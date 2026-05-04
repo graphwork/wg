@@ -101,6 +101,15 @@ description = "Pins fix-chat-tasks: sending to an older .chat-N updates last_int
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_chat_pty_last_interaction"
+script = "scenarios/tui_chat_pty_last_interaction.sh"
+owners = [
+    "fix-last-interaction",
+]
+description = "Pins fix-last-interaction: typing and sending in a real wg tui chat PTY tab bumps the backing .chat-N last_interaction_at within 5s and bubbles it above a previously newer chat, without LLM credentials."
+timeout_seconds = 45
+
+[[scenario]]
 name = "preset_shortcuts_still_work"
 script = "scenarios/preset_shortcuts_still_work.sh"
 owners = [

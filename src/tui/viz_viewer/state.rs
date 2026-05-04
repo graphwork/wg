@@ -24,6 +24,8 @@ use workgraph::{AgentRegistry, AgentStatus};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
+const CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE: Duration = Duration::from_secs(5);
+
 pub fn new_emacs_editor() -> EditorState {
     let mut state = EditorState::default();
     state.mode = EditorMode::Insert;
@@ -5275,6 +5277,11 @@ pub struct VizApp {
     /// Phase 3c of sessions-as-identity-rollout.md.
     pub chat_pty_takeover_pending_since: Option<std::time::Instant>,
 
+    /// Last graph timestamp bump caused by embedded chat PTY activity.
+    /// Child output can stream many times per second, so this keeps activity
+    /// sorting responsive without re-sorting on every terminal frame.
+    pub last_chat_pty_activity_bump: Option<std::time::Instant>,
+
     /// When true, keystrokes in the Chat tab forward to the embedded
     /// PTY child's stdin instead of the TUI's chat composer. Set for
     /// all PTY executors (native, claude, codex) — they all run
@@ -5772,6 +5779,7 @@ impl VizApp {
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
+            last_chat_pty_activity_bump: None,
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
             chat_agent_death: HashMap::new(),
@@ -7978,6 +7986,28 @@ impl VizApp {
             self.task_pane_last_bytes_seen
                 .insert(id.clone(), pane.bytes_processed());
         }
+    }
+
+    /// Record substantive interaction with the active embedded chat PTY.
+    ///
+    /// User sends force an immediate bump. Child output is debounced because
+    /// streaming terminal frames should not constantly reshuffle the task list.
+    pub fn bump_active_chat_pty_interaction(&mut self, force: bool) {
+        if !force
+            && self
+                .last_chat_pty_activity_bump
+                .is_some_and(|last| last.elapsed() < CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE)
+        {
+            return;
+        }
+
+        workgraph::chat::bump_chat_interaction(
+            &self.workgraph_dir,
+            &self.active_coordinator_id.to_string(),
+        );
+        self.last_chat_pty_activity_bump = Some(std::time::Instant::now());
+        self.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether any time-based UI elements are active and need periodic redraws
@@ -10472,6 +10502,7 @@ impl VizApp {
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
+            last_chat_pty_activity_bump: None,
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
             chat_agent_death: HashMap::new(),

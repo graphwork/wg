@@ -411,7 +411,7 @@ pub fn append_inbox_ref(
 /// and touches the matching task. Failures are intentionally swallowed —
 /// chat operations must never fail because of the side-channel timestamp
 /// bump. Heartbeats and streaming-token writes intentionally bypass this.
-pub(crate) fn bump_chat_interaction(workgraph_dir: &Path, session_ref: &str) {
+pub fn bump_chat_interaction(workgraph_dir: &Path, session_ref: &str) {
     let graph_path = workgraph_dir.join("graph.jsonl");
     let trimmed = session_ref.trim_start_matches('.');
     let mut candidates = vec![session_ref.to_string(), format!(".{}", trimmed)];

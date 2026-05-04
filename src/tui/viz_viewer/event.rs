@@ -273,6 +273,9 @@ fn run_event_loop_inner(
         let takeover_redraw = poll_chat_pty_takeover(app);
 
         if needs_redraw || refreshed || drained || takeover_redraw {
+            if app.chat_pty_mode && app.chat_pty_has_new_bytes() {
+                app.bump_active_chat_pty_interaction(false);
+            }
             let completed = terminal.draw(|frame| render::draw(frame, app))?;
             // Update the shared screen snapshot for IPC dump clients.
             update_shared_screen(completed.buffer, app, shared_screen);
@@ -637,6 +640,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 let key_event = crossterm::event::KeyEvent::new(code, modifiers);
                 let _ = pane.send_key(key_event);
             }
+            app.bump_active_chat_pty_interaction(matches!(code, KeyCode::Enter));
             // Always consume the key — we are nominally in PTY focus, so
             // letting it fall through to global handlers below would
             // re-introduce the old escape-hatch behavior the modal contract
@@ -8010,7 +8014,7 @@ mod chat_tab_navigation_tests {
     use ratatui::layout::Rect;
     use std::collections::{HashMap, HashSet};
     use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
+    use workgraph::parser::{load_graph, save_graph};
     use workgraph::test_helpers::make_task_with_status;
 
     /// Build a VizApp whose graph contains chat-loop tasks for each
@@ -9431,6 +9435,57 @@ mod chat_tab_navigation_tests {
             "In Normal mode with chat PTY active, paste must forward \
              every byte to the child's stdin (fix-paste-events guard \
              must not over-block)."
+        );
+    }
+
+    #[test]
+    fn enter_in_chat_pty_mode_bumps_chat_last_interaction_at() {
+        let (mut app, _tmp) = build_app_with_chats(&[1]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+
+        let graph_path = app.workgraph_dir.join("graph.jsonl");
+        workgraph::parser::modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut(".coordinator-1").unwrap();
+            task.last_interaction_at = Some("2026-04-30T00:00:00+00:00".to_string());
+            true
+        })
+        .unwrap();
+        let before = load_graph(&graph_path)
+            .unwrap()
+            .get_task(".coordinator-1")
+            .unwrap()
+            .last_interaction_at
+            .clone();
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        app.task_panes.insert(task_id, pane);
+
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        let after = load_graph(&graph_path)
+            .unwrap()
+            .get_task(".coordinator-1")
+            .unwrap()
+            .last_interaction_at
+            .clone();
+        assert_ne!(
+            after, before,
+            "TUI chat PTY Enter must bump last_interaction_at for the active chat task"
         );
     }
 
