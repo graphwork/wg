@@ -1,40 +1,91 @@
 # WorkGraph
 
-**WorkGraph is an operating surface for human/AI work.**
+**WorkGraph is not an agent framework. It is a cybernetic system for
+coordinating work:** agents generate, humans judge, evidence accumulates,
+failures reshape the plan, and the organization learns.
 
-It records what needs doing, who or what claimed it, what blocked it, what
-evidence was produced, where judgment entered, what failed, what was retried,
-and how the work changed over time.
-
-Agents can come and go. **The graph remains.**
-
-WorkGraph is not an agent framework. It is the substrate beneath agents: a
-persistent, inspectable graph where humans and machines coordinate through
-tasks, dependencies, claims, evidence, artifacts, and history.
+Most AI tools try to automate execution.
+WorkGraph closes the loop between **execution, validation, and human judgment**.
 
 > **Most AI systems center the agent. WorkGraph centers the work.**
 
-## Why this matters
+WorkGraph records what needs doing, who or what claimed it, what blocked it,
+what evidence was produced, where judgment entered, what failed, what was
+retried, and how the work changed over time.
 
-AI agents are increasingly capable, but their work is often ephemeral: hidden in
-chat logs, scattered across branches, trapped in prompt histories, or lost when
-a process exits. Real work needs continuity. WorkGraph makes work durable —
-something that can be inspected, resumed, audited, and shared independently of
-whatever process happens to be running right now.
-
-The agent that started a task may not be the one that finishes it. A human may
-take over. A different model may retry. The original session may be gone. None
-of that should matter to the work itself. The graph is the unit of memory; the
-agent is one of many things that may touch it.
+Agents can come and go. The graph remains.
 
 **Agents are transient. Work persists.**
 
+> WorkGraph is not evidence that agents can replace organizations. It is
+> evidence that organizations can be rebuilt around legible human/AI
+> feedback loops.
+
+## The bottleneck is validation
+
+AI systems can now generate code, analyses, prose, plans, and hypotheses
+faster than humans can evaluate them.
+
+That creates a new organizational problem: **work accumulates faster than
+judgment.**
+
+WorkGraph is designed around this bottleneck. It keeps generation, evidence,
+validation, repair, human judgment, and organizational memory in the same
+durable structure — so judgment can catch up to generation instead of being
+flattened by it.
+
+## Theory-led design
+
+WorkGraph was not designed by starting with agents and adding orchestration.
+
+It started from a theory of organizations: work needs decomposition,
+dependency, role, motivation, coordination, evaluation, memory, and
+adaptation.
+
+The implementation maps those organizational primitives into a working
+system. Read [the theory](https://graphwork.github.io/theory/) — it is
+foundational, not optional, reading.
+
+## The proof surface
+
+[Poietic PBC](https://poietic.life/) is being built through WorkGraph.
+
+The company's incorporation, grant writing, research coordination, website
+development, and public theory work have all passed through the graph. These
+are **not demos. They are the organization's own formation**, exposed as
+inspectable human/AI work.
+
+WorkGraph is therefore both the product and the medium through which Poietic
+becomes operational.
+
+## What WorkGraph is not
+
+WorkGraph is not primarily a chatbot, an agent benchmark harness, a
+project-management app, or an agent orchestration framework (LangGraph,
+CrewAI, AutoGen).
+
+Those categories center messages, scores, tickets, or agents.
+
+WorkGraph centers **answerable work**: tasks with dependencies, claims,
+evidence, validation, failures, handoffs, artifacts, and history.
+
+## Review this project in 10 minutes
+
+1. Read the [Poietic mission](https://poietic.life/): why legible human/AI
+   collaboration matters.
+2. Inspect a public graph: incorporation, grant writing, research, or this
+   website's own development.
+3. Read [the theory](https://graphwork.github.io/theory/): how tasks, roles,
+   evaluations, traces, and evolution form a cybernetic organization.
+4. Install WorkGraph only after you understand the system it instantiates.
+
 ## What WorkGraph gives you
 
-- **Persistent task graph** — tasks, dependencies, status, and metadata stored
-  as plain JSONL on disk. Git-friendly, human-readable, easy to inspect.
-- **Claims and handoffs** — any agent (human or AI) can claim work; if it dies,
-  another can pick up from where it left off.
+- **Persistent task graph** — tasks, dependencies, status, and metadata
+  stored as plain JSONL on disk. Git-friendly, human-readable, easy to
+  inspect.
+- **Claims and handoffs** — any agent (human or AI) can claim work; if it
+  dies, another can pick up from where it left off.
 - **Execution history** — every state transition, log line, and message is
   recorded. Nothing important is lost when a process exits.
 - **Evidence and artifacts** — files produced by tasks are tracked alongside
@@ -44,7 +95,7 @@ agent is one of many things that may touch it.
 - **Agent continuity** — composable identities (role + tradeoff) outlive the
   individual processes that embody them, and improve via feedback over time.
 
-## Five minutes from zero to running
+## Start a work graph
 
 ```bash
 cargo install --path .            # build the wg binary
@@ -61,11 +112,10 @@ graph evolve. Everything else is detail.
 
 ## Core concepts
 
-**Tasks** are units of work. They have a status (`open`, `in-progress`, `done`,
-`failed`, `blocked`, `pending-validation`, `waiting`, `abandoned`), a
-description, optional acceptance criteria, and edges to other tasks they depend
-on. Tasks may carry per-task overrides (model, execution mode, visibility,
-context scope).
+**Tasks** are units of work. They have a status (`open`, `in-progress`,
+`done`, `failed`, `blocked`, `pending-validation`, `waiting`, `abandoned`),
+a description, optional acceptance criteria, and edges to other tasks they
+depend on.
 
 **Dependencies** (`after` edges) form the graph. A task is waiting until its
 predecessors reach a terminal status. Cycles are allowed and represent
@@ -77,37 +127,50 @@ record artifacts, and either complete the work or hand it back. Agents are
 identified, tracked, and can be killed and replaced without losing the work
 itself.
 
-**Claims** are how an agent says "I'm working on this." A claim is just a
-record on the task. If the agent dies, the claim is released and another
-agent can take over.
+**Claims** are how an agent says "I'm working on this." If the agent dies,
+the claim is released and another agent can take over.
 
-**Traces** record everything: state transitions, logs, messages, artifacts,
-evaluations. The trace is the project's organizational memory and the basis
-for sharing, replay, and learning.
+### Organizational memory
 
-**Verification** is built into the lifecycle. Tasks include a `## Validation`
-section in their description listing acceptance criteria. When work is marked
-done, an evaluator scores the output against those criteria. Low confidence
-triggers verification by a stronger model.
+State transitions, logs, messages, artifacts, and evaluations are all
+recorded on the task. The trace is the project's organizational memory and
+the basis for sharing, replay, and learning.
 
-**Agency** is the system of composable identities — a *role* (what an agent
-does) paired with a *tradeoff* (why it acts that way). Agencies are evaluated
-and evolve over time based on performance data, so the population of available
-identities improves with use.
+### Closing the validation loop
+
+Verification is built into the lifecycle. Tasks include a `## Validation`
+section in their description listing acceptance criteria. When work is
+marked done, an evaluator scores the output against those criteria. Low
+confidence triggers verification by a stronger model. Generation, evidence,
+and judgment stay attached to the same task.
+
+### Roles, judgment, and evolving agency
+
+Agency is the system of composable identities — a *role* (what an agent
+does) paired with a *tradeoff* (why it acts that way). Agencies are
+evaluated and evolve over time based on performance data, so the population
+of available identities improves with use.
+
+### The coordinator
+
+`wg service start` launches a coordinator daemon that watches the graph and
+spawns agents on ready tasks, up to `max_agents` in parallel. Each
+concurrent agent runs in its own git worktree, so they don't step on each
+other.
 
 ## How it's used
 
-- **Solo with one AI**: declare tasks, start the service, let one agent at a
-  time work through them. The graph survives sessions; you can return tomorrow
-  and pick up where you left off.
-- **Many AIs in parallel**: the service spawns up to `max_agents` workers, each
-  in its own git worktree. They don't step on each other. Dependencies enforce
-  ordering where it matters.
+- **Solo with one AI**: declare tasks, start the service, let one agent at
+  a time work through them. The graph survives sessions; you can return
+  tomorrow and pick up where you left off.
+- **Many AIs in parallel**: the coordinator spawns up to `max_agents`
+  workers. Dependencies enforce ordering where it matters.
 - **Mixed human + AI**: humans claim what they want to do; AIs claim what's
   left. Handoffs at any boundary work the same way.
-- **Reflexive use**: a graph can describe its own evolution. WorkGraph itself
-  is built using WorkGraph — agents extend it, evaluate the extensions, and
-  evolve the substrate. The graph is the memory of its own construction.
+- **Reflexive use**: a graph can describe its own evolution. WorkGraph
+  itself is built using WorkGraph — agents extend it, evaluate the
+  extensions, and evolve the substrate. The graph is the memory of its own
+  construction.
 
 ## Storage
 
@@ -174,9 +237,10 @@ Use workgraph for task management. Run `wg quickstart` at session start.
 Use `wg service start` to dispatch work — do not manually claim tasks.
 ```
 
-Other agent harnesses (Codex CLI, OpenCode, etc.) read `AGENTS.md` — the same
-two lines work there. See [docs/GUIDE.md](docs/GUIDE.md#using-with-ai-coding-assistants)
-for the longer form.
+Other agent harnesses (Codex CLI, OpenCode, etc.) read `AGENTS.md` — the
+same two lines work there. See
+[docs/GUIDE.md](docs/GUIDE.md#using-with-ai-coding-assistants) for the
+longer form.
 
 ## License
 
