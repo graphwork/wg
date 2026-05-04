@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 /// Default content for .wg/.gitignore
 const GITIGNORE_CONTENT: &str = r#"# Workgraph gitignore
@@ -72,6 +72,16 @@ pub fn run_with_route(
     } else {
         effective_executor.and_then(SetupRoute::try_from_executor)
     };
+    let resolved_route = if resolved_route.is_none()
+        && executor.is_none()
+        && route.is_none()
+        && model.is_none()
+        && endpoint.is_none()
+    {
+        Some(SetupRoute::ClaudeCli)
+    } else {
+        resolved_route
+    };
 
     if dry_run {
         if let Some(r) = resolved_route {
@@ -82,8 +92,8 @@ pub fn run_with_route(
                 model: model.map(|s| s.to_string()),
             };
             let cfg = config_for_route(r, params);
-            let toml = toml::to_string_pretty(&cfg)
-                .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+            let toml =
+                toml::to_string_pretty(&cfg).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
             println!("# wg init --dry-run (route: {})", r.as_name());
             println!("# Would create: {}", dir.display());
             println!("# Would write the following config.toml:");
@@ -195,10 +205,8 @@ pub fn run_with_route(
         println!("  Run: wg skill install");
     }
 
-    if route == SetupRoute::ClaudeCli
-        && let Some(project_dir) = dir.parent()
-    {
-        let (status, changed) = super::setup::configure_project_claude_md(project_dir)?;
+    if let Some(project_dir) = dir.parent() {
+        let (status, changed) = super::setup::configure_project_agent_guides(project_dir)?;
         if changed {
             println!();
             println!("{}", status);
@@ -466,11 +474,9 @@ pub fn run(
         _ => {} // Custom executor — user knows what they're doing
     }
 
-    // Configure project-level CLAUDE.md if using Claude executor
-    if executor == "claude"
-        && let Some(project_dir) = dir.parent()
-    {
-        let (status, changed) = super::setup::configure_project_claude_md(project_dir)?;
+    // Configure project-level agent guides for Claude Code / Claude CLI and Codex.
+    if let Some(project_dir) = dir.parent() {
+        let (status, changed) = super::setup::configure_project_agent_guides(project_dir)?;
         if changed {
             println!();
             println!("{}", status);
@@ -486,12 +492,7 @@ pub fn run(
         other => other,
     };
     let _ = workgraph::launcher_history::record_use(
-        &workgraph::launcher_history::HistoryEntry::new(
-            canonical_executor,
-            model,
-            endpoint,
-            "cli",
-        ),
+        &workgraph::launcher_history::HistoryEntry::new(canonical_executor, model, endpoint, "cli"),
     );
 
     Ok(())
@@ -809,8 +810,14 @@ mod tests {
     fn test_endpoint_rejects_non_http() {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
-        let err = run(&wg_dir, true, Some("shell"), None, Some("definitely-not-a-url"))
-            .expect_err("non-http endpoint should be rejected");
+        let err = run(
+            &wg_dir,
+            true,
+            Some("shell"),
+            None,
+            Some("definitely-not-a-url"),
+        )
+        .expect_err("non-http endpoint should be rejected");
         // anyhow context wraps the inner bail, so format with `{:#}` to get the chain.
         let chain = format!("{:#}", err);
         assert!(

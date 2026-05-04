@@ -544,6 +544,15 @@ description = "Regression for fix-failed-upstream: a failed upstream task must N
 timeout_seconds = 30
 
 [[scenario]]
+name = "wg_init_writes_lockstep_agent_guides"
+script = "scenarios/wg_init_writes_lockstep_agent_guides.sh"
+owners = [
+    "fix-wg-init-2",
+]
+description = "Pins fix-wg-init-2: every fresh `wg init` route must write both CLAUDE.md and AGENTS.md to the project root from the same layer-2 template, so Claude Code / Claude CLI and Codex sessions receive byte-identical project-specific context that delegates the universal role contract to `wg agent-guide`. No LLM endpoint needed."
+timeout_seconds = 30
+
+[[scenario]]
 name = "codex_init_route_has_correct_defaults"
 script = "scenarios/codex_init_route_has_correct_defaults.sh"
 owners = [

@@ -58,7 +58,9 @@ mod tests {
 
     #[test]
     fn guide_text_documents_quality_pass() {
-        assert!(AGENT_GUIDE_TEXT.contains("quality pass") || AGENT_GUIDE_TEXT.contains("Quality pass"));
+        assert!(
+            AGENT_GUIDE_TEXT.contains("quality pass") || AGENT_GUIDE_TEXT.contains("Quality pass")
+        );
     }
 
     #[test]
@@ -126,6 +128,12 @@ mod tests {
             .expect("AGENTS.md must exist at repo root");
         let claude_md = std::fs::read_to_string(manifest_dir.join("CLAUDE.md"))
             .expect("CLAUDE.md must exist at repo root");
+
+        assert_eq!(
+            agents_md.as_bytes(),
+            claude_md.as_bytes(),
+            "AGENTS.md and CLAUDE.md must be byte-for-byte identical"
+        );
 
         // Both must point at the bundled agent-guide as the source of truth.
         for (name, body) in [("AGENTS.md", &agents_md), ("CLAUDE.md", &claude_md)] {

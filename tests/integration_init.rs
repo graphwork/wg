@@ -36,34 +36,49 @@ fn wg_cmd_in(dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
 }
 
+fn assert_lockstep_agent_guides(project_dir: &Path) {
+    let claude_md = std::fs::read(project_dir.join("CLAUDE.md")).expect("CLAUDE.md should exist");
+    let agents_md = std::fs::read(project_dir.join("AGENTS.md")).expect("AGENTS.md should exist");
+
+    assert_eq!(
+        claude_md, agents_md,
+        "CLAUDE.md and AGENTS.md should be byte-for-byte identical"
+    );
+
+    let body = String::from_utf8(claude_md).expect("agent guide should be UTF-8");
+    assert!(body.contains("wg agent-guide"));
+    assert!(body.contains("layer-2"));
+    assert!(body.contains("wg quickstart"));
+}
+
 // ---------------------------------------------------------------------------
-// test_init_requires_executor
+// test_init_without_flags_uses_default_route
 // ---------------------------------------------------------------------------
 
-/// `wg init` with no flags at all must fail with a helpful error
-/// pointing the user at the new `-m provider:model` flow (or `--route`).
+/// `wg init` with no flags uses the built-in default claude-cli route.
 #[test]
-fn test_init_requires_executor() {
+fn test_init_without_flags_uses_default_route() {
     let tmp = TempDir::new().unwrap();
 
     let output = wg_cmd_in(tmp.path(), &["init"]);
-
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "wg init with no inputs should fail with a helpful error"
+        output.status.success(),
+        "wg init with no inputs should use the default route.\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = format!("{}{}", stderr, stdout);
+    let wg_dir = tmp.path().join(".wg");
+    assert!(wg_dir.exists(), ".wg directory should be created");
+    assert_lockstep_agent_guides(tmp.path());
 
-    // Error must offer at least one example using the new model-spec form.
+    let config = workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
     assert!(
-        combined.contains("-m claude:opus")
-            || combined.contains("provider:model")
-            || combined.contains("--route"),
-        "error must show the new model+route flow. Got:\n{}",
-        combined
+        config.agent.model.starts_with("claude:"),
+        "default route should write a claude agent model, got {:?}",
+        config.agent.model
     );
 }
 
@@ -99,20 +114,56 @@ fn test_init_with_executor_claude_succeeds() {
 
     let wg_dir = tmp.path().join(".wg");
     assert!(wg_dir.exists(), ".wg directory should be created");
+    assert_lockstep_agent_guides(tmp.path());
 
-    let config =
-        workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
+    let config = workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
     // The handler is now derived from the model spec. The fresh config
     // should have claude:* set as the model — that's what the route
     // populates for `--executor claude`.
     let agent_model = &config.agent.model;
     assert!(
-        agent_model.starts_with("claude:") || agent_model == "claude" || agent_model.is_empty()
+        agent_model.starts_with("claude:")
+            || agent_model == "claude"
+            || agent_model.is_empty()
             || workgraph::dispatch::handler_for_model(agent_model)
                 == workgraph::dispatch::ExecutorKind::Claude,
         "agent.model must imply the claude handler, got: {:?}",
         agent_model
     );
+}
+
+#[test]
+fn test_init_routes_write_lockstep_agent_guides() {
+    for (route, extra_args) in [
+        ("claude-cli", Vec::<&str>::new()),
+        ("codex-cli", Vec::<&str>::new()),
+        ("openrouter", Vec::<&str>::new()),
+        (
+            "local",
+            vec!["-e", "http://127.0.0.1:11434", "-m", "nex:qwen3-coder"],
+        ),
+        (
+            "nex-custom",
+            vec!["-e", "http://127.0.0.1:8088", "-m", "nex:qwen3-coder"],
+        ),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let mut args = vec!["init", "--route", route, "--no-agency"];
+        args.extend(extra_args);
+
+        let output = wg_cmd_in(tmp.path(), &args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "wg {:?} should succeed.\nstdout: {}\nstderr: {}",
+            args,
+            stdout,
+            stderr
+        );
+
+        assert_lockstep_agent_guides(tmp.path());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,13 +214,7 @@ fn test_init_executor_and_endpoint_succeeds() {
 
     let output = wg_cmd_in(
         tmp.path(),
-        &[
-            "init",
-            "--executor",
-            "shell",
-            "-e",
-            "http://127.0.0.1:9999",
-        ],
+        &["init", "--executor", "shell", "-e", "http://127.0.0.1:9999"],
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -182,8 +227,7 @@ fn test_init_executor_and_endpoint_succeeds() {
     );
 
     let wg_dir = tmp.path().join(".wg");
-    let config =
-        workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
+    let config = workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
 
     assert_eq!(
         config.coordinator.executor.as_deref(),
