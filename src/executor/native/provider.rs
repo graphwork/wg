@@ -295,13 +295,16 @@ pub fn create_provider_ext(
         .or_else(|| provider_override.map(String::from))
         .or_else(|| endpoint_provider_override.clone())
         .or_else(|| {
-            // Legacy [native_executor].provider may be the "openai" alias;
-            // normalize to the canonical "oai-compat" so downstream wiring
-            // and `provider.name()` are consistent.
+            // Legacy [native_executor].provider — preserved verbatim so the
+            // user-facing label they configured ("openai", "openrouter", etc.)
+            // round-trips through `provider.name()`. Consistent with the
+            // explicit `provider_override` path above. The match arm below
+            // accepts both the canonical "oai-compat" tag and the legacy
+            // "openai" alias, so verbatim preservation does not affect routing.
             native_cfg
                 .and_then(|c| c.get("provider"))
                 .and_then(|v| v.as_str())
-                .map(|s| crate::config::provider_to_native_provider(s).to_string())
+                .map(String::from)
         })
         .or_else(|| {
             // Legacy heuristic takes precedence over env var for explicit model prefixes

@@ -266,7 +266,11 @@ is_default = true
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
     let provider = create_provider(tmp.path(), "deepseek/deepseek-chat").unwrap();
-    assert_eq!(provider.name(), "oai-compat");
+    // [native_executor].provider is preserved verbatim; the user wrote
+    // "openai" so that's what `provider.name()` reports. Routing still
+    // takes the OAI-compat path — the match arm in create_provider_ext
+    // treats "openai" and "oai-compat" identically.
+    assert_eq!(provider.name(), "openai");
     assert_eq!(provider.model(), "deepseek/deepseek-chat");
 }
 
