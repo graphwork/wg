@@ -193,6 +193,27 @@ Because identity is content-hashed, lineage is unfalsifiable. The parent entity 
 
 **Deduplication.** If the evolver proposes a role that is identical to an existing one—same description, same skills, same desired outcome—the content-hash collision is detected and the duplicate is rejected. This prevents the agency from accumulating redundant entities. It also means that convergent evolution is recognized: if two independent mutation paths arrive at the same role definition, the system knows they are the same role.
 
+### Import Dedup Rule
+
+`wg agency import` ingests rows from an Agency CSV (e.g. the upstream `agentbureau/agency` `starter.csv`). The dedup rule is one row per **content_hash** = `sha256(description)`. This is the same identity equation used by Agency v1.2.4 federation handshakes (see <a href="#federation-sharing-across-projects" class="ref">[federation]</a>), so per-row hash byte-equality with upstream is preserved.
+
+A consequence of this rule is that two CSV rows whose `description` field is identical will collapse to one stored primitive, even when their other columns differ. Two cases come up in practice:
+
+- **Per-scope variants.** Upstream sometimes ships paired entries with the same `(type, name)` and identical description but different `scope` (e.g. `task` vs `meta:assigner`). Only the first variant is stored.
+- **Same-description name collisions.** A row from one source (e.g. an upstream pull) can share a description byte-for-byte with a primitive already seeded locally under a different `name`. The earlier row wins.
+
+Both cases are detected explicitly during import:
+
+- **Default** (warn-and-skip): the importer keeps the first occurrence (a previous row in the same import, or an existing on-disk primitive) and prints a warning to stderr for each collision, including type, row index, the hashed prefix, and both `(name, scope)` pairs. The summary line at the end of the import reports the total collision count.
+- **`wg agency import --strict`**: the importer aborts on the first collision with a non-zero exit code, naming the colliding row. Use this for federation-sensitive workflows where any drift should fail-loud.
+
+This rule was chosen over two alternatives:
+
+- *Hash on `(type, name, scope)` instead of `description`.* This would preserve per-scope variants but break the Agency v1.2.4 federation hash equation, severing per-row byte-equality with upstream. Rejected.
+- *Last-write-wins (the pre-investigation behavior).* This silently overwrote locally-seeded primitives whenever an upstream row happened to share a description, with no surfaced warning. Rejected: it produces invisible semantic drift and was the bug filed under `investigate-agency-import`.
+
+Per-scope variants of a primitive that workgraph does need to keep separately should be expressed as two primitives with distinguishable descriptions (the scope can be repeated in the prose), or composed at the role layer where the same content primitive can be referenced by multiple roles.
+
 ## Federation: Sharing Across Projects
 
 An agency built in one project is not confined to that project. The federation system lets you share roles, motivations, and agents across workgraph projects—transferring proven identities from one context into another, complete with their performance histories and lineage chains.

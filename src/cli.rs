@@ -4062,6 +4062,11 @@ pub enum AgencyCommands {
         /// Only check if upstream has changed (exit 0 = changed, exit 1 = same)
         #[arg(long)]
         check: bool,
+
+        /// Error on the first description-hash dedup collision (default warns and skips).
+        /// See docs/manual/03-agency.md "Import Dedup Rule".
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Export local primitives as Agency CSV

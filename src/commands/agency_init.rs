@@ -279,6 +279,7 @@ fn try_upstream_pull(workgraph_dir: &Path) {
         tag: Some("upstream-bureau".to_string()),
         force: false,
         check: false,
+        strict: false,
     };
 
     match agency_import::run_import(workgraph_dir, opts) {

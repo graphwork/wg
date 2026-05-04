@@ -2009,6 +2009,7 @@ fn main() -> Result<()> {
                 tag,
                 force,
                 check,
+                strict,
             } => {
                 let opts = commands::agency_import::ImportOptions {
                     csv_path,
@@ -2019,6 +2020,7 @@ fn main() -> Result<()> {
                     tag,
                     force,
                     check,
+                    strict,
                 };
                 commands::agency_import::run_import(&workgraph_dir, opts).map(|_| ())
             }

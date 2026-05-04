@@ -88,6 +88,33 @@ pub struct ImportOptions {
     pub tag: Option<String>,
     pub force: bool,
     pub check: bool,
+    /// Error on the first dedup collision rather than warn-and-skip.
+    pub strict: bool,
+}
+
+/// One detected dedup collision during import. See docs/manual/03-agency.md
+/// "Import Dedup Rule" for the rule rationale.
+#[derive(Debug, Clone)]
+pub struct ImportCollision {
+    pub kind: &'static str,
+    pub row: usize,
+    pub hash: String,
+    pub kept_name: String,
+    pub kept_scope: Option<String>,
+    pub dropped_name: String,
+    pub dropped_scope: Option<String>,
+    /// Where the collision happened: against another CSV row, or against an
+    /// existing on-disk file.
+    pub origin: CollisionOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionOrigin {
+    /// Collided with a previous row in this same import.
+    SameImport,
+    /// Collided with a primitive file already present on disk (seed, prior
+    /// import, or another remote).
+    Existing,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +170,20 @@ pub fn run_from_bytes(
     dry_run: bool,
     tag: Option<&str>,
 ) -> Result<ImportCounts> {
+    run_from_bytes_with(workgraph_dir, source_label, csv_bytes, dry_run, tag, false).map(|(c, _)| c)
+}
+
+/// Like `run_from_bytes` but accepts a `strict` flag and returns the detected
+/// collision list alongside the counts. See docs/manual/03-agency.md
+/// "Import Dedup Rule" for semantics.
+pub fn run_from_bytes_with(
+    workgraph_dir: &Path,
+    source_label: &str,
+    csv_bytes: &[u8],
+    dry_run: bool,
+    tag: Option<&str>,
+    strict: bool,
+) -> Result<(ImportCounts, Vec<ImportCollision>)> {
     let provenance_tag = tag.unwrap_or("agency-import");
     let agency_dir = workgraph_dir.join("agency");
 
@@ -154,6 +195,13 @@ pub fn run_from_bytes(
     let mut reader = csv::Reader::from_reader(csv_content.as_bytes());
 
     let format = detect_format(reader.headers().context("Failed to read CSV headers")?);
+
+    // Per-type seen-hash trackers and pre-existing-name lookup. Keys are
+    // content_hash; values are (name, scope) of the row that owns the file.
+    let mut seen_components: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut seen_outcomes: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut seen_tradeoffs: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut collisions: Vec<ImportCollision> = Vec::new();
 
     let mut components_count = 0u32;
     let mut outcomes_count = 0u32;
@@ -223,6 +271,27 @@ pub fn run_from_bytes(
                 let content = ContentRef::Inline(description.clone());
                 let category = ComponentCategory::Translated;
                 let id = agency::content_hash_component(&description, &category, &content);
+                let row_num = row_idx + 1;
+                let scope_for_check = scope.clone();
+                let collision = check_collision(
+                    "component",
+                    &id,
+                    &name,
+                    scope_for_check.as_deref(),
+                    row_num,
+                    &mut seen_components,
+                    &agency_dir.join("primitives/components"),
+                    dry_run,
+                );
+                if let Some(coll) = collision {
+                    if strict {
+                        anyhow::bail!(format_strict_error(&coll));
+                    }
+                    eprintln!("{}", format_collision_warning(&coll));
+                    collisions.push(coll);
+                    skipped += 1;
+                    continue;
+                }
 
                 if dry_run {
                     println!("  [component] {} ({})", name, agency::short_hash(&id));
@@ -266,6 +335,27 @@ pub fn run_from_bytes(
                     CsvFormat::Agency => vec![],
                 };
                 let id = agency::content_hash_outcome(&description, &success_criteria);
+                let row_num = row_idx + 1;
+                let scope_for_check = scope.clone();
+                let collision = check_collision(
+                    "outcome",
+                    &id,
+                    &name,
+                    scope_for_check.as_deref(),
+                    row_num,
+                    &mut seen_outcomes,
+                    &agency_dir.join("primitives/outcomes"),
+                    dry_run,
+                );
+                if let Some(coll) = collision {
+                    if strict {
+                        anyhow::bail!(format_strict_error(&coll));
+                    }
+                    eprintln!("{}", format_collision_warning(&coll));
+                    collisions.push(coll);
+                    skipped += 1;
+                    continue;
+                }
 
                 if dry_run {
                     println!("  [outcome] {} ({})", name, agency::short_hash(&id));
@@ -317,6 +407,27 @@ pub fn run_from_bytes(
                     CsvFormat::Agency => (vec![], vec![]),
                 };
                 let id = agency::content_hash_tradeoff(&acceptable, &unacceptable, &description);
+                let row_num = row_idx + 1;
+                let scope_for_check = scope.clone();
+                let collision = check_collision(
+                    "tradeoff",
+                    &id,
+                    &name,
+                    scope_for_check.as_deref(),
+                    row_num,
+                    &mut seen_tradeoffs,
+                    &agency_dir.join("primitives/tradeoffs"),
+                    dry_run,
+                );
+                if let Some(coll) = collision {
+                    if strict {
+                        anyhow::bail!(format_strict_error(&coll));
+                    }
+                    eprintln!("{}", format_collision_warning(&coll));
+                    collisions.push(coll);
+                    skipped += 1;
+                    continue;
+                }
 
                 if dry_run {
                     println!("  [tradeoff] {} ({})", name, agency::short_hash(&id));
@@ -377,12 +488,134 @@ pub fn run_from_bytes(
     if skipped > 0 {
         println!("  Skipped:    {}", skipped);
     }
+    if !collisions.is_empty() {
+        println!(
+            "  Collisions: {} (description-hash dedup; rerun with --strict to fail)",
+            collisions.len()
+        );
+    }
 
     if !dry_run {
         write_manifest(workgraph_dir, source_label, csv_bytes, &counts)?;
     }
 
-    Ok(counts)
+    Ok((counts, collisions))
+}
+
+fn check_collision(
+    kind: &'static str,
+    id: &str,
+    name: &str,
+    scope: Option<&str>,
+    row: usize,
+    seen: &mut HashMap<String, (String, Option<String>)>,
+    on_disk_dir: &Path,
+    dry_run: bool,
+) -> Option<ImportCollision> {
+    if let Some((kept_name, kept_scope)) = seen.get(id) {
+        let kept_name = kept_name.clone();
+        let kept_scope = kept_scope.clone();
+        if kept_name != name || kept_scope.as_deref() != scope {
+            return Some(ImportCollision {
+                kind,
+                row,
+                hash: id.to_string(),
+                kept_name,
+                kept_scope,
+                dropped_name: name.to_string(),
+                dropped_scope: scope.map(str::to_string),
+                origin: CollisionOrigin::SameImport,
+            });
+        }
+        return None;
+    }
+    if !dry_run {
+        let on_disk = on_disk_dir.join(format!("{}.yaml", id));
+        if on_disk.exists() {
+            let (existing_name, existing_scope) = read_existing_name_scope(kind, &on_disk);
+            if existing_name.as_deref() != Some(name)
+                || existing_scope.as_deref() != scope
+            {
+                let collision = ImportCollision {
+                    kind,
+                    row,
+                    hash: id.to_string(),
+                    kept_name: existing_name.unwrap_or_else(|| "<unknown>".to_string()),
+                    kept_scope: existing_scope,
+                    dropped_name: name.to_string(),
+                    dropped_scope: scope.map(str::to_string),
+                    origin: CollisionOrigin::Existing,
+                };
+                seen.insert(
+                    id.to_string(),
+                    (collision.kept_name.clone(), collision.kept_scope.clone()),
+                );
+                return Some(collision);
+            }
+        }
+    }
+    seen.insert(id.to_string(), (name.to_string(), scope.map(str::to_string)));
+    None
+}
+
+fn read_existing_name_scope(kind: &str, path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (None, None);
+    };
+    match kind {
+        "component" => {
+            if let Ok(c) = serde_yaml::from_str::<workgraph::agency::RoleComponent>(&text) {
+                return (Some(c.name), c.scope);
+            }
+        }
+        "outcome" => {
+            if let Ok(o) = serde_yaml::from_str::<workgraph::agency::DesiredOutcome>(&text) {
+                return (Some(o.name), o.scope);
+            }
+        }
+        "tradeoff" => {
+            if let Ok(t) = serde_yaml::from_str::<workgraph::agency::TradeoffConfig>(&text) {
+                return (Some(t.name), t.scope);
+            }
+        }
+        _ => {}
+    }
+    (None, None)
+}
+
+fn format_collision_warning(c: &ImportCollision) -> String {
+    let kept_scope = c.kept_scope.as_deref().unwrap_or("<none>");
+    let dropped_scope = c.dropped_scope.as_deref().unwrap_or("<none>");
+    let origin = match c.origin {
+        CollisionOrigin::SameImport => "earlier row in this import",
+        CollisionOrigin::Existing => "existing on-disk primitive",
+    };
+    format!(
+        "Warning: agency import collision (row {}): {} '{}' (scope={}) shares description-hash {} with {} '{}' (scope={}); skipping",
+        c.row,
+        c.kind,
+        c.dropped_name,
+        dropped_scope,
+        agency::short_hash(&c.hash),
+        origin,
+        c.kept_name,
+        kept_scope,
+    )
+}
+
+fn format_strict_error(c: &ImportCollision) -> String {
+    let kept_scope = c.kept_scope.as_deref().unwrap_or("<none>");
+    let dropped_scope = c.dropped_scope.as_deref().unwrap_or("<none>");
+    format!(
+        "agency import --strict: row {} {} '{}' (scope={}) collides on description-hash {} with '{}' (scope={})",
+        c.row,
+        c.kind,
+        c.dropped_name,
+        dropped_scope,
+        agency::short_hash(&c.hash),
+        c.kept_name,
+        kept_scope,
+    )
 }
 
 /// Unified entry point for `wg agency import` supporting local file, URL, and upstream modes.
@@ -405,7 +638,17 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
 
     if let Some(ref csv_path) = opts.csv_path {
         // Local file path — existing behavior
-        return run(workgraph_dir, csv_path, opts.dry_run, opts.tag.as_deref());
+        let csv_bytes =
+            std::fs::read(csv_path).with_context(|| format!("Failed to read '{}'", csv_path))?;
+        return run_from_bytes_with(
+            workgraph_dir,
+            csv_path,
+            &csv_bytes,
+            opts.dry_run,
+            opts.tag.as_deref(),
+            opts.strict,
+        )
+        .map(|(c, _)| c);
     }
 
     // Resolve the URL (either explicit --url or --upstream from config)
@@ -459,13 +702,15 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
         }
 
         // Hash differs — import
-        return run_from_bytes(
+        return run_from_bytes_with(
             workgraph_dir,
             &url,
             &csv_bytes,
             opts.dry_run,
             opts.tag.as_deref(),
-        );
+            opts.strict,
+        )
+        .map(|(c, _)| c);
     }
 
     // No existing manifest or --force: fetch and import
@@ -486,13 +731,15 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
         std::process::exit(0);
     }
 
-    run_from_bytes(
+    run_from_bytes_with(
         workgraph_dir,
         &url,
         &csv_bytes,
         opts.dry_run,
         opts.tag.as_deref(),
+        opts.strict,
     )
+    .map(|(c, _)| c)
 }
 
 /// Detected CSV format based on header or column count.
@@ -1213,6 +1460,7 @@ mod tests {
             tag: None,
             force: false,
             check: false,
+            strict: false,
         };
         let counts = run_import(&wg_dir, opts).unwrap();
         assert_eq!(counts.role_components, 2);
@@ -1235,6 +1483,7 @@ mod tests {
             tag: None,
             force: false,
             check: false,
+            strict: false,
         };
         let result = run_import(&wg_dir, opts);
         assert!(result.is_err());
@@ -1256,6 +1505,7 @@ mod tests {
             tag: None,
             force: false,
             check: false,
+            strict: false,
         };
         let result = run_import(&wg_dir, opts);
         assert!(result.is_err());
@@ -1277,6 +1527,7 @@ mod tests {
             tag: None,
             force: false,
             check: false,
+            strict: false,
         };
         let result = run_import(&wg_dir, opts);
         assert!(result.is_err());
@@ -1304,6 +1555,7 @@ mod tests {
             tag: None,
             force: false,
             check: false,
+            strict: false,
         };
         let result = run_import(&wg_dir, opts);
         assert!(result.is_err());
@@ -1377,5 +1629,112 @@ mod tests {
             .count();
         // Second import should ADD the new component, not remove the first
         assert_eq!(count2, 2);
+    }
+
+    /// Per-scope variant: upstream uses the same description+name with two
+    /// different scopes ("task" vs "meta:assigner"). Default behavior keeps
+    /// the first row, warns, and records a same-import collision.
+    #[test]
+    fn test_agency_import_per_scope_variant_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        // Two rows: same (type, name, description), different scope.
+        let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                     role_component,forward-compatible-deferral-spec,Deferral spec contents,80,high,management,inst-001,,task\n\
+                     role_component,forward-compatible-deferral-spec,Deferral spec contents,80,high,management,inst-001,,meta:assigner\n";
+
+        let (counts, collisions) =
+            run_from_bytes_with(&wg_dir, "test://scope-variant.csv", csv, false, None, false)
+                .unwrap();
+
+        // Exactly one row saved; the duplicate-by-hash row is dropped + recorded.
+        assert_eq!(counts.role_components, 1);
+        assert_eq!(collisions.len(), 1);
+        let coll = &collisions[0];
+        assert_eq!(coll.kind, "component");
+        assert_eq!(coll.kept_name, "forward-compatible-deferral-spec");
+        assert_eq!(coll.dropped_name, "forward-compatible-deferral-spec");
+        assert_eq!(coll.kept_scope.as_deref(), Some("task"));
+        assert_eq!(coll.dropped_scope.as_deref(), Some("meta:assigner"));
+        assert_eq!(coll.origin, CollisionOrigin::SameImport);
+
+        // Strict mode errors on the same input.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let wg_dir2 = tmp2.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir2).unwrap();
+        let err = run_from_bytes_with(&wg_dir2, "test://scope-variant.csv", csv, false, None, true)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--strict"), "strict error should mention --strict, got: {}", msg);
+        assert!(msg.contains("forward-compatible-deferral-spec"));
+    }
+
+    /// Same-description name collision: an upstream row whose description
+    /// matches a primitive already on disk (a locally-seeded one) gets
+    /// detected as an Existing-origin collision and skipped.
+    #[test]
+    fn test_agency_import_same_description_name_collision_with_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        // First import: seed a primitive with one name.
+        let seed = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                      role_component,adapt-research-synthesis-for-non-domain-audience,Identical description text,90,high,research,inst-seed,,task\n";
+        let (seed_counts, seed_coll) =
+            run_from_bytes_with(&wg_dir, "test://seed.csv", seed, false, None, false).unwrap();
+        assert_eq!(seed_counts.role_components, 1);
+        assert!(seed_coll.is_empty());
+
+        // Second import: an upstream row with a different name but identical
+        // description. Default behavior should warn + skip (preserving the
+        // locally-seeded row).
+        let upstream = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
+                          role_component,identify-write-up-audience-and-adapt,Identical description text,80,medium,writing,inst-up,,task\n";
+        let (upstream_counts, upstream_coll) =
+            run_from_bytes_with(&wg_dir, "test://upstream.csv", upstream, false, None, false)
+                .unwrap();
+        assert_eq!(
+            upstream_counts.role_components, 0,
+            "upstream row should be skipped, not saved"
+        );
+        assert_eq!(upstream_coll.len(), 1);
+        let coll = &upstream_coll[0];
+        assert_eq!(coll.origin, CollisionOrigin::Existing);
+        assert_eq!(
+            coll.kept_name, "adapt-research-synthesis-for-non-domain-audience",
+            "first-write-wins: locally-seeded primitive must not be silently overwritten"
+        );
+        assert_eq!(coll.dropped_name, "identify-write-up-audience-and-adapt");
+
+        // Verify on-disk state preserves the seeded name.
+        let comp_dir = wg_dir.join("agency/primitives/components");
+        let entries: Vec<_> = std::fs::read_dir(&comp_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let comp: RoleComponent =
+            agency::load_component(&entries[0].as_ref().unwrap().path()).unwrap();
+        assert_eq!(comp.name, "adapt-research-synthesis-for-non-domain-audience");
+
+        // Strict mode errors on the same upstream import against a seeded file.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let wg_dir2 = tmp2.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir2).unwrap();
+        run_from_bytes_with(&wg_dir2, "test://seed.csv", seed, false, None, false).unwrap();
+        let err = run_from_bytes_with(
+            &wg_dir2,
+            "test://upstream.csv",
+            upstream,
+            false,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("--strict"),
+            "strict error should mention --strict, got: {}",
+            err
+        );
     }
 }

@@ -26,6 +26,15 @@ description = "Pins Agency's 12-column starter CSV import/export contract: `wg a
 timeout_seconds = 30
 
 [[scenario]]
+name = "agency_import_dedup_collision"
+script = "scenarios/agency_import_dedup_collision.sh"
+owners = [
+    "investigate-agency-import",
+]
+description = "Pins the dedup decision in docs/manual/03-agency.md: one row per content_hash = sha256(description). Default mode warns + skips on each collision (first-write-wins, two cases: per-scope variants and same-description name collisions); `--strict` errors on the first collision. Regression cover for the silent last-write-wins behavior that masked drift in agency federation imports."
+timeout_seconds = 30
+
+[[scenario]]
 name = "dev_check_branch_and_binary_freshness"
 script = "scenarios/dev_check_branch_and_binary_freshness.sh"
 owners = [
