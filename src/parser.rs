@@ -41,6 +41,13 @@ impl FileLock {
     /// Try to acquire a shared (read) lock, non-blocking.
     /// Returns `Ok(Some(lock))` on success, `Ok(None)` if the lock is held
     /// exclusively by another process (EWOULDBLOCK).
+    ///
+    /// Transient `EIO` / `EINTR` (notably MooseFS surfacing flock contention
+    /// as `EIO`) are retried with bounded exponential backoff via
+    /// [`crate::lock::retry_acquire`]. `EWOULDBLOCK` is intentionally NOT
+    /// retried here — it is the documented non-error signal that another
+    /// process holds the exclusive lock, and the caller proceeds without
+    /// taking the shared lock (atomic-rename writes make readers safe).
     #[cfg(unix)]
     fn try_acquire_shared<P: AsRef<Path>>(lock_path: P) -> Result<Option<Self>, ParseError> {
         use std::os::unix::io::AsRawFd;
@@ -57,21 +64,34 @@ impl FileLock {
             .open(&lock_path)?;
 
         let fd = file.as_raw_fd();
-        let ret = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
+        let policy = crate::lock::RetryPolicy::default();
+        let mut wouldblock = false;
+        let res = crate::lock::retry_acquire(
+            &policy,
+            crate::lock::is_transient_nonblocking,
+            || {
+                let ret = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
+                if ret == 0 {
+                    return Ok(());
+                }
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    wouldblock = true;
+                    return Ok(()); // Stop retrying; caller proceeds lockless.
+                }
+                Err(err)
+            },
+        );
 
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                return Ok(None);
-            }
-            return Err(ParseError::Lock(format!(
+        match res {
+            Ok(()) if wouldblock => Ok(None),
+            Ok(()) => Ok(Some(FileLock { file })),
+            Err(err) => Err(ParseError::Lock(format!(
                 "Failed to acquire shared lock on {:?}: {}",
                 lock_path.as_ref(),
                 err
-            )));
+            ))),
         }
-
-        Ok(Some(FileLock { file }))
     }
 
     #[cfg(not(unix))]
@@ -98,15 +118,22 @@ impl FileLock {
             .open(&lock_path)?;
 
         let fd = file.as_raw_fd();
-        let ret = unsafe { libc::flock(fd, operation) };
-
-        if ret != 0 {
-            return Err(ParseError::Lock(format!(
+        let policy = crate::lock::RetryPolicy::default();
+        crate::lock::retry_acquire(&policy, crate::lock::is_transient_blocking, || {
+            let ret = unsafe { libc::flock(fd, operation) };
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        })
+        .map_err(|err| {
+            ParseError::Lock(format!(
                 "Failed to acquire lock on {:?}: {}",
                 lock_path.as_ref(),
-                std::io::Error::last_os_error()
-            )));
-        }
+                err
+            ))
+        })?;
 
         Ok(FileLock { file })
     }
