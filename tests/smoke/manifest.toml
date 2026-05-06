@@ -900,6 +900,15 @@ description = "Pins the Ctrl+] scroll mode implementation. Runs cargo test for a
 timeout_seconds = 120
 
 [[scenario]]
+name = "viz_tui_preserve_top_anchor"
+script = "scenarios/viz_tui_preserve_top_anchor.sh"
+owners = [
+    "preserve-top-anchor",
+]
+description = "Live `wg viz --tui` regression for preserve-top-anchor: start at graph top, insert tasks above the selected anchor task from another shell with `wg insert before`, and assert the newly inserted top rows remain visible. Pre-fix, the selected-task relative anchor pulled the viewport down to the old task and hid the graph top."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_mouse_wheel_does_not_send_arrows"
 script = "scenarios/tui_mouse_wheel_does_not_send_arrows.sh"
 owners = [
