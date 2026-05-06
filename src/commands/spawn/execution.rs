@@ -1409,8 +1409,23 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
             echo "[wrapper] WARNING: Agent finished with unread messages:" >> "$OUTPUT_FILE"
             echo "$UNREAD" >> "$OUTPUT_FILE"
         fi
-        echo "{complete_msg}" >> "$OUTPUT_FILE"
-        {complete_cmd}
+
+        # Minimum-work gate: refuse to auto-mark done with no evidence of real work.
+        # Catches models that exit 0 with a prose summary and no tool use (e.g. gpt-5.x lazy-completion).
+        WG_GIT_DIR="$WG_WORKTREE_PATH"
+        if [ -z "$WG_GIT_DIR" ]; then WG_GIT_DIR="."; fi
+        LOG_COUNT=$(wg show "$TASK_ID" --json 2>/dev/null | grep -c '"event"' || echo 0)
+        ARTIFACT_COUNT=$(wg show "$TASK_ID" --json 2>/dev/null | grep -c '"artifact"' || echo 0)
+        DIFF_BYTES=$(git -C "$WG_GIT_DIR" diff HEAD --stat 2>/dev/null | wc -c || echo 0)
+        COMMITS_AHEAD=$(git -C "$WG_GIT_DIR" rev-list --count HEAD ^origin/HEAD 2>/dev/null || echo 0)
+
+        if [ "$LOG_COUNT" -lt 1 ] && [ "$ARTIFACT_COUNT" -lt 1 ] && [ "$DIFF_BYTES" -lt 50 ] && [ "$COMMITS_AHEAD" -lt 1 ]; then
+            echo "[wrapper] FAIL-GATE: agent exited 0 with no logs, no artifacts, no diff, no commits — refusing to auto-mark done" >> "$OUTPUT_FILE"
+            wg fail "$TASK_ID" --class "agent-no-work" --reason "Agent exited 0 without producing any work (no wg log, no artifacts, no diff, no commits)" 2>> "$OUTPUT_FILE" || true
+        else
+            echo "{complete_msg}" >> "$OUTPUT_FILE"
+            {complete_cmd}
+        fi
     else
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
