@@ -1,0 +1,45 @@
+@misc{owasp_llm01_2025,
+  author       = {{OWASP Gen AI Security Project}},
+  title        = {{LLM01:2025 Prompt Injection}},
+  year         = {2025},
+  howpublished = {\url{https://genai.owasp.org/llmrisk/llm01-prompt-injection/}},
+  note         = {Top-ranked LLM application risk; classifies system-prompt
+                  blending of trusted and untrusted context as a fundamental
+                  architectural concern.}
+}
+
+@article{liu_agentic_coding_2026,
+  author       = {Liu, Y. and others},
+  title        = {Prompt Injection Attacks on Agentic Coding Assistants:
+                  A Systematic Analysis of Vulnerabilities in Skills, Tools,
+                  and Protocol Ecosystems},
+  year         = {2026},
+  eprint       = {2601.17548},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.CR},
+  url          = {https://arxiv.org/abs/2601.17548},
+  note         = {Surveys skills-injection and tool-injection paths in
+                  multi-agent coding harnesses; relevant to the workgraph
+                  knowledge-tier injection chain.}
+}
+
+@misc{lakera_indirect_injection_2025,
+  author       = {{Lakera Research}},
+  title        = {Indirect Prompt Injection: The Hidden Threat Breaking Modern
+                  AI Systems},
+  year         = {2025},
+  howpublished = {\url{https://www.lakera.ai/blog/indirect-prompt-injection}},
+  note         = {Frames the system prompt as the operating contract whose
+                  fidelity bounds downstream agent behavior.}
+}
+
+@misc{workgraph_skills_injection_2026,
+  author       = {{Workgraph Maintainers}},
+  title        = {codex gpt-5.5: Skills / System-Prompt Injection
+                  Investigation},
+  year         = {2026},
+  howpublished = {docs/codex-gpt55-investigation/skills-injection.md},
+  note         = {In-repo investigation that identified the
+                  classify\_model\_tier fallthrough for gpt-5.5; directly
+                  motivates the gpt-5/gpt-4 Full-tier promotion fix.}
+}
