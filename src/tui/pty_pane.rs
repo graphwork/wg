@@ -4077,6 +4077,33 @@ sleep 5
         )
     }
 
+    /// Helper: produce an isolated tmux session prefix for sync tests.
+    ///
+    /// Rust runs tests in parallel by default. A shared prefix like
+    /// `wg-chat-test-` lets one test's sync sweep rewrite another test's
+    /// tmux session, which can make drift preconditions disappear before
+    /// they are asserted. Keep each sweep scoped to its own unique prefix.
+    fn unique_tmux_test_prefix(label: &str) -> String {
+        format!("wg-chat-test-{}-", unique_suffix(label))
+    }
+
+    fn tmux_session_in_prefix(prefix: &str, name: &str) -> String {
+        format!("{}{}", prefix, name)
+    }
+
+    fn set_tmux_status_option(session: &str, value: &str) {
+        let out = std::process::Command::new("tmux")
+            .args(["set-option", "-t", session, "status", value])
+            .output()
+            .expect("tmux set-option must run");
+        assert!(
+            out.status.success(),
+            "tmux set-option status {value} failed for {session}: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// THE re-assertion invariant: a wg-chat-* tmux session whose
     /// `status` was manually flipped on (e.g. by a prior wg version, or
     /// by a stray `tmux set status on`) gets corrected back to `off`
@@ -4088,8 +4115,8 @@ sleep 5
             eprintln!("tmux not installed — skipping drift-revert test");
             return;
         }
-        let suffix = unique_suffix("revert");
-        let session = format!("wg-chat-test-{}", suffix);
+        let prefix = unique_tmux_test_prefix("revert");
+        let session = tmux_session_in_prefix(&prefix, "owned");
 
         // Create the session with a long-running command, then flip
         // status ON manually to simulate a drifted / older-wg session.
@@ -4106,17 +4133,15 @@ sleep 5
             ])
             .status()
             .expect("tmux new-session must run");
-        let _ = std::process::Command::new("tmux")
-            .args(["set-option", "-t", &session, "status", "on"])
-            .status();
+        set_tmux_status_option(&session, "on");
         assert_eq!(
             read_tmux_status_option(&session),
             "on",
             "precondition: status should be on before sync"
         );
 
-        // Run the sync sweep with a prefix that matches our test session.
-        sync_chat_session_settings("wg-chat-test-");
+        // Run the sync sweep with a prefix that matches only our test session.
+        sync_chat_session_settings(&prefix);
 
         assert_eq!(
             read_tmux_status_option(&session),
@@ -4137,8 +4162,8 @@ sleep 5
             eprintln!("tmux not installed — skipping idempotency test");
             return;
         }
-        let suffix = unique_suffix("idem");
-        let session = format!("wg-chat-test-{}", suffix);
+        let prefix = unique_tmux_test_prefix("idem");
+        let session = tmux_session_in_prefix(&prefix, "owned");
 
         let _ = std::process::Command::new("tmux")
             .args([
@@ -4154,9 +4179,9 @@ sleep 5
             .status()
             .expect("tmux new-session must run");
 
-        sync_chat_session_settings("wg-chat-test-");
+        sync_chat_session_settings(&prefix);
         let after_first = read_tmux_status_option(&session);
-        sync_chat_session_settings("wg-chat-test-");
+        sync_chat_session_settings(&prefix);
         let after_second = read_tmux_status_option(&session);
 
         assert_eq!(after_first, "off", "first sync should produce status off");
@@ -4178,10 +4203,22 @@ sleep 5
             eprintln!("tmux not installed — skipping scope test");
             return;
         }
-        let suffix = unique_suffix("scope");
-        // Foreign session: NOT under wg-chat-test-* prefix. Should be
-        // untouched by the sync.
-        let foreign = format!("user-work-{}", suffix);
+        let prefix = unique_tmux_test_prefix("scope");
+        let owned = tmux_session_in_prefix(&prefix, "owned");
+        let foreign = format!("user-work-{}", unique_suffix("scope"));
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &owned,
+                "--",
+                "sh",
+                "-c",
+                "while true; do sleep 1; done",
+            ])
+            .status()
+            .expect("tmux new-session must run");
         let _ = std::process::Command::new("tmux")
             .args([
                 "new-session",
@@ -4195,25 +4232,35 @@ sleep 5
             ])
             .status()
             .expect("tmux new-session must run");
-        // Force status ON on the foreign session — the sync must
-        // leave it in this state.
-        let _ = std::process::Command::new("tmux")
-            .args(["set-option", "-t", &foreign, "status", "on"])
-            .status();
+        // Force status ON on both sessions. The sync should correct only
+        // the owned prefix and leave the foreign session in this state.
+        set_tmux_status_option(&owned, "on");
+        set_tmux_status_option(&foreign, "on");
+        assert_eq!(
+            read_tmux_status_option(&owned),
+            "on",
+            "precondition: owned session has status on"
+        );
         assert_eq!(
             read_tmux_status_option(&foreign),
             "on",
             "precondition: foreign session has status on"
         );
 
-        sync_chat_session_settings("wg-chat-test-");
+        sync_chat_session_settings(&prefix);
 
+        assert_eq!(
+            read_tmux_status_option(&owned),
+            "off",
+            "sync must touch sessions inside its prefix"
+        );
         assert_eq!(
             read_tmux_status_option(&foreign),
             "on",
             "sync must NOT touch sessions outside its prefix"
         );
 
+        tmux_kill_session(&owned);
         tmux_kill_session(&foreign);
     }
 
@@ -4226,7 +4273,8 @@ sleep 5
             return;
         }
         // Prefix designed to match nothing real.
-        sync_chat_session_settings("wg-chat-test-noop-prefix-that-matches-nothing-");
+        let prefix = unique_tmux_test_prefix("noop");
+        sync_chat_session_settings(&format!("{}missing-", prefix));
         // If we got here without panic, the test passes.
     }
 
@@ -4240,8 +4288,8 @@ sleep 5
             eprintln!("tmux not installed — skipping reattach-reassert test");
             return;
         }
-        let suffix = unique_suffix("reassert");
-        let session = format!("wg-chat-test-{}", suffix);
+        let prefix = unique_tmux_test_prefix("reassert");
+        let session = tmux_session_in_prefix(&prefix, "owned");
 
         // First spawn creates the session and applies options.
         {
@@ -4257,9 +4305,7 @@ sleep 5
             .expect("first spawn ok");
         }
         // Simulate drift between runs: flip status ON externally.
-        let _ = std::process::Command::new("tmux")
-            .args(["set-option", "-t", &session, "status", "on"])
-            .status();
+        set_tmux_status_option(&session, "on");
         assert_eq!(
             read_tmux_status_option(&session),
             "on",
