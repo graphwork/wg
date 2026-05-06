@@ -1,0 +1,11 @@
+{
+  "topic": "LLM agent completion and engagement patterns: RLHF lazy-completion bias and the three-layer failure model in workgraph's codex:gpt-5.5 dispatch",
+  "key_findings": [
+    "RLHF and chat-style alignment reward concise polished prose, which biases batch agents toward summary-shaped output ('I would do X') instead of observable tool calls and commits — Codex CLI catalog defaults (low verbosity, tight per-turn token limit) compound the effect",
+    "The codex:gpt-5.5 bail is a three-layer failure: (A) knowledge-tier classifier drops gpt-5.5 to Essential (~8 KB) so the agent never sees the smoke-gate / validation / no-built-in-Task contract; (B) codex CLI is invoked with no -c overrides, so the model runs at low verbosity with no developer_instructions; (C) the wrapper auto-runs `wg done` on EXIT_CODE=0 with no minimum-work gate, converting a model-side bail into a phantom completion",
+    "Engagement rate must be measured as a joint metric: success_ratio (file written + >=1 commit + status=done) AND a zero-false-done check (count(status=done AND commits_ahead=0) == 0), run on a fixed reproducer pack with multiple trials per task, A/B against the pre-fix baseline; classic quiz-style benchmarks do not measure tool-use engagement",
+    "Best-practice fixes layer defenses: (1) promote gpt-5/gpt-4 substrings to KnowledgeTier::Full so codex sees the same ~40 KB contract claude does; (2) inject -c model_verbosity=high, -c tool_output_token_limit=32000, and -c developer_instructions mandating file writes + commits; (3) add a structural minimum-work gate that flips false-done into failed when LOG_COUNT<1 AND ARTIFACT_COUNT<1 AND DIFF_BYTES<50 AND COMMITS_AHEAD<1"
+  ],
+  "engagement_rate_baseline": 0.25,
+  "engagement_rate_target": 0.75
+}
