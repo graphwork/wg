@@ -1,0 +1,10 @@
+{
+  "topic": "Effectiveness of developer_instructions as an agent-behavior enforcement mechanism in codex:gpt-5.5",
+  "model_tested": "codex:gpt-5.5",
+  "fix_components": [
+    "developer_instructions (role=developer system-prompt-level mandate)",
+    "model_verbosity=high (overrides catalog default 'low')",
+    "tool_output_token_limit=32000 (overrides ~10000 truncation default)"
+  ],
+  "confidence_level": "medium-high"
+}
