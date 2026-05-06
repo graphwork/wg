@@ -41,8 +41,41 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
 }
 
+fn wg_cmd_with_home(wg_dir: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(wg_binary())
+        .arg("--dir")
+        .arg(wg_dir)
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env_remove("WG_EXECUTOR_TYPE")
+        .env_remove("WG_MODEL")
+        .env_remove("WG_TIER")
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_TASK_ID")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
+}
+
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     let output = wg_cmd(wg_dir, args);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "wg {:?} failed.\nstdout: {}\nstderr: {}",
+        args,
+        stdout,
+        stderr
+    );
+    stdout
+}
+
+fn wg_ok_with_home(wg_dir: &Path, home: &Path, args: &[&str]) -> String {
+    let output = wg_cmd_with_home(wg_dir, home, args);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -62,6 +95,41 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
     wg_dir
+}
+
+fn codex_one_line_config_args() -> Vec<&'static str> {
+    vec![
+        "config",
+        "--local",
+        "--model",
+        "codex:gpt-5.5",
+        "--coordinator-model",
+        "codex:gpt-5.5",
+        "--tier",
+        "fast=codex:gpt-5.4-mini",
+        "--tier",
+        "standard=codex:gpt-5.4",
+        "--tier",
+        "premium=codex:gpt-5.5",
+        "--set-model",
+        "default",
+        "codex:gpt-5.5",
+        "--set-model",
+        "task_agent",
+        "codex:gpt-5.5",
+        "--set-model",
+        "evaluator",
+        "codex:gpt-5.4-mini",
+        "--set-model",
+        "assigner",
+        "codex:gpt-5.4-mini",
+        "--flip-model",
+        "codex:gpt-5.4-mini",
+        "--auto-assign",
+        "true",
+        "--auto-evaluate",
+        "true",
+    ]
 }
 
 // ===========================================================================
@@ -165,6 +233,7 @@ fn config_set_model() {
 
     let output = wg_ok(&wg_dir, &["config", "--model", "claude:haiku"]);
     assert!(output.contains("Set agent.model"));
+    assert!(output.contains("Set dispatcher.model"));
     assert!(output.contains("claude:haiku"));
 }
 
@@ -206,7 +275,77 @@ fn config_set_coordinator_executor() {
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["config", "--coordinator-executor", "native"]);
-    assert!(output.contains("Set coordinator.executor"));
+    assert!(output.contains("Set dispatcher.executor"));
+}
+
+#[test]
+fn config_one_line_codex_overwrites_dispatcher_model_and_executor() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let fake_home = tmp.path().join("home");
+    fs::create_dir_all(fake_home.join(".config")).unwrap();
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        r#"[agent]
+model = "claude:opus"
+
+[dispatcher]
+executor = "claude"
+model = "claude:opus"
+"#,
+    )
+    .unwrap();
+
+    let args = codex_one_line_config_args();
+    let output = wg_ok_with_home(&wg_dir, &fake_home, &args);
+    assert!(
+        output.contains("Set dispatcher.model = \"codex:gpt-5.5\""),
+        "config output should name canonical dispatcher.model, got:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("Set coordinator.model"),
+        "config output should not present coordinator.model as the written key:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Cleared deprecated dispatcher.executor"),
+        "model write should clear a stale dispatcher.executor pin:\n{}",
+        output
+    );
+
+    let saved = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+    assert!(
+        saved.contains("[dispatcher]") && saved.contains("model = \"codex:gpt-5.5\""),
+        "saved config should write canonical dispatcher.model:\n{}",
+        saved
+    );
+    assert!(
+        !saved.contains("executor = \"claude\""),
+        "stale dispatcher.executor must not keep masking the model:\n{}",
+        saved
+    );
+
+    let merged = wg_ok_with_home(&wg_dir, &fake_home, &["config", "--merged"]);
+    assert!(
+        merged.contains("executor = \"codex\""),
+        "effective merged config should resolve codex executor:\n{}",
+        merged
+    );
+    assert!(
+        merged.contains("model = \"codex:gpt-5.5\""),
+        "effective merged config should resolve codex dispatcher model:\n{}",
+        merged
+    );
+
+    let restart = wg_ok_with_home(&wg_dir, &fake_home, &["service", "restart"]);
+    let _ = wg_cmd_with_home(&wg_dir, &fake_home, &["service", "stop"]);
+    assert!(
+        restart.contains("executor=codex, model=codex:gpt-5.5"),
+        "service restart should use the daemon-facing codex route:\n{}",
+        restart
+    );
 }
 
 #[test]

@@ -3927,7 +3927,17 @@ impl Config {
                 e
             )
         })?;
-        let config: Config = toml::from_str(&content).map_err(|e| {
+        let mut val: toml::Value = content.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse global config at {}: {}",
+                global_path.display(),
+                e
+            )
+        })?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut val, &global_path.display().to_string(), &mut warnings);
+        emit_legacy_warnings(&warnings);
+        let config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse global config at {}: {}",
                 global_path.display(),
@@ -4133,7 +4143,13 @@ impl Config {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config: {}", e))?;
 
-        let config: Config = toml::from_str(&content).map_err(|e| {
+        let mut val: toml::Value = content.parse().map_err(|e| {
+            anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
+        })?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut val, &config_path.display().to_string(), &mut warnings);
+        emit_legacy_warnings(&warnings);
+        let config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
         })?;
 
@@ -4259,7 +4275,7 @@ impl Config {
     ///   no auth) and `is_default = true`. Any preexisting entry named
     ///   `default` is replaced and all other entries lose `is_default`.
     /// - `model` (if Some) goes into `agent.model` and
-    ///   `coordinator.model`. When combined with `endpoint`, the model
+    ///   `dispatcher.model`. When combined with `endpoint`, the model
     ///   name is prefixed with `nex:` (canonical, matches `wg nex`) so
     ///   the provider:model validator accepts it on reload; when `model`
     ///   is provider-prefixed already (`claude:opus`), it's used verbatim.
@@ -8479,5 +8495,33 @@ executor = "native"
             "second pass must not re-warn after migration, got {:?}",
             warnings2
         );
+    }
+
+    #[test]
+    fn test_local_config_load_normalizes_coordinator_alias() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(
+            wg_dir.join("config.toml"),
+            r#"
+[coordinator]
+max_agents = 2
+model = "claude:opus"
+
+[dispatcher]
+model = "codex:gpt-5.5"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(&wg_dir).expect("legacy+canonical local config should load");
+        assert_eq!(cfg.coordinator.max_agents, 2);
+        assert_eq!(
+            cfg.coordinator.model.as_deref(),
+            Some("codex:gpt-5.5"),
+            "canonical [dispatcher].model must win over legacy [coordinator].model"
+        );
+        assert_eq!(cfg.coordinator.effective_executor(), "codex");
     }
 }

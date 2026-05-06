@@ -6,6 +6,17 @@ use workgraph::config::{
     Config, ConfigSource, EndpointConfig, MatrixConfig, ModelRegistryEntry, Tier,
 };
 
+fn clear_dispatcher_executor_for_model(config: &mut Config, model: &str) -> Option<String> {
+    let spec = workgraph::config::parse_model_spec(model);
+    let provider = spec.provider.as_deref()?;
+    let implied = workgraph::config::provider_to_executor(provider);
+    let previous = config.coordinator.executor.take()?;
+    Some(format!(
+        "Cleared deprecated dispatcher.executor = \"{}\"; dispatcher.model implies executor = \"{}\"",
+        previous, implied
+    ))
+}
+
 /// When model/endpoint changes land, a soft reload (`Reconfigure` IPC)
 /// isn't enough — already-spawned coordinator subprocesses keep their
 /// old env. We restart the daemon instead so the coordinator respawns
@@ -714,12 +725,19 @@ pub fn update(
     // Writes a default oai-compat endpoint entry + applies the `nex:`
     // prefix to the model name so the provider:model validator accepts
     // it on reload. Model-only sets flow through the existing validated
-    // agent.model / coordinator.model blocks further down (we re-check
+    // agent.model / dispatcher.model blocks further down (we re-check
     // here so the existing blocks don't double-apply when we already did).
     let endpoint_handled_model = if endpoint.is_some() {
         let summary = config.apply_model_endpoint(model, endpoint)?;
         for line in &summary {
             println!("Set {}", line);
+        }
+        if coordinator_executor.is_none()
+            && let Some(dispatcher_model) = config.coordinator.model.clone()
+            && let Some(summary) =
+                clear_dispatcher_executor_for_model(&mut config, &dispatcher_model)
+        {
+            println!("{}", summary);
         }
         changed = true;
         true
@@ -753,6 +771,16 @@ pub fn update(
         }
         config.agent.model = m.to_string();
         println!("Set agent.model = \"{}\"", m);
+        if coordinator_model.is_none() {
+            config.coordinator.model = Some(m.to_string());
+            config.coordinator.provider = None;
+            println!("Set dispatcher.model = \"{}\"", m);
+            if coordinator_executor.is_none()
+                && let Some(summary) = clear_dispatcher_executor_for_model(&mut config, m)
+            {
+                println!("{}", summary);
+            }
+        }
         changed = true;
     }
 
@@ -791,13 +819,13 @@ pub fn update(
         eprintln!(
             "warning: `wg config --dispatcher-executor {0}` (and the legacy \
              `--coordinator-executor` alias) is deprecated; pass a \
-             `provider:model` spec to `--model` / `--coordinator-model` \
+             `provider:model` spec to `--model` / `--dispatcher-model` \
              instead (e.g. `wg config --model claude:opus`). The handler \
              is derived from the model's provider prefix.",
             exec,
         );
         config.coordinator.executor = Some(exec.to_string());
-        println!("Set coordinator.executor = \"{}\"", exec);
+        println!("Set dispatcher.executor = \"{}\"", exec);
         changed = true;
     }
 
@@ -811,7 +839,12 @@ pub fn update(
         }
         config.coordinator.model = Some(m.to_string());
         config.coordinator.provider = None; // Clear deprecated field
-        println!("Set coordinator.model = \"{}\"", m);
+        println!("Set dispatcher.model = \"{}\"", m);
+        if coordinator_executor.is_none()
+            && let Some(summary) = clear_dispatcher_executor_for_model(&mut config, m)
+        {
+            println!("{}", summary);
+        }
         changed = true;
     }
 
@@ -825,8 +858,8 @@ pub fn update(
         // Extract just the model ID (strip any existing provider prefix)
         let current_model_id = workgraph::config::parse_model_spec(current_model_raw).model_id;
         eprintln!(
-            "Warning: --coordinator-provider is deprecated. Use provider:model format in --coordinator-model instead.\n\
-             Example: wg config --coordinator-model {}:{}",
+            "Warning: --coordinator-provider is deprecated. Use provider:model format in --dispatcher-model instead.\n\
+             Example: wg config --dispatcher-model {}:{}",
             suggested_provider, current_model_id,
         );
         config.coordinator.provider = Some(p.to_string());
@@ -1026,15 +1059,25 @@ pub fn update(
 
     // Record executor/model config change in launcher history
     if coordinator_executor.is_some() || coordinator_model.is_some() || endpoint.is_some() {
+        let mdl = coordinator_model
+            .or(config.coordinator.model.as_deref())
+            .or(model);
         let exec = coordinator_executor
             .or(config.coordinator.executor.as_deref())
-            .unwrap_or(&config.agent.executor);
-        let mdl = coordinator_model
-            .or(model)
-            .or(config.coordinator.model.as_deref());
+            .map(std::string::ToString::to_string)
+            .or_else(|| {
+                mdl.and_then(|m| {
+                    workgraph::config::parse_model_spec(m)
+                        .provider
+                        .as_deref()
+                        .map(workgraph::config::provider_to_executor)
+                        .map(std::string::ToString::to_string)
+                })
+            })
+            .unwrap_or_else(|| config.agent.executor.clone());
         let ep = endpoint;
         let _ = workgraph::launcher_history::record_use(
-            &workgraph::launcher_history::HistoryEntry::new(exec, mdl, ep, "config"),
+            &workgraph::launcher_history::HistoryEntry::new(&exec, mdl, ep, "config"),
         );
     }
 
@@ -1066,10 +1109,10 @@ pub fn update(
         // new model/endpoint end-to-end. Skip with `--no-reload`.
         let wants_restart = !no_reload
             && matches!(scope, ConfigScope::Local)
-            && (endpoint.is_some() || model.is_some());
+            && (endpoint.is_some() || model.is_some() || coordinator_model.is_some());
         if wants_restart {
             match try_restart_daemon(dir) {
-                Ok(true) => println!("Daemon restarted (coordinator respawned with new config)."),
+                Ok(true) => println!("Daemon restarted (dispatcher respawned with new config)."),
                 Ok(false) => {} // no daemon running; nothing to do
                 Err(e) => {
                     println!(
@@ -2441,7 +2484,7 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
         "coordinator.coordinator_agent" | "dispatcher.coordinator_agent" => {
             config.coordinator.coordinator_agent = parse_bool(v)?;
         }
-        "coordinator.model" => {
+        "coordinator.model" | "dispatcher.model" => {
             workgraph::config::parse_model_spec_strict(v).map_err(|e| {
                 anyhow::anyhow!(
                     "Invalid model format: {}. Use provider:model (e.g. 'claude:opus').",
@@ -2450,7 +2493,7 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
             })?;
             config.coordinator.model = Some(v.to_string());
         }
-        "coordinator.executor" => {
+        "coordinator.executor" | "dispatcher.executor" => {
             config.coordinator.executor = Some(v.to_string());
         }
         "coordinator.agent_timeout" => {
@@ -2978,22 +3021,22 @@ mod tests {
             Some("evolver-hash"),
             Some("creator-hash"),
             Some("Retire below 0.3 after 10 evals"),
-            None,  // auto_triage
-            None,  // auto_place
-            None,  // auto_create
-            None,  // triage_timeout
-            None,  // triage_max_log_bytes
-            None,  // max_child_tasks
-            None,  // max_task_depth
-            None,  // viz_edge_color
-            None,  // eval_gate_threshold
-            None,  // eval_gate_all
-            None,  // flip_enabled
-            None,  // flip_verification_threshold
-            None,  // chat_history
-            None,  // chat_history_max
-            None,  // tui_counters
-            None,  // retry_context_tokens
+            None, // auto_triage
+            None, // auto_place
+            None, // auto_create
+            None, // triage_timeout
+            None, // triage_max_log_bytes
+            None, // max_child_tasks
+            None, // max_task_depth
+            None, // viz_edge_color
+            None, // eval_gate_threshold
+            None, // eval_gate_all
+            None, // flip_enabled
+            None, // flip_verification_threshold
+            None, // chat_history
+            None, // chat_history_max
+            None, // tui_counters
+            None, // retry_context_tokens
             None, // endpoint
             &[],
             &[],

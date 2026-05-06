@@ -145,7 +145,7 @@ fn config_coordinator_provider_flag_emits_deprecation_warning() {
 
     let args = ["config", "--coordinator-provider", "openrouter"];
     let output = wg_cmd(&wg_dir, &args);
-    assert_deprecated_warning(&output, &args, "--coordinator-model");
+    assert_deprecated_warning(&output, &args, "--dispatcher-model");
 }
 
 #[test]

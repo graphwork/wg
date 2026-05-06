@@ -605,9 +605,10 @@ name = "config_one_line_codex_route"
 script = "scenarios/config_one_line_codex_route.sh"
 owners = [
     "allow-one-line",
+    "fix-wg-config",
 ]
-description = "Pins allow-one-line: the real terminal flow `wg config --local --model ... --coordinator-model ... --tier ... --tier ... --tier ... --set-model ... --set-model ... --flip-model ... --auto-assign true --auto-evaluate true` must succeed as one atomic invocation, must not emit Clap's repeated --tier error, must write all Codex tier/model-routing values to local config, and `wg config --help` must document the repeatable flags clearly. No LLM endpoint needed."
-timeout_seconds = 30
+description = "Pins allow-one-line and fix-wg-config: the real terminal flow `wg config --local --model ... --coordinator-model ... --tier ... --tier ... --tier ... --set-model ... --set-model ... --flip-model ... --auto-assign true --auto-evaluate true` must succeed as one atomic invocation, must not emit Clap's repeated --tier error, must write canonical dispatcher.model plus all Codex tier/model-routing values to local config, must clear a stale deprecated dispatcher.executor=claude pin, must document repeatable flags clearly, and `wg service restart` must report executor=codex/model=codex:gpt-5.5. No LLM endpoint needed."
+timeout_seconds = 60
 
 [[scenario]]
 name = "purge_chats_skips_active_by_default"

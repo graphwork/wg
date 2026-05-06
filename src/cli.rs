@@ -1596,8 +1596,8 @@ pub enum Commands {
         executor: Option<String>,
 
         /// Set model. Accepts `provider:model` (e.g. `claude:opus`) or
-        /// a bare name when combined with `-e URL` (implies oai-compat).
-        /// Updates `agent.model` and `coordinator.model`.
+        /// a bare name when combined with `-e URL` (implies nex).
+        /// Updates `agent.model` and `dispatcher.model`.
         #[arg(short = 'm', long)]
         model: Option<String>,
 
@@ -1639,11 +1639,15 @@ pub enum Commands {
         #[arg(long, alias = "coordinator-executor")]
         dispatcher_executor: Option<String>,
 
-        /// Set dispatcher model (e.g., opus, sonnet, haiku); legacy alias: --coordinator-model
-        #[arg(long, alias = "coordinator-model")]
+        /// Set dispatcher model (e.g., claude:opus or codex:gpt-5.5); legacy alias: --coordinator-model
+        #[arg(
+            long = "dispatcher-model",
+            alias = "coordinator-model",
+            value_name = "MODEL"
+        )]
         coordinator_model: Option<String>,
 
-        /// [DEPRECATED] Set coordinator provider — use provider:model in --coordinator-model instead
+        /// [DEPRECATED] Set coordinator provider — use provider:model in --dispatcher-model instead
         #[arg(long)]
         coordinator_provider: Option<String>,
 
@@ -4852,7 +4856,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Model to use for spawned agents (overrides config.toml coordinator.model)
+        /// Model to use for spawned agents (overrides config.toml dispatcher.model)
         #[arg(long)]
         model: Option<String>,
 
@@ -5051,7 +5055,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         interval: Option<u64>,
 
-        /// Model to use for spawned agents (overrides config.toml coordinator.model)
+        /// Model to use for spawned agents (overrides config.toml dispatcher.model)
         #[arg(long)]
         model: Option<String>,
 
