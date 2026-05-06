@@ -608,21 +608,34 @@ mod tests {
 
             let task = mktask(".coordinator-0");
             assert!(task.model.is_none(), "synthesized task has no model");
+            let config = workgraph::config::Config::load_or_default(wg_dir);
+            let expected_model = config
+                .coordinator
+                .model
+                .clone()
+                .unwrap_or_else(|| config.agent.model.clone());
+            let expected_executor = workgraph::dispatch::handler_for_model(&expected_model);
             let spec = resolve_handler(wg_dir, &task, None).unwrap();
 
             let preview = spec.command_preview();
-            match spec {
-                HandlerSpec::Claude { model, .. } => {
-                    assert_eq!(
-                        model,
-                        Some("claude:opus".to_string()),
-                        "should fall back to config.coordinator.model when task.model is None"
-                    );
-                }
-                _ => panic!("expected Claude handler"),
-            }
+            let (actual_executor, actual_model) = match spec {
+                HandlerSpec::Claude { model, .. } => ("claude", model),
+                HandlerSpec::Codex { model, .. } => ("codex", model),
+                HandlerSpec::Native { model, .. } => ("native", model),
+                HandlerSpec::Gemini { .. } => ("gemini", None),
+            };
+            assert_eq!(
+                actual_executor,
+                expected_executor.as_str(),
+                "should use the handler implied by the effective config model"
+            );
+            assert_eq!(
+                actual_model,
+                Some(expected_model.clone()),
+                "should fall back to the effective config model when task.model is None"
+            );
             assert!(
-                preview.contains("-m claude:opus"),
+                preview.contains(&format!("-m {}", expected_model)),
                 "dry-run should include config model: {}",
                 preview
             );

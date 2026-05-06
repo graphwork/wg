@@ -2076,6 +2076,21 @@ pub fn provider_to_native_provider(provider: &str) -> &'static str {
     }
 }
 
+/// Map a user-facing provider prefix to the provider label carried by
+/// [`ResolvedModel`].
+///
+/// Most API-backed prefixes use the native provider name because downstream
+/// lightweight calls need to pick an HTTP client. `codex:` is intentionally
+/// preserved as `codex`: it is a CLI-backed route, and collapsing it to the
+/// OAI-compat protocol label makes role routing and `wg config --models`
+/// report `nex` even though the codex CLI is the required handler.
+pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
+    match provider {
+        "codex" => "codex",
+        other => provider_to_native_provider(other),
+    }
+}
+
 /// Reverse map: internal provider name → user-facing `provider:model` prefix.
 ///
 /// This is the inverse of [`provider_to_native_provider`] for display purposes.
@@ -2326,7 +2341,7 @@ impl Config {
                 model: entry.model.clone(),
                 provider: spec
                     .provider
-                    .map(|p| provider_to_native_provider(&p).to_string())
+                    .map(|p| provider_to_resolved_provider(&p).to_string())
                     .or_else(|| Some(entry.provider.clone())),
                 registry_entry: Some(entry),
                 endpoint: None,
@@ -2337,7 +2352,7 @@ impl Config {
                 model: spec.model_id,
                 provider: spec
                     .provider
-                    .map(|p| provider_to_native_provider(&p).to_string()),
+                    .map(|p| provider_to_resolved_provider(&p).to_string()),
                 registry_entry: None,
                 endpoint: None,
             })
@@ -2375,11 +2390,11 @@ impl Config {
         let coordinator_model_provider = self.coordinator.model.as_deref().and_then(|m| {
             parse_model_spec(m)
                 .provider
-                .map(|p| provider_to_native_provider(&p).to_string())
+                .map(|p| provider_to_resolved_provider(&p).to_string())
         });
         let agent_model_provider = parse_model_spec(&self.agent.model)
             .provider
-            .map(|p| provider_to_native_provider(&p).to_string());
+            .map(|p| provider_to_resolved_provider(&p).to_string());
 
         // Helper: resolve provider for a role, cascading through:
         //   models.<role>.provider → models.default.provider
@@ -2410,7 +2425,7 @@ impl Config {
             let spec_provider = spec
                 .provider
                 .as_deref()
-                .map(provider_to_native_provider)
+                .map(provider_to_resolved_provider)
                 .map(String::from);
             let lookup_model = &spec.model_id;
 
@@ -2471,7 +2486,7 @@ impl Config {
             let spec_provider = spec
                 .provider
                 .as_deref()
-                .map(provider_to_native_provider)
+                .map(provider_to_resolved_provider)
                 .map(String::from);
 
             if let Some(entry) = self.registry_lookup(&spec.model_id) {
@@ -2497,7 +2512,7 @@ impl Config {
         let fallback_provider = fallback_spec
             .provider
             .as_deref()
-            .map(provider_to_native_provider)
+            .map(provider_to_resolved_provider)
             .map(String::from);
 
         if let Some(entry) = self.registry_lookup(&fallback_spec.model_id) {
@@ -3802,72 +3817,6 @@ fn strip_global_only_model_roles(
     }
 }
 
-fn toml_has_path(value: &toml::Value, path: &[&str]) -> bool {
-    let mut current = value;
-    for key in path {
-        match current.get(*key) {
-            Some(next) => current = next,
-            None => return false,
-        }
-    }
-    true
-}
-
-fn restore_local_profile_overrides(
-    config: &mut Config,
-    local_val: &toml::Value,
-) -> anyhow::Result<()> {
-    let local_config: Config = local_val
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("Failed to deserialize local config overlay: {}", e))?;
-
-    if toml_has_path(local_val, &["agent", "model"]) {
-        config.agent.model = local_config.agent.model;
-    }
-    if toml_has_path(local_val, &["dispatcher", "model"]) {
-        config.coordinator.model = local_config.coordinator.model;
-    }
-
-    if toml_has_path(local_val, &["tiers", "fast"]) {
-        config.tiers.fast = local_config.tiers.fast;
-    }
-    if toml_has_path(local_val, &["tiers", "standard"]) {
-        config.tiers.standard = local_config.tiers.standard;
-    }
-    if toml_has_path(local_val, &["tiers", "premium"]) {
-        config.tiers.premium = local_config.tiers.premium;
-    }
-
-    if toml_has_path(local_val, &["models", "default"]) {
-        config.models.default = local_config.models.default;
-    }
-    if toml_has_path(local_val, &["models", "evaluator"]) {
-        config.models.evaluator = local_config.models.evaluator;
-    }
-    if toml_has_path(local_val, &["models", "assigner"]) {
-        config.models.assigner = local_config.models.assigner;
-    }
-    if toml_has_path(local_val, &["models", "flip_inference"]) {
-        config.models.flip_inference = local_config.models.flip_inference;
-    }
-    if toml_has_path(local_val, &["models", "flip_comparison"]) {
-        config.models.flip_comparison = local_config.models.flip_comparison;
-    }
-    if toml_has_path(local_val, &["models", "creator"]) {
-        config.models.creator = local_config.models.creator;
-    }
-    if toml_has_path(local_val, &["models", "evolver"]) {
-        config.models.evolver = local_config.models.evolver;
-    }
-
-    if toml_has_path(local_val, &["llm_endpoints", "endpoints"]) {
-        config.llm_endpoints.endpoints = local_config.llm_endpoints.endpoints;
-    }
-
-    Ok(())
-}
-
 /// A deprecated config key found in raw TOML, with a human-readable replacement
 /// suggestion the daemon can log on startup.
 ///
@@ -4086,14 +4035,14 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
         config.agent_model_is_local = agent_model_is_local;
 
-        // Apply active named profile overlay (global-dir layer), then restore
-        // any local keys in the profile allowlist. Profiles are convenient
-        // user defaults; project-local config remains authoritative.
+        // Apply active named profile as the final runtime overlay. `wg profile
+        // use <name>` is an explicit operator choice for this machine/session,
+        // so it must override both global defaults and project-local model
+        // pins when loading the effective config for service startup.
         if let Ok(Some(profile_name)) = crate::profile::named::active() {
             match crate::profile::named::load(&profile_name) {
                 Ok(prof) => {
                     crate::profile::named::overlay_onto(&mut config, &prof);
-                    restore_local_profile_overrides(&mut config, &local_val)?;
                 }
                 Err(e) => {
                     eprintln!(
@@ -5393,7 +5342,15 @@ model = "claude:haiku"
         // machine, but the merge should work either way.  If the global config
         // uses old format, the merge may fail — that's OK in that scenario.
         match Config::load_merged(temp_dir.path()) {
-            Ok(config) => assert_eq!(config.agent.model, "claude:haiku"),
+            Ok(config) => {
+                let expected_agent_model = crate::profile::named::active()
+                    .ok()
+                    .flatten()
+                    .and_then(|name| crate::profile::named::load(&name).ok())
+                    .and_then(|prof| prof.agent.and_then(|agent| agent.model))
+                    .unwrap_or_else(|| "claude:haiku".to_string());
+                assert_eq!(config.agent.model, expected_agent_model);
+            }
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
@@ -7107,6 +7064,14 @@ provider = "openrouter"
     }
 
     #[test]
+    fn test_provider_to_resolved_provider_preserves_codex_route() {
+        assert_eq!(provider_to_resolved_provider("codex"), "codex");
+        assert_eq!(provider_to_resolved_provider("nex"), "oai-compat");
+        assert_eq!(provider_to_resolved_provider("openrouter"), "openrouter");
+        assert_eq!(provider_to_resolved_provider("claude"), "anthropic");
+    }
+
+    #[test]
     fn test_native_provider_to_prefix_canonical_nex() {
         // Internal "oai-compat" / "openai" / "local" → user-facing "nex:"
         // (canonical, matches `wg nex`). The deprecated "oai-compat:" /
@@ -7117,6 +7082,7 @@ provider = "openrouter"
         // Canonical handler-name prefixes pass through.
         assert_eq!(native_provider_to_prefix("anthropic"), "claude");
         assert_eq!(native_provider_to_prefix("openrouter"), "openrouter");
+        assert_eq!(native_provider_to_prefix("codex"), "codex");
     }
 
     #[test]
@@ -7278,6 +7244,20 @@ model = "local:qwen3-coder"
         // Model ID should be the bare part without the claude: prefix
         assert_eq!(resolved.model, "claude-sonnet-4-6");
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_model_for_role_codex_prefix_preserves_cli_provider() {
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("codex:gpt-5.4-mini".into()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "gpt-5.4-mini");
+        assert_eq!(resolved.provider, Some("codex".to_string()));
     }
 
     #[test]

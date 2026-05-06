@@ -20731,6 +20731,74 @@ mod tui_config_panel_tests {
     use crate::commands::viz::LayoutMode as VizLayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
 
+    fn active_profile_config_panel_override_keys() -> HashSet<String> {
+        let mut keys = HashSet::new();
+        let profile = workgraph::profile::named::active()
+            .ok()
+            .flatten()
+            .and_then(|name| workgraph::profile::named::load(&name).ok());
+        let Some(profile) = profile else {
+            return keys;
+        };
+
+        if profile
+            .agent
+            .as_ref()
+            .and_then(|a| a.model.as_ref())
+            .is_some()
+        {
+            keys.insert("agent.model".to_string());
+        }
+        if profile
+            .dispatcher
+            .as_ref()
+            .and_then(|d| d.model.as_ref())
+            .is_some()
+        {
+            keys.insert("coordinator.model".to_string());
+        }
+        if let Some(tiers) = profile.tiers.as_ref() {
+            if tiers.fast.is_some() {
+                keys.insert("tiers.fast".to_string());
+            }
+            if tiers.standard.is_some() {
+                keys.insert("tiers.standard".to_string());
+            }
+            if tiers.premium.is_some() {
+                keys.insert("tiers.premium".to_string());
+            }
+        }
+
+        let insert_role = |keys: &mut HashSet<String>, role: &str| {
+            for suffix in ["model", "tier", "provider", "endpoint"] {
+                keys.insert(format!("models.{}.{}", role, suffix));
+            }
+        };
+        if let Some(models) = profile.models.as_ref() {
+            if models.default.is_some() {
+                insert_role(&mut keys, "default");
+            }
+            if models.evaluator.is_some() {
+                insert_role(&mut keys, "evaluator");
+            }
+            if models.assigner.is_some() {
+                insert_role(&mut keys, "assigner");
+            }
+            if models.flip.is_some() {
+                insert_role(&mut keys, "flip_inference");
+                insert_role(&mut keys, "flip_comparison");
+            }
+            if models.creator.is_some() {
+                insert_role(&mut keys, "creator");
+            }
+            if models.evolver.is_some() {
+                insert_role(&mut keys, "evolver");
+            }
+        }
+
+        keys
+    }
+
     /// Create a minimal VizApp with a real temp directory for config round-trip testing.
     fn build_config_test_app() -> (VizApp, tempfile::TempDir) {
         let mut graph = WorkGraph::new();
@@ -20769,6 +20837,7 @@ mod tui_config_panel_tests {
     fn test_config_panel_all_entries_save_roundtrip() {
         let (mut app, _temp) = build_config_test_app();
         app.load_config_panel();
+        let active_profile_overrides = active_profile_config_panel_override_keys();
 
         // Collect all keys for verification
         let keys: Vec<String> = app
@@ -20803,6 +20872,13 @@ mod tui_config_panel_tests {
             }
             // Skip model registry entries (managed via models.yaml, not config.toml)
             if key.starts_with("model.") {
+                continue;
+            }
+            // Active named profiles are a final runtime overlay. When one is
+            // enabled, local edits to profile-owned keys are saved to disk but
+            // intentionally masked in the effective config until the profile
+            // is switched off.
+            if active_profile_overrides.contains(&key) {
                 continue;
             }
 
@@ -26327,8 +26403,8 @@ mod chat_pty_executor_resolution_tests {
         );
     }
 
-    /// Pre-fix chats without overrides keep the global default — no
-    /// regression on the common path.
+    /// Pre-fix chats without overrides keep the effective config default,
+    /// including an active named profile when one is enabled.
     #[test]
     fn chat_with_no_overrides_uses_global_default() {
         let dir = tempfile::tempdir().unwrap();
@@ -26341,14 +26417,12 @@ mod chat_pty_executor_resolution_tests {
         // No CoordinatorState file written for chat 0.
 
         let config = Config::load_or_default(wg_dir);
+        let expected_executor = config.coordinator.effective_executor();
+        let expected_model = config.coordinator.model.clone();
         let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 0);
 
-        assert_eq!(executor, "claude", "global default executor");
-        assert_eq!(
-            model.as_deref(),
-            Some("claude:opus"),
-            "global default model"
-        );
+        assert_eq!(executor, expected_executor, "effective default executor");
+        assert_eq!(model, expected_model, "effective default model");
     }
 
     /// Mixed overrides: only model is per-chat, executor defaults
