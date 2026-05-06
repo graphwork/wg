@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -1789,9 +1789,9 @@ pub enum Commands {
         #[arg(long = "tiers")]
         show_tiers: bool,
 
-        /// Set which model a tier uses (e.g., --tier standard=gpt-4o)
-        #[arg(long = "tier", value_name = "TIER=MODEL_ID")]
-        set_tier: Option<String>,
+        /// Set which model a tier uses; repeat for multiple tiers (e.g., --tier fast=claude:haiku --tier standard=claude:sonnet)
+        #[arg(long = "tier", value_name = "TIER=MODEL_ID", action = ArgAction::Append)]
+        set_tier: Vec<String>,
 
         /// Registry entry short ID (for --registry-add)
         #[arg(long = "id", requires = "registry_add")]
@@ -1829,30 +1829,30 @@ pub enum Commands {
         #[arg(long = "models")]
         show_models: bool,
 
-        /// Set model for a dispatch role: --set-model <role> <model>
+        /// Set model for a dispatch role; repeat for multiple roles: --set-model <role> <model>
         /// Roles: default, task_agent, evaluator, flip_inference, flip_comparison,
         /// assigner, evolver, verification, triage, creator
-        #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"])]
-        set_model: Option<Vec<String>>,
+        #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"], action = ArgAction::Append)]
+        set_model: Vec<String>,
 
-        /// [DEPRECATED] Set provider for a dispatch role — use provider:model in --set-model instead
-        #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"])]
-        set_provider: Option<Vec<String>>,
+        /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
+        #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append)]
+        set_provider: Vec<String>,
 
-        /// Set endpoint for a dispatch role: --set-endpoint <role> <endpoint-name>
+        /// Set endpoint for a dispatch role; repeat for multiple roles: --set-endpoint <role> <endpoint-name>
         /// Binds a named endpoint (from `wg endpoints list`) to a dispatch role.
-        #[arg(long = "set-endpoint", num_args = 2, value_names = ["ROLE", "ENDPOINT"])]
-        set_endpoint: Option<Vec<String>>,
+        #[arg(long = "set-endpoint", num_args = 2, value_names = ["ROLE", "ENDPOINT"], action = ArgAction::Append)]
+        set_endpoint: Vec<String>,
 
-        /// Set model for a dispatch role: --role-model <role>=<model>
+        /// Set model for a dispatch role; repeat for multiple roles: --role-model <role>=<model>
         /// Equivalent to --set-model but uses key=value syntax.
-        #[arg(long = "role-model", value_name = "ROLE=MODEL")]
-        role_model: Option<String>,
+        #[arg(long = "role-model", value_name = "ROLE=MODEL", action = ArgAction::Append)]
+        role_model: Vec<String>,
 
-        /// [DEPRECATED] Set provider for a dispatch role — use provider:model in --set-model instead
+        /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
         /// Equivalent to --set-provider but uses key=value syntax.
-        #[arg(long = "role-provider", value_name = "ROLE=PROVIDER")]
-        role_provider: Option<String>,
+        #[arg(long = "role-provider", value_name = "ROLE=PROVIDER", action = ArgAction::Append)]
+        role_provider: Vec<String>,
 
         /// Max tokens of previous-attempt context to inject on retry (default: 2000, 0 = disabled)
         #[arg(long, name = "retry-context-tokens")]
