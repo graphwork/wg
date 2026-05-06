@@ -631,6 +631,8 @@ pub(crate) fn classify_model_tier(model: &str) -> KnowledgeTier {
         || model_lower.contains("llama3.1")
         || model_lower.contains("claude-sonnet")
         || model_lower.contains("claude-opus")
+        || model_lower.contains("gpt-5")
+        || model_lower.contains("gpt-4")
     {
         KnowledgeTier::Full
     }
@@ -2387,5 +2389,24 @@ mod tests {
 
         let guide = read_wg_guide(&wg_dir);
         assert_eq!(guide, workgraph::service::executor::DEFAULT_WG_GUIDE);
+    }
+
+    #[test]
+    fn test_classify_model_tier_gpt5_family_is_full() {
+        assert_eq!(classify_model_tier("gpt-5.5"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("codex:gpt-5.5"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("gpt-5"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("gpt-4o"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("gpt-4-turbo"), KnowledgeTier::Full);
+    }
+
+    #[test]
+    fn test_classify_model_tier_existing_models_unchanged() {
+        assert_eq!(classify_model_tier("claude-opus-4-7"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("claude-sonnet-4-6"), KnowledgeTier::Full);
+        assert_eq!(classify_model_tier("claude-haiku-4-5"), KnowledgeTier::Core);
+        assert_eq!(classify_model_tier("deepseek-v3"), KnowledgeTier::Core);
+        assert_eq!(classify_model_tier("minimax-m2"), KnowledgeTier::Essential);
+        assert_eq!(classify_model_tier("unknown-model-xyz"), KnowledgeTier::Essential);
     }
 }
