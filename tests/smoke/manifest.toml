@@ -601,6 +601,15 @@ description = "Pins fix-wg-init: `wg init --route codex-cli` followed by `WG_DIR
 timeout_seconds = 60
 
 [[scenario]]
+name = "config_one_line_codex_route"
+script = "scenarios/config_one_line_codex_route.sh"
+owners = [
+    "allow-one-line",
+]
+description = "Pins allow-one-line: the real terminal flow `wg config --local --model ... --coordinator-model ... --tier ... --tier ... --tier ... --set-model ... --set-model ... --flip-model ... --auto-assign true --auto-evaluate true` must succeed as one atomic invocation, must not emit Clap's repeated --tier error, must write all Codex tier/model-routing values to local config, and `wg config --help` must document the repeatable flags clearly. No LLM endpoint needed."
+timeout_seconds = 30
+
+[[scenario]]
 name = "purge_chats_skips_active_by_default"
 script = "scenarios/purge_chats_skips_active_by_default.sh"
 owners = [

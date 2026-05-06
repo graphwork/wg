@@ -171,6 +171,162 @@ fn test_config_set_tier_remap() {
 }
 
 #[test]
+fn test_config_repeated_tier_flags_in_one_invocation() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "config",
+            "--local",
+            "--tier",
+            "fast=codex:gpt-5.4-mini",
+            "--tier",
+            "standard=codex:gpt-5.4",
+            "--tier",
+            "premium=codex:gpt-5.5",
+        ],
+    );
+
+    let config = Config::load(&wg_dir).unwrap();
+    assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+    assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+}
+
+#[test]
+fn test_config_codex_one_liner_sets_all_local_values() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "config",
+            "--local",
+            "--model",
+            "codex:gpt-5.5",
+            "--coordinator-model",
+            "codex:gpt-5.5",
+            "--tier",
+            "fast=codex:gpt-5.4-mini",
+            "--tier",
+            "standard=codex:gpt-5.4",
+            "--tier",
+            "premium=codex:gpt-5.5",
+            "--set-model",
+            "default",
+            "codex:gpt-5.5",
+            "--set-model",
+            "task_agent",
+            "codex:gpt-5.5",
+            "--set-model",
+            "evaluator",
+            "codex:gpt-5.4-mini",
+            "--set-model",
+            "assigner",
+            "codex:gpt-5.4-mini",
+            "--flip-model",
+            "codex:gpt-5.4-mini",
+            "--auto-assign",
+            "true",
+            "--auto-evaluate",
+            "true",
+        ],
+    );
+
+    let config = Config::load(&wg_dir).unwrap();
+    assert_eq!(config.agent.model, "codex:gpt-5.5");
+    assert_eq!(config.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+    assert!(config.coordinator.provider.is_none());
+
+    assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+    assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::Default)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::TaskAgent)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::Evaluator)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::Assigner)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::FlipInference)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::FlipComparison)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+
+    assert!(config.agency.auto_assign);
+    assert!(config.agency.auto_evaluate);
+}
+
+#[test]
+fn test_config_repeated_role_model_flags_in_one_invocation() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "config",
+            "--local",
+            "--role-model",
+            "evaluator=codex:gpt-5.4-mini",
+            "--role-model",
+            "assigner=codex:gpt-5.4-mini",
+        ],
+    );
+
+    let config = Config::load(&wg_dir).unwrap();
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::Evaluator)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+    assert_eq!(
+        config
+            .models
+            .get_role(DispatchRole::Assigner)
+            .and_then(|cfg| cfg.model.as_deref()),
+        Some("codex:gpt-5.4-mini")
+    );
+}
+
+#[test]
 fn test_escalate_on_retry_default_off() {
     let config = Config::default();
     assert!(
