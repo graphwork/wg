@@ -748,6 +748,15 @@ description = "Named profiles: wg profile use <name> writes active-pointer, wg c
 timeout_seconds = 30
 
 [[scenario]]
+name = "profile_codex_service_start"
+script = "scenarios/profile_codex_service_start.sh"
+owners = [
+    "fix-profile-application",
+]
+description = "Regression for fix-profile-application: the live terminal flow `wg service stop; wg profile use codex; wg service start` must start the dispatcher with executor=codex/model=codex:gpt-5.5 even when local config pins claude:opus, and `wg config --models` must not render codex role settings as nex."
+timeout_seconds = 60
+
+[[scenario]]
 name = "profile_diff"
 script = "scenarios/profile_diff.sh"
 owners = [

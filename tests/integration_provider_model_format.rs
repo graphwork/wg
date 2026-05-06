@@ -51,8 +51,35 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
 }
 
+fn wg_cmd_with_home(wg_dir: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(wg_binary())
+        .arg("--dir")
+        .arg(wg_dir)
+        .args(args)
+        .env("HOME", home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
+}
+
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     let output = wg_cmd(wg_dir, args);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "wg {:?} failed.\nstdout: {}\nstderr: {}",
+        args,
+        stdout,
+        stderr
+    );
+    stdout
+}
+
+fn wg_ok_with_home(wg_dir: &Path, home: &Path, args: &[&str]) -> String {
+    let output = wg_cmd_with_home(wg_dir, home, args);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -72,6 +99,95 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
     wg_dir
+}
+
+fn setup_workgraph_under(tmp: &TempDir, rel: &str) -> PathBuf {
+    let wg_dir = tmp.path().join(rel).join(".wg");
+    fs::create_dir_all(&wg_dir).unwrap();
+    let graph_path = wg_dir.join("graph.jsonl");
+    let graph = WorkGraph::new();
+    save_graph(&graph, &graph_path).unwrap();
+    wg_dir
+}
+
+#[test]
+fn active_codex_profile_overrides_local_claude_models() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        r#"
+[agent]
+model = "claude:opus"
+
+[dispatcher]
+model = "claude:opus"
+
+[agency]
+auto_assign = false
+auto_evaluate = false
+auto_evolve = false
+"#,
+    )
+    .unwrap();
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
+
+    let config = wg_ok_with_home(&wg_dir, &home, &["config", "--show"]);
+    assert!(
+        config.contains("model = \"codex:gpt-5.5\""),
+        "active codex profile should override local claude model pins:\n{}",
+        config
+    );
+    assert!(
+        config.contains("executor = \"codex\""),
+        "dispatcher executor should be inferred from codex profile model:\n{}",
+        config
+    );
+
+    let profile_show = wg_ok_with_home(&wg_dir, &home, &["profile", "show"]);
+    assert!(
+        profile_show.contains("Active named profile: codex"),
+        "profile show should report the active named profile:\n{}",
+        profile_show
+    );
+    assert!(
+        profile_show.contains("agent.model  = codex:gpt-5.5")
+            && profile_show.contains("dispatcher.model = codex:gpt-5.5"),
+        "profile show should render effective profile-overlaid models:\n{}",
+        profile_show
+    );
+}
+
+#[test]
+fn config_models_displays_codex_provider_for_codex_profile_roles() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
+
+    let out = wg_ok_with_home(&wg_dir, &home, &["config", "--models"]);
+    for role in ["task_agent", "evaluator", "assigner", "evolver"] {
+        let line = out
+            .lines()
+            .find(|line| line.contains(role))
+            .unwrap_or_else(|| panic!("missing {role} line in:\n{out}"));
+        assert!(
+            line.contains("codex"),
+            "{role} should display provider codex, got line:\n{line}\nfull output:\n{out}"
+        );
+        assert!(
+            !line.contains(" nex "),
+            "{role} must not be displayed as nex for codex:gpt-* settings, got line:\n{line}"
+        );
+    }
 }
 
 // ===========================================================================

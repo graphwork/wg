@@ -225,6 +225,7 @@ pub fn run_lightweight_llm_call(
                     ),
                 }
             }
+            "codex" => return call_codex_cli(model, prompt, timeout_secs),
             _ => {}
         }
     }

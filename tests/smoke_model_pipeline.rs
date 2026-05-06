@@ -370,12 +370,28 @@ fn smoke_fresh_repo_default_model_from_config() {
     // Add a task without specifying --model.
     wg_ok(&wg_dir, &["add", "hello world 2", "--immediate"]);
 
-    // The task's model should be the configured default (or None if the default
-    // is only applied at dispatch time). Check the config at least.
-    let output = wg_ok(&wg_dir, &["config", "--show"]);
+    let raw_config = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
     assert!(
-        output.contains("minimax/minimax-m2.7"),
-        "Config should show the configured model, got:\n{}",
+        raw_config.contains("minimax/minimax-m2.7"),
+        "Local config should store the requested model, got:\n{}",
+        raw_config
+    );
+
+    // The task's model should be the configured default (or None if the default
+    // is only applied at dispatch time). Check the effective config at least.
+    // If the developer running tests has an active named profile, that profile
+    // intentionally overlays the local model at runtime.
+    let output = wg_ok(&wg_dir, &["config", "--show"]);
+    let expected_model = workgraph::profile::named::active()
+        .ok()
+        .flatten()
+        .and_then(|name| workgraph::profile::named::load(&name).ok())
+        .and_then(|profile| profile.agent.and_then(|agent| agent.model))
+        .unwrap_or_else(|| "minimax/minimax-m2.7".to_string());
+    assert!(
+        output.contains(&expected_model),
+        "Effective config should show {}, got:\n{}",
+        expected_model,
         output
     );
 }
