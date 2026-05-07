@@ -446,18 +446,20 @@ pub fn run(
         default_parent_after(graph, after)
     };
 
-    // 2. Task depth limit (enforced when --after is specified)
+    // 2. User-visible task depth limit (enforced when --after is specified)
     if !effective_after.is_empty() {
-        // The new task's depth = max(depth of each parent) + 1
+        // The new task's visible depth = max(visible depth of each parent) + 1.
+        // Internal agency scaffolding collapses onto the user task it gates.
         let max_parent_depth = effective_after
             .iter()
-            .map(|parent_id| graph.task_depth(parent_id))
+            .map(|parent_id| graph.user_visible_task_depth(parent_id))
             .max()
             .unwrap_or(0);
         let new_depth = max_parent_depth + 1;
         if new_depth > max_depth {
             error = Some(anyhow::anyhow!(
-                "Task would be at depth {} (max: {}). \
+                "Task would be at user-visible depth {} (configured max_task_depth: {}). \
+                 Internal agency scaffold tasks (.assign-*, .flip-*, .evaluate-*) do not count toward this limit. \
                  Consider creating tasks at the current level instead.",
                 new_depth,
                 max_depth
@@ -1246,6 +1248,69 @@ mod tests {
         }
     }
 
+    fn stub_task_after(id: &str, after: &[&str]) -> Task {
+        let mut task = stub_task(id);
+        task.after = after.iter().map(|dep| (*dep).to_string()).collect();
+        task
+    }
+
+    fn add_minimal_task(dir: &Path, title: &str, id: &str, after: &[String]) -> Result<()> {
+        run(
+            dir,
+            title,
+            Some(id),
+            None,
+            after,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+        )
+    }
+
+    fn write_max_task_depth_config(dir: &Path, max_depth: u32) {
+        std::fs::write(
+            dir.join("config.toml"),
+            format!("[guardrails]\nmax_task_depth = {}\n", max_depth),
+        )
+        .unwrap();
+    }
+
     // ---- parse_guard_expr tests ----
 
     #[test]
@@ -1970,6 +2035,96 @@ mod tests {
             b.before.contains(&"dep-task".to_string()),
             "blocker-b.before should contain dep-task, got: {:?}",
             b.before
+        );
+    }
+
+    #[test]
+    fn max_task_depth_uses_user_visible_depth_through_agency_scaffold() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        write_max_task_depth_config(dir_path, 2);
+        let path = super::graph_path(dir_path);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(stub_task(".assign-visible-root")));
+        graph.add_node(Node::Task(stub_task_after(
+            "visible-root",
+            &[".assign-visible-root"],
+        )));
+        graph.add_node(Node::Task(stub_task_after(
+            ".flip-visible-root",
+            &["visible-root"],
+        )));
+        graph.add_node(Node::Task(stub_task_after(
+            ".evaluate-visible-root",
+            &[".flip-visible-root"],
+        )));
+        graph.add_node(Node::Task(stub_task(".assign-visible-one")));
+        graph.add_node(Node::Task(stub_task_after(
+            "visible-one",
+            &[".evaluate-visible-root", ".assign-visible-one"],
+        )));
+        graph.add_node(Node::Task(stub_task_after(
+            ".flip-visible-one",
+            &["visible-one"],
+        )));
+        graph.add_node(Node::Task(stub_task_after(
+            ".evaluate-visible-one",
+            &[".flip-visible-one"],
+        )));
+        save_graph(&graph, &path).unwrap();
+
+        let result = add_minimal_task(
+            dir_path,
+            "Visible two",
+            "visible-two",
+            &[".evaluate-visible-one".to_string()],
+        );
+
+        assert!(
+            result.is_ok(),
+            "internal assignment/flip/evaluation scaffold should not make visible depth 2 exceed max_task_depth=2: {:?}",
+            result
+        );
+
+        let graph = load_graph(&path).unwrap();
+        assert_eq!(graph.user_visible_task_depth("visible-two"), 2);
+    }
+
+    #[test]
+    fn max_task_depth_still_rejects_deep_user_dependency_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        write_max_task_depth_config(dir_path, 2);
+        let path = super::graph_path(dir_path);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(stub_task("visible-root")));
+        graph.add_node(Node::Task(stub_task_after(
+            "visible-one",
+            &["visible-root"],
+        )));
+        graph.add_node(Node::Task(stub_task_after("visible-two", &["visible-one"])));
+        save_graph(&graph, &path).unwrap();
+
+        let result = add_minimal_task(
+            dir_path,
+            "Visible three",
+            "visible-three",
+            &["visible-two".to_string()],
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("user-visible depth 3"),
+            "depth error should report user-visible depth, got: {err}"
+        );
+        assert!(
+            err.contains("configured max_task_depth: 2"),
+            "depth error should report configured limit, got: {err}"
         );
     }
 
