@@ -67,6 +67,93 @@ fn build_graph(tasks: Vec<Task>) -> WorkGraph {
 }
 
 #[test]
+fn index_title_and_minimal_header_include_host_and_repo_path() {
+    let graph = build_graph(vec![make_task("alpha", "Alpha", "public")]);
+    let repo = TempDir::new().unwrap();
+    let workgraph_dir = repo.path().join(".wg");
+    fs::create_dir_all(&workgraph_dir).unwrap();
+    let out = TempDir::new().unwrap();
+
+    html::render_site(
+        &graph,
+        &workgraph_dir,
+        out.path(),
+        html::RenderOptions {
+            show_all: true,
+            project_meta: Some(html::ProjectMeta::default()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(out.path().join("index.html")).unwrap();
+    let task_page = fs::read_to_string(out.path().join("tasks/alpha.html")).unwrap();
+    let source_title = html::source_title_for_workgraph_dir(&workgraph_dir);
+    let repo_path = repo.path().canonicalize().unwrap().display().to_string();
+
+    assert!(
+        source_title.ends_with(&repo_path),
+        "source title should use the repo root, not the .wg dir: {source_title}"
+    );
+    assert!(
+        index.contains(&format!("<title>{source_title} — all tasks</title>")),
+        "index <title> should identify the source repo; got:\n{index}"
+    );
+    assert!(
+        index.contains(&format!("<h1>{source_title}</h1>")),
+        "minimal visible header should identify the source repo; got:\n{index}"
+    );
+    assert!(
+        task_page.contains(&format!("<title>alpha — {source_title}</title>")),
+        "task page <title> should include the source repo; got:\n{task_page}"
+    );
+    assert!(
+        !index.contains("<title>workgraph"),
+        "index title must not fall back to generic workgraph"
+    );
+}
+
+#[test]
+fn source_title_is_escaped_in_index_title_and_header() {
+    let graph = build_graph(vec![make_task("alpha", "Alpha", "public")]);
+    let dir = TempDir::new().unwrap();
+    let raw_source = "host<&:\"x':/tmp/repo<&\"'";
+    let escaped_source = "host&lt;&amp;:&quot;x&#39;:/tmp/repo&lt;&amp;&quot;&#39;";
+
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            project_meta: Some(html::ProjectMeta::default()),
+            source_title: Some(raw_source.to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    let task_page = fs::read_to_string(dir.path().join("tasks/alpha.html")).unwrap();
+    assert!(
+        index.contains(&format!("<title>{escaped_source} — all tasks</title>")),
+        "escaped source title missing from browser title: {index}"
+    );
+    assert!(
+        index.contains(&format!("<h1>{escaped_source}</h1>")),
+        "escaped source title missing from visible header: {index}"
+    );
+    assert!(
+        task_page.contains(&format!("<title>alpha — {escaped_source}</title>")),
+        "escaped source title missing from task page title: {task_page}"
+    );
+    assert!(
+        !index.contains(raw_source),
+        "raw source title must not appear unescaped in index html"
+    );
+}
+
+#[test]
 fn renders_index_with_only_public_task_count() {
     // 3 public, 2 internal — index should reflect 3 task nodes.
     let mut t1 = make_task("alpha", "Alpha", "public");
@@ -600,8 +687,8 @@ fn since_filter_composes_with_visibility() {
 
 #[test]
 fn declutter_index_has_clean_header_no_redundant_text() {
-    // Spec: top of page shows "workgraph" + task count, no "click a task to
-    // inspect" subtitle, no "Dependency graph (...)" parenthetical, no
+    // Spec: top of page shows a source title + task count, no "click a task
+    // to inspect" subtitle, no "Dependency graph (...)" parenthetical, no
     // inline `<section class="legend-section">` (legend lives in panel only).
     let t = make_task("only", "Only", "public");
     let graph = build_graph(vec![t]);

@@ -67,7 +67,9 @@ pub struct Deployment {
     pub schedule_task_id: Option<String>,
 
     /// Per-deployment override for the rendered page title. Wins over
-    /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`.
+    /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`
+    /// and avoids the default `hostname:/repo/path` source label in public
+    /// exports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
@@ -519,6 +521,7 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
                 include_chat,
                 all_chats,
                 project_meta: Some(project_meta),
+                source_title: None,
             },
         )
         .with_context(|| "wg html generation failed")?;
@@ -563,7 +566,8 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
 ///   1. per-deployment override (`title` / `byline` / `abstract_path`)
 ///   2. project-level (`<workgraph_dir>/config.toml [project]` →
 ///      `<workgraph_dir>/about.md`)
-///   3. defaults (title = workgraph_dir name, byline + abstract empty)
+///   3. when byline/abstract exist without a title, default the project
+///      header title to the workgraph dir name
 ///
 /// Reads no abstract from disk if `abstract_path` is empty AND the
 /// project-level cascade also has nothing — the default abstract is empty.
@@ -596,17 +600,18 @@ pub fn resolve_deployment_meta(
     }
 
     // Default title = directory name when neither override nor project
-    // config supplied one. Empty deployment + empty project = "workgraph"
-    // is handled in the renderer (the project-header is omitted entirely).
+    // config supplied one, but only when metadata exists. Empty deployment
+    // + empty project is handled in the renderer via the minimal source-title
+    // header, and the project-header is omitted entirely.
     if meta.title.is_none() {
         if let Some(name) = workgraph_dir
             .file_name()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
         {
-            // Only use the directory-name default when SOMETHING else is
+            // Only use the directory-name default when something else is
             // set (byline or abstract). Otherwise the "is_empty" check
-            // collapses the header back to the minimal workgraph form.
+            // collapses the header back to the minimal source-title form.
             if meta
                 .byline
                 .as_deref()
@@ -1397,7 +1402,8 @@ mod tests {
     fn publish_run_omits_project_header_when_meta_empty() {
         // Live: a deployment with NO metadata + NO project config + NO
         // about.md MUST NOT render an empty <header class="project-header">
-        // block — the page falls back to the existing minimal header.
+        // block. The minimal header/title still identify the source workgraph
+        // with the default host:path label.
         let tmp = fresh_dir();
         let dest = TempDir::new().unwrap();
         let target = format!("{}/", dest.path().display());
@@ -1410,7 +1416,20 @@ mod tests {
             !html.contains("class=\"project-header\""),
             "project-header must be omitted when no metadata is configured (got the empty block)"
         );
-        // Sanity: the minimal "workgraph" header is still present.
+        let source_title = workgraph::html::source_title_for_workgraph_dir(tmp.path());
+        assert!(
+            html.contains(&format!("<title>{source_title} — all tasks</title>")),
+            "browser title should identify the source workgraph; got: {html}"
+        );
+        assert!(
+            html.contains(&format!("<h1>{source_title}</h1>")),
+            "minimal visible header should identify the source workgraph; got: {html}"
+        );
+        assert!(
+            !html.contains("<title>workgraph"),
+            "browser title must not fall back to generic workgraph"
+        );
+        // Sanity: the minimal page header is still present.
         assert!(html.contains("class=\"page-header\""));
     }
 }

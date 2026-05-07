@@ -736,7 +736,7 @@ script = "scenarios/wg_html_declutter.sh"
 owners = [
     "wg-html-declutter",
 ]
-description = "Regression for wg-html-declutter: the page header is decluttered (just <h1>workgraph</h1> + '<n> tasks shown' — no 'click a task id to inspect' subtitle, no 'Dependency graph (...)' parenthetical headline above the viz, no inline `<section class=\"legend-section\">`). A 'Legend' button in the header opens the side panel with a full legend covering edge colors, status colors, click behaviors, and CLI flags. The legend HTML lives inside a hidden `<template id=\"wg-legend-template\">`; panel.js binds the legend toggle and reuses the existing side-panel infrastructure, swatches reference the --edge-* CSS variables for theme-aware colors."
+description = "Regression for wg-html-declutter: the page header is decluttered (source title + '<n> tasks shown' — no 'click a task id to inspect' subtitle, no 'Dependency graph (...)' parenthetical headline above the viz, no inline `<section class=\"legend-section\">`). A 'Legend' button in the header opens the side panel with a full legend covering edge colors, status colors, click behaviors, and CLI flags. The legend HTML lives inside a hidden `<template id=\"wg-legend-template\">`; panel.js binds the legend toggle and reuses the existing side-panel infrastructure, swatches reference the --edge-* CSS variables for theme-aware colors."
 timeout_seconds = 60
 
 [[scenario]]
@@ -991,8 +991,9 @@ name = "publish_project_metadata_renders"
 script = "scenarios/publish_project_metadata_renders.sh"
 owners = [
     "wg-html-publish-2",
+    "show-host-and",
 ]
-description = "Pins wg-html-publish-2: project metadata (title / byline / abstract markdown) at the top of `wg html publish`-rendered pages. Walks the cascade: per-deployment --title/--byline/--abstract on `add` wins over project-level [project] config, which wins over the auto-discovered <wg_dir>/about.md, and when nothing is set anywhere the project-header block is OMITTED entirely (the page falls back to the existing minimal 'workgraph / N tasks shown' header). Verifies the abstract is rendered as markdown (h2/ul/li from a markdown source). Skips when rsync is missing."
+description = "Pins wg-html-publish-2 and show-host-and: project metadata (title / byline / abstract markdown) at the top of `wg html publish`-rendered pages, and empty-metadata publish output uses `hostname:/repo/path` in the browser title and minimal visible header instead of generic `workgraph`. Walks the cascade: per-deployment --title/--byline/--abstract on `add` wins over project-level [project] config, which wins over the auto-discovered <wg_dir>/about.md, and when nothing is set anywhere the project-header block is OMITTED while the source title/header remain specific. Verifies the abstract is rendered as markdown (h2/ul/li from a markdown source). Skips when rsync is missing."
 timeout_seconds = 120
 
 [[scenario]]

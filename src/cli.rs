@@ -2706,7 +2706,9 @@ pub enum HtmlPublishCommands {
         rsync_flags: Option<String>,
 
         /// Title shown at the top of the rendered page. Wins over
-        /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`.
+        /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`
+        /// and overrides the default `hostname:/repo/path` source label for
+        /// portable public exports.
         #[arg(long = "title")]
         title: Option<String>,
 
