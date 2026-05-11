@@ -689,10 +689,16 @@ mod tests {
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Verify the timeout command wraps the inner command
+        // Verify the timeout command wraps the inner command. The literal
+        // `timeout` prefix is replaced at runtime by $WG_TIMEOUT_BIN (resolved
+        // to gtimeout on macOS / timeout on Linux), so the assertion checks
+        // the parts that survive: the runtime-resolved binary substitution
+        // and the duration.
         assert!(
-            script.contains("timeout --signal=TERM --kill-after=30 300"),
-            "Wrapper should contain timeout command with 300s (5m). Script:\n{}",
+            script.contains(
+                r#"${WG_TIMEOUT_BIN:+"$WG_TIMEOUT_BIN" --signal=TERM --kill-after=30 300 }"#
+            ),
+            "Wrapper should contain WG_TIMEOUT_BIN-substituted timeout prefix with 300s (5m). Script:\n{}",
             script
         );
         // Verify timeout exit code handling
@@ -724,10 +730,69 @@ mod tests {
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Default timeout is 30m = 1800s
+        // Default timeout is 30m = 1800s; the literal `timeout` prefix is
+        // resolved at runtime via $WG_TIMEOUT_BIN, so we check the substituted
+        // form rather than a hard-coded binary name.
         assert!(
-            script.contains("timeout --signal=TERM --kill-after=30 1800"),
-            "Wrapper should contain default timeout of 1800s (30m). Script:\n{}",
+            script.contains(
+                r#"${WG_TIMEOUT_BIN:+"$WG_TIMEOUT_BIN" --signal=TERM --kill-after=30 1800 }"#
+            ),
+            "Wrapper should contain WG_TIMEOUT_BIN-substituted default timeout of 1800s (30m). Script:\n{}",
+            script
+        );
+    }
+
+    #[test]
+    fn test_wrapper_script_probes_gtimeout_then_timeout() {
+        // Regression: macOS ships no GNU `timeout` binary; coreutils provides
+        // `gtimeout`. Before this probe was added, the wrapper hard-coded
+        // `timeout` and the missing binary caused the pipeline `cat prompt |
+        // claude --print` to silently hand empty stdin to claude, which then
+        // bailed with "Input must be provided either through stdin or as a
+        // prompt argument when using --print." Tasks died in ~2s with a
+        // confusing error and the real cause (no GNU timeout) was invisible.
+        let temp_dir = TempDir::new().unwrap();
+        let unique_id = get_unique_id();
+        let task_id = format!("t{}", unique_id);
+        let mut task = make_task(&task_id, "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        let workgraph_dir = temp_dir.path().join(".workgraph");
+        run(&workgraph_dir, &task_id, "shell", Some("5m"), None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
+        // Probe must check gtimeout first (macOS via coreutils), then timeout (Linux).
+        assert!(
+            script.contains("command -v gtimeout"),
+            "Wrapper should probe for gtimeout (macOS coreutils). Script:\n{}",
+            script
+        );
+        assert!(
+            script.contains("command -v timeout"),
+            "Wrapper should probe for timeout (Linux). Script:\n{}",
+            script
+        );
+        // The probe must set WG_TIMEOUT_BIN, which the timed command interpolates.
+        assert!(
+            script.contains("WG_TIMEOUT_BIN="),
+            "Wrapper should set WG_TIMEOUT_BIN env var. Script:\n{}",
+            script
+        );
+        // Substitution must use ${VAR:+...} so the prefix collapses to nothing
+        // when neither timeout binary is present (instead of breaking the pipeline).
+        assert!(
+            script.contains("${WG_TIMEOUT_BIN:+"),
+            "Wrapper should use ${{WG_TIMEOUT_BIN:+...}} substitution so the timeout prefix collapses cleanly when no binary is found. Script:\n{}",
+            script
+        );
+        // Warning when neither binary is found — visible in output.log so the
+        // operator can see why their hard timeout isn't being enforced.
+        assert!(
+            script.contains("GNU timeout not found"),
+            "Wrapper should warn when timeout binaries are missing. Script:\n{}",
             script
         );
     }
