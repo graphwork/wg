@@ -10955,40 +10955,62 @@ impl VizApp {
     /// Execute a wg command in a background thread.
     pub fn exec_command(&self, args: Vec<String>, effect: CommandEffect) {
         let tx = self.cmd_tx.clone();
+
+        // Under `cargo test --bin wg`, skip the real subprocess. Tests
+        // assert the routing (i.e. `exec_command` was called with the
+        // requested `effect`) — they do not depend on `wg` from PATH.
+        // Spawning a real subprocess inside the binary's test harness
+        // adds a fork+exec under heavy parallel test load that can
+        // exceed the test's `recv_timeout`. Synthesize an immediate
+        // failed result so the routing assertion fires deterministically.
+        #[cfg(test)]
+        {
+            let _ = args;
+            let _ = tx.send(CommandResult {
+                success: false,
+                output: String::new(),
+                effect,
+            });
+            return;
+        }
+
         // self.workgraph_dir is the `.wg` directory itself (e.g.
         // /project/.wg). The `wg` binary expects to run from the
         // project root so it can find `.wg` as a child — running
         // from *inside* `.wg` causes it to look for the non-existent
         // `.wg/.wg`. Use the parent directory as the CWD.
-        let project_root = self
-            .workgraph_dir
-            .parent()
-            .unwrap_or(&self.workgraph_dir)
-            .to_path_buf();
-        std::thread::spawn(move || {
-            let result = Command::new("wg")
-                .args(&args)
-                .current_dir(&project_root)
-                .output();
-            let (success, output) = match result {
-                Ok(o) => {
-                    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                    let combined = if stderr.is_empty() {
-                        stdout
-                    } else {
-                        format!("{}\n{}", stdout, stderr)
-                    };
-                    (o.status.success(), combined)
-                }
-                Err(e) => (false, format!("Failed to run wg: {}", e)),
-            };
-            let _ = tx.send(CommandResult {
-                success,
-                output,
-                effect,
+        #[cfg(not(test))]
+        {
+            let project_root = self
+                .workgraph_dir
+                .parent()
+                .unwrap_or(&self.workgraph_dir)
+                .to_path_buf();
+            std::thread::spawn(move || {
+                let result = Command::new("wg")
+                    .args(&args)
+                    .current_dir(&project_root)
+                    .output();
+                let (success, output) = match result {
+                    Ok(o) => {
+                        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                        let combined = if stderr.is_empty() {
+                            stdout
+                        } else {
+                            format!("{}\n{}", stdout, stderr)
+                        };
+                        (o.status.success(), combined)
+                    }
+                    Err(e) => (false, format!("Failed to run wg: {}", e)),
+                };
+                let _ = tx.send(CommandResult {
+                    success,
+                    output,
+                    effect,
+                });
             });
-        });
+        }
     }
 
     /// Drain any completed background commands and apply their effects.

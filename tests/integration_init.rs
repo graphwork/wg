@@ -26,8 +26,17 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd_in(dir: &Path, args: &[&str]) -> std::process::Output {
+    // Isolate HOME so the developer's real `~/.wg/config.toml` (which may
+    // pin a non-default model/route) does not leak into `wg init` defaults
+    // and contaminate the test assertion. Other integration tests
+    // (`integration_setup_routes.rs`, `smoke_native_executor.rs`) already
+    // do this; `integration_init.rs` was the lone holdout.
+    let fake_home = dir.join("_fake_home");
+    std::fs::create_dir_all(&fake_home)
+        .unwrap_or_else(|e| panic!("Failed to create fake home dir: {}", e));
     Command::new(wg_binary())
         .current_dir(dir)
+        .env("HOME", &fake_home)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

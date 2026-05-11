@@ -111,7 +111,12 @@ fn setup_workgraph_under(tmp: &TempDir, rel: &str) -> PathBuf {
 }
 
 #[test]
-fn active_codex_profile_overrides_local_claude_models() {
+fn local_claude_models_override_active_codex_profile() {
+    // Per merge commit 620d0fbdd, profile = file-swap (full Config
+    // snapshot replacing the global file), NOT overlay. Local config
+    // always wins over global. This test verifies that local
+    // `claude:opus` pins survive an active codex profile, which is the
+    // inverse of the overlay-era assertion this test originally made.
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join("home");
     fs::create_dir_all(home.join(".wg")).unwrap();
@@ -139,13 +144,13 @@ auto_evolve = false
 
     let config = wg_ok_with_home(&wg_dir, &home, &["config", "--show"]);
     assert!(
-        config.contains("model = \"codex:gpt-5.5\""),
-        "active codex profile should override local claude model pins:\n{}",
+        config.contains("model = \"claude:opus\""),
+        "local claude pins must survive an active codex profile (file-swap, not overlay):\n{}",
         config
     );
     assert!(
-        config.contains("executor = \"codex\""),
-        "dispatcher executor should be inferred from codex profile model:\n{}",
+        !config.contains("model = \"codex:gpt-5.5\""),
+        "local claude:opus must shadow codex profile's model — profile must not override local:\n{}",
         config
     );
 
@@ -156,9 +161,15 @@ auto_evolve = false
         profile_show
     );
     assert!(
-        profile_show.contains("agent.model  = codex:gpt-5.5")
-            && profile_show.contains("dispatcher.model = codex:gpt-5.5"),
-        "profile show should render effective profile-overlaid models:\n{}",
+        profile_show.contains("file swap"),
+        "profile show should declare the file-swap semantics so the reader knows local wins:\n{}",
+        profile_show
+    );
+    assert!(
+        profile_show.contains("agent.model")
+            && profile_show.contains("claude:opus")
+            && profile_show.contains("dispatcher.model"),
+        "profile show should render the EFFECTIVE (local-wins) models, not the profile's pins:\n{}",
         profile_show
     );
 }
