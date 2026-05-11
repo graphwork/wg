@@ -5,11 +5,18 @@ model = "codex:gpt-5.5"
 
 [dispatcher]
 model = "codex:gpt-5.5"
+max_agents = 8
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
 standard = "codex:gpt-5.4"
 premium = "codex:gpt-5.5"
+
+[models.default]
+model = "codex:gpt-5.5"
+
+[models.task_agent]
+model = "codex:gpt-5.5"
 
 [models.evaluator]
 model = "codex:gpt-5.4-mini"
@@ -17,5 +24,8 @@ model = "codex:gpt-5.4-mini"
 [models.assigner]
 model = "codex:gpt-5.4-mini"
 
-[models.flip]
+[models.flip_inference]
+model = "codex:gpt-5.4-mini"
+
+[models.flip_comparison]
 model = "codex:gpt-5.4-mini"

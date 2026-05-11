@@ -119,11 +119,12 @@ fn config_init_global_writes_minimal_canonical() {
     );
     let body = fs::read_to_string(&path).unwrap();
 
-    // The minimal claude-cli global config must contain:
-    //   [agent] model = "claude:opus"
-    //   [tiers] fast/standard/premium
-    //   [models.evaluator] model
-    //   [models.assigner] model
+    // After the 2026-05 profile-as-snapshot pivot, `wg config init --global`
+    // for a default route (claude-cli) writes the *claude profile* verbatim.
+    // The profile is a complete, working config — not a stripped-down
+    // "minimal" shell — so it includes [agent], [dispatcher], [tiers],
+    // [models.*] sections. This is the single source of truth: profile file
+    // = config file.
     assert!(body.contains("[agent]"), "missing [agent]; got:\n{}", body);
     assert!(
         body.contains("model = \"claude:opus\""),
@@ -137,27 +138,105 @@ fn config_init_global_writes_minimal_canonical() {
     assert!(body.contains("[models.evaluator]"));
     assert!(body.contains("[models.assigner]"));
 
-    // The minimal config must NOT carry restated defaults:
-    // no [dispatcher] section, no [chat], no [help], no [guardrails], etc.
-    assert!(
-        !body.contains("[dispatcher]"),
-        "minimal global config should not restate dispatcher defaults; got:\n{}",
-        body,
-    );
-    assert!(
-        !body.contains("[guardrails]"),
-        "minimal global config should not restate guardrails defaults; got:\n{}",
-        body,
-    );
+    // The config must not contain deprecated keys carried over from older
+    // templates — the profile snapshots are clean.
     assert!(
         !body.contains("verify_autospawn_enabled"),
-        "minimal global config should not contain deprecated keys; got:\n{}",
+        "global config should not contain deprecated keys; got:\n{}",
         body,
     );
     assert!(
         !body.contains("agent.executor") && !body.contains("\nexecutor ="),
-        "minimal global config should not contain agent.executor (deprecated); got:\n{}",
+        "global config should not contain agent.executor (deprecated); got:\n{}",
         body,
+    );
+
+    // The file must parse cleanly as a `Config` — that's the round-trip
+    // guarantee the profile-as-snapshot model rests on.
+    let parsed: Result<workgraph::config::Config, _> = toml::from_str(&body);
+    assert!(
+        parsed.is_ok(),
+        "global config must round-trip through Config; got: {:?}\n{}",
+        parsed.err(),
+        body,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: --route codex-cli must produce a working codex config.
+// Before the 2026-05 profile-as-snapshot pivot, this route emitted a config
+// that named codex in some places but left other roles unset / claude-default
+// — see the fix-codex-init task. The fix shares the codex profile template
+// as the single source of truth, so `--route codex-cli` is now byte-identical
+// to a `wg profile use codex` swap.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_init_route_codex_cli_produces_complete_codex_config() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "codex-cli"],
+    );
+    let body = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
+
+    // [agent].model — the central key that the original bug silently
+    // dropped — must be codex, not any claude variant.
+    assert!(
+        body.contains("model = \"codex:gpt-5.5\""),
+        "codex-cli route must set agent.model to codex:gpt-5.5; got:\n{}",
+        body,
+    );
+    assert!(
+        !body.contains("claude:opus") && !body.contains("claude:sonnet"),
+        "codex-cli route must not leave any claude models in the config; got:\n{}",
+        body,
+    );
+    // Per-role agency keys: evaluator + assigner must also be codex.
+    assert!(
+        body.contains("[models.evaluator]") && body.contains("[models.assigner]"),
+        "codex-cli config must specify agency role overrides; got:\n{}",
+        body,
+    );
+    assert!(
+        body.contains("model = \"codex:gpt-5.4-mini\""),
+        "codex-cli agency roles must use the cheaper codex model; got:\n{}",
+        body,
+    );
+
+    // Round-trips through Config.
+    let parsed: Result<workgraph::config::Config, _> = toml::from_str(&body);
+    assert!(parsed.is_ok(), "codex-cli config must parse as Config");
+    let cfg = parsed.unwrap();
+    assert_eq!(cfg.agent.model, "codex:gpt-5.5");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+}
+
+#[test]
+fn config_init_route_codex_cli_matches_codex_profile_template() {
+    // The single-source-of-truth contract: `wg config init --route codex-cli`
+    // must emit byte-identical content to the codex profile template that
+    // `wg profile use codex` would swap in. Same source, same bytes.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "codex-cli"],
+    );
+    let written = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
+    let template = workgraph::profile::named::STARTER_CODEX;
+    assert_eq!(
+        written, template,
+        "codex-cli route must emit the codex profile template verbatim",
     );
 }
 

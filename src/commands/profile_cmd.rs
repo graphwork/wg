@@ -7,6 +7,13 @@ use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use workgraph::profile;
 use workgraph::profile::named as named_profile;
 
+/// Extract the top-level `description` key from a profile TOML string.
+/// Returns None if the file has no description or fails to parse.
+fn parse_top_level_description(content: &str) -> Option<String> {
+    let val: toml::Value = content.parse().ok()?;
+    val.get("description")?.as_str().map(|s| s.to_string())
+}
+
 /// File name for the cached ranked tiers (inside .wg/).
 /// Note: `profile::load_ranked_tiers()` provides the public read path;
 /// this constant is kept here only for `save_ranked_tiers`.
@@ -229,66 +236,73 @@ pub fn show(
     profile_name: Option<&str>,
     _diff_base: bool,
 ) -> Result<()> {
-    // If a specific named profile is requested, show its raw contents.
+    // If a specific named profile is requested, show its snapshot contents.
+    // Profiles are complete Config snapshots now (post-2026-05 pivot), so we
+    // surface the same keys a `~/.wg/config.toml` would carry.
     if let Some(name) = profile_name {
         let prof = named_profile::load(name)?;
+        let path = named_profile::profile_path(name)?;
         if json {
-            println!("{}", serde_json::to_string_pretty(&prof)?);
+            let val = serde_json::json!({
+                "name": name,
+                "description": prof.description,
+                "agent_model": prof.config.agent.model,
+                "dispatcher_model": prof.config.coordinator.model,
+                "tiers": {
+                    "fast": prof.config.tiers.fast,
+                    "standard": prof.config.tiers.standard,
+                    "premium": prof.config.tiers.premium,
+                },
+                "file": path.display().to_string(),
+            });
+            println!("{}", serde_json::to_string_pretty(&val)?);
         } else {
             println!("Profile: {}", name);
             if let Some(ref desc) = prof.description {
                 println!("  {}", desc);
             }
             println!();
-            if let Some(ref agent) = prof.agent {
-                if let Some(ref m) = agent.model {
-                    println!("  agent.model = \"{}\"", m);
+            println!("  agent.model      = \"{}\"", prof.config.agent.model);
+            if let Some(ref m) = prof.config.coordinator.model {
+                println!("  dispatcher.model = \"{}\"", m);
+            }
+            if let Some(ref f) = prof.config.tiers.fast {
+                println!("  tiers.fast       = \"{}\"", f);
+            }
+            if let Some(ref s) = prof.config.tiers.standard {
+                println!("  tiers.standard   = \"{}\"", s);
+            }
+            if let Some(ref p) = prof.config.tiers.premium {
+                println!("  tiers.premium    = \"{}\"", p);
+            }
+            if let Some(ref m) = prof.config.models.evaluator {
+                if let Some(ref ms) = m.model {
+                    println!("  models.evaluator.model       = \"{}\"", ms);
                 }
             }
-            if let Some(ref dispatcher) = prof.dispatcher {
-                if let Some(ref m) = dispatcher.model {
-                    println!("  dispatcher.model = \"{}\"", m);
+            if let Some(ref m) = prof.config.models.assigner {
+                if let Some(ref ms) = m.model {
+                    println!("  models.assigner.model        = \"{}\"", ms);
                 }
             }
-            if let Some(ref tiers) = prof.tiers {
-                if let Some(ref f) = tiers.fast {
-                    println!("  tiers.fast = \"{}\"", f);
-                }
-                if let Some(ref s) = tiers.standard {
-                    println!("  tiers.standard = \"{}\"", s);
-                }
-                if let Some(ref p) = tiers.premium {
-                    println!("  tiers.premium = \"{}\"", p);
+            if let Some(ref m) = prof.config.models.flip_inference {
+                if let Some(ref ms) = m.model {
+                    println!("  models.flip_inference.model  = \"{}\"", ms);
                 }
             }
-            if let Some(ref models) = prof.models {
-                if let Some(ref m) = models.evaluator {
-                    if let Some(ref ms) = m.model {
-                        println!("  models.evaluator.model = \"{}\"", ms);
-                    }
-                }
-                if let Some(ref m) = models.assigner {
-                    if let Some(ref ms) = m.model {
-                        println!("  models.assigner.model = \"{}\"", ms);
-                    }
-                }
-                if let Some(ref m) = models.flip {
-                    if let Some(ref ms) = m.model {
-                        println!("  models.flip.model = \"{}\"", ms);
-                    }
+            if let Some(ref m) = prof.config.models.flip_comparison {
+                if let Some(ref ms) = m.model {
+                    println!("  models.flip_comparison.model = \"{}\"", ms);
                 }
             }
-            if let Some(ref ep) = prof.llm_endpoints {
-                for endpoint in &ep.endpoints {
-                    println!(
-                        "  endpoint: {} ({}) url={}",
-                        endpoint.name,
-                        endpoint.provider,
-                        endpoint.url.as_deref().unwrap_or("(none)")
-                    );
-                }
+            for endpoint in &prof.config.llm_endpoints.endpoints {
+                println!(
+                    "  endpoint: {} ({}) url={}",
+                    endpoint.name,
+                    endpoint.provider,
+                    endpoint.url.as_deref().unwrap_or("(none)")
+                );
             }
-            let path = named_profile::profile_path(name)?;
             println!();
             println!("  File: {}", path.display());
         }
@@ -356,8 +370,7 @@ pub fn show(
     }
 
     println!();
-    println!("  Effective settings (base config + profile overlay):");
-    println!("    agent.model  = {}", config.agent.model);
+    println!("  agent.model = {}", config.agent.model);
     println!();
     println!("  Tier Mappings:");
     println!(
@@ -519,8 +532,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
                         "kind": "builtin",
                         "active": false,
                         "description": named_profile::starter_template(name)
-                            .and_then(|s| toml::from_str::<named_profile::NamedProfile>(s).ok())
-                            .and_then(|p| p.description),
+                            .and_then(parse_top_level_description),
                     }));
                 }
             }
@@ -566,8 +578,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         for name in builtin_names {
             if !installed.iter().any(|i| i == name) {
                 let desc = named_profile::starter_template(name)
-                    .and_then(|s| toml::from_str::<named_profile::NamedProfile>(s).ok())
-                    .and_then(|p| p.description)
+                    .and_then(parse_top_level_description)
                     .unwrap_or_default();
                 println!("  [builtin] {:<14} {}", name, desc);
             }
@@ -604,13 +615,22 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
 
 // ── Named profile commands ────────────────────────────────────────────────────
 
-/// Activate a named profile: write active-pointer, hot-reload daemon.
+/// Activate a named profile: copy `~/.wg/profiles/<name>.toml` over
+/// `~/.wg/config.toml` (the global config), update the active-pointer file,
+/// hot-reload the daemon.
+///
+/// **Profile-as-swap, not overlay** (2026-05 pivot): the profile file IS the
+/// global config. No merge logic, no resolution chain. What's in the profile
+/// file is exactly what runs.
 pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool) -> Result<()> {
     if clear || name.is_none() {
         let prev = named_profile::active().unwrap_or(None);
         named_profile::set_active(None)?;
         match prev.as_deref() {
-            Some(p) => println!("Active profile cleared (was: {}).", p),
+            Some(p) => println!(
+                "Active profile cleared (was: {}). ~/.wg/config.toml left as-is — edit or `wg config init` to change.",
+                p
+            ),
             None => println!("No active profile was set. Nothing changed."),
         }
         if !no_reload {
@@ -623,48 +643,56 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     let prof = named_profile::load(profile_name)?;
 
     // Pre-flight: check that any api_key_ref in the profile's endpoints are reachable.
-    if let Some(ref eps_section) = prof.llm_endpoints {
-        let secrets_cfg = workgraph::secret::SecretsConfig::load_global();
-        for ep in &eps_section.endpoints {
-            if let Some(ref r) = ep.api_key_ref {
-                match workgraph::secret::check_ref_reachable(r, &secrets_cfg) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let hint = if let Some(n) = r.strip_prefix("keyring:") {
-                            format!("Run: wg secret set {}", n)
-                        } else if let Some(n) = r.strip_prefix("plain:") {
-                            format!("Run: wg secret set {} --backend plaintext", n)
-                        } else {
-                            String::new()
-                        };
-                        eprintln!(
-                            "Warning: profile '{}' references secret '{}' but no entry found.\n  {}",
-                            profile_name, r, hint
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: profile '{}' secret check failed for '{}': {}",
-                            profile_name, r, e
-                        );
-                    }
+    let secrets_cfg = workgraph::secret::SecretsConfig::load_global();
+    for ep in &prof.config.llm_endpoints.endpoints {
+        if let Some(ref r) = ep.api_key_ref {
+            match workgraph::secret::check_ref_reachable(r, &secrets_cfg) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let hint = if let Some(n) = r.strip_prefix("keyring:") {
+                        format!("Run: wg secret set {}", n)
+                    } else if let Some(n) = r.strip_prefix("plain:") {
+                        format!("Run: wg secret set {} --backend plaintext", n)
+                    } else {
+                        String::new()
+                    };
+                    eprintln!(
+                        "Warning: profile '{}' references secret '{}' but no entry found.\n  {}",
+                        profile_name, r, hint
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: profile '{}' secret check failed for '{}': {}",
+                        profile_name, r, e
+                    );
                 }
             }
         }
     }
 
     let prev = named_profile::active().unwrap_or(None);
+    let written = named_profile::apply_profile_as_global_config(profile_name)?;
     named_profile::set_active(Some(profile_name))?;
 
     match prev.as_deref() {
         Some(p) if p != profile_name => println!(
-            "Active profile: {} (was: {}). Next worker will use {} models.",
-            profile_name, p, profile_name
+            "Active profile: {} (was: {}). Wrote {}. Next worker will use {} models.",
+            profile_name,
+            p,
+            written.display(),
+            profile_name
         ),
-        Some(_) => println!("Active profile: {} (unchanged).", profile_name),
+        Some(_) => println!(
+            "Active profile: {} (re-applied). Wrote {}.",
+            profile_name,
+            written.display()
+        ),
         None => println!(
-            "Active profile: {}. Next worker will use {} models.",
-            profile_name, profile_name
+            "Active profile: {}. Wrote {}. Next worker will use {} models.",
+            profile_name,
+            written.display(),
+            profile_name
         ),
     }
 
@@ -719,6 +747,12 @@ fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
 }
 
 /// Create a new named profile file.
+///
+/// A profile is a complete config snapshot (post-2026-05 pivot). When `from`
+/// is supplied, the new profile starts as a byte-for-byte copy of the source
+/// file/template; we then patch the `description`, `[agent].model`,
+/// `[dispatcher].model`, and `[[llm_endpoints.endpoints]]` keys as requested
+/// by overlaying surgical line-level edits onto the source TOML.
 pub fn create_profile(
     name: &str,
     model: Option<&str>,
@@ -727,11 +761,6 @@ pub fn create_profile(
     description: Option<&str>,
     force: bool,
 ) -> Result<()> {
-    use workgraph::config::EndpointConfig;
-    use workgraph::profile::named::{
-        NamedProfile, ProfileAgentSection, ProfileDispatcherSection, ProfileEndpointsSection,
-    };
-
     let path = named_profile::profile_path(name)?;
     if path.exists() && !force {
         anyhow::bail!(
@@ -741,52 +770,75 @@ pub fn create_profile(
         );
     }
 
-    let mut prof = if let Some(from_name) = from {
-        match named_profile::load(from_name) {
-            Ok(p) => p,
-            Err(_) => {
-                if let Some(tmpl) = named_profile::starter_template(from_name) {
-                    toml::from_str(tmpl).with_context(|| {
-                        format!("Failed to parse starter template '{}'", from_name)
-                    })?
-                } else {
-                    anyhow::bail!("Profile or starter '{}' not found", from_name);
-                }
-            }
+    // Start from `from` (existing profile or starter template), or empty.
+    let base_content = if let Some(from_name) = from {
+        let from_path = named_profile::profile_path(from_name)?;
+        if from_path.exists() {
+            std::fs::read_to_string(&from_path).with_context(|| {
+                format!("Failed to read source profile {}", from_path.display())
+            })?
+        } else if let Some(tmpl) = named_profile::starter_template(from_name) {
+            tmpl.to_string()
+        } else {
+            anyhow::bail!("Profile or starter '{}' not found", from_name);
         }
     } else {
-        NamedProfile::default()
+        String::new()
     };
 
+    // Parse, patch, and serialize via toml::Value to keep the result valid TOML.
+    let mut val: toml::Value = if base_content.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        base_content
+            .parse()
+            .with_context(|| format!("Failed to parse source profile content for '{}'", name))?
+    };
     if let Some(desc) = description {
-        prof.description = Some(desc.to_string());
+        if let Some(table) = val.as_table_mut() {
+            table.insert(
+                "description".to_string(),
+                toml::Value::String(desc.to_string()),
+            );
+        }
     }
     if let Some(m) = model {
-        prof.agent = Some(ProfileAgentSection {
-            model: Some(m.to_string()),
-        });
-        prof.dispatcher = Some(ProfileDispatcherSection {
-            model: Some(m.to_string()),
-        });
+        let m = toml::Value::String(m.to_string());
+        if let Some(table) = val.as_table_mut() {
+            let agent = table
+                .entry("agent".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(t) = agent.as_table_mut() {
+                t.insert("model".to_string(), m.clone());
+            }
+            let dispatcher = table
+                .entry("dispatcher".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(t) = dispatcher.as_table_mut() {
+                t.insert("model".to_string(), m);
+            }
+        }
     }
     if let Some(url) = endpoint {
-        prof.llm_endpoints = Some(ProfileEndpointsSection {
-            endpoints: vec![EndpointConfig {
-                name: "default".to_string(),
-                provider: "oai-compat".to_string(),
-                url: Some(url.to_string()),
-                model: None,
-                api_key: None,
-                api_key_file: None,
-                api_key_env: None,
-                api_key_ref: None,
-                is_default: true,
-                context_window: None,
-            }],
-        });
+        let mut ep = toml::map::Map::new();
+        ep.insert("name".into(), toml::Value::String("default".into()));
+        ep.insert("provider".into(), toml::Value::String("oai-compat".into()));
+        ep.insert("url".into(), toml::Value::String(url.to_string()));
+        ep.insert("is_default".into(), toml::Value::Boolean(true));
+        if let Some(table) = val.as_table_mut() {
+            let llm = table
+                .entry("llm_endpoints".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(t) = llm.as_table_mut() {
+                t.insert(
+                    "endpoints".to_string(),
+                    toml::Value::Array(vec![toml::Value::Table(ep)]),
+                );
+            }
+        }
     }
-
-    named_profile::save(name, &prof)?;
+    let content = toml::to_string_pretty(&val).context("Failed to serialize new profile")?;
+    named_profile::save_raw(name, &content)?;
     println!("Profile '{}' created at {}", name, path.display());
     println!("  Use it with: wg profile use {}", name);
     Ok(())
@@ -862,13 +914,21 @@ pub fn delete_profile(name: &str, force: bool) -> Result<()> {
 }
 
 /// Show a diff between two profiles (or empty vs a profile).
+///
+/// Profiles are byte-exact files on disk now (post-2026-05 pivot), so we diff
+/// the raw file contents rather than reconstructing TOML from a structured
+/// view — keeps comments, ordering, and per-line nuance.
 pub fn diff_profiles(a: &str, b: Option<&str>) -> Result<()> {
-    let prof_a = named_profile::load(a)?;
-    let toml_a = toml::to_string_pretty(&prof_a)?;
+    let path_a = named_profile::profile_path(a)?;
+    let toml_a = std::fs::read_to_string(&path_a)
+        .with_context(|| format!("Failed to read profile '{}' at {}", a, path_a.display()))?;
 
     let (label_b, toml_b) = if let Some(b_name) = b {
-        let prof_b = named_profile::load(b_name)?;
-        (b_name.to_string(), toml::to_string_pretty(&prof_b)?)
+        let path_b = named_profile::profile_path(b_name)?;
+        let content = std::fs::read_to_string(&path_b).with_context(|| {
+            format!("Failed to read profile '{}' at {}", b_name, path_b.display())
+        })?;
+        (b_name.to_string(), content)
     } else {
         ("(base)".to_string(), String::new())
     };
