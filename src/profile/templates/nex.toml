@@ -5,11 +5,18 @@ model = "nex:qwen3-coder-30b"
 
 [dispatcher]
 model = "nex:qwen3-coder-30b"
+max_agents = 8
 
 [tiers]
 fast = "nex:qwen3-coder-30b"
 standard = "nex:qwen3-coder-30b"
 premium = "nex:qwen3-coder-30b"
+
+[models.default]
+model = "nex:qwen3-coder-30b"
+
+[models.task_agent]
+model = "nex:qwen3-coder-30b"
 
 # NOTE: agency tasks (.evaluate-*, .flip-*, .assign-*) are pinned to claude:haiku
 # by design (see CLAUDE.md "Agency tasks run on claude CLI"). Override here only
@@ -19,5 +26,4 @@ premium = "nex:qwen3-coder-30b"
 name = "default"
 provider = "oai-compat"
 url = "http://127.0.0.1:8088"
-api_key_env = ""
 is_default = true

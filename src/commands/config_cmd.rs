@@ -501,22 +501,20 @@ pub fn render_minimal_config(
     );
 
     match (route, scope) {
-        (R::ClaudeCli, ConfigScope::Global) => format!(
-            "{header}\
-             [agent]\n\
-             model = \"claude:opus\"\n\
-             \n\
-             [tiers]\n\
-             fast = \"claude:haiku\"\n\
-             standard = \"claude:sonnet\"\n\
-             premium = \"claude:opus\"\n\
-             \n\
-             [models.evaluator]\n\
-             model = \"claude:haiku\"\n\
-             \n\
-             [models.assigner]\n\
-             model = \"claude:haiku\"\n",
-        ),
+        // For routes that have a matching profile template, return the profile
+        // template content verbatim. This is the single source of truth: `wg
+        // config init --route <X>` = "copy profile <X> as starting config."
+        // Drops the header comment when serving from the profile template
+        // (the template's own `description = "..."` line is the equivalent).
+        (R::ClaudeCli, ConfigScope::Global) => {
+            workgraph::profile::named::STARTER_CLAUDE.to_string()
+        }
+
+        (R::CodexCli, ConfigScope::Global) => {
+            workgraph::profile::named::STARTER_CODEX.to_string()
+        }
+
+        (R::Local, ConfigScope::Global) => workgraph::profile::named::STARTER_NEX.to_string(),
 
         (R::Openrouter, ConfigScope::Global) => format!(
             "{header}\
@@ -533,41 +531,6 @@ pub fn render_minimal_config(
              provider = \"openrouter\"\n\
              url = \"https://openrouter.ai/api/v1\"\n\
              api_key_env = \"OPENROUTER_API_KEY\"\n\
-             is_default = true\n",
-        ),
-
-        (R::CodexCli, ConfigScope::Global) => format!(
-            "{header}\
-             [agent]\n\
-             model = \"codex:gpt-5.5\"\n\
-             \n\
-             [tiers]\n\
-             fast = \"codex:gpt-5.4-mini\"\n\
-             standard = \"codex:gpt-5.4\"\n\
-             premium = \"codex:gpt-5.5\"\n\
-             \n\
-             [models.evaluator]\n\
-             model = \"codex:gpt-5.4-mini\"\n\
-             \n\
-             [models.assigner]\n\
-             model = \"codex:gpt-5.4-mini\"\n\
-             \n\
-             [models.flip_inference]\n\
-             model = \"codex:gpt-5.4-mini\"\n\
-             \n\
-             [models.flip_comparison]\n\
-             model = \"codex:gpt-5.4-mini\"\n",
-        ),
-
-        (R::Local, ConfigScope::Global) => format!(
-            "{header}\
-             [agent]\n\
-             model = \"nex:qwen2.5-coder:7b\"\n\
-             \n\
-             [[llm_endpoints.endpoints]]\n\
-             name = \"local\"\n\
-             provider = \"local\"\n\
-             url = \"http://localhost:11434/v1\"\n\
              is_default = true\n",
         ),
 

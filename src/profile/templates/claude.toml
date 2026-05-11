@@ -5,11 +5,18 @@ model = "claude:opus"
 
 [dispatcher]
 model = "claude:opus"
+max_agents = 8
 
 [tiers]
 fast = "claude:haiku"
 standard = "claude:sonnet"
 premium = "claude:opus"
+
+[models.default]
+model = "claude:opus"
+
+[models.task_agent]
+model = "claude:opus"
 
 [models.evaluator]
 model = "claude:haiku"
@@ -17,5 +24,8 @@ model = "claude:haiku"
 [models.assigner]
 model = "claude:haiku"
 
-[models.flip]
+[models.flip_inference]
+model = "claude:haiku"
+
+[models.flip_comparison]
 model = "claude:haiku"

@@ -3802,71 +3802,10 @@ fn strip_global_only_model_roles(
     }
 }
 
-fn toml_has_path(value: &toml::Value, path: &[&str]) -> bool {
-    let mut current = value;
-    for key in path {
-        match current.get(*key) {
-            Some(next) => current = next,
-            None => return false,
-        }
-    }
-    true
-}
-
-fn restore_local_profile_overrides(
-    config: &mut Config,
-    local_val: &toml::Value,
-) -> anyhow::Result<()> {
-    let local_config: Config = local_val
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("Failed to deserialize local config overlay: {}", e))?;
-
-    if toml_has_path(local_val, &["agent", "model"]) {
-        config.agent.model = local_config.agent.model;
-    }
-    if toml_has_path(local_val, &["dispatcher", "model"]) {
-        config.coordinator.model = local_config.coordinator.model;
-    }
-
-    if toml_has_path(local_val, &["tiers", "fast"]) {
-        config.tiers.fast = local_config.tiers.fast;
-    }
-    if toml_has_path(local_val, &["tiers", "standard"]) {
-        config.tiers.standard = local_config.tiers.standard;
-    }
-    if toml_has_path(local_val, &["tiers", "premium"]) {
-        config.tiers.premium = local_config.tiers.premium;
-    }
-
-    if toml_has_path(local_val, &["models", "default"]) {
-        config.models.default = local_config.models.default;
-    }
-    if toml_has_path(local_val, &["models", "evaluator"]) {
-        config.models.evaluator = local_config.models.evaluator;
-    }
-    if toml_has_path(local_val, &["models", "assigner"]) {
-        config.models.assigner = local_config.models.assigner;
-    }
-    if toml_has_path(local_val, &["models", "flip_inference"]) {
-        config.models.flip_inference = local_config.models.flip_inference;
-    }
-    if toml_has_path(local_val, &["models", "flip_comparison"]) {
-        config.models.flip_comparison = local_config.models.flip_comparison;
-    }
-    if toml_has_path(local_val, &["models", "creator"]) {
-        config.models.creator = local_config.models.creator;
-    }
-    if toml_has_path(local_val, &["models", "evolver"]) {
-        config.models.evolver = local_config.models.evolver;
-    }
-
-    if toml_has_path(local_val, &["llm_endpoints", "endpoints"]) {
-        config.llm_endpoints.endpoints = local_config.llm_endpoints.endpoints;
-    }
-
-    Ok(())
-}
+// `restore_local_profile_overrides` and its `toml_has_path` helper removed
+// (2026-05): profiles are now snapshot file-swaps, not overlays. The
+// global+local merge already gives local config the right precedence — no
+// profile-aware restoration needed.
 
 /// A deprecated config key found in raw TOML, with a human-readable replacement
 /// suggestion the daemon can log on startup.
@@ -4086,23 +4025,14 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
         config.agent_model_is_local = agent_model_is_local;
 
-        // Apply active named profile overlay (global-dir layer), then restore
-        // any local keys in the profile allowlist. Profiles are convenient
-        // user defaults; project-local config remains authoritative.
-        if let Ok(Some(profile_name)) = crate::profile::named::active() {
-            match crate::profile::named::load(&profile_name) {
-                Ok(prof) => {
-                    crate::profile::named::overlay_onto(&mut config, &prof);
-                    restore_local_profile_overrides(&mut config, &local_val)?;
-                }
-                Err(e) => {
-                    eprintln!(
-                        "warning: active profile '{}' could not be loaded: {}",
-                        profile_name, e
-                    );
-                }
-            }
-        }
+        // Note: named profile resolution is now a *file swap*, not an overlay.
+        // `wg profile use <name>` copies `~/.wg/profiles/<name>.toml` over
+        // `~/.wg/config.toml`, so by the time we read the global config above
+        // it already reflects the active profile. The `~/.wg/active-profile`
+        // pointer is purely informational (used by `wg profile show` /
+        // `wg profile list` to label which snapshot is in effect). No overlay
+        // / merge logic lives here — that was the source of the silent
+        // "[agent].model dropped" bug.
 
         config.validate_model_format()?;
 

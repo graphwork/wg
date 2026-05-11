@@ -72,13 +72,21 @@ pub fn run_with_route(
     } else {
         effective_executor.and_then(SetupRoute::try_from_executor)
     };
+    // When nothing was supplied explicitly, decide the default route based on
+    // whether a global config already exists. If `~/.wg/config.toml` is
+    // present, the user already picked their provider (via `wg profile use`
+    // or a manual edit) — bake in the *same* route so the project's local
+    // config remains a thin overlay rather than overwriting global with claude
+    // defaults. This is what makes `wg profile use codex && cd proj && wg
+    // init` work end-to-end: the local config inherits codex rather than
+    // silently restating claude:opus.
     let resolved_route = if resolved_route.is_none()
         && executor.is_none()
         && route.is_none()
         && model.is_none()
         && endpoint.is_none()
     {
-        Some(SetupRoute::ClaudeCli)
+        Some(default_route_from_global_or_claude())
     } else {
         resolved_route
     };
@@ -214,6 +222,27 @@ pub fn run_with_route(
     }
 
     Ok(())
+}
+
+/// Default route for a no-arg `wg init`. Reads `~/.wg/config.toml` and picks
+/// the route whose primary model provider matches the global `[agent].model`
+/// prefix. Falls back to `ClaudeCli` if no global exists or the provider is
+/// unrecognized.
+///
+/// This is the glue that makes `wg profile use <provider> && wg init` produce
+/// a project config consistent with the active profile. Without it, the
+/// previous default (always ClaudeCli) overwrote codex/nex globals with
+/// claude:opus the moment a user ran `wg init`.
+fn default_route_from_global_or_claude() -> SetupRoute {
+    let Ok(Some(global)) = workgraph::config::Config::load_global() else {
+        return SetupRoute::ClaudeCli;
+    };
+    let spec = workgraph::config::parse_model_spec(&global.agent.model);
+    spec.provider
+        .as_deref()
+        .map(workgraph::config::provider_to_executor)
+        .and_then(SetupRoute::try_from_executor)
+        .unwrap_or(SetupRoute::ClaudeCli)
 }
 
 /// Map a model spec (e.g. `claude:opus`, `local:qwen3-coder`) to the

@@ -1,17 +1,22 @@
-//! Named runtime profiles: user-created (model, endpoint, per-role) bundles.
+//! Named runtime profiles: complete config snapshots a user can swap in.
 //!
 //! Storage: `~/.wg/profiles/<name>.toml` (one file per profile).
 //! Active pointer: `~/.wg/active-profile` (one-line, absent = no profile).
 //!
-//! A profile is a strict-allowlist overlay on top of the base config.
-//! Only the fields listed in `NamedProfile` may appear in a profile file;
-//! unknown keys are rejected at parse time via `deny_unknown_fields`.
+//! Design pivot (2026-05): profiles are no longer overlays. Each profile file
+//! is a *complete* `Config` snapshot. `wg profile use <name>` writes the
+//! profile file as `~/.wg/config.toml` (the global config), full stop. No
+//! merge logic, no resolution chain — what's in the profile file is exactly
+//! what runs.
+//!
+//! Project-local `.wg/config.toml` continues to override the global as it
+//! always has; profile = global default snapshot, not a per-project override.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, EndpointConfig, RoleModelConfig, TierConfig};
+use crate::config::Config;
 
 // ── Starter templates (baked into binary) ────────────────────────────────────
 
@@ -38,81 +43,27 @@ pub fn starter_template(name: &str) -> Option<&'static str> {
     }
 }
 
-// ── Allowlisted sub-structs ──────────────────────────────────────────────────
+// ── NamedProfile (a complete config snapshot, with optional description) ─────
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileAgentSection {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileDispatcherSection {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// Per-role models allowed in a profile (strict subset of ModelRoutingConfig).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileModelsSection {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<RoleModelConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evaluator: Option<RoleModelConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assigner: Option<RoleModelConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flip: Option<RoleModelConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub creator: Option<RoleModelConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evolver: Option<RoleModelConfig>,
-}
-
-/// LLM endpoints section in a profile (replaces, not merges, the base array).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ProfileEndpointsSection {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub endpoints: Vec<EndpointConfig>,
-}
-
-// ── NamedProfile (the allowlist struct) ──────────────────────────────────────
-
-/// A named runtime profile: a strict-allowlist overlay on `~/.wg/config.toml`.
+/// A named runtime profile: a complete `Config` snapshot, optionally tagged
+/// with a one-line human-readable description.
 ///
-/// Only these top-level keys may appear in a profile file.
-/// Anything else causes a parse error: "unknown profile field: [tui]; profiles
-/// control models and endpoints only".
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+/// The profile file format is just a regular `Config` TOML file with an
+/// optional top-level `description` key. Any unknown top-level keys are
+/// silently ignored (same as `Config` itself), which is what lets a profile
+/// file double as a full `~/.wg/config.toml`.
+#[derive(Debug, Clone, Default)]
 pub struct NamedProfile {
-    /// Human-readable description shown by `wg profile list`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Human-readable description shown by `wg profile list` / `show`.
     pub description: Option<String>,
+    /// The complete config snapshot.
+    pub config: Config,
+}
 
-    /// `[agent]` section — only `model` is profile-able.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<ProfileAgentSection>,
-
-    /// `[dispatcher]` section — only `model` is profile-able.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dispatcher: Option<ProfileDispatcherSection>,
-
-    /// `[tiers]` section — fast/standard/premium tier→model mappings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tiers: Option<TierConfig>,
-
-    /// `[models.*]` per-role overrides (evaluator, assigner, flip, creator, evolver).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub models: Option<ProfileModelsSection>,
-
-    /// `[[llm_endpoints.endpoints]]` — replaces (not merges) the base endpoint array.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm_endpoints: Option<ProfileEndpointsSection>,
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DescriptionOnly {
+    #[serde(default)]
+    description: Option<String>,
 }
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
@@ -225,16 +176,25 @@ pub fn load(name: &str) -> Result<NamedProfile> {
 fn load_from_path(path: &Path, name: &str) -> Result<NamedProfile> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read profile file {}", path.display()))?;
-    let profile: NamedProfile = toml::from_str(&content).map_err(|e| {
+    parse_profile(&content, path, name)
+}
+
+/// Parse profile content (TOML) into a `NamedProfile`.
+fn parse_profile(content: &str, path: &Path, name: &str) -> Result<NamedProfile> {
+    let meta: DescriptionOnly = toml::from_str(content).unwrap_or_default();
+    let config: Config = toml::from_str(content).map_err(|e| {
         anyhow::anyhow!(
             "Failed to parse profile '{}' ({}): {}\n\
-             Profiles may only contain: description, [agent], [dispatcher], [tiers], [models.*], [[llm_endpoints.endpoints]]",
+             A profile is a complete config snapshot — same shape as `~/.wg/config.toml`.",
             name,
             path.display(),
             e,
         )
     })?;
-    Ok(profile)
+    Ok(NamedProfile {
+        description: meta.description,
+        config,
+    })
 }
 
 /// Migrate a stale legacy `wg-next:` description prefix in an existing
@@ -275,14 +235,12 @@ pub fn migrate_stale_description(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Save a named profile to `~/.wg/profiles/<name>.toml`.
-pub fn save(name: &str, profile: &NamedProfile) -> Result<()> {
+/// Save raw TOML content as a named profile in `~/.wg/profiles/<name>.toml`.
+pub fn save_raw(name: &str, content: &str) -> Result<()> {
     let dir = profiles_dir()?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create profiles directory {}", dir.display()))?;
     let path = dir.join(format!("{}.toml", name));
-    let content = toml::to_string_pretty(profile)
-        .with_context(|| format!("Failed to serialize profile '{}'", name))?;
     std::fs::write(&path, content)
         .with_context(|| format!("Failed to write profile file {}", path.display()))?;
     Ok(())
@@ -315,59 +273,49 @@ pub fn profile_path(name: &str) -> Result<PathBuf> {
     Ok(profiles_dir()?.join(format!("{}.toml", name)))
 }
 
-// ── Overlay semantics ─────────────────────────────────────────────────────────
+// ── Profile-swap (the new core operation) ────────────────────────────────────
 
-/// Apply a named profile as an overlay onto a base Config.
+/// Apply a profile to the global config: copy `~/.wg/profiles/<name>.toml`
+/// to `~/.wg/config.toml`, byte-for-byte, after backing up any pre-existing
+/// global config.
 ///
-/// Semantics (per design §2.4):
-/// - Scalar keys: profile wins over base.
-/// - `[[llm_endpoints.endpoints]]` array: profile REPLACES the base array entirely.
-pub fn overlay_onto(base: &mut Config, prof: &NamedProfile) {
-    if let Some(ref agent) = prof.agent {
-        if let Some(ref m) = agent.model {
-            base.agent.model = m.clone();
-        }
+/// This is the single source of truth for what `wg profile use` does. The
+/// profile file IS the global config. No merge, no overlay, no resolution
+/// chain. Returns the destination path written.
+pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
+    let src = profile_path(name)?;
+    if !src.exists() {
+        // Use load() to get a consistent error/suggestion (covers wgnext
+        // legacy fall-through and closest-match suggestions).
+        load(name)?;
+        // If load() somehow succeeded but the file path doesn't exist, that's
+        // a bug — bail with a clear message.
+        anyhow::bail!("Profile '{}' source file not found at {}", name, src.display());
     }
-    if let Some(ref dispatcher) = prof.dispatcher {
-        if let Some(ref m) = dispatcher.model {
-            base.coordinator.model = Some(m.clone());
-        }
+    let dst = Config::global_config_path()?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
-    if let Some(ref tiers) = prof.tiers {
-        if let Some(ref f) = tiers.fast {
-            base.tiers.fast = Some(f.clone());
-        }
-        if let Some(ref s) = tiers.standard {
-            base.tiers.standard = Some(s.clone());
-        }
-        if let Some(ref p) = tiers.premium {
-            base.tiers.premium = Some(p.clone());
-        }
+    if dst.exists() {
+        // Skip-back-compat-ceremony stance (per repo guidance) is fine for in-binary
+        // logic, but the *global config* is user-edited state — back it up once per
+        // swap so a typo'd `wg profile use` doesn't silently lose hand-tuned keys.
+        let ts = chrono::Local::now()
+            .format("%Y-%m-%dT%H-%M-%SZ")
+            .to_string();
+        let bak = dst.with_file_name(format!("config.toml.bak-{}", ts));
+        std::fs::copy(&dst, &bak)
+            .with_context(|| format!("Failed to back up {} to {}", dst.display(), bak.display()))?;
     }
-    if let Some(ref models) = prof.models {
-        if let Some(ref m) = models.default {
-            base.models.default = Some(m.clone());
-        }
-        if let Some(ref m) = models.evaluator {
-            base.models.evaluator = Some(m.clone());
-        }
-        if let Some(ref m) = models.assigner {
-            base.models.assigner = Some(m.clone());
-        }
-        if let Some(ref m) = models.flip {
-            base.models.flip_inference = Some(m.clone());
-            base.models.flip_comparison = Some(m.clone());
-        }
-        if let Some(ref m) = models.creator {
-            base.models.creator = Some(m.clone());
-        }
-        if let Some(ref m) = models.evolver {
-            base.models.evolver = Some(m.clone());
-        }
-    }
-    if let Some(ref ep) = prof.llm_endpoints {
-        base.llm_endpoints.endpoints = ep.endpoints.clone();
-    }
+    std::fs::copy(&src, &dst).with_context(|| {
+        format!(
+            "Failed to copy profile {} to {}",
+            src.display(),
+            dst.display()
+        )
+    })?;
+    Ok(dst)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -419,7 +367,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 pub fn active_profile_model() -> Option<String> {
     let name = active().ok()??;
     let prof = load(&name).ok()?;
-    prof.agent.and_then(|a| a.model)
+    Some(prof.config.agent.model)
 }
 
 // ── Validation helper ─────────────────────────────────────────────────────────
@@ -429,15 +377,7 @@ pub fn active_profile_model() -> Option<String> {
 pub fn validate_file(path: &Path) -> Result<NamedProfile> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let profile: NamedProfile = toml::from_str(&content).map_err(|e| {
-        anyhow::anyhow!(
-            "Invalid profile file ({}): {}\n\
-             Profiles may only contain: description, [agent], [dispatcher], [tiers], [models.*], [[llm_endpoints.endpoints]]",
-            path.display(),
-            e,
-        )
-    })?;
-    Ok(profile)
+    parse_profile(&content, path, path.file_stem().and_then(|s| s.to_str()).unwrap_or("(profile)"))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -464,24 +404,9 @@ mod tests {
     }
 
     #[test]
-    fn test_named_profile_rejects_unknown_field() {
-        let toml = r#"
-description = "test"
-[tui]
-theme = "dark"
-"#;
-        let result: Result<NamedProfile, _> = toml::from_str(toml);
-        assert!(result.is_err(), "Should reject unknown field [tui]");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("tui") || err.contains("unknown"),
-            "Error should mention tui or unknown: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_named_profile_accepts_all_allowed_fields() {
+    fn test_named_profile_parses_full_config_shape() {
+        // A profile is a complete config snapshot — accept all the same keys
+        // a `~/.wg/config.toml` would accept.
         let toml = r#"
 description = "Full profile"
 
@@ -490,6 +415,7 @@ model = "claude:opus"
 
 [dispatcher]
 model = "claude:opus"
+max_agents = 8
 
 [tiers]
 fast = "claude:haiku"
@@ -508,108 +434,122 @@ provider = "oai-compat"
 url = "http://127.0.0.1:8088"
 is_default = true
 "#;
-        let result: Result<NamedProfile, _> = toml::from_str(toml);
-        assert!(
-            result.is_ok(),
-            "Should accept all allowed fields: {:?}",
-            result
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.toml");
+        std::fs::write(&path, toml).unwrap();
+        let prof = parse_profile(toml, &path, "test").unwrap();
+        assert_eq!(prof.description.as_deref(), Some("Full profile"));
+        assert_eq!(prof.config.agent.model, "claude:opus");
+        assert_eq!(prof.config.coordinator.model.as_deref(), Some("claude:opus"));
+        assert_eq!(prof.config.tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(prof.config.llm_endpoints.endpoints.len(), 1);
     }
 
     #[test]
-    fn test_overlay_agent_model() {
-        let mut base = Config::default();
-        base.agent.model = "claude:sonnet".to_string();
-
-        let prof = NamedProfile {
-            agent: Some(ProfileAgentSection {
-                model: Some("codex:gpt-5.5".to_string()),
-            }),
-            ..Default::default()
-        };
-
-        overlay_onto(&mut base, &prof);
-        assert_eq!(base.agent.model, "codex:gpt-5.5");
-    }
-
-    #[test]
-    fn test_overlay_tiers() {
-        let mut base = Config::default();
-        base.tiers.fast = Some("claude:haiku".to_string());
-        base.tiers.standard = Some("claude:sonnet".to_string());
-
-        let prof = NamedProfile {
-            tiers: Some(TierConfig {
-                fast: Some("codex:gpt-5.4-mini".to_string()),
-                standard: Some("codex:gpt-5.4".to_string()),
-                premium: Some("codex:gpt-5.5".to_string()),
-            }),
-            ..Default::default()
-        };
-
-        overlay_onto(&mut base, &prof);
-        assert_eq!(base.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-        assert_eq!(base.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
-        assert_eq!(base.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
-    }
-
-    fn make_endpoint(name: &str, provider: &str, url: &str) -> EndpointConfig {
-        EndpointConfig {
-            name: name.to_string(),
-            provider: provider.to_string(),
-            url: Some(url.to_string()),
-            model: None,
-            api_key: None,
-            api_key_file: None,
-            api_key_env: None,
-            api_key_ref: None,
-            is_default: true,
-            context_window: None,
-        }
-    }
-
-    #[test]
-    fn test_overlay_endpoints_replace() {
-        use crate::config::EndpointsConfig;
-
-        let mut base = Config::default();
-        base.llm_endpoints = EndpointsConfig {
-            inherit_global: false,
-            endpoints: vec![make_endpoint("old", "openai", "http://old.example.com")],
-        };
-
-        let prof = NamedProfile {
-            llm_endpoints: Some(ProfileEndpointsSection {
-                endpoints: vec![make_endpoint(
-                    "default",
-                    "oai-compat",
-                    "http://127.0.0.1:8088",
-                )],
-            }),
-            ..Default::default()
-        };
-
-        overlay_onto(&mut base, &prof);
-        assert_eq!(base.llm_endpoints.endpoints.len(), 1);
-        assert_eq!(base.llm_endpoints.endpoints[0].name, "default");
-        assert_eq!(
-            base.llm_endpoints.endpoints[0].url.as_deref(),
-            Some("http://127.0.0.1:8088")
-        );
-    }
-
-    #[test]
-    fn test_starter_templates_parse() {
+    fn test_starter_templates_parse_as_full_config() {
+        // Each starter template must parse as a complete Config — that's
+        // the whole point of the snapshot model: profile file = config file.
         for name in STARTER_NAMES {
             let tmpl = starter_template(name).unwrap();
-            let result: Result<NamedProfile, _> = toml::from_str(tmpl);
+            let result = toml::from_str::<Config>(tmpl);
             assert!(
                 result.is_ok(),
-                "Starter template '{}' should parse: {:?}",
+                "Starter template '{}' must parse as Config: {:?}",
                 name,
                 result
             );
         }
+    }
+
+    #[test]
+    fn test_codex_starter_has_codex_models_everywhere() {
+        // Regression: codex profile must NOT leave any role pinned to a claude
+        // model. The original bug was that activating codex still ran claude
+        // because [agent].model wasn't propagating; the snapshot model fixes
+        // this by making the file itself the authoritative source.
+        let prof = parse_profile(STARTER_CODEX, Path::new("codex.toml"), "codex").unwrap();
+        assert_eq!(prof.config.agent.model, "codex:gpt-5.5");
+        assert_eq!(prof.config.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+        assert_eq!(prof.config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+        assert_eq!(prof.config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+        // Per-role overrides for agency meta-tasks should also be codex models.
+        let eval = prof.config.models.evaluator.as_ref().expect("evaluator set");
+        assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        let assigner = prof.config.models.assigner.as_ref().expect("assigner set");
+        assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn test_apply_profile_as_global_config_writes_file_byte_for_byte() {
+        let _tmp = with_home(|| {
+            // Install the codex starter into the temp HOME's profiles dir.
+            save_raw("codex", STARTER_CODEX).unwrap();
+            let dst = apply_profile_as_global_config("codex").unwrap();
+            assert!(dst.exists(), "global config must exist after apply");
+            let written = std::fs::read_to_string(&dst).unwrap();
+            assert_eq!(
+                written, STARTER_CODEX,
+                "global config must be byte-identical to the profile snapshot"
+            );
+            // Sanity: ensure the actual [agent].model line in the written file
+            // names codex, not claude. This is the verbatim check the task
+            // validation calls for (`grep 'model = ' ~/.wg/config.toml`).
+            assert!(
+                written.contains("model = \"codex:gpt-5.5\""),
+                "global config must contain codex models, not claude. Got:\n{}",
+                written,
+            );
+            assert!(
+                !written.contains("claude:opus"),
+                "global config must not retain any claude models after codex swap. Got:\n{}",
+                written,
+            );
+        });
+    }
+
+    #[test]
+    fn test_apply_profile_backs_up_existing_global_config() {
+        let _tmp = with_home(|| {
+            save_raw("codex", STARTER_CODEX).unwrap();
+            let dst = Config::global_config_path().unwrap();
+            std::fs::write(&dst, "# pre-existing user content\n[agent]\nmodel = \"claude:opus\"\n")
+                .unwrap();
+            apply_profile_as_global_config("codex").unwrap();
+            // At least one backup file must exist alongside config.toml.
+            let dir = dst.parent().unwrap();
+            let bak_count = std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("config.toml.bak-")
+                })
+                .count();
+            assert!(bak_count >= 1, "expected a config.toml.bak-* backup file");
+        });
+    }
+
+    #[test]
+    fn test_apply_profile_overwrites_claude_with_codex() {
+        // The original bug: activating codex profile left agent.model at
+        // claude:opus. With profile-as-swap, the new config.toml must reflect
+        // codex everywhere — verified by re-loading Config from disk.
+        let _tmp = with_home(|| {
+            save_raw("codex", STARTER_CODEX).unwrap();
+            // Pre-seed global config with claude (simulates a user previously
+            // on the claude profile).
+            let dst = Config::global_config_path().unwrap();
+            std::fs::write(&dst, STARTER_CLAUDE).unwrap();
+            // Swap.
+            apply_profile_as_global_config("codex").unwrap();
+            // Re-load the global config from disk and verify codex models.
+            let cfg = Config::load_global().unwrap().expect("global must be present");
+            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+        });
     }
 
     #[test]
@@ -628,26 +568,19 @@ is_default = true
     #[test]
     fn test_save_and_load_profile() {
         let _tmp = with_home(|| {
-            let prof = NamedProfile {
-                description: Some("test profile".to_string()),
-                agent: Some(ProfileAgentSection {
-                    model: Some("claude:opus".to_string()),
-                }),
-                ..Default::default()
-            };
-            save("testprof", &prof).unwrap();
+            let content = "description = \"test profile\"\n\n[agent]\nmodel = \"claude:opus\"\n";
+            save_raw("testprof", content).unwrap();
             let loaded = load("testprof").unwrap();
             assert_eq!(loaded.description.as_deref(), Some("test profile"));
-            assert_eq!(loaded.agent.unwrap().model.as_deref(), Some("claude:opus"));
+            assert_eq!(loaded.config.agent.model, "claude:opus");
         });
     }
 
     #[test]
     fn test_list_installed() {
         let _tmp = with_home(|| {
-            let prof = NamedProfile::default();
-            save("alpha", &prof).unwrap();
-            save("beta", &prof).unwrap();
+            save_raw("alpha", "[agent]\nmodel = \"claude:opus\"\n").unwrap();
+            save_raw("beta", "[agent]\nmodel = \"claude:sonnet\"\n").unwrap();
             let names = list_installed().unwrap();
             assert!(names.contains(&"alpha".to_string()));
             assert!(names.contains(&"beta".to_string()));
@@ -701,14 +634,7 @@ is_default = true
         let _tmp = with_home(|| {
             // Simulate a user who ran `wg profile init-starters` on an older
             // build that wrote `wgnext.toml` and never re-ran init-starters.
-            let prof = NamedProfile {
-                description: Some("legacy".to_string()),
-                agent: Some(ProfileAgentSection {
-                    model: Some("local:qwen3-coder-30b".to_string()),
-                }),
-                ..Default::default()
-            };
-            save(LEGACY_NEX_NAME, &prof).unwrap();
+            save_raw(LEGACY_NEX_NAME, "description = \"legacy\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n").unwrap();
             // Loading by the legacy name must still succeed (backward compat).
             let loaded = load(LEGACY_NEX_NAME).unwrap();
             assert_eq!(loaded.description.as_deref(), Some("legacy"));
@@ -717,16 +643,8 @@ is_default = true
 
     #[test]
     fn test_load_wgnext_falls_back_to_nex_when_legacy_file_absent() {
-        // A user runs `wg profile use wgnext` long after init-starters has
-        // migrated wgnext.toml -> nex.toml. The legacy filename no longer
-        // exists, but the call must still resolve (so old scripts/aliases
-        // don't break) by transparently loading nex.toml.
         let _tmp = with_home(|| {
-            let prof = NamedProfile {
-                description: Some("canonical-nex".to_string()),
-                ..Default::default()
-            };
-            save("nex", &prof).unwrap();
+            save_raw("nex", "description = \"canonical-nex\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n").unwrap();
             assert!(!profile_path(LEGACY_NEX_NAME).unwrap().exists());
 
             let loaded = load(LEGACY_NEX_NAME).unwrap();
@@ -740,13 +658,8 @@ is_default = true
 
     #[test]
     fn test_migrate_stale_description_rewrites_wg_next_to_wg_nex() {
-        // Files written by older binaries had a description of:
-        //   description = "wg-next: in-process nex handler ..."
-        // The previous rename only changed the in-binary template; on-disk
-        // files were never refreshed. migrate_stale_description must surgically
-        // fix the description without disturbing the rest of the file.
         let _tmp = with_home(|| {
-            let stale = "description = \"wg-next: in-process nex handler at a localhost endpoint (edit URL per machine)\"\n\n[agent]\nmodel = \"local:qwen3-coder-30b\"\n\n# user comment that must be preserved\n";
+            let stale = "description = \"wg-next: in-process nex handler at a localhost endpoint (edit URL per machine)\"\n\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n\n# user comment that must be preserved\n";
             let path = profile_path("nex").unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, stale).unwrap();
@@ -800,11 +713,8 @@ is_default = true
 
     #[test]
     fn test_migrate_stale_description_only_touches_description_line() {
-        // If a non-description line happens to contain "wg-next" (e.g., a user
-        // comment or a model id we don't ship), it must NOT be rewritten —
-        // we only fix the description line which we know was a stale template.
         let _tmp = with_home(|| {
-            let mixed = "description = \"my custom\"\n\n[agent]\nmodel = \"local:wg-next-model\"\n# wg-next: legacy reference in a comment\n";
+            let mixed = "description = \"my custom\"\n\n[agent]\nmodel = \"nex:custom-wg-next-model\"\n# wg-next: legacy reference in a comment\n";
             let path = profile_path("nex").unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, mixed).unwrap();
