@@ -107,6 +107,72 @@ pub fn run_send(chat_id: Option<&str>, message: &str) -> Result<()> {
     })
 }
 
+/// List all configured Telegram bots — the legacy single-bot from `[telegram]`
+/// (if any) plus every entry under `[telegram.bots.<id>]`. Used to verify a
+/// multi-bot setup before `wg telegram listen` spawns one long-poll task per
+/// bot.
+pub fn run_list_bots(json: bool) -> Result<()> {
+    // Match the project-local-then-global lookup the other telegram subcommands
+    // use (see `load_telegram_config`): try `.workgraph/notify.toml` from CWD
+    // first, then fall back to `~/.config/workgraph/notify.toml`.
+    let notify = match NotifyConfig::load(Some(Path::new(".")))? {
+        Some(c) => c,
+        None => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({"bots": []}))?
+                );
+            } else {
+                println!("Telegram: not configured (no notify.toml found)");
+            }
+            return Ok(());
+        }
+    };
+
+    let channels = TelegramChannel::all_from_notify_config(&notify)?;
+
+    if json {
+        let bots: Vec<serde_json::Value> = channels
+            .iter()
+            .map(|ch| {
+                serde_json::json!({
+                    "bot_id": ch.bot_id(),
+                    "channel_type": ch.channel_type(),
+                    "agent_id": ch.agent_id(),
+                    "chat_id": ch.chat_id(),
+                    "bot_token_preview": ch.bot_token_preview(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({"bots": bots}))?
+        );
+    } else if channels.is_empty() {
+        println!("Telegram: no bots configured");
+        println!("\nAdd a [telegram] block to ~/.config/workgraph/notify.toml or .workgraph/notify.toml.");
+        println!(
+            "Single-bot (legacy):\n  [telegram]\n  bot_token = \"...\"\n  chat_id = \"...\"\n"
+        );
+        println!(
+            "Multi-bot (one per persistent agent):\n  [telegram.bots.nora]\n  bot_token = \"...\"\n  chat_id = \"...\"\n  agent_id = \"nora\"\n"
+        );
+    } else {
+        println!("{} bot(s) configured:\n", channels.len());
+        for ch in &channels {
+            let agent = ch.agent_id().unwrap_or("(shared / no agent binding)");
+            println!("  bot id:        {}", ch.bot_id());
+            println!("  channel type:  {}", ch.channel_type());
+            println!("  agent id:      {}", agent);
+            println!("  chat id:       {}", ch.chat_id());
+            println!("  token preview: {}", ch.bot_token_preview());
+            println!();
+        }
+    }
+    Ok(())
+}
+
 /// Show Telegram configuration status.
 pub fn run_status(json: bool) -> Result<()> {
     match load_telegram_config() {
