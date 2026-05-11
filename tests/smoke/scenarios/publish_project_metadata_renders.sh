@@ -8,7 +8,8 @@
 #      stored in html-publish.toml)
 #   2. Project-level [project] section in <wg_dir>/config.toml
 #   3. <wg_dir>/about.md for the abstract (auto-discovered)
-#   4. Empty everywhere → header is OMITTED (no useless empty block)
+#   4. Empty everywhere → project-header is OMITTED and the minimal
+#      browser/visible title falls back to hostname:/repo/path
 #
 # This scenario walks the cascade end-to-end against a local rsync target,
 # verifying:
@@ -20,7 +21,10 @@
 #   * Project-level config + about.md are picked up when no per-deployment
 #     override is set
 #   * When no metadata is configured anywhere, the project-header block is
-#     OMITTED (the page falls back to the existing minimal header)
+#     OMITTED and <title>/<h1> identify the source as hostname:/repo/path
+#   * A configured title is used instead of the path source label, which is
+#     the portable/public-export fallback for users who do not want to expose
+#     a local absolute path
 
 set -u
 
@@ -75,6 +79,12 @@ if ! grep -q '<h1 class="project-title">Override Title</h1>' "$dest/index.html";
 fi
 if ! grep -q '<p class="project-byline">override byline</p>' "$dest/index.html"; then
     loud_fail "rendered html missing per-deployment byline 'override byline'"
+fi
+if ! grep -q '<title>Override Title — all tasks</title>' "$dest/index.html"; then
+    loud_fail "configured title should drive browser title instead of generic workgraph or host path"
+fi
+if ! grep -q '<h1>Override Title</h1>' "$dest/index.html"; then
+    loud_fail "configured title should replace the visible minimal workgraph header"
 fi
 
 # (3) Project-level cascade: config.toml [project] + about.md
@@ -145,7 +155,8 @@ if ! grep -q '<li>bullet one</li>' "$dest_cascade/index.html"; then
     loud_fail "abstract from about.md must render markdown (li missing)"
 fi
 
-# (4) Empty case — fresh repo with NO metadata anywhere → header omitted.
+# (4) Empty case — fresh repo with NO metadata anywhere → project-header
+# omitted, browser title + minimal visible header identify the source repo.
 empty_scratch=$(make_scratch)
 cd "$empty_scratch"
 if ! wg init --route local >empty-init.log 2>&1; then
@@ -165,10 +176,25 @@ fi
 if grep -q 'class="project-header"' "$empty_dest/index.html"; then
     loud_fail "empty-meta case must OMIT the project-header block; instead got it in $empty_dest/index.html"
 fi
-# Sanity: minimal "workgraph" header is still present.
+# Sanity: minimal page-header is still present, but no longer says only
+# "workgraph"; it uses the host plus repository working directory.
 if ! grep -q 'class="page-header"' "$empty_dest/index.html"; then
     loud_fail "empty-meta case must STILL render the minimal page-header"
 fi
+host="$(hostname 2>/dev/null || true)"
+if [[ -z "$host" ]]; then
+    host="unknown-host"
+fi
+expected_source="${host}:${empty_scratch}"
+if ! grep -Fq "<title>${expected_source} — all tasks</title>" "$empty_dest/index.html"; then
+    loud_fail "empty-meta browser title should be '${expected_source} — all tasks'; got: $(grep '<title>' "$empty_dest/index.html" | head -1)"
+fi
+if ! grep -Fq "<h1>${expected_source}</h1>" "$empty_dest/index.html"; then
+    loud_fail "empty-meta visible h1 should be '${expected_source}'; got: $(grep '<h1>' "$empty_dest/index.html" | head -1)"
+fi
+if grep -q '<title>workgraph' "$empty_dest/index.html"; then
+    loud_fail "empty-meta browser title must not fall back to generic workgraph"
+fi
 
-echo "PASS: --title/--byline/--abstract advertised + per-deployment override + project-config cascade + about.md markdown abstract + empty-meta header omission"
+echo "PASS: --title/--byline/--abstract advertised + per-deployment override + project-config cascade + about.md markdown abstract + empty-meta source title/header"
 exit 0

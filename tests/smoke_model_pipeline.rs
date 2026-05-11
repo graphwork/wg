@@ -370,12 +370,23 @@ fn smoke_fresh_repo_default_model_from_config() {
     // Add a task without specifying --model.
     wg_ok(&wg_dir, &["add", "hello world 2", "--immediate"]);
 
-    // The task's model should be the configured default (or None if the default
-    // is only applied at dispatch time). Check the config at least.
-    let output = wg_ok(&wg_dir, &["config", "--show"]);
+    let raw_config = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
     assert!(
-        output.contains("minimax/minimax-m2.7"),
-        "Config should show the configured model, got:\n{}",
+        raw_config.contains("minimax/minimax-m2.7"),
+        "Local config should store the requested model, got:\n{}",
+        raw_config
+    );
+
+    // The task's model should be the configured default (or None if the default
+    // is only applied at dispatch time). Check the effective config at least.
+    // Under the file-swap profile design, local config always wins over the
+    // global/profile, so the local "minimax/minimax-m2.7" is always expected.
+    let output = wg_ok(&wg_dir, &["config", "--show"]);
+    let expected_model = "minimax/minimax-m2.7";
+    assert!(
+        output.contains(expected_model),
+        "Effective config should show {}, got:\n{}",
+        expected_model,
         output
     );
 }

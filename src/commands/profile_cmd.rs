@@ -328,6 +328,7 @@ pub fn show(
             "active_named_profile": active,
             "profile": config.profile,
             "agent_model": config.agent.model,
+            "dispatcher_model": config.coordinator.model,
             "effective_tiers": {
                 "fast": effective_tiers.fast,
                 "standard": effective_tiers.standard,
@@ -370,7 +371,12 @@ pub fn show(
     }
 
     println!();
-    println!("  agent.model = {}", config.agent.model);
+    println!("  Active config (profile is a file swap, not an overlay):");
+    println!("    agent.model      = {}", config.agent.model);
+    println!(
+        "    dispatcher.model = {}",
+        config.coordinator.model.as_deref().unwrap_or("(unset)")
+    );
     println!();
     println!("  Tier Mappings:");
     println!(

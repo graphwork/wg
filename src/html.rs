@@ -30,7 +30,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::chat::{self, ChatMessage};
@@ -126,7 +126,16 @@ pub struct RenderOptions {
     /// `[project]` config + `<workgraph_dir>/about.md`. To skip metadata
     /// entirely (back-compat path used in some tests), pass
     /// `Some(ProjectMeta::default())`.
+    ///
+    /// When no project/deployment title is configured, the page title and
+    /// minimal header fall back to `hostname:/repo/path`. Set
+    /// `[project].title` or `wg html publish add --title ...` for portable
+    /// public exports that should not expose an absolute local path.
     pub project_meta: Option<ProjectMeta>,
+    /// Override for the default source label used when project metadata has
+    /// no title. Production callers leave this unset; tests use it to pin
+    /// escaping and fallback behavior independent of the host running them.
+    pub source_title: Option<String>,
 }
 
 /// Resolved project metadata for the rendered page header.
@@ -142,7 +151,7 @@ pub struct RenderOptions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectMeta {
     /// Page title (e.g. "Poietic Inc — Active Work"). When `None`, the
-    /// minimal "workgraph" header is used.
+    /// minimal header uses the default `hostname:/repo/path` source label.
     pub title: Option<String>,
     /// One-line byline / tagline shown under the title. Plain text.
     pub byline: Option<String>,
@@ -205,6 +214,99 @@ pub fn resolve_project_meta(workgraph_dir: &Path) -> ProjectMeta {
     meta
 }
 
+/// Default source label for HTML browser titles and the minimal page header.
+///
+/// In a normal project `workgraph_dir` is `<repo>/.wg` (or legacy
+/// `<repo>/.workgraph`), so the repository working directory is its parent.
+/// Tests and library callers sometimes pass a synthetic workgraph directory
+/// directly; those paths are used as-is.
+pub fn source_title_for_workgraph_dir(workgraph_dir: &Path) -> String {
+    format_source_title(
+        lookup_hostname(),
+        repo_working_dir_for_title(workgraph_dir).as_deref(),
+    )
+}
+
+fn format_source_title(hostname: Option<String>, repo_dir: Option<&Path>) -> String {
+    let host = hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown-host");
+    let repo = repo_dir
+        .map(|p| p.display().to_string())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown-repo".to_string());
+    format!("{host}:{repo}")
+}
+
+fn repo_working_dir_for_title(workgraph_dir: &Path) -> Option<PathBuf> {
+    let canonical = workgraph_dir
+        .canonicalize()
+        .unwrap_or_else(|_| workgraph_dir.to_path_buf());
+    let is_workgraph_dir = canonical
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| name == ".wg" || name == ".workgraph")
+        .unwrap_or(false);
+    let repo_dir = if is_workgraph_dir {
+        canonical
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or(canonical)
+    } else {
+        canonical
+    };
+    if repo_dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(repo_dir)
+    }
+}
+
+fn lookup_hostname() -> Option<String> {
+    system_hostname()
+        .or_else(|| env_hostname("HOSTNAME"))
+        .or_else(|| env_hostname("COMPUTERNAME"))
+}
+
+fn env_hostname(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(unix)]
+fn system_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..len])
+        .trim()
+        .to_string()
+        .into_nonempty()
+}
+
+#[cfg(not(unix))]
+fn system_hostname() -> Option<String> {
+    None
+}
+
+trait NonEmptyString {
+    fn into_nonempty(self) -> Option<String>;
+}
+
+impl NonEmptyString for String {
+    fn into_nonempty(self) -> Option<String> {
+        if self.is_empty() { None } else { Some(self) }
+    }
+}
+
 /// Public render entry point. Builds the complete static site.
 pub fn render_site(
     graph: &WorkGraph,
@@ -222,6 +324,19 @@ pub fn render_site(
         .project_meta
         .clone()
         .unwrap_or_else(|| resolve_project_meta(workgraph_dir));
+    let fallback_source_title = opts
+        .source_title
+        .clone()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| source_title_for_workgraph_dir(workgraph_dir));
+    let document_title = project_meta
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_source_title.as_str())
+        .to_string();
     let since_cutoff: Option<DateTime<Utc>> = since
         .map(|s| parse_since(s).map(|d| Utc::now() - d))
         .transpose()?;
@@ -337,6 +452,7 @@ pub fn render_site(
             } else {
                 Some(messages_block.as_str())
             },
+            &document_title,
         );
         let path = tasks_dir.join(format!("{}.html", url_encode_id(&task.id)));
         fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
@@ -361,6 +477,7 @@ pub fn render_site(
         chat_transcripts_hidden,
         has_agency_tasks,
         &project_meta,
+        &document_title,
     );
     fs::write(out_dir.join("index.html"), &index_html).context("failed to write index.html")?;
 
@@ -408,6 +525,7 @@ pub fn run(
             // know about per-deployment overrides; those come from
             // `wg html publish run`, which threads its own ProjectMeta in.
             project_meta: None,
+            source_title: None,
         },
     )?;
 
@@ -1795,7 +1913,6 @@ fn render_footer(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn render_index(
     graph: &WorkGraph,
     included: &[&Task],
@@ -1813,6 +1930,7 @@ fn render_index(
     chat_transcripts_hidden: usize,
     has_agency_tasks: bool,
     project_meta: &ProjectMeta,
+    document_title: &str,
 ) -> String {
     let total_in_graph = graph.tasks().count();
     let total_shown = included.len();
@@ -1930,13 +2048,7 @@ fn render_index(
     // above the viz. The abstract is rendered as markdown and collapses
     // behind a "show more" toggle when the body is taller than ~5 lines.
     let project_header_html = render_project_header(project_meta);
-    // Browser title prefers the project title when set; otherwise falls
-    // back to the legacy "workgraph — <suffix>" form so existing fixtures
-    // keep matching.
-    let browser_title = match project_meta.title.as_deref() {
-        Some(t) if !t.trim().is_empty() => format!("{} — workgraph", t.trim()),
-        _ => format!("workgraph — {}", title_suffix),
-    };
+    let browser_title = format!("{} — {}", document_title.trim(), title_suffix);
 
     // Agency toggle UI (button + body data attribute) — emitted only when
     // there are actual agency tasks in scope. Web equivalent of the TUI's
@@ -1997,7 +2109,7 @@ fn render_index(
          <body>\n\
          <header class=\"page-header\">\n\
          <div>\n\
-         <h1>workgraph</h1>\n\
+         <h1>{header_title}</h1>\n\
          <p class=\"subtitle\">{n} tasks shown</p>\n\
          {chat_banner}\
          </div>\n\
@@ -2033,6 +2145,7 @@ fn render_index(
          </body>\n\
          </html>\n",
         browser_title = escape_html(&browser_title),
+        header_title = escape_html(document_title.trim()),
         n = total_shown,
         viz = viz_html,
         legend_panel = legend_panel,
@@ -2052,7 +2165,7 @@ fn render_index(
 
 /// Render the project-header block. Returns an empty string when
 /// `meta.is_empty()` so the page falls back to the existing minimal
-/// "workgraph / N tasks shown" header.
+/// source-title / N-tasks-shown header.
 fn render_project_header(meta: &ProjectMeta) -> String {
     if meta.is_empty() {
         return String::new();
@@ -2109,6 +2222,7 @@ fn render_task_page(
     eval: Option<&EvalSummary>,
     chat_block: Option<&str>,
     messages_block: Option<&str>,
+    document_title: &str,
 ) -> String {
     let title = escape_html(&task.title);
     let id = escape_html(&task.id);
@@ -2325,7 +2439,7 @@ fn render_task_page(
          <head>\n\
          <meta charset=\"utf-8\" />\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
-         <title>{id} — workgraph</title>\n\
+         <title>{id} — {document_title}</title>\n\
          <link rel=\"stylesheet\" href=\"../style.css\" />\n\
          <script>\n\
          (function () {{\n\
@@ -2358,6 +2472,7 @@ fn render_task_page(
          </html>\n",
         id = id,
         title = title,
+        document_title = escape_html(document_title.trim()),
         meta = meta_html,
         desc = description_html,
         deps = deps_html,
@@ -2590,6 +2705,36 @@ mod tests {
         assert_eq!(parse_since("2w").unwrap(), Duration::weeks(2));
         assert!(parse_since("0h").is_err());
         assert!(parse_since("abc").is_err());
+    }
+
+    #[test]
+    fn source_title_falls_back_for_missing_host_or_repo_dir() {
+        assert_eq!(
+            format_source_title(None, Some(Path::new("/repo/root"))),
+            "unknown-host:/repo/root"
+        );
+        assert_eq!(
+            format_source_title(Some("builder".to_string()), None),
+            "builder:unknown-repo"
+        );
+        assert_eq!(
+            format_source_title(Some("  ".to_string()), Some(Path::new(""))),
+            "unknown-host:unknown-repo"
+        );
+    }
+
+    #[test]
+    fn source_title_uses_repo_parent_for_workgraph_dirs() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let workgraph_dir = repo.path().join(".wg");
+        std::fs::create_dir_all(&workgraph_dir).unwrap();
+
+        let resolved = repo_working_dir_for_title(&workgraph_dir).unwrap();
+        assert_eq!(resolved, repo.path().canonicalize().unwrap());
+
+        let missing = repo.path().join("missing").join(".workgraph");
+        let resolved_missing = repo_working_dir_for_title(&missing).unwrap();
+        assert_eq!(resolved_missing, repo.path().join("missing"));
     }
 
     // ────────────────────────────────────────────────────────────────────

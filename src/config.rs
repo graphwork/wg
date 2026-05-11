@@ -2076,6 +2076,21 @@ pub fn provider_to_native_provider(provider: &str) -> &'static str {
     }
 }
 
+/// Map a user-facing provider prefix to the provider label carried by
+/// [`ResolvedModel`].
+///
+/// Most API-backed prefixes use the native provider name because downstream
+/// lightweight calls need to pick an HTTP client. `codex:` is intentionally
+/// preserved as `codex`: it is a CLI-backed route, and collapsing it to the
+/// OAI-compat protocol label makes role routing and `wg config --models`
+/// report `nex` even though the codex CLI is the required handler.
+pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
+    match provider {
+        "codex" => "codex",
+        other => provider_to_native_provider(other),
+    }
+}
+
 /// Reverse map: internal provider name → user-facing `provider:model` prefix.
 ///
 /// This is the inverse of [`provider_to_native_provider`] for display purposes.
@@ -2326,7 +2341,7 @@ impl Config {
                 model: entry.model.clone(),
                 provider: spec
                     .provider
-                    .map(|p| provider_to_native_provider(&p).to_string())
+                    .map(|p| provider_to_resolved_provider(&p).to_string())
                     .or_else(|| Some(entry.provider.clone())),
                 registry_entry: Some(entry),
                 endpoint: None,
@@ -2337,7 +2352,7 @@ impl Config {
                 model: spec.model_id,
                 provider: spec
                     .provider
-                    .map(|p| provider_to_native_provider(&p).to_string()),
+                    .map(|p| provider_to_resolved_provider(&p).to_string()),
                 registry_entry: None,
                 endpoint: None,
             })
@@ -2375,11 +2390,11 @@ impl Config {
         let coordinator_model_provider = self.coordinator.model.as_deref().and_then(|m| {
             parse_model_spec(m)
                 .provider
-                .map(|p| provider_to_native_provider(&p).to_string())
+                .map(|p| provider_to_resolved_provider(&p).to_string())
         });
         let agent_model_provider = parse_model_spec(&self.agent.model)
             .provider
-            .map(|p| provider_to_native_provider(&p).to_string());
+            .map(|p| provider_to_resolved_provider(&p).to_string());
 
         // Helper: resolve provider for a role, cascading through:
         //   models.<role>.provider → models.default.provider
@@ -2410,7 +2425,7 @@ impl Config {
             let spec_provider = spec
                 .provider
                 .as_deref()
-                .map(provider_to_native_provider)
+                .map(provider_to_resolved_provider)
                 .map(String::from);
             let lookup_model = &spec.model_id;
 
@@ -2471,7 +2486,7 @@ impl Config {
             let spec_provider = spec
                 .provider
                 .as_deref()
-                .map(provider_to_native_provider)
+                .map(provider_to_resolved_provider)
                 .map(String::from);
 
             if let Some(entry) = self.registry_lookup(&spec.model_id) {
@@ -2497,7 +2512,7 @@ impl Config {
         let fallback_provider = fallback_spec
             .provider
             .as_deref()
-            .map(provider_to_native_provider)
+            .map(provider_to_resolved_provider)
             .map(String::from);
 
         if let Some(entry) = self.registry_lookup(&fallback_spec.model_id) {
@@ -3917,7 +3932,17 @@ impl Config {
                 e
             )
         })?;
-        let config: Config = toml::from_str(&content).map_err(|e| {
+        let mut val: toml::Value = content.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse global config at {}: {}",
+                global_path.display(),
+                e
+            )
+        })?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut val, &global_path.display().to_string(), &mut warnings);
+        emit_legacy_warnings(&warnings);
+        let config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse global config at {}: {}",
                 global_path.display(),
@@ -4114,7 +4139,13 @@ impl Config {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config: {}", e))?;
 
-        let config: Config = toml::from_str(&content).map_err(|e| {
+        let mut val: toml::Value = content.parse().map_err(|e| {
+            anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
+        })?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut val, &config_path.display().to_string(), &mut warnings);
+        emit_legacy_warnings(&warnings);
+        let config: Config = val.try_into().map_err(|e| {
             anyhow::anyhow!("Failed to parse config at {}: {}", config_path.display(), e)
         })?;
 
@@ -4240,7 +4271,7 @@ impl Config {
     ///   no auth) and `is_default = true`. Any preexisting entry named
     ///   `default` is replaced and all other entries lose `is_default`.
     /// - `model` (if Some) goes into `agent.model` and
-    ///   `coordinator.model`. When combined with `endpoint`, the model
+    ///   `dispatcher.model`. When combined with `endpoint`, the model
     ///   name is prefixed with `nex:` (canonical, matches `wg nex`) so
     ///   the provider:model validator accepts it on reload; when `model`
     ///   is provider-prefixed already (`claude:opus`), it's used verbatim.
@@ -5322,8 +5353,15 @@ model = "claude:haiku"
         // This test depends on whether ~/.wg/config.toml exists on the
         // machine, but the merge should work either way.  If the global config
         // uses old format, the merge may fail — that's OK in that scenario.
+        //
+        // Under the file-swap profile design, local config always overrides
+        // global (and global IS the active profile snapshot). So regardless of
+        // which profile is active on the test machine, local "claude:haiku"
+        // must win.
         match Config::load_merged(temp_dir.path()) {
-            Ok(config) => assert_eq!(config.agent.model, "claude:haiku"),
+            Ok(config) => {
+                assert_eq!(config.agent.model, "claude:haiku");
+            }
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
@@ -7037,6 +7075,14 @@ provider = "openrouter"
     }
 
     #[test]
+    fn test_provider_to_resolved_provider_preserves_codex_route() {
+        assert_eq!(provider_to_resolved_provider("codex"), "codex");
+        assert_eq!(provider_to_resolved_provider("nex"), "oai-compat");
+        assert_eq!(provider_to_resolved_provider("openrouter"), "openrouter");
+        assert_eq!(provider_to_resolved_provider("claude"), "anthropic");
+    }
+
+    #[test]
     fn test_native_provider_to_prefix_canonical_nex() {
         // Internal "oai-compat" / "openai" / "local" → user-facing "nex:"
         // (canonical, matches `wg nex`). The deprecated "oai-compat:" /
@@ -7047,6 +7093,7 @@ provider = "openrouter"
         // Canonical handler-name prefixes pass through.
         assert_eq!(native_provider_to_prefix("anthropic"), "claude");
         assert_eq!(native_provider_to_prefix("openrouter"), "openrouter");
+        assert_eq!(native_provider_to_prefix("codex"), "codex");
     }
 
     #[test]
@@ -7208,6 +7255,20 @@ model = "local:qwen3-coder"
         // Model ID should be the bare part without the claude: prefix
         assert_eq!(resolved.model, "claude-sonnet-4-6");
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_model_for_role_codex_prefix_preserves_cli_provider() {
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("codex:gpt-5.4-mini".into()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.model, "gpt-5.4-mini");
+        assert_eq!(resolved.provider, Some("codex".to_string()));
     }
 
     #[test]
@@ -8429,5 +8490,33 @@ executor = "native"
             "second pass must not re-warn after migration, got {:?}",
             warnings2
         );
+    }
+
+    #[test]
+    fn test_local_config_load_normalizes_coordinator_alias() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+        fs::write(
+            wg_dir.join("config.toml"),
+            r#"
+[coordinator]
+max_agents = 2
+model = "claude:opus"
+
+[dispatcher]
+model = "codex:gpt-5.5"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(&wg_dir).expect("legacy+canonical local config should load");
+        assert_eq!(cfg.coordinator.max_agents, 2);
+        assert_eq!(
+            cfg.coordinator.model.as_deref(),
+            Some("codex:gpt-5.5"),
+            "canonical [dispatcher].model must win over legacy [coordinator].model"
+        );
+        assert_eq!(cfg.coordinator.effective_executor(), "codex");
     }
 }

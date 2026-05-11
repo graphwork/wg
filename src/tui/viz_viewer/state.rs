@@ -5587,6 +5587,9 @@ pub struct VizApp {
     /// Set by the fast path when graph.jsonl changes but the full viz wasn't reloaded.
     /// Checked by the slow path to ensure the viz reload isn't skipped.
     graph_viz_stale: bool,
+    /// True after a graph change has requested an async graph reload and before
+    /// that freshly loaded graph has been applied to the visible TUI state.
+    graph_reload_pending: bool,
 
     // ── Event tracing ──
     /// When `Some`, records all input events to a JSONL file for replay.
@@ -5877,6 +5880,7 @@ impl VizApp {
             last_detail_output_mtime: None,
             hud_follow: false,
             graph_viz_stale: false,
+            graph_reload_pending: false,
             tracer: None,
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
@@ -5937,6 +5941,11 @@ impl VizApp {
         // Use strict (no +3 slack) so users who scrolled near-but-not-at the bottom
         // are not dragged along by new content appended below them.
         let was_at_bottom = self.scroll.is_at_bottom_strict() || self.initial_load;
+        // Top-follow: if the user is watching the top of the graph, keep the
+        // viewport pinned there even if rows are inserted above the selected
+        // task. This must outrank the selected-task relative anchor below,
+        // otherwise the old selected task pulls the viewport down.
+        let was_at_top = self.scroll.is_at_top() || self.initial_load;
 
         // Anchor on the selected task's RELATIVE position within the viewport.
         // This keeps the task visually stable even when lines shift above it.
@@ -6118,6 +6127,9 @@ impl VizApp {
                     // First load: scroll to top so tasks are visible immediately.
                     self.scroll.go_top();
                     self.initial_load = false;
+                } else if was_at_top {
+                    // Top-anchor: user was watching newest/top-of-graph rows.
+                    self.scroll.go_top();
                 } else if was_at_bottom && !new_task_focused {
                     // Smart-follow: user was at the bottom, keep them there.
                     self.scroll.go_bottom();
@@ -7541,6 +7553,69 @@ impl VizApp {
         }
     }
 
+    fn apply_loaded_graph_refresh(
+        &mut self,
+        graph: &workgraph::graph::WorkGraph,
+        graph_mtime: Option<SystemTime>,
+    ) {
+        self.graph_reload_pending = false;
+        self.graph_viz_stale = false;
+        self.last_graph_mtime = graph_mtime;
+        self.last_heavy_refresh_at = Some(Instant::now());
+
+        let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
+        let prev_hud_scroll = self.hud_scroll;
+        let prev_hud_follow = self.hud_follow;
+
+        self.smart_follow_active = self.scroll.is_at_bottom();
+        self.load_viz_from_graph(graph);
+        if !self.search_input.is_empty() {
+            self.rerun_search();
+        }
+        self.load_stats_from_graph(graph);
+        self.refresh_chat_tab_caches(graph);
+        self.load_agent_monitor();
+        self.update_agent_streams();
+        if self.right_panel_tab == RightPanelTab::Firehose {
+            self.update_firehose();
+        }
+        if self.right_panel_tab == RightPanelTab::Output {
+            self.update_output_pane();
+        }
+        if self.right_panel_tab == RightPanelTab::Log {
+            self.update_log_output();
+            self.update_log_stream_events();
+        }
+        self.invalidate_hud();
+        self.load_hud_detail();
+        if prev_hud_task.is_some()
+            && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
+        {
+            if prev_hud_follow {
+                self.hud_scroll = usize::MAX;
+            } else {
+                self.hud_scroll = prev_hud_scroll;
+            }
+        }
+        if self.right_panel_tab == RightPanelTab::Log {
+            self.invalidate_log_pane();
+            self.load_log_pane();
+        }
+        if self.right_panel_tab == RightPanelTab::Agency {
+            self.invalidate_agency_lifecycle();
+            self.load_agency_lifecycle();
+        }
+        if self.right_panel_tab == RightPanelTab::Files
+            && let Some(ref mut fb) = self.file_browser
+        {
+            fb.refresh();
+        }
+        if self.right_panel_tab == RightPanelTab::CoordLog {
+            self.load_coord_log();
+            self.load_activity_feed();
+        }
+    }
+
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
@@ -7553,7 +7628,14 @@ impl VizApp {
         // the main loop has work to do. This lets cached-graph and
         // cached-stat values reflect the worker's most recent results
         // without ever blocking on disk. (See `async_fs.rs`.)
-        let _async_changes = self.async_fs.drain_responses();
+        let async_changes = self.async_fs.drain_responses();
+        if async_changes.graph
+            && self.graph_reload_pending
+            && let Some((graph, graph_mtime)) = self.async_fs.cached_graph()
+        {
+            self.apply_loaded_graph_refresh(&graph, graph_mtime);
+            return true;
+        }
 
         // Check if the file watcher detected changes in .wg/.
         let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
@@ -7626,68 +7708,13 @@ impl VizApp {
                 return false;
             }
             if graph_mutated {
-                self.last_graph_mtime = current_mtime;
-                self.last_heavy_refresh_at = Some(Instant::now());
                 // Dispatch a background graph reload (no-op if one is in
-                // flight). The actual reload + parse runs on the async-fs
-                // worker thread; we apply the freshest cached graph below.
+                // flight). Do not apply the old cached graph or record the
+                // new mtime yet; `drain_responses()` will apply the freshly
+                // loaded graph on a later loop tick.
+                self.graph_reload_pending = true;
+                self.graph_viz_stale = true;
                 self.async_fs.request_graph_load(graph_path.clone());
-                // Full viz reload on every graph mutation — this catches
-                // transient states (assigning, evaluating) that would
-                // otherwise be missed by the 1-second slow-path tick.
-                if let Some((graph, _)) = self.async_fs.cached_graph() {
-                    let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-                    let prev_hud_scroll = self.hud_scroll;
-                    let prev_hud_follow = self.hud_follow;
-                    self.smart_follow_active = self.scroll.is_at_bottom();
-                    self.load_viz_from_graph(&graph);
-                    self.load_stats_from_graph(&graph);
-                    self.refresh_chat_tab_caches(&graph);
-                    self.load_agent_monitor();
-                    self.update_agent_streams();
-                    if self.right_panel_tab == RightPanelTab::Firehose {
-                        self.update_firehose();
-                    }
-                    if self.right_panel_tab == RightPanelTab::Output {
-                        self.update_output_pane();
-                    }
-                    if self.right_panel_tab == RightPanelTab::Log {
-                        self.update_log_output();
-                        self.update_log_stream_events();
-                    }
-                    self.invalidate_hud();
-                    self.load_hud_detail();
-                    if prev_hud_task.is_some()
-                        && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-                    {
-                        if prev_hud_follow {
-                            self.hud_scroll = usize::MAX; // renderer clamps to actual max
-                        } else {
-                            self.hud_scroll = prev_hud_scroll;
-                        }
-                    }
-                    if !self.search_input.is_empty() {
-                        self.rerun_search();
-                    }
-                }
-                // Log pane: reload if active (log entries are in graph.jsonl).
-                if self.right_panel_tab == RightPanelTab::Log {
-                    self.invalidate_log_pane();
-                    self.load_log_pane();
-                }
-                if self.right_panel_tab == RightPanelTab::Agency {
-                    self.invalidate_agency_lifecycle();
-                    self.load_agency_lifecycle();
-                }
-                if self.right_panel_tab == RightPanelTab::Files
-                    && let Some(ref mut fb) = self.file_browser
-                {
-                    fb.refresh();
-                }
-                if self.right_panel_tab == RightPanelTab::CoordLog {
-                    self.load_coord_log();
-                    self.load_activity_feed();
-                }
                 content_updated = true;
             } else if messages_changed {
                 // A message file changed but graph.jsonl didn't — `wg msg send`
@@ -7877,12 +7904,15 @@ impl VizApp {
             .values()
             .any(|s| s.last_seen.elapsed() >= hold);
 
-        if graph_changed || needs_token_refresh || has_expiring_stickies {
-            self.graph_viz_stale = false;
-            // Dispatch a background graph reload (no-op if one is in flight)
-            // and use the cached graph (possibly stale by one frame) to
-            // refresh viz/stats. The fresh graph lands on the next tick.
+        if graph_changed {
+            // Dispatch a background graph reload and apply it only after the
+            // async worker has populated the cache. Applying the old cached
+            // graph here would make the TUI record the new mtime while still
+            // showing stale rows, losing the refresh.
+            self.graph_reload_pending = true;
+            self.graph_viz_stale = true;
             self.async_fs.request_graph_load(graph_path.clone());
+        } else if needs_token_refresh || has_expiring_stickies {
             if let Some((graph, _)) = self.async_fs.cached_graph() {
                 // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
                 // recompute_trace() -> invalidate_hud() clears hud_detail.
@@ -7890,8 +7920,7 @@ impl VizApp {
                 let prev_hud_scroll = self.hud_scroll;
                 let prev_hud_follow = self.hud_follow;
 
-                if graph_changed || has_expiring_stickies {
-                    self.last_graph_mtime = current_mtime;
+                if has_expiring_stickies {
                     // Update smart-follow state before reloading: track if user is at bottom.
                     self.smart_follow_active = self.scroll.is_at_bottom();
                     self.load_viz_from_graph(&graph);
@@ -7970,13 +7999,9 @@ impl VizApp {
             self.async_fs.request_stat(graph_path.clone());
             let fresh_mtime = self.async_fs.cached_stat(&graph_path);
             if fresh_mtime != self.last_graph_mtime {
-                self.last_graph_mtime = fresh_mtime;
+                self.graph_reload_pending = true;
+                self.graph_viz_stale = true;
                 self.async_fs.request_graph_load(graph_path);
-                if let Some((graph, _)) = self.async_fs.cached_graph() {
-                    self.load_viz_from_graph(&graph);
-                    self.load_stats_from_graph(&graph);
-                    self.refresh_chat_tab_caches(&graph);
-                }
             }
         }
 
@@ -10639,6 +10664,7 @@ impl VizApp {
             last_detail_output_mtime: None,
             hud_follow: false,
             graph_viz_stale: false,
+            graph_reload_pending: false,
             tracer: None,
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
@@ -18051,6 +18077,11 @@ impl ViewportScroll {
         self.offset_y = self.content_height.saturating_sub(self.viewport_height);
     }
 
+    /// Returns true when the viewport is pinned to the top of the graph.
+    pub fn is_at_top(&self) -> bool {
+        self.offset_y == 0
+    }
+
     /// Returns true if the viewport is scrolled to (or near) the bottom.
     /// "Near" means within 3 lines of the bottom, to allow for small render jitter.
     pub fn is_at_bottom(&self) -> bool {
@@ -20731,6 +20762,14 @@ mod tui_config_panel_tests {
     use crate::commands::viz::LayoutMode as VizLayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
 
+    fn active_profile_config_panel_override_keys() -> HashSet<String> {
+        // Under the file-swap profile design, profiles are not overlays —
+        // local config always wins over global (which IS the active profile
+        // snapshot). No key is "masked" by an active profile, so no key
+        // needs to be skipped during the save-roundtrip test.
+        HashSet::new()
+    }
+
     /// Create a minimal VizApp with a real temp directory for config round-trip testing.
     fn build_config_test_app() -> (VizApp, tempfile::TempDir) {
         let mut graph = WorkGraph::new();
@@ -20769,6 +20808,7 @@ mod tui_config_panel_tests {
     fn test_config_panel_all_entries_save_roundtrip() {
         let (mut app, _temp) = build_config_test_app();
         app.load_config_panel();
+        let active_profile_overrides = active_profile_config_panel_override_keys();
 
         // Collect all keys for verification
         let keys: Vec<String> = app
@@ -20803,6 +20843,14 @@ mod tui_config_panel_tests {
             }
             // Skip model registry entries (managed via models.yaml, not config.toml)
             if key.starts_with("model.") {
+                continue;
+            }
+            // Historically, active named profiles were a runtime overlay
+            // and profile-owned keys had to be skipped here. Under the
+            // file-swap design they no longer mask local edits, so the skip
+            // helper returns an empty set. Call retained for clarity / future
+            // safety net.
+            if active_profile_overrides.contains(&key) {
                 continue;
             }
 
@@ -26327,8 +26375,8 @@ mod chat_pty_executor_resolution_tests {
         );
     }
 
-    /// Pre-fix chats without overrides keep the global default — no
-    /// regression on the common path.
+    /// Pre-fix chats without overrides keep the effective config default,
+    /// including an active named profile when one is enabled.
     #[test]
     fn chat_with_no_overrides_uses_global_default() {
         let dir = tempfile::tempdir().unwrap();
@@ -26341,14 +26389,12 @@ mod chat_pty_executor_resolution_tests {
         // No CoordinatorState file written for chat 0.
 
         let config = Config::load_or_default(wg_dir);
+        let expected_executor = config.coordinator.effective_executor();
+        let expected_model = config.coordinator.model.clone();
         let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 0);
 
-        assert_eq!(executor, "claude", "global default executor");
-        assert_eq!(
-            model.as_deref(),
-            Some("claude:opus"),
-            "global default model"
-        );
+        assert_eq!(executor, expected_executor, "effective default executor");
+        assert_eq!(model, expected_model, "effective default model");
     }
 
     /// Mixed overrides: only model is per-chat, executor defaults
@@ -27192,6 +27238,42 @@ mod viewport_stability_tests {
         (viz, graph, tmp)
     }
 
+    fn generate_viz_for_test(graph: &WorkGraph) -> VizOutput {
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        generate_ascii(
+            graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+    }
+
+    fn build_timestamped_linear_graph(n: usize) -> (VizOutput, WorkGraph, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        for i in 0..n {
+            let id = format!("task-{}", i);
+            let title = format!("Task {}", i);
+            let mut task = make_task_with_status(&id, &title, Status::Open);
+            task.created_at = Some(format!("2026-01-01T00:{:02}:00Z", i));
+            if i > 0 {
+                task.after = vec![format!("task-{}", i - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        save_graph(&graph, &tmp.path().join("graph.jsonl")).unwrap();
+        let viz = generate_viz_for_test(&graph);
+        (viz, graph, tmp)
+    }
+
     /// Build a VizApp that looks like it completed an initial load:
     /// content_height set, viewport_height simulated, scrolled to top.
     ///
@@ -27318,6 +27400,155 @@ mod viewport_stability_tests {
         assert!(
             !app.needs_center_on_selected,
             "needs_center_on_selected must NOT be set when at top"
+        );
+    }
+
+    /// When a graph refresh inserts rows above the existing selected task
+    /// without a `.new_task_focus` marker, a top-positioned viewport must
+    /// remain pinned to graph row 0 instead of preserving the old task's
+    /// screen-relative position.
+    #[test]
+    fn rows_inserted_above_selected_task_preserve_top_anchor_without_focus_marker() {
+        let (viz, mut graph, tmp) = build_timestamped_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 12);
+        let selected_before = app.selected_task_id().unwrap().to_string();
+
+        assert_eq!(app.scroll.offset_y, 0);
+        assert_eq!(selected_before, "task-0");
+
+        let mut top_task = make_task_with_status("task-new-top", "New Top Task", Status::Open);
+        top_task.created_at = Some("2026-01-02T00:00:00Z".to_string());
+        graph.add_node(Node::Task(top_task));
+        save_graph(&graph, &tmp.path().join("graph.jsonl")).unwrap();
+
+        let viz2 = generate_viz_for_test(&graph);
+        assert_eq!(
+            viz2.task_order.first().map(String::as_str),
+            Some("task-new-top")
+        );
+
+        app.apply_viz_result(Ok(viz2));
+
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "top-anchor must outrank selected-task relative anchoring"
+        );
+        assert_eq!(
+            app.selected_task_id(),
+            Some(selected_before.as_str()),
+            "refresh should still preserve selected task by ID"
+        );
+        let new_top_line = *app.node_line_map.get("task-new-top").unwrap();
+        let new_top_visible = app.original_to_visible(new_top_line).unwrap();
+        assert!(
+            new_top_visible < app.scroll.viewport_height,
+            "new top-of-graph task should be visible when viewport remains top anchored"
+        );
+    }
+
+    /// End-to-end simulation of the async TUI refresh path: a graph mtime
+    /// change first updates the async stat cache, then loads graph.jsonl on
+    /// the worker, and only then applies the fresh graph. This locks the
+    /// regression where the TUI applied the old cached graph and recorded the
+    /// new mtime, permanently hiding inserted top rows until manual refresh.
+    #[test]
+    fn async_refresh_applies_fresh_graph_and_preserves_top_anchor() {
+        let (viz, mut graph, tmp) = build_timestamped_linear_graph(30);
+        let graph_path = tmp.path().join("graph.jsonl");
+        let old_mtime = std::fs::metadata(&graph_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let mut app = build_app_post_initial(&viz, tmp.path(), 12);
+        app.last_graph_mtime = old_mtime;
+        app.refresh_interval = std::time::Duration::ZERO;
+        if let Ok(old_graph) = workgraph::parser::load_graph(&graph_path) {
+            app.async_fs.seed_graph(old_graph, old_mtime);
+        }
+        app.async_fs.seed_stat(graph_path.clone(), old_mtime);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut top_task = make_task_with_status("task-new-top", "New Top Task", Status::Open);
+        top_task.created_at = Some("2026-01-02T00:00:00Z".to_string());
+        graph.add_node(Node::Task(top_task));
+        save_graph(&graph, &graph_path).unwrap();
+
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let start = Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(2) {
+            app.maybe_refresh();
+            if app
+                .task_order
+                .first()
+                .is_some_and(|id| id == "task-new-top")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            app.task_order.first().map(String::as_str),
+            Some("task-new-top"),
+            "async refresh must apply the worker-loaded graph, not the stale cache"
+        );
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "top anchor must survive the real async refresh path"
+        );
+    }
+
+    /// Away from the top, keep the previous selected-task anchoring behavior:
+    /// rows inserted above the selected task should move the scroll offset so
+    /// the selected task stays at the same viewport-relative row.
+    #[test]
+    fn rows_inserted_above_selected_task_preserve_non_top_relative_anchor() {
+        let (viz, mut graph, tmp) = build_timestamped_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 12);
+
+        let selected_id = "task-15";
+        app.selected_task_idx = app.task_order.iter().position(|id| id == selected_id);
+        app.recompute_trace();
+
+        let old_orig_line = *app.node_line_map.get(selected_id).unwrap();
+        let old_visible = app.original_to_visible(old_orig_line).unwrap();
+        app.scroll.offset_y = old_visible.saturating_sub(5);
+        assert!(
+            app.scroll.offset_y > 0,
+            "test setup must place viewport away from top"
+        );
+        let old_offset = app.scroll.offset_y;
+        let old_relative = old_visible as isize - old_offset as isize;
+
+        let mut top_task = make_task_with_status("task-new-top", "New Top Task", Status::Open);
+        top_task.created_at = Some("2026-01-02T00:00:00Z".to_string());
+        graph.add_node(Node::Task(top_task));
+        save_graph(&graph, &tmp.path().join("graph.jsonl")).unwrap();
+
+        let viz2 = generate_viz_for_test(&graph);
+        assert_eq!(
+            viz2.task_order.first().map(String::as_str),
+            Some("task-new-top")
+        );
+
+        app.apply_viz_result(Ok(viz2));
+
+        assert_eq!(
+            app.selected_task_id(),
+            Some(selected_id),
+            "non-top refresh should preserve selected task by ID"
+        );
+        let new_orig_line = *app.node_line_map.get(selected_id).unwrap();
+        let new_visible = app.original_to_visible(new_orig_line).unwrap();
+        let new_relative = new_visible as isize - app.scroll.offset_y as isize;
+        assert_eq!(
+            new_relative, old_relative,
+            "non-top selected task should keep its viewport-relative row"
+        );
+        assert!(
+            app.scroll.offset_y > old_offset,
+            "scroll offset should move down to compensate for inserted top rows"
         );
     }
 

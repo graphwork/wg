@@ -601,6 +601,16 @@ description = "Pins fix-wg-init: `wg init --route codex-cli` followed by `WG_DIR
 timeout_seconds = 60
 
 [[scenario]]
+name = "config_one_line_codex_route"
+script = "scenarios/config_one_line_codex_route.sh"
+owners = [
+    "allow-one-line",
+    "fix-wg-config",
+]
+description = "Pins allow-one-line and fix-wg-config: the real terminal flow `wg config --local --model ... --coordinator-model ... --tier ... --tier ... --tier ... --set-model ... --set-model ... --flip-model ... --auto-assign true --auto-evaluate true` must succeed as one atomic invocation, must not emit Clap's repeated --tier error, must write canonical dispatcher.model plus all Codex tier/model-routing values to local config, must clear a stale deprecated dispatcher.executor=claude pin, must document repeatable flags clearly, and `wg service restart` must report executor=codex/model=codex:gpt-5.5. No LLM endpoint needed."
+timeout_seconds = 60
+
+[[scenario]]
 name = "purge_chats_skips_active_by_default"
 script = "scenarios/purge_chats_skips_active_by_default.sh"
 owners = [
@@ -726,7 +736,7 @@ script = "scenarios/wg_html_declutter.sh"
 owners = [
     "wg-html-declutter",
 ]
-description = "Regression for wg-html-declutter: the page header is decluttered (just <h1>workgraph</h1> + '<n> tasks shown' — no 'click a task id to inspect' subtitle, no 'Dependency graph (...)' parenthetical headline above the viz, no inline `<section class=\"legend-section\">`). A 'Legend' button in the header opens the side panel with a full legend covering edge colors, status colors, click behaviors, and CLI flags. The legend HTML lives inside a hidden `<template id=\"wg-legend-template\">`; panel.js binds the legend toggle and reuses the existing side-panel infrastructure, swatches reference the --edge-* CSS variables for theme-aware colors."
+description = "Regression for wg-html-declutter: the page header is decluttered (source title + '<n> tasks shown' — no 'click a task id to inspect' subtitle, no 'Dependency graph (...)' parenthetical headline above the viz, no inline `<section class=\"legend-section\">`). A 'Legend' button in the header opens the side panel with a full legend covering edge colors, status colors, click behaviors, and CLI flags. The legend HTML lives inside a hidden `<template id=\"wg-legend-template\">`; panel.js binds the legend toggle and reuses the existing side-panel infrastructure, swatches reference the --edge-* CSS variables for theme-aware colors."
 timeout_seconds = 60
 
 [[scenario]]
@@ -746,6 +756,15 @@ owners = [
 ]
 description = "Named profiles: wg profile use <name> writes active-pointer, wg config --merged reflects the profile's models, wg profile use --clear removes the pointer."
 timeout_seconds = 30
+
+[[scenario]]
+name = "profile_codex_service_start"
+script = "scenarios/profile_codex_service_start.sh"
+owners = [
+    "fix-profile-application",
+]
+description = "Regression for fix-profile-application: the live terminal flow `wg service stop; wg profile use codex; wg service start` must start the dispatcher with executor=codex/model=codex:gpt-5.5 even when local config pins claude:opus, and `wg config --models` must not render codex role settings as nex."
+timeout_seconds = 60
 
 [[scenario]]
 name = "profile_diff"
@@ -881,6 +900,15 @@ description = "Pins the Ctrl+] scroll mode implementation. Runs cargo test for a
 timeout_seconds = 120
 
 [[scenario]]
+name = "viz_tui_preserve_top_anchor"
+script = "scenarios/viz_tui_preserve_top_anchor.sh"
+owners = [
+    "preserve-top-anchor",
+]
+description = "Live `wg viz --tui` regression for preserve-top-anchor: start at graph top, insert tasks above the selected anchor task from another shell with `wg insert before`, and assert the newly inserted top rows remain visible. Pre-fix, the selected-task relative anchor pulled the viewport down to the old task and hid the graph top."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_mouse_wheel_does_not_send_arrows"
 script = "scenarios/tui_mouse_wheel_does_not_send_arrows.sh"
 owners = [
@@ -963,8 +991,9 @@ name = "publish_project_metadata_renders"
 script = "scenarios/publish_project_metadata_renders.sh"
 owners = [
     "wg-html-publish-2",
+    "show-host-and",
 ]
-description = "Pins wg-html-publish-2: project metadata (title / byline / abstract markdown) at the top of `wg html publish`-rendered pages. Walks the cascade: per-deployment --title/--byline/--abstract on `add` wins over project-level [project] config, which wins over the auto-discovered <wg_dir>/about.md, and when nothing is set anywhere the project-header block is OMITTED entirely (the page falls back to the existing minimal 'workgraph / N tasks shown' header). Verifies the abstract is rendered as markdown (h2/ul/li from a markdown source). Skips when rsync is missing."
+description = "Pins wg-html-publish-2 and show-host-and: project metadata (title / byline / abstract markdown) at the top of `wg html publish`-rendered pages, and empty-metadata publish output uses `hostname:/repo/path` in the browser title and minimal visible header instead of generic `workgraph`. Walks the cascade: per-deployment --title/--byline/--abstract on `add` wins over project-level [project] config, which wins over the auto-discovered <wg_dir>/about.md, and when nothing is set anywhere the project-header block is OMITTED while the source title/header remain specific. Verifies the abstract is rendered as markdown (h2/ul/li from a markdown source). Skips when rsync is missing."
 timeout_seconds = 120
 
 [[scenario]]

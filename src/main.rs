@@ -2692,12 +2692,6 @@ fn main() -> Result<()> {
                 return commands::config_cmd::show_tiers(&workgraph_dir, cli.json);
             }
 
-            // Handle --tier <tier>=<model-id>
-            if let Some(ref tier_spec) = set_tier {
-                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-                return commands::config_cmd::set_tier(&workgraph_dir, write_scope, tier_spec);
-            }
-
             // Handle Matrix configuration
             if matrix
                 || homeserver.is_some()
@@ -2725,71 +2719,6 @@ fn main() -> Result<()> {
                 }
             } else if show_models {
                 commands::config_cmd::show_model_routing(&workgraph_dir, cli.json)
-            } else if set_model.is_some()
-                || set_provider.is_some()
-                || set_endpoint.is_some()
-                || role_model.is_some()
-                || role_provider.is_some()
-                || flip_inference_model.is_some()
-                || flip_comparison_model.is_some()
-                || flip_model.is_some()
-            {
-                // Merge --role-model/--role-provider (key=value) into set_model/set_provider format
-                let effective_model = if let Some(ref kv) = role_model {
-                    let parts: Vec<&str> = kv.splitn(2, '=').collect();
-                    if parts.len() != 2 {
-                        anyhow::bail!(
-                            "--role-model requires format <role>=<model>, got \"{}\"",
-                            kv
-                        );
-                    }
-                    Some(vec![parts[0].to_string(), parts[1].to_string()])
-                } else {
-                    set_model
-                };
-                let effective_provider = if let Some(ref kv) = role_provider {
-                    let parts: Vec<&str> = kv.splitn(2, '=').collect();
-                    if parts.len() != 2 {
-                        anyhow::bail!(
-                            "--role-provider requires format <role>=<provider>, got \"{}\"",
-                            kv
-                        );
-                    }
-                    Some(vec![parts[0].to_string(), parts[1].to_string()])
-                } else {
-                    set_provider
-                };
-                // Default scope for writes = Local
-                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-
-                // Handle --flip-model / --flip-inference-model / --flip-comparison-model
-                // These are shorthand for --set-model flip_inference/flip_comparison <model>
-                let flip_inf = flip_inference_model.or_else(|| flip_model.clone());
-                let flip_cmp = flip_comparison_model.or(flip_model);
-                if flip_inf.is_some() || flip_cmp.is_some() {
-                    commands::config_cmd::update_flip_models(
-                        &workgraph_dir,
-                        write_scope,
-                        flip_inf.as_deref(),
-                        flip_cmp.as_deref(),
-                    )?;
-                }
-
-                // Handle standard model routing if present
-                if effective_model.is_some()
-                    || effective_provider.is_some()
-                    || set_endpoint.is_some()
-                {
-                    commands::config_cmd::update_model_routing(
-                        &workgraph_dir,
-                        write_scope,
-                        effective_model.as_deref(),
-                        effective_provider.as_deref(),
-                        set_endpoint.as_deref(),
-                    )?;
-                }
-
-                Ok(())
             } else if list {
                 commands::config_cmd::list(&workgraph_dir, cli.json)
             } else if init {
@@ -2828,12 +2757,21 @@ fn main() -> Result<()> {
                     && eval_gate_threshold.is_none()
                     && eval_gate_all.is_none()
                     && flip_enabled.is_none()
+                    && flip_inference_model.is_none()
+                    && flip_comparison_model.is_none()
+                    && flip_model.is_none()
                     && flip_verification_threshold.is_none()
                     && chat_history.is_none()
                     && chat_history_max.is_none()
                     && tui_counters.is_none()
                     && retry_context_tokens.is_none()
-                    && endpoint.is_none())
+                    && endpoint.is_none()
+                    && set_tier.is_empty()
+                    && set_model.is_empty()
+                    && set_provider.is_empty()
+                    && set_endpoint.is_empty()
+                    && role_model.is_empty()
+                    && role_provider.is_empty())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -2876,6 +2814,15 @@ fn main() -> Result<()> {
                     tui_counters.as_deref(),
                     retry_context_tokens,
                     endpoint.as_deref(),
+                    &set_tier,
+                    &set_model,
+                    &set_provider,
+                    &set_endpoint,
+                    &role_model,
+                    &role_provider,
+                    flip_inference_model.as_deref(),
+                    flip_comparison_model.as_deref(),
+                    flip_model.as_deref(),
                     no_reload,
                 )
             }

@@ -1577,6 +1577,14 @@ impl ExecutorRegistry {
                         "--json".to_string(),
                         "--skip-git-repo-check".to_string(),
                         "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                        // Counter gpt-5.x catalog defaults that drive lazy completion:
+                        // low verbosity + truncation bias produce text-only "summaries" instead of tool calls.
+                        "-c".to_string(),
+                        "model_verbosity=\"high\"".to_string(),
+                        "-c".to_string(),
+                        "tool_output_token_limit=32000".to_string(),
+                        "-c".to_string(),
+                        r#"developer_instructions="You are a non-interactive batch worker. You MUST complete the task by writing files to disk and creating at least one git commit before declaring done. A prose summary without file writes or commits is a task failure. Use shell tools (Read, Write, Edit, Bash) to do real work; do not describe work in the response.""#.to_string(),
                     ],
                     env: HashMap::new(),
                     // No default template — uses scope-based build_prompt() assembly.
@@ -2266,15 +2274,18 @@ args = ["--custom-flag"]
 
         assert_eq!(config.executor.executor_type, "codex");
         assert_eq!(config.executor.command, "codex");
-        assert_eq!(
-            config.executor.args,
-            vec![
-                "exec".to_string(),
-                "--json".to_string(),
-                "--skip-git-repo-check".to_string(),
-                "--dangerously-bypass-approvals-and-sandbox".to_string(),
-            ]
-        );
+        // Base invocation flags
+        assert_eq!(&config.executor.args[0..4], &[
+            "exec".to_string(),
+            "--json".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        ]);
+        // Completion-forcing overrides added for gpt-5.x lazy-completion fix
+        let args_str = config.executor.args.join(" ");
+        assert!(args_str.contains("model_verbosity"), "should include model_verbosity override");
+        assert!(args_str.contains("tool_output_token_limit"), "should include tool_output_token_limit override");
+        assert!(args_str.contains("developer_instructions"), "should include developer_instructions override");
         assert_eq!(
             config.executor.working_dir,
             Some("{{working_dir}}".to_string())
