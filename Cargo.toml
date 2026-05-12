@@ -63,8 +63,9 @@ cron = "0.12"
 log = "0.4"
 env_logger = "0.11"
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
-rquest = { version = "5", features = ["json", "gzip", "brotli"] }
-rquest-util = "2"
+# rquest 5.x is yanked on crates.io; 3.0.0 is the newest non-yanked release.
+# It provides built-in Chrome impersonation, so no rquest-util shim is needed.
+rquest = { version = "3.0.0", features = ["json", "gzip", "brotli", "deflate", "zstd"] }
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }

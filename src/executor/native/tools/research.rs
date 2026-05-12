@@ -345,7 +345,7 @@ async fn fetch_page_content(url: &str) -> Result<String, String> {
         Err(_) => {
             // Chrome not available — fall back to rquest
             let client = rquest::Client::builder()
-                .emulation(rquest_util::Emulation::Chrome136)
+                .impersonate(rquest::Impersonate::Chrome131)
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .map_err(|e| format!("client: {}", e))?;

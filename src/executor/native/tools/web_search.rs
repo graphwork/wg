@@ -914,7 +914,7 @@ fn build_client() -> Result<rquest::Client, String> {
     // TLS fingerprinting to distinguish scripts from browsers see
     // us as Chrome, not as rustls.
     rquest::Client::builder()
-        .emulation(rquest_util::Emulation::Chrome136)
+        .impersonate(rquest::Impersonate::Chrome131)
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
@@ -1025,7 +1025,7 @@ pub(crate) fn is_google_news_redirect(url: &str) -> bool {
 
 /// Resolve a Google News RSS redirect URL to the actual article URL.
 ///
-/// Uses rquest with Chrome136 TLS/HTTP2 fingerprint and no-redirect
+/// Uses rquest with Chrome131 TLS/HTTP2 fingerprint and no-redirect
 /// policy so we capture the `Location` header from Google's 302.
 /// When Google believes it's talking to a browser, the Location
 /// points at the real publisher URL. A short timeout keeps the
@@ -1036,7 +1036,7 @@ pub(crate) fn is_google_news_redirect(url: &str) -> bool {
 /// URL in that case rather than drop the result.
 pub(crate) async fn resolve_google_news_redirect(url: &str) -> Option<String> {
     let client = rquest::Client::builder()
-        .emulation(rquest_util::Emulation::Chrome136)
+        .impersonate(rquest::Impersonate::Chrome131)
         .redirect(rquest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(5))
         .build()

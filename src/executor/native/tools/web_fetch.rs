@@ -4,7 +4,7 @@
 //!
 //! Two-tier fetch architecture:
 //!
-//! 1. **`rquest` with Chrome-136 emulation (primary path)**. Presents
+//! 1. **`rquest` with Chrome-131 impersonation (primary path)**. Presents
 //!    as a real Chrome browser at the TLS (JA3/JA4), HTTP/2, and header
 //!    levels — not just User-Agent spoofing. Most anti-bot systems that
 //!    block plain `reqwest` cannot distinguish us from a human browsing
@@ -29,7 +29,7 @@
 //! the session for user inspection.
 //!
 //! Measurement: the metadata response includes `path_used`
-//! (`rquest_chrome136` | `headless_chrome`) and `duration_ms` per
+//! (`rquest_chrome131` | `headless_chrome`) and `duration_ms` per
 //! fetch so sessions can be analyzed later to measure how often the
 //! browser fallback is actually needed.
 
@@ -158,19 +158,19 @@ impl Tool for WebFetchTool {
 
         let overall_started = Instant::now();
 
-        // Primary path: rquest with Chrome-136 emulation.
+        // Primary path: rquest with Chrome-131 impersonation.
         let primary_result = fetch_via_rquest(&url_str, self.fetch_timeout_secs).await;
 
         let fetched = match primary_result {
-            Ok(body) => (body, "rquest_chrome136"),
+            Ok(body) => (body, "rquest_chrome131"),
             Err(primary_err) => {
-                // rquest-with-Chrome-emulation failed. Try headless Chrome.
+                // rquest-with-Chrome-impersonation failed. Try headless Chrome.
                 match fetch_via_browser(&url_str).await {
                     Ok(body) => (FetchedBody::Html(body), "headless_chrome"),
                     Err(browser_err) => {
                         return ToolOutput::error(format!(
                             "Failed to fetch URL (both paths):\n\
-                             - rquest_chrome136: {}\n\
+                             - rquest_chrome131: {}\n\
                              - headless_chrome: {}\n\n\
                              If the URL came from a web_search result, this is a transient \
                              failure — retry or use `bash` with `curl` as a last resort. If \
@@ -402,7 +402,7 @@ enum FetchedBody {
 
 async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<FetchedBody, String> {
     let client = rquest::Client::builder()
-        .emulation(rquest_util::Emulation::Chrome136)
+        .impersonate(rquest::Impersonate::Chrome131)
         .timeout(Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| format!("client build: {}", e))?;
