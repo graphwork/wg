@@ -386,7 +386,7 @@ fn slug_from_url(url: &str) -> String {
     }
 }
 
-/// Fetch via `rquest` with Chrome-136 emulation. This is the primary
+/// Fetch via `rquest` with Chrome-131 impersonation. This is the primary
 /// path. Returns the response body on HTTP 2xx, otherwise an error
 /// with the status or underlying reqwest error.
 /// Result of a fetch: either HTML text or raw bytes with a content type.

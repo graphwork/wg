@@ -3342,12 +3342,12 @@ pub enum ProfileCommands {
         #[arg(long)]
         premium: Option<String>,
     },
-    /// Activate a named profile (writes active-profile pointer, hot-reloads daemon)
+    /// Activate a named profile (clears local routing pins, hot-reloads daemon)
     Use {
         /// Profile name to activate, or omit with --clear to deactivate
         name: Option<String>,
 
-        /// Skip sending IPC reload to daemon (just write the active-profile pointer)
+        /// Skip sending IPC reload to daemon (still writes profile config and clears local routing pins)
         #[arg(long)]
         no_reload: bool,
 

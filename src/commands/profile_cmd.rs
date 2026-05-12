@@ -371,7 +371,7 @@ pub fn show(
     }
 
     println!();
-    println!("  Active config (profile is a file swap, not an overlay):");
+    println!("  Active config (named profile is authoritative for routing):");
     println!("    agent.model      = {}", config.agent.model);
     println!(
         "    dispatcher.model = {}",
@@ -622,12 +622,13 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
 // ── Named profile commands ────────────────────────────────────────────────────
 
 /// Activate a named profile: copy `~/.wg/profiles/<name>.toml` over
-/// `~/.wg/config.toml` (the global config), update the active-pointer file,
+/// `~/.wg/config.toml` (the global config), remove project-local routing keys
+/// that would shadow the profile, update the active-pointer file, and
 /// hot-reload the daemon.
 ///
 /// **Profile-as-swap, not overlay** (2026-05 pivot): the profile file IS the
 /// global config. No merge logic, no resolution chain. What's in the profile
-/// file is exactly what runs.
+/// file is exactly what runs. Local non-routing settings are preserved.
 pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool) -> Result<()> {
     if clear || name.is_none() {
         let prev = named_profile::active().unwrap_or(None);
@@ -679,6 +680,7 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
 
     let prev = named_profile::active().unwrap_or(None);
     let written = named_profile::apply_profile_as_global_config(profile_name)?;
+    let local_cleanup = named_profile::clear_local_profile_routing_overrides(dir)?;
     named_profile::set_active(Some(profile_name))?;
 
     match prev.as_deref() {
@@ -700,6 +702,17 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
             written.display(),
             profile_name
         ),
+    }
+
+    if let Some(cleanup) = local_cleanup {
+        println!(
+            "  Cleared local routing overrides from {}: {}",
+            cleanup.path.display(),
+            cleanup.removed_keys.join(", ")
+        );
+        println!("  Local config backup: {}", cleanup.backup_path.display());
+    } else {
+        println!("  No local routing overrides needed clearing.");
     }
 
     if !no_reload {
@@ -780,9 +793,8 @@ pub fn create_profile(
     let base_content = if let Some(from_name) = from {
         let from_path = named_profile::profile_path(from_name)?;
         if from_path.exists() {
-            std::fs::read_to_string(&from_path).with_context(|| {
-                format!("Failed to read source profile {}", from_path.display())
-            })?
+            std::fs::read_to_string(&from_path)
+                .with_context(|| format!("Failed to read source profile {}", from_path.display()))?
         } else if let Some(tmpl) = named_profile::starter_template(from_name) {
             tmpl.to_string()
         } else {
@@ -932,7 +944,11 @@ pub fn diff_profiles(a: &str, b: Option<&str>) -> Result<()> {
     let (label_b, toml_b) = if let Some(b_name) = b {
         let path_b = named_profile::profile_path(b_name)?;
         let content = std::fs::read_to_string(&path_b).with_context(|| {
-            format!("Failed to read profile '{}' at {}", b_name, path_b.display())
+            format!(
+                "Failed to read profile '{}' at {}",
+                b_name,
+                path_b.display()
+            )
         })?;
         (b_name.to_string(), content)
     } else {

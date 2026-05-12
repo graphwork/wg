@@ -3720,16 +3720,31 @@ fn emit_legacy_warnings(warnings: &[String]) {
 /// set `[llm_endpoints] inherit_global = true` in local config to keep the
 /// legacy "global cascades into local" behavior.
 ///
+/// Active named profiles are the exception: when a profile is active and the
+/// local config does not explicitly declare its own endpoints or
+/// `inherit_global = false`, the profile's global endpoints are part of the
+/// selected route and should flow into the effective config.
+///
 /// This mutates `global_val` in place to drop the `endpoints` array from its
 /// `[llm_endpoints]` table when local hasn't opted in. Call this BEFORE
 /// `merge_toml` so the deep-merge sees an effectively-empty global endpoints
 /// list and the merged config reflects only what local declared.
-fn apply_endpoint_inheritance_policy(global_val: &mut toml::Value, local_val: &toml::Value) {
-    let inherit = local_val
+fn apply_endpoint_inheritance_policy(
+    global_val: &mut toml::Value,
+    local_val: &toml::Value,
+    active_named_profile: bool,
+) {
+    let explicit_inherit = local_val
         .get("llm_endpoints")
         .and_then(|t| t.get("inherit_global"))
-        .and_then(|b| b.as_bool())
-        .unwrap_or(false);
+        .and_then(|b| b.as_bool());
+    let local_declares_endpoints = local_val
+        .get("llm_endpoints")
+        .and_then(|t| t.get("endpoints"))
+        .and_then(|v| v.as_array())
+        .is_some();
+    let inherit =
+        explicit_inherit.unwrap_or_else(|| active_named_profile && !local_declares_endpoints);
     if inherit {
         return;
     }
@@ -3991,7 +4006,8 @@ impl Config {
             &mut warnings,
         );
         emit_legacy_warnings(&warnings);
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
         Ok(merge_toml(global_val, local_val))
     }
 
@@ -4042,7 +4058,8 @@ impl Config {
             .and_then(|m| m.as_str())
             .is_some();
 
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
         let mut merged = merge_toml(global_val.clone(), local_val.clone());
         strip_global_only_model_roles(&mut merged, &global_val, &local_val);
         let mut config: Config = merged
@@ -4054,10 +4071,10 @@ impl Config {
         // `wg profile use <name>` copies `~/.wg/profiles/<name>.toml` over
         // `~/.wg/config.toml`, so by the time we read the global config above
         // it already reflects the active profile. The `~/.wg/active-profile`
-        // pointer is purely informational (used by `wg profile show` /
-        // `wg profile list` to label which snapshot is in effect). No overlay
-        // / merge logic lives here — that was the source of the silent
-        // "[agent].model dropped" bug.
+        // pointer is used only for user-facing labels and for the endpoint
+        // inheritance exception above; model routing authority is handled by
+        // `wg profile use`, which removes local model-routing keys that would
+        // shadow the selected profile.
 
         config.validate_model_format()?;
 
@@ -4429,7 +4446,8 @@ impl Config {
         // source map reflects the effective merged config: a global endpoint
         // entry that's been suppressed because local opted out should not
         // appear as "from global" in `wg config --list`.
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
 
         // Record sources: global first, then local overwrites
         let mut sources = BTreeMap::new();
@@ -7667,7 +7685,7 @@ model = "claude:haiku"
 "#,
         )
         .unwrap();
-        apply_endpoint_inheritance_policy(&mut global, &local);
+        apply_endpoint_inheritance_policy(&mut global, &local, false);
         let merged = merge_toml(global, local);
         let config: Config = merged.try_into().unwrap();
         assert!(
@@ -7698,7 +7716,7 @@ is_default = true
 "#,
         )
         .unwrap();
-        apply_endpoint_inheritance_policy(&mut global, &local);
+        apply_endpoint_inheritance_policy(&mut global, &local, false);
         let merged = merge_toml(global, local);
         let config: Config = merged.try_into().unwrap();
         assert_eq!(config.llm_endpoints.endpoints.len(), 1);
@@ -7721,7 +7739,7 @@ inherit_global = true
 "#,
         )
         .unwrap();
-        apply_endpoint_inheritance_policy(&mut global, &local);
+        apply_endpoint_inheritance_policy(&mut global, &local, false);
         let merged = merge_toml(global, local);
         let config: Config = merged.try_into().unwrap();
         assert_eq!(
@@ -7755,7 +7773,7 @@ is_default = true
 "#,
         )
         .unwrap();
-        apply_endpoint_inheritance_policy(&mut global, &local);
+        apply_endpoint_inheritance_policy(&mut global, &local, false);
         let merged = merge_toml(global, local);
         let config: Config = merged.try_into().unwrap();
         assert_eq!(config.llm_endpoints.endpoints.len(), 1);
@@ -7938,7 +7956,7 @@ is_default = true
 
         let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
         let local_val = Config::load_toml_value(local_path.path()).unwrap();
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, false);
         let merged = merge_toml(global_val, local_val);
 
         let config: Config = merged.try_into().unwrap();
@@ -7980,7 +7998,7 @@ inherit_global = true
 
         let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
         let local_val = Config::load_toml_value(local_path.path()).unwrap();
-        apply_endpoint_inheritance_policy(&mut global_val, &local_val);
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, false);
         let merged = merge_toml(global_val, local_val);
 
         let config: Config = merged.try_into().unwrap();
@@ -7991,6 +8009,80 @@ inherit_global = true
         );
         assert_eq!(config.llm_endpoints.endpoints[0].provider, "openrouter");
         assert!(config.llm_endpoints.inherit_global);
+    }
+
+    #[test]
+    fn test_active_named_profile_endpoints_propagate_by_default() {
+        // Named profiles are authoritative route selections. When a profile is
+        // active, its global endpoints should be visible in a repo that has no
+        // local endpoint table, so `wg profile use nex` is enough for routing.
+        let global_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            global_path.path(),
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "default"
+provider = "oai-compat"
+url = "http://127.0.0.1:8088"
+is_default = true
+"#,
+        )
+        .unwrap();
+
+        let local_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(local_path.path(), "").unwrap();
+
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, true);
+        let merged = merge_toml(global_val, local_val);
+
+        let config: Config = merged.try_into().unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].provider, "oai-compat");
+        assert_eq!(
+            config.llm_endpoints.endpoints[0].url.as_deref(),
+            Some("http://127.0.0.1:8088")
+        );
+    }
+
+    #[test]
+    fn test_active_named_profile_endpoints_can_be_explicitly_blocked() {
+        let global_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            global_path.path(),
+            r#"
+[llm_endpoints]
+[[llm_endpoints.endpoints]]
+name = "default"
+provider = "oai-compat"
+url = "http://127.0.0.1:8088"
+is_default = true
+"#,
+        )
+        .unwrap();
+
+        let local_path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            local_path.path(),
+            r#"
+[llm_endpoints]
+inherit_global = false
+"#,
+        )
+        .unwrap();
+
+        let mut global_val = Config::load_toml_value(global_path.path()).unwrap();
+        let local_val = Config::load_toml_value(local_path.path()).unwrap();
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, true);
+        let merged = merge_toml(global_val, local_val);
+
+        let config: Config = merged.try_into().unwrap();
+        assert!(
+            config.llm_endpoints.endpoints.is_empty(),
+            "explicit inherit_global=false should block active profile endpoints"
+        );
     }
 
     #[test]

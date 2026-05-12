@@ -9,8 +9,8 @@
 //! merge logic, no resolution chain — what's in the profile file is exactly
 //! what runs.
 //!
-//! Project-local `.wg/config.toml` continues to override the global as it
-//! always has; profile = global default snapshot, not a per-project override.
+//! `wg profile use <name>` also removes project-local model-routing keys that
+//! would shadow the selected profile. Unrelated local settings remain local.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -58,6 +58,17 @@ pub struct NamedProfile {
     pub description: Option<String>,
     /// The complete config snapshot.
     pub config: Config,
+}
+
+/// Summary of project-local routing keys removed by profile activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRoutingCleanup {
+    /// The local `.wg/config.toml` path that was rewritten.
+    pub path: PathBuf,
+    /// Backup written before changing the local config.
+    pub backup_path: PathBuf,
+    /// Dotted/table keys removed from the local config.
+    pub removed_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -290,7 +301,11 @@ pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
         load(name)?;
         // If load() somehow succeeded but the file path doesn't exist, that's
         // a bug — bail with a clear message.
-        anyhow::bail!("Profile '{}' source file not found at {}", name, src.display());
+        anyhow::bail!(
+            "Profile '{}' source file not found at {}",
+            name,
+            src.display()
+        );
     }
     let dst = Config::global_config_path()?;
     if let Some(parent) = dst.parent() {
@@ -316,6 +331,137 @@ pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
         )
     })?;
     Ok(dst)
+}
+
+/// Remove project-local model/provider routing keys that would shadow an
+/// active named profile.
+///
+/// Named profiles are complete global config snapshots, but the regular
+/// global+local merge means a repo-local `.wg/config.toml` can still pin
+/// stale model routes. Profile activation is authoritative for routing, so
+/// `wg profile use <name>` calls this helper for the current repository.
+///
+/// This intentionally removes only routing keys:
+/// - top-level legacy `profile`
+/// - `[agent].model` / `[agent].executor`
+/// - `[dispatcher]` or legacy `[coordinator]` model/executor/provider
+/// - entire `[tiers]`
+/// - entire `[models]`
+/// - local `llm_endpoints` endpoint routing
+///
+/// Other local settings, including agency flags, TUI preferences,
+/// `dispatcher.max_agents`, worktree settings, MCP config, etc. are preserved.
+pub fn clear_local_profile_routing_overrides(
+    workgraph_dir: &Path,
+) -> Result<Option<LocalRoutingCleanup>> {
+    let path = workgraph_dir.join("config.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read local config {}", path.display()))?;
+    let mut value: toml::Value = content.parse().with_context(|| {
+        format!(
+            "Failed to parse local config {} before profile switch",
+            path.display()
+        )
+    })?;
+
+    let mut removed_keys = Vec::new();
+    let Some(root) = value.as_table_mut() else {
+        return Ok(None);
+    };
+
+    remove_top_level(root, "profile", &mut removed_keys);
+    remove_section_keys(root, "agent", &["model", "executor"], &mut removed_keys);
+    remove_section_keys(
+        root,
+        "dispatcher",
+        &["model", "executor", "provider"],
+        &mut removed_keys,
+    );
+    remove_section_keys(
+        root,
+        "coordinator",
+        &["model", "executor", "provider"],
+        &mut removed_keys,
+    );
+    remove_top_level(root, "tiers", &mut removed_keys);
+    remove_top_level(root, "models", &mut removed_keys);
+    remove_section_keys(
+        root,
+        "llm_endpoints",
+        &["endpoints", "inherit_global"],
+        &mut removed_keys,
+    );
+
+    if removed_keys.is_empty() {
+        return Ok(None);
+    }
+
+    let backup_path = backup_local_config(&path)?;
+    let cleaned = toml::to_string_pretty(&value).with_context(|| {
+        format!(
+            "Failed to serialize cleaned local config {} after removing {:?}",
+            path.display(),
+            removed_keys
+        )
+    })?;
+    std::fs::write(&path, cleaned)
+        .with_context(|| format!("Failed to write cleaned local config {}", path.display()))?;
+
+    Ok(Some(LocalRoutingCleanup {
+        path,
+        backup_path,
+        removed_keys,
+    }))
+}
+
+fn remove_top_level(
+    root: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    removed_keys: &mut Vec<String>,
+) {
+    if root.remove(key).is_some() {
+        removed_keys.push(key.to_string());
+    }
+}
+
+fn remove_section_keys(
+    root: &mut toml::map::Map<String, toml::Value>,
+    section: &str,
+    keys: &[&str],
+    removed_keys: &mut Vec<String>,
+) {
+    let Some(table) = root.get_mut(section).and_then(|v| v.as_table_mut()) else {
+        return;
+    };
+
+    for key in keys {
+        if table.remove(*key).is_some() {
+            removed_keys.push(format!("{}.{}", section, key));
+        }
+    }
+
+    if table.is_empty() {
+        root.remove(section);
+    }
+}
+
+fn backup_local_config(path: &Path) -> Result<PathBuf> {
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%dT%H-%M-%SZ")
+        .to_string();
+    let backup_path = path.with_file_name(format!("config.toml.bak-profile-{}", ts));
+    std::fs::copy(path, &backup_path).with_context(|| {
+        format!(
+            "Failed to back up local config {} to {}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+    Ok(backup_path)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -377,7 +523,13 @@ pub fn active_profile_model() -> Option<String> {
 pub fn validate_file(path: &Path) -> Result<NamedProfile> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    parse_profile(&content, path, path.file_stem().and_then(|s| s.to_str()).unwrap_or("(profile)"))
+    parse_profile(
+        &content,
+        path,
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("(profile)"),
+    )
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -440,7 +592,10 @@ is_default = true
         let prof = parse_profile(toml, &path, "test").unwrap();
         assert_eq!(prof.description.as_deref(), Some("Full profile"));
         assert_eq!(prof.config.agent.model, "claude:opus");
-        assert_eq!(prof.config.coordinator.model.as_deref(), Some("claude:opus"));
+        assert_eq!(
+            prof.config.coordinator.model.as_deref(),
+            Some("claude:opus")
+        );
         assert_eq!(prof.config.tiers.fast.as_deref(), Some("claude:haiku"));
         assert_eq!(prof.config.llm_endpoints.endpoints.len(), 1);
     }
@@ -469,12 +624,23 @@ is_default = true
         // this by making the file itself the authoritative source.
         let prof = parse_profile(STARTER_CODEX, Path::new("codex.toml"), "codex").unwrap();
         assert_eq!(prof.config.agent.model, "codex:gpt-5.5");
-        assert_eq!(prof.config.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-        assert_eq!(prof.config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(
+            prof.config.coordinator.model.as_deref(),
+            Some("codex:gpt-5.5")
+        );
+        assert_eq!(
+            prof.config.tiers.fast.as_deref(),
+            Some("codex:gpt-5.4-mini")
+        );
         assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
         assert_eq!(prof.config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
         // Per-role overrides for agency meta-tasks should also be codex models.
-        let eval = prof.config.models.evaluator.as_ref().expect("evaluator set");
+        let eval = prof
+            .config
+            .models
+            .evaluator
+            .as_ref()
+            .expect("evaluator set");
         assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.4-mini"));
         let assigner = prof.config.models.assigner.as_ref().expect("assigner set");
         assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.4-mini"));
@@ -513,8 +679,11 @@ is_default = true
         let _tmp = with_home(|| {
             save_raw("codex", STARTER_CODEX).unwrap();
             let dst = Config::global_config_path().unwrap();
-            std::fs::write(&dst, "# pre-existing user content\n[agent]\nmodel = \"claude:opus\"\n")
-                .unwrap();
+            std::fs::write(
+                &dst,
+                "# pre-existing user content\n[agent]\nmodel = \"claude:opus\"\n",
+            )
+            .unwrap();
             apply_profile_as_global_config("codex").unwrap();
             // At least one backup file must exist alongside config.toml.
             let dir = dst.parent().unwrap();
@@ -545,10 +714,128 @@ is_default = true
             // Swap.
             apply_profile_as_global_config("codex").unwrap();
             // Re-load the global config from disk and verify codex models.
-            let cfg = Config::load_global().unwrap().expect("global must be present");
+            let cfg = Config::load_global()
+                .unwrap()
+                .expect("global must be present");
             assert_eq!(cfg.agent.model, "codex:gpt-5.5");
             assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
             assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+        });
+    }
+
+    #[test]
+    fn test_clear_local_profile_routing_overrides_preserves_unrelated_settings() {
+        let _tmp = with_home(|| {
+            save_raw("codex", STARTER_CODEX).unwrap();
+            apply_profile_as_global_config("codex").unwrap();
+
+            let project = tempfile::tempdir().unwrap();
+            let wg_dir = project.path().join(".wg");
+            std::fs::create_dir_all(&wg_dir).unwrap();
+            std::fs::write(
+                wg_dir.join("config.toml"),
+                r#"
+profile = "openai"
+
+[agent]
+model = "claude:opus"
+executor = "claude"
+interval = 13
+
+[dispatcher]
+model = "claude:opus"
+executor = "claude"
+provider = "claude"
+max_agents = 3
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+
+[models.default]
+model = "claude:opus"
+
+[models.evaluator]
+model = "claude:haiku"
+
+[llm_endpoints]
+inherit_global = false
+
+[[llm_endpoints.endpoints]]
+name = "stale"
+provider = "openrouter"
+url = "https://stale.invalid/v1"
+is_default = true
+
+[agency]
+auto_assign = false
+auto_evaluate = false
+assigner_agent = "local-agent"
+"#,
+            )
+            .unwrap();
+
+            let cleanup = clear_local_profile_routing_overrides(&wg_dir)
+                .unwrap()
+                .expect("local routing keys should be removed");
+
+            for key in [
+                "profile",
+                "agent.model",
+                "agent.executor",
+                "dispatcher.model",
+                "dispatcher.executor",
+                "dispatcher.provider",
+                "tiers",
+                "models",
+                "llm_endpoints.endpoints",
+                "llm_endpoints.inherit_global",
+            ] {
+                assert!(
+                    cleanup.removed_keys.contains(&key.to_string()),
+                    "cleanup should report removed key {key}; got {:?}",
+                    cleanup.removed_keys
+                );
+            }
+            assert!(cleanup.backup_path.exists(), "backup file must exist");
+
+            let cleaned = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+            assert!(
+                cleaned.contains("interval = 13"),
+                "agent.interval must be preserved:\n{}",
+                cleaned
+            );
+            assert!(
+                cleaned.contains("max_agents = 3"),
+                "dispatcher.max_agents must be preserved:\n{}",
+                cleaned
+            );
+            assert!(
+                cleaned.contains("assigner_agent = \"local-agent\""),
+                "agency settings must be preserved:\n{}",
+                cleaned
+            );
+            assert!(
+                !cleaned.contains("claude:opus") && !cleaned.contains("claude:haiku"),
+                "stale claude model pins must be removed:\n{}",
+                cleaned
+            );
+            assert!(
+                !cleaned.contains("[tiers]") && !cleaned.contains("[models"),
+                "local tiers/models routing tables must be removed:\n{}",
+                cleaned
+            );
+
+            let merged = Config::load_merged(&wg_dir).unwrap();
+            assert_eq!(merged.agent.model, "codex:gpt-5.5");
+            assert_eq!(merged.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+            assert_eq!(merged.coordinator.effective_executor(), "codex");
+            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(merged.coordinator.max_agents, 3);
+            assert_eq!(merged.agent.interval, 13);
+            assert!(!merged.agency.auto_assign);
+            assert_eq!(merged.agency.assigner_agent.as_deref(), Some("local-agent"));
         });
     }
 
@@ -634,7 +921,11 @@ is_default = true
         let _tmp = with_home(|| {
             // Simulate a user who ran `wg profile init-starters` on an older
             // build that wrote `wgnext.toml` and never re-ran init-starters.
-            save_raw(LEGACY_NEX_NAME, "description = \"legacy\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n").unwrap();
+            save_raw(
+                LEGACY_NEX_NAME,
+                "description = \"legacy\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n",
+            )
+            .unwrap();
             // Loading by the legacy name must still succeed (backward compat).
             let loaded = load(LEGACY_NEX_NAME).unwrap();
             assert_eq!(loaded.description.as_deref(), Some("legacy"));
@@ -644,7 +935,11 @@ is_default = true
     #[test]
     fn test_load_wgnext_falls_back_to_nex_when_legacy_file_absent() {
         let _tmp = with_home(|| {
-            save_raw("nex", "description = \"canonical-nex\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n").unwrap();
+            save_raw(
+                "nex",
+                "description = \"canonical-nex\"\n[agent]\nmodel = \"nex:qwen3-coder-30b\"\n",
+            )
+            .unwrap();
             assert!(!profile_path(LEGACY_NEX_NAME).unwrap().exists());
 
             let loaded = load(LEGACY_NEX_NAME).unwrap();

@@ -767,6 +767,15 @@ description = "Regression for fix-profile-application: the live terminal flow `w
 timeout_seconds = 60
 
 [[scenario]]
+name = "profile_switch_authoritative_hot_reload"
+script = "scenarios/profile_switch_authoritative_hot_reload.sh"
+owners = [
+    "make-profile-switching",
+]
+description = "Regression for make-profile-switching: with a running daemon and stale repo-local Claude pins in [agent], [dispatcher], [tiers], and [models.*], `wg profile use codex` alone clears local routing pins, preserves unrelated local settings, makes profile show/config --merged/service status agree on codex, and `wg profile use claude` hot-reloads back to Claude."
+timeout_seconds = 60
+
+[[scenario]]
 name = "profile_diff"
 script = "scenarios/profile_diff.sh"
 owners = [
