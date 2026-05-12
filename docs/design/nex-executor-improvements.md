@@ -8,7 +8,7 @@ inotify, `wg session` CLI.
 
 ## Goal
 
-**Make the native executor (`wg nex`) strong enough that workgraph
+**Make the native executor (`wg nex`) strong enough that wg
 can dispatch agents to work on itself without a human in the loop.**
 
 Today, `executor=claude` via `claude --print` is the billing-
@@ -56,7 +56,7 @@ an MCP server." Every serious peer executor has MCP (Claude Code,
 OpenCode, Goose, Amplifier, Cline, Nanobot). Without it, WGNEX is
 on a divergent trajectory.
 
-For self-bootstrap specifically: workgraph tasks that need to
+For self-bootstrap specifically: wg tasks that need to
 search GitHub, query Linear, write to Slack, read Sentry errors,
 etc. — all of these become reachable the moment MCP lands, without
 us writing Rust code for each.

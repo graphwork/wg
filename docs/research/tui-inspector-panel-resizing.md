@@ -12,7 +12,7 @@ Crossterm provides three mouse tracking modes, controlled via ANSI escape sequen
 | Button (1002) | `\x1b[?1002h` | Click + Drag (button-held motion) |
 | Any-event (1003) | `\x1b[?1003h` | Click + Drag + Moved (all motion) |
 
-The workgraph TUI already uses modes 1002/1003 selectively (`event.rs:30`, `set_mouse_capture()`). Mode 1003 is enabled on Termux where touch drag events may lack the button-held flag.
+The wg TUI already uses modes 1002/1003 selectively (`event.rs:30`, `set_mouse_capture()`). Mode 1003 is enabled on Termux where touch drag events may lack the button-held flag.
 
 **Relevant `MouseEventKind` variants:**
 - `Down(MouseButton)` — button press at (col, row)

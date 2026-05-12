@@ -29,7 +29,7 @@ The adapter reimplements the entire agent execution loop that native wg provides
 
 | Bypass Point | File:Line | What adapter does | What native wg does |
 |---|---|---|---|
-| **Graph init** | adapter.py:1300–1311 | `tempfile.mkdtemp()` + `wg init` on host | Graph lives in project `.workgraph/` directory |
+| **Graph init** | adapter.py:1300–1311 | `tempfile.mkdtemp()` + `wg init` on host | Graph lives in project `.wg/` directory |
 | **Graph lifecycle** | adapter.py:1592–1603 | `shutil.copytree()` to logs, then `shutil.rmtree()` | Persistent graph; no cleanup |
 | **Root task creation** | adapter.py:1365–1370 (F), 1375–1380 (E), etc. | `wg add` with `uuid.uuid4().hex[:8]` ID | Tasks created by user/coordinator with meaningful IDs |
 | **Agency bootstrap** | adapter.py:1313–1327 (D), 1330–1345 (E) | `wg agency init` + hardcoded agent create | Native uses `wg agency init` interactively; agents assigned via `.assign-*` pipeline |
@@ -172,7 +172,7 @@ Harbor invocation: `harbor run --agent-import-path wg.adapter:ConditionBAgent`
 
 ### Creation (adapter.py:1299–1311)
 1. `tempfile.mkdtemp(prefix="tb-wg-")` → e.g. `/tmp/tb-wg-abc123/`
-2. `wg init` inside that temp dir → `/tmp/tb-wg-abc123/.workgraph/`
+2. `wg init` inside that temp dir → `/tmp/tb-wg-abc123/.wg/`
 3. (D/E only) `wg agency init` + `wg agent create`
 4. Root task created via `wg add` with UUID-based ID
 
@@ -194,12 +194,12 @@ Harbor invocation: `harbor run --agent-import-path wg.adapter:ConditionBAgent`
 - **WG usage:** Direct `subprocess.run(["wg", ...])` calls (line 165–175)
 - **Conditions A, C, D, E** defined with context_scope/tags (lines 128–149)
 - **Creates fan-out tasks** (one per condition×task×replica) + fan-in results collection
-- **NOT using the adapter** — this is a separate path that creates tasks in the project's real workgraph
+- **NOT using the adapter** — this is a separate path that creates tasks in the project's real wg
 
 ### `terminal-bench/tb_collect_results.py`
 - **Purpose:** Fan-in analysis — reads FLIP scores, eval scores, verify results
 - **WG usage:** `subprocess.run(["wg", "show", task_id])` to get task status
-- **Reads:** `.workgraph/agency/evaluations/` for FLIP and LLM evaluation data
+- **Reads:** `.wg/agency/evaluations/` for FLIP and LLM evaluation data
 
 ### `terminal-bench/wg/tb_logging.py`
 - **Purpose:** Structured NDJSON logging for all conditions

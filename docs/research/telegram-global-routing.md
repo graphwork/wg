@@ -1,6 +1,6 @@
 # Global Telegram Bot: Shared Inbound Routing Across Repos
 
-Design document for a single Telegram bot shared by multiple `wg service` daemons across different workgraph repos.
+Design document for a single Telegram bot shared by multiple `wg service` daemons across different wg repos.
 
 ---
 
@@ -25,15 +25,15 @@ Design document for a single Telegram bot shared by multiple `wg service` daemon
 
 - **Global telegram-bridge daemon (separate process):** Adds operational complexity — users must remember to start a separate bridge daemon alongside `wg service`. If it crashes, all repos lose Telegram. Creates a management burden for a tool that emphasizes simplicity.
 
-- **Webhook mode:** Requires exposing a port (ngrok, Cloudflare tunnel, or public IP). Most workgraph users run on laptops/dev machines where exposing a port is unacceptable. Also conflicts with multiple repos wanting the same webhook endpoint.
+- **Webhook mode:** Requires exposing a port (ngrok, Cloudflare tunnel, or public IP). Most wg users run on laptops/dev machines where exposing a port is unacceptable. Also conflicts with multiple repos wanting the same webhook endpoint.
 
 **Chosen approach: Poll-lock leader election**
 
-The first `wg service` daemon to start acquires an exclusive file lock on `~/.config/workgraph/telegram-poll.lock`. That daemon becomes the **poll leader** — it runs the `getUpdates` long-polling loop and routes inbound messages to the correct repo via the shared routing state file. All other daemons are **outbound-only** — they can send messages but do not poll.
+The first `wg service` daemon to start acquires an exclusive file lock on `~/.config/wg/telegram-poll.lock`. That daemon becomes the **poll leader** — it runs the `getUpdates` long-polling loop and routes inbound messages to the correct repo via the shared routing state file. All other daemons are **outbound-only** — they can send messages but do not poll.
 
 **Mechanics:**
 
-1. On startup, each service daemon attempts `flock(LOCK_EX | LOCK_NB)` on `~/.config/workgraph/telegram-poll.lock`.
+1. On startup, each service daemon attempts `flock(LOCK_EX | LOCK_NB)` on `~/.config/wg/telegram-poll.lock`.
 2. If the lock is acquired → this daemon is the poll leader. It spawns the `getUpdates` loop.
 3. If the lock is already held → this daemon operates outbound-only.
 4. If the poll leader exits (daemon stops, crashes), the OS releases the flock. The next daemon to attempt the lock wins. Daemons should re-attempt lock acquisition periodically (every 60s) so leadership transfers naturally.
@@ -55,7 +55,7 @@ The first `wg service` daemon to start acquires an exclusive file lock on `~/.co
 
 ### Location
 
-`~/.config/workgraph/telegram-routing.json`
+`~/.config/wg/telegram-routing.json`
 
 ### Schema
 
@@ -172,7 +172,7 @@ Where:
 - `repo_name` — from `projects[].repo_name` in routing state (derived from directory name, e.g., `basename $(dirname $project_dir)`)
 - `emoji` — existing emoji mapping from `dispatch.rs` (`📋 ❌ 🚫 🔐 🚨`)
 - `event_label` — `ready`, `failed`, `blocked`, `approval needed`, `URGENT`
-- `task_id` — the workgraph task ID (in monospace/code format for Telegram)
+- `task_id` — the wg task ID (in monospace/code format for Telegram)
 - `task_title` — human-readable task title
 - `detail` — optional extra context (failure reason, etc.)
 
@@ -217,7 +217,7 @@ fn route_inbound(update: TelegramUpdate, state: &RoutingState) -> RouteAction:
 
 ### Delivery mechanism
 
-When the poll leader determines the target `(project_dir, task_id)`, it delivers the message by writing directly to the workgraph message queue:
+When the poll leader determines the target `(project_dir, task_id)`, it delivers the message by writing directly to the wg message queue:
 
 ```rust
 // Poll leader delivers inbound message to the target project
@@ -279,7 +279,7 @@ fn route_freestanding(text: &str, state: &RoutingState) -> RouteAction:
     // No active project — show picker
     active = state.projects.values().filter(|p| is_pid_alive(p.pid))
     if active.count() == 0:
-        return Info("No active workgraph projects.")
+        return Info("No active wg projects.")
     elif active.count() == 1:
         return DeliverToCoordinator(active[0].dir, text)
     else:
@@ -539,7 +539,7 @@ Agent (fix-auth)     wg CLI        Telegram API     Routing State    Poll Leader
 The Telegram bot token and chat ID live exclusively in the global config:
 
 ```toml
-# ~/.config/workgraph/notify.toml
+# ~/.config/wg/notify.toml
 
 [routing]
 default = ["telegram"]
@@ -552,14 +552,14 @@ chat_id = "12345678"
 Per-repo `.wg/notify.toml` files may override routing rules (e.g., which event types trigger notifications) but **never** need to specify `bot_token` or `chat_id`. The service daemon resolves Telegram config by:
 
 1. Check per-repo `.wg/notify.toml` for a `[telegram]` section.
-2. If absent, fall back to `~/.config/workgraph/notify.toml`.
+2. If absent, fall back to `~/.config/wg/notify.toml`.
 3. The `bot_token` and `chat_id` from whichever file is found are used.
 
 This is already how `NotifyConfig::load()` works (see `config.rs:111-119`). No changes needed for config resolution.
 
 ### Routing state is always global
 
-The `telegram-routing.json` file is always at `~/.config/workgraph/telegram-routing.json`. This is never per-repo — it's the shared coordination point.
+The `telegram-routing.json` file is always at `~/.config/wg/telegram-routing.json`. This is never per-repo — it's the shared coordination point.
 
 ### Per-repo display name
 

@@ -67,7 +67,7 @@ Rough size: ~100-150 lines including a new `ToolRegistry::for_task_type()` const
 
 ### The incident that motivated this
 
-- A workgraph task `flip-web-search` (a regular `exec_mode=full` task — NOT a `.flip-*` meta task) was dispatched by the coordinator daemon.
+- A wg task `flip-web-search` (a regular `exec_mode=full` task — NOT a `.flip-*` meta task) was dispatched by the coordinator daemon.
 - Three zombie `wg native-exec` processes were left running after `wg kill` was called (`wg kill` does not tree-kill child processes).
 - One of them wrote a hallucinated replacement for `web_search.rs` directly into the main tree, destroying ~1700 lines of real code (all search backends, rate limiting, circuit breakers, etc.). Recovery was via `git checkout HEAD --`.
 

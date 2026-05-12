@@ -1,4 +1,4 @@
-# workgraph Design Deliberation — Consensus Document
+# wg Design Deliberation — Consensus Document
 
 **Date:** 2026-03-10
 **Process:** 10 researchers × 3 rounds of structured deliberation + synthesis + facilitation
@@ -8,11 +8,11 @@
 
 ## The Agreed Framework: Layered Coordination Model
 
-The deliberation produced a three-layer architectural framework for workgraph's coordination model. All 10 participants confirmed this framework as settled.
+The deliberation produced a three-layer architectural framework for wg's coordination model. All 10 participants confirmed this framework as settled.
 
 ### Layer 1: The Stigmergic Medium
 
-The task graph is the primary coordination mechanism. Agents coordinate indirectly through traces left in the shared graph — task states, artifacts, logs, dependency structures. This is workgraph's most distinctive architectural property and its core competitive advantage over workflow-as-code (Temporal) and DAG-based (Airflow) systems.
+The task graph is the primary coordination mechanism. Agents coordinate indirectly through traces left in the shared graph — task states, artifacts, logs, dependency structures. This is wg's most distinctive architectural property and its core competitive advantage over workflow-as-code (Temporal) and DAG-based (Airflow) systems.
 
 **Design principle:** Every coordination event must leave a trace in the graph. The graph is the system's memory, identity, and single source of truth.
 

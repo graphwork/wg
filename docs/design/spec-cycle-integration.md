@@ -9,7 +9,7 @@
 
 ## Overview
 
-This spec details four phases of work to integrate cycle detection into workgraph's runtime. Each phase is an independent implementation task. The design doc (`docs/design/cycle-aware-graph.md`) provides the rationale; this spec provides the file-by-file implementation plan.
+This spec details four phases of work to integrate cycle detection into wg's runtime. Each phase is an independent implementation task. The design doc (`docs/design/cycle-aware-graph.md`) provides the rationale; this spec provides the file-by-file implementation plan.
 
 **What exists:**
 - `src/cycle.rs`: Tarjan SCC, Havlak loop nesting, incremental detection, metadata extraction (1030 lines, 53 tests)
@@ -18,17 +18,17 @@ This spec details four phases of work to integrate cycle detection into workgrap
 - `src/check.rs`: `check_cycles()` (DFS-based), `check_loop_edges()`
 
 **What needs to happen:**
-1. Wire `src/cycle.rs` algorithms into `WorkGraph` as cached `CycleAnalysis`
+1. Wire `src/cycle.rs` algorithms into `wg` as cached `CycleAnalysis`
 2. Add `CycleConfig` to `Task`, modify dispatch for back-edge exemption
 3. Migrate `loops_to` edges to structural cycles
 4. Remove `loops_to` entirely
 
 ---
 
-## Phase 1: Add CycleAnalysis to workgraph (non-breaking)
+## Phase 1: Add CycleAnalysis to wg (non-breaking)
 
 ### Goal
-Add `CycleAnalysis` as a cached, lazily-computed field on `WorkGraph`. Add `wg cycles` command. Integrate into `wg check`. **No behavioral changes** — `loops_to` continues to work exactly as before.
+Add `CycleAnalysis` as a cached, lazily-computed field on `wg`. Add `wg cycles` command. Integrate into `wg check`. **No behavioral changes** — `loops_to` continues to work exactly as before.
 
 ### Data Structures
 
@@ -71,7 +71,7 @@ pub struct CycleInfo {
 **Change 2: Add cache invalidation**
 - Location: `add_node()` (line ~445), `remove_node()` (line ~530)
 - Add: `self.cycle_analysis = None;` at the start of each method
-- Note: The `after` field mutations happen outside `WorkGraph` (callers mutate `Task` directly via `get_task_mut()`), so we need either:
+- Note: The `after` field mutations happen outside `wg` (callers mutate `Task` directly via `get_task_mut()`), so we need either:
   - (a) A dedicated `invalidate_cycle_cache()` pub method that callers use, OR
   - (b) Always recompute on access (since `cycle_analysis()` is lazy, this is fine)
 - **Decision:** Option (b) — always recompute on access. `add_node` and `remove_node` invalidate; for `after`-field changes, the cache is invalidated by the next `add_node`/`remove_node` or explicitly. In practice, commands reload the graph from disk each time, so the cache is always empty on load. This is sufficient for Phase 1 (read-only diagnostic).
@@ -95,14 +95,14 @@ impl WorkGraph {
 ```
 
 **Change 4: Add `compute_cycle_analysis()` function**
-- Bridge between `WorkGraph` (string IDs) and `src/cycle.rs` (numeric IDs)
+- Bridge between `wg` (string IDs) and `src/cycle.rs` (numeric IDs)
 - Uses `NamedGraph` from `src/cycle.rs` to build adjacency list from `after` edges
 - Calls `analyze_graph_cycles()` from `src/cycle.rs`
 - Maps `CycleMetadata` (numeric) back to `CycleAnalysis` (string IDs)
 - ~50 lines of glue code
 
 ```rust
-fn compute_cycle_analysis(graph: &WorkGraph) -> CycleAnalysis {
+fn compute_cycle_analysis(graph: &wg) -> CycleAnalysis {
     use crate::cycle::{NamedGraph, analyze_graph_cycles};
 
     let mut named = NamedGraph::new();
@@ -223,7 +223,7 @@ Implementation:
 **Mutability note:** `get_cycle_analysis()` takes `&mut self` because it may compute and cache. For commands that only need read access to cycle analysis, we have two options:
 1. Compute cycle analysis separately (call `compute_cycle_analysis(&graph)` as a free function)
 2. Use interior mutability (`RefCell` or `OnceCell`)
-**Decision:** Make `compute_cycle_analysis()` a public free function. Commands can call it directly without needing `&mut WorkGraph`. The cached version on `WorkGraph` is for the coordinator (long-lived process).
+**Decision:** Make `compute_cycle_analysis()` a public free function. Commands can call it directly without needing `&mut wg`. The cached version on `wg` is for the coordinator (long-lived process).
 
 #### `src/main.rs` — MECHANICAL
 
@@ -257,7 +257,7 @@ Implementation:
 
 | File | Type | Lines | Description |
 |------|------|-------|-------------|
-| `src/graph.rs` | Logic | ~80 | CycleAnalysis struct, compute fn, cache on workgraph |
+| `src/graph.rs` | Logic | ~80 | CycleAnalysis struct, compute fn, cache on wg |
 | `src/check.rs` | Logic | ~40 | Enhanced check_cycles, irreducible warning |
 | `src/commands/check.rs` | Mechanical | ~20 | Display enhanced cycle info |
 | `src/commands/cycles.rs` | **New file** | ~150 | `wg cycles` command |
@@ -329,7 +329,7 @@ pub struct CycleConfig {
 
 ```rust
 pub fn ready_tasks_cycle_aware<'a>(
-    graph: &'a WorkGraph,
+    graph: &'a wg,
     analysis: &CycleAnalysis,
 ) -> Vec<&'a Task> {
     graph.tasks().filter(|task| {
@@ -370,7 +370,7 @@ pub fn ready_tasks_cycle_aware<'a>(
 /// Shared readiness check logic. cycle_analysis is optional.
 fn is_task_ready(
     task: &Task,
-    graph: &WorkGraph,
+    graph: &wg,
     workgraph_dir: Option<&Path>,
     cycle_analysis: Option<&CycleAnalysis>,
 ) -> bool {

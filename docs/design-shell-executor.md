@@ -165,7 +165,7 @@ The downstream checker task (a Claude agent) still gets:
 ### 3.1 The Pattern
 
 A checker task (Claude agent) inspects the output of an upstream shell task and decides:
-retry or accept. This naturally maps to workgraph's existing cycle primitives.
+retry or accept. This naturally maps to wg's existing cycle primitives.
 
 ### 3.2 Graph Structure
 

@@ -10,15 +10,15 @@
 #
 # Environment:
 #   WG_BIN         - Path to wg binary (default: wg)
-#   WG_LOG_DIR     - Log directory (default: .workgraph/logs)
-#   WG_PID_DIR     - PID file directory (default: .workgraph/pids)
+#   WG_LOG_DIR     - Log directory (default: .wg/logs)
+#   WG_PID_DIR     - PID file directory (default: .wg/pids)
 
 set -e
 
 # Configuration
 WG_BIN="${WG_BIN:-wg}"
-WG_LOG_DIR="${WG_LOG_DIR:-.workgraph/logs}"
-WG_PID_DIR="${WG_PID_DIR:-.workgraph/pids}"
+WG_LOG_DIR="${WG_LOG_DIR:-.wg/logs}"
+WG_PID_DIR="${WG_PID_DIR:-.wg/pids}"
 
 # Parse command
 COMMAND="${1:-}"

@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-workgraph currently offers two re-execution primitives: **retry** (amnesia reset of failed tasks) and **cycles** (planned repetition with convergence). Neither handles the middle ground: *unplanned re-execution with accumulated context*. This design introduces **`wg iterate`** — a command that re-opens a completed or failed task while structuring prior attempt history into a handoff document that the next agent receives as part of its context.
+wg currently offers two re-execution primitives: **retry** (amnesia reset of failed tasks) and **cycles** (planned repetition with convergence). Neither handles the middle ground: *unplanned re-execution with accumulated context*. This design introduces **`wg iterate`** — a command that re-opens a completed or failed task while structuring prior attempt history into a handoff document that the next agent receives as part of its context.
 
 **Key insight**: Iterate is not retry with memory, nor a 1-iteration cycle. It is a *spiral* — the same work point re-entered at a higher knowledge level. The predecessor's successes, failures, partial artifacts, and diagnostic observations become first-class input to the successor.
 

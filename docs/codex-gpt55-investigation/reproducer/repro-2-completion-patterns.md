@@ -4,7 +4,7 @@
 **Date:** 2026-05-06
 **Companion data:** `repro-2-data.json`
 
-This review synthesizes the workgraph fix-proposal analysis (`docs/codex-gpt55-investigation/fix-proposal.md`)
+This review synthesizes the wg fix-proposal analysis (`docs/codex-gpt55-investigation/fix-proposal.md`)
 and skills-injection investigation (`docs/codex-gpt55-investigation/skills-injection.md`) with
 public 2025 literature on tool-using agents, RLHF post-training, and agent evaluation.
 The aim is a transferable explanation of *why* a non-interactive batch agent like
@@ -43,7 +43,7 @@ non-engagement structurally impossible.
 
 ## 2. The three-layer failure model
 
-The workgraph fix-proposal identified three independent layers, each
+The wg fix-proposal identified three independent layers, each
 sufficient on its own to produce the observed bail. This is a generalizable
 mental model for any agent harness.
 
@@ -102,7 +102,7 @@ and end-state side effects.
 
 ## 4. Best practices for agent completion
 
-Distilled from the workgraph fix and corroborated by the 2025 RLHF /
+Distilled from the wg fix and corroborated by the 2025 RLHF /
 agentic-RL literature:
 
 - **Inject the contract at full fidelity.** Never let an agent run with a

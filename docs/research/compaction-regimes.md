@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-12  
 **Task:** research-compaction-regimes  
-**Motivation:** Inform workgraph's token-threshold-based compaction gating design
+**Motivation:** Inform wg's token-threshold-based compaction gating design
 
 ---
 
@@ -129,7 +129,7 @@ This helps agents self-manage before hitting limits, but does not trigger compac
 
 ### Claude Code Compaction
 
-Claude Code (the CLI tool) implements its own compaction mechanism independent of the API beta. workgraph exposes this as a visible `.compact-0` cycle task (coordinator → compact → coordinator loop). This is separate from and complementary to the API-level `compact-2026-01-12` beta feature.
+Claude Code (the CLI tool) implements its own compaction mechanism independent of the API beta. wg exposes this as a visible `.compact-0` cycle task (coordinator → compact → coordinator loop). This is separate from and complementary to the API-level `compact-2026-01-12` beta feature.
 
 ---
 
@@ -342,33 +342,33 @@ No provider currently returns a "you are at X% of context capacity" field in the
 
 ---
 
-## Recommendation for workgraph
+## Recommendation for wg
 
 ### Current State
 
-workgraph already implements client-side compaction gating:
+wg already implements client-side compaction gating:
 - `config.compaction_token_threshold` (default: 100,000 tokens)
 - Coordinator tracks token usage from LLM responses and triggers compaction when accumulated tokens exceed threshold
 - Compaction runs as a visible `.compact-0` cycle task
 
 ### Strategic Recommendation
 
-**Use workgraph's own compaction, not provider auto-compaction. Optionally add the Anthropic beta as an enhancement.**
+**Use wg's own compaction, not provider auto-compaction. Optionally add the Anthropic beta as an enhancement.**
 
 #### Rationale
 
 1. **OpenAI has no auto-compaction.** Any system that relies on provider-side compaction is OpenAI-incompatible.
 
-2. **OpenRouter's middle-out is lossy and silent.** Deletes messages without notification or summarization. Unacceptable for task context fidelity — workgraph agents need their full task context.
+2. **OpenRouter's middle-out is lossy and silent.** Deletes messages without notification or summarization. Unacceptable for task context fidelity — wg agents need their full task context.
 
-3. **Anthropic's beta compaction is promising but limited.** Only supports Opus 4.6 and Sonnet 4.6 (no Haiku). It produces proper summaries (not deletions), but the workgraph compaction system is more sophisticated: it produces structured `context.md` artifacts that are injected into subsequent coordinator context, which the API-level compaction cannot replicate.
+3. **Anthropic's beta compaction is promising but limited.** Only supports Opus 4.6 and Sonnet 4.6 (no Haiku). It produces proper summaries (not deletions), but the wg compaction system is more sophisticated: it produces structured `context.md` artifacts that are injected into subsequent coordinator context, which the API-level compaction cannot replicate.
 
-4. **workgraph needs cross-provider portability.** The system must work the same whether using Claude, OpenAI, or any OpenRouter-proxied model.
+4. **wg needs cross-provider portability.** The system must work the same whether using Claude, OpenAI, or any OpenRouter-proxied model.
 
 #### Recommended Architecture
 
 ```
-Tier 1 (Primary): workgraph client-side compaction
+Tier 1 (Primary): wg client-side compaction
   - Token threshold gating (already implemented, config.compaction_token_threshold)
   - Produces structured context.md artifacts
   - Works with all providers
@@ -376,12 +376,12 @@ Tier 1 (Primary): workgraph client-side compaction
 
 Tier 2 (Enhancement, Anthropic only): Anthropic API beta compaction
   - Enable compact-2026-01-12 on Opus 4.6 / Sonnet 4.6 coordinator sessions
-  - Use pause_after_compaction=True to intercept and supplement with workgraph context
+  - Use pause_after_compaction=True to intercept and supplement with wg context
   - Use custom instructions to preserve task structure
   - Treat as defense-in-depth for very long sessions
 
 Tier 3 (Hard limit): Never rely on OpenRouter middle-out
-  - Disable explicitly: transforms: [] on all workgraph requests
+  - Disable explicitly: transforms: [] on all wg requests
   - Silent message deletion is incompatible with task fidelity
 ```
 
@@ -392,7 +392,7 @@ Implement a tiered resolution strategy:
 2. **Hardcoded table** for Anthropic direct and OpenAI direct — update on model releases
 3. **Fallback default** of 200,000 tokens for unknown models (conservative)
 
-The workgraph `ModelEntry.context_window` field (already in `config.rs`) is the right place to store these values.
+The wg `ModelEntry.context_window` field (already in `config.rs`) is the right place to store these values.
 
 ---
 
@@ -401,4 +401,4 @@ The workgraph `ModelEntry.context_window` field (already in `config.rs`) is the 
 - [x] All three providers investigated (Anthropic, OpenRouter, OpenAI)
 - [x] Summary table produced with concrete answers
 - [x] API endpoints/methods for querying context window size documented
-- [x] Recommendation for workgraph's approach documented
+- [x] Recommendation for wg's approach documented

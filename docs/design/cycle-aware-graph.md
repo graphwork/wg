@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This document designs two coupled changes to workgraph's graph model:
+This document designs two coupled changes to wg's graph model:
 
 1. **Edge rename:** `blocked_by` → `after`, `blocks` → `before`. Edges express temporal ordering, not obstruction. Data flows through context injection, not through the edge itself. "Blocking" becomes a derived runtime state, not a relationship type.
 
@@ -176,7 +176,7 @@ struct Cycle {
 **Primary: Tarjan's SCC** — custom iterative implementation in `src/cycle.rs` (std-only, no external dependencies).
 
 Rationale:
-- O(V+E) time, O(V) space — effectively free for workgraph's scale (<1000 tasks).
+- O(V+E) time, O(V) space — effectively free for wg's scale (<1000 tasks).
 - Custom iterative implementation avoids stack overflow on large graphs.
 - Based on Tarjan (1972) with the iterative transformation from Pearce (2016).
 - Finds all cycles simultaneously, grouped into SCCs.
@@ -260,7 +260,7 @@ Y → B → A → B   (B is entered from Y)
 
 **Decision: Reject irreducible cycles in v1.**
 
-workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all naturally reducible — they have a clear starting point. Irreducible cycles would indicate a modeling error.
+wg's use cases (review-revise, CI retry, monitor-fix-verify) are all naturally reducible — they have a clear starting point. Irreducible cycles would indicate a modeling error.
 
 When an irreducible cycle is detected:
 - `wg check` reports it as a warning.
@@ -297,7 +297,7 @@ The cycle header's back-edge predecessors are exempt from the readiness check. O
 
 ```rust
 pub fn ready_tasks_cycle_aware(
-    graph: &WorkGraph,
+    graph: &wg,
     analysis: &CycleAnalysis,
 ) -> Vec<&Task> {
     graph.tasks().filter(|task| {
@@ -418,7 +418,7 @@ This is more flexible — any agent in the cycle can signal convergence, not jus
 
 **Changes:**
 - Add `CycleAnalysis` struct and `analyze_cycles()` function to `src/graph.rs` (or new `src/cycle.rs` module).
-- Add `cycle_analysis: Option<CycleAnalysis>` to `WorkGraph`.
+- Add `cycle_analysis: Option<CycleAnalysis>` to `wg`.
 - Add `wg cycles` command (or enhance existing `wg loops`) to display detected cycles.
 - Integrate cycle detection into `wg check` (validate that all cycles in `after` edges are reducible or intentional).
 
@@ -739,7 +739,7 @@ use petgraph::algo::tarjan_scc;
 
 ```rust
 pub fn ready_tasks_cycle_aware<'a>(
-    graph: &'a WorkGraph,
+    graph: &'a wg,
     analysis: &CycleAnalysis,
 ) -> Vec<&'a Task> {
     graph.tasks().filter(|task| {
@@ -765,7 +765,7 @@ pub fn ready_tasks_cycle_aware<'a>(
 
 ```rust
 pub fn evaluate_cycle_iteration(
-    graph: &mut WorkGraph,
+    graph: &mut wg,
     completed_task_id: &str,
     analysis: &CycleAnalysis,
 ) -> Vec<String> {
@@ -872,6 +872,6 @@ pub fn evaluate_cycle_iteration(
 | Header identification | Entry-node heuristic | Dominator-based, explicit annotation, DFS-based | Works for common cases, no extra computation |
 | Metadata location | CycleConfig on header task | Per-edge, separate cycle store | Header-centric is intuitive, aligns with --converged |
 | Iteration trigger | All-Done | Source completion, any completion, back-edge | Clean semantics, handles parallel execution |
-| Irreducible cycles | Reject in v1 | Pick one header, allow multiple headers | workgraph use cases are reducible |
+| Irreducible cycles | Reject in v1 | Pick one header, allow multiple headers | wg use cases are reducible |
 | Migration | 4-phase incremental | Big bang, permanent dual-model | Low risk, allows evaluation at each phase |
 | Convergence | Tag on header | Tag on completing task, separate flag | Header is the stable cycle identifier |

@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-workgraph's architecture is surprisingly well-positioned for multi-user operation. The combination of file-based state (JSONL), flock-based locking, `modify_graph()` atomic transactions, filesystem watching, and existing federation/peer infrastructure means that multiple users SSH'ing into a shared server and each running their own TUI instance is **already largely functional today**. The main gaps are: (1) the TOCTOU race in commands that haven't migrated to `modify_graph()`, (2) no real-time cross-instance notification of graph changes beyond filesystem polling, and (3) federation is agency-only — no cross-workgraph task visibility yet.
+wg's architecture is surprisingly well-positioned for multi-user operation. The combination of file-based state (JSONL), flock-based locking, `modify_graph()` atomic transactions, filesystem watching, and existing federation/peer infrastructure means that multiple users SSH'ing into a shared server and each running their own TUI instance is **already largely functional today**. The main gaps are: (1) the TOCTOU race in commands that haven't migrated to `modify_graph()`, (2) no real-time cross-instance notification of graph changes beyond filesystem polling, and (3) federation is agency-only — no cross-wg task visibility yet.
 
 ---
 
@@ -73,7 +73,7 @@ The TUI already exposes its rendered screen via a Unix domain socket at `.wg/ser
 
 ### 2.2 Recommendation: ttyd
 
-**ttyd** is the strongest candidate for exposing workgraph's TUI via browser:
+**ttyd** is the strongest candidate for exposing wg's TUI via browser:
 
 - **Single binary, zero dependencies** — `ttyd -p 8080 wg tui` immediately works
 - **Full xterm.js integration** — true terminal emulation, handles TUI rendering (ratatui), mouse events, bracketed paste, 256-color
@@ -122,7 +122,7 @@ This is more work but provides the most polished experience. The ttyd approach i
 | **Terminal emulation** | 256-color, true-color (some devices), Unicode |
 | **Touch interaction** | Volume keys as Ctrl/Alt modifiers, gesture support |
 | **Screen size** | Typically 40-80 cols on phone, 100+ on tablet |
-| **workgraph TUI** | **Already detected** — `detect_termux_touch()` in `event.rs:48-50` enables mode 1003 for touch drag events |
+| **wg TUI** | **Already detected** — `detect_termux_touch()` in `event.rs:48-50` enables mode 1003 for touch drag events |
 | **Background execution** | `termux-wake-lock` prevents Android from killing sessions |
 
 **Key finding:** The TUI already has Termux-specific code. The `TERMUX_VERSION` env var detection and mosh-aware mouse mode switching (`event.rs:26-50`) show that mobile access has already been considered and partially implemented.
@@ -171,15 +171,15 @@ The **SSH/mosh → tmux → wg tui** stack works today on both platforms. The ma
 | **VS Code Live Share** | Editor-specific, WebSocket | Yes | Microsoft auth | Mature |
 | **Tuple** | Screen sharing + voice | Yes | Invite-based | Commercial |
 
-### 4.2 workgraph's Model is Different
+### 4.2 wg's Model is Different
 
-The prior art above focuses on **screen sharing** — multiple users seeing the same terminal output. workgraph's vision is fundamentally different: **independent sessions, shared state**.
+The prior art above focuses on **screen sharing** — multiple users seeing the same terminal output. wg's vision is fundamentally different: **independent sessions, shared state**.
 
 Each user runs their own TUI instance, seeing the full graph from their own perspective. They don't need to see each other's cursor or terminal — they see each other's *effects* (task completions, log entries, agent spawns) reflected in the shared graph state.
 
 This is architecturally simpler and more scalable than screen sharing:
 
-| Screen Sharing Model | workgraph Model |
+| Screen Sharing Model | wg Model |
 |---------------------|-----------------|
 | N users share 1 terminal session | N users have N terminal sessions |
 | Single cursor, turn-taking | Independent cursors, parallel work |
@@ -199,28 +199,28 @@ This is architecturally simpler and more scalable than screen sharing:
 
 ### 5.1 Current State
 
-Federation in workgraph currently covers **agency entities only** (roles, tradeoffs, agents, evaluations):
+Federation in wg currently covers **agency entities only** (roles, tradeoffs, agents, evaluations):
 
 - **`src/federation.rs`** — Core transfer logic between agency stores. Content-addressed entities (SHA-256 IDs) make federation conflict-free.
-- **`.wg/federation.yaml`** — Named remotes (agency stores) and named peers (other workgraph instances).
+- **`.wg/federation.yaml`** — Named remotes (agency stores) and named peers (other wg instances).
 - **Commands:** `wg agency pull/push/scan/remote/merge` — all operational today.
 
-The **peer system** (`wg peer add/remove/list/show/status`) is also implemented, providing named references to other workgraph instances with service status detection.
+The **peer system** (`wg peer add/remove/list/show/status`) is also implemented, providing named references to other wg instances with service status detection.
 
 ### 5.2 Cross-Repo Communication (Designed, Partially Implemented)
 
 The design document at `docs/design/cross-repo-communication.md` describes:
 
-- **`wg add --repo <peer>`** — Create a task in another workgraph instance (via IPC if service is running, direct file access otherwise)
+- **`wg add --repo <peer>`** — Create a task in another wg instance (via IPC if service is running, direct file access otherwise)
 - **Cross-repo dependencies** — `repo:task-id` syntax for references
 - **`AddTask` and `QueryTask` IPC requests** — New IPC message types for remote task creation and status queries
 - **Peer resolution** — Named peers → path → socket discovery → IPC or file fallback
 
-### 5.3 What Cross-workgraph Visibility Would Look Like
+### 5.3 What Cross-wg Visibility Would Look Like
 
-For the multi-user scenario on a single VPS, the key insight is that **all workgraph instances share a filesystem**. This means:
+For the multi-user scenario on a single VPS, the key insight is that **all wg instances share a filesystem**. This means:
 
-1. **Same workgraph, multiple users** — No federation needed. All users operate on the same `.wg/graph.jsonl`. Each user has their own coordinator (multiple coordinators are already supported via the TUI's coordinator tab system). This is the simplest and most immediately viable model.
+1. **Same wg, multiple users** — No federation needed. All users operate on the same `.wg/graph.jsonl`. Each user has their own coordinator (multiple coordinators are already supported via the TUI's coordinator tab system). This is the simplest and most immediately viable model.
 
 2. **Separate workgraphs, same machine** — Use the existing peer system. Each project has its own `.wg/`. Users can `wg peer add` each other's workgraphs. Cross-repo task dispatch via `wg add --repo` sends tasks between them.
 
@@ -233,7 +233,7 @@ For the multi-user scenario on a single VPS, the key insight is that **all workg
 
 | Gap | Impact | Difficulty |
 |-----|--------|-----------|
-| No cross-workgraph task visibility in TUI | Users can't see peer tasks without switching | Medium — add a "peers" panel |
+| No cross-wg task visibility in TUI | Users can't see peer tasks without switching | Medium — add a "peers" panel |
 | Agency federation is manual (`pull`/`push`) | No automatic sharing of agent performance data | Low — could auto-sync on coordinator tick |
 | No user identity in the graph | Can't attribute actions to specific users | Low — add `user` field to log entries |
 | Coordinator-per-user isolation | Multiple coordinators may make conflicting decisions | Medium — need coordinator namespacing |
@@ -313,9 +313,9 @@ The pragmatic path:
 
 These decisions gate the multi-user roadmap and should be made before significant implementation:
 
-### Decision 1: Single workgraph or Per-User Workgraphs?
+### Decision 1: Single wg or Per-User Workgraphs?
 
-**Option A: Shared single workgraph** — All users operate on one `.wg/graph.jsonl`. Simplest. Already works. Risk: coordinator conflicts if multiple users run coordinators simultaneously.
+**Option A: Shared single wg** — All users operate on one `.wg/graph.jsonl`. Simplest. Already works. Risk: coordinator conflicts if multiple users run coordinators simultaneously.
 
 **Option B: Per-user workgraphs with federation** — Each user has their own `.wg/` in their home directory, federated via peers. More isolated but loses the "single graph" collaborative feel.
 

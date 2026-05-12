@@ -238,9 +238,9 @@ submissions/terminal-bench/2.0/<agent-name>__<model>/
 ### metadata.yaml (required)
 
 ```yaml
-agent_url: https://github.com/graphwork/workgraph
-agent_display_name: "Workgraph Condition G (context-injected)"
-agent_org_display_name: "Workgraph"
+agent_url: https://github.com/graphwork/wg
+agent_display_name: "wg Condition G (context-injected)"
+agent_org_display_name: "wg"
 
 models:
   - model_name: minimax-m2.7

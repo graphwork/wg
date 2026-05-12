@@ -64,7 +64,7 @@ These tests fail on `cargo test --lib`, which means **CI is currently red** on t
 1. Line 28: unconditional `[dependencies]`
 2. Line 44-45: `[target.'cfg(unix)'.dependencies]`
 
-The unconditional entry supersedes the target-specific one. Since workgraph only targets Unix anyway (the daemon script, PID management, and `kill()` calls all assume Unix), the target-specific block on line 44-45 is redundant and should be removed.
+The unconditional entry supersedes the target-specific one. Since wg only targets Unix anyway (the daemon script, PID management, and `kill()` calls all assume Unix), the target-specific block on line 44-45 is redundant and should be removed.
 
 #### P2: `petgraph` Appears Unused
 
@@ -198,7 +198,7 @@ Clean and appropriate. The `.wg/` exclusion prevents accidentally committing pro
 
 Two config files with separate concerns:
 - **`.wg/config.toml`** (per-project): Agent, coordinator, project, help, and agency settings.
-- **`~/.config/workgraph/matrix.toml`** (per-user, global): Matrix credentials. Correctly separated to avoid committing secrets.
+- **`~/.config/wg/matrix.toml`** (per-user, global): Matrix credentials. Correctly separated to avoid committing secrets.
 
 ### Config Sections
 

@@ -1,4 +1,4 @@
-agent_url: https://github.com/graphwork/workgraph
+agent_url: https://github.com/graphwork/wg
 agent_display_name: "Workgraph Condition A (bare agent)"
 agent_org_display_name: "Workgraph"
 

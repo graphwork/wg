@@ -10,7 +10,7 @@
 
 ### How Cycles Work
 
-workgraph cycles are **structural loops** in the task dependency graph. A cycle is a set of tasks connected by `after` edges that form a strongly connected component (SCC), detected via Tarjan's algorithm (`src/cycle.rs`). One task in the cycle is designated the **cycle header** — it carries `CycleConfig` and controls iteration behavior.
+wg cycles are **structural loops** in the task dependency graph. A cycle is a set of tasks connected by `after` edges that form a strongly connected component (SCC), detected via Tarjan's algorithm (`src/cycle.rs`). One task in the cycle is designated the **cycle header** — it carries `CycleConfig` and controls iteration behavior.
 
 **Creating a cycle:**
 ```bash
@@ -77,7 +77,7 @@ Agents signal convergence with `wg done <id> --converged`. This adds a `"converg
 
 **No quality-based convergence.** The system has no way to say "iterate until quality score > 8" or "iterate until tests pass." The `TaskStatus` guard can express "iterate while task X has status Y" but cannot express quality thresholds.
 
-**No comparison between iterations.** The system tracks `loop_iteration` as a counter but does not retain or compare outputs across iterations. Each iteration's agent starts fresh (except for artifacts and logs preserved in workgraph).
+**No comparison between iterations.** The system tracks `loop_iteration` as a counter but does not retain or compare outputs across iterations. Each iteration's agent starts fresh (except for artifacts and logs preserved in wg).
 
 **Subjective agent convergence.** The `--converged` flag relies entirely on the agent's judgment. The loop-convergence design doc (`docs/design/loop-convergence.md`) acknowledges this as the simplest approach but flags `ScoreAbove` guards and structured convergence criteria as future work.
 

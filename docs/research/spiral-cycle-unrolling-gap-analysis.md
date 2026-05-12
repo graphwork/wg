@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-workgraph cycles reset task state **in-place**, reusing the same task IDs across iterations. This means per-iteration artifacts (evaluations, FLIP scores, agent logs, token usage, session IDs, validation results) are either **overwritten** or **orphaned** — they exist in external storage but lose their iteration provenance. The "spiral" concept proposes that each cycle iteration materializes as unique tasks, preserving full per-iteration history while the cycle definition remains the structural template.
+wg cycles reset task state **in-place**, reusing the same task IDs across iterations. This means per-iteration artifacts (evaluations, FLIP scores, agent logs, token usage, session IDs, validation results) are either **overwritten** or **orphaned** — they exist in external storage but lose their iteration provenance. The "spiral" concept proposes that each cycle iteration materializes as unique tasks, preserving full per-iteration history while the cycle definition remains the structural template.
 
 **Key finding**: There is no existing spiral implementation, design doc, or partial code. The gap is significant but well-bounded. The closest existing mechanism is `wg replay` + the runs snapshot system, which archives full graph state before resetting tasks — a coarser version of per-iteration preservation.
 
@@ -89,7 +89,7 @@ Only the cycle "header" task (one member with `cycle_config` set) carries the co
 
 | Search Term | Results |
 |------------|---------|
-| `spiral` | **No code references**. One poem line in `docs/poetry/workgraph-poems.typ` |
+| `spiral` | **No code references**. One poem line in `docs/poetry/wg-poems.typ` |
 | `unroll` | **No results** in code or git history |
 | `materialize` | **No results** in code or git history |
 | `git log --grep spiral` | **No commits** |
@@ -100,7 +100,7 @@ Only the cycle "header" task (one member with `cycle_config` set) carries the co
 **`docs/research/cyclic-processes.md`** (2026-02-14) is the closest prior art. It surveyed 8 workflow systems and identified two philosophies:
 
 - **Philosophy A: Immutable runs, new instances** (Temporal, Airflow, Argo, Cylc) — each iteration creates a new execution/run/node. The spiral concept aligns with this philosophy.
-- **Philosophy B: Mutable status, re-activation** (n8n, BPMN, Step Functions) — the same task transitions back. **This is what workgraph currently implements.**
+- **Philosophy B: Mutable status, re-activation** (n8n, BPMN, Step Functions) — the same task transitions back. **This is what wg currently implements.**
 
 The research recommended a hybrid approach (Section 3.2):
 > "For retry/revision loops (short cycles, same work unit): Allow Done -> Open re-activation on the same task."

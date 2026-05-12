@@ -172,7 +172,7 @@ This is the largest implementation gap after information boundary control. niket
 **Gap to close:** The veracity exchange research recommended a 3-phase approach:
 1. **Phase 1 (CLI bridge)**: `wg exchange export <task-id>` generates a portable JSON bundle (task definition, evaluation scores, public artifacts). `wg exchange import` consumes bundles from peers. ~300-400 lines.
 2. **Phase 2 (Event hooks)**: Hook system that notifies external systems on task completion. Allows passive consumers to subscribe. ~200 lines.
-3. **Phase 3 (Native integration)**: Full exchange client with peer discovery, credibility tracking, and bidirectional communication. This is a separate tool, not core workgraph changes.
+3. **Phase 3 (Native integration)**: Full exchange client with peer discovery, credibility tracking, and bidirectional communication. This is a separate tool, not core wg changes.
 
 This is correctly deferred as the most speculative dimension. Phase 1 alone provides the minimum viable exchange interface.
 

@@ -1,10 +1,10 @@
-# Arena-Based Model Selection for workgraph
+# Arena-Based Model Selection for wg
 
-Research doc covering how FLIP-style arena evaluation (Wang et al., 2025; arXiv:2602.13551) can drive model selection in workgraph.
+Research doc covering how FLIP-style arena evaluation (Wang et al., 2025; arXiv:2602.13551) can drive model selection in wg.
 
 ## 1. Current Model Selection
 
-workgraph resolves which model runs a task through a fixed hierarchy (`src/commands/spawn.rs:209-213`):
+wg resolves which model runs a task through a fixed hierarchy (`src/commands/spawn.rs:209-213`):
 
 ```
 task.model > executor.model > coordinator.model (CLI --model) > default
@@ -29,7 +29,7 @@ The FLIP method (§4.2 of the paper) enables cheap Best-of-N selection:
 3. Score each: `rᵢ = F1(x, x'ᵢ)` — word-level F1 between original task description and inferred instruction
 4. Select the response with the highest score: `y* = argmax rᵢ`
 
-**Why this works for workgraph:** Task descriptions are explicit instructions. FLIP measures how faithfully a response follows its instruction — exactly the quality signal workgraph needs. A response that addresses the task description well will allow a small model to reconstruct that description from the response alone.
+**Why this works for wg:** Task descriptions are explicit instructions. FLIP measures how faithfully a response follows its instruction — exactly the quality signal wg needs. A response that addresses the task description well will allow a small model to reconstruct that description from the response alone.
 
 **Scoring is model-agnostic and training-free.** The FLIP evaluator can be any small model (1B-12B parameters). It doesn't need to understand code quality — it just needs to generate plausible instructions from responses. The F1 computation is pure string matching.
 
@@ -79,11 +79,11 @@ Task: 10k-token description, 50k-token response. Arena with 3 models:
 | Normal single run | ~$0.80 |
 | **Arena overhead** | **~$1.65** (~2× normal) |
 
-Arena is cost-effective when the quality gain from selecting the best model saves downstream rework, retry costs, or evaluation failures. With workgraph's retry mechanism (`max_retries`), a single failed attempt at $0.80 + retry at $0.80 = $1.60 — comparable to arena's upfront cost.
+Arena is cost-effective when the quality gain from selecting the best model saves downstream rework, retry costs, or evaluation failures. With wg's retry mechanism (`max_retries`), a single failed attempt at $0.80 + retry at $0.80 = $1.60 — comparable to arena's upfront cost.
 
 ### Latency
 
-Arena runs are inherently sequential if models share rate limits, or parallel if using different providers. With workgraph's multi-provider model registry, parallel arena runs are possible. The FLIP scoring step is fast (~1-2s per evaluation with a small model).
+Arena runs are inherently sequential if models share rate limits, or parallel if using different providers. With wg's multi-provider model registry, parallel arena runs are possible. The FLIP scoring step is fast (~1-2s per evaluation with a small model).
 
 ## 5. Integration with Model Registry and Per-Task Override
 
@@ -168,14 +168,14 @@ wg add "arena-probe-{task-id}" --after dependencies --before {task-id} \
   --exec "wg arena-select {task-id} --candidates 3"
 ```
 
-This fits naturally into workgraph's graph model — the probe task completes, sets the model, then the real task dispatches with the selected model.
+This fits naturally into wg's graph model — the probe task completes, sets the model, then the real task dispatches with the selected model.
 
 ### Recommended approach
 
 Start with **Option A** (`wg arena-select` command) because:
 - No changes to coordinator logic
 - Users opt in explicitly
-- Easy to test and validate FLIP scoring accuracy on real workgraph tasks
+- Easy to test and validate FLIP scoring accuracy on real wg tasks
 - Win-rate data accumulates and informs whether Option B (automatic) is worth building
 
 Then graduate to **Option B** once win-rate data shows meaningful quality differences between models for different task types.

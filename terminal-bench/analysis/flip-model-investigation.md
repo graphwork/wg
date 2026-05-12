@@ -26,7 +26,7 @@ let comparison_model = config
     .model;
 ```
 
-These resolve to the `[models]` section of `.workgraph/config.toml`:
+These resolve to the `[models]` section of `.wg/config.toml`:
 
 ```toml
 [models.flip_inference]

@@ -203,7 +203,7 @@ Located in `tasks/hard-benchmarks/`. These are project-authored multi-step tasks
 
 ### Adapter (`wg/adapter.py`)
 
-The core adapter bridges Harbor's agent protocol to workgraph's native executor. Supports two execution modes:
+The core adapter bridges Harbor's agent protocol to wg's native executor. Supports two execution modes:
 1. **Docker-aware** (Harbor path): LLM agent loop in Python, routes commands through Harbor's `environment.exec()` into Docker containers. Uses LiteLLM for API calls.
 2. **Host-native** (standalone runner path): Delegates to `wg service start` + `wg native-exec`. Uses wg's built-in Rust OpenAI-compatible client directly.
 
@@ -226,7 +226,7 @@ Supports **6 conditions** (A through F) with varying tool access, context scope,
 |-----------|---------|-------|
 | **Docker** | Container isolation for TB tasks | `docker.io` + `docker-compose-v2` |
 | **Harbor** | Benchmark framework (task download, orchestration, verification) | `pip install harbor-bench` (>= 0.3.0) |
-| **Workgraph (`wg`)** | Task graph executor, agent spawning | `cargo install --path .` (Rust binary) |
+| **wg (`wg`)** | Task graph executor, agent spawning | `cargo install --path .` (Rust binary) |
 | **Python 3.10+** | Runner scripts, adapter | System or venv |
 | **LiteLLM** | OpenRouter API proxy (Harbor path only) | `pip install litellm` |
 | **OpenRouter API** | LLM API gateway | Requires `OPENROUTER_API_KEY` env var |
@@ -353,7 +353,7 @@ Results directories in `terminal-bench/results/` document completed experiments:
 
 1. **Two execution paths exist**: Harbor (Docker containers, LiteLLM) and host-native (wg service, Rust client). The host-native path is used by all `run_*.py` scripts and provides per-trial isolation via temp directories.
 
-2. **Trial isolation**: Each trial gets its own temp directory with an independent `.workgraph/`, config, and service socket. Trials cannot interfere with each other.
+2. **Trial isolation**: Each trial gets its own temp directory with an independent `.wg/`, config, and service socket. Trials cannot interfere with each other.
 
 3. **Concurrency is semaphore-gated**: `asyncio.Semaphore(MAX_CONCURRENT_TRIALS)` limits parallel trials. The limiting factor is API rate limits, not local compute for most tasks.
 

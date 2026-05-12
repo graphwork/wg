@@ -8,7 +8,7 @@
 
 | Condition | Executor | WG Context | Surveillance Loop | Description |
 |-----------|----------|------------|-------------------|-------------|
-| **A** | native (wg executor) | None (clean scope) | No | Baseline: agent executes task directly, no workgraph context injected |
+| **A** | native (wg executor) | None (clean scope) | No | Baseline: agent executes task directly, no wg context injected |
 | **F** | native (wg executor) | Graph scope + WG Quick Guide | Yes (max 3 iterations, 1m delay) | Full wg-native: agent has wg tools, surveillance agent verifies work after completion |
 
 ## Model Verification

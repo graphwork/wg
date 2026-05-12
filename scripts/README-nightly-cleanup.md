@@ -1,6 +1,6 @@
 # Nightly Cleanup Implementation
 
-This directory contains the nightly cleanup implementation for workgraph.
+This directory contains the nightly cleanup implementation for wg.
 
 ## Files
 
@@ -40,9 +40,9 @@ Helper script to create a scheduled cron task for automated nightly cleanup.
 ./scripts/setup-nightly-cleanup.sh "0 0 3 * * *"  # 3 AM daily
 ```
 
-## Integration with Workgraph Cron
+## Integration with wg Cron
 
-The cleanup can be scheduled using workgraph's new cron functionality:
+The cleanup can be scheduled using wg's new cron functionality:
 
 ```bash
 # Create a scheduled cleanup task
@@ -72,7 +72,7 @@ The nightly cleanup provides several benefits:
 
 The cleanup operations are designed to be safe:
 
-- Archive operations preserve data in `.workgraph/archive.jsonl`
+- Archive operations preserve data in `.wg/archive.jsonl`
 - Only removes tasks/agents that are truly terminal or orphaned
 - Uses 30-day retention periods to avoid premature deletion
 - Provides dry-run mode for testing

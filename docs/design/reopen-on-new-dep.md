@@ -106,7 +106,7 @@ mutation rather than by cycle completion. The `loop_iteration` field wouldn't ap
    has not validated against all its dependencies.
 
 2. **Consistency with build systems.** Users with Make/Bazel intuition expect
-   downstream invalidation when inputs change. workgraph tasks, especially
+   downstream invalidation when inputs change. wg tasks, especially
    agent-executed ones, are closer to build targets than to Jira tickets.
 
 3. **Safety.** The coordinator dispatches work based on status. A `Done` task won't
@@ -129,7 +129,7 @@ mutation rather than by cycle completion. The `loop_iteration` field wouldn't ap
    dependencies at the time. Reopening discards that work. For human tasks (not
    agent-executed), this may feel like losing progress.
 
-4. **No idempotency guarantee.** Unlike build targets, workgraph tasks may have side
+4. **No idempotency guarantee.** Unlike build targets, wg tasks may have side
    effects or produce different results on re-execution. Automatic re-execution
    could be wasteful or harmful.
 

@@ -1,19 +1,19 @@
 # Executor Integration Design: Universal Tool Manifest
 
-This document details how the universal tool manifest system integrates with workgraph's current executor architecture.
+This document details how the universal tool manifest system integrates with wg's current executor architecture.
 
 ## Current Architecture Review
 
 ### Native Executor (`src/executor/native/`)
 - **Tool Registry**: `ToolRegistry` maps tool names to implementations
 - **Tool Trait**: All tools implement `name()`, `definition()`, `execute()`, `is_read_only()`
-- **Bundle System**: TOML files in `.workgraph/bundles/` filter available tools
+- **Bundle System**: TOML files in `.wg/bundles/` filter available tools
 - **Registration**: Hardcoded in `ToolRegistry::default_all()`
 
 ### Claude Executor 
 - **Tool Set**: Uses Claude Code's built-in tools (Read, Write, Edit, Bash, etc.)
 - **No Registry**: Tools are provided by Claude platform
-- **Limited Customization**: Cannot add workgraph-specific tools like `wg:*`
+- **Limited Customization**: Cannot add wg-specific tools like `wg:*`
 
 ### Shell Executor
 - **Single Tool**: Only bash commands via shell execution
@@ -125,7 +125,7 @@ impl Tool for MCPTool {
 ### 2. Claude Executor Integration
 
 #### Current Limitation
-The Claude executor uses Claude Code's built-in tools and cannot be extended with workgraph-specific tools.
+The Claude executor uses Claude Code's built-in tools and cannot be extended with wg-specific tools.
 
 #### Solution: MCP Export Server
 ```rust
@@ -138,14 +138,14 @@ pub async fn serve_mcp(port: u16, manifest: &ToolManifest) -> Result<()> {
 }
 ```
 
-This allows Claude executors to access workgraph tools via MCP protocol.
+This allows Claude executors to access wg tools via MCP protocol.
 
 #### Claude-Side Configuration
 ```json
 // ~/.claude/mcp.json
 {
   "mcpServers": {
-    "workgraph": {
+    "wg": {
       "command": "wg",
       "args": ["mcp", "serve", "--port", "8080"]
     }
@@ -200,7 +200,7 @@ impl AmplifierExecutor {
         let required_tools = self.analyze_task_tools(task).await?;
         let available_executors = self.get_compatible_executors(&required_tools).await?;
         
-        // Prefer native for workgraph tools, claude for analysis, shell for simple commands
+        // Prefer native for wg tools, claude for analysis, shell for simple commands
         let executor = match self.select_best_executor(&available_executors, &required_tools) {
             ExecutorType::Native if required_tools.has_wg_tools() => self.native_executor(),
             ExecutorType::Claude if required_tools.is_analysis_heavy() => self.claude_executor(),
@@ -217,7 +217,7 @@ impl AmplifierExecutor {
 
 ### Current Bundle Format
 ```toml
-# .workgraph/bundles/research.toml
+# .wg/bundles/research.toml
 name = "research"
 description = "Read-only research tools"
 tools = ["read_file", "glob", "grep", "web_search"]
@@ -226,7 +226,7 @@ context_scope = "task"
 
 ### Extended Bundle Format with Tool Sources
 ```toml
-# .workgraph/bundles/enhanced-research.toml
+# .wg/bundles/enhanced-research.toml
 name = "enhanced-research"
 description = "Research with MCP integration"
 extends = "builtin:research"

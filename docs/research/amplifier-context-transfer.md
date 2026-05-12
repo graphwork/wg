@@ -1,11 +1,11 @@
-# Context Transfer: workgraph vs Amplifier
+# Context Transfer: wg vs Amplifier
 
 **Date**: 2026-02-18
-**Sources**: `CONTEXT-TRANSFER.md` (amplifier-bundle-workgraph), `docs/research/amplifier-architecture.md`, `src/commands/spawn.rs`, `src/service/executor.rs`, `src/commands/context.rs`, `src/commands/artifact.rs`, `src/graph.rs`
+**Sources**: `CONTEXT-TRANSFER.md` (amplifier-bundle-wg), `docs/research/amplifier-architecture.md`, `src/commands/spawn.rs`, `src/service/executor.rs`, `src/commands/context.rs`, `src/commands/artifact.rs`, `src/graph.rs`
 
 ## 1. How Amplifier's Bundle Passes Task Context
 
-Amplifier's workgraph bundle uses a **prompt template** embedded in `executor/amplifier.toml` to pass structured context to each spawned session. The template uses six variables that wg replaces at spawn time:
+Amplifier's wg bundle uses a **prompt template** embedded in `executor/amplifier.toml` to pass structured context to each spawned session. The template uses six variables that wg replaces at spawn time:
 
 | Variable | Content |
 |---|---|
@@ -33,7 +33,7 @@ The prompt is built in `spawn_agent_inner()` (`spawn.rs:123-457`). The sequence:
 
 1. **Load graph** and validate task status (must be Open or Blocked)
 2. **Build context** via `build_task_context()` — iterates `blocked_by`, collects artifacts and last 5 log entries from done dependencies
-3. **Create TemplateVars** from the task, context string, and workgraph directory (`executor.rs:34-57`)
+3. **Create TemplateVars** from the task, context string, and wg directory (`executor.rs:34-57`)
 4. **Resolve agent identity** — if the task has an `agent` field, look up the Agent/Role/Motivation in `.wg/agency/` and render an identity prompt
 5. **Resolve skills preamble** — if `.claude/skills/using-superpowers/SKILL.md` exists, include it
 6. **Load executor config** — either from `.wg/executors/<name>.toml` or the built-in default
@@ -192,7 +192,7 @@ The correct path is:
 The amplifier bundle should:
 - Use `wg context --json` for structured context queries rather than parsing `wg show` output
 - Consider surfacing `inputs`/`deliverables` in its prompt template so agents know the data flow contract
-- Include `wg-executor-protocol.md` in the behavior's `context.include` (currently excluded), or make its inclusion configurable, so Amplifier agents spawned *by* workgraph also get the protocol even if not using the executor prompt template
+- Include `wg-executor-protocol.md` in the behavior's `context.include` (currently excluded), or make its inclusion configurable, so Amplifier agents spawned *by* wg also get the protocol even if not using the executor prompt template
 
 ### Summary
 

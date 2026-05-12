@@ -29,13 +29,13 @@ The audit (§2 "Full key inventory") already maps every key to G / P / B / N. Th
 | **MCP servers** | B but typically P | local default; global allowed | `[[mcp.servers]]` (audit §2 `[mcp]`) |
 | **Endpoints** | B (G shared, P override) | global: per route; local: only when shadowing | `[[llm_endpoints.endpoints]]` (audit §2 `[[llm_endpoints.endpoints]]`) |
 | **Agency identity bindings** | B (per-user content hashes) | global: post-`wg agency init` only | `[agency].assigner_agent` etc. (audit §2 `[agency]`) |
-| **External creds** | G-only (separate file) | never written by config init | `~/.config/workgraph/matrix.toml` (audit §2 "Matrix credentials — separate file") |
+| **External creds** | G-only (separate file) | never written by config init | `~/.config/wg/matrix.toml` (audit §2 "Matrix credentials — separate file") |
 | **Deprecated / no-op** | N | never written | `coordinator.compactor_*`, `agent.executor`, `dispatcher.executor`, `coordinator.verify_autospawn_enabled` (audit §2 "Code-level soon-to-deprecate" and §3) |
 
 **One-line reason per scope choice (cite audit):**
 
 - `[agent].model`, `[tiers]`, `[models.*]` are **B**: per-project model choices are common (audit §1 "Resolution cascades for model selection" — `agent.model` in *local* config skips tier cascade for `task_agent`).
-- `[dispatcher]` is functionally **G**: every key in audit §2 `[dispatcher]` is daemon-wide; project-local override is technically allowed but the daemon runs once for all projects in the workgraph dir, so overrides are surprising.
+- `[dispatcher]` is functionally **G**: every key in audit §2 `[dispatcher]` is daemon-wide; project-local override is technically allowed but the daemon runs once for all projects in the wg dir, so overrides are surprising.
 - `[[tag_routing]]`, `[project]` are **P**: explicitly per-project taxonomy (audit §2 `[[tag_routing]]` "P (project-specific tag taxonomies)").
 - `[agency]` identity hashes are **B/G**: content-addressable hashes are user-scoped, but per-project pinning is allowed (audit §2 `[agency]` "B (per project; identity hashes are content-addressable)").
 - Deprecated keys (audit §2 status column "deprecated") are **never written** by `wg config init` — see §6.
@@ -159,7 +159,7 @@ model = "codex:gpt-5.4-mini"
 
 The `[models.evaluator]` / `[models.assigner]` / `[models.flip_inference]` / `[models.flip_comparison]` sections are critical — without them, agency meta-tasks (`.evaluate-*`, `.flip-*`, `.assign-*`) silently fall back to the built-in `claude:haiku` even on an all-codex project.
 
-### 3.3 `.wg/config.toml` — minimal project (the workgraph repo case)
+### 3.3 `.wg/config.toml` — minimal project (the wg repo case)
 
 For a project that wants to override the global default to use claude CLI even when global is openrouter:
 
@@ -270,7 +270,7 @@ Reason: audit §6 "Migration plan" — the lint pass is the safe first step; rew
 ```
 $ wg setup
 
-Welcome to workgraph. Let's get you configured.
+Welcome to wg. Let's get you configured.
 
 ?  Where should I write your config?
    ❯ Global (~/.wg/config.toml) — applies to every wg project

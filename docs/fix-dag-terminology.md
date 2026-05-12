@@ -2,23 +2,23 @@
 
 ## Problem
 
-workgraph is **not** a DAG (directed acyclic graph). It explicitly supports cycles via loop edges (`loops_to`, back-edges, iteration guards). Despite this, the codebase and documentation refer to the graph as a "DAG" in numerous places — including the core struct's own doc comment. This causes AI agents and contributors to incorrectly describe workgraph as a DAG, which misrepresents a fundamental design property.
+wg is **not** a DAG (directed acyclic graph). It explicitly supports cycles via loop edges (`loops_to`, back-edges, iteration guards). Despite this, the codebase and documentation refer to the graph as a "DAG" in numerous places — including the core struct's own doc comment. This causes AI agents and contributors to incorrectly describe wg as a DAG, which misrepresents a fundamental design property.
 
 The correct term is **directed graph** or **task graph**. The `after` edges form the forward dependency structure, and `loops_to` edges create deliberate cycles for iterative workflows (write-review-revise, polling, retries, sprint cycles).
 
 ## Scope
 
-Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe the workgraph's data model needs to be corrected. References to acyclicity in the context of external library constraints (e.g., the `ascii-dag` crate requiring acyclic input) or algorithmic notes (e.g., "critical path only works on the acyclic portion") are **fine** — those describe implementation constraints, not the data model itself.
+Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe the wg's data model needs to be corrected. References to acyclicity in the context of external library constraints (e.g., the `ascii-dag` crate requiring acyclic input) or algorithmic notes (e.g., "critical path only works on the acyclic portion") are **fine** — those describe implementation constraints, not the data model itself.
 
 ## Locations to fix
 
 ### Critical — these define the mental model
 
-1. **`src/graph.rs:411`** — Doc comment on the `WorkGraph` struct:
+1. **`src/graph.rs:411`** — Doc comment on the `wg` struct:
    ```rust
-   /// The workgraph: a DAG of tasks and resources with embedded dependency edges.
+   /// The wg: a DAG of tasks and resources with embedded dependency edges.
    ```
-   Fix: Remove "DAG" — call it a "directed task graph" or just "workgraph."
+   Fix: Remove "DAG" — call it a "directed task graph" or just "wg."
 
 2. **`docs/README.md:81`** — Main documentation hedges but still leads with DAG:
    > "Tasks form a directed graph through `after` relationships. While typically a DAG (directed acyclic graph), cycles are permitted for iterative/recurring work patterns."
@@ -26,7 +26,7 @@ Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe
    Fix: Don't frame it as "typically a DAG with exceptions." State plainly that it's a directed graph that supports cycles via loop edges. The `after` edges are always forward (acyclic), but `loops_to` edges create intentional cycles. This is a feature, not an exception.
 
 3. **`docs/research/cyclic-processes.md:11`** — Research document states:
-   > "workgraph currently assumes a DAG (Directed Acyclic Graph) for task dependencies."
+   > "wg currently assumes a DAG (Directed Acyclic Graph) for task dependencies."
 
    Fix: This was written before loop edges were implemented. Update the opening to reflect that cycles are now supported, or add a note at the top that this is a historical research document and cycles have since been implemented.
 
@@ -46,19 +46,19 @@ Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe
 
 7. **`src/tui/dag_layout.rs:1753, 1771, 1800, 1806`** — Test comments referencing acyclic graphs. These are testing the acyclic-input code path specifically, so the language is accurate. No change needed.
 
-8. **`docs/design-cyclic-workgraph.md:113`** — Explains that `after` edges are acyclic while `loops_to` edges are separate. This is **correct and well-written**. No change needed.
+8. **`docs/design-cyclic-wg.md:113`** — Explains that `after` edges are acyclic while `loops_to` edges are separate. This is **correct and well-written**. No change needed.
 
 9. **`docs/archive/reviews/review-core-graph.md:240`** — Archive review noting cycle handling. Historical document, low priority.
 
-10. **`docs/archive/research/rust-ecosystem-research.md:135, 204, 234`** — Research comparing petgraph vs daggy. Historical document discussing library choices. Fine as-is since it's describing the *libraries*, not workgraph's model.
+10. **`docs/archive/research/rust-ecosystem-research.md:135, 204, 234`** — Research comparing petgraph vs daggy. Historical document discussing library choices. Fine as-is since it's describing the *libraries*, not wg's model.
 
 11. **`docs/archive/reviews/review-tui.md:37, 76`** — Reviews noting cycle detection in the TUI. Accurate description of implementation. Fine as-is.
 
-12. **`docs/archive/research/task-format-research.md:97, 155`** — Describes Taskwarrior as a DAG. Accurate for Taskwarrior, not about workgraph.
+12. **`docs/archive/research/task-format-research.md:97, 155`** — Describes Taskwarrior as a DAG. Accurate for Taskwarrior, not about wg.
 
-13. **`docs/archive/research/beads-gastown-research.md:97`** — Describes another system's acyclic constraint. Not about workgraph.
+13. **`docs/archive/research/beads-gastown-research.md:97`** — Describes another system's acyclic constraint. Not about wg.
 
-14. **`Cargo.toml:36`** — `ascii-dag = "0.8"` dependency. This is the crate name, not a claim about workgraph. No change.
+14. **`Cargo.toml:36`** — `ascii-dag = "0.8"` dependency. This is the crate name, not a claim about wg. No change.
 
 15. **`src/commands/viz.rs:24`** — `"dag"` as a CLI alias for ASCII output format. This is a user-facing command alias (`wg viz --format dag`). Consider whether this name is confusing, but it's low priority.
 
@@ -85,4 +85,4 @@ After fixing, grep for `(?i)\bDAG\b|directed acyclic|acyclic` and confirm every 
 - Describes a specific algorithmic property (critical path on acyclic subgraph)
 - Appears in archive/research docs about other systems
 
-No remaining instance should describe workgraph's own data model as a DAG or acyclic.
+No remaining instance should describe wg's own data model as a DAG or acyclic.

@@ -2,7 +2,7 @@
 
 ## 1. Rolling Narrative
 
-Workgraph is a lightweight task coordination graph system (Rust, MIT-licensed) enabling humans and AI agents to collaborate on complex multi-step projects. The project has progressed from core graph model through agency system integration toward production hardening. Key infrastructure: directed graph in `.workgraph/graph.jsonl`, daemon-based coordinator, git worktree isolation per agent, flock-based concurrency safety.
+wg is a lightweight task coordination graph system (Rust, MIT-licensed) enabling humans and AI agents to collaborate on complex multi-step projects. The project has progressed from core graph model through agency system integration toward production hardening. Key infrastructure: directed graph in `.wg/graph.jsonl`, daemon-based coordinator, git worktree isolation per agent, flock-based concurrency safety.
 
 **Coordinator-21 Lifecycle (the compaction subject)**
 
@@ -25,11 +25,11 @@ The system treats coordinators as ephemeral agents that can be discarded and rep
 ## 2. Persistent Facts
 
 **Storage & State**
-- Graph: `.workgraph/graph.jsonl` (~6319 tasks, ~11.7MB)
-- Config: `.workgraph/config.toml`
-- Agency: `.workgraph/agency/` (roles, tradeoffs, agents, 4467 evaluations)
-- Service: `.workgraph/service/` (state.json, daemon.log ~8.6MB, coordinator-state-N.json)
-- Coordinator prompt: `.workgraph/service/coordinator-prompt.txt`
+- Graph: `.wg/graph.jsonl` (~6319 tasks, ~11.7MB)
+- Config: `.wg/config.toml`
+- Agency: `.wg/agency/` (roles, tradeoffs, agents, 4467 evaluations)
+- Service: `.wg/service/` (state.json, daemon.log ~8.6MB, coordinator-state-N.json)
+- Coordinator prompt: `.wg/service/coordinator-prompt.txt`
 
 **Coordinator Cycles**
 - Each coordinator N has: `.coordinator-N` (main), `.compact-N` (introspection), `.archive-N` (cleanup)

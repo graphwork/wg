@@ -1,6 +1,6 @@
 # How to Submit to Terminal Bench 2.0 Leaderboard
 
-Adapted from the Harbor HOWTO for Workgraph's multi-condition experiment.
+Adapted from the Harbor HOWTO for wg's multi-condition experiment.
 
 ## Submission Format
 
@@ -22,9 +22,9 @@ submissions/terminal-bench/2.0/<agent-name>__<model>/
 ### metadata.yaml Template
 
 ```yaml
-agent_url: https://github.com/graphwork/workgraph
-agent_display_name: "Workgraph Condition X (description)"
-agent_org_display_name: "Workgraph"
+agent_url: https://github.com/graphwork/wg
+agent_display_name: "wg Condition X (description)"
+agent_org_display_name: "wg"
 
 models:
   - model_name: minimax-m2.7
@@ -38,12 +38,12 @@ models:
 | Condition | Agent | Description |
 |-----------|-------|-------------|
 | A | `ConditionAAgent` | Bare agent, no wg context (control) |
-| B | `ConditionBAgent` | Workgraph stigmergic context |
+| B | `ConditionBAgent` | wg stigmergic context |
 | C | `ConditionCAgent` | Enhanced planning + snapshots |
 | F | `ConditionFAgent` | Full wg context + surveillance loops |
 
 All conditions use **Minimax M2.7** via OpenRouter. The core thesis comparison
-is A vs F: same model, dramatically different results with workgraph coordination.
+is A vs F: same model, dramatically different results with wg coordination.
 
 ## Running the Benchmark
 

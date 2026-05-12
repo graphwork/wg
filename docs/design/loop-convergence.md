@@ -61,7 +61,7 @@ When `--converged` is passed:
 In `evaluate_loop_edges()` (graph.rs:566), add an early return at the top:
 
 ```rust
-pub fn evaluate_loop_edges(graph: &mut WorkGraph, source_id: &str) -> Vec<String> {
+pub fn evaluate_loop_edges(graph: &mut wg, source_id: &str) -> Vec<String> {
     // Check if the source task signaled convergence — skip all loop firing
     if let Some(task) = graph.get_task(source_id) {
         if task.tags.contains(&"converged".to_string()) {

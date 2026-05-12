@@ -25,7 +25,7 @@ The agent does **not** receive:
 - **Upstream task descriptions** (only their artifacts and log tails)
 - **Downstream task awareness** (what tasks depend on this one)
 - **Graph topology** (no sense of where it sits in the graph)
-- **Project-level purpose/goal** (no top-level description of what the workgraph is for)
+- **Project-level purpose/goal** (no top-level description of what the wg is for)
 - **wg status / wg list summary** (no sense of overall project progress)
 - **CLAUDE.md content** (this comes via Claude Code's own mechanism, not the prompt template)
 - **Task tags** (the agent doesn't know its own task's tags)
@@ -81,7 +81,7 @@ Currently agents see **only their task** plus dependency artifacts/logs. Here's 
 
 The current prompt tells agents to "use `wg` CLI" and lists specific commands (log, artifact, done, fail, add), but doesn't explain:
 
-- What workgraph *is* conceptually (a directed graph of tasks with dependencies)
+- What wg *is* conceptually (a directed graph of tasks with dependencies)
 - What the coordinator does (polls for ready tasks, spawns agents, monitors health)
 - How the agency system works (roles, motivations, agent assignment)
 - What cycles/loops mean

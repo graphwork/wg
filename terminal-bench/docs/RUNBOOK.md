@@ -312,7 +312,7 @@ harbor run --agent-import-path "wg.adapter:ConditionAAgent" \
 bash terminal-bench/reproduce.sh --model "openrouter:other/model"
 ```
 
-The model string uses workgraph format (`provider:model`). Harbor format
+The model string uses wg format (`provider:model`). Harbor format
 (`provider/model`) is also accepted and auto-normalized by the adapter.
 
 The benchmark model is hardcoded in `wg/adapter.py` as:
@@ -376,8 +376,8 @@ Harbor writes results per-trial:
     agent/
       trial_summary.json               # Agent summary (tokens, turns, etc.)
       agent_loop.ndjson                # Full agent interaction trace
-      wg-artifacts/                    # Extracted .workgraph/ from container
-        .workgraph/
+      wg-artifacts/                    # Extracted .wg/ from container
+        .wg/
           graph.jsonl                  # Task graph state
           config.toml                  # Condition-specific configuration
           service/
@@ -402,10 +402,10 @@ Harbor writes results per-trial:
 | File | What it tells you |
 |------|-------------------|
 | `verifier/reward.txt` | Pass (1.0) or fail (0.0) |
-| `agent/wg-artifacts/.workgraph/agents/*/stream.jsonl` | Token counts, model used, tool calls |
-| `agent/wg-artifacts/.workgraph/config.toml` | Confirms condition config was applied |
-| `agent/wg-artifacts/.workgraph/graph.jsonl` | Task state and dependencies |
-| `agent/wg-artifacts/.workgraph/service/daemon.log` | Service lifecycle and errors |
+| `agent/wg-artifacts/.wg/agents/*/stream.jsonl` | Token counts, model used, tool calls |
+| `agent/wg-artifacts/.wg/config.toml` | Confirms condition config was applied |
+| `agent/wg-artifacts/.wg/graph.jsonl` | Task state and dependencies |
+| `agent/wg-artifacts/.wg/service/daemon.log` | Service lifecycle and errors |
 | `result.json` (trial-level) | Harbor's result including timing and metadata |
 
 ### Verifying Model Purity
@@ -457,7 +457,7 @@ https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard
 Submission structure per condition:
 
 ```
-submissions/terminal-bench/2.0/workgraph-condition-a__minimax-m2.7/
+submissions/terminal-bench/2.0/wg-condition-a__minimax-m2.7/
   metadata.yaml
   <job-name>/
     result.json
@@ -656,7 +656,7 @@ encourages the agent to:
 The agent is not forced to follow this — it has full tools and can solve
 problems directly. In practice, some tasks are solved directly (like F),
 while others benefit from the graph-building and iteration guidance.
-This emulates what a human does when using workgraph: the agent is both
+This emulates what a human does when using wg: the agent is both
 the worker and the consciousness that evaluates whether the work is done.
 
 ### Condition Comparison

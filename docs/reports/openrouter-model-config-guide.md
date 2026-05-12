@@ -1,14 +1,14 @@
 # OpenRouter Model Configuration & Assignment Guide
 
 Research report for task `research-openrouter-model`. Answers 7 specific questions
-about OpenRouter model support in workgraph after the resolve-model-registry,
+about OpenRouter model support in wg after the resolve-model-registry,
 auto-detect-native, add-config-validation, and update-setup-wizard changes.
 
 ---
 
 ## 1. How does the model_registry in config.toml work?
 
-There are **two separate model registries** in workgraph:
+There are **two separate model registries** in wg:
 
 ### A. Config-level registry (`config.toml` `[[model_registry]]`)
 
@@ -421,7 +421,7 @@ provider = "openrouter"
 
 ### Prerequisites
 - OpenRouter API key set: `export OPENROUTER_API_KEY="sk-or-v1-..."`
-- workgraph initialized: `wg init`
+- wg initialized: `wg init`
 
 ### Step 1: Verify endpoint exists
 

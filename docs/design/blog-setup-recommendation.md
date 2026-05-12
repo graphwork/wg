@@ -14,7 +14,7 @@
 - **Current content:** Static landing page with:
   - `index.html` — hand-written product landing page
   - `style.css` — CSS with JetBrains Mono font, light/dark mode via `prefers-color-scheme`
-  - `workgraph-manual.html/.md/.pdf` — pandoc-generated manual
+  - `wg-manual.html/.md/.pdf` — pandoc-generated manual
   - `organizational-patterns.html/.md/.pdf` — pandoc-generated theory doc
   - `favicon.svg`, `og-image.png`, font files (`.woff2`)
 - **Build system:** None (raw static files served directly)
@@ -179,9 +179,9 @@ graphwork.github.io/
 │   ├── og-image.png          # (existing)
 │   ├── JetBrainsMono-Regular.woff2  # (existing)
 │   ├── JetBrainsMono-Bold.woff2     # (existing)
-│   ├── workgraph-manual.html        # (existing)
-│   ├── workgraph-manual.md          # (existing)
-│   ├── workgraph-manual.pdf         # (existing)
+│   ├── wg-manual.html        # (existing)
+│   ├── wg-manual.md          # (existing)
+│   ├── wg-manual.pdf         # (existing)
 │   ├── organizational-patterns.html # (existing)
 │   ├── organizational-patterns.md   # (existing)
 │   └── organizational-patterns.pdf  # (existing)
@@ -229,7 +229,7 @@ const blog = defineCollection({
     title: z.string(),
     description: z.string(),
     date: z.date(),
-    author: z.string().default('workgraph Team'),
+    author: z.string().default('wg Team'),
     readTime: z.string().optional(),  // e.g., "8 min read"
     tags: z.array(z.string()).default([]),
     draft: z.boolean().default(false),
@@ -384,10 +384,10 @@ jobs:
 
 ## 9. Scope Confirmation
 
-This blog is for the **workgraph project** specifically:
-- The graphwork.github.io repo description is "workgraph - Task coordination for humans and AI agents"
-- The existing landing page is the workgraph product page
-- Content will be workgraph-related posts (project updates, technical deep dives, design philosophy)
+This blog is for the **wg project** specifically:
+- The graphwork.github.io repo description is "wg - Task coordination for humans and AI agents"
+- The existing landing page is the wg product page
+- Content will be wg-related posts (project updates, technical deep dives, design philosophy)
 
 ---
 

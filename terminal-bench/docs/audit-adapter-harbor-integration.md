@@ -12,7 +12,7 @@ Task: `tb-adapter-audit`
 1. Creates a host-side temp dir (`tempfile.mkdtemp(prefix="tb-wg-")`)
 2. Calls `wg init` on the **host** via `_exec_wg_cmd_host()` (line 843)
 3. Normalizes the model string from Harbor's `/` format to wg's `:` format (line 849)
-4. Writes `.workgraph/config.toml` via `_write_trial_wg_config()` (line 853) — sets coordinator.executor=native, coordinator.model, agent.model, context_scope, exec_mode, max_agents=1
+4. Writes `.wg/config.toml` via `_write_trial_wg_config()` (line 853) — sets coordinator.executor=native, coordinator.model, agent.model, context_scope, exec_mode, max_agents=1
 5. Writes custom bundle TOML for Condition A via `_write_trial_bundle()` (line 859) — excludes wg tools
 6. For federation conditions (D, E, F): initializes hub, writes federation.yaml, pulls agency primitives (lines 862–886)
 7. For agency conditions (D, E): creates a named agent identity (solver/orchestrator) via `wg agent create` (lines 876–892)
@@ -51,7 +51,7 @@ Task: `tb-adapter-audit`
 ### How `wg service start` works
 - **Forks a daemon process** (`src/commands/service/mod.rs:890`) and returns immediately
 - The daemon runs a coordinator loop that:
-  1. Reads `.workgraph/config.toml` for executor type, model, context scope
+  1. Reads `.wg/config.toml` for executor type, model, context scope
   2. Polls for ready tasks
   3. Spawns `wg native-exec` for each ready task
   4. After agent finishes, runs `--verify` command
@@ -170,7 +170,7 @@ The host wg binary is compiled for `x86_64-unknown-linux-gnu`. Docker containers
 ## 5. Metric Collection
 
 ### Where stream.jsonl lives
-- Inside the container: `.workgraph/agents/<agent-id>/stream.jsonl`
+- Inside the container: `.wg/agents/<agent-id>/stream.jsonl`
 - The native executor writes this file directly (`src/executor/native/agent.rs:154-158`)
 - The path is derived from the output_log path (same directory)
 
@@ -193,20 +193,20 @@ Since wg runs inside Docker, stream.jsonl is inside the container. Two options:
 
 **Option A: Read via `exec()`**
 ```python
-result = await environment.exec(command="cat .workgraph/agents/*/stream.jsonl")
+result = await environment.exec(command="cat .wg/agents/*/stream.jsonl")
 # Parse result.stdout line by line
 ```
 - Simple but has limits: glob expansion, large output truncation
 
 **Option B: `download_dir()` after completion**
 ```python
-await environment.download_dir(".workgraph/agents/", local_agents_dir)
+await environment.download_dir(".wg/agents/", local_agents_dir)
 # Then use existing _collect_agent_metrics(local_agents_dir_parent)
 ```
 - More robust: exact same parsing code, handles multiple agent dirs
 - Slightly more I/O
 
-**Recommendation: Option B** — download `.workgraph/` (or just `.workgraph/agents/`) to a host temp dir after task completion, then reuse `_collect_agent_metrics()` with minimal changes.
+**Recommendation: Option B** — download `.wg/` (or just `.wg/agents/`) to a host temp dir after task completion, then reuse `_collect_agent_metrics()` with minimal changes.
 
 ---
 
@@ -220,18 +220,18 @@ async def setup(self, environment: BaseEnvironment) -> None:
     await environment.upload_file(self._wg_binary_host_path, "/usr/local/bin/wg")
     await environment.exec(command="chmod +x /usr/local/bin/wg")
     
-    # 2. Initialize workgraph INSIDE the container
+    # 2. Initialize wg INSIDE the container
     await environment.exec(command="wg init")
     
     # 3. Write config.toml inside the container
     config_content = self._build_config_toml(condition, model)
-    await environment.exec(command=f"cat > .workgraph/config.toml << 'WGEOF'\n{config_content}\nWGEOF")
+    await environment.exec(command=f"cat > .wg/config.toml << 'WGEOF'\n{config_content}\nWGEOF")
     
     # 4. Write custom bundle if needed (Condition A)
     if CONDITION_CONFIG[self.condition].get("exclude_wg_tools"):
         bundle_content = self._build_bundle_toml()
-        await environment.exec(command="mkdir -p .workgraph/bundles")
-        await environment.exec(command=f"cat > .workgraph/bundles/implementer.toml << 'WGEOF'\n{bundle_content}\nWGEOF")
+        await environment.exec(command="mkdir -p .wg/bundles")
+        await environment.exec(command=f"cat > .wg/bundles/implementer.toml << 'WGEOF'\n{bundle_content}\nWGEOF")
     
     # 5. Store environment reference for run() and teardown
     self._environment = environment
@@ -353,20 +353,20 @@ async def _collect_agent_metrics_from_container(
     local_tmp = tempfile.mkdtemp(prefix="tb-metrics-")
     try:
         # Download the agents directory from the container
-        await environment.download_dir(".workgraph/agents/", os.path.join(local_tmp, "agents"))
+        await environment.download_dir(".wg/agents/", os.path.join(local_tmp, "agents"))
         
         # Reuse existing parsing logic
-        return await _collect_agent_metrics(local_tmp + "/.workgraph")
+        return await _collect_agent_metrics(local_tmp + "/.wg")
     except Exception as e:
         logger.warning(f"Failed to collect metrics from container: {e}")
         # Fallback: try reading via exec
-        result = await environment.exec(command="cat .workgraph/agents/*/stream.jsonl 2>/dev/null || echo '{}'")
+        result = await environment.exec(command="cat .wg/agents/*/stream.jsonl 2>/dev/null || echo '{}'")
         return _parse_stream_jsonl_text(result.stdout or "")
     finally:
         shutil.rmtree(local_tmp, ignore_errors=True)
 ```
 
-Note: `_collect_agent_metrics()` expects the path to contain an `agents/` subdirectory. The download path needs to match this structure. Actually, looking at the code (line 367), `agents_dir = os.path.join(wg_dir, "agents")` — so we should `download_dir(".workgraph/agents/", os.path.join(local_tmp, "agents"))` and pass `local_tmp` as `wg_dir`.
+Note: `_collect_agent_metrics()` expects the path to contain an `agents/` subdirectory. The download path needs to match this structure. Actually, looking at the code (line 367), `agents_dir = os.path.join(wg_dir, "agents")` — so we should `download_dir(".wg/agents/", os.path.join(local_tmp, "agents"))` and pass `local_tmp` as `wg_dir`.
 
 ### Phase 5: Clean up dead code
 
@@ -397,7 +397,7 @@ Note: `_collect_agent_metrics()` expects the path to contain an `agents/` subdir
 
 3. **Task instruction quoting**: The `instruction` string from Harbor can contain quotes, newlines, special characters. Using `wg add "..."` in a shell command requires careful escaping. Better approach: write the instruction to a file inside the container, then use `wg add --description-file` if available, or use heredoc: `wg add "task" -d "$(cat /tmp/instruction.txt)"`.
 
-4. **Container working directory**: Need to verify that `wg init` creates `.workgraph/` in the expected directory inside the container (likely `/home/agent/` or `/workspace/`). The exec() calls should use `cwd=` parameter if needed.
+4. **Container working directory**: Need to verify that `wg init` creates `.wg/` in the expected directory inside the container (likely `/home/agent/` or `/workspace/`). The exec() calls should use `cwd=` parameter if needed.
 
 5. **git requirement**: `wg init` may require git to be installed in the container. TB containers should have git, but need to verify. If not, `apt-get install -y git` in setup.
 

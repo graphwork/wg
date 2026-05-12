@@ -62,10 +62,10 @@ const BROWSER_DISPATCH_TIMEOUT_SECS: u64 = 15;
 const OUTER_JOIN_TIMEOUT_SECS: u64 = 20;
 
 /// Descriptive User-Agent for JSON API backends (Wikipedia, HN Algolia,
-/// Google News RSS). Includes the workgraph repo URL so upstream
+/// Google News RSS). Includes the wg repo URL so upstream
 /// operators can find us and complain if needed. OSM Nominatim and
 /// similar strict-policy APIs explicitly require an identifying UA.
-const WG_USER_AGENT: &str = "workgraph/0.1.0 (+https://github.com/graphwork/workgraph)";
+const WG_USER_AGENT: &str = "wg/0.1.0 (+https://github.com/graphwork/wg)";
 
 /// Realistic browser User-Agent for HTML-scrape backends like DDG
 /// when hit via reqwest. Presents as desktop Linux Firefox. Required
@@ -1748,10 +1748,7 @@ async fn search_searxng(client: &rquest::Client, query: &str) -> Result<Vec<Sear
     let body = client
         .get(&url)
         .header("Accept", "application/json")
-        .header(
-            "User-Agent",
-            "workgraph/0.1.0 (+https://github.com/graphwork/workgraph)",
-        )
+        .header("User-Agent", "wg/0.1.0 (+https://github.com/graphwork/wg)")
         .send()
         .await
         .map_err(|e| format!("SearXNG request: {}", e))?

@@ -10,7 +10,7 @@
 
 Replace the current cycle-driven `.compact-*` task spawning mechanism with a **journal-based self-compaction system** where the coordinator agent:
 
-1. Writes its conversation to `.workgraph/coordinator/journal.md`
+1. Writes its conversation to `.wg/coordinator/journal.md`
 2. Detects token thresholds internally (80% of context window)
 3. Writes compaction markers directly to the journal
 4. Continues without spawning graph tasks
@@ -47,7 +47,7 @@ Compaction is **cycle-driven + token-threshold-gated**:
 The daemon:
 1. Detects `.compact-0` becomes cycle-ready when `.coordinator-0` completes
 2. Checks `accumulated_tokens >= threshold` (80% of 200K = 160K tokens)
-3. If threshold met, runs `compactor::run_compaction()` to produce `.workgraph/compactor/context.md`
+3. If threshold met, runs `compactor::run_compaction()` to produce `.wg/compactor/context.md`
 4. Coordinator's next iteration reads `context.md` via `build_coordinator_context()`
 
 **Problem**: The `.compact-*` task is a separate graph node. Compaction is an external operation, not self-managed by the coordinator.
@@ -95,7 +95,7 @@ fn compact_messages(messages: Vec<Message>, _budget_tokens: usize) -> Vec<Messag
 ### 2.1 Journal File Location
 
 ```
-.workgraph/coordinator/journal.md
+.wg/coordinator/journal.md
 ```
 
 **Format rationale**: Markdown with embedded JSON markers (vs. JSONL in native executor) — human-readable for debugging, easy to inspect after compaction events.
@@ -161,7 +161,7 @@ Created 5 tasks successfully.
 
 ### 2.5 CoordinatorJournalState (persisted)
 
-Location: `.workgraph/coordinator/state.json`
+Location: `.wg/coordinator/state.json`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,7 +298,7 @@ async fn perform_self_compaction(
 
 ### 4.1 On Restart/Resume
 
-1. Read `.workgraph/coordinator/journal.md`
+1. Read `.wg/coordinator/journal.md`
 2. Find **latest** `Compaction` marker (last occurrence)
 3. Parse JSON summary from marker
 4. Reconstruct context as: `[summary_text] + [recent N messages from journal]`
@@ -530,7 +530,7 @@ pub struct CoordinatorConfig {
 
 ```rust
 fn default_coordinator_journal_path() -> PathBuf {
-    PathBuf::from(".workgraph/coordinator/journal.md")
+    PathBuf::from(".wg/coordinator/journal.md")
 }
 
 fn default_compaction_threshold_ratio() -> f64 {
@@ -556,7 +556,7 @@ compaction_threshold_ratio = 0.8
 compaction_recent_count = 50
 
 # Path to coordinator journal file
-coordinator_journal_path = ".workgraph/coordinator/journal.md"
+coordinator_journal_path = ".wg/coordinator/journal.md"
 ```
 
 ---
@@ -705,10 +705,10 @@ cargo test integration_coordinator_resume
 WG_COORDINATOR_USE_SELF_COMPACTION=true wg service start
 
 # Check journal after several interactions
-cat .workgraph/coordinator/journal.md
+cat .wg/coordinator/journal.md
 
 # Verify compaction marker format
-grep -A 20 "=== COMPACTION" .workgraph/coordinator/journal.md
+grep -A 20 "=== COMPACTION" .wg/coordinator/journal.md
 
 # Kill and restart coordinator, verify resume
 pkill -f "wg service"
@@ -744,7 +744,7 @@ wg service start
 | File | Reason |
 |------|--------|
 | `src/service/compactor.rs` | Still used by `wg compact` command; module kept for manual invocation |
-| `.workgraph/compactor/context.md` | Still produced by manual `wg compact` invocations |
+| `.wg/compactor/context.md` | Still produced by manual `wg compact` invocations |
 
 ---
 

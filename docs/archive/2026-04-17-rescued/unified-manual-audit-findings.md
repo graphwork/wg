@@ -1,5 +1,5 @@
 # Unified Manual Audit Findings
-**File:** docs/manual/workgraph-manual.md and workgraph-manual.typ  
+**File:** docs/manual/wg-manual.md and wg-manual.typ  
 **Audit Date:** 2026-04-12  
 **Task:** audit-unified-manual  
 
@@ -57,7 +57,7 @@ The unified manual is generally well-written and accurate, but has **significant
 - `dead-agents` - Detect and clean up dead agents
 - `endpoints` - Manage LLM endpoints
 - `heartbeat` - Agent heartbeat management
-- `init` - Initialize new workgraph
+- `init` - Initialize new wg
 - `key` - Manage API keys
 - `quickstart` - Agent onboarding cheat sheet
 - `reclaim` - Reclaim task from dead agent
@@ -108,7 +108,7 @@ Verified key glossary entries against CLI:
 
 ## File-Specific Issues
 
-### docs/manual/workgraph-manual.md
+### docs/manual/wg-manual.md
 **Lines with command references verified:**
 - Line 14: Status definitions - ✅ Accurate
 - Line 23: `wg add --visibility` - ✅ Command exists, syntax correct
@@ -129,7 +129,7 @@ Verified key glossary entries against CLI:
 - `wg fail`: 8 mentions ✅
 - `wg edit`: 7 mentions ✅
 
-### docs/manual/workgraph-manual.typ
+### docs/manual/wg-manual.typ
 - **Content matches markdown file exactly**
 - **Typst formatting preserves all CLI references correctly**
 - **Table structure maintains glossary accuracy**

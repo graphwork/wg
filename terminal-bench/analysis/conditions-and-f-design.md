@@ -66,7 +66,7 @@ Do not ask for clarification - proceed with your best judgment.
 ### 2.2 Condition B: WG Tools (Passive)
 
 **Prompt** (`build_condition_b_prompt`, adapter.py:574–597):
-Adds root task ID, brief wg guidelines ("use wg_log to record progress"), workgraph graph patterns (pipeline, diamond, loop), and journal/resume concept.
+Adds root task ID, brief wg guidelines ("use wg_log to record progress"), wg graph patterns (pipeline, diamond, loop), and journal/resume concept.
 
 **Failure mode**: 80% of agents never call a single wg tool. The model treats wg_* tools as optional. When the task is simple, it takes the shortest path (bash+file). The prompt says "use wg_log" as a suggestion, not an imperative.
 
@@ -162,7 +162,7 @@ response = await litellm.acompletion(
 Tools are defined as standard OpenAI function-calling JSON schemas (adapter.py:43–361). They are **model-agnostic** — any model supporting OpenAI function calling can use them. The tool schemas include:
 
 - **Name**: e.g., `wg_add`, `wg_done`, `wg_log`
-- **Description**: Brief (e.g., "Create a new task in the workgraph")
+- **Description**: Brief (e.g., "Create a new task in the wg")
 - **Parameters**: JSON Schema with required/optional fields
 
 ### 3.3 What M2.7 Gets vs. What It Needs
@@ -176,7 +176,7 @@ Tools are defined as standard OpenAI function-calling JSON schemas (adapter.py:4
 **What M2.7 does NOT get**:
 1. **No CLAUDE.md content**: The project instructions that tell Claude how to use `wg` (task decomposition patterns, dependency management, cycle support, verification requirements) are never injected. This is ~5K tokens of operational context.
 2. **No .claude/ memory**: Project-specific knowledge (architecture decisions, known patterns, file paths) is not available.
-3. **No `wg` conceptual background**: M2.7 has no pre-training knowledge of what "workgraph" is. Claude (used natively) would understand `wg` from its training data or CLAUDE.md. M2.7 must learn entirely from the tool descriptions + system prompt.
+3. **No `wg` conceptual background**: M2.7 has no pre-training knowledge of what "wg" is. Claude (used natively) would understand `wg` from its training data or CLAUDE.md. M2.7 must learn entirely from the tool descriptions + system prompt.
 4. **No tool usage examples**: The tool schemas say `wg_add` takes a `title` and optional `after` parameter, but there are no examples of *when* to use `--after` or what dependency patterns look like.
 
 ### 3.4 Impact by Condition
@@ -322,7 +322,7 @@ class ConditionFAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-f"
+        return "wg-condition-f"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "F"  # New condition letter

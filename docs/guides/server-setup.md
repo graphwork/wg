@@ -1,6 +1,6 @@
 # Server Setup Guide
 
-This guide covers server-side configuration for hosting a multi-user workgraph instance. It focuses on mosh, the primary transport for mobile and roaming clients, plus the surrounding infrastructure (firewall, systemd, connection dispatcher).
+This guide covers server-side configuration for hosting a multi-user wg instance. It focuses on mosh, the primary transport for mobile and roaming clients, plus the surrounding infrastructure (firewall, systemd, connection dispatcher).
 
 ---
 
@@ -9,7 +9,7 @@ This guide covers server-side configuration for hosting a multi-user workgraph i
 - A Linux VPS (Ubuntu 22.04/24.04 or Debian 12 recommended)
 - Root or sudo access
 - SSH server running and accessible
-- workgraph binary installed (`cargo install workgraph` or from [GitHub Releases](https://github.com/erikg/workgraph/releases))
+- wg binary installed (`cargo install wg` or from [GitHub Releases](https://github.com/graphwork/wg/releases))
 - tmux installed (`apt install tmux`)
 
 ---
@@ -24,7 +24,7 @@ This guide covers server-side configuration for hosting a multi-user workgraph i
 - **High latency** — local echo provides instant feedback while waiting for the server
 - **Intermittent connectivity** — sessions survive laptop sleep, network outages, and IP changes
 
-For workgraph, mosh is the recommended transport for mobile clients (Android via Termux, iOS via Blink Shell) and for desktop users on unreliable networks.
+For wg, mosh is the recommended transport for mobile clients (Android via Termux, iOS via Blink Shell) and for desktop users on unreliable networks.
 
 ### Installation
 
@@ -175,7 +175,7 @@ The client-side setting takes precedence.
 
 ```bash
 cat <<'EOF' | sudo tee /etc/profile.d/mosh.sh
-# mosh server defaults for workgraph deployment
+# mosh server defaults for wg deployment
 export MOSH_PREDICTION_DISPLAY=adaptive
 export MOSH_SERVER_NETWORK_TMOUT=604800  # Clean up after 7 days idle
 export MOSH_SERVER_SIGNAL_TMOUT=60
@@ -226,7 +226,7 @@ mosh provides strong, authenticated encryption for the UDP data channel:
 | Port exposure | TCP 22 | TCP 22 + UDP 60000-61000 |
 | Roaming support | No (TCP breaks on IP change) | Yes (UDP tolerates IP change) |
 
-### Security considerations for shared workgraph servers
+### Security considerations for shared wg servers
 
 1. **SSH key-only authentication:** Disable password authentication for the server.
 
@@ -282,10 +282,10 @@ This launches `wg-connect.sh` on the server, which:
 
 ### SSH ForceCommand integration
 
-For a fully locked-down workgraph server, configure SSH to automatically route users into the dispatcher:
+For a fully locked-down wg server, configure SSH to automatically route users into the dispatcher:
 
 ```bash
-# /etc/ssh/sshd_config.d/workgraph.conf
+# /etc/ssh/sshd_config.d/wg.conf
 Match Group wg-users
     ForceCommand /usr/local/bin/wg-connect.sh
 ```

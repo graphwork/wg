@@ -1,8 +1,8 @@
-# workgraph Architectural Issues
+# wg Architectural Issues
 
 ## The Core Question
 
-How do autonomous agents coordinate work through workgraph without a human orchestrator?
+How do autonomous agents coordinate work through wg without a human orchestrator?
 
 Currently, I (Claude) act as the coordinator - checking ready tasks, dispatching subagents, monitoring completion. But for true autonomy, agents need to self-organize.
 
@@ -91,22 +91,22 @@ Task {
 
 ## Issue 4: Execution Model
 
-**Current state**: workgraph tracks tasks. Something external (me, Claude Code) actually does the work.
+**Current state**: wg tracks tasks. Something external (me, Claude Code) actually does the work.
 
 **What's missing**:
 - No standard way to "execute" a task
 - No definition of what "doing the work" means
-- No connection between workgraph and the execution environment
+- No connection between wg and the execution environment
 
 **Questions**:
-- Is workgraph just coordination, or should it trigger execution?
+- Is wg just coordination, or should it trigger execution?
 - Should tasks have executable definitions (scripts, prompts)?
 - How do agents get permissions/tools they need?
 
 **Options**:
-1. **Coordination only**: workgraph tracks state, external system does work
+1. **Coordination only**: wg tracks state, external system does work
 2. **Execution included**: `wg run <id>` spawns an agent with the right context
-3. **Hybrid**: workgraph provides context, agent decides how to execute
+3. **Hybrid**: wg provides context, agent decides how to execute
 
 **Proposed model** (hybrid):
 ```
@@ -255,7 +255,7 @@ Task {
 
 ## Next Steps
 
-1. **Decide on execution model**: Is workgraph coordination-only or does it trigger execution?
+1. **Decide on execution model**: Is wg coordination-only or does it trigger execution?
 2. **Design context inheritance**: How do task outputs become inputs for dependent tasks?
 3. **Add agent capabilities**: Extend Actor with skills
 4. **Add task requirements**: Extend Task with required skills, context files, deliverables

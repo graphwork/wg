@@ -41,7 +41,7 @@ The tree shows the path `root → mid → end`. The direct `root → end` edge i
 Because root is above end in the rendering, the arc goes **downward** — an "outbound"
 edge from root's perspective. Current code renders this with `←` at root, which is wrong.
 
-This is common in workgraph task graphs: a design task might block both an implementation
+This is common in wg task graphs: a design task might block both an implementation
 task (directly) and a verification task (which also depends on the implementation).
 
 ## Current Behavior

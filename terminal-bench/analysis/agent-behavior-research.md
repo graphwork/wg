@@ -21,7 +21,7 @@ The TB experiment ran three conditions with 89 tasks × 3 trials each. Pass rate
 | Field | B-rerun value | C value |
 |-------|--------------|---------|
 | `config.agent.import_path` | `wg.adapter:ConditionCAgent` | `wg.adapter:ConditionCAgent` |
-| `agent_info.name` | `workgraph-condition-c` | `workgraph-condition-c` |
+| `agent_info.name` | `wg-condition-c` | `wg-condition-c` |
 | `agent_result.metadata.condition` | `C` | `C` |
 | `run.sh` | `--agent-import-path "wg.adapter:ConditionCAgent"` | N/A (Harbor run via task agent) |
 
@@ -65,7 +65,7 @@ To validly compare B vs C, use the original `full-condition-b` data (which ran `
 
 | Cause | Count | Description |
 |-------|-------|-------------|
-| Model ignores wg tools | 24 | Agent has tools, uses bash+file, never calls wg_*. Runs 4-50 turns without touching workgraph |
+| Model ignores wg tools | 24 | Agent has tools, uses bash+file, never calls wg_*. Runs 4-50 turns without touching wg |
 | Error/exception | 4 | Trial errored before meaningful wg usage (polyglot-c-py, feal-differential, polyglot-rust-c, write-compressor) |
 | Very short trial (1 turn) | 2 | Agent barely started (polyglot-rust-c__KURAYx7: 1 turn, no tool calls) |
 | Continuation batch artifact | 7 | Top-level directory entries for batch subdirectories |
@@ -111,7 +111,7 @@ This +20.8pp gap suggests wg usage (particularly logging and completion signalin
 
 ### Finding: No roles, tradeoffs, or assignments are active in any B or C trial
 
-**Evidence from workgraph state snapshots:**
+**Evidence from wg state snapshots:**
 
 - `agency/cache/` contains default starter roles, tradeoffs, and agents from `wg agency init` — but these are seeded by the adapter's `setup()` method, not by the trial agent.
 - `agency/assignments/` is empty in all examined snapshots.

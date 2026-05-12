@@ -336,7 +336,7 @@ The only change is inserting `.merge-X` into the chain and re-pointing `.flip-X`
 
 ## 8. Implementation Breakdown: Follow-up Tasks
 
-These tasks should be filed as workgraph tasks with the dependencies shown:
+These tasks should be filed as wg tasks with the dependencies shown:
 
 ### Task 1: `implement-wg-merge-command`
 **Description:** Implement `wg merge <task-id>` CLI command in Rust. Port the shell merge-back logic (acquire lock, squash merge, commit, conflict handling) to a proper command with structured error handling and provenance logging.

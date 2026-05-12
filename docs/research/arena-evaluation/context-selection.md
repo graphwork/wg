@@ -1,6 +1,6 @@
-# Arena-Based Context Selection for workgraph
+# Arena-Based Context Selection for wg
 
-How FLIP backward-inference scoring (Wang et al., 2025, arXiv:2602.13551) can drive empirical selection of prompts, contexts, and agent configurations in workgraph.
+How FLIP backward-inference scoring (Wang et al., 2025, arXiv:2602.13551) can drive empirical selection of prompts, contexts, and agent configurations in wg.
 
 ## 1. Current Context Construction
 
@@ -116,7 +116,7 @@ for each planner prompt variant P_i:
 - **Decomposition strategy:** "Break into phases" vs. "Break by component" vs. "Break by skill"
 - **Constraint emphasis:** Lead with constraints vs. mention at end vs. embed inline
 - **Memory inclusion** (Layer 3): Include 0, 3, or all past run summaries from `TraceMemoryConfig`
-- **Output structure:** `workgraph-yaml` vs. free-form with parsing
+- **Output structure:** `wg-yaml` vs. free-form with parsing
 
 ### Integration with `static_fallback`
 

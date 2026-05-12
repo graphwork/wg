@@ -251,7 +251,7 @@ Parallel to the existing `.compact-0` cycle for project context, add a per-coord
 
 **Prompt template:**
 ```
-You are summarizing a conversation between a user and a workgraph coordinator.
+You are summarizing a conversation between a user and a wg coordinator.
 Preserve:
 - Decisions made and their rationale
 - User preferences and recurring instructions

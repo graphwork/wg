@@ -1,6 +1,6 @@
 # Task and Workflow Management Format Research
 
-This document analyzes existing lightweight workflow and task management file formats to inform the design of workgraph's format.
+This document analyzes existing lightweight workflow and task management file formats to inform the design of wg's format.
 
 ## Table of Contents
 
@@ -13,7 +13,7 @@ This document analyzes existing lightweight workflow and task management file fo
    - [Plain Markdown Task Lists](#plain-markdown-task-lists)
    - [JSONL/NDJSON](#jsonlndjson)
 3. [Comparison Table](#comparison-table)
-4. [Recommendations for workgraph](#recommendations-for-workgraph)
+4. [Recommendations for wg](#recommendations-for-wg)
 5. [Sources](#sources)
 
 ---
@@ -26,7 +26,7 @@ After analyzing six major task/workflow management formats, clear patterns emerg
 - **Machine-first formats** (BPMN XML, GitHub GraphQL) support rich semantics but sacrifice human editability
 - **Hybrid approaches** (Taskwarrior JSON, JSONL) balance both concerns with one-record-per-line designs
 
-For workgraph, a **JSONL-based format with carefully designed schema** offers the best tradeoffs: append-only semantics for event sourcing, git-friendly line-based diffs, machine parseability, and reasonable human readability when needed.
+For wg, a **JSONL-based format with carefully designed schema** offers the best tradeoffs: append-only semantics for event sourcing, git-friendly line-based diffs, machine parseability, and reasonable human readability when needed.
 
 ---
 
@@ -485,9 +485,9 @@ SORT due ASC
 
 ---
 
-## Recommendations for workgraph
+## Recommendations for wg
 
-Based on this analysis, here are recommendations for workgraph's format design:
+Based on this analysis, here are recommendations for wg's format design:
 
 ### 1. Primary Format: JSONL Event Log
 

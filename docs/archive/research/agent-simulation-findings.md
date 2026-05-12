@@ -2,7 +2,7 @@
 
 ## Overview
 
-Ran 3 parallel agents (worker-1, worker-2, worker-3) to test workgraph coordination. Each agent:
+Ran 3 parallel agents (worker-1, worker-2, worker-3) to test wg coordination. Each agent:
 1. Checked `wg ready` for available tasks
 2. Attempted to claim a task
 3. Reported their experience

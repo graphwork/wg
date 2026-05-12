@@ -1,12 +1,12 @@
 # Stigmergic Memory Doesn't Help (Yet): A Terminal-Bench Experiment
 
-**tl;dr** — We gave an AI agent access to workgraph, an external task-graph memory system, and ran it against 89 Terminal-Bench tasks. Pass rate didn't change. The scaffolding neither helped nor hurt. This is a null result, and we think it's interesting.
+**tl;dr** — We gave an AI agent access to wg, an external task-graph memory system, and ran it against 89 Terminal-Bench tasks. Pass rate didn't change. The scaffolding neither helped nor hurt. This is a null result, and we think it's interesting.
 
 ## The thesis
 
 There's a seductive idea floating around AI-agent research: the bottleneck isn't the model, it's the memory architecture. Give a small model the right external scaffolding — persistent task state, structured logging, the ability to decompose work — and it should punch above its weight. Ants do it. Termite colonies do it. The term of art is *stigmergy*: coordination through shared environmental traces rather than direct communication.
 
-[Workgraph](https://github.com/graphwork/workgraph) is an implementation of this idea. It gives AI agents a persistent task graph they can read and write: log progress, decompose tasks into subtasks, record artifacts, and resume from where they left off. The question is whether this external memory actually changes what a model can accomplish.
+[wg](https://github.com/graphwork/wg) is an implementation of this idea. It gives AI agents a persistent task graph they can read and write: log progress, decompose tasks into subtasks, record artifacts, and resume from where they left off. The question is whether this external memory actually changes what a model can accomplish.
 
 ## The experiment
 
@@ -17,7 +17,7 @@ We tested three conditions, all using the same model (**Minimax M2.7** via OpenR
 | Condition | What the agent gets |
 |-----------|-------------------|
 | **A** (control) | Bash + file tools. No memory, no planning, no decomposition. |
-| **B** (stigmergic) | Everything in A, plus workgraph tools: `wg_log`, `wg_done`, `wg_add` (decomposition), `wg_artifact`, `wg_show`. Graph-aware context injection. |
+| **B** (stigmergic) | Everything in A, plus wg tools: `wg_log`, `wg_done`, `wg_add` (decomposition), `wg_artifact`, `wg_show`. Graph-aware context injection. |
 | **C** (enhanced) | Everything in B, plus skill-injected planning prompts, work snapshots, and enhanced context management. |
 
 Each condition ran all 89 tasks with 3 trials per task (267 trials per condition, ~800 total). Same model weights, same temperature, same timeout. The only variable was the scaffolding.
@@ -42,7 +42,7 @@ On medium-difficulty tasks (those that A solves 33–66% of the time), B and C g
 | Medium | 22 | 55% | 64% | 64% |
 | Hard | 34 | 0% | 7% | 2% |
 
-B cracked two hard tasks that A never solved: `fix-ocaml-gc` (100% vs 0%) and `password-recovery` (100% vs 0%). These were cases where decomposition or persistent state plausibly helped. But these gains were offset by losses on easy tasks — the overhead of workgraph bookkeeping apparently introduced enough friction to cause failures on tasks the bare agent handles cleanly.
+B cracked two hard tasks that A never solved: `fix-ocaml-gc` (100% vs 0%) and `password-recovery` (100% vs 0%). These were cases where decomposition or persistent state plausibly helped. But these gains were offset by losses on easy tasks — the overhead of wg bookkeeping apparently introduced enough friction to cause failures on tasks the bare agent handles cleanly.
 
 ### Decomposition was rare
 
@@ -50,7 +50,7 @@ Only 6–8% of B/C trials used `wg_add` to decompose tasks. When they did, the p
 
 ### Overhead was modest
 
-Workgraph tool calls consumed ~9% of total tool calls in B and C. Most were bookkeeping (`wg_log`, `wg_done`) rather than substantive (`wg_add`, `wg_show`). The model dutifully logged and recorded but rarely used the graph for strategic purposes.
+wg tool calls consumed ~9% of total tool calls in B and C. Most were bookkeeping (`wg_log`, `wg_done`) rather than substantive (`wg_add`, `wg_show`). The model dutifully logged and recorded but rarely used the graph for strategic purposes.
 
 ## What this means
 
@@ -79,7 +79,7 @@ The dominant narrative in AI scaffolding research is "we added X and got Y% impr
 
 ## Reproduction
 
-All data, scripts, and harness code are in the [workgraph repository](https://github.com/graphwork/workgraph) under `terminal-bench/`:
+All data, scripts, and harness code are in the [wg repository](https://github.com/graphwork/wg) under `terminal-bench/`:
 
 ```bash
 # Re-run the analysis
@@ -109,4 +109,4 @@ C was slightly more token-efficient per solve (269K tokens vs 310K for A on pass
 
 ---
 
-*This post is part of the [workgraph](https://github.com/graphwork/workgraph) project. Workgraph is a task coordination graph for humans and AI agents, MIT licensed.*
+*This post is part of the [wg](https://github.com/graphwork/wg) project. wg is a task coordination graph for humans and AI agents, MIT licensed.*

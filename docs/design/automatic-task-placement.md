@@ -341,7 +341,7 @@ No changes needed to the publish command itself.
 
 **Detection logic:**
 ```rust
-fn build_placement_tasks(graph: &mut WorkGraph, config: &Config, dir: &Path) -> bool {
+fn build_placement_tasks(graph: &mut wg, config: &Config, dir: &Path) -> bool {
     let tasks_needing_placement: Vec<_> = graph.tasks()
         .filter(|t| {
             t.paused                              // Draft task

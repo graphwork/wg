@@ -109,7 +109,7 @@ Several sections, a synthesis, an inventory, and a checklist.
 ### Research tool — enhancement proposal
 
 - [research_enhancement_proposal.md](research_enhancement_proposal.md)
-- [investigation_workgraph_limitations.md](investigation_workgraph_limitations.md)
+- [investigation_wg_limitations.md](investigation_wg_limitations.md)
 
 ### Task lifecycle
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document traces the full code path from task detection to agent spawning for different executor types in the workgraph system.
+This document traces the full code path from task detection to agent spawning for different executor types in the wg system.
 
 ## High-Level Spawning Flow
 
@@ -125,7 +125,7 @@ let inner_command = build_inner_command(
     for arg in &settings.args {
         cmd_parts.push(shell_escape(arg));
     }
-    // Prevent agents from spawning sub-agents outside workgraph
+    // Prevent agents from spawning sub-agents outside wg
     cmd_parts.push("--disallowedTools".to_string());
     cmd_parts.push(shell_escape("Agent"));
     cmd_parts.push("--disable-slash-commands".to_string());

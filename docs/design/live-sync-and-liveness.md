@@ -122,7 +122,7 @@ Users commit and push/pull `.wg/graph.jsonl` like any other file. JSONL format m
 Register a custom merge driver in `.gitattributes`:
 
 ```
-.wg/graph.jsonl merge=workgraph-jsonl
+.wg/graph.jsonl merge=wg-jsonl
 ```
 
 The merge driver (`wg merge-driver`) resolves conflicts using domain knowledge:
@@ -337,7 +337,7 @@ suppress = ["task_completed"]  # too noisy for large graphs
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ WORKGRAPH DASHBOARD                    ▲ 3 users │ uptime 4h22m │
+│ WG DASHBOARD                           ▲ 3 users │ uptime 4h22m │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  Coordinators                                                    │

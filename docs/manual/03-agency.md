@@ -212,11 +212,11 @@ This rule was chosen over two alternatives:
 - *Hash on `(type, name, scope)` instead of `description`.* This would preserve per-scope variants but break the Agency v1.2.4 federation hash equation, severing per-row byte-equality with upstream. Rejected.
 - *Last-write-wins (the pre-investigation behavior).* This silently overwrote locally-seeded primitives whenever an upstream row happened to share a description, with no surfaced warning. Rejected: it produces invisible semantic drift and was the bug filed under `investigate-agency-import`.
 
-Per-scope variants of a primitive that workgraph does need to keep separately should be expressed as two primitives with distinguishable descriptions (the scope can be repeated in the prose), or composed at the role layer where the same content primitive can be referenced by multiple roles.
+Per-scope variants of a primitive that wg does need to keep separately should be expressed as two primitives with distinguishable descriptions (the scope can be repeated in the prose), or composed at the role layer where the same content primitive can be referenced by multiple roles.
 
 ## Federation: Sharing Across Projects
 
-An agency built in one project is not confined to that project. The federation system lets you share roles, motivations, and agents across workgraph projects—transferring proven identities from one context into another, complete with their performance histories and lineage chains.
+An agency built in one project is not confined to that project. The federation system lets you share roles, motivations, and agents across wg projects—transferring proven identities from one context into another, complete with their performance histories and lineage chains.
 
 Federation operates through named *remotes*: references to another project’s agency store, managed via `wg agency remote add`, `wg agency remote list`, and `wg agency remote remove`. Remotes are stored in `.wg/federation.yaml`. Once a remote is configured, three operations become available.
 

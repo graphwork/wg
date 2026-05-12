@@ -1,9 +1,9 @@
-# Amplifier–workgraph Executor Gap Analysis
+# Amplifier–wg Executor Gap Analysis
 
 **Date**: 2026-02-18
 **Task**: `analyze-wg-executors`
 
-## 1. How workgraph Currently Configures Executors
+## 1. How wg Currently Configures Executors
 
 Executor configuration lives in two places:
 
@@ -203,7 +203,7 @@ that produce structured output (JSON streams, binary, etc.).
 
 ### 4.1 Current workarounds in the amplifier executor
 
-The existing amplifier bundle ([ramparte/amplifier-bundle-workgraph](https://github.com/ramparte/amplifier-bundle-workgraph))
+The existing amplifier bundle ([ramparte/amplifier-bundle-wg](https://github.com/ramparte/amplifier-bundle-wg))
 uses these workarounds:
 
 | Gap | Workaround |

@@ -1,6 +1,6 @@
 = Coordination & Execution <sec-coordination>
 
-When you type `wg service start --max-agents 5`, a background process wakes up, binds a Unix socket, and begins to breathe. Every few seconds it opens the graph file, scans for ready tasks, and decides what to do. This is the coordinator—the scheduling brain that turns a static directed graph into a running system. Without it, workgraph is a notebook. With it, workgraph is a machine.
+When you type `wg service start --max-agents 5`, a background process wakes up, binds a Unix socket, and begins to breathe. Every few seconds it opens the graph file, scans for ready tasks, and decides what to do. This is the coordinator—the scheduling brain that turns a static directed graph into a running system. Without it, wg is a notebook. With it, wg is a machine.
 
 This section walks through the full lifecycle of work: from the moment the daemon starts, through the dispatch of agents, to the handling of their success, failure, and unexpected death.
 
@@ -170,7 +170,7 @@ You can change `max_agents` without restarting the daemon. `wg service reload --
 
 === Map/Reduce Patterns <map-reduce>
 
-Parallelism in workgraph arises naturally from the graph structure. A _fan-out_ (map) pattern occurs when one task is before several children: the parent completes, all children become ready simultaneously, and the coordinator spawns agents for each (up to `max_agents`). A _fan-in_ (reduce) pattern occurs when several tasks are before a single aggregator: the aggregator only becomes ready when all its predecessors are terminal, and then a single agent handles the synthesis.
+Parallelism in wg arises naturally from the graph structure. A _fan-out_ (map) pattern occurs when one task is before several children: the parent completes, all children become ready simultaneously, and the coordinator spawns agents for each (up to `max_agents`). A _fan-in_ (reduce) pattern occurs when several tasks are before a single aggregator: the aggregator only becomes ready when all its predecessors are terminal, and then a single agent handles the synthesis.
 
 These patterns are not built-in primitives. They emerge from dependency edges. A project plan that says "write five sections, then compile the manual" naturally produces a fan-out of five writer tasks followed by a fan-in to a compiler task. The coordinator handles this without any special configuration—`max_agents` determines how many of the five writers run concurrently.
 
@@ -263,7 +263,7 @@ The maximum number of concurrent coordinators is configured via `wg config --max
 
 == Peer Communication <peer-communication>
 
-workgraph projects can communicate across repository boundaries through the _peer_ system. `wg peer add <name> <path>` registers another workgraph instance as a named peer. Tasks can be created in a peer's graph via `wg add "title" --repo <peer-name>`, enabling cross-repo task dispatch without leaving the local CLI.
+wg projects can communicate across repository boundaries through the _peer_ system. `wg peer add <name> <path>` registers another wg instance as a named peer. Tasks can be created in a peer's graph via `wg add "title" --repo <peer-name>`, enabling cross-repo task dispatch without leaving the local CLI.
 
 `wg peer list` shows all configured peers with their service status (whether the peer's daemon is running). `wg peer status` performs a quick health check across all peers. This is distinct from agency federation (which shares identities and evaluations)---peer communication shares _work_ across project boundaries.
 
@@ -313,7 +313,7 @@ Requeue is distinct from `wg retry` (which resets a _failed_ task) and from the 
 
 == Observing the System <observing>
 
-The IPC protocol lets tools talk to the daemon. But many integrations need to observe the graph from the outside—a CI system that triggers on task completion, a dashboard that tracks agent progress, a portfolio manager that records outcomes. For these, workgraph provides `wg watch`.
+The IPC protocol lets tools talk to the daemon. But many integrations need to observe the graph from the outside—a CI system that triggers on task completion, a dashboard that tracks agent progress, a portfolio manager that records outcomes. For these, wg provides `wg watch`.
 
 `wg watch` streams a real-time event feed of graph mutations to standard output. Each line is a JSON object with a type, timestamp, optional task ID, and a data payload carrying the operation detail. The event types mirror the operations log: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. The stream reads from the same provenance log that records every mutation to the graph—`wg watch` is not a separate event system but a live tail of the log with structured formatting.
 
@@ -321,7 +321,7 @@ Events can be filtered. The `--event` flag accepts categories—`task_state` for
 
 === The Adapter Pattern <adapter-pattern>
 
-`wg watch` is one side of a broader integration architecture. External systems interact with workgraph through five ingestion points, each corresponding to a different kind of information flow:
+`wg watch` is one side of a broader integration architecture. External systems interact with wg through five ingestion points, each corresponding to a different kind of information flow:
 
 #table(
   columns: (auto, auto, 1fr),
@@ -334,7 +334,7 @@ Events can be filtered. The `--event` flag accepts categories—`task_state` for
   [Observation], [`wg watch`], [The event stream _out_ — external systems observe what is happening without polling.],
 ) <fig-ingestion-points>
 
-The generic adapter follows a four-step pattern: _observe_ the graph via `wg watch`, _translate_ external data into workgraph's vocabulary, _ingest_ via the appropriate CLI command, and _react_ by triggering external actions. A CI adapter might observe `task.completed` events, run a test suite, and record the result via `wg evaluate record --source "ci:tests"`. A portfolio manager might observe agent completions, measure real-world outcomes, and feed scores back as external evaluations. The adapter pattern is deliberately simple—each integration is a small loop of observe, translate, ingest, react—because the ingestion points are stable CLI commands, not a bespoke API.
+The generic adapter follows a four-step pattern: _observe_ the graph via `wg watch`, _translate_ external data into wg's vocabulary, _ingest_ via the appropriate CLI command, and _react_ by triggering external actions. A CI adapter might observe `task.completed` events, run a test suite, and record the result via `wg evaluate record --source "ci:tests"`. A portfolio manager might observe agent completions, measure real-world outcomes, and feed scores back as external evaluations. The adapter pattern is deliberately simple—each integration is a small loop of observe, translate, ingest, react—because the ingestion points are stable CLI commands, not a bespoke API.
 
 === The Operations Log and Trace <operations-log>
 

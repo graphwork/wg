@@ -1,8 +1,8 @@
-# workgraph + Agency Manual — Document Plan
+# wg + Agency Manual — Document Plan
 
-This plan governs the structure, terminology, tone, and content of a conceptual manual for humans who want to understand and use workgraph and its agency system for their own projects. This is not an API reference or CLI cheat-sheet. It is a book — tight, precise prose that builds understanding from first principles.
+This plan governs the structure, terminology, tone, and content of a conceptual manual for humans who want to understand and use wg and its agency system for their own projects. This is not an API reference or CLI cheat-sheet. It is a book — tight, precise prose that builds understanding from first principles.
 
-**Target audience:** Humans who manage projects (solo or team), coordinate AI agents, or both. They may be software engineers, researchers, or project leads. They want to understand what workgraph does, why it works the way it does, and how to use it effectively.
+**Target audience:** Humans who manage projects (solo or team), coordinate AI agents, or both. They may be software engineers, researchers, or project leads. They want to understand what wg does, why it works the way it does, and how to use it effectively.
 
 **Tone:** Concise, lyrical technical prose. Not bullet-point documentation. Each section should read as a short essay that builds a mental model. Analogies are welcome where they clarify; jargon is defined before use. Diagrams (ASCII or typst-native) are encouraged where they compress paragraphs into a glance.
 
@@ -16,7 +16,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 | Term | Definition |
 |------|-----------|
-| **task** | The fundamental unit of work in a workgraph. Has an ID, title, status, and may have dependencies, skills, inputs, deliverables, and other metadata. Tasks are nodes in the graph. |
+| **task** | The fundamental unit of work in a wg. Has an ID, title, status, and may have dependencies, skills, inputs, deliverables, and other metadata. Tasks are nodes in the graph. |
 | **status** | The current lifecycle state of a task. One of: *open* (available for work), *in-progress* (claimed by an agent), *done* (completed successfully), *failed* (attempted and failed; retryable), *abandoned* (permanently dropped), or *blocked* (explicitly marked; rarely used since blocking is usually derived). The three *terminal* statuses are done, failed, and abandoned — a terminal task no longer blocks its dependents. |
 | **dependency** | A directed edge between tasks expressed via `after`. Task B depends on task A means B cannot be ready until A reaches a terminal status. Dependencies form the forward structure of the graph. |
 | **after** | The authoritative dependency list on a task. `task.after = ["dep"]` means the task comes after `dep` — i.e., `dep` must complete before this task can be ready. Renamed from `blocked_by`; the old name is accepted as a serde alias for backward compatibility. |
@@ -65,11 +65,11 @@ Every writer must use these terms with these exact meanings. If a term is not in
 | **trace export** | A filtered, shareable snapshot of the trace. Visibility filtering controls what is included: *internal* exports everything, *public* sanitizes (strips logs, evaluations, agent details), *peer* provides richer detail for trusted peers. The interchange format for cross-boundary sharing. Produced by `wg trace export --visibility <zone>`. |
 | **trace function** | A parameterized workflow template extracted from completed traces via `wg func extract`. Captures task structure, dependencies, structural cycles, and input parameters. Input types include string, text, file list, file content, number, URL, enum, and JSON. Applied via `wg func apply` to create new task graphs following the same pattern. Stored as YAML in `.wg/functions/`. |
 | **replay** | Re-execution of previously completed or failed work. `wg replay` creates an immutable snapshot of the current graph state (stored in `.wg/runs/`), then selectively resets tasks based on criteria: failed-only, below-score threshold, explicit task list, or subgraph. Dependents in the transitive closure are also reset. Supports `--plan-only` for previewing. |
-| **federation** | The system for sharing agency entities across workgraph projects. Operations: *scan* (discover entities in a remote store), *pull* (import from remote to local), *push* (export from local to remote). Named remotes are stored in `.wg/federation.yaml`. Performance records are merged during transfer with deduplication by task ID and timestamp. Content-hash IDs make federation natural — identical entities deduplicate automatically. |
-| **remote** | A named reference to another workgraph project's agency store, used for federation. Stores a path, optional description, and last-sync timestamp. Managed via `wg agency remote add/list/remove`. Stored in `.wg/federation.yaml`. |
+| **federation** | The system for sharing agency entities across wg projects. Operations: *scan* (discover entities in a remote store), *pull* (import from remote to local), *push* (export from local to remote). Named remotes are stored in `.wg/federation.yaml`. Performance records are merged during transfer with deduplication by task ID and timestamp. Content-hash IDs make federation natural — identical entities deduplicate automatically. |
+| **remote** | A named reference to another wg project's agency store, used for federation. Stores a path, optional description, and last-sync timestamp. Managed via `wg agency remote add/list/remove`. Stored in `.wg/federation.yaml`. |
 | **evaluation source** | A freeform string tag on each evaluation identifying its origin. Default: `"llm"` (internal auto-evaluator). Conventions: `"manual"` (human-reviewed), `"outcome:<metric>"` (external outcome data, e.g., `"outcome:sharpe"`), `"ci:<suite>"` (CI/test results), `"vx:<peer-id>"` (Veracity Exchange peer evaluation), `"import:<source>"` (imported via trace import). The evolver reads all evaluations regardless of source. |
 | **event stream** | A real-time feed of graph mutations produced by `wg watch --json`. Events are typed: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. Filterable by category (`task_state`, `evaluation`, `agent`) or by task ID prefix. Enables external adapters to observe and react without polling. |
-| **adapter** | An external tool or service that translates between an external system's vocabulary and workgraph's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI commands) → react. Not a formal type in the codebase — a conceptual pattern for integration. Examples: CI bots, Slack integrations, portfolio management tools. |
+| **adapter** | An external tool or service that translates between an external system's vocabulary and wg's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI commands) → react. Not a formal type in the codebase — a conceptual pattern for integration. Examples: CI bots, Slack integrations, portfolio management tools. |
 | | |
 | **— Pattern Vocabulary —** | The following terms come from the [Canonical Pattern Vocabulary](../design/spec-patterns-vocab.md), organized into four categories: structure, agency, control, and shorthands. |
 | | |
@@ -86,7 +86,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 | **platform** | One role produces shared infrastructure that other roles depend on. Platform tasks appear as `after` dependencies for stream-aligned tasks. Maps to Team Topologies' "platform team." See also: **scaffold** shorthand. |
 | | |
 | *Control patterns* | |
-| **stigmergic** | Agents read the graph, not each other. The graph is the communication channel. All coordination happens through task state — no agent-to-agent messages. Every `wg done`, `wg log`, `wg artifact` call modifies the shared graph, stimulating downstream agents. This is the fundamental operating principle of workgraph, not an optional pattern. |
+| **stigmergic** | Agents read the graph, not each other. The graph is the communication channel. All coordination happens through task state — no agent-to-agent messages. Every `wg done`, `wg log`, `wg artifact` call modifies the shared graph, stimulating downstream agents. This is the fundamental operating principle of wg, not an optional pattern. |
 | **requisite variety** | Match the number of distinct roles to the number of distinct task types. Ashby's Law: **R ≥ V** (roles ≥ variety of tasks). Diagnosed via `wg agency stats`. Too few roles → low scores on specialized tasks; too many → roles with zero assignments. Fixed via `wg evolve`. |
 | **evolve** | Evaluate completed work, then mutate roles and motivations to produce better agents. The execute → evaluate → evolve cycle. Autopoietic: the system produces the components (agent definitions) that produce the system (task completions). Strategies: mutation, crossover, gap-analysis, retirement, motivation-tuning. |
 | **double-loop** | Don't just retry a failed task with a different agent (single-loop). Change the role definition itself (double-loop). Escalate from single to double loop when the same task type fails repeatedly, evaluation scores plateau, or the role definition doesn't match actual work. From Argyris & Schön (1978). |
@@ -103,13 +103,13 @@ Every writer must use these terms with these exact meanings. If a term is not in
 ### Section 1: System Overview
 **File:** `docs/manual/01-overview.typ`
 
-**Purpose:** Establish what workgraph is, what the agency system is, how they relate, and why this combination exists. The reader should finish this section with a clear mental model of the whole before diving into parts.
+**Purpose:** Establish what wg is, what the agency system is, how they relate, and why this combination exists. The reader should finish this section with a clear mental model of the whole before diving into parts.
 
 **Key points to cover:**
 
-1. **What workgraph is.** A task coordination system for humans and AI agents. Work is modeled as a directed graph of tasks connected by dependency edges. The graph is the single source of truth — all state lives in a JSONL file under version control.
+1. **What wg is.** A task coordination system for humans and AI agents. Work is modeled as a directed graph of tasks connected by dependency edges. The graph is the single source of truth — all state lives in a JSONL file under version control.
 
-2. **The core loop.** Add tasks with dependencies → the scheduler finds ready work → agents (human or AI) are dispatched → completed work unblocks downstream tasks → repeat. This is the heartbeat of any workgraph project.
+2. **The core loop.** Add tasks with dependencies → the scheduler finds ready work → agents (human or AI) are dispatched → completed work unblocks downstream tasks → repeat. This is the heartbeat of any wg project.
 
 3. **What the agency system adds.** Without the agency, every AI agent is a generic assistant. The agency gives agents *composable identities* — a role (what they do) paired with a motivation (why they do it that way). Different pairings produce different agents. These identities are immutable (content-hashed), evaluated (scored after task completion), and evolved (improved by an LLM evolver based on performance data).
 
@@ -117,11 +117,11 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 5. **Human and AI agents in the same model.** The identity system is uniform. The only difference is the executor: AI agents receive prompts; human agents receive notifications. Both are tracked, evaluated, and evolved using the same mechanisms. (Human evaluations are excluded from the evolution signal.)
 
-6. **Storage and simplicity.** Everything is files: JSONL for the graph, YAML for agency entities, TOML for configuration. No database, no server dependency. The service daemon is optional — you can run workgraph purely from the CLI.
+6. **Storage and simplicity.** Everything is files: JSONL for the graph, YAML for agency entities, TOML for configuration. No database, no server dependency. The service daemon is optional — you can run wg purely from the CLI.
 
 7. **Trace and organizational memory.** The operations log records every mutation to the graph. This trace is the project's memory — queryable via `wg trace`, exportable for sharing, and extractable into reusable workflow templates (trace functions). Mention briefly; detailed treatment in §2 (trace functions) and §4 (event stream).
 
-8. **External integration.** External systems can observe workgraph via the event stream (`wg watch --json`), translate events, and inject information through five ingestion points: evaluations, tasks, context (trace import), state changes, and observations. This adapter pattern enables CI bots, portfolio tools, and peer collaboration without tight coupling. Mention briefly; detailed treatment in §4.
+8. **External integration.** External systems can observe wg via the event stream (`wg watch --json`), translate events, and inject information through five ingestion points: evaluations, tasks, context (trace import), state changes, and observations. This adapter pattern enables CI bots, portfolio tools, and peer collaboration without tight coupling. Mention briefly; detailed treatment in §4.
 
 9. **Task visibility.** Tasks carry a visibility field (`internal`, `public`, or `peer`) that controls what information crosses organizational boundaries during trace exports. This is the boundary mechanism for sharing — relevant to both the task graph (§2) and federation (§3).
 
@@ -136,7 +136,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 ### Section 2: The Task Graph
 **File:** `docs/manual/02-task-graph.typ`
 
-**Purpose:** Deep understanding of the graph model — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns. The reader should finish this section able to design a workgraph for any project.
+**Purpose:** Deep understanding of the graph model — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns. The reader should finish this section able to design a wg for any project.
 
 **Key points to cover:**
 
@@ -150,7 +150,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 5. **Readiness.** The four conditions: open status, not paused, past time constraints, all predecessors terminal. Explain `not_before` (scheduling for the future) and `ready_after` (set by cycle delays). Non-existent predecessors are treated as resolved (fail-open).
 
-6. **Structural cycles: intentional repetition.** Why workgraph is a directed graph, not a DAG. Cycles are formed naturally by `after` edges — if A is after C, C is after B, and B is after A, the system detects the cycle automatically using Tarjan's SCC algorithm. The cycle header (entry point) carries a `CycleConfig` with `max_iterations`, an optional guard condition, and an optional delay. Without a `CycleConfig`, cycles are flagged as unconfigured deadlocks. Back-edge exemption allows the header to become ready despite its cycle predecessors not being terminal. Walk through the review-revise cycle example step by step.
+6. **Structural cycles: intentional repetition.** Why wg is a directed graph, not a DAG. Cycles are formed naturally by `after` edges — if A is after C, C is after B, and B is after A, the system detects the cycle automatically using Tarjan's SCC algorithm. The cycle header (entry point) carries a `CycleConfig` with `max_iterations`, an optional guard condition, and an optional delay. Without a `CycleConfig`, cycles are flagged as unconfigured deadlocks. Back-edge exemption allows the header to become ready despite its cycle predecessors not being terminal. Walk through the review-revise cycle example step by step.
 
 7. **Early convergence.** Any agent working on a cycle member can signal `wg done <task> --converged` to stop the cycle, even if iterations remain and guards are satisfied. The `"converged"` tag is placed on the cycle header (regardless of which member the agent completes). The cycle evaluator checks this tag and skips iteration. Use case: a refine agent determines work has converged and doesn't need another iteration. `wg retry` clears the convergence tag. This complements bounded iteration — `max_iterations` is the safety cap, convergence is the intelligent early exit.
 
@@ -197,7 +197,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 10. **Task-agent matching.** `wg match` compares a task's required skills against agents' capabilities. Scores by match count + trust bonus. This is used by the auto-assign system and can be used manually.
 
-11. **Federation: sharing across projects.** Agency entities can be shared between workgraph projects via federation. `wg agency scan <remote>` discovers entities in another project's agency store. `wg agency pull <remote>` imports entities (roles, motivations, agents, and their evaluations) from a remote store. `wg agency push <remote>` exports local entities to a remote store. Named remotes are stored in `.wg/federation.yaml` and managed via `wg agency remote add/list/remove`. Performance records are merged during transfer: evaluations are deduplicated by task ID + timestamp, and average scores are recalculated. Content-hash IDs make federation natural — the same entity has the same ID everywhere, so deduplication is automatic. Lineage is preserved across federation — ancestry chains remain intact. Mention that task visibility (§2) controls what trace data crosses boundaries, while federation controls what agency data crosses boundaries.
+11. **Federation: sharing across projects.** Agency entities can be shared between wg projects via federation. `wg agency scan <remote>` discovers entities in another project's agency store. `wg agency pull <remote>` imports entities (roles, motivations, agents, and their evaluations) from a remote store. `wg agency push <remote>` exports local entities to a remote store. Named remotes are stored in `.wg/federation.yaml` and managed via `wg agency remote add/list/remove`. Performance records are merged during transfer: evaluations are deduplicated by task ID + timestamp, and average scores are recalculated. Content-hash IDs make federation natural — the same entity has the same ID everywhere, so deduplication is automatic. Lineage is preserved across federation — ancestry chains remain intact. Mention that task visibility (§2) controls what trace data crosses boundaries, while federation controls what agency data crosses boundaries.
 
 12. **Evaluation source and external signals.** Evaluations carry a `source` field that distinguishes internal assessments (`"llm"`) from external signals (`"outcome:sharpe"`, `"ci:test-suite"`, `"vx:peer-id"`). This is architecturally significant — it connects the agency model to external systems that produce outcome data. Brief mention here with forward reference to §5 for full treatment of how the evolver weighs different sources.
 
@@ -214,7 +214,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 **Key points to cover:**
 
-1. **The service daemon.** A background process started by `wg service start`. It hosts the coordinator, listens on a Unix socket for IPC, and manages agent lifecycle. Optional — workgraph works without it, but the daemon automates dispatch. Agents are detached from the daemon (via `setsid()`) and survive restarts.
+1. **The service daemon.** A background process started by `wg service start`. It hosts the coordinator, listens on a Unix socket for IPC, and manages agent lifecycle. Optional — wg works without it, but the daemon automates dispatch. Agents are detached from the daemon (via `setsid()`) and survive restarts.
 
 2. **The coordinator tick.** The six-phase heartbeat: (1) reap zombie processes, (2) clean up dead agents and count alive slots, (3) create auto-assign meta-tasks if enabled, (4) create auto-evaluate meta-tasks if enabled, (5) save graph if modified and find ready tasks, (6) spawn agents for ready tasks up to available slots. Two triggers: IPC-driven (immediate, reactive) and safety-net poll (background timer, catches manual edits).
 
@@ -236,7 +236,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 11. **Pause, resume, and manual control.** The coordinator can be paused (no new spawns, running agents continue) and resumed. `wg service tick` runs a single coordinator tick for debugging. `wg spawn` dispatches a single task manually without the daemon.
 
-12. **Observing the system: `wg watch` (event stream).** `wg watch --json` streams a real-time event feed of graph mutations. Events are typed: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. Events can be filtered by category (`--filter task_state`) or by task ID prefix. The event stream reads from the same operations log that records all graph mutations. This enables the adapter pattern: a CI integration, a Slack bot, or a portfolio management tool can observe workgraph events and react without polling. Describe the generic adapter cycle: observe → translate → ingest → react. Connect back to the five ingestion points mentioned in §1.
+12. **Observing the system: `wg watch` (event stream).** `wg watch --json` streams a real-time event feed of graph mutations. Events are typed: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. Events can be filtered by category (`--filter task_state`) or by task ID prefix. The event stream reads from the same operations log that records all graph mutations. This enables the adapter pattern: a CI integration, a Slack bot, or a portfolio management tool can observe wg events and react without polling. Describe the generic adapter cycle: observe → translate → ingest → react. Connect back to the five ingestion points mentioned in §1.
 
 13. **Replay.** `wg replay` re-executes previously completed or failed work by creating an immutable snapshot of the current graph state and selectively resetting tasks. Criteria for reset: `--failed-only`, `--below-score <threshold>`, explicit task list, or `--subgraph <root>`. Dependents in the transitive closure are also reset. `--plan-only` previews what would be reset. Snapshots are stored in `.wg/runs/`. Connect to trace functions (§2) — replay re-executes existing work, trace functions template new work from proven patterns.
 
@@ -267,7 +267,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 7. **How evolution works mechanically.** The evolver agent receives: performance summaries, strategy instructions, budget constraints, retention heuristics, and its own identity (if configured). It outputs structured JSON operations: create_role, modify_role, create_motivation, modify_motivation, retire_role, retire_motivation. Operations are applied to the agency storage. Modified entities get new content-hash IDs with lineage metadata linking to their parents.
 
-8. **Safety guardrails.** The last remaining role or motivation cannot be retired. Retired entities are preserved as `.yaml.retired` files, not deleted. `--dry-run` shows the evolver's plan without applying. `--budget` limits operations per run. Self-mutations (evolver changing its own role/motivation) are deferred to human review via a workgraph task with verification requirements.
+8. **Safety guardrails.** The last remaining role or motivation cannot be retired. Retired entities are preserved as `.yaml.retired` files, not deleted. `--dry-run` shows the evolver's plan without applying. `--budget` limits operations per run. Self-mutations (evolver changing its own role/motivation) are deferred to human review via a wg task with verification requirements.
 
 9. **Lineage tracking.** Every role, motivation, and agent records: parent IDs (none for manual creation, one for mutation, two+ for crossover), generation number (0 for manual, incrementing), creator identity (`"human"` or `"evolver-{run_id}"`), and timestamp. Lineage can be walked with `wg role lineage`, `wg motivation lineage`, `wg agent lineage`. Content-hash IDs make lineage unfalsifiable — the original entity is never modified, only new children are created.
 
@@ -313,7 +313,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 These rules apply to ALL writers across all five sections:
 
-1. **Never say "DAG."** workgraph is a directed graph, not necessarily acyclic. Loop edges create intentional cycles. Use "directed graph" or "task graph."
+1. **Never say "DAG."** wg is a directed graph, not necessarily acyclic. Loop edges create intentional cycles. Use "directed graph" or "task graph."
 
 2. **"Ready" has a precise meaning.** A task is ready if and only if it satisfies the four readiness conditions (see glossary). Do not use "ready" loosely to mean "available" or "waiting."
 

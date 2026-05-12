@@ -1,6 +1,6 @@
 # Hero Screencast Recording
 
-Record short (~30-45s after compression) screencasts showing workgraph's TUI
+Record short (~30-45s after compression) screencasts showing wg's TUI
 coordinator handling real multi-agent workflows.
 
 ## Prerequisites

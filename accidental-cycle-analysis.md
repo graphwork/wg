@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Workgraph has sophisticated cycle detection and handling mechanisms, but **accidental cycles (without CycleConfig) create deadlocks** because they lack the iteration metadata needed for proper scheduling. The system detects these cycles but has no way to break them automatically.
+wg has sophisticated cycle detection and handling mechanisms, but **accidental cycles (without CycleConfig) create deadlocks** because they lack the iteration metadata needed for proper scheduling. The system detects these cycles but has no way to break them automatically.
 
 ## 1. How Structural Cycle Detection Works Today
 

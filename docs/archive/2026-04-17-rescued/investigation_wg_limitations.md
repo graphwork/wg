@@ -1,12 +1,12 @@
-# Investigation of workgraph Research Tool Limitations
+# Investigation of wg Research Tool Limitations
 
 ## Overview
 
-This document investigates the current limitations of research tools in the workgraph environment, specifically focusing on source tracking and citation capabilities.
+This document investigates the current limitations of research tools in the wg environment, specifically focusing on source tracking and citation capabilities.
 
 ## Current State Analysis
 
-Based on examination of the workgraph environment, the following issues have been identified:
+Based on examination of the wg environment, the following issues have been identified:
 
 ### 1. Source Tracking Limitation
 
@@ -56,8 +56,8 @@ But there's no environment variable or documented method to discover this locati
 ## Recommendations
 
 1. **Implement Environment Variables**:
-   - `WORKGRAPH_DATA_DIR` - Root directory for workgraph data
-   - `WORKGRAPH_CONVERSATION_DIR` - Directory containing conversation logs
+   - `WG_DATA_DIR` - Root directory for wg data
+   - `WG_CONVERSATION_DIR` - Directory containing conversation logs
    - `WORKGRAPH_RESEARCH_DIR` - Directory for research outputs
 
 2. **Enhance Output Format**:
@@ -79,4 +79,4 @@ But there's no environment variable or documented method to discover this locati
 
 ## Conclusion
 
-The current workgraph research tools provide valuable information synthesis but lack essential source tracking capabilities that are fundamental for academic and professional use cases. Addressing these limitations will significantly improve the utility of these tools.
+The current wg research tools provide valuable information synthesis but lack essential source tracking capabilities that are fundamental for academic and professional use cases. Addressing these limitations will significantly improve the utility of these tools.

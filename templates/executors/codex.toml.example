@@ -1,6 +1,6 @@
 # Codex CLI executor — uses `codex exec` (OpenAI Codex).
 #
-# Drop this in at `.workgraph/executors/codex.toml` (strip `.example`)
+# Drop this in at `.wg/executors/codex.toml` (strip `.example`)
 # to override the built-in defaults.
 #
 # Usage:

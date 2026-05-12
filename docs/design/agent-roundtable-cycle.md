@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-The **Agent Roundtable** is a cyclic workflow where 3–4 specialized reviewer agents collaboratively identify, prioritize, and implement improvements to the workgraph website. It leverages workgraph's structural cycle support (`--max-iterations`, `--converged`) and scatter-gather topology to produce iterative refinement without requiring direct agent-to-agent communication.
+The **Agent Roundtable** is a cyclic workflow where 3–4 specialized reviewer agents collaboratively identify, prioritize, and implement improvements to the wg website. It leverages wg's structural cycle support (`--max-iterations`, `--converged`) and scatter-gather topology to produce iterative refinement without requiring direct agent-to-agent communication.
 
 ### Design Principles
 
@@ -181,7 +181,7 @@ When reviewers disagree (e.g., UX wants larger fonts, Code wants smaller bundles
 A deliberation phase (agents debating proposals) was considered and rejected:
 - **Cost**: Each deliberation round costs an additional LLM call per agent, with marginal value.
 - **Convergence risk**: Agent debates can cycle without converging (each agent optimizes for its own perspective).
-- **workgraph alignment**: The scatter-gather pattern with quantitative synthesis is already workgraph's strongest multi-agent pattern (per the organizational patterns doc). Adding deliberation introduces agent-to-agent coupling that fights the stigmergic model.
+- **wg alignment**: The scatter-gather pattern with quantitative synthesis is already wg's strongest multi-agent pattern (per the organizational patterns doc). Adding deliberation introduces agent-to-agent coupling that fights the stigmergic model.
 
 If future iterations reveal that the quantitative approach misses important nuance, a lightweight deliberation step could be added: each reviewer reads the draft action plan and posts a single `wg msg` with objections. The synthesizer incorporates these before finalizing. This is **not included in v1**.
 
@@ -515,4 +515,4 @@ The Agent Roundtable is a **scatter-gather cycle** that:
 - Communicates via **structured artifacts** (stigmergic)
 - Stops via **`--converged`** or **`--max-iterations 5`** (bounded)
 
-It maps cleanly onto workgraph's existing primitives: `--after` edges for topology, `--max-iterations` for cycle bounds, `--converged` for early termination, `wg artifact` for provenance, and the agency system for role-based dispatch.
+It maps cleanly onto wg's existing primitives: `--after` edges for topology, `--max-iterations` for cycle bounds, `--converged` for early termination, `wg artifact` for provenance, and the agency system for role-based dispatch.

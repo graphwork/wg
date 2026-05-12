@@ -1,6 +1,6 @@
 # Agency System
 
-The agency system gives workgraph agents composable identities. Instead of every agent being a generic assistant, you define **roles** (what an agent does), **tradeoffs** (why it acts that way), and pair them into **agents** that are assigned to tasks, evaluated, and evolved over time.
+The agency system gives wg agents composable identities. Instead of every agent being a generic assistant, you define **roles** (what an agent does), **tradeoffs** (why it acts that way), and pair them into **agents** that are assigned to tasks, evaluated, and evolved over time.
 
 Agents can be **human or AI**. The difference is the executor: AI agents use `claude` (or similar), human agents use `matrix`, `email`, or `shell`. Both share the same identity model — roles, tradeoffs, capabilities, trust levels, and performance tracking all work uniformly regardless of who (or what) is doing the work.
 
@@ -36,7 +36,7 @@ A tradeoff defines **why** an agent acts the way it does.
 
 ### Agent
 
-An agent is the **unified identity** in workgraph — it can represent a human or an AI. For AI agents, it is a named pairing of a role and a tradeoff. For human agents, role and tradeoff are optional.
+An agent is the **unified identity** in wg — it can represent a human or an AI. For AI agents, it is a named pairing of a role and a tradeoff. For human agents, role and tradeoff are optional.
 
 | Field | Description |
 |-------|-------------|
@@ -439,7 +439,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 | `wg agency init` | Seed agency with starter roles and tradeoffs |
 | `wg agency stats [--min-evals <N>] [--by-model] [--by-task-type]` | Show agency performance analytics |
 | `wg agency create [--model <MODEL>] [--dry-run]` | Invoke the creator agent to discover and add new primitives |
-| `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into workgraph |
+| `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into wg |
 | `wg agency migrate [--dry-run]` | Migrate old-format agency store to primitive+cache format |
 | `wg agency deferred` | List pending deferred evolver operations (alias for `wg evolve review list`) |
 | `wg agency approve <id>` | Approve a deferred operation (alias for `wg evolve review approve`) |
@@ -519,7 +519,7 @@ wg role add "Writer" --skill "tone:inline:Write in a clear, technical style" --o
 
 ### Installing skills
 
-The workgraph skill can be installed as a Claude Code skill:
+The wg skill can be installed as a Claude Code skill:
 
 ```bash
 wg skill install     # installs to ~/.claude/skills/wg/
@@ -819,7 +819,7 @@ Roles, tradeoffs, and agents are stored as YAML. Evaluations are stored as JSON.
 
 ## Federation
 
-Federation lets you share agency entities (roles, tradeoffs, agents) and their performance data across workgraph projects. Because entities use content-hash IDs, the same role in two projects has the same ID — pull/push merges performance records automatically.
+Federation lets you share agency entities (roles, tradeoffs, agents) and their performance data across wg projects. Because entities use content-hash IDs, the same role in two projects has the same ID — pull/push merges performance records automatically.
 
 ### Remotes
 
@@ -834,7 +834,7 @@ wg agency remote remove <name>           # remove a named remote
 
 ### Discovering stores
 
-Scan a directory tree for workgraph agency stores:
+Scan a directory tree for wg agency stores:
 
 ```bash
 wg agency scan <root-dir>                 # find all .wg/agency/ stores

@@ -2,7 +2,7 @@
 
 This reproducer is a direct engagement check for `codex:gpt-5.5`: it is meant
 to prove that the executor can read a task, use tools, write artifacts, commit
-the result, and leave workgraph breadcrumbs instead of returning a prose-only
+the result, and leave wg breadcrumbs instead of returning a prose-only
 completion. Section 4 of `fix-proposal.md` is useful because it defines success
 in terms of observable delivery rather than model self-report. The proposed
 metric does not ask whether the model sounded confident. It asks whether a
@@ -31,7 +31,7 @@ summarize an approach, leave no files behind, and still exit successfully.
 
 The secondary metric, `count(status=done AND commits_ahead=0) == 0`, is at
 least as important as the success ratio. A failed task is recoverable in
-workgraph: it can be retried, escalated, or inspected. A false `done` task is
+wg: it can be retried, escalated, or inspected. A false `done` task is
 more dangerous because it tells downstream tasks and evaluators that work
 exists when it does not. Fix #3, the wrapper minimum-work gate, is therefore
 not only a guardrail for Codex; it is a graph integrity mechanism. It ensures
@@ -57,7 +57,7 @@ official GPT-5.5 announcement later framed GPT-5.5 as useful in Codex for
 long-horizon work, including internal examples where Codex analyzed business
 data, built frameworks, and processed large document sets. Those sources do
 not validate this repository's particular wrapper fix, but they make the
-success metric reasonable: a Codex worker assigned through workgraph should be
+success metric reasonable: a Codex worker assigned through wg should be
 expected to complete concrete repository tasks, not merely describe them.
 
 There are still limitations. Four tasks are enough for a minimal reproducer,
@@ -86,7 +86,7 @@ simple measurable check. The git commit requirement proves the worker used the
 repository workflow instead of ending at text output. Finally, the required
 `wg log` call to `codex-test-fix` leaves an explicit breadcrumb for the
 downstream measurement task. That combination is intentionally redundant, and
-the redundancy is the point: a real workgraph completion should leave evidence
+the redundancy is the point: a real wg completion should leave evidence
 in files, git history, validation output, and graph logs.
 
 Sources consulted during the required web search:

@@ -34,7 +34,7 @@ Condition G's poor performance is caused by **unconditional decomposition** — 
 | Ulivo experiment run 4 | minimax-m2.7 | 14 | — | 9/14 (64%) | Best G result; agents worked until timeout |
 | Ulivo experiment A/F | minimax-m2.7 | 89×5 | 41% / 45% | — | Full TB 2.0 benchmark |
 
-**Critical observation:** There is no completed head-to-head A vs G comparison on the same tasks with the same model using the autopoietic meta-prompt. The pilot-a-vs-g-haiku comparison used raw Claude for "G" (not the workgraph decomposition condition). The Ulivo 64% result is not directly comparable to Ulivo A (41%) because it was a different task subset (14 vs 89 tasks) and different iteration of the prompt.
+**Critical observation:** There is no completed head-to-head A vs G comparison on the same tasks with the same model using the autopoietic meta-prompt. The pilot-a-vs-g-haiku comparison used raw Claude for "G" (not the wg decomposition condition). The Ulivo 64% result is not directly comparable to Ulivo A (41%) because it was a different task subset (14 vs 89 tasks) and different iteration of the prompt.
 
 ### 1.2 Overhead Gap: What We Can Estimate
 

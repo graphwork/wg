@@ -1,4 +1,4 @@
-# External Information Flows in workgraph
+# External Information Flows in wg
 ## And Where VX Plugs In
 
 **Date:** 2026-02-20
@@ -9,7 +9,7 @@
 
 ## Acknowledgment
 
-nikete's work directly pushed workgraph forward. The ideas behind trace, replay, filtered exports, distill, and the three-zone sharing model (internal/public/credentialed) shaped our implementation of `wg trace`, `wg replay`, `wg runs`, trace functions (extract/instantiate), and the organizational patterns doc's new sections on organizational memory and routines. The conversation about VX forced us to think about what workgraph looks like from the outside, which led to `--json` output auditing, `wg watch`, and the smooth integration design. These were all nikete-encouraged ideas and the system is better for them.
+nikete's work directly pushed wg forward. The ideas behind trace, replay, filtered exports, distill, and the three-zone sharing model (internal/public/credentialed) shaped our implementation of `wg trace`, `wg replay`, `wg runs`, trace functions (extract/instantiate), and the organizational patterns doc's new sections on organizational memory and routines. The conversation about VX forced us to think about what wg looks like from the outside, which led to `--json` output auditing, `wg watch`, and the smooth integration design. These were all nikete-encouraged ideas and the system is better for them.
 
 What follows is a response to the *vocabulary renames* on the vx-adapter branch, not a rejection of the ideas.
 
@@ -17,13 +17,13 @@ What follows is a response to the *vocabulary renames* on the vx-adapter branch,
 
 ## The Short Version
 
-VX is one instance of a generic problem: **how do external information sources plug into workgraph?** The answer is the same for VX, CI systems, monitoring dashboards, user feedback, market data, or any other external signal: workgraph has defined ingestion points at every level, and adapters translate at the boundary. No core vocabulary changes needed.
+VX is one instance of a generic problem: **how do external information sources plug into wg?** The answer is the same for VX, CI systems, monitoring dashboards, user feedback, market data, or any other external signal: wg has defined ingestion points at every level, and adapters translate at the boundary. No core vocabulary changes needed.
 
 ---
 
 ## 1. Generic External Information Flows
 
-workgraph needs to ingest external information at every level — not just evaluation scores. The pattern is the same regardless of the source:
+wg needs to ingest external information at every level — not just evaluation scores. The pattern is the same regardless of the source:
 
 ```
 External Source          Adapter            Ingestion Point         Consumer
@@ -67,16 +67,16 @@ wg watch --json      ─── stream out  ───┘─ Event stream         
 
 Every external system follows the same pattern:
 
-1. **Observe** — watch workgraph events via `wg watch --json` or poll `wg list --json`
+1. **Observe** — watch wg events via `wg watch --json` or poll `wg list --json`
 2. **Translate** — map external data into wg formats (evaluations, tasks, trace exports)
 3. **Ingest** — call `wg` CLI commands to write data in
 4. **React** — trigger external actions based on wg events
 
-VX is one adapter. A CI integration is another. A Slack bot is another. They all use the same five ingestion points. The adapter translates vocabulary at the boundary — VX calls its scores "rewards," CI calls them "test results," a user calls them "feedback." Inside workgraph, they're all evaluations with a `source` field.
+VX is one adapter. A CI integration is another. A Slack bot is another. They all use the same five ingestion points. The adapter translates vocabulary at the boundary — VX calls its scores "rewards," CI calls them "test results," a user calls them "feedback." Inside wg, they're all evaluations with a `source` field.
 
 ### What We Should Build (nikete-inspired improvements)
 
-nikete's work highlighted real gaps in workgraph's introspection and extraction capabilities. These are genuinely valuable and we should keep building:
+nikete's work highlighted real gaps in wg's introspection and extraction capabilities. These are genuinely valuable and we should keep building:
 
 - **Better logging** — richer operation log entries, structured agent output capture
 - **Deeper introspection** — `wg trace` is good but can show more (temporal viz, animate)
@@ -261,7 +261,7 @@ The proposed `wg veracity` subcommands all dissolve into existing commands:
 | `veracity suggest` | External adapter | Peer protocol, not core wg |
 | `veracity peers` | External adapter | Peer registry, not core wg |
 
-Nothing unique remains. Every core function maps onto existing commands with the `Evaluation.source` field. The peer-to-peer protocol (challenges, suggestions, credibility tracking) is adapter-layer logic that belongs in the VX tool, not in workgraph core.
+Nothing unique remains. Every core function maps onto existing commands with the `Evaluation.source` field. The peer-to-peer protocol (challenges, suggestions, credibility tracking) is adapter-layer logic that belongs in the VX tool, not in wg core.
 
 ---
 

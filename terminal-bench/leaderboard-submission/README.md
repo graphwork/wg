@@ -10,15 +10,15 @@ The leaderboard requires **minimum 5 trials per task**. Our current experiment h
 
 | Directory | Condition | Agent | Pass Rate (3 trials) |
 |-----------|-----------|-------|---------------------|
-| `workgraph-condition-a__minimax-m2.7/` | A | Bare agent (control) | 52.3% |
-| `workgraph-condition-b__minimax-m2.7/` | B | Workgraph stigmergic context | 51.4% |
-| `workgraph-condition-c__minimax-m2.7/` | C | Enhanced planning + snapshots | 49.0% |
+| `wg-condition-a__minimax-m2.7/` | A | Bare agent (control) | 52.3% |
+| `wg-condition-b__minimax-m2.7/` | B | wg stigmergic context | 51.4% |
+| `wg-condition-c__minimax-m2.7/` | C | Enhanced planning + snapshots | 49.0% |
 | *(planned)* | G | Context-only: wg context injection, no surveillance | — |
 
 ### Condition naming
 
 - **A** — Bare agent (baseline): task description + verify command only
-- **B** — Workgraph stigmergic context
+- **B** — wg stigmergic context
 - **C** — Enhanced planning + snapshots
 - **F** — Full wg-native with surveillance loops (historical; 0 activations in 95 pilot trials)
 - **G** — Context-only: wg context injection (graph context + WG Quick Guide + wg CLI), no surveillance. Formalized from pilot analysis showing surveillance added 0 value. Validated by `tb-smoke-no-surv` (4/4 pass). This is the primary treatment condition for the A vs G full-scale experiment.

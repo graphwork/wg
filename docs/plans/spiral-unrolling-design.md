@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This design introduces **spiral mode** — an opt-in enhancement to workgraph cycles that preserves per-iteration history as archived snapshot tasks. When a spiral-enabled cycle iterates, completed tasks are cloned as `{task-id}~{iteration}` before the live tasks are reset. This preserves per-iteration FLIP scores, evaluations, token usage, agent assignments, and artifacts while keeping the live task IDs stable for external references.
+This design introduces **spiral mode** — an opt-in enhancement to wg cycles that preserves per-iteration history as archived snapshot tasks. When a spiral-enabled cycle iterates, completed tasks are cloned as `{task-id}~{iteration}` before the live tasks are reset. This preserves per-iteration FLIP scores, evaluations, token usage, agent assignments, and artifacts while keeping the live task IDs stable for external references.
 
 **Key principle**: The cycle definition remains the structural template. Each iteration materializes as a frozen snapshot. Simple cycles (no `spiral: true`) continue to use the existing lightweight in-place reset.
 
@@ -98,7 +98,7 @@ FLIP agent evaluates {task-id}~{N}
 
 Detection logic:
 ```rust
-fn is_in_spiral_cycle(task_id: &str, cycle_analysis: &CycleAnalysis, graph: &WorkGraph) -> bool {
+fn is_in_spiral_cycle(task_id: &str, cycle_analysis: &CycleAnalysis, graph: &wg) -> bool {
     if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(task_id) {
         let cycle = &cycle_analysis.cycles[cycle_idx];
         // Find config owner and check spiral flag

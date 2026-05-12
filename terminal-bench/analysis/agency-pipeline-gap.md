@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-TB trials **already generate evaluation records** that land in `.workgraph/agency/evaluations/` and are **already consumed by `wg evolve run`**. The pipeline is connected — but the connection is lossy. Critical trial metadata (condition, task type, difficulty, verify pass/fail) is **not** encoded in evaluation records, which means `wg evolve` treats all TB evaluations identically regardless of experimental condition. This flattens the multi-condition signal that makes TB data uniquely valuable for evolution.
+TB trials **already generate evaluation records** that land in `.wg/agency/evaluations/` and are **already consumed by `wg evolve run`**. The pipeline is connected — but the connection is lossy. Critical trial metadata (condition, task type, difficulty, verify pass/fail) is **not** encoded in evaluation records, which means `wg evolve` treats all TB evaluations identically regardless of experimental condition. This flattens the multi-condition signal that makes TB data uniquely valuable for evolution.
 
 **Status: Pipeline exists but is metadata-blind.**
 
@@ -18,18 +18,18 @@ TB trials **already generate evaluation records** that land in `.workgraph/agenc
 
 ### 2.1 Where TB Trial Evaluations Land
 
-TB trial tasks (e.g., `tb-a-file-ops-r0`) go through the standard workgraph lifecycle:
+TB trial tasks (e.g., `tb-a-file-ops-r0`) go through the standard wg lifecycle:
 
-1. **Assignment** → `.workgraph/agency/assignments/tb-a-file-ops-r0.yaml`
+1. **Assignment** → `.wg/agency/assignments/tb-a-file-ops-r0.yaml`
    - Contains: `agent_id`, `composition_id`, `mode` (Learning/ForcedExploration), `assignment_source`
    - Does NOT contain: condition, task_type, replica index
 
-2. **FLIP Evaluation** → `.workgraph/agency/evaluations/flip-tb-a-file-ops-r0-<timestamp>.json`
+2. **FLIP Evaluation** → `.wg/agency/evaluations/flip-tb-a-file-ops-r0-<timestamp>.json`
    - Source: `"flip"`
    - Contains: `score`, `dimensions` (hallucination_rate, semantic_match, specificity_match, requirement_coverage), `agent_id`, `role_id`, `tradeoff_id`
    - Does NOT contain: condition, task_type
 
-3. **LLM Evaluation** → `.workgraph/agency/evaluations/eval-tb-a-file-ops-r0-<timestamp>.json`
+3. **LLM Evaluation** → `.wg/agency/evaluations/eval-tb-a-file-ops-r0-<timestamp>.json`
    - Source: `"llm"`
    - Contains: `score`, `dimensions` (correctness, completeness, efficiency, style_adherence, intent_fidelity, downstream_usability, coordination_overhead, blocking_impact), `agent_id`, `role_id`, `tradeoff_id`
    - Does NOT contain: condition, task_type
@@ -83,7 +83,7 @@ It filters out evaluations from human agents, then passes everything to either:
 3. **Synergy matrix**: (role_id × tradeoff_id) → avg_score, count
 
 The evolver sees **aggregate scores per role and tradeoff** — it does NOT see:
-- Which evaluations came from TB trials vs. normal workgraph tasks
+- Which evaluations came from TB trials vs. normal wg tasks
 - What experimental condition (A/C/D/E) a trial ran under
 - What task type (file-ops, debugging, algorithm, etc.) was being tested
 - Whether verify passed or failed
@@ -100,7 +100,7 @@ The auto-evolver (`src/agency/evolver.rs`) triggers on:
 - **Reactive**: Recent average score < `evolution_reactive_threshold` (default: 0.4)
 - **Interval**: Minimum time between cycles (`evolution_interval`, default: 7200s)
 
-TB evaluations count toward these thresholds indistinguishably from normal workgraph evaluations.
+TB evaluations count toward these thresholds indistinguishably from normal wg evaluations.
 
 ---
 
@@ -267,7 +267,7 @@ A new evolution strategy `condition-analysis` could:
 
 | Metric | Count |
 |--------|-------|
-| Total evaluations in `.workgraph/agency/evaluations/` | ~4,356 |
+| Total evaluations in `.wg/agency/evaluations/` | ~4,356 |
 | TB-specific evaluations (eval-tb-*) | 291 |
 | TB FLIP evaluations | 146 |
 | TB LLM evaluations | 145 |

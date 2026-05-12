@@ -197,7 +197,7 @@ Correctly instructs agents to use `wg quickstart`, `wg service start`, `cargo in
 
 ### 1.12 NOTES.md (178 lines) — HISTORICAL research notes
 
-Early brainstorming document. Contains the original vision and research synthesis for workgraph. Useful as historical context but not as documentation.
+Early brainstorming document. Contains the original vision and research synthesis for wg. Useful as historical context but not as documentation.
 
 ### 1.13 .claude/skills/wg/SKILL.md — GOOD, accurate
 
@@ -226,7 +226,7 @@ Well-focused skill definition that correctly teaches agents the coordinator patt
 | `petri-nets-research.md` | ~500 | Partially | Same as above |
 | `task-format-research.md` | ~400 | No | Format decisions made (JSONL chosen and implemented) |
 | `beads-gastown-research.md` | ~500 | Partially | Competitive analysis; useful for positioning |
-| `workgraph-analysis-research.md` | ~400 | Yes | Analysis commands design — still useful for extending analysis features |
+| `wg-analysis-research.md` | ~400 | Yes | Analysis commands design — still useful for extending analysis features |
 | `human-interface-research.md` | ~500 | Partially | TUI chosen and built; web/IDE sections still relevant for future |
 | `human-summoning-research.md` | ~500 | Yes | Matrix integration built, but other notification channels not yet explored |
 | `agent-simulation-findings.md` | ~200 | No | Findings from early agent testing; all identified gaps have been fixed |
@@ -313,7 +313,7 @@ Commands and features that exist in code but have **no documentation**:
 
 12. **Keep research docs** — The following are still useful references:
     - `survey-context-management.md` (recent, actionable findings)
-    - `workgraph-analysis-research.md` (useful for extending analysis)
+    - `wg-analysis-research.md` (useful for extending analysis)
     - `human-summoning-research.md` (notification channels not yet fully explored)
     - `csp-process-algebra-research.md` and `petri-nets-research.md` (relevant if formal verification is pursued)
 

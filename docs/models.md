@@ -1,6 +1,6 @@
 # Model, Endpoint, and API Key Management
 
-How to configure which AI models workgraph uses, where to send requests, and how to manage API keys securely.
+How to configure which AI models wg uses, where to send requests, and how to manage API keys securely.
 
 ## Quick Start: I Have an API Key, How Do I Start?
 
@@ -17,7 +17,7 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 wg service start
 ```
 
-That's it. workgraph ships with built-in defaults for popular models via OpenRouter.
+That's it. wg ships with built-in defaults for popular models via OpenRouter.
 
 **Want to be more explicit?** Add a named endpoint:
 
@@ -104,7 +104,7 @@ No API key needed for local models.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Model Registry** — A catalog of available models with metadata (cost, capabilities, tier). workgraph ships with 13+ built-in models. You can add custom ones.
+**Model Registry** — A catalog of available models with metadata (cost, capabilities, tier). wg ships with 13+ built-in models. You can add custom ones.
 
 **Model Routing** — Maps dispatch roles (evaluator, triage, etc.) to specific models. Controls which model each type of agent uses.
 
@@ -449,7 +449,7 @@ The `--check-key` command validates that an API key is present and (for OpenRout
 
 ### How Keys Are Resolved
 
-When workgraph needs to authenticate with an endpoint, it resolves the API key using this priority chain:
+When wg needs to authenticate with an endpoint, it resolves the API key using this priority chain:
 
 1. **Inline key** (`api_key` in config) — highest priority, but **not recommended** (can be committed to git)
 2. **Key file** (`api_key_file` in config) — reads key from a file, supports `~` and relative paths

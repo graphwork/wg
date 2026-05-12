@@ -28,7 +28,7 @@ These features were implemented in the most recent commits and are not yet docum
 ## Section 1: System Overview (`01-overview.typ`)
 
 ### Currently Covered
-- What workgraph is (graph-based task coordination)
+- What wg is (graph-based task coordination)
 - The core loop (define → dispatch → execute → complete)
 - The agency loop (assign → execute → evaluate → evolve)
 - How graph and agency relate (coordinator at intersection)
@@ -36,8 +36,8 @@ These features were implemented in the most recent commits and are not yet docum
 - Storage model (JSONL, YAML, TOML, files-only)
 
 ### Missing or Outdated
-1. **No mention of external information flows.** The overview doesn't mention how external systems integrate with workgraph (the five ingestion points: evaluation, task, context, state, observation).
-2. **No mention of `wg watch`.** The observation/event-stream capability is a significant addition that enables external adapters — it belongs in the overview as part of "how workgraph communicates outward."
+1. **No mention of external information flows.** The overview doesn't mention how external systems integrate with wg (the five ingestion points: evaluation, task, context, state, observation).
+2. **No mention of `wg watch`.** The observation/event-stream capability is a significant addition that enables external adapters — it belongs in the overview as part of "how wg communicates outward."
 3. **No mention of trace system.** The trace/provenance system (`wg trace`, `wg trace export`, `wg trace import`, trace functions) is a major capability for organizational memory and workflow reuse. The overview should at least mention it exists.
 4. **No mention of federation.** Agency federation (sharing roles, motivations, agents across projects) is a new cross-cutting capability.
 5. **No mention of task visibility.** The three-zone visibility model (`internal`/`public`/`peer`) is architecturally significant — it defines what crosses organizational boundaries.
@@ -103,7 +103,7 @@ These features were implemented in the most recent commits and are not yet docum
 
 ### Specific Additions Needed
 1. **Add a subsection on agency federation** after "Lineage and Deduplication" (or as a new final subsection before "Cross-References"). Title: "Federation: Sharing Across Projects." Content:
-   - Agency entities can be shared between workgraph projects via federation.
+   - Agency entities can be shared between wg projects via federation.
    - `wg agency scan <path>` discovers what roles, motivations, and agents exist in another project's agency store.
    - `wg agency pull <remote>` imports entities (roles, motivations, agents, and their evaluations) from a remote store into the local project.
    - `wg agency push <remote>` exports local entities to a remote store.
@@ -143,7 +143,7 @@ These features were implemented in the most recent commits and are not yet docum
    - Events are typed: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`.
    - Events can be filtered by type (`--filter task_state`) or by task ID.
    - The event stream reads from the same operations log that records all graph mutations.
-   - This enables external adapters: a CI integration, a Slack bot, or a portfolio management tool can observe workgraph events and react without polling.
+   - This enables external adapters: a CI integration, a Slack bot, or a portfolio management tool can observe wg events and react without polling.
    - Mention the generic adapter pattern: observe → translate → ingest → react.
 2. **Add a mention of convergence in the dispatch section.** In the prompt rendering step: "For tasks that are the source of loop edges, the rendered prompt includes a note about the `--converged` flag, informing the agent that it can break the loop early if the work has reached a stable state."
 3. **Mention `Evaluation.source`** in the auto-evaluate discussion: "Evaluations created by auto-evaluate carry `source: \"llm\"`. External evaluations can be recorded via `wg evaluate record --source <tag>`, allowing the evolver to consider both internal quality assessments and external outcome data."
@@ -183,7 +183,7 @@ These features were implemented in the most recent commits and are not yet docum
 
 ---
 
-## Glossary (in `PLAN.md` and `workgraph-manual.typ`)
+## Glossary (in `PLAN.md` and `wg-manual.typ`)
 
 ### Terms Currently Defined
 The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks, ready, loop edge, guard, loop iteration, resource, role, motivation, agent, agency, content-hash ID, capability, skill, skill resolution, trust level, executor, coordinator, service/service daemon, tick, dispatch, claim, assignment, auto-assign, auto-evaluate, evaluation, performance record, evolution, strategy, lineage, generation, synergy matrix, meta-task, map/reduce pattern, triage, wrapper script.
@@ -197,18 +197,18 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
 | **trace** | The operations log recording every mutation to the graph. The project's organizational memory, queryable via `wg trace`, exportable with visibility filtering via `wg trace export`, and importable from peers via `wg trace import`. |
 | **trace export** | A filtered, shareable snapshot of the trace. Visibility filtering controls what is included: `internal` exports everything, `public` sanitizes (no agent output, no logs), `peer` provides richer detail for trusted peers. The interchange format for cross-boundary sharing. |
 | **trace function** | A parameterized workflow template extracted from completed traces via `wg trace extract`. Captures task structure, dependencies, loop edges, and input parameters. Instantiated via `wg trace instantiate` to create new task graphs following the same pattern. Stored as YAML in `.wg/functions/`. |
-| **federation** | The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover entities in a remote store), _pull_ (import from remote to local), _push_ (export from local to remote). Named remotes are stored in `.wg/federation.yaml`. Performance records are merged during transfer with deduplication. |
-| **remote** | A named reference to another workgraph project's agency store. Managed via `wg agency remote add/list/remove`. Stored in `.wg/federation.yaml`. |
+| **federation** | The system for sharing agency entities across wg projects. Operations: _scan_ (discover entities in a remote store), _pull_ (import from remote to local), _push_ (export from local to remote). Named remotes are stored in `.wg/federation.yaml`. Performance records are merged during transfer with deduplication. |
+| **remote** | A named reference to another wg project's agency store. Managed via `wg agency remote add/list/remove`. Stored in `.wg/federation.yaml`. |
 | **evaluation source** | A freeform string tag on each evaluation identifying its origin. Default: `"llm"` (internal auto-evaluator). External sources use structured tags: `"outcome:sharpe"`, `"ci:test-suite"`, `"vx:peer-id"`. The evolver reads all sources. |
 | **watch** | A real-time event stream (`wg watch --json`) that emits typed events (task.created, task.completed, agent.spawned, etc.) as the graph mutates. Enables external adapters to observe and react without polling. |
-| **adapter** | An external tool that translates between an external system's vocabulary and workgraph's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI) → react. |
+| **adapter** | An external tool that translates between an external system's vocabulary and wg's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI) → react. |
 
 ---
 
 ## README.md
 
 ### Currently Covered
-- What workgraph is
+- What wg is
 - Installation
 - Setup (init, add tasks, edit, agent creation, start working)
 - Verification workflow
@@ -256,7 +256,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
    ```markdown
    ## Trace & Sharing
 
-   workgraph records every operation in a trace log. Use it for introspection, sharing, and workflow reuse.
+   wg records every operation in a trace log. Use it for introspection, sharing, and workflow reuse.
 
    ### Watching events
    ```bash
@@ -370,7 +370,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
    ```markdown
    ## Federation
 
-   Share agency entities across workgraph projects.
+   Share agency entities across wg projects.
 
    ### Named remotes
 
@@ -458,7 +458,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
 
 ---
 
-## Unified Manual (`workgraph-manual.typ`)
+## Unified Manual (`wg-manual.typ`)
 
 The unified manual concatenates all sections. Changes needed:
 
@@ -483,7 +483,7 @@ The unified manual concatenates all sections. Changes needed:
 
 ### Order of Operations for Writers
 Sections can be updated independently. Recommended order:
-1. **Glossary first** (both PLAN.md and workgraph-manual.typ) — new terms need to be defined before writers use them.
+1. **Glossary first** (both PLAN.md and wg-manual.typ) — new terms need to be defined before writers use them.
 2. **Section 2** (task graph) — `visibility` field and `--converged` are foundational.
 3. **Section 3** (agency) — federation additions.
 4. **Section 4** (coordination) — `wg watch`, convergence in prompts, evaluation source.

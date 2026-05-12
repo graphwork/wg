@@ -18,7 +18,7 @@
 |-------|------|-------|---------------------------|----------------------|
 | **1: Multi-User MVP** | 2-7 users, shared VPS, safe concurrency, live TUI | 20 | 20-28 | ~2-3 weeks |
 | **2: Web & Mobile Access** | Access from any device via browser, phone, tablet | 12 | 10-14 | ~1-2 weeks |
-| **3: Observable Federation** | See peer workgraph state from CLI and TUI | 6 | 5-7 | ~1 week |
+| **3: Observable Federation** | See peer wg state from CLI and TUI | 6 | 5-7 | ~1 week |
 | **4: Interactive Federation + Polish** | Cross-repo dispatch, event-driven liveness, multi-machine | 6 | 12-18 | ~2-3 weeks |
 
 **Total: 44 tasks, ~47-67 task-agent units, ~6-9 weeks wall-clock with 4 parallel agents.**
@@ -161,7 +161,7 @@ Total critical path: ~7 task-agent units = ~2.5 weeks with parallel streams
 
 ## Phase 2: Web & Mobile Access
 
-**Goal:** Access workgraph from any device — browser, Android, iOS.
+**Goal:** Access wg from any device — browser, Android, iOS.
 **Entry criteria:** Phase 1 server init and responsive TUI complete.
 **Exit criteria:** Users can connect from Chrome, Termux, Blink Shell with reconnection resilience.
 
@@ -214,7 +214,7 @@ Total: ~3 task-agent units on critical path (much is parallel docs work)
 
 ## Phase 3: Observable Federation
 
-**Goal:** See peer workgraph state from CLI and TUI. Same-machine. Read-only.
+**Goal:** See peer wg state from CLI and TUI. Same-machine. Read-only.
 **Entry criteria:** Phase 1 IPC infrastructure stable.
 **Exit criteria:** `wg peer scan`, `wg peer tasks`, and TUI Peers tab all work.
 
@@ -857,7 +857,7 @@ wg add "Termux setup script + guide" \
   --verify "scripts/wg-termux-setup.sh exists and docs/guides/android-access.md exists" \
   -d "## Description
 Android onboarding:
-- wg-termux-setup.sh: installs mosh, tmux, openssh; creates ~/.shortcuts/workgraph
+- wg-termux-setup.sh: installs mosh, tmux, openssh; creates ~/.shortcuts/wg
 - Guide: F-Droid install instructions (NOT Google Play)
 - Termux:Widget setup for home screen shortcut
 - Connection template: mosh user@server -- tmux new-session -A -s \$USER-wg 'wg tui'
@@ -917,7 +917,7 @@ wg add "Unified server deployment script" \
   --after mu-c-ttyd-guide,mu-c-connect-dispatcher,mu-c-mosh-guide,mu-s-server-init \
   --verify "scripts/wg-server-setup.sh exists and is executable" \
   -d "## Description
-One-command server setup: installs workgraph binary, tmux, mosh-server, ttyd, Caddy. Generates Caddyfile, systemd units. Opens firewall ports. Creates wg-connect.sh. Prints per-platform connection instructions. Supports Ubuntu 22.04/24.04, Debian 12.
+One-command server setup: installs wg binary, tmux, mosh-server, ttyd, Caddy. Generates Caddyfile, systemd units. Opens firewall ports. Creates wg-connect.sh. Prints per-platform connection instructions. Supports Ubuntu 22.04/24.04, Debian 12.
 
 ## Validation
 - [ ] Runs on fresh VPS from supported OS

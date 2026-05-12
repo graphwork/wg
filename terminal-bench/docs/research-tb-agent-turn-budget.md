@@ -37,7 +37,7 @@ Resolution cascade: CLI param > executor config > coordinator config (`src/comma
 
 ## Q2: What are the EXACT requirements for a valid TB 2.0 leaderboard submission?
 
-**Source:** `/home/erik/executors/workgraph/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
+**Source:** `/home/erik/executors/wg/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
 
 ### Required directory structure
 ```
@@ -54,8 +54,8 @@ submissions/terminal-bench/2.0/<agent-name>__<model>/
 
 ### metadata.yaml format
 ```yaml
-agent_url: https://github.com/graphwork/workgraph
-agent_display_name: "Workgraph"
+agent_url: https://github.com/graphwork/wg
+agent_display_name: "wg"
 agent_org_display_name: "Poietic PBC"
 models:
   - model_name: minimax-m2.7
@@ -273,7 +273,7 @@ Sources:
 
 | File | Purpose |
 |------|---------|
-| `/home/erik/executors/workgraph/docs/terminal-bench/HOWTO-submit-to-leaderboard.md` | Canonical submission guide |
+| `/home/erik/executors/wg/docs/terminal-bench/HOWTO-submit-to-leaderboard.md` | Canonical submission guide |
 | `terminal-bench/docs/scale-experiment-design.md` | Full-scale experiment design |
 | `terminal-bench/docs/research-howto-submission-review.md` | Prior research on submission readiness |
 | `terminal-bench/analysis/tb2-runtime-compliance-audit.md` | Runtime compliance audit |

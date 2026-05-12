@@ -1,10 +1,10 @@
-# Veracity Exchange × workgraph: Deep Dive
+# Veracity Exchange × wg: Deep Dive
 
 **Last updated:** 2026-02-20 — revised based on nikete's actual design doc (`nikete/main:docs/design-veracity-exchange.md`) and `nikete/vx-adapter` branch code.
 
 ## Executive Summary
 
-Veracity Exchange is a system for scoring workflow sub-units against real-world outcomes and using those scores to build a peer trust network. workgraph is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems integrate, based on nikete's actual design documents and code rather than speculation.
+Veracity Exchange is a system for scoring workflow sub-units against real-world outcomes and using those scores to build a peer trust network. wg is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems integrate, based on nikete's actual design documents and code rather than speculation.
 
 **Key findings from nikete's actual code and design:**
 
@@ -28,7 +28,7 @@ Veracity Exchange is a system for scoring workflow sub-units against real-world 
 
 Veracity Exchange is NOT just an API marketplace. From `design-veracity-exchange.md`:
 
-> A workgraph for a measurable task produces **real-world outcomes** (P&L, -MSE). These outcomes can be attributed back to individual work units in the graph. This attribution creates **veracity scores** — ground-truth quality signals grounded in reality, not LLM self-evaluation.
+> A wg for a measurable task produces **real-world outcomes** (P&L, -MSE). These outcomes can be attributed back to individual work units in the graph. This attribution creates **veracity scores** — ground-truth quality signals grounded in reality, not LLM self-evaluation.
 
 The key insight is that **proper scoring rules** underpin the entire system. A scoring rule is *proper* if the optimal strategy is to report your true belief. When suggestions are scored against real-world outcomes (not self-report or LLM judgment), participants are incentivized to suggest genuinely good improvements — not to game evaluators.
 
@@ -40,7 +40,7 @@ Concretely:
 ```
 YOUR NODE                                    PEER NETWORK
 ┌──────────────────────────┐                ┌──────────────┐
-│  workgraph               │   public       │  peer nodes  │
+│  wg               │   public       │  peer nodes  │
 │  ┌──────┐  ┌──────────┐ │  challenges    │              │
 │  │task A│→ │task B     │ │ ──────────→    │  suggest     │
 │  │(priv)│  │(public)   │ │               │  improvements│
@@ -83,12 +83,12 @@ nikete defines 8 new types that form the VX integration layer. These are concret
 
 ### A. Outcome
 
-An externally-observed, ground-truth measurement tied to a workgraph or sub-graph:
+An externally-observed, ground-truth measurement tied to a wg or sub-graph:
 
 ```rust
 pub struct Outcome {
     pub id: String,                    // "outcome-{graph_id}-{timestamp}"
-    pub graph_id: String,              // which workgraph (or sub-graph root) this measures
+    pub graph_id: String,              // which wg (or sub-graph root) this measures
     pub metric: String,                // "sharpe", "pnl", "neg_mse", "log_score"
     pub value: f64,
     pub period: Option<OutcomePeriod>, // time window measured
@@ -231,7 +231,7 @@ nikete evaluated three *different* integration options (from `veracity-exchange-
 **Option A: External Service with CLI Bridge (recommended)**
 
 ```
-workgraph (local)           veracity exchange (remote)
+wg (local)           veracity exchange (remote)
     │                              │
     ├── wg exchange publish ───────►  publish task outcomes
     ├── wg exchange suggest ───────►  submit improvement suggestions
@@ -344,7 +344,7 @@ The branch contains extensive VX-related research:
 
 ## 5. Mapping to Existing Infrastructure (Updated)
 
-nikete's design doc maps VX concepts to existing workgraph primitives:
+nikete's design doc maps VX concepts to existing wg primitives:
 
 | VX Concept | Existing Infrastructure | Gap |
 |------------|------------------------|-----|
@@ -392,7 +392,7 @@ Our original §2.3 theorized that agent definitions (role + motivation) would be
 
 ### The GEPA Connection (Surprise Finding)
 
-nikete's `gepa-integration.md` proposes using the GEPA prompt optimization framework as the inner loop inside workgraph's evolutionary system. A role description becomes a GEPA optimization target:
+nikete's `gepa-integration.md` proposes using the GEPA prompt optimization framework as the inner loop inside wg's evolutionary system. A role description becomes a GEPA optimization target:
 
 ```python
 def evaluate_role(role_description: str) -> tuple[float, dict]:

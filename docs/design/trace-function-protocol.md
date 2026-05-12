@@ -6,7 +6,7 @@
 
 ### 1.1 What Exists Today
 
-The workgraph codebase has a working first-generation trace function system:
+The wg codebase has a working first-generation trace function system:
 
 **Core data model** (`src/function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.wg/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
 
@@ -49,7 +49,7 @@ The workgraph codebase has a working first-generation trace function system:
 - No adaptive functions: no trace memory or feedback loop from past instantiations
 - No planning node: agents cannot dynamically decide how many tasks to create
 - No structural constraints: no way to express "at least 2 implementation tasks, at most 5"
-- No self-bootstrapping: the extraction process is a CLI command, not itself a workgraph workflow
+- No self-bootstrapping: the extraction process is a CLI command, not itself a wg workflow
 - No function composition: functions cannot nest or reference other functions
 - No conditional task inclusion: all templates are always instantiated
 - No visibility field on functions themselves (tasks have visibility, functions do not)
@@ -132,7 +132,7 @@ pub struct PlanningConfig {
     pub planner_template: TaskTemplate,
 
     /// Format the planner should output its task graph in.
-    pub output_format: String,  // default: "workgraph-yaml"
+    pub output_format: String,  // default: "wg-yaml"
 
     /// Use static tasks as fallback if planner fails.
     pub static_fallback: bool,
@@ -214,7 +214,7 @@ pub struct TaskOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FunctionVisibility {
-    Internal,  // only within this workgraph
+    Internal,  // only within this wg
     Peer,      // discoverable by federated peers, redaction applies
     Public,    // fully portable, provenance stripped
 }
@@ -274,7 +274,7 @@ planning:
       API Spec: {{input.api_spec}}
     skills: [analysis, api-design]
     role_hint: architect
-  output_format: workgraph-yaml
+  output_format: wg-yaml
   static_fallback: true
   validate_plan: true
 constraints:

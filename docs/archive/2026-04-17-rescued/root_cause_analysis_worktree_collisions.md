@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The worktree collision issues in the workgraph system stem from fundamental race conditions and logical flaws in how worktree creation and cleanup processes interact. Previous attempts to fix these collisions failed because they either:
+The worktree collision issues in the wg system stem from fundamental race conditions and logical flaws in how worktree creation and cleanup processes interact. Previous attempts to fix these collisions failed because they either:
 
 1. **Failed to address timing gaps** between process creation and cleanup checks
 2. **Implemented incomplete liveness checking** that didn't account for all failure modes  

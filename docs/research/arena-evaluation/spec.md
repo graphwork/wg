@@ -1,6 +1,6 @@
 # Arena Evaluation Research Spec
 
-Research spec for integrating FLIP-style backward-inference evaluation into workgraph.
+Research spec for integrating FLIP-style backward-inference evaluation into wg.
 
 ## 1. Paper Summary
 
@@ -60,7 +60,7 @@ The paper hypothesizes the **validation-generation gap**: even GPT-4 has only 76
 - Cross-language instruction/response pairs break F1; need LLM-judge fallback (§7)
 - Longer responses yield better FLIP scores (§5, Figure 5) — may need normalization
 
-## 3. Relevance to workgraph
+## 3. Relevance to wg
 
 ### 3a. As a `wg evaluate` Component
 

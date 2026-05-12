@@ -86,7 +86,7 @@ cmd.env("CLAUDE_CODE_DISABLE_WORKTREES", "1");
 
 Or add to the agent's CLAUDE.md / prompt instructions:
 ```
-CRITICAL: Do NOT use EnterWorktree. You are already in an isolated worktree managed by workgraph.
+CRITICAL: Do NOT use EnterWorktree. You are already in an isolated worktree managed by wg.
 ```
 
 The env var approach is more reliable since it prevents the tool at the system level rather than relying on the LLM following instructions.
@@ -97,7 +97,7 @@ The env var approach is more reliable since it prevents the tool at the system l
 
 Add to the wg agent prompt template (in `src/commands/spawn/execution.rs` or the executor context injection):
 ```
-NEVER use the EnterWorktree or ExitWorktree tools. Your working directory is already isolated by workgraph. Using EnterWorktree will cause you to lose your worktree and all uncommitted work.
+NEVER use the EnterWorktree or ExitWorktree tools. Your working directory is already isolated by wg. Using EnterWorktree will cause you to lose your worktree and all uncommitted work.
 ```
 
 This is less reliable than Fix 1 but can be deployed immediately.

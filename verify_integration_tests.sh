@@ -3,7 +3,7 @@
 
 set -e
 
-echo "🔍 Workgraph Cron Trigger System Integration Verification"
+echo "🔍 wg Cron Trigger System Integration Verification"
 echo "========================================================="
 
 # Test 1: Core cron module compilation

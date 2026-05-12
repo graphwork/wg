@@ -120,7 +120,7 @@ doesn't; tok/s is unimplemented).**
 `src/executor/native/tools/web_fetch.rs:206 save_binary_artifact` handles any
 non-PDF, non-text response by inferring an extension from `Content-Type`
 and writing raw bytes to
-`<workgraph>/nex-sessions/fetched-pages/NNNNN-<slug>.<ext>` — `.bin` is
+`<wg>/nex-sessions/fetched-pages/NNNNN-<slug>.<ext>` — `.bin` is
 the fallback. The `extract_to_markdown` cap (`fetch_max_chars`, default
 16000) only applies to the markdown extraction path; binary saves bypass
 it entirely.

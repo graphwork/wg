@@ -1,6 +1,6 @@
 # Human-in-the-Loop Integration: Messaging, Voice, and Notification Channels
 
-Research report for workgraph — evaluating channels for bidirectional human-agent communication.
+Research report for wg — evaluating channels for bidirectional human-agent communication.
 
 ## Table of Contents
 
@@ -104,7 +104,7 @@ See [Existing Matrix Code Assessment](#existing-matrix-code-assessment) for deta
 - Federated, self-hostable — full data sovereignty
 - E2EE support (even for bots)
 - VoIP via Element Call / Jitsi integration
-- Already partially integrated in workgraph
+- Already partially integrated in wg
 - Open protocol, no vendor lock-in
 - Rich HTML messages, reactions, threads
 
@@ -125,7 +125,7 @@ See [Existing Matrix Code Assessment](#existing-matrix-code-assessment) for deta
 - Session messages (24h window after user initiates)
 
 **Weaknesses:**
-- **As of Jan 2026: Meta bans general-purpose AI chatbots.** Structured bots for support/notifications are still allowed, but this creates legal risk for workgraph use cases.
+- **As of Jan 2026: Meta bans general-purpose AI chatbots.** Structured bots for support/notifications are still allowed, but this creates legal risk for wg use cases.
 - Per-message pricing ($0.005-$0.08 depending on region and template vs session)
 - Must use pre-approved message templates for outbound
 - 24-hour session window — humans must reply within 24h or you need a new template message
@@ -484,7 +484,7 @@ src/
 
 ## Configuration Design
 
-### Global notification config (`~/.config/workgraph/notify.toml`)
+### Global notification config (`~/.config/wg/notify.toml`)
 
 ```toml
 # Default channels for different event types
@@ -511,7 +511,7 @@ chat_id = "12345678"                # Your user ID or group ID
 # Slack
 [slack]
 bot_token = "xoxb-..."
-channel = "#workgraph-notifications"
+channel = "#wg-notifications"
 # Optional: app_token for Socket Mode (bidirectional)
 app_token = "xapp-..."
 
@@ -527,7 +527,7 @@ smtp_host = "smtp.gmail.com"
 smtp_port = 587
 username = "you@gmail.com"
 password = "app-password"         # Use app-specific password
-from = "workgraph@yourdomain.com"
+from = "wg@yourdomain.com"
 to = ["you@gmail.com"]
 
 # SMS (Twilio)
@@ -561,7 +561,7 @@ wg config --notify slack --bot-token "xoxb-..." --channel "#wg"
 wg config --notify email --smtp-host "smtp.gmail.com" --to "you@email.com"
 
 # Test a channel
-wg notify --test telegram "Hello from workgraph!"
+wg notify --test telegram "Hello from wg!"
 
 # Send task notification (existing command, now channel-aware)
 wg notify <task-id>                     # Uses default channels
@@ -618,6 +618,6 @@ wg config --notify-status
 
 ## Summary
 
-The workgraph human-in-the-loop system should be built on a `NotificationChannel` trait that abstracts over all platforms. Start with Telegram (best UX for individuals) and webhooks (universal integration), refactor existing Matrix code behind the trait, then layer on additional channels based on user demand. The escalation chain pattern (Telegram → SMS → Phone) provides robust human reachability for critical paths.
+The wg human-in-the-loop system should be built on a `NotificationChannel` trait that abstracts over all platforms. Start with Telegram (best UX for individuals) and webhooks (universal integration), refactor existing Matrix code behind the trait, then layer on additional channels based on user demand. The escalation chain pattern (Telegram → SMS → Phone) provides robust human reachability for critical paths.
 
 The existing Matrix code is functional but needs a trait abstraction and version fix. The `matrix_lite` implementation is the stronger foundation. The command parser and notification formatter are solid and should be generalized for use across all channels.

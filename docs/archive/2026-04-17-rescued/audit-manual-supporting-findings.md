@@ -50,10 +50,10 @@ All major CLI commands referenced in the supporting files are functioning as doc
 **Issue:** Documentation shows incorrect `--output` flag syntax  
 **Current Documentation:**
 ```bash
-typst compile docs/manual/workgraph-manual.typ
+typst compile docs/manual/wg-manual.typ
 ```
 **Problem:** Implies using `--output` flag in line 19 context, but typst uses positional arguments  
-**Correct Syntax:** `typst compile docs/manual/workgraph-manual.typ output-name.pdf`
+**Correct Syntax:** `typst compile docs/manual/wg-manual.typ output-name.pdf`
 
 #### 2. Inconsistent CLI Command Names  
 **File:** docs/manual/UPDATE-SPEC.md  

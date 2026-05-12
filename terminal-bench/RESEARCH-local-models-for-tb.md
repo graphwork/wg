@@ -85,7 +85,7 @@ If Qwen3-Coder-Next is too tight at Q4 for 256K context tasks:
 - Native tool calling support for Qwen3, Llama, Devstral models
 - OpenAI-compatible API at `http://localhost:11434/v1`
 - Zero configuration: `ollama pull qwen3-coder-next` and go
-- **Workgraph already has native `ollama:` provider routing** — model format is `ollama:qwen3-coder-next`
+- **wg already has native `ollama:` provider routing** — model format is `ollama:qwen3-coder-next`
 
 **Setup:**
 ```bash
@@ -144,11 +144,11 @@ llama.cpp now has MCP client support (merged March 2026), enabling tool calling 
 
 ---
 
-## 4. Workgraph / Harbor Integration
+## 4. wg / Harbor Integration
 
-### Path A: Direct Workgraph Native Executor (Recommended for Condition A/G)
+### Path A: Direct wg Native Executor (Recommended for Condition A/G)
 
-Workgraph already supports local providers natively. The provider routing in `src/executor/native/provider.rs` handles:
+wg already supports local providers natively. The provider routing in `src/executor/native/provider.rs` handles:
 
 - `ollama:model-name` → routes to `http://localhost:11434/v1` automatically
 - `llamacpp:model-name` → routes to `http://localhost:8080/v1` automatically

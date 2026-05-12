@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-The workgraph native executor's `OpenAiClient` is well-positioned to work with local models served by **Ollama** and **vLLM**, both of which expose OpenAI-compatible `/v1/chat/completions` endpoints. Tool calling works with capable models, but quality varies dramatically by model family and size. **Qwen3 30B+ and Llama 3.1/3.3 70B are the most viable local options for agentic workgraph tasks.**
+The wg native executor's `OpenAiClient` is well-positioned to work with local models served by **Ollama** and **vLLM**, both of which expose OpenAI-compatible `/v1/chat/completions` endpoints. Tool calling works with capable models, but quality varies dramatically by model family and size. **Qwen3 30B+ and Llama 3.1/3.3 70B are the most viable local options for agentic wg tasks.**
 
 ---
 
@@ -13,9 +13,9 @@ The workgraph native executor's `OpenAiClient` is well-positioned to work with l
 
 ### 1.1 Ollama
 
-**API compatibility:** Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) supports tool calling as of late 2024. The workgraph `OpenAiClient` sends `stream: false` requests, which avoids Ollama's historical streaming+tools issues.
+**API compatibility:** Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) supports tool calling as of late 2024. The wg `OpenAiClient` sends `stream: false` requests, which avoids Ollama's historical streaming+tools issues.
 
-**Configuration for workgraph:**
+**Configuration for wg:**
 ```toml
 # .wg/config.toml
 [native_executor]
@@ -30,13 +30,13 @@ Set `OPENAI_API_KEY=ollama` (any non-empty string) as Ollama ignores it but the 
 - `tool_choice` parameter is **not supported** — the model decides whether to use tools. This is acceptable since the agent loop already handles both tool-use and text-only responses.
 - Tool call IDs: Ollama generates UUIDs in the `call_XXXXXX` format that OpenAI uses. Compatible with the `OpenAiClient`'s translation layer.
 - Response format matches OpenAI spec: `finish_reason: "tool_calls"` when tools are invoked, `finish_reason: "stop"` otherwise. The `translate_response` function handles both correctly.
-- **No `logprobs`** — not needed for workgraph.
+- **No `logprobs`** — not needed for wg.
 
 ### 1.2 vLLM
 
 **API compatibility:** vLLM provides a full OpenAI-compatible server with tool calling via `--enable-auto-tool-choice` and `--tool-call-parser <parser>`. Streaming and non-streaming both supported.
 
-**Configuration for workgraph:**
+**Configuration for wg:**
 ```toml
 # .wg/config.toml
 [native_executor]
@@ -84,11 +84,11 @@ Models rated on three dimensions:
 
 ---
 
-## 3. Quality Assessment for workgraph Tasks
+## 3. Quality Assessment for wg Tasks
 
-### What workgraph agents actually do (from tool gap analysis)
+### What wg agents actually do (from tool gap analysis)
 
-The typical workgraph agent session involves:
+The typical wg agent session involves:
 1. Read task description and orient (Bash: `wg show`, `wg context`)
 2. Search/read codebase (Grep, Read, Glob)
 3. Edit/write files (Edit, Write)
@@ -97,7 +97,7 @@ The typical workgraph agent session involves:
 
 This requires: reliable tool detection, valid JSON arguments, ability to interpret tool output and decide next action across 10-50 turns.
 
-### Quality tiers for workgraph tasks
+### Quality tiers for wg tasks
 
 **Tier 1 — Production-viable (can replace Claude for most tasks):**
 - Qwen3-235B-A22B (MoE, ~48GB VRAM)
@@ -131,7 +131,7 @@ These models frequently: hallucinate tool names, produce malformed JSON argument
 
 ## 4. Streaming Behavior
 
-The workgraph `OpenAiClient` uses **non-streaming** requests (`stream: false` in `OaiRequest`). This is the safest path for local model compatibility:
+The wg `OpenAiClient` uses **non-streaming** requests (`stream: false` in `OaiRequest`). This is the safest path for local model compatibility:
 
 | Server | Non-streaming + tools | Streaming + tools | Notes |
 |--------|:-----:|:-----:|-------|
@@ -260,6 +260,6 @@ The existing `OpenAiClient` in `src/executor/native/openai_client.rs` is fully c
 - Any model without explicit tool-calling training (e.g., base models, chat-only finetunes without function calling)
 
 ### Future considerations
-- **MCP (Model Context Protocol)**: Ollama is adding MCP support. If workgraph adopts MCP for tool definitions, this would provide a standardized interface across local and remote models.
+- **MCP (Model Context Protocol)**: Ollama is adding MCP support. If wg adopts MCP for tool definitions, this would provide a standardized interface across local and remote models.
 - **Speculative decoding**: vLLM supports speculative decoding for faster inference with draft models — could significantly reduce agent turn latency.
-- **LoRA adapters**: Fine-tuning a smaller model (8B-14B) specifically on workgraph tool schemas could dramatically improve quality at the small model tier.
+- **LoRA adapters**: Fine-tuning a smaller model (8B-14B) specifically on wg tool schemas could dramatically improve quality at the small model tier.

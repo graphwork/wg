@@ -100,8 +100,8 @@ The bottleneck is **write throughput**, not read or notification. Each `modify_g
 The primary conflict prevention mechanism is `modify_graph()` (`parser.rs:267-283`):
 
 ```rust
-pub fn modify_graph<P, F>(path: P, f: F) -> Result<WorkGraph, ParseError>
-where F: FnOnce(&mut WorkGraph) -> bool {
+pub fn modify_graph<P, F>(path: P, f: F) -> Result<wg, ParseError>
+where F: FnOnce(&mut wg) -> bool {
     let _lock = FileLock::acquire(&lock_path)?;  // exclusive flock
     let mut graph = load_graph_inner(path)?;      // read under lock
     let modified = f(&mut graph);                 // modify under lock
@@ -165,7 +165,7 @@ Rationale:
 - tmux already preserves session state across disconnects — the TUI stays running
 - Complexity of user-namespaced state files outweighs the benefit
 
-If persistence is ever needed (e.g., "remember my last-viewed task across TUI restarts"), use `~/.config/workgraph/tui-state.json` in the **user's home directory**, not in `.wg/`. This naturally namespaces by Unix user.
+If persistence is ever needed (e.g., "remember my last-viewed task across TUI restarts"), use `~/.config/wg/tui-state.json` in the **user's home directory**, not in `.wg/`. This naturally namespaces by Unix user.
 
 ### 4.3 Shared State: Chat
 
@@ -347,7 +347,7 @@ If `WG_USER` is not set, fall back to:
 
 ## 9. Architecture Decision Records
 
-### ADR-1: Single Shared workgraph (not per-user)
+### ADR-1: Single Shared wg (not per-user)
 
 **Decision:** All users operate on one `.wg/graph.jsonl`.
 **Rationale:** Simplest model, already works, matches "shared workspace" vision. Per-user workgraphs would require federation for basic task visibility.

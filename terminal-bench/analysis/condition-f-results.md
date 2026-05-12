@@ -220,7 +220,7 @@ This differs from the pilot (which used minimax-m2.7 for all tasks) and from the
 
 ## 8. Agent Assignment Analysis
 
-F used the workgraph agency system for agent assignment:
+F used the wg agency system for agent assignment:
 
 | Agent | Name | Tasks | Score |
 |-------|------|-------|-------|

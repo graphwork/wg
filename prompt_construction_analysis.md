@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This analysis examines the prompt construction differences between "claude" and "native" executor types in the workgraph system. **Key finding**: Both executors use the same core `build_prompt()` function, but differ in specific context injection and command invocation patterns.
+This analysis examines the prompt construction differences between "claude" and "native" executor types in the wg system. **Key finding**: Both executors use the same core `build_prompt()` function, but differ in specific context injection and command invocation patterns.
 
 ## Core Prompt Assembly
 
@@ -34,7 +34,7 @@ The `build_prompt()` function in `src/service/executor.rs:709` assembles prompts
 
 ### 1. WG CLI Documentation Injection
 
-**Native executors get explicit workgraph CLI documentation:**
+**Native executors get explicit wg CLI documentation:**
 
 **File**: `src/commands/spawn/execution.rs:315-317`
 ```rust
@@ -48,7 +48,7 @@ if settings.executor_type == "native" {
 // Task+ scope: wg usage guide for non-Claude models
 if scope >= ContextScope::Task && !ctx.wg_guide_content.is_empty() {
     parts.push(format!(
-        "## Workgraph Usage Guide\n\n{}",
+        "## wg Usage Guide\n\n{}",
         ctx.wg_guide_content
     ));
 }
@@ -141,8 +141,8 @@ let system_prompt = if system_suffix.is_empty() {
 ## Key Architectural Insights
 
 1. **Claude agents are "CLAUDE.md native"** - they receive project-specific instructions from CLAUDE.md files
-2. **Native agents are "workgraph native"** - they receive explicit CLI documentation through DEFAULT_WG_GUIDE
+2. **Native agents are "wg native"** - they receive explicit CLI documentation through DEFAULT_WG_GUIDE
 3. **State management differs fundamentally** - native agents get live state updates, claude agents operate more statically  
 4. **Bundle system provides executor-specific prompt augmentation** for specialized exec_modes
 
-This analysis reveals that while both executors share core prompt assembly logic, they serve different architectural roles: Claude for general-purpose AI interaction with project context, and Native for workgraph-optimized task execution with live coordination features.
+This analysis reveals that while both executors share core prompt assembly logic, they serve different architectural roles: Claude for general-purpose AI interaction with project context, and Native for wg-optimized task execution with live coordination features.

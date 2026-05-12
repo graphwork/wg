@@ -1,10 +1,10 @@
-# Proposal: declarative role definitions for workgraph
+# Proposal: declarative role definitions for wg
 
 
 ## Problem
 
 
-workgraph's current capability system uses simple string tags (`-c coding -c testing`). This is insufficient for:
+wg's current capability system uses simple string tags (`-c coding -c testing`). This is insufficient for:
 
 
 - Describing complex agent behaviours and constraints
@@ -84,7 +84,7 @@ wg add "Review authentication module" --role code-reviewer --role security-speci
 
 The matching algorithm:
 1. Filter agents that have the required role(s) loaded or can load them within context budget
-2. Score by fit (existing workgraph logic) plus role alignment
+2. Score by fit (existing wg logic) plus role alignment
 3. Assign or queue for claim
 
 
@@ -158,7 +158,7 @@ Because the modification logic is itself a skill, it can be:
 - Evaluated and modified (meta-level recursion)
 
 
-## Integration with existing workgraph
+## Integration with existing wg
 
 
 | Existing feature | Extension |

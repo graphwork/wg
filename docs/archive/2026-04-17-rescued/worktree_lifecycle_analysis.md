@@ -1,7 +1,7 @@
 # Current Worktree Lifecycle Implementation Analysis
 
 ## Overview
-This document analyzes how worktrees are currently created, managed, and cleaned up in the workgraph system to understand where issues lie.
+This document analyzes how worktrees are currently created, managed, and cleaned up in the wg system to understand where issues lie.
 
 ## 1. Worktree Creation Flow
 

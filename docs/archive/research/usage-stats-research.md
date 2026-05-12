@@ -4,7 +4,7 @@
 
 ## Context
 
-workgraph has 50+ subcommands. Reordering `--help` output by actual usage would improve discoverability for users who run `wg --help` frequently. This requires tracking which commands are invoked and how often.
+wg has 50+ subcommands. Reordering `--help` output by actual usage would improve discoverability for users who run `wg --help` frequently. This requires tracking which commands are invoked and how often.
 
 ### Current Dependencies (Relevant)
 
@@ -155,7 +155,7 @@ Typical scenarios:
 **Recommendation: Both, with preference for per-repo**
 
 - **Per-repo (`.wg/stats.json`)**: Different projects have different command profiles. A data-heavy project uses `wg analyze` more; an agent project uses `wg spawn` more.
-- **Global (`~/.config/workgraph/stats.json`)**: Could aggregate across all repos for the user's overall usage pattern.
+- **Global (`~/.config/wg/stats.json`)**: Could aggregate across all repos for the user's overall usage pattern.
 
 Start with per-repo only. Global is a nice-to-have for later.
 
@@ -181,7 +181,7 @@ const DEFAULT_ORDER: &[&str] = &[
 
 ### Rationale
 
-1. **Simplicity:** JSON is already a first-class citizen in workgraph (serde_json is used everywhere)
+1. **Simplicity:** JSON is already a first-class citizen in wg (serde_json is used everywhere)
 2. **Readability:** Users can inspect/edit stats manually if needed
 3. **Minimal overhead:** ~50 commands × ~20 bytes = ~1KB file
 4. **Sufficient concurrency:** `flock()` is adequate for the expected concurrency levels
@@ -322,4 +322,4 @@ The increment should:
 | **Single JSON** | Low | Good (flock) | None | **Recommended** |
 | SQLite | High | Excellent | rusqlite | Not chosen - overkill |
 
-**Recommendation:** Implement Option 3 (single JSON stats file) with `flock()` for concurrency safety. It balances simplicity, performance, and maintainability for workgraph's use case.
+**Recommendation:** Implement Option 3 (single JSON stats file) with `flock()` for concurrency safety. It balances simplicity, performance, and maintainability for wg's use case.

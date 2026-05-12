@@ -340,7 +340,7 @@ Zero-downtime rotation process:
 
 Supported providers: Azure AI, Amazon Bedrock, Google Vertex AI. BYOK endpoints are prioritized first in routing. Fallback to OpenRouter credits if rate-limited (configurable). 1M free BYOK requests per month.
 
-### Best Practices for workgraph
+### Best Practices for wg
 
 - **Single key per deployment** is sufficient for pay-as-you-go (no per-key rate limits)
 - Use **credit limits** on keys to prevent runaway costs from agent loops

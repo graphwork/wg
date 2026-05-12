@@ -2,7 +2,7 @@
 
 ## Overview
 
-workgraph has **two parallel Matrix client implementations** selected via Cargo feature flags:
+wg has **two parallel Matrix client implementations** selected via Cargo feature flags:
 
 | Feature | Module | Dependencies | Lines | Default? |
 |---------|--------|-------------|-------|----------|
@@ -85,7 +85,7 @@ The `matrix-lite` feature was created to **avoid the heavy `matrix-sdk` dependen
 
 - `matrix-sdk` 0.16 with `e2e-encryption` + `sqlite` pulls in: `vodozemac` (Olm/Megolm), `sqlcipher`/`rusqlite`, `eyeball`/`eyeball-im`, OpenSSL bindings, and hundreds of transitive deps
 - This significantly increases compile time and binary size
-- For workgraph's use case (sending notifications, basic command/response in rooms), E2EE is rarely needed
+- For wg's use case (sending notifications, basic command/response in rooms), E2EE is rarely needed
 
 The `matrix-lite` default was chosen to keep the default build fast and simple, with `matrix` available as an opt-in for encrypted rooms.
 
@@ -120,7 +120,7 @@ The two `MatrixClient` types have overlapping APIs but no shared trait:
 
 ### 4. Graph Operations Bypass CLI/Locking
 
-Both listeners directly call `load_graph()`/`save_graph()` without file locking. The rest of workgraph uses `flock`-based graph locking (added in commit `8279a35`). Concurrent graph modifications from Matrix commands and CLI could corrupt the graph file.
+Both listeners directly call `load_graph()`/`save_graph()` without file locking. The rest of wg uses `flock`-based graph locking (added in commit `8279a35`). Concurrent graph modifications from Matrix commands and CLI could corrupt the graph file.
 
 ### 5. Lite Version Has No Tests for Commands
 
@@ -141,7 +141,7 @@ Both listeners directly call `load_graph()`/`save_graph()` without file locking.
 
 ### Keep `matrix-lite` as Default, Keep `matrix` as Opt-in
 
-The two-feature approach is sound. The full SDK is genuinely heavy, and most workgraph users won't need E2EE. The problem is the implementation, not the design.
+The two-feature approach is sound. The full SDK is genuinely heavy, and most wg users won't need E2EE. The problem is the implementation, not the design.
 
 ### Consolidate Shared Code (High Priority)
 

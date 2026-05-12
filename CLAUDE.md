@@ -1,8 +1,8 @@
-<!-- workgraph-managed -->
-# workgraph (project-specific guide)
+<!-- wg-managed -->
+# wg (project-specific guide)
 
 This file is the **layer-2** project guide for agents working *on the
-workgraph codebase itself*. It is NOT the universal chat-agent / worker-agent
+wg codebase itself*. It is NOT the universal chat-agent / worker-agent
 contract — that is bundled inside the `wg` binary and emitted by:
 
 ```
@@ -14,13 +14,13 @@ session) to get the universal role contract: chat agent vs dispatcher vs worker
 distinction, `## Validation` requirement, smoke-gate, cycle handling, git
 hygiene, worktree isolation, "no built-in Task tool" rules, etc.
 
-This file only covers things specific to the workgraph repo:
+This file only covers things specific to the wg repo:
 
 - How to use `wg` itself in this session
 - How to develop and rebuild the `wg` binary
 - Service configuration recipes (model / endpoint pairs)
 - Named profiles (`wg profile use ...`) and secret backends (`wg secret ...`)
-- Agency-task model pinning (a workgraph-only quirk)
+- Agency-task model pinning (a wg-only quirk)
 
 For project orientation, run `wg quickstart`.
 
@@ -31,7 +31,7 @@ a bug. Update both together.
 
 ---
 
-## Use workgraph for task management
+## Use wg for task management
 
 **At the start of each session, run `wg quickstart` in your terminal to orient yourself.**
 Use `wg service start` to dispatch work — do not manually claim tasks.

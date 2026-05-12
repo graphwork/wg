@@ -273,12 +273,12 @@ The heartbeat is **fundamentally different** — it's a central strategist perio
 3. On receiving the message, the coordinator wakes and processes it
 
 **Implementation:**
-- No code changes to workgraph — uses existing `wg msg` and `Message` wait conditions
+- No code changes to wg — uses existing `wg msg` and `Message` wait conditions
 - TB runner script starts the heartbeat loop alongside `wg service start`
 - Stop the loop when the run completes
 
 **Pros:**
-- Zero code changes to workgraph binary
+- Zero code changes to wg binary
 - Can be tested immediately
 - Easy to adjust interval without recompilation
 - Works with any coordinator setup
@@ -359,7 +359,7 @@ For Terminal Bench autonomous runs, the heartbeat would work as follows:
 ### 7.1 Setup
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [coordinator]
 coordinator_agent = true
 heartbeat_interval = 30  # seconds (Option A)

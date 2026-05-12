@@ -32,7 +32,7 @@ fi
 # Test 3: Check graph serialization includes cron fields
 echo
 echo "Test 3: Verifying graph serialization includes cron fields"
-cat .workgraph/graph.jsonl | grep "cron_"
+cat .wg/graph.jsonl | grep "cron_"
 
 if [ $? -eq 0 ]; then
     echo "✓ Cron fields serialized in graph"

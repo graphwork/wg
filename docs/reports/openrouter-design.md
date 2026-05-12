@@ -165,7 +165,7 @@ wg service start
 | Add `with_provider_hint()` builder | new | `pub fn with_provider_hint(mut self, hint: &str) -> Self` |
 | Fix URL construction | ~388 | Change `"{}/v1/chat/completions"` to `"{}/chat/completions"` |
 | Update `DEFAULT_BASE_URL` | ~124 | Change to `"https://openrouter.ai/api/v1"` |
-| Add OpenRouter headers | ~458-467 | In `build_headers()`, when `provider_hint == Some("openrouter")`, add `HTTP-Referer: https://github.com/anthropics/workgraph` and `X-Title: workgraph` |
+| Add OpenRouter headers | ~458-467 | In `build_headers()`, when `provider_hint == Some("openrouter")`, add `HTTP-Referer: https://github.com/anthropics/wg` and `X-Title: wg` |
 | Update `name()` | ~472-474 | Return `provider_hint` if set, else `"openai"` |
 | Update tests | ~584+ | Update `DEFAULT_BASE_URL` references in tests if any |
 

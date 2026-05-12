@@ -10,7 +10,7 @@
 
 ### What we're testing
 
-Does **workgraph context injection** (Condition G) improve coding task pass rates compared to a **bare agent** (Condition A)?
+Does **wg context injection** (Condition G) improve coding task pass rates compared to a **bare agent** (Condition A)?
 
 - **Condition A (Baseline):** An LLM agent receives only the task description and a verify command. No graph context, no `wg` tools.
 - **Condition G (Context-only):** The same LLM agent receives graph-scoped context, access to `wg` CLI tools, and a WG Quick Guide. No surveillance infrastructure — a clean context-injection-only condition formalized after pilot analysis showed surveillance added 0 value.
@@ -160,9 +160,9 @@ sudo apt update && sudo apt install -y \
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
-# 3. Clone the workgraph repo
-git clone https://github.com/anthropics/workgraph.git
-cd workgraph
+# 3. Clone the wg repo
+git clone https://github.com/anthropics/wg.git
+cd wg
 
 # 4. Build and install the wg binary
 cargo install --path .
@@ -198,8 +198,8 @@ source ~/.bashrc
 
 ```bash
 # Clone (if not already done above)
-git clone https://github.com/anthropics/workgraph.git
-cd workgraph
+git clone https://github.com/anthropics/wg.git
+cd wg
 
 # Build the wg binary
 cargo build --release
@@ -237,7 +237,7 @@ echo ""
 Always run a smoke test before the full experiment to validate the setup:
 
 ```bash
-cd workgraph
+cd wg
 
 # Smoke test: 3 tasks x 1 replica x 2 conditions = 6 trials (~5 minutes)
 python3 terminal-bench/run_scale_experiment.py --smoke
@@ -248,7 +248,7 @@ Expected output: 6 trials complete, progress bar, final summary showing pass rat
 ### Full experiment
 
 ```bash
-cd workgraph
+cd wg
 
 # Default: 18 tasks x 5 replicas x 2 conditions (A,G) = 180 trials
 python3 terminal-bench/run_scale_experiment.py
@@ -391,7 +391,7 @@ terminal-bench/results/scale-run-001/
 ├── ...
 │
 ├── condA-file-ops-r0/
-│   └── workgraph_state/             # Preserved .workgraph for post-hoc analysis
+│   └── workgraph_state/             # Preserved .wg for post-hoc analysis
 ├── condF-file-ops-r0/
 │   └── workgraph_state/
 └── ...
@@ -518,7 +518,7 @@ for f in sorted(glob.glob(os.path.join(results_dir, 'cond*.json'))):
 wg --version
 
 # If wg was rebuilt, reinstall
-cd workgraph && cargo install --path .
+cd wg && cargo install --path .
 
 # Check no stale services are running
 ps aux | grep "wg service"
@@ -560,7 +560,7 @@ Each trial creates a temp directory (~10-50 MB) that is cleaned up after complet
 rustc --version
 
 # Rebuild and install
-cd workgraph
+cd wg
 cargo install --path .
 
 # Verify it's on PATH
@@ -656,7 +656,7 @@ auto_evaluate = false
 
 Condition G is the autopoietic treatment: the agent receives the same tools and
 context as Condition F, plus an **autopoietic meta-prompt** that encourages it to
-build a self-correcting workgraph with verification cycles.
+build a self-correcting wg with verification cycles.
 
 The agent receives:
 - Task title and description, prepended with the autopoietic meta-prompt
@@ -694,7 +694,7 @@ exec_mode = "full"
 **Distinction from F:** F uses `max_agents=1` and no meta-prompt — the agent gets
 a single task and works on it. G uses `max_agents=8`, an active coordinator, and
 the autopoietic meta-prompt that encourages graph decomposition and iterative
-verification. G emulates what a human does with workgraph: reading the problem,
+verification. G emulates what a human does with wg: reading the problem,
 breaking it down, building a plan, checking results, and iterating.
 
 **Historical note:** Originally formalized as "F without surveillance" (context-only).

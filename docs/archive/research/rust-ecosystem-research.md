@@ -1,6 +1,6 @@
-# Rust Ecosystem Research for workgraph System
+# Rust Ecosystem Research for wg System
 
-This document provides a comprehensive evaluation of the Rust ecosystem for building a workgraph system, covering graph libraries, JSON/JSONL handling, CLI frameworks, SQLite bindings, and file watching capabilities.
+This document provides a comprehensive evaluation of the Rust ecosystem for building a wg system, covering graph libraries, JSON/JSONL handling, CLI frameworks, SQLite bindings, and file watching capabilities.
 
 ---
 
@@ -228,7 +228,7 @@ A newer library with better error handling (returns `Result` instead of panickin
 
 ### 1.4 Graph Library Recommendation
 
-**For a workgraph system**: Use **petgraph** as the foundation with **daggy** if you need strict DAG guarantees.
+**For a wg system**: Use **petgraph** as the foundation with **daggy** if you need strict DAG guarantees.
 
 - If tasks can have cycles (rare but possible): Use `petgraph::stable_graph::StableGraph`
 - If tasks must be acyclic: Use `daggy::Dag` or `daggy::StableDag`
@@ -407,7 +407,7 @@ serde-jsonlines = { version = "0.5", features = ["async"] }
 
 ### 2.3 Append-Only Log Pattern
 
-For a workgraph system, the append-only JSONL pattern is ideal:
+For a wg system, the append-only JSONL pattern is ideal:
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -489,14 +489,14 @@ The most popular and feature-rich CLI parsing library in Rust.
 use clap::{Parser, Subcommand, Args};
 use std::path::PathBuf;
 
-/// workgraph CLI - manage task dependency graphs
+/// wg CLI - manage task dependency graphs
 #[derive(Parser)]
 #[command(name = "wg")]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    /// Path to the workgraph file
-    #[arg(short, long, default_value = "workgraph.jsonl")]
+    /// Path to the wg file
+    #[arg(short, long, default_value = "wg.jsonl")]
     file: PathBuf,
 
     /// Enable verbose output
@@ -677,7 +677,7 @@ let input: String = args.free_from_str()?;
 
 ### 3.4 CLI Framework Recommendation
 
-**Use clap** for the workgraph CLI:
+**Use clap** for the wg CLI:
 - Subcommand support is essential for a tool like this
 - Auto-generated help keeps documentation in sync
 - Shell completions improve user experience
@@ -709,7 +709,7 @@ Synchronous, ergonomic SQLite bindings.
 use rusqlite::{Connection, Result, params};
 
 fn main() -> Result<()> {
-    let conn = Connection::open("workgraph.db")?;
+    let conn = Connection::open("wg.db")?;
 
     // Create schema
     conn.execute(
@@ -847,7 +847,7 @@ struct Task {
 async fn main() -> Result<(), sqlx::Error> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect("sqlite:workgraph.db?mode=rwc").await?;
+        .connect("sqlite:wg.db?mode=rwc").await?;
 
     // Run migrations
     sqlx::migrate!("./migrations").run(&pool).await?;
@@ -915,7 +915,7 @@ tokio = { version = "1", features = ["full"] }
 
 ### 4.4 SQLite Recommendation
 
-**For workgraph system**:
+**For wg system**:
 
 - **Start with rusqlite**: Simpler, no async complexity, perfect for CLI tools
 - **Migrate to sqlx** if: You need async operations or might support other databases
@@ -952,8 +952,8 @@ fn main() -> notify::Result<()> {
 
     let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
 
-    // Watch the workgraph file
-    watcher.watch(Path::new("workgraph.jsonl"), RecursiveMode::NonRecursive)?;
+    // Watch the wg file
+    watcher.watch(Path::new("wg.jsonl"), RecursiveMode::NonRecursive)?;
 
     // Watch a directory recursively
     watcher.watch(Path::new("./tasks"), RecursiveMode::Recursive)?;
@@ -1003,7 +1003,7 @@ fn main() -> notify::Result<()> {
     let mut debouncer = new_debouncer(Duration::from_millis(500), tx)?;
 
     debouncer.watcher().watch(
-        Path::new("workgraph.jsonl"),
+        Path::new("wg.jsonl"),
         RecursiveMode::NonRecursive
     )?;
 
@@ -1012,7 +1012,7 @@ fn main() -> notify::Result<()> {
             Ok(events) => {
                 for event in events {
                     println!("Debounced event: {:?}", event.path);
-                    // Rebuild/reload workgraph here
+                    // Rebuild/reload wg here
                 }
             }
             Err(e) => eprintln!("Error: {:?}", e),
@@ -1044,7 +1044,7 @@ async fn main() -> notify::Result<()> {
         Config::default(),
     )?;
 
-    watcher.watch(Path::new("workgraph.jsonl"), RecursiveMode::NonRecursive)?;
+    watcher.watch(Path::new("wg.jsonl"), RecursiveMode::NonRecursive)?;
 
     while let Some(result) = rx.recv().await {
         match result {

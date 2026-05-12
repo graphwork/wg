@@ -305,7 +305,7 @@ These are **good** — they exist but are separate from the integration test fil
 
 ### Priority 4: Tests to Remove or Improve
 
-10. **`test_is_process_alive_*` tests** (integration_service_coordinator.rs:846-857) — These test `libc::kill(pid, 0)` directly, not any workgraph code. They're testing the OS. Remove or replace with tests that exercise the actual `is_process_alive()` function in the registry.
+10. **`test_is_process_alive_*` tests** (integration_service_coordinator.rs:846-857) — These test `libc::kill(pid, 0)` directly, not any wg code. They're testing the OS. Remove or replace with tests that exercise the actual `is_process_alive()` function in the registry.
 
 11. **Duplicated `recalculate_avg_score` tests** — `test_recalculate_avg_score_empty` appears in both `integration_agency_edge_cases.rs` and `evaluation_recording.rs`. Remove the duplicate.
 

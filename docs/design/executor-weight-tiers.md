@@ -25,7 +25,7 @@ The system already has a partial answer — `exec_mode: bare` restricts tools to
 
 When `exec_mode == "bare"`:
 - Uses `--system-prompt` to pass prompt (vs piping to stdin)
-- Restricts tools to `Bash(wg:*)` — only workgraph CLI
+- Restricts tools to `Bash(wg:*)` — only wg CLI
 - Pipes task title + description as user message
 - Still uses Claude Code as executor (full session overhead for launching)
 

@@ -1,6 +1,6 @@
 # Communication Topology: Multi-Bot, Multi-User, Scoped Routing
 
-Design document for how workgraph reaches the right human, through the right channel, at the right scope.
+Design document for how wg reaches the right human, through the right channel, at the right scope.
 
 ---
 
@@ -115,7 +115,7 @@ Each level can specify actors and routing rules. Unspecified values inherit from
 
 | Scope | Where defined | What it controls |
 |-------|--------------|-----------------|
-| **Global** | `~/.config/workgraph/notify.toml` | Default actors, channels, and routing for all projects |
+| **Global** | `~/.config/wg/notify.toml` | Default actors, channels, and routing for all projects |
 | **Project** | `.wg/notify.toml` | Per-project overrides — different actors, channels, or routing rules |
 | **Subgraph** | Task tags or explicit `notify` field on root task of a subgraph | Weakly connected components that should notify a different actor |
 | **Task** | `notify` field on individual task | Single-task override (rare, for special cases like "notify the CEO when deploy completes") |
@@ -169,7 +169,7 @@ Examples:
 The new schema extends the current `notify.toml` with actor definitions and scoped routing. The existing fields (`[routing]`, `[escalation]`, `[telegram]`, etc.) continue to work unchanged.
 
 ```toml
-# ~/.config/workgraph/notify.toml
+# ~/.config/wg/notify.toml
 # (or .wg/notify.toml for project-level)
 
 # ─── Channel defaults ───────────────────────────────────────────────
@@ -363,7 +363,7 @@ fn resolve_event_roles(event_type, project) -> Vec<String>:
 
 - **Replace, don't merge.** If a project defines `[routing.events]`, it replaces the global event routing entirely. If a task tag says `notify:carol:owner`, Carol replaces Alice as owner for that scope. No merging of actor lists.
 - **Scope specificity wins.** Task tags override subgraph tags override project config override global config.
-- **Actors are global.** Actor definitions are always resolved from the global `~/.config/workgraph/notify.toml`. Project-level configs can add project-specific actors, but they don't override global actor definitions with the same name — names must be unique.
+- **Actors are global.** Actor definitions are always resolved from the global `~/.config/wg/notify.toml`. Project-level configs can add project-specific actors, but they don't override global actor definitions with the same name — names must be unique.
 - **Channel defaults merge.** An actor's channel config merges with global channel defaults. If Alice's Telegram channel specifies only `chat_id`, the `bot_token` comes from the global `[telegram]` section.
 
 ### Interaction with telegram-global-routing.md
@@ -386,7 +386,7 @@ When the routing layer says "send to Alice via Telegram," the transport layer us
 The simplest possible config is what exists today — no actors at all:
 
 ```toml
-# ~/.config/workgraph/notify.toml (minimal)
+# ~/.config/wg/notify.toml (minimal)
 
 [routing]
 default = ["telegram"]
@@ -495,7 +495,7 @@ fn is_actor_mode(config: &NotifyConfig) -> bool {
 
 **Scenario:** One developer, personal project, just wants Telegram failure alerts.
 
-**Config:** `~/.config/workgraph/notify.toml`
+**Config:** `~/.config/wg/notify.toml`
 
 ```toml
 [routing]
@@ -519,7 +519,7 @@ chat_id = "12345678"
 
 **Scenario:** Three-person team. Alice is the project lead, Bob reviews code, Carol is on-call this week.
 
-**Config:** `~/.config/workgraph/notify.toml`
+**Config:** `~/.config/wg/notify.toml`
 
 ```toml
 [telegram]
@@ -587,7 +587,7 @@ urgent_timeout = 900
 
 **Scenario:** Alice manages two projects. Project Alpha uses Telegram. Project Beta uses Slack (because the beta team lives in Slack).
 
-**Global config:** `~/.config/workgraph/notify.toml`
+**Global config:** `~/.config/wg/notify.toml`
 
 ```toml
 [telegram]
@@ -654,7 +654,7 @@ approval = ["owner"]
 
 **Scenario:** A large project has an auth subsystem (managed by Dave) and a frontend (managed by Eve). The project lead (Alice) gets everything, but Dave and Eve only get notifications for their respective areas.
 
-**Config:** `~/.config/workgraph/notify.toml`
+**Config:** `~/.config/wg/notify.toml`
 
 ```toml
 [telegram]

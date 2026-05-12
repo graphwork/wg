@@ -1,6 +1,6 @@
 # Demo Medley: Screencast Scenario Catalog
 
-*A library of short screencasts showing workgraph's capabilities — from first task to autopoietic loops.*
+*A library of short screencasts showing wg's capabilities — from first task to autopoietic loops.*
 
 **Produced by:** research-demo-medley  
 **Date:** 2026-03-23  
@@ -35,7 +35,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 ## Scenario Catalog
 
-### Tier 1: Core Workflows (produce first — these explain what workgraph IS)
+### Tier 1: Core Workflows (produce first — these explain what wg IS)
 
 ---
 
@@ -43,7 +43,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | What workgraph does — from `wg init` to tasks flowing through agents. The "hello world." |
+| **Teaching purpose** | What wg does — from `wg init` to tasks flowing through agents. The "hello world." |
 | **Duration** | 30–40s compressed |
 | **Graph pattern** | Pipeline: `design-api → implement-api → write-tests` |
 | **Graph setup** | Clean project, `wg init` from scratch |
@@ -91,7 +91,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | workgraph isn't just task execution — it's a thinking tool. Show `wg why-blocked`, `wg impact`, `wg bottlenecks`, `wg forecast`. |
+| **Teaching purpose** | wg isn't just task execution — it's a thinking tool. Show `wg why-blocked`, `wg impact`, `wg bottlenecks`, `wg forecast`. |
 | **Duration** | 25–30s compressed |
 | **Graph pattern** | Diamond: 1 root → 3 parallel → 1 integrator, with one task blocked |
 | **Graph setup** | Pre-create 5 tasks in diamond pattern. Mark root and one branch as done. One branch still in-progress (creating a bottleneck). |
@@ -111,7 +111,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | workgraph supports cycles — not just DAGs. Show a write→review→revise loop that iterates until converged. |
+| **Teaching purpose** | wg supports cycles — not just DAGs. Show a write→review→revise loop that iterates until converged. |
 | **Duration** | 30–40s compressed |
 | **Graph pattern** | Cycle: `write-draft → review-draft → revise-draft → write-draft` with `--max-iterations 3` |
 | **Graph setup** | Create cycle with `wg add` + back-edge. Use `wg cycles` to show detected cycle. |
@@ -127,7 +127,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | workgraph isn't just for AI. A human claims one task while agents handle others. Shows mixed coordination. |
+| **Teaching purpose** | wg isn't just for AI. A human claims one task while agents handle others. Shows mixed coordination. |
 | **Duration** | 30–40s compressed |
 | **Graph pattern** | Diamond: `research → [human: design-api, agent: write-scaffolding] → integrate` |
 | **Graph setup** | Pre-create 4 tasks. Start service with max_agents 2. |
@@ -171,7 +171,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 ---
 
-### Tier 3: Advanced Features (produce third — for users evaluating workgraph deeply)
+### Tier 3: Advanced Features (produce third — for users evaluating wg deeply)
 
 ---
 
@@ -207,14 +207,14 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 ---
 
-#### 11. workgraph Building workgraph (Self-Hosting)
+#### 11. wg Building wg (Self-Hosting)
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | The ultimate proof of capability — workgraph coordinating its own development. Shows real software engineering, not toy tasks. |
+| **Teaching purpose** | The ultimate proof of capability — wg coordinating its own development. Shows real software engineering, not toy tasks. |
 | **Duration** | 40–50s compressed |
 | **Graph pattern** | Real graph from `.wg/graph.jsonl` — whatever's current |
-| **Graph setup** | Use the actual workgraph project's own graph. Filter to an interesting recent subgraph (e.g., the screencast work itself, or a recent feature branch). |
+| **Graph setup** | Use the actual wg project's own graph. Filter to an interesting recent subgraph (e.g., the screencast work itself, or a recent feature branch). |
 | **Recording method** | **Live capture from real session.** Record `wg tui` during actual development. Or replay: extract a subgraph from history, recreate it in a demo project, and simulate the progression. |
 | **What viewer sees** | A real, complex task graph with 10+ tasks. Multiple agents working on Rust code. Tasks completing with real commit hashes in logs. The graph is visibly non-trivial — this isn't a toy. |
 | **Key moments** | (1) Scale — many tasks, real dependencies, (2) agent logs showing actual code commits, (3) the meta moment: "this screencast was coordinated by the tool it's demonstrating" |
@@ -263,7 +263,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | workgraph can notify humans via Matrix, Slack, email, or webhook when tasks complete or need attention. Shows the operational integration story. |
+| **Teaching purpose** | wg can notify humans via Matrix, Slack, email, or webhook when tasks complete or need attention. Shows the operational integration story. |
 | **Duration** | 20–25s compressed |
 | **Graph pattern** | Pipeline with a `--verify` gate that triggers a notification |
 | **Graph setup** | Configure notification backend (Matrix or webhook for demo). Create task with --verify. |
@@ -282,12 +282,12 @@ Production order balances **teaching value** (what does a new user need to see f
 | Priority | Scenario | Tier | Effort | Rationale |
 |----------|----------|------|--------|-----------|
 | **P1** | 1. First Five Minutes | Core | Low (simulated) | Every product needs a "getting started" demo. Current demos skip this entirely. |
-| **P2** | 3. Validation Gates | Core | Low (simulated) | Major differentiator — shows workgraph isn't just "run tasks" but has quality gates. |
+| **P2** | 3. Validation Gates | Core | Low (simulated) | Major differentiator — shows wg isn't just "run tasks" but has quality gates. |
 | **P3** | 5. Cycle / Iteration Loop | Intermediate | Low (simulated) | The "not just a DAG" story. Cycles are a headline feature with zero demos. |
-| **P4** | 4. Dependency Analysis | Core | Low (simulated) | Shows workgraph as a thinking tool, not just an executor. Zero coverage today. |
+| **P4** | 4. Dependency Analysis | Core | Low (simulated) | Shows wg as a thinking tool, not just an executor. Zero coverage today. |
 | **P5** | 7. Edge Tracing in TUI | Intermediate | Low (simulated) | Visual, impressive, quick to produce. Already partially designed in storyboard v2. |
 | **P6** | 2. Chat-Driven Decomposition | Core | Low (existing) | Refresh the best existing demo (haiku). Retire heist+pancakes from hero carousel. |
-| **P7** | 6. Human + AI Side-by-Side | Intermediate | Medium (semi-live) | Critical narrative: workgraph isn't "replace humans" — it's "coordinate everyone." |
+| **P7** | 6. Human + AI Side-by-Side | Intermediate | Medium (semi-live) | Critical narrative: wg isn't "replace humans" — it's "coordinate everyone." |
 | **P8** | 8. Service Lifecycle | Intermediate | Medium (semi-live) | Explains the operational model. Important for adoption but less visually exciting. |
 | **P9** | 10. Task Messaging | Advanced | Low (simulated) | Quick to produce, shows stigmergic coordination. |
 | **P10** | 9. Agency System | Advanced | Medium (needs LLM for eval) | Complex feature, deserves a thorough demo. Needs more setup. |
@@ -318,7 +318,7 @@ Production order balances **teaching value** (what does a new user need to see f
 |-----|----------|-------------------|
 | **How to get started** — no init/setup/first-task flow shown | Critical | #1 First Five Minutes |
 | **Validation / quality gates** — `--verify`, pending-validation, approve/reject invisible | Critical | #3 Validation Gates |
-| **Cycles** — headline feature, zero visibility. Visitors don't know workgraph supports loops | Critical | #5 Cycles |
+| **Cycles** — headline feature, zero visibility. Visitors don't know wg supports loops | Critical | #5 Cycles |
 | **Human participation** — all demos are fully autonomous, implying "this is just for AI" | High | #6 Human + AI |
 | **Analysis tools** — why-blocked, bottlenecks, forecast, impact never shown | High | #4 Dependency Analysis |
 | **CLI workflow** — every demo uses TUI. Users who prefer CLI see no path | High | #1, #3, #4 (all CLI-first) |
@@ -345,7 +345,7 @@ Production order balances **teaching value** (what does a new user need to see f
 ## Freshness Strategy
 
 ### Problem
-TUI rendering, CLI output format, and command syntax change as workgraph evolves. Screencasts become stale. Manual re-recording is expensive and error-prone.
+TUI rendering, CLI output format, and command syntax change as wg evolves. Screencasts become stale. Manual re-recording is expensive and error-prone.
 
 ### Solution: Simulation-first recording pipeline
 

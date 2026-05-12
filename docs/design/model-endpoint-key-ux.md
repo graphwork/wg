@@ -701,7 +701,7 @@ For the absolute simplest path, a guided wizard:
 
 ```bash
 $ wg setup
-Welcome to workgraph setup!
+Welcome to wg setup!
 
 ? Select your LLM provider:
   > Anthropic (direct API)

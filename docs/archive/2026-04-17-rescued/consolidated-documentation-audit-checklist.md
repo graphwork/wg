@@ -1,7 +1,7 @@
 # Consolidated Documentation Audit Checklist
 **Integration Date:** 2026-04-12  
 **Source:** Integration of 5 parallel documentation audit tasks  
-**Purpose:** Comprehensive per-document delta checklist across entire workgraph project
+**Purpose:** Comprehensive per-document delta checklist across entire wg project
 
 ---
 
@@ -44,7 +44,7 @@ Consolidated findings from comprehensive documentation audit covering:
 - Functions system missing (`wg func` suite)
 
 **❓ Verification Needed:**
-- GitHub repository URL: `https://github.com/graphwork/workgraph`
+- GitHub repository URL: `https://github.com/graphwork/wg`
 - OpenAI integration syntax examples
 - Global config path: `~/.wg/config.toml`
 
@@ -81,7 +81,7 @@ Consolidated findings from comprehensive documentation audit covering:
 
 **Files Inventoried:**
 - README.md - Manual overview and compilation instructions
-- workgraph-manual.md/.typ - Unified manual with comprehensive glossary
+- wg-manual.md/.typ - Unified manual with comprehensive glossary
 - 01-overview.md/.typ - System overview and core concepts  
 - 02-task-graph.md/.typ - Tasks, dependencies, cycles, readiness
 - 03-agency.md/.typ - Roles, tradeoffs, agents, federation
@@ -113,7 +113,7 @@ Consolidated findings from comprehensive documentation audit covering:
 **1. Federation Architecture** 
 - ✅ Implemented: Peer configuration, agency federation, basic IPC
 - ❌ Missing: `QueryGraph` IPC protocol, TUI Peers panel, cross-repo task dispatch
-- **Impact:** Limited federation visibility and cross-workgraph coordination
+- **Impact:** Limited federation visibility and cross-wg coordination
 
 **2. Self-Hosting Coordinator**
 - ✅ Current: Traditional Rust daemon + CLI architecture  

@@ -4,7 +4,7 @@
 
 ## Overview
 
-A `native` executor that calls the Anthropic Messages API directly from Rust, implementing a tool-use loop with both file tools and in-process workgraph tools. This eliminates the dependency on Claude CLI and Amplifier for agent execution, giving workgraph full control over the LLM interaction lifecycle.
+A `native` executor that calls the Anthropic Messages API directly from Rust, implementing a tool-use loop with both file tools and in-process wg tools. This eliminates the dependency on Claude CLI and Amplifier for agent execution, giving wg full control over the LLM interaction lifecycle.
 
 ## Motivation
 
@@ -34,7 +34,7 @@ src/executor/
     │   ├── mod.rs      # ToolRegistry, ToolDefinition, dispatch
     │   ├── file.rs     # read_file, write_file, edit_file, glob, grep
     │   ├── bash.rs     # Shell command execution
-    │   └── wg.rs       # In-process workgraph operations
+    │   └── wg.rs       # In-process wg operations
     └── bundle.rs       # Bundle loading and tool filtering
 ```
 
@@ -425,9 +425,9 @@ pub struct BashTool {
 Executes via `tokio::process::Command::new("bash").arg("-c").arg(command)`.
 Captures stdout + stderr. Kills on timeout via SIGTERM, then SIGKILL after 5s.
 
-### workgraph Tools (`tools/wg.rs`)
+### wg Tools (`tools/wg.rs`)
 
-These call workgraph library functions directly — **no subprocess, no CLI parsing overhead**.
+These call wg library functions directly — **no subprocess, no CLI parsing overhead**.
 
 | Tool | Maps to | Description |
 |------|---------|-------------|
@@ -478,7 +478,7 @@ These call workgraph library functions directly — **no subprocess, no CLI pars
 }
 ```
 
-**Implementation approach**: Each wg tool function takes a `&Path` to the workgraph directory and calls the corresponding library function. The workgraph dir is captured in the tool closure at registration time:
+**Implementation approach**: Each wg tool function takes a `&Path` to the wg directory and calls the corresponding library function. The wg dir is captured in the tool closure at registration time:
 
 ```rust
 pub fn register_wg_tools(registry: &mut ToolRegistry, workgraph_dir: PathBuf) {
@@ -723,7 +723,7 @@ New required dependencies: `regex` (for grep tool), `async-trait` (for Tool trai
 - `src/executor/native/tools/bash.rs` — Shell execution with timeout
 - Unit tests for each tool
 
-### Phase 4c: workgraph Tools
+### Phase 4c: wg Tools
 - `src/executor/native/tools/wg.rs` — In-process wg operations
 - Extract library functions where commands currently do everything inline
 - Integration test: native agent creates a task, logs progress, marks done

@@ -93,7 +93,7 @@ The wrapper `run.sh` (`src/commands/spawn/execution.rs:572-660`) includes a **ba
 1. Every 10 seconds, checks if `pending_messages.txt` has content
 2. Atomically moves the file to a temp location and appends its content to the agent's output log
 3. Also calls `wg msg poll` and `wg msg read` to check the message queue directly
-4. Appends any new messages to the output log with `[workgraph] === New messages received ===` markers
+4. Appends any new messages to the output log with `[wg] === New messages received ===` markers
 
 **Limitation:** This polling loop writes messages to the agent's output log file, but `claude --print` reads stdin once. The agent only sees these messages if it happens to read its own output file. In practice, this means **messages sent to running agents are logged but not reliably consumed by the LLM**.
 

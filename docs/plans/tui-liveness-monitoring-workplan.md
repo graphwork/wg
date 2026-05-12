@@ -505,7 +505,7 @@ A birds-eye view optimized for team leads or operators monitoring long-running a
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ WORKGRAPH SURVEILLANCE                      ▲ 3 users │ uptime 4h22m    │
+│ WG SURVEILLANCE                             ▲ 3 users │ uptime 4h22m    │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  Coordinators           │  Active Agents                                 │

@@ -227,7 +227,7 @@ The matched-set experiment recommended by the comparison report (A on F's 18 tas
 
 ### The Core Narrative
 
-Workgraph context injection acts as an **intelligence multiplier** for M2.7. It doesn't make the model smarter in the general sense — it makes it more effective at complex, multi-step coding tasks by providing:
+wg context injection acts as an **intelligence multiplier** for M2.7. It doesn't make the model smarter in the general sense — it makes it more effective at complex, multi-step coding tasks by providing:
 
 1. **Task structure awareness.** The model sees its task within a dependency graph, understands what came before and what comes after.
 2. **Tool availability.** `wg` commands give the model structured ways to log progress, record artifacts, and signal completion.

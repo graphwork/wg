@@ -165,22 +165,22 @@ We can ship a `wg-termux-setup.sh` script that users run once:
 
 ```bash
 #!/data/data/com.termux/files/usr/bin/bash
-# wg-termux-setup.sh — one-time Termux configuration for workgraph
+# wg-termux-setup.sh — one-time Termux configuration for wg
 
 pkg update -y
 pkg install -y mosh tmux openssh
 
 # Create a connection shortcut
 mkdir -p ~/.shortcuts
-cat > ~/.shortcuts/workgraph <<'SHORTCUT'
+cat > ~/.shortcuts/wg <<'SHORTCUT'
 #!/bin/bash
 mosh user@your-server.com -- tmux new-session -A -s $USER-wg "wg tui"
 SHORTCUT
-chmod +x ~/.shortcuts/workgraph
+chmod +x ~/.shortcuts/wg
 
 # Termux:Widget can launch ~/.shortcuts/* from the home screen
 echo "Done! Install Termux:Widget for home screen shortcut."
-echo "Edit ~/.shortcuts/workgraph to set your server address."
+echo "Edit ~/.shortcuts/wg to set your server address."
 ```
 
 **Custom Android app (deferred):**
@@ -231,7 +231,7 @@ Shipping a custom iOS terminal app is feasible (Blink Shell proves this) but req
 - Maintaining a mosh client implementation (Blink's is native Swift, not trivial)
 - Ongoing maintenance for iOS version compatibility
 
-The cost-benefit strongly favors recommending Blink Shell unless workgraph reaches a scale where a branded app is justified.
+The cost-benefit strongly favors recommending Blink Shell unless wg reaches a scale where a branded app is justified.
 
 **Connection stack (identical to Android):**
 
@@ -335,7 +335,7 @@ For web: the reverse proxy authenticates the user and passes the identity to tty
 | mosh | Mobile resilience | `apt install mosh` |
 | ttyd | Web terminal access | `apt install ttyd` or binary from GitHub |
 | Caddy | Reverse proxy + TLS | `apt install caddy` |
-| workgraph | The application | `cargo install --path .` or release binary |
+| wg | The application | `cargo install --path .` or release binary |
 
 Minimum VPS: 1 vCPU, 1GB RAM, any Linux. Each connected user adds ~20-50MB (tmux + wg tui process).
 
@@ -351,7 +351,7 @@ Minimum VPS: 1 vCPU, 1GB RAM, any Linux. Each connected user adds ~20-50MB (tmux
 3. User authenticates → Caddy proxies to ttyd
 4. ttyd spawns: tmux new-session -A -s $USER-wg "wg tui"
 5. xterm.js renders the TUI in the browser tab
-6. User sees the workgraph dashboard — can navigate, create tasks, view agents
+6. User sees the wg dashboard — can navigate, create tasks, view agents
 7. (Optional) User clicks "Add to Home Screen" for PWA experience
 ```
 
@@ -363,7 +363,7 @@ Minimum VPS: 1 vCPU, 1GB RAM, any Linux. Each connected user adds ~20-50MB (tmux
 1. User installs Termux from F-Droid (not Play Store — the Play Store version is outdated)
 2. User runs the setup script:
    curl -sL https://raw.githubusercontent.com/.../wg-termux-setup.sh | bash
-3. Script installs mosh, tmux, openssh; creates ~/.shortcuts/workgraph
+3. Script installs mosh, tmux, openssh; creates ~/.shortcuts/wg
 4. User edits the shortcut to set their server address + SSH key
 5. User taps the shortcut (or runs it manually):
    mosh user@server -- tmux new-session -A -s $USER-wg "wg tui"
@@ -411,7 +411,7 @@ Minimum VPS: 1 vCPU, 1GB RAM, any Linux. Each connected user adds ~20-50MB (tmux
 |-----------|---------|---------|---------|
 | tmux | 3.x | ISC | Session persistence |
 | mosh | 1.4+ | GPL-3.0 | UDP transport, network resilience |
-| workgraph (wg) | current | MIT | The application |
+| wg (wg) | current | MIT | The application |
 
 ### Server-Side (web access only)
 
@@ -478,7 +478,7 @@ The entire stack is assembled from existing, maintained open-source components (
 ### Phase 4: PWA & Polish (effort: 2-3 days)
 1. Create PWA manifest for ttyd web frontend
 2. Add service worker for offline "reconnecting" UX
-3. Custom ttyd theme matching workgraph branding
+3. Custom ttyd theme matching wg branding
 
 ### Phase 5: Custom Apps (defer)
 - Only if user demand warrants the maintenance burden
@@ -496,5 +496,5 @@ These decisions should be carried forward to `mu-design-synthesis`:
 3. **mosh is the mobile transport** — critical for Android/iOS, not applicable to web
 4. **No custom mobile apps initially** — Termux (Android) and Blink Shell (iOS) are sufficient
 5. **Responsive TUI is a prerequisite** — small-screen support is needed before mobile is truly viable
-6. **Authentication is at the reverse proxy layer** — not in workgraph itself
+6. **Authentication is at the reverse proxy layer** — not in wg itself
 7. **The screen_dump.rs IPC** (`tui.sock`) is a future integration point for richer web UIs but is not needed for Phase 1

@@ -22,7 +22,7 @@ The graph directory is resolved first, **then** config is loaded:
 | graph-dir resolution | `--dir` → `WG_DIR` → walk-up from cwd for `.wg`/`.wg` → `~/.wg`/`~/.wg` → default `./.wg` | `src/main.rs:55-102` |
 | global config | `~/.wg/config.toml` (note: **hardcoded `.wg`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
 | project config | `<workgraph_dir>/config.toml` (whichever name resolved above) | `src/config.rs:3749-3754` (`Config::load_merged`) |
-| matrix creds | `~/.config/workgraph/matrix.toml` (separate file, not merged into Config) | `src/config.rs:3367-3370` |
+| matrix creds | `~/.config/wg/matrix.toml` (separate file, not merged into Config) | `src/config.rs:3367-3370` |
 
 **Stale alert:** `Config::global_dir()` joins `.wg` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.wg/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
 
@@ -267,7 +267,7 @@ Scope: typically **G** for shared endpoints (the openrouter API key etc.); **P**
 
 ### Matrix credentials — separate file
 
-Stored at `~/.config/workgraph/matrix.toml`, NOT in main config (`src/config.rs:3340-3421`). Keys: `homeserver_url`, `username`, `password`, `access_token`, `default_room`. Scope: G-only (it's user creds).
+Stored at `~/.config/wg/matrix.toml`, NOT in main config (`src/config.rs:3340-3421`). Keys: `homeserver_url`, `username`, `password`, `access_token`, `default_room`. Scope: G-only (it's user creds).
 
 ---
 
@@ -353,7 +353,7 @@ counters = "uptime,cumulative,active,compact"
 # only override defaults you actually disagree with
 ```
 
-If you use Matrix/Telegram/etc. notifications, those live in their own files (`~/.config/workgraph/matrix.toml`) — don't pollute `config.toml` with them.
+If you use Matrix/Telegram/etc. notifications, those live in their own files (`~/.config/wg/matrix.toml`) — don't pollute `config.toml` with them.
 
 **What you should NOT keep in global** (these are restated built-in defaults):
 
@@ -420,7 +420,7 @@ Real reasons to write a project-local config:
   [agent]
   model = "claude:opus"
   ```
-- **Shadow the global default endpoint** to force fallback (e.g. workgraph repo wants `claude` CLI not OpenRouter):
+- **Shadow the global default endpoint** to force fallback (e.g. wg repo wants `claude` CLI not OpenRouter):
   ```toml
   [[llm_endpoints.endpoints]]
   # Shadow global openrouter so claude_handler is used.
@@ -453,10 +453,10 @@ Real reasons to write a project-local config:
   deny_tools = ["bash", "wg_done"]
   ```
 
-### Recommended minimal project config (concrete proposal for the workgraph repo)
+### Recommended minimal project config (concrete proposal for the wg repo)
 
 ```toml
-# .wg/config.toml — workgraph repo
+# .wg/config.toml — wg repo
 
 [agent]
 model = "claude:opus"

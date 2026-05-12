@@ -1,13 +1,13 @@
-# workgraph Universal Role Contract
+# wg Universal Role Contract
 
 This document is the canonical, project-independent contract for how agents
-behave inside ANY workgraph project. It is bundled into the `wg` binary and
+behave inside ANY wg project. It is bundled into the `wg` binary and
 emitted by `wg agent-guide`. It applies regardless of which repository you
 are running in.
 
 Project-specific rules live in that project's `CLAUDE.md` / `AGENTS.md`.
-workgraph-as-a-codebase contributor docs (design rationale, ADRs) live in
-`docs/designs/` and `docs/research/` of the workgraph repo and are NOT
+wg-as-a-codebase contributor docs (design rationale, ADRs) live in
+`docs/designs/` and `docs/research/` of the wg repo and are NOT
 required reading for users.
 
 ## STOP — Read This First If You Are a Chat Agent
@@ -57,7 +57,7 @@ That is a worker's job. Use `wg add` instead.
 - **NEVER** investigate before creating tasks ("let me check something first"
   is the anti-pattern that this contract exists to prevent)
 
-The ONLY files a chat agent reads are workgraph state files via the `wg`
+The ONLY files a chat agent reads are wg state files via the `wg`
 CLI. Everything else is a worker's job.
 
 ### Don't run wg nex from bash
@@ -107,7 +107,7 @@ not to explore.
 
 ## Three Roles, One Vocabulary
 
-workgraph distinguishes three kinds of LLM-driven actor. Mixing them up is
+wg distinguishes three kinds of LLM-driven actor. Mixing them up is
 the most common source of bugs.
 
 - **dispatcher** — the daemon launched by `wg service start`. Polls the
@@ -125,7 +125,7 @@ the most common source of bugs.
   graphs with `.coordinator-N` task IDs can be rewritten via
   `wg migrate chat-rename`.
 - **worker agent** — an LLM process spawned by the dispatcher to do a
-  single workgraph task. Lives only as long as that task is in-progress.
+  single wg task. Lives only as long as that task is in-progress.
 
 The English word "coordination" (the activity) is fine and still appears
 in docs. As role-nouns, "coordinator" and "orchestrator" are deprecated.
@@ -200,16 +200,16 @@ Compose:
 
 CRITICAL — Do NOT use built-in `TaskCreate` / `TaskUpdate` /
 `TaskList` / `TaskGet` tools. They are a separate system that does
-NOT interact with workgraph. Always use `wg` CLI commands.
+NOT interact with wg. Always use `wg` CLI commands.
 
 CRITICAL — Do NOT use the built-in **Task tool** (subagents). NEVER
 spawn `Explore`, `Plan`, `general-purpose`, or any other subagent type.
-The Task tool creates processes outside workgraph, which defeats the
+The Task tool creates processes outside wg, which defeats the
 entire system. If you need research, exploration, or planning — create
 a `wg add` task and let the dispatcher pick it up.
 
 ALL tasks — including research, exploration, and planning — should be
-workgraph tasks.
+wg tasks.
 
 ## Task Description Requirements
 
@@ -285,9 +285,9 @@ unit test "because it exercises the same code", stop. The
 CLI path was already correct and the TUI caller was the broken one.
 Add the human-flow simulation.
 
-## Cycles (workgraph Is Not a DAG)
+## Cycles (wg Is Not a DAG)
 
-workgraph is a directed graph that supports cycles. For repeating
+wg is a directed graph that supports cycles. For repeating
 workflows (cleanup → commit → verify, write → review → revise, etc.)
 create ONE cycle with `--max-iterations` instead of duplicating tasks
 for each pass. Use `wg done --converged` to stop the cycle when the
@@ -449,18 +449,18 @@ Worker agents share a working tree (or worktrees off the same repo).
 
 ## Worktree Isolation (Worker Agents)
 
-A worker agent runs inside a workgraph-managed worktree. Its working
+A worker agent runs inside a wg-managed worktree. Its working
 directory is already isolated.
 
 NEVER use the `EnterWorktree` or `ExitWorktree` tools. Using them will:
 
 1. Create a SECOND worktree in `.claude/worktrees/`, abandoning this
    one
-2. Switch the session CWD away from the workgraph branch
+2. Switch the session CWD away from the wg branch
 3. Cause ALL commits to go to the wrong branch
 4. Result in work being LOST — the merge-back will find no commits
 
-If you see those tools available, ignore them. workgraph already
+If you see those tools available, ignore them. wg already
 provides full git isolation.
 
 ### Prior WIP from a previous attempt
@@ -520,8 +520,8 @@ complex reasoning, verification, evolution.
   between them is a bug, not an intentional difference. Both should
   be layer-2-only (project specifics) and point at this guide for the
   universal contract.
-- `docs/designs/` and `docs/research/` (workgraph repo only) —
-  contributor docs for people hacking on workgraph itself; not
+- `docs/designs/` and `docs/research/` (wg repo only) —
+  contributor docs for people hacking on wg itself; not
   required reading for users
 - `wg quickstart` — command cheat sheet for the current binary
 - `wg agent-guide` — this document

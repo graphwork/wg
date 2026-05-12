@@ -2,7 +2,7 @@
 
 ## Overview
 
-The cron trigger system has been successfully integrated into workgraph, enabling time-based task scheduling alongside the existing cycle-based coordination.
+The cron trigger system has been successfully integrated into wg, enabling time-based task scheduling alongside the existing cycle-based coordination.
 
 ## Implemented Components
 
@@ -72,7 +72,7 @@ wg add "weekly report" --cron "0 9 * * 1" \
 ## Benefits Achieved
 
 1. **Operational Automation**: Scheduled maintenance, backups, monitoring
-2. **Integration**: Leverages existing workgraph task management
+2. **Integration**: Leverages existing wg task management
 3. **Flexibility**: Standard cron expressions for rich scheduling
 4. **Observability**: Full task instances with logs and artifacts
 5. **Backward Compatibility**: No impact on existing functionality

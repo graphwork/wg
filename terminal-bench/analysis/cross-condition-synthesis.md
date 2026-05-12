@@ -173,7 +173,7 @@ Within Tier 2, the differences between C, D, and E are **not statistically signi
 
 The FLIP model investigation (tb-investigate-flip-model) established:
 
-- **FLIP always uses fixed evaluator models**: Claude Sonnet (inference) + Claude Haiku (comparison), per `.workgraph/config.toml` configuration.
+- **FLIP always uses fixed evaluator models**: Claude Sonnet (inference) + Claude Haiku (comparison), per `.wg/config.toml` configuration.
 - **The task agent's model is recorded but never used** for FLIP probes (`src/commands/evaluate.rs:674-684`).
 - **For the full-sweep data (Sonnet 4.6 agents), this is not a confound** — the FLIP inference model (also Sonnet) naturally understands Sonnet's output patterns.
 
@@ -245,9 +245,9 @@ FLIP provides far stronger discriminative power than LLM eval for separating sha
 ### 5.5 Condition F: Discover-and-Verify
 
 - **Strategy:** Find existing tests → classify task → implement → run discovered tests → iterate on failures
-- **wg usage:** Uses wg in workgraph execution (logging, done) but not designed for Harbor wg tools
+- **wg usage:** Uses wg in wg execution (logging, done) but not designed for Harbor wg tools
 - **Verification:** Empirical — existing tests are authoritative, not self-authored tests
-- **Termination:** wg_done (workgraph context)
+- **Termination:** wg_done (wg context)
 - **Strength:** Test discovery bridges the verification gap; adaptive classification avoids E's decomposition trap
 - **Weakness:** Falls back to A-like behavior when no tests exist; incomplete trial data
 
@@ -307,7 +307,7 @@ F's design teaches *when* to decompose rather than forcing it:
 - **Atomic tasks** (single file, single function): Implement directly
 - **Multi-step tasks** (multiple files, build pipeline): Plan steps, implement sequentially
 
-This avoids E's failure mode (decomposing atomic tasks) while preserving the option for complex tasks. However, F's full-sweep trials use Sonnet 4.6 via workgraph (not Harbor with minimax), so a direct comparison of decomposition behavior is not yet available.
+This avoids E's failure mode (decomposing atomic tasks) while preserving the option for complex tasks. However, F's full-sweep trials use Sonnet 4.6 via wg (not Harbor with minimax), so a direct comparison of decomposition behavior is not yet available.
 
 ---
 

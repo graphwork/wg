@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This research investigates how cycle iteration data is stored and displayed in the workgraph TUI, focusing on the Detail, Log, and Messages tabs. The findings reveal that only the Detail tab is currently iteration-aware, while Log and Messages tabs aggregate data across all iterations.
+This research investigates how cycle iteration data is stored and displayed in the wg TUI, focusing on the Detail, Log, and Messages tabs. The findings reveal that only the Detail tab is currently iteration-aware, while Log and Messages tabs aggregate data across all iterations.
 
 ## Key Questions Answered
 

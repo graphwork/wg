@@ -6,7 +6,7 @@
 
 ## Problem Statement
 
-workgraph currently requires up to three separate values to route a model request:
+wg currently requires up to three separate values to route a model request:
 
 1. **`provider`** — which LLM backend (anthropic, openrouter, openai, local)
 2. **`model`** — the model identifier (opus, minimax/minimax-m2.5, deepseek/deepseek-v3.2)
@@ -20,7 +20,7 @@ These values are resolved via independent cascades (task → agent → executor 
 
 ### The Prefix-Stripping Bug (autohaiku)
 
-In autohaiku's workgraph task templates, tasks are created with `--model deepseek-v3.2` (the registry short alias). This resolves through `resolve_model_via_registry()` to `deepseek/deepseek-v3.2` (the full API model ID from the registry entry). The resolved model then passes correctly through the native executor to OpenRouter.
+In autohaiku's wg task templates, tasks are created with `--model deepseek-v3.2` (the registry short alias). This resolves through `resolve_model_via_registry()` to `deepseek/deepseek-v3.2` (the full API model ID from the registry entry). The resolved model then passes correctly through the native executor to OpenRouter.
 
 However, if a user sets `model = "deepseek/deepseek-v3.2"` directly (the full ID, not the alias) without a registry entry or provider override, the system's heuristic path in `create_provider_ext()` (provider.rs:98-106) kicks in:
 
@@ -315,9 +315,9 @@ wg add "My task" --model "deepseek/deepseek-v3.2"
 
 ## Impact on Autohaiku
 
-The autohaiku shell scripts (`disk-observer.sh`, etc.) call OpenRouter directly via `curl` with `MODEL="${DISK_OBSERVER_MODEL:-deepseek/deepseek-v3.2}"`. These are not affected by workgraph model resolution — they bypass it entirely.
+The autohaiku shell scripts (`disk-observer.sh`, etc.) call OpenRouter directly via `curl` with `MODEL="${DISK_OBSERVER_MODEL:-deepseek/deepseek-v3.2}"`. These are not affected by wg model resolution — they bypass it entirely.
 
-The workgraph task templates in `haiku-system-design.md` use `--model deepseek-v3.2` (bare alias). Post-migration, these could be updated to `--model openrouter:deepseek/deepseek-v3.2` for explicitness, but the bare alias path continues to work via registry lookup.
+The wg task templates in `haiku-system-design.md` use `--model deepseek-v3.2` (bare alias). Post-migration, these could be updated to `--model openrouter:deepseek/deepseek-v3.2` for explicitness, but the bare alias path continues to work via registry lookup.
 
 ## Open Questions
 

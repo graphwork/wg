@@ -99,7 +99,7 @@ web_search tool
   └── SearXNGBackend (self-hosted, URL required)
 ```
 
-Configure via environment variable or workgraph config:
+Configure via environment variable or wg config:
 ```
 WG_SEARCH_BACKEND=serper
 WG_SEARCH_API_KEY=<key>

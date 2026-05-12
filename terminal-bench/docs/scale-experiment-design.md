@@ -12,7 +12,7 @@
 Run a **matched-set comparison** of Conditions A and G across the full Terminal-Bench task suite on a dedicated always-on server, producing statistically adequate data for a treatment-effect claim.
 
 ### Primary hypothesis
-Workgraph context injection (Condition G) improves pass rates on coding tasks vs. bare agents (Condition A).
+wg context injection (Condition G) improves pass rates on coding tasks vs. bare agents (Condition A).
 
 ### What the pilots proved and what remains open
 
@@ -233,7 +233,7 @@ run_scale_experiment.py
 │   └── Final: summary.json + comparison.md
 │
 └── Results Collector
-    ├── Per-trial JSON + workgraph state archive
+    ├── Per-trial JSON + wg state archive
     ├── Aggregate statistics (pass rate, tokens, time by condition/difficulty/task)
     ├── Comparison report (A vs G, optionally vs F)
     └── Raw data export for external analysis
@@ -243,7 +243,7 @@ run_scale_experiment.py
 
 Each trial gets:
 - **Own temp directory:** `tempfile.mkdtemp(prefix=f"tb-{condition}-{task}-r{replica}-")`
-- **Own `.workgraph/`:** Independent graph, config, service socket, agent state
+- **Own `.wg/`:** Independent graph, config, service socket, agent state
 - **Own `/tmp` namespace:** Clean up task-specific paths before each trial (via `cleanup_tmp_paths()`)
 - **Stripped environment:** No `WG_*` or `CLAUDECODE` env vars leak from parent
 
@@ -375,7 +375,7 @@ Ubuntu 22.04 LTS or 24.04 LTS (amd64). The TB 2.0 Docker images target Linux amd
 | Docker CE | 24.0+ | `apt install docker.io docker-compose-v2` |
 | Python | 3.10+ | System Python or pyenv |
 | Rust toolchain | stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| `wg` binary | latest | `cargo install --path .` (from workgraph repo) |
+| `wg` binary | latest | `cargo install --path .` (from wg repo) |
 | `harbor-bench` | >= 0.3.0 | `pip install harbor-bench` |
 | `litellm` | latest | `pip install litellm` (Harbor path) |
 | `httpx` | >= 0.24 | `pip install httpx` |
@@ -482,7 +482,7 @@ terminal-bench/results/scale-run-{NNN}/
 │   ├── summary.json                 # Condition A aggregate
 │   ├── {task-id}-r{N}.json         # Per-trial result
 │   └── {task-id}-r{N}/
-│       └── workgraph_state/         # Preserved .workgraph for post-hoc analysis
+│       └── workgraph_state/         # Preserved .wg for post-hoc analysis
 │
 ├── condition-G/
 │   ├── summary.json

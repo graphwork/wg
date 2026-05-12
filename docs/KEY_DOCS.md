@@ -11,7 +11,7 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 | File | Purpose | Audience |
 |------|---------|----------|
 | `README.md` | Project overview, install, setup, usage patterns, feature summary | Everyone (entry point) |
-| `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use workgraph | AI agents (Claude Code) |
+| `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use wg | AI agents (Claude Code) |
 | `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
 | `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, retry/kill mechanics, anti-patterns | AI agents, advanced users |
 | `docs/AGENT-SERVICE.md` | Service daemon architecture: dispatcher tick, dispatch cycle, agent lifecycle, model-spec handler routing | Operators, contributors |
@@ -37,7 +37,7 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 |------|---------|----------|
 | `src/commands/quickstart.rs` | Quickstart text shown by `wg quickstart` — onboarding cheat sheet | AI agents, new users |
 | `src/text/agent_guide.md` | Universal role contract bundled into the `wg` binary — emitted by `wg agent-guide`. Defines chat agent / dispatcher / worker agent roles, validation requirement, smoke gate, cycle handling, git hygiene, worktree isolation. | AI agents (any project) |
-| `CLAUDE.md` | Project-level Claude Code instructions (workgraph repo: layer-2, project-specific) | AI agents |
+| `CLAUDE.md` | Project-level Claude Code instructions (wg repo: layer-2, project-specific) | AI agents |
 | `AGENTS.md` | AI coding-assistant contract for non-Claude tools (GitHub Copilot, Cursor, Claude Code without skill) | AI agents |
 | `~/.claude/CLAUDE.md` | Global Claude Code instructions (may not exist) | AI agents |
 
@@ -50,8 +50,8 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 | `docs/manual/03-agency.typ` | Agency model: roles, tradeoffs, agents, content-hash IDs, skills, trust, federation | Deep readers |
 | `docs/manual/04-coordination.typ` | Coordination & execution: daemon, tick, dispatch, wrapper, IPC, watch, custom executors | Deep readers |
 | `docs/manual/05-evolution.typ` | Evolution & improvement: evaluation, performance, strategies, lineage, autopoiesis | Deep readers |
-| `docs/manual/workgraph-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
-| `docs/manual/workgraph-manual.md` | Full assembled manual (Markdown, derived from Typst) | Deep readers |
+| `docs/manual/wg-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
+| `docs/manual/wg-manual.md` | Full assembled manual (Markdown, derived from Typst) | Deep readers |
 | `docs/manual/01-overview.md` | System overview (Markdown, derived from Typst) | Deep readers |
 | `docs/manual/02-task-graph.md` | Task graph chapter (Markdown, derived from Typst) | Deep readers |
 | `docs/manual/03-agency.md` | Agency chapter (Markdown, derived from Typst) | Deep readers |
@@ -334,7 +334,7 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 | `docs/cycle-support-audit.md` | Cycle support audit |
 | `docs/spec-bugfixes.md` | Bug fix specs |
 | `docs/fix-dag-terminology.md` | DAG terminology fix notes |
-| `docs/design-cyclic-workgraph.md` | Cyclic workgraph design |
+| `docs/design-cyclic-wg.md` | Cyclic wg design |
 | `docs/design-cycle-failure-restart.md` | Cycle failure restart design |
 | `docs/design-bidirectional-agent-communication.md` | Bidirectional agent communication design |
 | `docs/design-pan-executor.md` | Pan-executor design |

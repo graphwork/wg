@@ -8,7 +8,7 @@
 
 ## 1. What We Set Out to Do
 
-SPARK v3 was the third major iteration of workgraph's self-organizing development cycle. The goal: make workgraph capable of managing its own development autonomously -- dispatching tasks, evaluating results, evolving its own prompts, and recovering from failures without human intervention.
+SPARK v3 was the third major iteration of wg's self-organizing development cycle. The goal: make wg capable of managing its own development autonomously -- dispatching tasks, evaluating results, evolving its own prompts, and recovering from failures without human intervention.
 
 ### Planned Tracks
 
@@ -268,11 +268,11 @@ Human intervention was needed for:
 
 ---
 
-## 5. Current State of workgraph
+## 5. Current State of wg
 
 ### Capabilities
 
-workgraph is a functional self-organizing task orchestration system:
+wg is a functional self-organizing task orchestration system:
 
 - **89 CLI commands** covering task management, query, analysis, agency, service, monitoring, and utilities
 - **2,730 passing tests** across unit, integration, doc-test, and smoke test suites
@@ -409,9 +409,9 @@ All current -- produced in final SPARK v3 validation:
 
 ## Summary
 
-SPARK v3 accomplished its primary goal: workgraph can dispatch its own tasks, evaluate results, and recover from failures without human intervention. The system completed 323 of 335 tasks (96.4%) across 7 tracks with a mean evaluation score of 0.803 over 1,207 evaluations.
+SPARK v3 accomplished its primary goal: wg can dispatch its own tasks, evaluate results, and recover from failures without human intervention. The system completed 323 of 335 tasks (96.4%) across 7 tracks with a mean evaluation score of 0.803 over 1,207 evaluations.
 
-The key gap is the learning loop: the system observes its own performance (via evals and FLIP) but doesn't yet autonomously apply those observations to improve (evolver auto-trigger inactive, evolved amendments not consumed). Closing this loop would move workgraph from "self-sustaining for execution" to "genuinely self-improving."
+The key gap is the learning loop: the system observes its own performance (via evals and FLIP) but doesn't yet autonomously apply those observations to improve (evolver auto-trigger inactive, evolved amendments not consumed). Closing this loop would move wg from "self-sustaining for execution" to "genuinely self-improving."
 
 The other major debt items are git hygiene (38 stashes, 7 unmerged branches) and documentation staleness. Both are tractable problems with clear solutions.
 

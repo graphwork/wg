@@ -38,7 +38,7 @@ The adapter source (`terminal-bench/wg/adapter.py`) defines three distinct paths
 | `wg_log` guidance | N/A | Brief ("record progress") | **Explicit**: template with task ID + step labels |
 | Root task | Not created | Created, ID passed to prompt | Created, ID passed to prompt |
 
-**Key insight:** B and C have **identical tools** but different prompts. C's prompt explicitly teaches the model *when* and *how* to use workgraph tools, while B just lists them. This is the core experimental variable.
+**Key insight:** B and C have **identical tools** but different prompts. C's prompt explicitly teaches the model *when* and *how* to use wg tools, while B just lists them. This is the core experimental variable.
 
 ---
 
@@ -58,7 +58,7 @@ Examined 5 zero-wg trials from each condition. Pattern is consistent:
 
 **Zero-wg B trials** (61 / 270 = 23%): The model receives wg tools in its tool list but **never calls them**. It proceeds directly with bash + file tools. The B prompt says "Use `wg_log` to record progress" but does not provide concrete examples or explain *why* to use them. The model (minimax-m2.7) treats them as optional and focuses on the task itself.
 
-**Zero-wg C trials** (23 / 165 = 14%): Even with the skill injection prompt, some trials skip wg entirely. Examined planning turns for these — the model **does not acknowledge workgraph** in its planning phase. Example from `cancel-async-tasks__5Drxper`: "Simple task - I'll implement directly" — no mention of wg_log or wg_done despite the prompt explicitly instructing these.
+**Zero-wg C trials** (23 / 165 = 14%): Even with the skill injection prompt, some trials skip wg entirely. Examined planning turns for these — the model **does not acknowledge wg** in its planning phase. Example from `cancel-async-tasks__5Drxper`: "Simple task - I'll implement directly" — no mention of wg_log or wg_done despite the prompt explicitly instructing these.
 
 **Root causes identified:**
 1. **Prompt compliance gap (primary):** minimax-m2.7 doesn't reliably follow tool usage instructions, especially when the task is simple. It takes the shortest path (bash + file) regardless of prompt.
@@ -106,7 +106,7 @@ The agency system (roles, tradeoffs, assignment, evaluation) is **not active** i
 
 **Evidence:**
 - `wg init` is called by the adapter's `setup()` method on the host, which seeds the agency primitives directory (roles, tradeoffs, outcomes — default starter data)
-- **No assignments** exist in any examined workgraph state snapshot (empty `agency/assignments/` directory)
+- **No assignments** exist in any examined wg state snapshot (empty `agency/assignments/` directory)
 - **No evaluations** exist (empty `agency/evaluations/` directory)
 - The adapter does **not expose** agency-related tools (no `wg_assign`, `wg_evaluate`, `wg_agent_create`)
 - Agents never run `wg` via bash inside the container — all wg interaction is via function-calling tools routed to the host
@@ -117,11 +117,11 @@ The agency system (roles, tradeoffs, assignment, evaluation) is **not active** i
 - `wg_add` — task decomposition (rare, ~7% of trials)
 - `wg_artifact` — file recording (rare)
 
-The workgraph in TB trials functions as a **task tracker + journal**, not as a multi-agent coordination system.
+The wg in TB trials functions as a **task tracker + journal**, not as a multi-agent coordination system.
 
 ### No `wg service` running
 
-- The `service/registry.json` in all examined workgraph snapshots shows `{"agents": {}, "next_agent_id": 1}` — no agents registered
+- The `service/registry.json` in all examined wg snapshots shows `{"agents": {}, "next_agent_id": 1}` — no agents registered
 - No `state.json` or `daemon.log` in service directories
 - The adapter runs a single agent per trial — no coordinator, no agent spawning
 
@@ -150,7 +150,7 @@ The model is consistent. The experimental variable is the adapter condition (pro
 
 ### Preliminary interpretation (CAUTION: partial data)
 
-- **A outperforms B-original.** The bare agent (47.7%) beats the workgraph-enabled agent (38.1%). This is counterintuitive and suggests the B prompt's wg tools add cognitive overhead without enough guidance on *when* to use them. The model wastes turns on wg_log and wg_add instead of solving the task.
+- **A outperforms B-original.** The bare agent (47.7%) beats the wg-enabled agent (38.1%). This is counterintuitive and suggests the B prompt's wg tools add cognitive overhead without enough guidance on *when* to use them. The model wastes turns on wg_log and wg_add instead of solving the task.
 - **C recovers performance.** The skill injection prompt (41.4%) partially recovers the overhead introduced by wg tools. The explicit "if simple, skip decomposition" guidance helps.
 - **B-rerun ≈ C** (46.4% vs 41.4%) — both run ConditionCAgent, so this difference is noise/sampling variance.
 - **Turn counts are similar** across conditions (~26), suggesting the wg tools don't significantly change execution length.

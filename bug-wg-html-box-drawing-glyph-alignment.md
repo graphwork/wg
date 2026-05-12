@@ -11,8 +11,8 @@ connections hard or impossible to follow.
 
 ## Affected view
 
-- Live example: `https://ulivo.poietic.life/wg/feeds/workgraph-itself/`
-- Generated page title: `Workgraph live mirror — Workgraph`
+- Live example: `https://ulivo.poietic.life/wg/feeds/wg-itself/`
+- Generated page title: `wg live mirror — wg`
 - Main graph element: `<pre class="viz-pre viz-substantive">`
 - Connector markup pattern: each connector character is wrapped as an edge span,
   for example:

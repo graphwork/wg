@@ -700,7 +700,7 @@ primary self-modification mechanism.
 
 The existing self-mutation safety already handles this:
 - Operations targeting the evolver's own role/tradeoff → deferred to a verified
-  workgraph task requiring human approval (via `defer_self_mutation()`).
+  wg task requiring human approval (via `defer_self_mutation()`).
 - `meta_swap_*` / `meta_compose_agent` on `meta_role: "evolver"` → deferred.
 
 No changes needed to this mechanism. It applies equally in fan-out mode since

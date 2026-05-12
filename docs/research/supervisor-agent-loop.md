@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-This document explores a **supervisory agent pattern** for workgraph: an oversight mechanism that monitors a working agent and prevents premature failure. The supervisor's job is to keep the worker on track, nudge it toward alternative approaches when stuck, and ensure tasks reach completion rather than being abandoned or half-finished.
+This document explores a **supervisory agent pattern** for wg: an oversight mechanism that monitors a working agent and prevents premature failure. The supervisor's job is to keep the worker on track, nudge it toward alternative approaches when stuck, and ensure tasks reach completion rather than being abandoned or half-finished.
 
 We present three approaches in increasing order of complexity:
 
@@ -20,7 +20,7 @@ We present three approaches in increasing order of complexity:
 
 ### 1.1 Why Agents Give Up Too Early
 
-From observing workgraph agent behavior across thousands of tasks, the failure modes that lead to incomplete results are:
+From observing wg agent behavior across thousands of tasks, the failure modes that lead to incomplete results are:
 
 | Failure Mode | Frequency | Current Mitigation |
 |---|---|---|
@@ -516,7 +516,7 @@ Devin uses a separate planning model that maintains a high-level plan and delega
 OpenHands has a `AgentController` that manages agent lifecycle with configurable "stuck detection." When the agent repeats the same action too many times, the controller intervenes. This is closest to Approach #2 (watchdog).
 
 ### Claude Code's Native Loop
-Claude Code's agent loop (which workgraph's native executor is based on) already has context pressure management and emergency compaction. The state injection mechanism (messages, graph changes) is already a form of mid-turn supervision. The watchdog approach (#2) is a natural extension of this.
+Claude Code's agent loop (which wg's native executor is based on) already has context pressure management and emergency compaction. The state injection mechanism (messages, graph changes) is already a form of mid-turn supervision. The watchdog approach (#2) is a natural extension of this.
 
 ### Key Takeaway
 No major system has a paired-supervisor architecture as standard. Most rely on either self-reflection (prompt) or controller-level heuristics (watchdog). The watchdog pattern is the industry standard because it's cheap and effective at the patterns that matter most (repeated failures, stalls, timeout management).

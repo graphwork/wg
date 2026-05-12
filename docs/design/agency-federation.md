@@ -4,7 +4,7 @@
 
 ## 1. Overview
 
-Agency federation enables roles, motivations, and agents to flow between workgraph instances. Because all three entity types use **content-hash IDs** (SHA-256 of identity-defining fields), federation is inherently conflict-free: identical definitions produce identical IDs regardless of where they were created.
+Agency federation enables roles, motivations, and agents to flow between wg instances. Because all three entity types use **content-hash IDs** (SHA-256 of identity-defining fields), federation is inherently conflict-free: identical definitions produce identical IDs regardless of where they were created.
 
 This document covers six capabilities, layered from simple to complex:
 
@@ -44,7 +44,7 @@ An **agency store** is any directory containing the standard layout:
 ```
 
 A store can be:
-- **Local project**: `.wg/agency/` in a workgraph project
+- **Local project**: `.wg/agency/` in a wg project
 - **Global user**: `~/.wg/agency/`
 - **Bare store**: A standalone directory with just the agency subdirs (no `.wg/` parent needed)
 - **Remote path**: Any accessible filesystem path

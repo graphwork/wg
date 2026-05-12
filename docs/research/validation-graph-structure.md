@@ -192,7 +192,7 @@ The `deliverables` field exists in both `Task` and `TaskTemplate` but is unused 
 
 ```rust
 // In check.rs or a new lint.rs
-pub fn check_parallel_file_overlap(graph: &WorkGraph) -> Vec<FileOverlap> {
+pub fn check_parallel_file_overlap(graph: &wg) -> Vec<FileOverlap> {
     let mut overlaps = Vec::new();
     let parallel_pairs = find_parallel_task_pairs(graph);
 
@@ -250,7 +250,7 @@ The key architectural question is: **should validation be advisory or enforcing?
 
 ## 8. Summary
 
-workgraph already has strong structural validation through auto-evaluate (100% coverage). The main gaps are:
+wg already has strong structural validation through auto-evaluate (100% coverage). The main gaps are:
 
 1. **Evaluation is post-hoc and non-gating** — bad evaluations don't trigger remediation
 2. **Unused fields** (`verify`, `deliverables`) that could enable self-checking and file overlap detection

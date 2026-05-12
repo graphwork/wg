@@ -153,7 +153,7 @@ Last verified: 2026-04-12
 
 The manual (01-overview through 05-evolution) is a deep reference. The Typst files are ground truth; markdown is derived.
 
-**Missing from KEY_DOCS.md:** All markdown chapter files (`01-overview.md` through `05-evolution.md`, `workgraph-manual.md`) are not indexed — only the `.typ` files are.
+**Missing from KEY_DOCS.md:** All markdown chapter files (`01-overview.md` through `05-evolution.md`, `wg-manual.md`) are not indexed — only the `.typ` files are.
 
 **Potential staleness:**
 - [ ] Manual chapters may not reflect newest commands (spend, profile, openrouter, user, cron, telegram)
@@ -186,7 +186,7 @@ The manual (01-overview through 05-evolution) is a deep reference. The Typst fil
 - [ ] `docs/AGENT-LIFECYCLE.md` — Hardened agent lifecycle documentation
 - [ ] `docs/SECURITY.md` — Security guide (pre-commit, secret management)
 - [ ] `docs/manual/01-overview.md` through `05-evolution.md` — Markdown manual chapters
-- [ ] `docs/manual/workgraph-manual.md` — Full assembled manual (markdown)
+- [ ] `docs/manual/wg-manual.md` — Full assembled manual (markdown)
 - [ ] `docs/design/bare-coordinator.md` — Bare coordinator design
 - [ ] `docs/design/coordinator-id-assignment.md` — Coordinator ID assignment
 - [ ] `docs/design/design-autopoietic-task-agency.md` — Autopoietic task agency

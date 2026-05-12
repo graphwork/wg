@@ -90,7 +90,7 @@ The prompt is built by `build_prompt()` (`src/service/executor.rs:675-821`). The
 
 ### 2.2 CLAUDE.md
 
-The project `CLAUDE.md` mentions "research" only in the context of workgraph tasks ("create a research task — don't investigate yourself"). No mention of web capabilities.
+The project `CLAUDE.md` mentions "research" only in the context of wg tasks ("create a research task — don't investigate yourself"). No mention of web capabilities.
 
 ### 2.3 TB Task Descriptions
 
@@ -104,7 +104,7 @@ Tasks are self-contained problem descriptions (e.g., "Write a bash script...", "
 
 ### 2.4 Condition G Meta-Prompt
 
-Condition G's task description tells the seed agent to build a workgraph and delegate, but does not mention researching solutions online.
+Condition G's task description tells the seed agent to build a wg and delegate, but does not mention researching solutions online.
 
 ---
 
@@ -116,7 +116,7 @@ The native executor (`wg native-exec`) does not implement web_search or web_fetc
 
 ### Gap 2: No prompt mentions web capabilities (MODERATE)
 
-Even for Claude CLI agents (non-TB, normal workgraph usage), the prompt never mentions that web search is available. Agents may discover WebSearch/WebFetch through Claude Code's deferred tool system, but this depends on the model's awareness and initiative. There is no explicit encouragement to search for existing solutions before implementing from scratch.
+Even for Claude CLI agents (non-TB, normal wg usage), the prompt never mentions that web search is available. Agents may discover WebSearch/WebFetch through Claude Code's deferred tool system, but this depends on the model's awareness and initiative. There is no explicit encouragement to search for existing solutions before implementing from scratch.
 
 ### Gap 3: TB task descriptions are fully self-contained (LOW for current tasks)
 

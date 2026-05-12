@@ -1,8 +1,8 @@
-# Universal Tool Manifest Design for Workgraph Agents
+# Universal Tool Manifest Design for wg Agents
 
 ## Overview
 
-This design provides a unified system for declaring, discovering, and scoping tools across all workgraph executor types (claude, native, shell, amplifier). It builds on the existing bundle system while adding MCP integration and cross-executor compatibility.
+This design provides a unified system for declaring, discovering, and scoping tools across all wg executor types (claude, native, shell, amplifier). It builds on the existing bundle system while adding MCP integration and cross-executor compatibility.
 
 ## Design Principles
 
@@ -16,12 +16,12 @@ This design provides a unified system for declaring, discovering, and scoping to
 
 ### Primary Format: `tools.toml`
 
-The tool manifest is a TOML file located at `.workgraph/tools.toml` in the project root.
+The tool manifest is a TOML file located at `.wg/tools.toml` in the project root.
 
 ```toml
 [meta]
 version = "1.0"
-description = "Tool configuration for workgraph project"
+description = "Tool configuration for wg project"
 
 # Tool source definitions
 [sources]
@@ -29,7 +29,7 @@ description = "Tool configuration for workgraph project"
 [sources.native]
 type = "builtin"
 tools = ["file", "bash", "wg", "web_search", "bg"]
-description = "Core workgraph tools"
+description = "Core wg tools"
 
 [sources.mcp-claude-skills]
 type = "mcp"
@@ -110,7 +110,7 @@ For projects primarily using MCP servers:
       "url": "http://localhost:3000/mcp"
     }
   },
-  "workgraph": {
+  "wg": {
     "bundles": {
       "default": {
         "mcpTools": ["claude-skills:*", "web-tools:*"],
@@ -125,10 +125,10 @@ For projects primarily using MCP servers:
 
 ### 1. Builtin (`type = "builtin"`)
 
-References workgraph's native tool registry:
+References wg's native tool registry:
 - `file`: read_file, write_file, edit_file, glob, grep
 - `bash`: shell command execution
-- `wg`: workgraph operations (show, list, add, done, etc.)
+- `wg`: wg operations (show, list, add, done, etc.)
 - `web_search`: DuckDuckGo search
 - `bg`: background job management
 
@@ -212,7 +212,7 @@ Investigate connection timeouts.
 
 ### Startup Sequence
 
-1. **Check for manifest**: Look for `.workgraph/tools.toml` or `mcp.json`
+1. **Check for manifest**: Look for `.wg/tools.toml` or `mcp.json`
 2. **Load sources**: Initialize all defined tool sources
 3. **Build registry**: Create unified `ToolRegistry` with all available tools
 4. **Apply scoping**: Filter tools based on executor type and task requirements
@@ -245,8 +245,8 @@ MCP servers are discovered via:
 
 - **Current**: Uses Claude Code's built-in tool set
 - **New**: Exports available tools as MCP server
-- **Tool overlap**: Maps workgraph tools to Claude equivalents where possible
-- **Enhancement**: Gets access to workgraph-specific tools (wg:*)
+- **Tool overlap**: Maps wg tools to Claude equivalents where possible
+- **Enhancement**: Gets access to wg-specific tools (wg:*)
 
 ### Shell Executor
 

@@ -1,4 +1,4 @@
-# Current Validation Mechanisms in workgraph
+# Current Validation Mechanisms in wg
 
 Research deliverable for task `research-current-validation`.
 
@@ -290,7 +290,7 @@ When creating tasks via `wg add`:
 
 **File:** `src/commands/evolve.rs:306-370`
 
-When the evolver proposes operations targeting its own role or motivation, those operations are deferred to a verified workgraph task requiring human approval instead of being applied immediately.
+When the evolver proposes operations targeting its own role or motivation, those operations are deferred to a verified wg task requiring human approval instead of being applied immediately.
 
 **Effectiveness: STRONG** — Critical safety mechanism preventing the evolver from modifying its own selection criteria. Well-implemented with lineage tracking.
 

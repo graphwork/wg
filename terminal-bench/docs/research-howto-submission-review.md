@@ -2,7 +2,7 @@
 
 **Task:** research-review-howto
 **Date:** 2026-04-07
-**Source:** `/home/erik/executors/workgraph/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
+**Source:** `/home/erik/executors/wg/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
 
 ---
 
@@ -25,8 +25,8 @@ submissions/terminal-bench/2.0/<agent-name>__<model>/
 
 ### metadata.yaml Format
 ```yaml
-agent_url: https://github.com/graphwork/workgraph
-agent_display_name: "Workgraph"
+agent_url: https://github.com/graphwork/wg
+agent_display_name: "wg"
 agent_org_display_name: "Poietic PBC"
 
 models:
@@ -55,10 +55,10 @@ models:
 
 ## Q2: Do We Already Have This Doc?
 
-**No, the HOWTO does not exist in the workgraph repo.** It lives in the executors repo at:
-`/home/erik/executors/workgraph/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
+**No, the HOWTO does not exist in the wg repo.** It lives in the executors repo at:
+`/home/erik/executors/wg/docs/terminal-bench/HOWTO-submit-to-leaderboard.md`
 
-What we DO have in the workgraph repo:
+What we DO have in the wg repo:
 - `terminal-bench/leaderboard-submission/README.md` — a status doc noting conditions A/B/C need 2 more trials
 - `terminal-bench/prepare-leaderboard.sh` — copies trial data into submission format
 - `terminal-bench/docs/scale-experiment-design.md` — detailed experiment design for A vs F
@@ -142,17 +142,17 @@ Additionally, there are **18 custom tasks** (8 calibration + 10 hard benchmarks)
 ## Q6: Can We Submit Conditions A and F Separately?
 
 **Yes, absolutely.** The HOWTO and leaderboard format treat each `<agent-name>__<model>/` directory as an independent submission entry. We already have this pattern:
-- `workgraph-condition-a__minimax-m2.7/` with its own `metadata.yaml`
-- `workgraph-condition-b__minimax-m2.7/` with its own `metadata.yaml`
-- `workgraph-condition-c__minimax-m2.7/` with its own `metadata.yaml`
+- `wg-condition-a__minimax-m2.7/` with its own `metadata.yaml`
+- `wg-condition-b__minimax-m2.7/` with its own `metadata.yaml`
+- `wg-condition-c__minimax-m2.7/` with its own `metadata.yaml`
 
 To submit F, we need:
-- `workgraph-condition-f__minimax-m2.7/metadata.yaml` (doesn't exist yet)
+- `wg-condition-f__minimax-m2.7/metadata.yaml` (doesn't exist yet)
 - 5 trials per task from the F condition runs
 
-The `agent_display_name` field in `metadata.yaml` differentiates them on the leaderboard (e.g., "Workgraph Condition A (bare agent)" vs "Workgraph Condition F (wg-native context)").
+The `agent_display_name` field in `metadata.yaml` differentiates them on the leaderboard (e.g., "wg Condition A (bare agent)" vs "wg Condition F (wg-native context)").
 
-**Note:** The leaderboard rules explicitly allow multi-agent and orchestrator architectures, so Condition F's use of workgraph context injection is fully compliant.
+**Note:** The leaderboard rules explicitly allow multi-agent and orchestrator architectures, so Condition F's use of wg context injection is fully compliant.
 
 ---
 
@@ -162,7 +162,7 @@ The `agent_display_name` field in `metadata.yaml` differentiates them on the lea
 | Item | Status | Location |
 |------|--------|----------|
 | Harbor adapter implementation | Complete | `wg/adapter.py` (ConditionAAgent through ConditionFAgent) |
-| `metadata.yaml` for A/B/C | Complete | `leaderboard-submission/workgraph-condition-{a,b,c}__minimax-m2.7/` |
+| `metadata.yaml` for A/B/C | Complete | `leaderboard-submission/wg-condition-{a,b,c}__minimax-m2.7/` |
 | `prepare-leaderboard.sh` | Complete | `terminal-bench/prepare-leaderboard.sh` |
 | Trial data for A/B/C (3 trials) | Complete | `results/rerun-condition-a/`, `rerun-condition-b/`, `full-condition-c/` |
 | Trial data for F (3 trials) | Complete | `results/full-f-m27/` |
@@ -176,7 +176,7 @@ The `agent_display_name` field in `metadata.yaml` differentiates them on the lea
 | **5 trials per task** | Have 3, need 5 for ALL conditions | 2 more trial runs per condition (~8h each) |
 | **metadata.yaml for F** | Doesn't exist in `leaderboard-submission/` | 2 minutes to create |
 | **prepare-leaderboard.sh for F** | Script only handles A/B/C, not F | ~10 lines to add |
-| **F submission directory** | `leaderboard-submission/workgraph-condition-f__minimax-m2.7/` doesn't exist | mkdir + metadata.yaml |
+| **F submission directory** | `leaderboard-submission/wg-condition-f__minimax-m2.7/` doesn't exist | mkdir + metadata.yaml |
 | **API key scrubbing** | Not verified whether logs contain keys | Audit needed before submission |
 | **HuggingFace fork** | Not yet created | Manual step |
 
@@ -184,8 +184,8 @@ The `agent_display_name` field in `metadata.yaml` differentiates them on the lea
 | Decision | Options | Recommendation |
 |----------|---------|---------------|
 | Which conditions to submit? | A only / F only / A+F / A+B+C+F | **A+F minimum** (the primary comparison). B and C optional. |
-| Agent display name for F | "Workgraph Condition F (wg-native)" / "Workgraph (context-injected)" | Use descriptive name that explains the treatment |
-| Agent org name | "Workgraph" / "Poietic PBC" | Condition A metadata says "Workgraph", HOWTO example says "Poietic PBC" — pick one consistently |
+| Agent display name for F | "wg Condition F (wg-native)" / "wg (context-injected)" | Use descriptive name that explains the treatment |
+| Agent org name | "wg" / "Poietic PBC" | Condition A metadata says "wg", HOWTO example says "Poietic PBC" — pick one consistently |
 | Run 2 more trials via Harbor or host-native? | Harbor (proven) / host-native (faster) | Harbor — matches existing data format exactly |
 
 ---
@@ -201,7 +201,7 @@ The `agent_display_name` field in `metadata.yaml` differentiates them on the lea
 
 ### Submission Workflow
 1. Fork `harborframework/terminal-bench-2-leaderboard` on HuggingFace
-2. Copy `workgraph-condition-a__minimax-m2.7/` and `workgraph-condition-f__minimax-m2.7/` into `submissions/terminal-bench/2.0/`
+2. Copy `wg-condition-a__minimax-m2.7/` and `wg-condition-f__minimax-m2.7/` into `submissions/terminal-bench/2.0/`
 3. Open PR — bot validates format and trial count
 4. Maintainer reviews and merges
 5. Results appear at tbench.ai/leaderboard/terminal-bench/2.0

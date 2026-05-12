@@ -1,6 +1,6 @@
-# Amplifier Bundle for workgraph: Architectural Summary
+# Amplifier Bundle for wg: Architectural Summary
 
-**Source**: [ramparte/amplifier-bundle-workgraph](https://github.com/ramparte/amplifier-bundle-workgraph)
+**Source**: [ramparte/amplifier-bundle-wg](https://github.com/ramparte/amplifier-bundle-wg)
 **Date**: 2026-02-18
 
 ## 1. What Amplifier Is and What "Bundles" Are
@@ -16,47 +16,47 @@
 ```yaml
 ---
 bundle:
-  name: workgraph
+  name: wg
   version: 0.1.0
-  description: "workgraph integration for Amplifier"
+  description: "wg integration for Amplifier"
 includes:
-  - bundle: workgraph:behaviors/workgraph
+  - bundle: wg:behaviors/wg
 ---
 ```
 
-Bundles are referenced by namespace (`workgraph:path/to/resource`) and can be installed from git URLs:
+Bundles are referenced by namespace (`wg:path/to/resource`) and can be installed from git URLs:
 
 ```bash
-amplifier bundle add git+https://github.com/ramparte/amplifier-bundle-workgraph
+amplifier bundle add git+https://github.com/ramparte/amplifier-bundle-wg
 ```
 
-The workgraph bundle provides: a behavior definition, a planner agent, and context documents that teach Amplifier agents how to use `wg`.
+The wg bundle provides: a behavior definition, a planner agent, and context documents that teach Amplifier agents how to use `wg`.
 
 ## 2. The Bidirectional Integration Model
 
 This is the core architectural insight. The integration works in **two independent directions**, and they compose:
 
-### Direction A: Amplifier → workgraph
+### Direction A: Amplifier → wg
 
-Add workgraph awareness to Amplifier sessions. When an Amplifier agent encounters a task with non-linear dependencies (multiple parallel workstreams with ordering constraints), it decomposes it into a workgraph:
+Add wg awareness to Amplifier sessions. When an Amplifier agent encounters a task with non-linear dependencies (multiple parallel workstreams with ordering constraints), it decomposes it into a wg:
 
 1. Agent detects complex task structure (heuristic: 4+ subtasks, parallelism opportunity, data dependencies between subtasks)
 2. Runs `wg init` and `wg add` to build the task graph
-3. Runs `wg service start` to launch the workgraph daemon
+3. Runs `wg service start` to launch the wg daemon
 4. Daemon dispatches tasks to executors as they become ready
 
-This direction is enabled by installing the **behavior** (`behaviors/workgraph.yaml`) and its associated **context** (`context/workgraph-guide.md`) and **agent** (`agents/workgraph-planner.md`).
+This direction is enabled by installing the **behavior** (`behaviors/wg.yaml`) and its associated **context** (`context/wg-guide.md`) and **agent** (`agents/wg-planner.md`).
 
-### Direction B: workgraph → Amplifier
+### Direction B: wg → Amplifier
 
-Install Amplifier as a workgraph executor so the service daemon spawns full Amplifier sessions for each task:
+Install Amplifier as a wg executor so the service daemon spawns full Amplifier sessions for each task:
 
 1. Install `executor/amplifier.toml` and `executor/amplifier-run.sh` into `.wg/executors/`
 2. Set `coordinator.executor = "amplifier"` in `.wg/config.toml`
 3. When `wg service start` dispatches a task, it spawns an Amplifier session instead of (or alongside) a Claude CLI session
 4. Each task gets the full Amplifier ecosystem — bundles, tools, recipes, multi-agent delegation
 
-### Composed: Amplifier ↔ workgraph
+### Composed: Amplifier ↔ wg
 
 When both directions are active, the architecture becomes recursive:
 
@@ -64,14 +64,14 @@ When both directions are active, the architecture becomes recursive:
 User
   |
   v
-Amplifier Session (with workgraph behavior)
+Amplifier Session (with wg behavior)
   |
   |--> detects complex task
   |--> wg init / wg add (builds task graph)
   |--> wg service start (launches daemon)
   |
   v
-workgraph Service Daemon
+wg Service Daemon
   |
   |--> dispatches ready tasks
   |--> spawns Amplifier executor for each
@@ -86,11 +86,11 @@ workgraph Service Daemon
 All tasks done --> reports back to user
 ```
 
-An Amplifier agent decomposes work into a workgraph, then workgraph spawns Amplifier sessions to execute each piece. The child sessions could theoretically themselves detect sub-tasks requiring workgraph decomposition, creating nested coordination (though this isn't explicitly encouraged).
+An Amplifier agent decomposes work into a wg, then wg spawns Amplifier sessions to execute each piece. The child sessions could theoretically themselves detect sub-tasks requiring wg decomposition, creating nested coordination (though this isn't explicitly encouraged).
 
 ## 3. The Executor Config Format (`amplifier.toml`)
 
-The executor config is a standard workgraph TOML file placed at `.wg/executors/amplifier.toml`. It has three sections:
+The executor config is a standard wg TOML file placed at `.wg/executors/amplifier.toml`. It has three sections:
 
 ### `[executor]` — Core Configuration
 
@@ -103,7 +103,7 @@ working_dir = "{{working_dir}}"                    # Template variable
 timeout = 600                                      # Seconds (default 10 min)
 ```
 
-**Critical design note**: `type = "claude"` is used **not** because the executor is Claude, but because this is the only executor type in workgraph's codebase that generates `cat prompt.txt | command` (stdin piping). For all other `type` values, workgraph sets `stdin = Stdio::null()` at `spawn.rs:336`, silently dropping the prompt. This is a pragmatic hack documented in `CONTEXT-TRANSFER.md`.
+**Critical design note**: `type = "claude"` is used **not** because the executor is Claude, but because this is the only executor type in wg's codebase that generates `cat prompt.txt | command` (stdin piping). For all other `type` values, wg sets `stdin = Stdio::null()` at `spawn.rs:336`, silently dropping the prompt. This is a pragmatic hack documented in `CONTEXT-TRANSFER.md`.
 
 ### `[executor.env]` — Environment Variables
 
@@ -112,7 +112,7 @@ timeout = 600                                      # Seconds (default 10 min)
 WG_TASK_ID = "{{task_id}}"
 ```
 
-workgraph passes the task ID via environment variable so the wrapper script and agent can reference it.
+wg passes the task ID via environment variable so the wrapper script and agent can reference it.
 
 ### `[executor.prompt_template]` — Rendered Task Prompt
 
@@ -131,7 +131,7 @@ template = """
 ## Context from Completed Dependencies
 {{task_context}}
 
-## workgraph Protocol
+## wg Protocol
 ...
 """
 ```
@@ -144,7 +144,7 @@ template = """
 - `{{task_identity}}` — Agent identity block (role, skills, etc.)
 - `{{working_dir}}` — Project root directory
 
-The prompt template embeds the full workgraph executor protocol inline — logging, artifact recording, done/fail marking — so each spawned agent knows exactly how to interact with workgraph regardless of what other context it has.
+The prompt template embeds the full wg executor protocol inline — logging, artifact recording, done/fail marking — so each spawned agent knows exactly how to interact with wg regardless of what other context it has.
 
 ## 4. The Context Transfer Mechanism
 
@@ -152,7 +152,7 @@ Context flows from completed tasks to their dependents through several channels:
 
 ### At Spawn Time (Push)
 
-When workgraph renders the prompt template for a new task, `{{task_context}}` is replaced with aggregated context from all completed `blocked_by` dependencies. This includes:
+When wg renders the prompt template for a new task, `{{task_context}}` is replaced with aggregated context from all completed `blocked_by` dependencies. This includes:
 - **Artifacts**: File paths recorded via `wg artifact <id> <path>`
 - **Logs**: Progress messages recorded via `wg log <id> "..."`
 - **Description/title**: What the upstream task was supposed to do
@@ -176,13 +176,13 @@ The artifact system (`wg artifact <id> <path>`) is the primary mechanism for int
 
 A key technical challenge documented in `CONTEXT-TRANSFER.md`:
 
-1. workgraph pipes the rendered prompt to the executor command's **stdin** (but only for `type = "claude"`)
+1. wg pipes the rendered prompt to the executor command's **stdin** (but only for `type = "claude"`)
 2. `amplifier run --mode single` expects the prompt as a **positional argument**, not stdin
 3. The `amplifier-run.sh` wrapper bridges this gap: reads stdin into a variable, then passes it as the last positional arg to `amplifier run`
 
 ```bash
 # amplifier-run.sh (simplified)
-PROMPT=$(cat)                          # Read stdin (from workgraph)
+PROMPT=$(cat)                          # Read stdin (from wg)
 exec amplifier run --mode single \     # Pass as positional arg
      --output-format json \
      "${EXTRA_ARGS[@]}" \
@@ -191,39 +191,39 @@ exec amplifier run --mode single \     # Pass as positional arg
 
 ## 5. The Behavior/Agent Model
 
-### Behavior: `behaviors/workgraph.yaml`
+### Behavior: `behaviors/wg.yaml`
 
-The behavior is what Amplifier loads to give agents workgraph awareness:
+The behavior is what Amplifier loads to give agents wg awareness:
 
 ```yaml
 bundle:
-  name: workgraph-behavior
+  name: wg-behavior
   version: 0.1.0
-  description: "Adds workgraph task graph awareness and tooling to Amplifier agents"
+  description: "Adds wg task graph awareness and tooling to Amplifier agents"
 
 agents:
   include:
-    - workgraph:workgraph-planner
+    - wg:wg-planner
 
 context:
   include:
-    - workgraph:context/workgraph-guide.md
+    - wg:context/wg-guide.md
 ```
 
 This does two things:
-1. **Loads the workgraph-planner agent** — a specialized agent for task decomposition that can be delegated to
-2. **Loads the workgraph-guide.md context** — a comprehensive reference document injected into the agent's context window
+1. **Loads the wg-planner agent** — a specialized agent for task decomposition that can be delegated to
+2. **Loads the wg-guide.md context** — a comprehensive reference document injected into the agent's context window
 
-Note: `context/wg-executor-protocol.md` is **not** included in the behavior's `context.include`. It is only used in the executor's prompt template. This is intentional — the executor protocol is for agents spawned *by* workgraph, while the behavior is for agents using workgraph *from* Amplifier.
+Note: `context/wg-executor-protocol.md` is **not** included in the behavior's `context.include`. It is only used in the executor's prompt template. This is intentional — the executor protocol is for agents spawned *by* wg, while the behavior is for agents using wg *from* Amplifier.
 
-### Agent: `agents/workgraph-planner.md`
+### Agent: `agents/wg-planner.md`
 
 A specialized agent with YAML frontmatter metadata:
 
 ```yaml
 meta:
-  name: workgraph-planner
-  description: "Decomposes complex tasks into workgraph dependency graphs..."
+  name: wg-planner
+  description: "Decomposes complex tasks into wg dependency graphs..."
 ```
 
 The planner agent's responsibilities:
@@ -241,11 +241,11 @@ The planner documents three common decomposition patterns:
 
 Task sizing guidance: 5–30 minutes per agent. Smaller loses to overhead, larger loses parallelism.
 
-### Context: `context/workgraph-guide.md`
+### Context: `context/wg-guide.md`
 
-A comprehensive reference loaded into every Amplifier agent that has the workgraph behavior. Covers:
+A comprehensive reference loaded into every Amplifier agent that has the wg behavior. Covers:
 
-- **When to use workgraph** (detection heuristics: 4+ subtasks, parallelism, data dependencies)
+- **When to use wg** (detection heuristics: 4+ subtasks, parallelism, data dependencies)
 - **When NOT to** (simple sequential, single-file, no parallelism)
 - **Full CLI reference** — every `wg` command organized by category (task management, querying, analysis, service daemon)
 - **Task lifecycle** — Open → InProgress → Done/Failed, with retry and blocking semantics
@@ -254,7 +254,7 @@ A comprehensive reference loaded into every Amplifier agent that has the workgra
 
 ### Context: `context/wg-executor-protocol.md`
 
-Used **only** in the executor prompt template (not in the behavior). Defines the protocol for agents spawned by workgraph's daemon:
+Used **only** in the executor prompt template (not in the behavior). Defines the protocol for agents spawned by wg's daemon:
 
 1. **Log progress**: `wg log <ID> "..."`
 2. **Record artifacts**: `wg artifact <ID> <path>`
@@ -289,34 +289,34 @@ wg config coordinator.executor amplifier
 
 Bundles are distributed via git URLs:
 ```bash
-amplifier bundle add git+https://github.com/ramparte/amplifier-bundle-workgraph
+amplifier bundle add git+https://github.com/ramparte/amplifier-bundle-wg
 ```
 
 Or via the `includes` mechanism in other bundle definitions:
 ```yaml
 includes:
-  - git+https://github.com/graphwork/amplifier-bundle-workgraph#subdirectory=behaviors/workgraph.yaml
+  - git+https://github.com/graphwork/amplifier-bundle-wg#subdirectory=behaviors/wg.yaml
 ```
 
-Resources within bundles are referenced by namespace: `workgraph:workgraph-planner`, `workgraph:context/workgraph-guide.md`.
+Resources within bundles are referenced by namespace: `wg:wg-planner`, `wg:context/wg-guide.md`.
 
 ## 7. Bugs and Design Constraints (from CONTEXT-TRANSFER.md)
 
 Several bugs were discovered and fixed during development (commit `fbd612a`):
 
-1. **Executor type hack**: workgraph only pipes stdin for `type = "claude"` executors. Custom types get `Stdio::null()`. The amplifier executor uses `type = "claude"` as a workaround, with a wrapper script that bridges stdin to positional args.
+1. **Executor type hack**: wg only pipes stdin for `type = "claude"` executors. Custom types get `Stdio::null()`. The amplifier executor uses `type = "claude"` as a workaround, with a wrapper script that bridges stdin to positional args.
 
 2. **Bundle YAML format**: Initial versions had incorrect YAML structure. The correct format uses `agents.include` and `context.include` as lists, and namespace paths without file extensions.
 
-3. **Include URI format**: `bundle.md` must use `bundle: workgraph:behaviors/workgraph` (with namespace prefix and `bundle:` key), not bare relative paths.
+3. **Include URI format**: `bundle.md` must use `bundle: wg:behaviors/wg` (with namespace prefix and `bundle:` key), not bare relative paths.
 
 4. **Non-blocking spawn**: `wg spawn` is non-blocking — tests must poll for task completion rather than checking status immediately.
 
 ### Future Considerations
 
-- Coordinating with workgraph upstream on a standardized non-Claude executor prompt-passing mechanism
+- Coordinating with wg upstream on a standardized non-Claude executor prompt-passing mechanism
 - Whether to publish under `graphwork/` or keep under `ramparte/`
-- `wg-executor-protocol.md` is not included in the behavior's `context.include` — agents only get `workgraph-guide.md` by default
+- `wg-executor-protocol.md` is not included in the behavior's `context.include` — agents only get `wg-guide.md` by default
 - The `wg` binary must be on PATH when executor sessions run
 
 ## 8. Test Suite
@@ -325,20 +325,20 @@ Several bugs were discovered and fixed during development (commit `fbd612a`):
 
 - **TOML validity**: Parses `amplifier.toml`, checks required fields (`type`, `command`, `args`, `working_dir`, `prompt_template`)
 - **Template variables**: Verifies `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}` present in template
-- **Install script**: Tests installation into valid workgraph project, verifies files match source
+- **Install script**: Tests installation into valid wg project, verifies files match source
 - **Install validation**: Rejects directories without `.wg/`
 - **Wrapper script**: Tests flag forwarding (`--model`, `--bundle`) and prompt passing via stdin→positional-arg bridge
 - **Bundle structure**: Verifies all expected files exist, bundle.md has YAML frontmatter, agent has meta frontmatter
 - **E2E lifecycle** (slow): Creates a project, installs executor, adds a trivial task, spawns Amplifier session, polls for completion (120s timeout), verifies artifact creation
 
-## 9. Key Takeaways for workgraph Integration
+## 9. Key Takeaways for wg Integration
 
-1. **The executor interface is the integration point**: Any system can become a workgraph executor by providing a TOML config with `type = "claude"` (for stdin piping) and a wrapper that reads the rendered prompt. The executor receives full task context including dependency outputs.
+1. **The executor interface is the integration point**: Any system can become a wg executor by providing a TOML config with `type = "claude"` (for stdin piping) and a wrapper that reads the rendered prompt. The executor receives full task context including dependency outputs.
 
-2. **Context-driven, not tool-driven**: The bundle adds value by teaching agents the workgraph mental model through context documents, not by providing custom tool integrations. Agents use `bash` to call `wg` CLI directly — "ruthless simplicity."
+2. **Context-driven, not tool-driven**: The bundle adds value by teaching agents the wg mental model through context documents, not by providing custom tool integrations. Agents use `bash` to call `wg` CLI directly — "ruthless simplicity."
 
-3. **The `type = "claude"` constraint is a real limitation**: workgraph currently has a hardcoded assumption that only Claude-type executors need stdin piping. This forces all custom executors to use `type = "claude"` and wrapper scripts. This should be addressed upstream.
+3. **The `type = "claude"` constraint is a real limitation**: wg currently has a hardcoded assumption that only Claude-type executors need stdin piping. This forces all custom executors to use `type = "claude"` and wrapper scripts. This should be addressed upstream.
 
-4. **Template variables provide the contract**: The set of `{{variables}}` in the prompt template defines the data contract between workgraph and its executors. Currently: `task_id`, `task_title`, `task_description`, `task_context`, `task_identity`, `working_dir`.
+4. **Template variables provide the contract**: The set of `{{variables}}` in the prompt template defines the data contract between wg and its executors. Currently: `task_id`, `task_title`, `task_description`, `task_context`, `task_identity`, `working_dir`.
 
-5. **The planner agent is the decomposition brain**: When Amplifier detects a complex task, it delegates to `workgraph-planner` which has deep knowledge of dependency patterns, task sizing, and skill assignment.
+5. **The planner agent is the decomposition brain**: When Amplifier detects a complex task, it delegates to `wg-planner` which has deep knowledge of dependency patterns, task sizing, and skill assignment.

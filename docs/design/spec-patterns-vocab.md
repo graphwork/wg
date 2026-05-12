@@ -1,4 +1,4 @@
-# Spec: Canonical Pattern Vocabulary for workgraph Agents
+# Spec: Canonical Pattern Vocabulary for wg Agents
 
 **Date:** 2026-02-21
 **Status:** Active
@@ -8,7 +8,7 @@
 
 ## Purpose
 
-This document defines the canonical vocabulary of patterns for workgraph agents. Each pattern maps to concrete `wg` CLI commands, task graph shapes, and guidance on when to apply it. The vocabulary is organized into four categories: **structure**, **agency**, **control**, and **shorthands**.
+This document defines the canonical vocabulary of patterns for wg agents. Each pattern maps to concrete `wg` CLI commands, task graph shapes, and guidance on when to apply it. The vocabulary is organized into four categories: **structure**, **agency**, **control**, and **shorthands**.
 
 ---
 
@@ -353,7 +353,7 @@ Control patterns describe how the system governs itself — feedback, adaptation
 
 **What:** Agents read the graph, not each other. The graph is the communication channel. No agent-to-agent messages — all coordination happens through task state.
 
-**Mechanism:** This is not a pattern you implement; it is the fundamental operating principle of workgraph. Every `wg done`, `wg log`, `wg artifact` call modifies the shared graph, which stimulates downstream agents.
+**Mechanism:** This is not a pattern you implement; it is the fundamental operating principle of wg. Every `wg done`, `wg log`, `wg artifact` call modifies the shared graph, which stimulates downstream agents.
 
 **Key practices:**
 - Write descriptive task titles and descriptions — these are the "pheromone trails" for downstream agents
@@ -371,7 +371,7 @@ wg context write-tests
 # Shows: From implement-api (done): Artifacts: src/api.rs
 ```
 
-**Key insight from organizational-patterns.md §1:** Stigmergy makes workgraph scale. Adding agents does not increase communication overhead because the coordination cost is absorbed by the shared graph.
+**Key insight from organizational-patterns.md §1:** Stigmergy makes wg scale. Adding agents does not increase communication overhead because the coordination cost is absorbed by the shared graph.
 
 ---
 
@@ -459,7 +459,7 @@ wg evolve --strategy mutation
 - Evaluation scores plateau despite agent re-assignment
 - The role definition doesn't match the actual work required
 
-**Key insight from organizational-patterns.md §6.4:** Organizations that cannot double-loop learn become rigid. In workgraph, evolving roles and motivations (not just re-assigning agents) is what prevents performance plateaus.
+**Key insight from organizational-patterns.md §6.4:** Organizations that cannot double-loop learn become rigid. In wg, evolving roles and motivations (not just re-assigning agents) is what prevents performance plateaus.
 
 ---
 

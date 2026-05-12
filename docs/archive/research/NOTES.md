@@ -10,7 +10,7 @@ Let me do a deep research sweep to make sure we're building on the right foundat
 
 Let me start searching:
 
-Now let me dive into the formal foundations - the process algebras and coordination theory that could ground your workgraph:
+Now let me dive into the formal foundations - the process algebras and coordination theory that could ground your wg:
 
 Let me search for one more key area - formal organizational modeling and any existing "algebra of organizations":
 
@@ -18,7 +18,7 @@ Excellent. I now have a comprehensive picture. Let me synthesize this into a res
 
 ---
 
-## Deep Research Synthesis: workgraph — A Grammar of Organizational Work
+## Deep Research Synthesis: wg — A Grammar of Organizational Work
 
 ### The Gap You've Identified is Real
 
@@ -120,7 +120,7 @@ With these primitives, you could **prove** things like:
 4. **Progress**: "The system always makes forward progress"
 5. **Determinacy**: "Given same inputs, same outputs" (crucial for durable execution)
 
-Durable Execution is crash-proof because it virtualizes execution, enabling it to take place across a series of processes, each of which can potentially run on a different machine than the one before. [Temporal](https://temporal.io/blog/what-is-durable-execution) Your workgraph could enable this at the organizational level.
+Durable Execution is crash-proof because it virtualizes execution, enabling it to take place across a series of processes, each of which can potentially run on a different machine than the one before. [Temporal](https://temporal.io/blog/what-is-durable-execution) Your wg could enable this at the organizational level.
 
 ---
 
@@ -165,7 +165,7 @@ Then `wg verify` translates this to a Petri net representation and checks proper
 4. **Human+agent-native design** (beads is close but not general enough)
 5. **Cross-domain applicability** (not just coding tasks)
 
-The name "workgraph" is apt. You're essentially proposing what relational algebra did for data: a formal foundation that enables both human reasoning and automated verification about organizational structures.
+The name "wg" is apt. You're essentially proposing what relational algebra did for data: a formal foundation that enables both human reasoning and automated verification about organizational structures.
 
 ---
 

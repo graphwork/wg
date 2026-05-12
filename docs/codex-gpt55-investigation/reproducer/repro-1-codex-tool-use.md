@@ -1,14 +1,14 @@
-# Reproducer 1: Codex CLI Tool-Use Architecture and Lazy-Completion in workgraph
+# Reproducer 1: Codex CLI Tool-Use Architecture and Lazy-Completion in wg
 
 ## Scope
 
-This literature review captures what is known — from the workgraph source
+This literature review captures what is known — from the wg source
 tree, the upstream Codex CLI documentation, and the public model cards as of
 2026 — about how the Codex CLI handles tool invocations, why the
 `gpt-5.5`-era models tend toward "lazy completion" (text-only, no tool calls,
 no committed deliverables), how `developer_instructions` partially close that
 gap, and what architectural insights drop out of comparing the codex executor
-path with the claude executor path inside workgraph.
+path with the claude executor path inside wg.
 
 Companion bibliography: `repro-1-refs.bib`.
 
@@ -16,7 +16,7 @@ Companion bibliography: `repro-1-refs.bib`.
 
 The Codex CLI is OpenAI's open-source coding agent, built in Rust, that runs
 locally and can read, edit, and execute code in the working directory
-[openai-codex-cli, openai-codex-repo]. In workgraph it is invoked as a
+[openai-codex-cli, openai-codex-repo]. In wg it is invoked as a
 non-interactive batch worker via the executor configured at
 `src/service/executor.rs:1571-1588`:
 
@@ -30,19 +30,19 @@ Tool invocations in this mode happen through three converging surfaces:
    the model can drive via tool-call messages. With
    `--dangerously-bypass-approvals-and-sandbox` the approval policy is
    collapsed so the model never has to wait for a human "yes." This is the
-   path workgraph relies on for `wg log`, `wg done`, and any file edits.
+   path wg relies on for `wg log`, `wg done`, and any file edits.
 2. **Model Context Protocol (MCP).** Codex supports MCP servers for
-   third-party tools and external context [openai-codex-cli]. workgraph does
+   third-party tools and external context [openai-codex-cli]. wg does
    not currently register any MCP servers in the default executor config, so
    the model only sees the built-in shell.
 3. **Skills.** Recent Codex releases ship a skills system — reusable bundles
    of instructions that the model can invoke explicitly or auto-select
-   [openai-codex-cli]. workgraph's tier-classified guide
+   [openai-codex-cli]. wg's tier-classified guide
    (`src/commands/spawn/context.rs`) is conceptually adjacent but is injected
    as a static prompt, not as a Codex skill.
 
 Architecturally, every tool round-trip in `codex exec --json` emits a JSON
-event on stdout that the workgraph wrapper script never inspects. The
+event on stdout that the wg wrapper script never inspects. The
 wrapper only watches the process exit code, which is decisive for the bug
 described below.
 
@@ -107,7 +107,7 @@ summaries. `tool_output_token_limit=32000` prevents shell output truncation,
 which can otherwise cause the model to "give up" because it cannot see
 partial progress. The `developer_instructions` block makes "must call tools"
 non-optional from the model's perspective and pairs cleanly with the
-workgraph-side completion contract injected through the tier guide. Because
+wg-side completion contract injected through the tier guide. Because
 existing user configs in `.wg/executors/codex.toml` override built-in
 defaults, advanced users keep full control.
 

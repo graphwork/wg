@@ -4,7 +4,7 @@
 **Date:** 2026-05-06
 **Inputs synthesized:**
 - `docs/codex-gpt55-investigation/flags.md` (codex CLI / config.toml levers)
-- `docs/codex-gpt55-investigation/handler.md` (workgraph spawn + wrapper divergences)
+- `docs/codex-gpt55-investigation/handler.md` (wg spawn + wrapper divergences)
 - `docs/codex-gpt55-investigation/skills-injection.md` (knowledge-tier gap)
 
 ---

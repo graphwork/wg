@@ -1,10 +1,10 @@
-# Cross-Repo workgraph Communication
+# Cross-Repo wg Communication
 
-> Enable workgraph instances across repositories to dispatch tasks, share dependencies, observe state, and share trace functions.
+> Enable wg instances across repositories to dispatch tasks, share dependencies, observe state, and share trace functions.
 
 ## 1. Problem Statement
 
-Each workgraph instance is isolated to a single repository. In practice, projects depend on each other — a grants project (`~/grants/agentic-orgs`) needs features built in the workgraph tool itself (`~/workgraph`). Today this requires manually switching directories, running separate services, and manually coordinating task completion across repos. We need first-class cross-repo communication.
+Each wg instance is isolated to a single repository. In practice, projects depend on each other — a grants project (`~/grants/agentic-orgs`) needs features built in the wg tool itself (`~/workgraph`). Today this requires manually switching directories, running separate services, and manually coordinating task completion across repos. We need first-class cross-repo communication.
 
 ### 1.1 What Already Exists
 
@@ -14,7 +14,7 @@ Each workgraph instance is isolated to a single repository. In practice, project
 | Federation config (`.wg/federation.yaml`) | **Complete** | Named remotes for agency stores |
 | Unix socket IPC | **Complete** | `.wg/service/daemon.sock`, JSON-RPC protocol |
 | Trace function extract/instantiate | **Complete** | `src/commands/trace_{extract,instantiate}.rs`, `.wg/functions/` |
-| Global `--dir` flag | **Complete** | Override workgraph directory for any command |
+| Global `--dir` flag | **Complete** | Override wg directory for any command |
 | Content-addressed agency entities | **Complete** | SHA-256 hashing in `src/agency.rs` |
 | Task IDs | **Slug-based** | NOT content-addressed; generated from first 3 words of title |
 | Cross-repo task dispatch | **Missing** | No `--repo` flag, no remote task creation |
@@ -56,11 +56,11 @@ remotes:
     description: "Team shared agency store"
     last_sync: "2026-02-19T22:00:00Z"
 
-# Peer workgraph instances (NEW)
+# Peer wg instances (NEW)
 peers:
-  workgraph:
+  wg:
     path: /home/erik/workgraph
-    description: "The workgraph tool itself"
+    description: "The wg tool itself"
     # socket auto-discovered from <path>/.wg/service/state.json
   grants:
     path: /home/erik/grants/agentic-orgs
@@ -83,7 +83,7 @@ Socket discovery for a peer:
 ### 2.4 Data Structures
 
 ```rust
-/// A peer workgraph instance
+/// A peer wg instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
     pub path: String,
@@ -96,7 +96,7 @@ pub struct FederationConfig {
     /// Agency store remotes (existing)
     #[serde(default)]
     pub remotes: HashMap<String, RemoteConfig>,
-    /// Peer workgraph instances (new)
+    /// Peer wg instances (new)
     #[serde(default)]
     pub peers: HashMap<String, PeerConfig>,
 }
@@ -124,13 +124,13 @@ wg peer status                        # Quick health check of all peers
 
 Option A — `--repo` flag on `wg add`:
 ```bash
-wg add --repo workgraph "Fix the trace system" -d "Description here"
+wg add --repo wg "Fix the trace system" -d "Description here"
 wg add --repo ~/workgraph "Fix the trace system" -d "Description here"
 ```
 
 Option B — colon-namespaced ID:
 ```bash
-wg add "Fix the trace system" --into workgraph:
+wg add "Fix the trace system" --into wg:
 ```
 
 **Recommendation: Option A** (`--repo` flag). Rationale:
@@ -147,7 +147,7 @@ When `wg add --repo <peer>` is invoked:
 3. **If running**: Send task creation via a new `AddTask` IPC request to the peer's socket
 4. **If not running**: Directly modify the peer's `graph.jsonl` (acquire file lock, add task, save)
 5. **If running, after add**: Send `GraphChanged` IPC to wake the peer coordinator
-6. **Return**: Print the created task ID with peer prefix (`workgraph:fix-the-trace`)
+6. **Return**: Print the created task ID with peer prefix (`wg:fix-the-trace`)
 
 ### 3.3 New IPC Request Type
 
@@ -212,8 +212,8 @@ Response includes: `task_id`, `title`, `status`, `assigned`, `started_at`, `comp
 Introduce `peer:task-id` syntax for cross-repo references:
 
 ```bash
-# Local task blocked by a task in the "workgraph" peer
-wg add "Use new trace" --blocked-by workgraph:implement-recursive-trace
+# Local task blocked by a task in the "wg" peer
+wg add "Use new trace" --blocked-by wg:implement-recursive-trace
 
 # Also support absolute paths
 wg add "Use new trace" --blocked-by ~/workgraph:implement-recursive-trace
@@ -227,7 +227,7 @@ In `graph.jsonl`, cross-repo blocked_by entries are stored with the full namespa
 {
   "kind": "task",
   "id": "use-new-trace",
-  "blocked_by": ["workgraph:implement-recursive-trace"],
+  "blocked_by": ["wg:implement-recursive-trace"],
   ...
 }
 ```
@@ -302,7 +302,7 @@ This requires the completing service to know about its dependents. Two approache
 
 ### 4.7 Display and Querying
 
-- `wg show <task>` renders cross-repo deps with peer name: `Blocked by: workgraph:implement-recursive-trace (done)`
+- `wg show <task>` renders cross-repo deps with peer name: `Blocked by: wg:implement-recursive-trace (done)`
 - `wg why-blocked <task>` resolves remote deps and shows their current status
 - `wg list` can filter by cross-repo dependency status
 
@@ -341,7 +341,7 @@ This already works. No changes needed for basic file-based sharing.
 wg trace instantiate --from ~/workgraph/.wg/functions/build-feature.yaml --input feature_name=auth
 
 # Instantiate from a peer's function library
-wg trace instantiate --from workgraph:build-feature --input feature_name=auth
+wg trace instantiate --from wg:build-feature --input feature_name=auth
 ```
 
 ### 5.4 New `--from` Flag for Instantiate
@@ -362,8 +362,8 @@ Local functions:
   deploy-pipeline    (3 tasks, extracted from deploy-v2)
 
 Peer functions:
-  workgraph:build-feature  (5 tasks, extracted from add-auth)
-  workgraph:review-cycle   (2 tasks, loop-based review)
+  wg:build-feature  (5 tasks, extracted from add-auth)
+  wg:review-cycle   (2 tasks, loop-based review)
 ```
 
 ### 5.6 Implementation Plan
@@ -382,18 +382,18 @@ Peer functions:
 │  graph.jsonl                    service/daemon.sock              │
 │  ├── task: use-new-trace        ├── Agents, Status, Spawn, ...  │
 │  │   blocked_by:                ├── AddTask (NEW)               │
-│  │     workgraph:impl-trace ────┤── QueryTask (NEW)             │
+│  │     wg:impl-trace ────┤── QueryTask (NEW)             │
 │  │                              │                               │
 │  functions/                     federation.yaml                  │
 │  └── deploy.yaml                ├── remotes: {upstream: ...}    │
 │                                 └── peers:                      │
-│                                       workgraph: ~/workgraph    │
+│                                       wg: ~/workgraph    │
 │                                       grants: ~/grants/...      │
 └─────────────────┬───────────────────────────────────────────────┘
                   │ IPC (QueryTask) or direct file read
                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Repo B (~workgraph/.wg/)          │
+│                        Repo B (~wg/.wg/)          │
 │                                                                 │
 │  graph.jsonl                    service/daemon.sock              │
 │  ├── task: impl-trace (done) ───▶ responds to QueryTask         │
@@ -436,7 +436,7 @@ Peer functions:
 ## 8. Testing Strategy
 
 - **Unit tests**: `parse_remote_ref()`, peer resolution, `AddTask`/`QueryTask` serialization
-- **Integration tests**: Two temp workgraph dirs, test cross-repo add, dependency resolution, trace instantiate
+- **Integration tests**: Two temp wg dirs, test cross-repo add, dependency resolution, trace instantiate
 - **Service tests**: Start two daemons, verify IPC-based QueryTask and AddTask
 - Test graceful degradation when peer service is not running (fall back to file access)
 

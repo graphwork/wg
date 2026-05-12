@@ -189,7 +189,7 @@ This phase is explicitly deferred — the data suggests it won't be needed for 9
 
 ## 6. Follow-up Implementation Tasks
 
-These can be filed directly as workgraph tasks:
+These can be filed directly as wg tasks:
 
 1. **`add-isolation-field`** — Add `isolation: Option<String>` to `Task` struct in `graph.rs`, add `--isolation` flag to `wg add` CLI in `cli.rs`. Wire into `should_create_worktree()` in `execution.rs`.
    - Scope: `src/graph.rs`, `src/cli.rs`, `src/commands/spawn/execution.rs`

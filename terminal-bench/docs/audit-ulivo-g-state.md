@@ -12,7 +12,7 @@
 
 The "two G definitions" question is resolved: Condition G evolved through **three phases** within a single condition letter. The heartbeat design (Phase 3) replaced the autopoietic meta-prompt design (Phase 2), which itself replaced the "F without surveillance" definition (Phase 1). All three are the same G — the code reflects Phase 3 (current), and Phase 2's meta-prompt remains in the code as inactive guidance (since `autopoietic: False`).
 
-Seven condition G runs exist on Ulivo, tracking the evolution from Phase 2 through the architect-bundle detour to Phase 3. The best Phase 2 result was 64.3% (14 trials); the current Phase 3 config shows 8.4% on 38 trials (107 attempted, 102 errors) — significantly worse, but this run used the TB 2.0 89-task Docker benchmark (not the 18 custom host-native tasks), and many errors are infrastructure failures (Docker metric collection, missing `.workgraph/agents/`), not agent failures.
+Seven condition G runs exist on Ulivo, tracking the evolution from Phase 2 through the architect-bundle detour to Phase 3. The best Phase 2 result was 64.3% (14 trials); the current Phase 3 config shows 8.4% on 38 trials (107 attempted, 102 errors) — significantly worse, but this run used the TB 2.0 89-task Docker benchmark (not the 18 custom host-native tasks), and many errors are infrastructure failures (Docker metric collection, missing `.wg/agents/`), not agent failures.
 
 ---
 
@@ -116,7 +116,7 @@ Seven Condition G runs on the TB 2.0 Docker benchmark (89 tasks):
 1. **Run 4 (64.3%)** is the high-water mark, but only 14 trials completed and "agents worked until timeout" — not clean convergence.
 2. **Run 5 (0%)** confirms the architect-bundle approach was a dead end — `wg add --exec-mode architect` was rejected.
 3. **Run 7 (8.4%)** is the first Phase 3 (heartbeat) run. The low rate is likely due to:
-   - 102 of 107 trials errored (infrastructure: Docker metric collection failures, missing `.workgraph/agents/` dirs)
+   - 102 of 107 trials errored (infrastructure: Docker metric collection failures, missing `.wg/agents/` dirs)
    - The `coordinator_model: "sonnet"` config isn't wired, so the coordinator runs on M2.7
    - `budget_secs` may not have been wired in the run 7 code (depends on exact binary version)
 4. **All runs** used `openrouter:minimax/minimax-m2.7` via `ConditionGAgent`.
@@ -125,7 +125,7 @@ Seven Condition G runs on the TB 2.0 Docker benchmark (89 tasks):
 ### Error Patterns in Run 7
 
 The run log shows:
-- `download_dir failed, falling back to exec cat` — Docker metric collection can't find `.workgraph/agents/` inside containers
+- `download_dir failed, falling back to exec cat` — Docker metric collection can't find `.wg/agents/` inside containers
 - `git may not be available in container` — git not installed in TB Docker environments
 - These are **metric collection errors**, not necessarily agent execution failures
 
@@ -138,7 +138,7 @@ The run log shows:
 | Date | Commit | Definition | Phase |
 |------|--------|-----------|-------|
 | Apr 7 | `47ed02d8` (formalize-condition-g) | "F without surveillance" — context-only injection, no surveillance loops, `max_agents=1` | **Phase 1** |
-| Apr 8 | `84c2d81b` (implement Condition G) | Autopoietic — agent builds self-correcting workgraph via meta-prompt, `max_agents=8`, coordinator active | **Phase 2** |
+| Apr 8 | `84c2d81b` (implement Condition G) | Autopoietic — agent builds self-correcting wg via meta-prompt, `max_agents=8`, coordinator active | **Phase 2** |
 | Apr 8 | `1c062444` (design-tb-heartbeat) | Heartbeat-orchestrated coordinator — coordinator runs on 30s heartbeat loop, orchestrates instead of seed agent | **Phase 3 (design)** |
 | Apr 8 | `021c585f` (impl-tb-heartbeat) | Phase 3 implemented — `autopoietic: False`, `coordinator_agent: True`, `heartbeat_interval: 30` | **Phase 3 (impl)** |
 | Apr 8 | `242bf37f` (graceful-completion) | Time budget injection, coordinator wind-down, soft-deadline messaging | **Phase 3 (enhancement)** |

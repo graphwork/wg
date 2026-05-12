@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-User boards are per-user persistent conversation surfaces that live alongside coordinator tasks in the workgraph. They provide a human-owned message board that coordinators can subscribe to and interact with, persisting across coordinator lifecycles.
+User boards are per-user persistent conversation surfaces that live alongside coordinator tasks in the wg. They provide a human-owned message board that coordinators can subscribe to and interact with, persisting across coordinator lifecycles.
 
 The core insight: a user board is **a task that represents a human's presence** in the graph. Just as `.coordinator-N` tasks represent running coordinator processes, `.user-NAME-N` tasks represent active human participants.
 
@@ -105,12 +105,12 @@ Examples: `.user-erik-0`, `.user-alice-0`, `.user-erik-1` (after first archive).
 | `wg user list` | List all user boards (active and archived). |
 | `wg user archive [NAME]` | Sugar for `wg done .user-NAME` with the auto-increment behavior. |
 
-**Alias resolution:** The key UX improvement. When a command receives `.user-erik` (no numeric suffix), it resolves to the highest-numbered active (non-archived, non-Done) `.user-erik-N`. This is implemented as a utility function in `src/commands/mod.rs` or a method on `WorkGraph`.
+**Alias resolution:** The key UX improvement. When a command receives `.user-erik` (no numeric suffix), it resolves to the highest-numbered active (non-archived, non-Done) `.user-erik-N`. This is implemented as a utility function in `src/commands/mod.rs` or a method on `wg`.
 
 ```rust
 /// Resolve a user board alias like `.user-erik` to the active `.user-erik-N`.
 /// Returns the original ID if it's already fully qualified or not a user board.
-fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
+fn resolve_user_board_alias(graph: &wg, id: &str) -> String {
     // Only resolve if it matches `.user-{handle}` without a trailing `-N`
     if !id.starts_with(".user-") { return id.to_string(); }
     let suffix = &id[".user-".len()..];
@@ -198,7 +198,7 @@ fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
 
 The user handle is currently `$USER` / `WG_USER` — a local convention with no verification. The extension point for cryptographic identity:
 
-1. **Key generation:** `wg identity init` generates an Ed25519 keypair, stores private key in `~/.config/workgraph/identity.key` (user-local, never in repo).
+1. **Key generation:** `wg identity init` generates an Ed25519 keypair, stores private key in `~/.config/wg/identity.key` (user-local, never in repo).
 2. **Public key hash:** The SHA-256 hash of the public key becomes the user's **verified identity**. Stored in `.wg/identities/{hash}.pub`.
 3. **Message signing:** Each message gets an optional `signature` field (Ed25519 over `{timestamp}:{body}`). Unsigned messages are still valid but marked as unverified.
 4. **Board binding:** A user board's `agent` field (currently None) would hold the identity hash, proving board ownership.

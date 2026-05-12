@@ -25,7 +25,7 @@ Verified cost (from agent logs): 2 failures = $1.88 wasted in one batch. With
 | Option | Ship? | Rationale |
 |--------|-------|-----------|
 | **A** — Failure classification (parse api_error_status from raw_stream.jsonl, set `failure_class=api_error_400_document`, surface in `wg show` / `wg service status`) | **YES** | Cheap, high signal, immediately actionable. Stops the retry-burn loop on day 1. The user has explicitly framed A as "always do A." |
-| **B** — Preflight hook framework (run `pdfinfo` before spawn) | **NO (deferred)** | The workgraph-native equivalent already works: the bug-report's own workaround used `wg add diagnose-prepare-pdfs` + `--before <task>` to run `pdfinfo` / `pdftotext` upstream. A first-class hook framework duplicates the cycle pattern at the executor layer, introduces a new config schema (validators, args, error contracts) and a new status (`blocked_on_input`), and pays for itself only if A reveals classes of failure that the cycle workaround can't cover. Not worth the invasiveness for one bug. |
+| **B** — Preflight hook framework (run `pdfinfo` before spawn) | **NO (deferred)** | The wg-native equivalent already works: the bug-report's own workaround used `wg add diagnose-prepare-pdfs` + `--before <task>` to run `pdfinfo` / `pdftotext` upstream. A first-class hook framework duplicates the cycle pattern at the executor layer, introduces a new config schema (validators, args, error contracts) and a new status (`blocked_on_input`), and pays for itself only if A reveals classes of failure that the cycle workaround can't cover. Not worth the invasiveness for one bug. |
 | **C** — Per-task tool forbid (`forbid_tool_on_extension = [".pdf"]` injected as system-prompt addendum) | **NO (deferred)** | Only valuable on retry, *after* A has surfaced the failure class. Operator already has a working escape hatch today (`wg log <task> "NEVER use Read on .pdf — use the .txt sidecar"` survives `wg retry`). C makes that one-shot escape into a structured field; that's a refinement, not a fix. Revisit once A has been live for a few weeks and we see how often per-task forbidding would beat the log-injection pattern. |
 
 **One-line verdict:** ship A; let real usage tell us whether B and C earn their
@@ -35,7 +35,7 @@ keep before we build them.
 
 - First-time bad-PDF failure still costs ~$1 — we just don't repeat it. This
   is the "fix the input, don't retry" half of the bug; the "don't waste
-  the first dollar" half stays open until B (or a workgraph-native preflight
+  the first dollar" half stays open until B (or a wg-native preflight
   cycle pattern) ships.
 - Operator must manually re-route after the failure (set up a `pdftotext`
   prep task, edit dependents). That manual step is unchanged from today.

@@ -1,4 +1,4 @@
-# MCP Server Integration - Example using multiple MCP servers with workgraph
+# MCP Server Integration - Example using multiple MCP servers with wg
 [meta]
 version = "1.0"
 description = "Full MCP integration with Gmail, Calendar, and custom servers"
@@ -8,7 +8,7 @@ description = "Full MCP integration with Gmail, Calendar, and custom servers"
 [sources.native]
 type = "builtin"
 tools = ["file", "bash", "wg"]
-description = "Essential workgraph tools"
+description = "Essential wg tools"
 
 [sources.gmail]
 type = "mcp"

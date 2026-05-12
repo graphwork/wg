@@ -8,11 +8,11 @@
 
 ## Executive Summary
 
-Amplifier is Microsoft's modular AI agent framework, structured as a thin Python kernel (~2,600 lines) with a plugin ecosystem. The user has been actively using it with workgraph, building an integration bundle (`amplifier-bundle-workgraph`), patching the OpenAI provider module for OpenRouter compatibility, and designing multi-provider workflows. This report assesses the bundle system, architecture, compatibility posture, and recommends a workgraph integration path.
+Amplifier is Microsoft's modular AI agent framework, structured as a thin Python kernel (~2,600 lines) with a plugin ecosystem. The user has been actively using it with wg, building an integration bundle (`amplifier-bundle-wg`), patching the OpenAI provider module for OpenRouter compatibility, and designing multi-provider workflows. This report assesses the bundle system, architecture, compatibility posture, and recommends a wg integration path.
 
-**Key finding**: Amplifier's architecture is well-designed (mechanism/policy separation, composable bundles, 5 clean module protocols), but the execution model is *fundamentally a Python wrapper around LLM API calls with tool routing*. A Rust-native replacement for workgraph's needs would be straightforward — the hard part isn't the agent loop, it's the ecosystem of tools and behaviors that Amplifier's bundle system provides.
+**Key finding**: Amplifier's architecture is well-designed (mechanism/policy separation, composable bundles, 5 clean module protocols), but the execution model is *fundamentally a Python wrapper around LLM API calls with tool routing*. A Rust-native replacement for wg's needs would be straightforward — the hard part isn't the agent loop, it's the ecosystem of tools and behaviors that Amplifier's bundle system provides.
 
-**Recommendation**: Build a native executor in workgraph for the core tool-use loop (model URL + API key + model name → tool-use loop), and maintain the Amplifier executor as an option for when the full Amplifier ecosystem (bundles, agents, behaviors, recipes) is needed.
+**Recommendation**: Build a native executor in wg for the core tool-use loop (model URL + API key + model name → tool-use loop), and maintain the Amplifier executor as an option for when the full Amplifier ecosystem (bundles, agents, behaviors, recipes) is needed.
 
 ---
 
@@ -122,14 +122,14 @@ Behaviors are thin bundles (`.yaml`) that compose a set of related config. Examp
 
 ```yaml
 bundle:
-  name: workgraph
+  name: wg
   version: 1.0.0
-  description: "workgraph integration behavior"
+  description: "wg integration behavior"
 
 context:
   include:
-    - workgraph:context/workgraph-guide.md
-    - workgraph:context/wg-executor-protocol.md
+    - wg:context/wg-guide.md
+    - wg:context/wg-executor-protocol.md
 ```
 
 ---
@@ -264,7 +264,7 @@ From the user's own testing and design docs (`MULTI_PROVIDER_DESIGN.md`, `MULTI_
 
 ### 3.3 Upstream Status
 
-The compatibility layer (config flags) was merged upstream. The multi-provider design docs exist in the workgraph bundle repo but have NOT been upstreamed. The fundamental limitation — providers hardcode their mount name — requires a coordinated change across kernel, foundation, and CLI.
+The compatibility layer (config flags) was merged upstream. The multi-provider design docs exist in the wg bundle repo but have NOT been upstreamed. The fundamental limitation — providers hardcode their mount name — requires a coordinated change across kernel, foundation, and CLI.
 
 ### 3.4 Local Patches
 
@@ -292,13 +292,13 @@ The amplifier repo has a local change: `.amplifier/modules/provider-openai` subm
 
 | Bundle | Purpose |
 |--------|---------|
-| `amplifier-bundle-workgraph` | workgraph integration (bi-directional) |
+| `amplifier-bundle-wg` | wg integration (bi-directional) |
 
 ### 4.3 Community Assessment
 
 Amplifier is Microsoft Research/MADE:Explorations — early preview, not accepting external contributions yet. The ecosystem is small (< 30 repos). Bundles are well-structured but tightly coupled to the Microsoft org. There is no "bundle registry" — everything is git URIs.
 
-**Compatibility with Amplifier's bundle ecosystem is NOT worth pursuing as a primary goal.** The value is in understanding their *patterns* (composition, context injection, behavior layering) and replicating what makes sense natively in workgraph.
+**Compatibility with Amplifier's bundle ecosystem is NOT worth pursuing as a primary goal.** The value is in understanding their *patterns* (composition, context injection, behavior layering) and replicating what makes sense natively in wg.
 
 ---
 
@@ -306,22 +306,22 @@ Amplifier is Microsoft Research/MADE:Explorations — early preview, not accepti
 
 ### 5.1 What the Amplifier Executor Currently Does
 
-When workgraph dispatches a task via the Amplifier executor:
+When wg dispatches a task via the Amplifier executor:
 
-1. workgraph renders a prompt template with task context (ID, title, description, dependency artifacts)
+1. wg renders a prompt template with task context (ID, title, description, dependency artifacts)
 2. `amplifier-run.sh` wrapper reads prompt from stdin
-3. Runs `amplifier run --mode single --output-format json --bundle workgraph "$PROMPT"`
-4. Amplifier loads the workgraph bundle (foundation + workgraph behavior + hook-shell)
+3. Runs `amplifier run --mode single --output-format json --bundle wg "$PROMPT"`
+4. Amplifier loads the wg bundle (foundation + wg behavior + hook-shell)
 5. Session runs the orchestrator loop (LLM → tool calls → results → loop)
 6. Agent uses `wg` CLI commands to log progress, record artifacts, mark done/fail
-7. Amplifier exits, workgraph detects completion
+7. Amplifier exits, wg detects completion
 
 ### 5.2 What a Rust-Native Replacement Needs
 
 At minimum:
 
 1. **Model configuration**: API endpoint URL + API key + model name
-2. **System prompt**: The rendered task prompt (already done by workgraph's template system)
+2. **System prompt**: The rendered task prompt (already done by wg's template system)
 3. **Tool definitions**: JSON schemas for tools the agent can call
 4. **Tool-use loop**:
    - Send messages + tool specs to LLM API
@@ -350,19 +350,19 @@ At minimum:
 
 1. **Token counting** — Need a tokenizer or rough heuristic
 2. **Provider-specific quirks** — Each API has slight differences in tool call format
-3. **Streaming** — Nice to have but not required for workgraph executor
+3. **Streaming** — Nice to have but not required for wg executor
 4. **Context compaction** — For long sessions, need to summarize/drop old messages
 
 ### 5.4 What You'd Lose vs. Amplifier
 
 | Amplifier Feature | Impact of Loss |
 |-------------------|---------------|
-| Bundle composition | Replace with workgraph's own config |
+| Bundle composition | Replace with wg's own config |
 | @mention expansion | Not needed for task execution |
-| Agent delegation (sub-sessions) | workgraph already has this natively |
-| Session persistence/resume | workgraph agents are single-shot |
+| Agent delegation (sub-sessions) | wg already has this natively |
+| Session persistence/resume | wg agents are single-shot |
 | Recipe system | Not used in executor context |
-| Hook system | Replace with workgraph's own logging |
+| Hook system | Replace with wg's own logging |
 | Approval UI | Not needed for automated execution |
 | 14+ specialized agents | The agent *is* the prompt template |
 
@@ -374,7 +374,7 @@ At minimum:
 
 **Track A: Native Executor (Primary)**
 
-Build a minimal Rust-native tool-use loop in workgraph for the common case:
+Build a minimal Rust-native tool-use loop in wg for the common case:
 
 - Configure: model URL + API key + model name
 - Define available tools (shell, file read/write, wg CLI)
@@ -382,11 +382,11 @@ Build a minimal Rust-native tool-use loop in workgraph for the common case:
 - Run tool-use loop until completion
 - Parse `wg done`/`wg fail` commands as termination signals
 
-This covers 90% of workgraph's executor needs with zero Python dependency.
+This covers 90% of wg's executor needs with zero Python dependency.
 
 **Track B: Amplifier Executor (Optional)**
 
-Keep the `amplifier-bundle-workgraph` executor for when users want:
+Keep the `amplifier-bundle-wg` executor for when users want:
 - Full Amplifier ecosystem (bundles, agents, behaviors)
 - Specific LLM features (Anthropic extended thinking, OpenAI reasoning, etc.)
 - Session persistence and resume
@@ -395,7 +395,7 @@ Keep the `amplifier-bundle-workgraph` executor for when users want:
 ### 6.2 Native Executor Design Sketch
 
 ```
-[workgraph config]
+[wg config]
   executor = "native"
   model_url = "https://openrouter.ai/api/v1"
   api_key_env = "OPENROUTER_API_KEY"
@@ -433,12 +433,12 @@ The tool-use format in Chat Completions is well-documented and stable:
 
 ### 6.4 What NOT to Build
 
-- **Bundle composition system** — workgraph's config is sufficient
+- **Bundle composition system** — wg's config is sufficient
 - **@mention expansion** — Not needed; task context comes from wg templates
 - **Provider abstraction layer** — Just use OpenAI-compatible API everywhere
 - **Session persistence** — Agents are single-shot; logs go through `wg log`
-- **Hook system** — workgraph has its own event/logging system
-- **Agent delegation** — workgraph IS the delegation system
+- **Hook system** — wg has its own event/logging system
+- **Agent delegation** — wg IS the delegation system
 
 ### 6.5 Migration Path
 
@@ -461,13 +461,13 @@ The tool-use format in Chat Completions is well-documented and stable:
 | `~/amplifier-app-cli/amplifier_app_cli/main.py` | CLI entry point |
 | `~/amplifier-module-provider-openai/amplifier_module_provider_openai/__init__.py` | OpenAI provider (2000+ lines) |
 | `~/amplifier-module-provider-openai/amplifier_module_provider_openai/_constants.py` | Provider defaults |
-| `~/amplifier-bundle-workgraph/bundle.md` | workgraph bundle definition |
-| `~/amplifier-bundle-workgraph/executor/amplifier.toml` | Executor config for workgraph |
-| `~/amplifier-bundle-workgraph/executor/amplifier-run.sh` | Wrapper script |
-| `~/amplifier-bundle-workgraph/DESIGN.md` | Setup improvements design |
-| `~/amplifier-bundle-workgraph/docs/OPENROUTER_PROVIDER_DESIGN.md` | OpenRouter provider design |
-| `~/amplifier-bundle-workgraph/docs/MULTI_PROVIDER_DESIGN.md` | Multi-provider UX design |
-| `~/amplifier-bundle-workgraph/docs/MULTI_PROVIDER_REVIEW.md` | Multi-provider test results |
+| `~/amplifier-bundle-wg/bundle.md` | wg bundle definition |
+| `~/amplifier-bundle-wg/executor/amplifier.toml` | Executor config for wg |
+| `~/amplifier-bundle-wg/executor/amplifier-run.sh` | Wrapper script |
+| `~/amplifier-bundle-wg/DESIGN.md` | Setup improvements design |
+| `~/amplifier-bundle-wg/docs/OPENROUTER_PROVIDER_DESIGN.md` | OpenRouter provider design |
+| `~/amplifier-bundle-wg/docs/MULTI_PROVIDER_DESIGN.md` | Multi-provider UX design |
+| `~/amplifier-bundle-wg/docs/MULTI_PROVIDER_REVIEW.md` | Multi-provider test results |
 | `~/.amplifier/cache/amplifier-foundation-*/bundle.md` | Foundation bundle (default) |
 | `~/.amplifier/cache/amplifier-foundation-*/providers/openrouter.yaml` | OpenRouter provider config |
 | `~/.local/share/uv/tools/amplifier/.../amplifier_core/session.py` | Kernel session |
@@ -496,4 +496,4 @@ The tool-use format in Chat Completions is well-documented and stable:
 
 ---
 
-*Report generated from direct source code analysis of ~/amplifier, ~/amplifier-app-cli, ~/amplifier-bundle-workgraph, ~/amplifier-module-provider-openai, and installed amplifier-core and amplifier-foundation packages.*
+*Report generated from direct source code analysis of ~/amplifier, ~/amplifier-app-cli, ~/amplifier-bundle-wg, ~/amplifier-module-provider-openai, and installed amplifier-core and amplifier-foundation packages.*

@@ -102,7 +102,7 @@ after: Vec<String>,
 | 345 | `blocks: helper.blocks,` | `before: helper.before,` |
 | 346 | `blocked_by: helper.blocked_by,` | `after: helper.after,` |
 
-### 2.4 workgraph doc comment (line 427–431)
+### 2.4 wg doc comment (line 427–431)
 
 ```
 // Old: "Tasks depend on other tasks via `blocked_by`/`blocks` edges."
@@ -170,7 +170,7 @@ after: Vec<String>,
 - Rename function: `is_blocker_satisfied` → `is_predecessor_satisfied`
 - Rename param: `blocker_id` → `pred_id`
 - Update doc comment: "blocked_by dependency" → "after dependency"
-- Update comment: "Can't resolve without workgraph dir; treat as blocked" → "...treat as waiting"
+- Update comment: "Can't resolve without wg dir; treat as blocked" → "...treat as waiting"
 
 ### 3.5 ready_tasks_with_peers() (line 300–323)
 
@@ -679,7 +679,7 @@ All 13 test files contain `blocked_by` / `blocks` field references in task const
 | `docs/research/cyclic-processes.md` | `blocked_by` → `after` |
 | `docs/cycle-support-audit.md` | "blocked" state references — review |
 | `docs/fix-dag-terminology.md` | Already about this rename |
-| `docs/design-cyclic-workgraph.md` | `blocked_by` → `after` |
+| `docs/design-cyclic-wg.md` | `blocked_by` → `after` |
 | `docs/test-specs/trace-replay-test-spec.md` | `blocked_by` → `after`, `blocks` → `before` |
 
 **Priority 3 — Archive/review docs (low priority, update opportunistically):**
@@ -690,7 +690,7 @@ All files under `docs/archive/` and `docs/research/` — update `blocked_by` →
 
 | File | Changes needed |
 |------|---------------|
-| `docs/manual/workgraph-manual.typ` | `blocked_by` → `after` in examples |
+| `docs/manual/wg-manual.typ` | `blocked_by` → `after` in examples |
 | `docs/manual/02-task-graph.typ` | Field definitions |
 | `docs/manual/04-coordination.typ` | CLI examples |
 | `docs/manual/01-overview.typ` | Overview references |

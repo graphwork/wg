@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-This document provides comprehensive documentation of the hardened agent exit and worktree lifecycle processes in the workgraph system, integrating findings from extensive audits and test implementations. The analysis reveals a production-ready system with robust multi-layered safety mechanisms that exceed operational requirements.
+This document provides comprehensive documentation of the hardened agent exit and worktree lifecycle processes in the wg system, integrating findings from extensive audits and test implementations. The analysis reveals a production-ready system with robust multi-layered safety mechanisms that exceed operational requirements.
 
-**Key Finding**: The workgraph agent lifecycle infrastructure is architecturally sound with comprehensive coverage of normal operations and edge cases, requiring no critical fixes for safe production operation.
+**Key Finding**: The wg agent lifecycle infrastructure is architecturally sound with comprehensive coverage of normal operations and edge cases, requiring no critical fixes for safe production operation.
 
 ## 1. Lifecycle Overview
 
@@ -54,7 +54,7 @@ stateDiagram-v2
 
 ### Multi-Layered Safety Nets
 
-The workgraph cleanup system employs multiple independent entry points to ensure no agent death goes unhandled:
+The wg cleanup system employs multiple independent entry points to ensure no agent death goes unhandled:
 
 | Layer | Component | Frequency | Purpose |
 |-------|-----------|-----------|---------|
@@ -620,7 +620,7 @@ wg sweep --dry-run
 
 **✅ FULLY PRODUCTION-READY**
 
-The comprehensive audits reveal that workgraph's agent lifecycle management exceeds production requirements:
+The comprehensive audits reveal that wg's agent lifecycle management exceeds production requirements:
 
 - **Zero critical fixes required** - existing infrastructure handles all core scenarios
 - **Comprehensive test coverage** - 113/113 tests passing across all lifecycle scenarios  
@@ -635,7 +635,7 @@ The comprehensive audits reveal that workgraph's agent lifecycle management exce
 **Docker Container Management**: Comparable process monitoring and cleanup mechanisms  
 **CI/CD Agent Pools**: Equivalent isolation and resource management patterns
 
-The workgraph implementation meets or exceeds these industry standards with additional sophisticated features like auto-triage and commit recovery.
+The wg implementation meets or exceeds these industry standards with additional sophisticated features like auto-triage and commit recovery.
 
 ## 10. Coordinator Persistence
 
@@ -698,7 +698,7 @@ worktree_operations = true
 
 ## Conclusion
 
-The workgraph agent lifecycle system represents a mature, production-ready implementation that comprehensively addresses agent process management, resource cleanup, and fault tolerance. The multi-layered safety architecture ensures robust operation under various failure modes while maintaining operational transparency and resource efficiency.
+The wg agent lifecycle system represents a mature, production-ready implementation that comprehensively addresses agent process management, resource cleanup, and fault tolerance. The multi-layered safety architecture ensures robust operation under various failure modes while maintaining operational transparency and resource efficiency.
 
 **Key Achievements**:
 - **Zero critical gaps** identified in core functionality

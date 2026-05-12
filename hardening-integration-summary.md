@@ -1,8 +1,8 @@
-# Workgraph Hardening Integration Summary - FINAL
+# wg Hardening Integration Summary - FINAL
 
 ## Executive Summary
 
-This document summarizes the **completed** integration of all hardening work for the workgraph agent lifecycle system. All hardening objectives have been achieved, resulting in a production-ready system with robust multi-layered safety mechanisms.
+This document summarizes the **completed** integration of all hardening work for the wg agent lifecycle system. All hardening objectives have been achieved, resulting in a production-ready system with robust multi-layered safety mechanisms.
 
 **Status**: ✅ INTEGRATION COMPLETE  
 **Date**: 2026-04-12  
@@ -152,7 +152,7 @@ From the audit recommendations:
 
 ## Conclusion
 
-The workgraph hardening integration has been **successfully completed** with all objectives achieved:
+The wg hardening integration has been **successfully completed** with all objectives achieved:
 
 ### ✅ **Key Achievements**
 1. **Comprehensive Documentation**: `docs/AGENT-LIFECYCLE.md` provides complete operational guidance
@@ -170,4 +170,4 @@ The workgraph hardening integration has been **successfully completed** with all
 
 **Final Status**: ✅ **HARDENING INTEGRATION COMPLETE** - Ready for production deployment
 
-The workgraph system now features comprehensive hardening with robust documentation, enhanced testing, and validated production readiness.
+The wg system now features comprehensive hardening with robust documentation, enhanced testing, and validated production readiness.

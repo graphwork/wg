@@ -1,6 +1,6 @@
 # Canonical Key Documentation Index
 **Index Date:** 2026-04-12  
-**Purpose:** Comprehensive reference for all documentation files across workgraph project  
+**Purpose:** Comprehensive reference for all documentation files across wg project  
 **Status:** Based on complete documentation audit findings
 
 ---
@@ -45,7 +45,7 @@ This index organizes documentation by location and purpose, providing the defini
 | File | Purpose | Format | Status |
 |------|---------|---------|---------|
 | **README.md** | Manual overview, compilation instructions, structure guide | .md | Active |
-| **workgraph-manual.md/.typ** | Unified manual with comprehensive glossary | .md/.typ | Active |
+| **wg-manual.md/.typ** | Unified manual with comprehensive glossary | .md/.typ | Active |
 | **01-overview.md/.typ** | System overview, core concepts | .md/.typ | Active |
 | **02-task-graph.md/.typ** | Tasks, dependencies, cycles, readiness | .md/.typ | Active |
 | **03-agency.md/.typ** | Roles, tradeoffs, agents, federation | .md/.typ | Active |
@@ -275,4 +275,4 @@ This index organizes documentation by location and purpose, providing the defini
 
 ---
 
-*This index serves as the canonical reference for all workgraph documentation. Update this file when adding, removing, or significantly reorganizing documentation.*
+*This index serves as the canonical reference for all wg documentation. Update this file when adding, removing, or significantly reorganizing documentation.*

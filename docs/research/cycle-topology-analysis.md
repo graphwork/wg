@@ -1,6 +1,6 @@
 # Cycle Topology Analysis: Automatic Detection and Agent Awareness
 
-Research report for automatic cycle topology analysis in the workgraph coordinator service.
+Research report for automatic cycle topology analysis in the wg coordinator service.
 
 ## 1. Current State of Cycle Detection and Annotation
 
@@ -27,7 +27,7 @@ Research report for automatic cycle topology analysis in the workgraph coordinat
 
 3. **No annotation on `wg add`.** When a user creates A→B→A (explicit back-edge), nothing annotates the edge or warns the user. The cycle only becomes visible via `wg cycles`.
 
-4. **Cycle analysis is computed fresh on every coordinator tick.** `compute_cycle_analysis()` is called at multiple points in `src/commands/service.rs` (lines 383, 419, 911, 1027, 1169) — each a full O(V+E) computation from scratch. There's a cached `cycle_analysis: Option<CycleAnalysis>` field on `WorkGraph` (line 558) but it's invalidated on every mutation (add_node, update_task, etc.).
+4. **Cycle analysis is computed fresh on every coordinator tick.** `compute_cycle_analysis()` is called at multiple points in `src/commands/service.rs` (lines 383, 419, 911, 1027, 1169) — each a full O(V+E) computation from scratch. There's a cached `cycle_analysis: Option<CycleAnalysis>` field on `wg` (line 558) but it's invalidated on every mutation (add_node, update_task, etc.).
 
 ## 2. Proposed Automatic Analysis Triggers
 
@@ -235,7 +235,7 @@ This is actually correct behavior: the header is the evaluator/decision-maker th
 ### Algorithm complexity
 
 - `CycleAnalysis::from_graph()` is O(V+E) via Tarjan's SCC — this is optimal
-- Incremental updates (re-running on each `wg add`) are not significantly cheaper than full recomputation for typical workgraph sizes (tens to hundreds of tasks)
+- Incremental updates (re-running on each `wg add`) are not significantly cheaper than full recomputation for typical wg sizes (tens to hundreds of tasks)
 - No need for incremental cycle detection — full recomputation is fast enough
 
 ## 6. Recommended Approach

@@ -32,7 +32,7 @@ The docs/design/ directory contains extensive design documentation covering fede
 
 **Missing Components:**
 - ❌ `QueryGraph` IPC request for peer state snapshots
-- ❌ TUI Peers panel for cross-workgraph visibility  
+- ❌ TUI Peers panel for cross-wg visibility  
 - ❌ Cross-repo dependency syntax (`peer:task-id`)
 - ❌ Federation polling strategy
 - ❌ `PeerGraphSnapshot` data structures
@@ -76,7 +76,7 @@ The docs/design/ directory contains extensive design documentation covering fede
 
 1. **Federation Visibility (federation-architecture.md)**
    - No `QueryGraph` IPC for peer state queries
-   - TUI cannot show peer workgraph states
+   - TUI cannot show peer wg states
    - Cross-repo task dispatch designed but not implemented
 
 2. **Self-Hosting Coordinator (self-hosting-architecture.md)**  

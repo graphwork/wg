@@ -1,4 +1,4 @@
-# workgraph Agent Guide
+# wg Agent Guide
 
 How spawned agents should think about task graphs: recognizing patterns, building structures, staffing work, and staying in control.
 
@@ -581,7 +581,7 @@ Escalate from single to double loop when the same task type fails repeatedly.
 | Anti-pattern | What goes wrong | Fix |
 |--------------|----------------|-----|
 | **Parallel file conflict** | Two concurrent tasks edit the same file → one overwrites the other | Serialize with `--after` or decompose so each task owns distinct files |
-| **Using built-in TaskCreate** | Built-in task tools are a separate system that does NOT interact with workgraph | Always use `wg` CLI commands (`wg add`, `wg done`, etc.) |
+| **Using built-in TaskCreate** | Built-in task tools are a separate system that does NOT interact with wg | Always use `wg` CLI commands (`wg add`, `wg done`, etc.) |
 | **Missing integrator** | Diamond with no join point → parallel outputs never get merged | Always add a synthesizer task with `--after worker-a,worker-b,...` |
 | **Missing loop-back on refine** | Review identifies issues but there's no path back to fix them | Add a revise task in the cycle with a back-edge to the cycle header |
 | **Unbounded loop** | Cycle without `--max-iterations` → runs forever | Always set `--max-iterations` on cycle headers |
@@ -653,7 +653,7 @@ wg tui                         # interactive dashboard (equiv. to wg viz --all -
 wg tui --no-mouse              # TUI without mouse capture (useful in tmux)
 wg status                      # one-screen summary
 wg analyze                     # comprehensive health report
-wg watch                       # stream workgraph events as JSON lines
+wg watch                       # stream wg events as JSON lines
 ```
 
 #### TUI views and keybindings
@@ -1246,7 +1246,7 @@ wg done <task> --converged
 
 **Never do this:**
 ```bash
-# WRONG: built-in task tools don't interact with workgraph
+# WRONG: built-in task tools don't interact with wg
 TaskCreate(...)   # ← NO
 TaskUpdate(...)   # ← NO
 

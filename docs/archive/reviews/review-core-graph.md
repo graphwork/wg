@@ -10,7 +10,7 @@
 
 ### What it does
 
-Defines the core data types for the workgraph: `Task`, `Actor`, `Resource`, and the `WorkGraph` container. This is the foundational module — 48 files across the codebase depend on it.
+Defines the core data types for the wg: `Task`, `Actor`, `Resource`, and the `wg` container. This is the foundational module — 48 files across the codebase depend on it.
 
 ### Key types
 
@@ -20,7 +20,7 @@ Defines the core data types for the workgraph: `Task`, `Actor`, `Resource`, and 
 | `Actor` | Human or AI agent with capabilities, trust level, rate, capacity, and Matrix integration |
 | `Resource` | Budget/compute constraint with availability tracking |
 | `Node` | Tagged union (`Task` / `Actor` / `Resource`) with JSON `kind` discriminator |
-| `WorkGraph` | `HashMap<String, Node>` wrapper with typed accessor methods |
+| `wg` | `HashMap<String, Node>` wrapper with typed accessor methods |
 | `Status` | Task lifecycle: `Open → InProgress → Done` (plus `Blocked`, `Failed`, `Abandoned`, `PendingReview`) |
 | `LogEntry` | Timestamped progress note with optional actor attribution |
 | `Estimate` | Optional hours/cost pair for planning |

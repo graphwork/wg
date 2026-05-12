@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-21
 **Source:** [vx-integration-response.md](vx-integration-response.md) (sections 6, 7, 8)
-**Scope:** Six concrete changes to workgraph core enabling VX adapter integration
+**Scope:** Six concrete changes to wg core enabling VX adapter integration
 
 ---
 
@@ -323,7 +323,7 @@ Handle the new `--visibility` flag: validate and set `task.visibility`.
 
 ### Problem
 
-There is no way to produce a shareable, filtered view of workgraph data. Full trace data includes internal tasks, agent logs, and operational details that shouldn't cross organizational boundaries.
+There is no way to produce a shareable, filtered view of wg data. Full trace data includes internal tasks, agent logs, and operational details that shouldn't cross organizational boundaries.
 
 ### CLI Changes
 
@@ -368,7 +368,7 @@ pub struct TraceExport {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportMetadata {
-    /// workgraph version that produced this export
+    /// wg version that produced this export
     pub version: String,
     /// Timestamp of export
     pub exported_at: String,
@@ -536,7 +536,7 @@ Imported data should be accessible to agents via the existing context system:
 
 ### Test Cases
 
-1. **Basic import:** Export from one workgraph, import into another → imported tasks appear with namespaced IDs.
+1. **Basic import:** Export from one wg, import into another → imported tasks appear with namespaced IDs.
 2. **Dry run:** `wg trace import export.json --dry-run` → prints summary, no files written.
 3. **Source tagging:** `wg trace import export.json --source "peer:alice"` → tasks tagged `source:peer:alice`.
 4. **ID namespacing:** Imported task `portfolio-q1` becomes `imported/peer-alice/portfolio-q1` — no collision with local task `portfolio-q1`.
@@ -552,7 +552,7 @@ Imported data should be accessible to agents via the existing context system:
 
 ### Problem
 
-External systems (VX adapter, CI, dashboards) have no way to react to workgraph events in real time. They must poll `wg list --json`, which is inefficient and misses transient state changes.
+External systems (VX adapter, CI, dashboards) have no way to react to wg events in real time. They must poll `wg list --json`, which is inefficient and misses transient state changes.
 
 ### CLI Changes
 
@@ -561,7 +561,7 @@ External systems (VX adapter, CI, dashboards) have no way to react to workgraph 
 Add a new `Watch` command:
 
 ```rust
-/// Stream workgraph events as JSON lines
+/// Stream wg events as JSON lines
 Watch {
     /// Filter events by type (repeatable). Types: task_state, evaluation, agent, all.
     #[arg(long = "event", default_value = "all")]

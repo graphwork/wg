@@ -1,6 +1,6 @@
 # OpenRouter Setup Guide
 
-Use [OpenRouter](https://openrouter.ai/) to access hundreds of models from a single API key. workgraph treats OpenRouter as an OpenAI-compatible provider, so any model available on OpenRouter works with the native executor.
+Use [OpenRouter](https://openrouter.ai/) to access hundreds of models from a single API key. wg treats OpenRouter as an OpenAI-compatible provider, so any model available on OpenRouter works with the native executor.
 
 ---
 
@@ -35,7 +35,7 @@ wg agent create "Deep Researcher" \
   --provider openrouter
 ```
 
-The `--model` flag sets the agent's preferred model. The `--provider` flag tells workgraph to route requests through OpenRouter.
+The `--model` flag sets the agent's preferred model. The `--provider` flag tells wg to route requests through OpenRouter.
 
 ### 4. Assign the agent to a task
 
@@ -129,7 +129,7 @@ meta-llama/llama-4-maverick
 mistralai/mistral-large-latest
 ```
 
-When a model string contains a `/`, workgraph automatically selects the OpenAI-compatible provider (which includes OpenRouter). You can also use OpenRouter-specific suffixed variants when available.
+When a model string contains a `/`, wg automatically selects the OpenAI-compatible provider (which includes OpenRouter). You can also use OpenRouter-specific suffixed variants when available.
 
 ### API key resolution priority
 
@@ -244,13 +244,13 @@ This sends a request to the `/models` endpoint and confirms that:
 
 ### Streaming vs non-streaming mode
 
-workgraph uses **streaming mode** by default for all OpenAI-compatible providers, including OpenRouter. Streaming provides:
+wg uses **streaming mode** by default for all OpenAI-compatible providers, including OpenRouter. Streaming provides:
 - Real-time output as tokens are generated
 - Usage statistics in the final stream chunk (via `stream_options.include_usage`)
 
 Streaming is always enabled and does not need to be configured. OpenRouter supports streaming for all models.
 
-OpenRouter also supports auto-caching for Anthropic and Gemini models via `cache_control`, which workgraph enables automatically to reduce costs on repeated prompts.
+OpenRouter also supports auto-caching for Anthropic and Gemini models via `cache_control`, which wg enables automatically to reduce costs on repeated prompts.
 
 ---
 
@@ -275,7 +275,7 @@ Models follow the `provider/model-name` pattern:
 
 ### Searching models from the CLI
 
-workgraph includes built-in model browsing:
+wg includes built-in model browsing:
 
 ```bash
 # Search by name or description
@@ -295,4 +295,4 @@ wg models list --tier frontier
 
 ### Model tiers
 
-When using workgraph's model selection (e.g., `--model haiku`), short tier names are resolved to full model IDs. For OpenRouter models, always use the full `provider/model` ID to avoid ambiguity.
+When using wg's model selection (e.g., `--model haiku`), short tier names are resolved to full model IDs. For OpenRouter models, always use the full `provider/model` ID to avoid ambiguity.

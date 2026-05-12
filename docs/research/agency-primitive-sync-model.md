@@ -90,7 +90,7 @@ After seeding, `agency_init` creates default + special agents and configures `au
 ### Option A: Vendored Snapshot (Current Model)
 
 **How it works:**
-- A copy of `agency/starter.csv` is checked into the workgraph repo
+- A copy of `agency/starter.csv` is checked into the wg repo
 - It's embedded into the binary at compile time via `include_bytes!`
 - New projects get the full pool on `wg init` / `wg agency init`
 - To update: copy the latest CSV from the upstream Agency repo, commit, release a new `wg` binary
@@ -141,7 +141,7 @@ After seeding, `agency_init` creates default + special agents and configures `au
 
 **Disadvantages:**
 - Submodule UX is notoriously poor (detached HEAD, forgotten init, CI complexity)
-- Couples the workgraph release cycle to the upstream repo's structure
+- Couples the wg release cycle to the upstream repo's structure
 - Breaks `cargo install --git` (submodules aren't fetched by default)
 - Over-engineered for a single 180 KB file
 - Adds a build-time dependency on the submodule being initialized
@@ -222,7 +222,7 @@ content_hash: abc123...
            │ Manual copy + git commit + code review
            ▼
 ┌─────────────────────────────────┐
-│ workgraph Repo                  │
+│ wg Repo                  │
 │ agency/starter.csv              │  ← git-tracked, reviewable
 │                                 │
 │ include_bytes!() in binary      │  ← embedded at compile time

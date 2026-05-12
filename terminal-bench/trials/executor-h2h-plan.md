@@ -8,9 +8,9 @@
 
 ## 1. Conditions
 
-### Condition A — Bare Agent (No Workgraph)
+### Condition A — Bare Agent (No wg)
 
-The pure baseline. A Claude agent receives only the task description and standard tools. No workgraph context, no decomposition guidance, no test discovery, no verification gates.
+The pure baseline. A Claude agent receives only the task description and standard tools. No wg context, no decomposition guidance, no test discovery, no verification gates.
 
 - **Executor:** Claude CLI (`claude --model {model} --print`)
 - **Prompt:** Task description only, no `wg` CLI awareness
@@ -20,9 +20,9 @@ The pure baseline. A Claude agent receives only the task description and standar
 - **Verification gate:** None
 - **Turn limit:** Unlimited (30-min wall-clock timeout)
 
-### Condition B — Agent + Workgraph, Old Executor
+### Condition B — Agent + wg, Old Executor
 
-The workgraph executor as it existed **before** the five improvement tracks were merged. This is the executor with:
+The wg executor as it existed **before** the five improvement tracks were merged. This is the executor with:
 - Static `AUTOPOIETIC_GUIDANCE` (generic decomposition patterns, not task-adaptive)
 - No pre-task test discovery (no `discover_test_files()` scanning)
 - Inline verification only (`verify_mode = "inline"` — same agent verifies its own work)
@@ -30,7 +30,7 @@ The workgraph executor as it existed **before** the five improvement tracks were
 - No `build_decomposition_guidance()` function
 - Context injection for non-Claude models absent (`read_wg_guide()` not wired)
 
-**Baseline config** (`.workgraph/config.toml` overrides):
+**Baseline config** (`.wg/config.toml` overrides):
 ```toml
 [coordinator]
 decomp_guidance = false       # disables adaptive decomposition templates
@@ -41,23 +41,23 @@ verify_mode = "inline"        # same agent verifies (no separate-agent verificat
 **Git reference:** The old behavior is equivalent to any commit before `97efebd4` (impl-executor-test-discovery / impl-executor-decomp-templates). However, since the new features are gated by config flags, simply setting the flags above on the current codebase reproduces the old behavior without checking out an older commit. This is preferable because it isolates the executor improvements as the only variable.
 
 - **Executor:** `wg service start` (coordinator dispatches agents)
-- **Prompt:** Full workgraph agent prompt with `REQUIRED_WORKFLOW_SECTION`, `GIT_HYGIENE_SECTION`, `AUTOPOIETIC_GUIDANCE` (static), `GRAPH_PATTERNS_SECTION`
+- **Prompt:** Full wg agent prompt with `REQUIRED_WORKFLOW_SECTION`, `GIT_HYGIENE_SECTION`, `AUTOPOIETIC_GUIDANCE` (static), `GRAPH_PATTERNS_SECTION`
 - **Tools:** Standard Claude Code tools + `wg` CLI
 - **Decomposition guidance:** Static (generic patterns in `AUTOPOIETIC_GUIDANCE`)
 - **Test discovery:** None
 - **Verification gate:** Inline only (`wg done` runs verify command in same agent context)
 
-### Condition C — Agent + Workgraph, Enhanced Executor
+### Condition C — Agent + wg, Enhanced Executor
 
 The current executor with all five improvement tracks enabled (the defaults since `97efebd4`):
 
 1. **Adaptive decomposition templates** (`decomp_guidance = true`): `classify_task_complexity()` categorizes tasks as Atomic/Pipeline/FanOut/Integration/Ambiguous, then `build_decomposition_guidance()` injects pattern-matched templates.
 2. **Pre-task test discovery** (`auto_test_discovery = true`): `discover_test_files()` scans the project for test files (Python, Rust, JS patterns) and injects them into the agent prompt as `## Discovered Test Files`. Auto-generates `--verify` gates from discovered tests.
 3. **Separate-agent verification** (`verify_mode = "separate"`): Verification runs in a new agent context (different conversation/context window), preventing false-PASS rates where the implementation agent rubber-stamps its own work.
-4. **Context injection for non-Claude models**: `read_wg_guide()` injects `.workgraph/wg-guide.md` content for native executor paths.
+4. **Context injection for non-Claude models**: `read_wg_guide()` injects `.wg/wg-guide.md` content for native executor paths.
 5. **F prompt fix**: `build_condition_f_prompt()` uses `cat` to read tests directly instead of `find`.
 
-**Enhanced config** (`.workgraph/config.toml` overrides):
+**Enhanced config** (`.wg/config.toml` overrides):
 ```toml
 [coordinator]
 decomp_guidance = true         # adaptive decomposition templates
@@ -66,7 +66,7 @@ verify_mode = "separate"       # separate agent verifies (different context wind
 ```
 
 - **Executor:** `wg service start` (coordinator dispatches agents)
-- **Prompt:** Full workgraph agent prompt with adaptive decomposition, discovered test files section, and all five improvement sections
+- **Prompt:** Full wg agent prompt with adaptive decomposition, discovered test files section, and all five improvement sections
 - **Tools:** Standard Claude Code tools + `wg` CLI
 - **Decomposition guidance:** Adaptive (task-specific templates based on complexity classification)
 - **Test discovery:** Enabled (discovered test files injected into prompt, auto-verify gates)
@@ -123,12 +123,12 @@ Rationale:
 ### Model Control
 
 All conditions use the **same model** across all trials:
-- **Model:** `claude:opus` (as configured in `.workgraph/config.toml`)
+- **Model:** `claude:opus` (as configured in `.wg/config.toml`)
 - **Temperature:** 0.0 (deterministic — variance comes from model nondeterminism, not sampling)
 - **Max turns:** 200 (safety valve; matches prior D/E experiments)
 - **Wall-clock timeout:** 30 minutes per trial
 
-Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial uses the workgraph's native executor model (`claude:opus`) because the enhanced executor features (decomp_guidance, separate-verify) are designed for the `claude` executor path, not the `native` executor. Using the same model removes model capability as a confound.
+Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial uses the wg's native executor model (`claude:opus`) because the enhanced executor features (decomp_guidance, separate-verify) are designed for the `claude` executor path, not the `native` executor. Using the same model removes model capability as a confound.
 
 ### Randomization
 
@@ -158,7 +158,7 @@ Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial us
 
 | Metric | Measurement Method | Why It Matters |
 |--------|-------------------|----------------|
-| **Subtask quality** (conditions B, C only) | For tasks that produce subtasks via `wg add`: (1) count of subtasks, (2) % of subtasks with `--after` edges, (3) % of subtasks with `--verify` gates, (4) correctness of dependency ordering. Measured by parsing `.workgraph/graph.jsonl` after the trial. | Tests whether adaptive decomposition produces better-structured subtask graphs than static guidance. |
+| **Subtask quality** (conditions B, C only) | For tasks that produce subtasks via `wg add`: (1) count of subtasks, (2) % of subtasks with `--after` edges, (3) % of subtasks with `--verify` gates, (4) correctness of dependency ordering. Measured by parsing `.wg/graph.jsonl` after the trial. | Tests whether adaptive decomposition produces better-structured subtask graphs than static guidance. |
 | **Verification iterations** | Count of times the agent re-runs tests/checks before declaring done. Parsed from agent transcript (bash commands containing `test`, `pytest`, `cargo test`, `verify`). | Measures verification discipline. More iterations with convergence = good. Many iterations without convergence = thrashing. |
 | **False-PASS rate** | Trials where the agent declared success (`wg done` or natural stop) but the task's verification failed. | Directly measures verification blind spot severity. Enhanced executor's separate-agent verification should reduce this. |
 | **Failure diagnostics quality** | For failed trials: does the agent provide a reason? Is it actionable? Scored 0 (no info), 1 (vague), 2 (specific and actionable). Scored by human review. | Conditions B/C produce `wg fail --reason` or `wg log` entries. Condition A produces nothing. |
@@ -179,7 +179,7 @@ Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial us
 
 ### What "Old Executor" Means
 
-The "old executor" (Condition B) is the workgraph executor with the five improvement tracks **disabled by config flags**. This approach is preferred over checking out an older git commit because:
+The "old executor" (Condition B) is the wg executor with the five improvement tracks **disabled by config flags**. This approach is preferred over checking out an older git commit because:
 
 1. It isolates exactly the features being tested (decomp, test discovery, verify mode)
 2. All other executor improvements and bug fixes are shared across conditions
@@ -195,7 +195,7 @@ The "old executor" (Condition B) is the workgraph executor with the five improve
 
 ### What Stays the Same Across B and C
 
-- Full workgraph agent prompt (`REQUIRED_WORKFLOW_SECTION`, `GIT_HYGIENE_SECTION`, `MESSAGE_POLLING_SECTION`, `ETHOS_SECTION`, `GRAPH_PATTERNS_SECTION`)
+- Full wg agent prompt (`REQUIRED_WORKFLOW_SECTION`, `GIT_HYGIENE_SECTION`, `MESSAGE_POLLING_SECTION`, `ETHOS_SECTION`, `GRAPH_PATTERNS_SECTION`)
 - Agent isolation (worktrees)
 - `wg` CLI availability and tool set
 - Task descriptions, `--verify` commands, dependency edges
@@ -239,14 +239,14 @@ wg config | grep -E 'decomp_guidance|auto_test_discovery|verify_mode'
 ### Phase 2: Condition A Trials (bare agent)
 
 Run 7 tasks x 3 trials = 21 trials in an isolated environment:
-- No workgraph initialization
+- No wg initialization
 - Agent receives task description only
 - Manual verification of results against task acceptance criteria
 
 ### Phase 3: Condition B Trials (old executor)
 
 1. Set config: `decomp_guidance=false`, `auto_test_discovery=false`, `verify_mode=inline`
-2. For each task, create a workgraph task with `wg add` + appropriate `--verify`
+2. For each task, create a wg task with `wg add` + appropriate `--verify`
 3. Run `wg service start --max-agents 1` (single agent to avoid interference between trials)
 4. Record results from `wg show` and agent transcripts
 
@@ -290,7 +290,7 @@ Measurement: % of subtasks with `--after` edges and `--verify` gates.
 **H4:** Condition C correctly avoids decomposing `cancel-async-tasks` and `regex-log` (classified as Atomic), while decomposing `build-cython-ext` and `merge-diff-arc-agi-task` (classified as Pipeline/FanOut).
 Measurement: Subtask count per task, compared to task classification.
 
-**H5:** Condition A (bare agent) may still be competitive with Condition B, based on prior pilot data showing A' ≥ D. The key question is whether Condition C's improvements push workgraph-assisted agents ahead of bare agents.
+**H5:** Condition A (bare agent) may still be competitive with Condition B, based on prior pilot data showing A' ≥ D. The key question is whether Condition C's improvements push wg-assisted agents ahead of bare agents.
 
 ### Risk: Type II Error
 

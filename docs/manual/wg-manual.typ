@@ -1,9 +1,9 @@
-// workgraph Manual
+// wg Manual
 // A conceptual guide to task coordination for humans and AI agents
 
 #set document(
-  title: "workgraph: A Manual",
-  author: "The workgraph Project",
+  title: "wg: A Manual",
+  author: "The wg Project",
 )
 
 #set text(font: "New Computer Modern", size: 11pt)
@@ -14,7 +14,7 @@
 #page(numbering: none)[
   #v(4fr)
   #align(center)[
-    #text(size: 32pt, weight: "bold")[workgraph]
+    #text(size: 32pt, weight: "bold")[wg]
     #v(8pt)
     #text(size: 16pt)[A Manual]
     #v(24pt)
@@ -93,8 +93,8 @@ The following terms have precise meanings throughout this manual. They are defin
   [*map/reduce pattern*], [An emergent workflow: fan-out (one task completes, enabling parallel children) and fan-in (parallel tasks must all complete before a single aggregator). Arises from dependency edges, not a built-in primitive.],
   [*triage*], [An LLM-based assessment of a dead agent's output, classifying the result as _done_, _continue_, or _restart_.],
   [*wrapper script*], [The `run.sh` generated for each spawned agent. Runs the executor, captures output, and handles post-exit fallback logic.],
-  [*federation*], [The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover), _pull_ (import), _push_ (export). Named remotes stored in `.wg/federation.yaml`. Content-hash IDs make deduplication automatic.],
-  [*remote*], [A named reference to another workgraph project's agency store, used for federation. Managed via `wg agency remote add/list/remove`.],
+  [*federation*], [The system for sharing agency entities across wg projects. Operations: _scan_ (discover), _pull_ (import), _push_ (export). Named remotes stored in `.wg/federation.yaml`. Content-hash IDs make deduplication automatic.],
+  [*remote*], [A named reference to another wg project's agency store, used for federation. Managed via `wg agency remote add/list/remove`.],
   [*provider*], [The LLM provider backing a task or agent: `anthropic`, `openai`, `openrouter`, or `local`. Set per-task via `--provider` on `wg add`/`wg edit`, or per-agent via `wg config`. The coordinator resolves providers through the same priority chain as models.],
   [*exec-mode*], [Controls the execution weight of an agent dispatched for a task. Four values: _full_ (default—complete tool access), _light_ (read-only tools), _bare_ (only `wg` CLI), _shell_ (no LLM—runs the task's `exec` field directly). Set via `--exec-mode` on `wg add`/`wg edit`.],
   [*placement*], [The coordinator's automatic positioning of newly created tasks in the dependency graph. Controlled by placement hints: `--no-place` (skip placement—make the task immediately available), `--place-near <IDS>` (place near specified tasks), `--place-before <IDS>` (insert before specified tasks). Automatic placement is configured via `wg config --auto-place`.],
@@ -103,9 +103,9 @@ The following terms have precise meanings throughout this manual. They are defin
   [*sweep*], [Detection and recovery of orphaned in-progress tasks whose agents have died. `wg sweep` scans for tasks claimed by agents whose PIDs no longer exist and offers to reclaim them.],
   [*checkpoint*], [A snapshot of an agent's progress during long-running tasks. `wg checkpoint` saves the current state so that if the agent is interrupted, a replacement can resume from the checkpoint rather than starting over.],
   [*event stream*], [A real-time feed of graph mutations produced by `wg watch`. Events are typed (`task.created`, `task.completed`, `evaluation.recorded`, etc.) and filterable by category or task ID. Enables external adapters to observe and react without polling.],
-  [*adapter*], [An external tool that translates between an external system's vocabulary and workgraph's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI) → react. A conceptual pattern, not a formal type.],
+  [*adapter*], [An external tool that translates between an external system's vocabulary and wg's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI) → react. A conceptual pattern, not a formal type.],
   [*dispatch role*], [A named system function with its own model and provider assignment. Roles include _default_, _task\_agent_, _evaluator_, _assigner_, _evolver_, _triage_, _verification_, _compactor_, _placer_, and others. Managed via `wg model routing` and `wg model set`. Enables cost-optimized model allocation: cheap models for routine roles, capable models for complex work.],
-  [*peer*], [A registered reference to another workgraph project for cross-repo communication. Managed via `wg peer add/remove/list/status`. Tasks can be created in a peer's graph via `wg add --repo <peer-name>`. Distinct from federation (which shares agency identities)---peer communication shares _work_.],
+  [*peer*], [A registered reference to another wg project for cross-repo communication. Managed via `wg peer add/remove/list/status`. Tasks can be created in a peer's graph via `wg add --repo <peer-name>`. Distinct from federation (which shares agency identities)---peer communication shares _work_.],
   [*agency import*], [Importing agency primitives (roles, motivations) from external sources via `wg agency import`. Supports local CSV files, remote URLs (`--url`), and configured upstream bureaus (`--upstream`). Change detection via manifest hashing prevents redundant imports.],
   [*user board*], [A per-user conversation surface (`.user-NAME` task) for persistent human-in-the-loop communication. Created via `wg user init`, listed with `wg user list`, and archived with `wg user archive`. Each board is a task with a message queue---the coordinator reopens it when new messages arrive, enabling asynchronous dialogue between the human and the system.],
   [*provider profile*], [A named preset that maps model tiers (haiku, sonnet, opus) to specific provider/model combinations. Managed via `wg profile set`, `wg profile show`, and `wg profile list`. Profiles simplify model configuration: instead of setting each dispatch role's model individually, activate a profile and all roles resolve through its tier mappings. `wg profile refresh` updates rankings from OpenRouter.],

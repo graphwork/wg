@@ -1,6 +1,6 @@
-# Human Summoning Mechanisms for workgraph
+# Human Summoning Mechanisms for wg
 
-This document researches mechanisms for "summoning" humans into the workgraph system when agents or tasks need human input - approval, review, expertise, or decisions.
+This document researches mechanisms for "summoning" humans into the wg system when agents or tasks need human input - approval, review, expertise, or decisions.
 
 ---
 
@@ -30,7 +30,7 @@ use notify_rust::Notification;
 
 fn summon_human(task_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
     Notification::new()
-        .summary(&format!("workgraph: Task needs attention"))
+        .summary(&format!("wg: Task needs attention"))
         .body(&format!("{}\n\nTask: {}", message, task_id))
         .icon("dialog-information")
         .urgency(notify_rust::Urgency::Normal)
@@ -89,7 +89,7 @@ fn macos_notification(title: &str, message: &str) -> std::io::Result<()> {
 
 ### 1.2 Terminal Bell/Alerts
 
-For users running workgraph in tmux, screen, or terminal emulators.
+For users running wg in tmux, screen, or terminal emulators.
 
 ```rust
 fn terminal_bell() {
@@ -173,7 +173,7 @@ fn send_summons_email(
     let email = Message::builder()
         .from(config.from_address.parse()?)
         .to(to.parse()?)
-        .subject(format!("[workgraph] Attention needed: {}", task.title))
+        .subject(format!("[wg] Attention needed: {}", task.title))
         .header(ContentType::TEXT_PLAIN)
         .body(format!(
             r#"A task needs your attention.
@@ -182,10 +182,10 @@ Task: {}
 ID: {}
 Reason: {}
 
-View task: workgraph://task/{}
+View task: wg://task/{}
 
 ---
-workgraph Notification System
+wg Notification System
 "#,
             task.title, task.id, reason, task.id
         ))?;
@@ -234,7 +234,7 @@ async fn send_via_sendgrid(
             "personalizations": [{
                 "to": [{"email": to}]
             }],
-            "from": {"email": "workgraph@yourdomain.com"},
+            "from": {"email": "wg@yourdomain.com"},
             "subject": subject,
             "content": [{
                 "type": "text/plain",
@@ -310,7 +310,7 @@ async fn send_sms(
 async fn summon_via_sms(config: &TwilioConfig, actor: &Actor, task: &Task) {
     if let Some(phone) = &actor.phone {
         let msg = format!(
-            "workgraph: Task '{}' needs your attention. Reply YES to claim or NO to skip.",
+            "wg: Task '{}' needs your attention. Reply YES to claim or NO to skip.",
             task.title
         );
         send_sms(config, phone, &msg).await.ok();
@@ -380,7 +380,7 @@ async fn call_human(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="alice">
-        Attention. This is workgraph calling about task: {}.
+        Attention. This is wg calling about task: {}.
         This task requires your immediate attention.
         Press 1 to claim this task.
         Press 2 to snooze for 30 minutes.
@@ -594,7 +594,7 @@ async fn notify_discord(
                     {"name": "Task ID", "value": task.id, "inline": true},
                     {"name": "Status", "value": format!("{:?}", task.status), "inline": true}
                 ],
-                "footer": {"text": "workgraph Notification"}
+                "footer": {"text": "wg Notification"}
             }]
         }))
         .send()
@@ -745,7 +745,7 @@ async fn send_push_notification(
             "notification": {
                 "title": "Task Needs Attention",
                 "body": format!("{}: {}", task.title, reason),
-                "click_action": format!("workgraph://task/{}", task.id)
+                "click_action": format!("wg://task/{}", task.id)
             },
             "data": {
                 "task_id": task.id,
@@ -1058,7 +1058,7 @@ fn acknowledge_command(task_id: &str, response: AckResponse) -> Result<()> {
 
 5. Human receives SMS, opens Slack, clicks "Claim"
 
-6. workgraph updates:
+6. wg updates:
    - Task acknowledged
    - Escalation stopped
    - Human marked as actively reviewing
@@ -1170,7 +1170,7 @@ For phone calls, Twilio's TwiML allows gathering DTMF tones:
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="alice">
-        This is workgraph calling about task: Approve budget for Q3 marketing.
+        This is wg calling about task: Approve budget for Q3 marketing.
         The agent requests your approval.
     </Say>
     <Gather numDigits="1" action="/voice-response/task-123">
@@ -1577,7 +1577,7 @@ Imagine:
 ```
 *Phone rings*
 
-"This is workgraph. Task 'Deploy to production' requires your approval.
+"This is wg. Task 'Deploy to production' requires your approval.
 The deployment includes 3 database migrations and updates to the payment
 system. Press 1 to approve. Press 2 to reject. Press 3 to schedule a
 review call."
@@ -1666,12 +1666,12 @@ default_channels = ["desktop", "slack"]
 
 [notifications.slack]
 webhook_url = "${WORKGRAPH_SLACK_WEBHOOK}"
-default_channel = "#workgraph"
+default_channel = "#wg"
 
 [notifications.email]
 smtp_server = "smtp.gmail.com"
 smtp_port = 587
-from_address = "workgraph@yourdomain.com"
+from_address = "wg@yourdomain.com"
 
 [notifications.twilio]
 account_sid = "${TWILIO_ACCOUNT_SID}"
@@ -1722,7 +1722,7 @@ wg notify-test --channel slack --to "#test-channel"
 
 ## Summary
 
-Human summoning in workgraph bridges the gap between autonomous agent work and necessary human oversight. The key principles:
+Human summoning in wg bridges the gap between autonomous agent work and necessary human oversight. The key principles:
 
 1. **Start simple** - Slack webhooks provide 80% of the value with 20% of the effort
 2. **Escalate thoughtfully** - Not everything needs a phone call; use escalation policies
@@ -1737,7 +1737,7 @@ The recommended implementation order:
 4. SMS (for urgent matters)
 5. Phone calls (nuclear option)
 
-With these mechanisms, workgraph can effectively coordinate work between humans and AI agents, escalating to humans when needed while respecting their time and attention.
+With these mechanisms, wg can effectively coordinate work between humans and AI agents, escalating to humans when needed while respecting their time and attention.
 
 ---
 

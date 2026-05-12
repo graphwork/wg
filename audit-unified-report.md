@@ -214,7 +214,7 @@ None of the 11 branches require manual review beyond what is described above. Al
 **Code (all superseded):** Wholesale agency→identity/motivation→objective/evaluation→reward renames across 87 files. Main kept its own terminology and restructured into a directory module. 390-commit divergence makes code merge impossible.
 
 **Valuable docs (cherry-pick with terminology updates):**
-1. **docs/research/organizational-economics-review.md** (765 lines) — Maps 13 foundational economics results to workgraph design. Identifies concrete design risks (Goodhart, underexploration, tournament pathologies). Highest intellectual value.
+1. **docs/research/organizational-economics-review.md** (765 lines) — Maps 13 foundational economics results to wg design. Identifies concrete design risks (Goodhart, underexploration, tournament pathologies). Highest intellectual value.
 2. **docs/research/collaborators-and-perspectives.md** (356 lines) — Team context document
 3. **docs/research/gepa-integration.md** (426 lines) — 10 concrete GEPA integration points
 

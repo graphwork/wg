@@ -1,6 +1,6 @@
-# Federation & Cross-workgraph Visibility Architecture
+# Federation & Cross-wg Visibility Architecture
 
-> Each user/team has their own workgraph endpoint. They can see other federated workgraphs. A network of collaborative workspaces.
+> Each user/team has their own wg endpoint. They can see other federated workgraphs. A network of collaborative workspaces.
 
 **Task:** mu-design-federation
 **Date:** 2026-03-25
@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This document designs the federation model for workgraph: the ability for independent workgraph instances to discover each other, observe each other's state, and optionally dispatch work across boundaries. The design builds on substantial existing infrastructure (peer configs, IPC protocol with `AddTask`/`QueryTask`, agency federation, cross-repo communication design) and maps a path from what works today to a fully federated network.
+This document designs the federation model for wg: the ability for independent wg instances to discover each other, observe each other's state, and optionally dispatch work across boundaries. The design builds on substantial existing infrastructure (peer configs, IPC protocol with `AddTask`/`QueryTask`, agency federation, cross-repo communication design) and maps a path from what works today to a fully federated network.
 
 **Key architectural decision:** Federation is **observation-first, write-optional**. The primary value is visibility -- seeing what's happening across workgraphs. Write capabilities (cross-repo task dispatch) already exist via IPC and are a secondary concern.
 
@@ -40,7 +40,7 @@ This document designs the federation model for workgraph: the ability for indepe
 
 | Gap | Why It Matters |
 |-----|----------------|
-| No cross-workgraph task visibility in TUI | Users can't see peer tasks without CLI commands |
+| No cross-wg task visibility in TUI | Users can't see peer tasks without CLI commands |
 | No periodic peer state refresh | `wg peer status` is point-in-time; no continuous monitoring |
 | No visibility filtering on federation reads | Remote graph is read in full -- no filtering by visibility level |
 | No authentication on IPC | Unix socket is owner-only (0600), sufficient for local; not for TCP |
@@ -78,7 +78,7 @@ Three discovery mechanisms, layered from simplest to most automated:
 **Layer 2 (future):** For multi-machine scenarios, services could announce themselves via:
 - **Local registry file:** `~/.wg/peers.yaml` as a user-global peer directory
 - **mDNS/DNS-SD:** Announce `_workgraph._tcp` on the local network
-- **Central registry:** An HTTP endpoint listing known workgraph instances
+- **Central registry:** An HTTP endpoint listing known wg instances
 
 **Decision:** Start with Layers 0+1. Manual config handles the immediate need; scan reduces discovery friction. Layer 2 is deferred until multi-machine federation is implemented.
 
@@ -117,7 +117,7 @@ Tasks already have a `visibility` field with three levels:
 
 | Level | Meaning | Default |
 |-------|---------|---------|
-| `internal` | Only visible within the local workgraph | Yes |
+| `internal` | Only visible within the local wg | Yes |
 | `peer` | Visible to federated peers with credentials | No |
 | `public` | Visible to anyone (sanitized view) | No |
 
@@ -192,7 +192,7 @@ pub struct VerificationSummary {
 For efficiency, peers don't read the full remote graph. Instead, a **snapshot** aggregates the graph state:
 
 ```rust
-/// Aggregated view of a peer's workgraph state.
+/// Aggregated view of a peer's wg state.
 /// Generated on demand or cached with a TTL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerGraphSnapshot {
@@ -279,7 +279,7 @@ This is the **single new IPC type** needed for federation visibility. `QueryTask
 
 ```
 ┌──────────────┐     QueryGraph IPC      ┌──────────────┐
-│  workgraph A │ ◄──────────────────────► │  workgraph B │
+│  wg A │ ◄──────────────────────► │  wg B │
 │  (observer)  │                          │  (observed)  │
 │              │     PeerGraphSnapshot    │              │
 │  TUI/CLI     │ ◄─────────────────────── │  Daemon      │
@@ -317,26 +317,26 @@ Federation state is refreshed on a **configurable poll interval** separate from 
 
 ### 5.1 Who Are You Across Workgraphs?
 
-Federation doesn't require a global identity system. Each workgraph instance has a **local name** and an **owner**:
+Federation doesn't require a global identity system. Each wg instance has a **local name** and an **owner**:
 
 ```yaml
 # .wg/config.toml (new fields)
 [federation]
-# Human-readable name for this workgraph instance
-name = "workgraph-tool"
+# Human-readable name for this wg instance
+name = "wg-tool"
 # Owner identifier (defaults to $USER)
 owner = "erik"
 ```
 
-When workgraph A queries workgraph B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
+When wg A queries wg B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
 
 ### 5.2 For Cross-Repo Task Dispatch
 
-When creating a task on a remote workgraph (`wg add --repo`), the origin is recorded:
+When creating a task on a remote wg (`wg add --repo`), the origin is recorded:
 
 ```json
 {
-  "origin": "workgraph-tool:erik",
+  "origin": "wg-tool:erik",
   "origin_task": "implement-feature-x"
 }
 ```
@@ -348,7 +348,7 @@ This provides attribution without requiring a shared user directory.
 For multi-machine federation (v0.3+), SSH public keys provide natural identity:
 - Already available on developer machines
 - Already used for git authentication
-- Can be associated with a workgraph owner in `config.toml`
+- Can be associated with a wg owner in `config.toml`
 - TCP IPC can use SSH key-based authentication
 
 ---
@@ -400,7 +400,7 @@ The TUI gains a new right-panel tab: **Peers** (alongside Chat, Output, CoordLog
 ```
 ┌─ Graph ───────────────────────────────┬─ Peers ──────────────────────┐
 │                                        │                              │
-│   ┌─ implement-auth ──────────┐       │  ● workgraph-tool   3/12    │
+│   ┌─ implement-auth ──────────┐       │  ● wg-tool   3/12    │
 │   │  Status: in-progress      │       │    ├─ 3 in-progress         │
 │   │  Agent: Programmer        │       │    ├─ 5 open                │
 │   └───────────────────────────┘       │    └─ 4 done                │
@@ -425,7 +425,7 @@ The TUI gains a new right-panel tab: **Peers** (alongside Chat, Output, CoordLog
 Pressing Enter on a peer in the Peers panel opens a drill-down showing that peer's visible tasks:
 
 ```
-┌─ Graph ───────────────────────────────┬─ Peers > workgraph-tool ─────┐
+┌─ Graph ───────────────────────────────┬─ Peers > wg-tool ─────┐
 │                                        │                              │
 │   (local graph unchanged)              │  ← Back to peers list       │
 │                                        │                              │
@@ -464,7 +464,7 @@ In v0.2+, cross-repo dependencies could be shown inline in the graph view:
   ┌─ use-new-trace ────────────┐
   │  Status: blocked            │
   │  Blocked by:                │
-  │    workgraph:impl-trace ◆  │  ◆ = remote dependency
+  │    wg:impl-trace ◆  │  ◆ = remote dependency
   └─────────────────────────────┘
 ```
 
@@ -520,7 +520,7 @@ The `◆` marker indicates a cross-repo dependency. Color indicates status (gree
 
 **Same user, same machine (v0.1):** Unix permissions are sufficient. The user owns all `.wg/` directories and sockets. No additional auth needed.
 
-**Shared VPS, multiple users (v0.2):** Create a `workgraph` Unix group. Set socket permissions to `0660` and graph file permissions to `0640` for group members. Visibility filtering ensures `internal` tasks are never exposed even if the file is readable.
+**Shared VPS, multiple users (v0.2):** Create a `wg` Unix group. Set socket permissions to `0660` and graph file permissions to `0640` for group members. Visibility filtering ensures `internal` tasks are never exposed even if the file is readable.
 
 **Multi-machine (v0.3+):** TCP IPC requires TLS for transport security and token-based authentication. Tokens are generated per-peer and stored in `federation.yaml`:
 
@@ -561,7 +561,7 @@ The smallest useful federation: **see your peers' high-level state from the CLI 
 
 ### 9.2 What v0.1 Delivers
 
-A user with 3 workgraph projects can:
+A user with 3 wg projects can:
 1. `wg peer scan ~/projects` -- discover all workgraphs
 2. `wg peer add project-a ~/projects/alpha` -- register peers
 3. `wg peer tasks project-a` -- see peer-visible tasks from CLI

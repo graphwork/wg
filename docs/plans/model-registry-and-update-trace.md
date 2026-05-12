@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-This design extends workgraph's existing model registry (`ModelRegistryEntry` in `config.rs`, `ModelEntry` in `models.rs`) with benchmark scores, popularity metrics, and a composite fitness score. It also specifies a workgraph-native update cycle that keeps the registry current without external cron.
+This design extends wg's existing model registry (`ModelRegistryEntry` in `config.rs`, `ModelEntry` in `models.rs`) with benchmark scores, popularity metrics, and a composite fitness score. It also specifies a wg-native update cycle that keeps the registry current without external cron.
 
 ### Design Principles
 
@@ -101,7 +101,7 @@ This file stores benchmark and popularity data fetched from external APIs. It is
 | Field group | Source | Why |
 |------------|--------|-----|
 | `pricing` | OpenRouter API | Stable, structured, free. Drives cost optimization. |
-| `benchmarks.coding_index` | AA API | #1 relevance metric per research — primary workgraph agent work is code. |
+| `benchmarks.coding_index` | AA API | #1 relevance metric per research — primary wg agent work is code. |
 | `benchmarks.intelligence_index` | AA API | #2 relevance — composite of agents, coding, reasoning, instruction following. |
 | `benchmarks.agentic` | OpenRouter SSR | #3 relevance — tool use and multi-step planning. Fragile source, so nullable. |
 | `performance` | OpenRouter SSR / AA | Medium relevance — faster agents finish tasks sooner, but quality > speed. |
@@ -152,7 +152,7 @@ reliability = min(provider_count / 5, 1.0) * 50
 
 | Component | Weight | Why |
 |-----------|--------|-----|
-| **Quality** | 70% | workgraph agents must produce correct code. A cheap model that fails tasks wastes more money than an expensive model that succeeds. Agent sessions run thousands of tokens, so the per-token cost is dwarfed by the cost of wasted agent time on failures + retries. |
+| **Quality** | 70% | wg agents must produce correct code. A cheap model that fails tasks wastes more money than an expensive model that succeeds. Agent sessions run thousands of tokens, so the per-token cost is dwarfed by the cost of wasted agent time on failures + retries. |
 | **Value** | 20% | Cost matters at scale — running 10 parallel agents on frontier models adds up. But only after quality is assured. The `value` component rewards models that punch above their price point (e.g., DeepSeek, Qwen). |
 | **Reliability** | 10% | Multiple providers = less downtime. High request count = battle-tested. But this is a hygiene factor, not a differentiator. |
 
@@ -178,7 +178,7 @@ reliability = min(provider_count / 5, 1.0) * 50
 
 ---
 
-## 4. Update Trace Design (workgraph Cycle)
+## 4. Update Trace Design (wg Cycle)
 
 The update trace is a daemon-managed cycle task — visible in the graph as `.registry-refresh-0`, following the same pattern as `.compact-0` and `.archive-0`. This keeps all recurring work visible without requiring an external cron.
 

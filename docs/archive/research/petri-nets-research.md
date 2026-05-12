@@ -1,6 +1,6 @@
-# Petri Nets Research: Verification Layer for workgraph
+# Petri Nets Research: Verification Layer for wg
 
-This document synthesizes research on Petri nets and their application to workflow verification, with practical guidance for implementing a verification layer in the workgraph project.
+This document synthesizes research on Petri nets and their application to workflow verification, with practical guidance for implementing a verification layer in the wg project.
 
 ## Table of Contents
 
@@ -10,7 +10,7 @@ This document synthesizes research on Petri nets and their application to workfl
 4. [Existing Implementations](#4-existing-implementations)
 5. [Mapping Workflows to Petri Nets](#5-mapping-workflows-to-petri-nets)
 6. [Lightweight Verification Approaches](#6-lightweight-verification-approaches)
-7. [Recommendations for workgraph](#7-recommendations-for-workgraph)
+7. [Recommendations for wg](#7-recommendations-for-wg)
 
 ---
 
@@ -514,7 +514,7 @@ def structural_checks(workflow):
 
 ---
 
-## 7. Recommendations for workgraph
+## 7. Recommendations for wg
 
 ### 7.1 Tiered Verification Strategy
 
@@ -531,7 +531,7 @@ def structural_checks(workflow):
 **Phase 1: Lightweight checks (implement first)**
 ```rust
 // In Rust
-pub fn check_workflow(wg: &workgraph) -> Vec<Issue> {
+pub fn check_workflow(wg: &wg) -> Vec<Issue> {
     let mut issues = vec![];
 
     // Tier 1: Cycle detection
@@ -550,7 +550,7 @@ pub fn check_workflow(wg: &workgraph) -> Vec<Issue> {
 **Phase 2: Optional deep verification**
 ```rust
 // Export to LoLA format for full model checking
-pub fn export_lola(wg: &workgraph) -> String {
+pub fn export_lola(wg: &wg) -> String {
     let mut out = String::new();
 
     // Define places
@@ -580,7 +580,7 @@ pub fn export_lola(wg: &workgraph) -> String {
 
 ### 7.3 Rust Library Recommendation
 
-For the workgraph project, consider:
+For the wg project, consider:
 
 1. **Build lightweight checks in pure Rust** (no dependencies) for Tier 1-3
 2. **Use `pnets` crate** for Petri net representation if needed

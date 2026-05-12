@@ -1,14 +1,14 @@
 # Telegram Bot Configuration Research Summary
 
 ## Overview
-The workgraph repository **has a fully functional Telegram bot configured and working**. The bot is set up for user communication and task coordination.
+The wg repository **has a fully functional Telegram bot configured and working**. The bot is set up for user communication and task coordination.
 
 ## Bot Configuration
 
 ### Location
 The Telegram bot configuration is located in the **global config file**:
-- **Path**: `~/.config/workgraph/notify.toml`
-- **No project-local configuration** found in `.workgraph/notify.toml`
+- **Path**: `~/.config/wg/notify.toml`
+- **No project-local configuration** found in `.wg/notify.toml`
 
 ### Current Configuration
 ```toml
@@ -54,7 +54,7 @@ Agents can interact with the Telegram bot using these `wg telegram` commands:
    wg telegram listen --chat-id "custom_chat_id"  # Custom chat
    ```
 
-### Supported Workgraph Commands via Telegram
+### Supported wg Commands via Telegram
 When the listener is running, Erik can send these commands via Telegram:
 - `claim <task>` / `claim <task> as <actor>` - Claim tasks
 - `done <task>` - Mark tasks complete  
@@ -83,13 +83,13 @@ The bot is configured as the **default channel** for:
 ### Implementation Details
 - **Backend**: Direct Telegram Bot API via `reqwest` (not teloxide)
 - **Polling**: Uses long-polling with `getUpdates` endpoint
-- **Global Routing**: Supports shared bot across multiple workgraph repos via file-lock leader election
+- **Global Routing**: Supports shared bot across multiple wg repos via file-lock leader election
 - **Message Format**: Plain text, Markdown, and HTML support
 - **Action Buttons**: Inline keyboards for interactive approvals
 
 ### Configuration Priority
-1. **Project-local**: `.workgraph/notify.toml` (not present)
-2. **Global**: `~/.config/workgraph/notify.toml` (✅ active)
+1. **Project-local**: `.wg/notify.toml` (not present)
+2. **Global**: `~/.config/wg/notify.toml` (✅ active)
 
 ## Agent Usage Recommendations
 

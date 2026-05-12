@@ -10,7 +10,7 @@
 
 ### 1.1 Claude Code Agent Built-in Tools
 
-Claude Code agents (the ones running in this workgraph repo) have access to the following tools:
+Claude Code agents (the ones running in this wg repo) have access to the following tools:
 
 | # | Tool | Category | Description |
 |---|------|----------|-------------|
@@ -59,21 +59,21 @@ From `terminal-bench/wg/adapter.py`:
 | 5 | `glob` | Glob | File pattern matching (via `find` + `ls`) |
 | 6 | `grep` | Grep | Regex search (via system `grep -rn`) |
 
-#### Condition B–E Tools (15 tools — adds workgraph)
+#### Condition B–E Tools (15 tools — adds wg)
 
 All Condition A tools, plus:
 
 | # | Tool | Category | Description |
 |---|------|----------|-------------|
-| 7 | `wg_show` | Workgraph | Show task details |
-| 8 | `wg_list` | Workgraph | List tasks by status |
-| 9 | `wg_add` | Workgraph | Create new tasks |
-| 10 | `wg_done` | Workgraph | Mark task done (with --converged) |
-| 11 | `wg_fail` | Workgraph | Mark task failed |
-| 12 | `wg_log` | Workgraph | Append log entry |
-| 13 | `wg_artifact` | Workgraph | Record file artifact |
-| 14 | `wg_msg_send` | Workgraph | Send message to task |
-| 15 | `wg_msg_read` | Workgraph | Read task messages |
+| 7 | `wg_show` | wg | Show task details |
+| 8 | `wg_list` | wg | List tasks by status |
+| 9 | `wg_add` | wg | Create new tasks |
+| 10 | `wg_done` | wg | Mark task done (with --converged) |
+| 11 | `wg_fail` | wg | Mark task failed |
+| 12 | `wg_log` | wg | Append log entry |
+| 13 | `wg_artifact` | wg | Record file artifact |
+| 14 | `wg_msg_send` | wg | Send message to task |
+| 15 | `wg_msg_read` | wg | Read task messages |
 
 #### Condition F Tools (15 tools — enhanced wg_add)
 

@@ -10,7 +10,7 @@
 
 The previous F proposal (conditions-and-f-design.md §4.3, Decision 1) recommended dropping wg tools entirely, reasoning that A' (bare, 80%) outperforms D (wg + verify, 73%) and E (wg + org, 75%). This reasoning is wrong for two reasons:
 
-1. **It abandons the thesis.** The entire experiment asks: "Does workgraph add value over bare agents?" Dropping wg from F means F can only match A', never prove wg's value. A positive F-without-wg result would be evidence *against* wg.
+1. **It abandons the thesis.** The entire experiment asks: "Does wg add value over bare agents?" Dropping wg from F means F can only match A', never prove wg's value. A positive F-without-wg result would be evidence *against* wg.
 
 2. **It misattributes E's failure.** E failed not because wg is bad, but because M2.7 was never taught how to use wg. Zero `--after` dependencies across 30 E trials. 80% of B agents ignored wg tools entirely. The model gravitates away from wg because the system prompt doesn't teach it effectively — Claude agents succeed with wg because CLAUDE.md and MEMORY.md provide operational patterns that M2.7 never receives.
 
@@ -23,9 +23,9 @@ The previous F proposal (conditions-and-f-design.md §4.3, Decision 1) recommend
 This is the distilled "kernel of total utility" from CLAUDE.md and MEMORY.md. It teaches M2.7 the operational patterns that make Claude agents effective wg users.
 
 ```
-## Workgraph Quick Guide
+## wg Quick Guide
 
-Workgraph (wg) is a persistent task coordination graph. Tasks have
+wg (wg) is a persistent task coordination graph. Tasks have
 dependencies, statuses, and verification gates. It acts as your external
 memory — if your context fills up, your wg_log entries survive.
 
@@ -99,8 +99,8 @@ def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
         f"Your root task ID is: **{root_task_id}**\n\n"
 
         # --- WG Context Injection (distilled from CLAUDE.md + MEMORY.md) ---
-        "## Workgraph Quick Guide\n\n"
-        "Workgraph (wg) is a persistent task coordination graph. Tasks have "
+        "## wg Quick Guide\n\n"
+        "wg (wg) is a persistent task coordination graph. Tasks have "
         "dependencies, statuses, and verification gates. It acts as your external "
         "memory — if your context fills up, your wg_log entries survive.\n\n"
 
@@ -253,7 +253,7 @@ WG_ADD_TOOL_F = {
     "type": "function",
     "function": {
         "name": "wg_add",
-        "description": "Create a new task in the workgraph.",
+        "description": "Create a new task in the wg.",
         "parameters": {
             "type": "object",
             "required": ["title"],
@@ -356,7 +356,7 @@ class ConditionFAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-f"
+        return "wg-condition-f"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "F"
@@ -380,7 +380,7 @@ if self.condition in ("B", "C", "D", "E", "F"):
 
     if self.condition == "F":
         # No agency bootstrap — F is a plain coding agent with wg tools
-        logger.info("Condition F: workgraph initialized, no agency bootstrap")
+        logger.info("Condition F: wg initialized, no agency bootstrap")
 ```
 
 #### In `run()`:
@@ -432,7 +432,7 @@ if self.condition == "F":
 """
 Terminal Bench Agent Adapter for Harbor Framework.
 
-Bridges Harbor's agent protocol to the workgraph native executor concept.
+Bridges Harbor's agent protocol to the wg native executor concept.
 Supports six conditions:
   Condition A (control): bash + file tools only, no graph, no resume
   Condition B (treatment): full wg tool access, graph awareness, journal/resume

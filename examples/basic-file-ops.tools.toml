@@ -8,7 +8,7 @@ description = "Basic file operations for document processing and analysis"
 [sources.native]
 type = "builtin"
 tools = ["file", "wg"]
-description = "Core workgraph file and workflow tools"
+description = "Core wg file and workflow tools"
 
 [bundles]
 

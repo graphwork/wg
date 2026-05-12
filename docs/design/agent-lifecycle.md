@@ -6,7 +6,7 @@
 
 ## Problem
 
-Agents in workgraph can stop for many reasons: they complete their task, they get stuck, the system sleeps, they need to wait for a dependency, or they receive a message after finishing. The previous design (liveness-detection.md) addressed detection and triage of stuck/dead agents. This document expands the design to cover the **full agent lifecycle** — a unified model where agents can stop and restart without losing context, regardless of why they stopped.
+Agents in wg can stop for many reasons: they complete their task, they get stuck, the system sleeps, they need to wait for a dependency, or they receive a message after finishing. The previous design (liveness-detection.md) addressed detection and triage of stuck/dead agents. This document expands the design to cover the **full agent lifecycle** — a unified model where agents can stop and restart without losing context, regardless of why they stopped.
 
 ## The Unified Abstraction
 

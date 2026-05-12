@@ -5,8 +5,8 @@
 ## Goal
 
 Run Terminal Bench two ways:
-- **Condition A**: Bare agent (no workgraph) -- the baseline everyone else has
-- **Condition B**: Same agent with workgraph as external memory -- the thesis
+- **Condition A**: Bare agent (no wg) -- the baseline everyone else has
+- **Condition B**: Same agent with wg as external memory -- the thesis
 
 Show that B dramatically outperforms A. Prove that memory makes computation universal.
 
@@ -220,11 +220,11 @@ A simple script that:
 
 This is the **control group**. Same model, same tools, no graph.
 
-### 3c. Build Condition B harness: agent + workgraph (4-6 hours)
+### 3c. Build Condition B harness: agent + wg (4-6 hours)
 
 A script that:
 1. For each Terminal Bench task:
-   - Creates a workgraph with the task as root node
+   - Creates a wg with the task as root node
    - The agent has full wg tools + file tools + bash
    - Agent can: decompose into subtasks, log progress, create verification gates
    - If the task is complex enough, the coordinator can spawn child agents
@@ -240,7 +240,7 @@ Define:
 - **Primary metric**: % of tasks solved (pass/fail per Terminal Bench scoring)
 - **Secondary metrics**: tokens consumed, wall-clock time, number of turns, cost
 - **Controls**: Same model, same temperature, same max tokens per response, same tool implementations
-- **Variable**: Presence/absence of workgraph
+- **Variable**: Presence/absence of wg
 - **Statistical**: Run each condition 3x to account for model stochasticity. Report mean and variance.
 
 **Phase 3 Total Effort**: 11-16 hours (2 days)
@@ -259,18 +259,18 @@ Run both conditions on Minimax M2.7:
 - Condition B: 3 runs, all tasks
 - Capture: scores, tokens, time, logs
 
-This is the main result. If Minimax M2.7 + workgraph meaningfully outperforms bare Minimax M2.7, that's the headline.
+This is the main result. If Minimax M2.7 + wg meaningfully outperforms bare Minimax M2.7, that's the headline.
 
 ### 4b. Smaller open model via OpenRouter (stretch)
 
-Repeat with a smaller/cheaper model. The hypothesis is that workgraph helps smaller models even more, because they hit context limits sooner and benefit more from externalized memory.
+Repeat with a smaller/cheaper model. The hypothesis is that wg helps smaller models even more, because they hit context limits sooner and benefit more from externalized memory.
 
 ### 4c. Claude Sonnet via native executor (calibration)
 
 Run both conditions with Claude Sonnet through the native executor (not Claude CLI). This gives you:
 - A calibration point against a known-good model
 - Validation that the native executor performs comparably to the Claude CLI executor
-- A ceiling estimate for what the workgraph benefit looks like with a strong model
+- A ceiling estimate for what the wg benefit looks like with a strong model
 
 ### 4d. Analyze results (half day)
 
@@ -279,7 +279,7 @@ For each model x condition:
 - Pass rate by task difficulty
 - Token efficiency (tokens per solved task)
 - Time efficiency (wall-clock per solved task)
-- Qualitative: what kinds of tasks does workgraph help most?
+- Qualitative: what kinds of tasks does wg help most?
 
 **Phase 4 Total Effort**: 2-3 days (mostly waiting for runs to complete)
 **Deliverable**: Numbers
@@ -293,9 +293,9 @@ For each model x condition:
 ### The Story
 
 1. **The thesis**: Memory makes computation universal (link to your paper)
-2. **The construction**: workgraph as external stigmergic memory for LLMs
+2. **The construction**: wg as external stigmergic memory for LLMs
 3. **The experiment**: Terminal Bench, two conditions, same model
-4. **The result**: [X]% improvement with workgraph on Minimax M2.7
+4. **The result**: [X]% improvement with wg on Minimax M2.7
 5. **The implication**: The bottleneck isn't the model. It's the memory architecture. You can make a $0 open model outperform a $200/month subscription by giving it the right external memory system.
 
 ### Artifacts
@@ -322,7 +322,7 @@ For each model x condition:
 
 **Total: 8-11 working days from today to published Terminal Bench results.**
 
-With workgraph orchestrating the work (eating your own dogfood), phases 1-3 can be parallelized. Fix bugs in the native executor while building the harness. That compresses the timeline to maybe **6-8 days**.
+With wg orchestrating the work (eating your own dogfood), phases 1-3 can be parallelized. Fix bugs in the native executor while building the harness. That compresses the timeline to maybe **6-8 days**.
 
 ---
 
@@ -332,7 +332,7 @@ With workgraph orchestrating the work (eating your own dogfood), phases 1-3 can 
 |------|:-----------:|------------|
 | Primary model tool calling is unreliable | 30% | Fall back to alternative model via OpenRouter |
 | Terminal Bench tasks exceed 32K context in single session | 40% | This is actually GOOD -- it proves the need for external memory. Condition A fails, Condition B (with resume/journal) succeeds. |
-| workgraph overhead costs more tokens than it saves | 15% | Measure and report honestly. Even if token count is higher, pass rate improvement is the primary metric. |
+| wg overhead costs more tokens than it saves | 15% | Measure and report honestly. Even if token count is higher, pass rate improvement is the primary metric. |
 | Results are marginal (< 5% improvement) | 20% | Focus on hard tasks only (where context limits matter). Report by difficulty tier. The improvement should be largest on the hardest tasks. |
 | OpenRouter rate limits or downtime | 20% | Run during off-peak hours, or fall back to alternative model on OpenRouter. |
 
@@ -347,7 +347,7 @@ If the primary model can't reliably do tool calling through the native executor,
 - Haiku is cheap ($0.25/MTok input, $1.25/MTok output)
 - Haiku is fast
 - Haiku is weaker than Sonnet/Opus -- similar capability tier to good open models
-- If Haiku + workgraph beats bare Haiku, that still proves the thesis
+- If Haiku + wg beats bare Haiku, that still proves the thesis
 - And the native executor already works with Anthropic's API
 
 This gives you a publishable result while you fix any model integration issues.
@@ -362,7 +362,7 @@ If the experiment works:
 
 Or even better:
 
-**"Minimax M2.7 with workgraph solves [X]% of Terminal Bench. Bare Minimax M2.7 solves [Y]%. The graph is worth [X-Y] percentage points of performance -- equivalent to a [N]x model size increase."**
+**"Minimax M2.7 with wg solves [X]% of Terminal Bench. Bare Minimax M2.7 solves [Y]%. The graph is worth [X-Y] percentage points of performance -- equivalent to a [N]x model size increase."**
 
 That's the number that changes everything. That's the constructive proof of your theorem. That's what turns 5 stars into 5,000.
 

@@ -8,9 +8,9 @@
 
 ## Executive Summary
 
-> **Note:** This research document was written before loop edges were implemented. workgraph now supports cycles via `loops_to` edges with iteration guards and max counts. The analysis below remains useful as background for the design decisions made.
+> **Note:** This research document was written before loop edges were implemented. wg now supports cycles via `loops_to` edges with iteration guards and max counts. The analysis below remains useful as background for the design decisions made.
 
-workgraph models task dependencies as a directed graph. Many real workflows are cyclic: sprint cycles, review-revise loops, CI/CD pipelines, monitoring→alert→fix→verify, recurring standups. This report surveys how other systems handle cycles, reviews formal approaches, and proposes extensions for workgraph.
+wg models task dependencies as a directed graph. Many real workflows are cyclic: sprint cycles, review-revise loops, CI/CD pipelines, monitoring→alert→fix→verify, recurring standups. This report surveys how other systems handle cycles, reviews formal approaches, and proposes extensions for wg.
 
 **Key finding**: The three patterns that emerge across all systems are:
 
@@ -18,7 +18,7 @@ workgraph models task dependencies as a directed graph. Many real workflows are 
 2. **Template instantiation** — cycles create new instances of task subgraphs rather than mutating existing ones
 3. **Event-driven re-activation** — completion/failure events trigger status resets on upstream tasks
 
-The recommended minimal change for workgraph: add a `loop` edge type with a guard condition and max iteration count, let `Done` tasks be re-opened to `Open` via these edges, and use the existing `wg check` infrastructure to verify cycle safety.
+The recommended minimal change for wg: add a `loop` edge type with a guard condition and max iteration count, let `Done` tasks be re-opened to `Open` via these edges, and use the existing `wg check` infrastructure to verify cycle safety.
 
 ---
 
@@ -28,7 +28,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 2. [Formal Graph Theory Approaches](#2-formal-graph-theory-approaches)
 3. [Task Status in Cycles](#3-task-status-in-cycles)
 4. [Preventing Infinite Loops](#4-preventing-infinite-loops)
-5. [Minimal Design for workgraph](#5-minimal-design-for-workgraph)
+5. [Minimal Design for wg](#5-minimal-design-for-wg)
 6. [Appendix: Comparative Tables](#6-appendix-comparative-tables)
 
 ---
@@ -41,7 +41,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 **Cycle mechanism**: Native language loops (`for`, `while`). Each loop iteration appends events to the workflow's history. The hard limit is **51,200 history events** (50 MB). After ~100 iterations, you're supposed to call **`ContinueAsNew`**, which atomically completes the current execution and starts a fresh one with the same Workflow ID, carrying forward only explicitly passed state.
 
-**Key insight for workgraph**: Temporal separates the *logical identity* (Workflow ID stays constant) from the *physical execution* (Run ID changes on ContinueAsNew). This is directly applicable — a recurring task in workgraph could keep its task ID but create new "iterations" or "runs."
+**Key insight for wg**: Temporal separates the *logical identity* (Workflow ID stays constant) from the *physical execution* (Run ID changes on ContinueAsNew). This is directly applicable — a recurring task in wg could keep its task ID but create new "iterations" or "runs."
 
 **Other primitives**:
 - **Cron Schedules / Schedules API**: Server-side recurring triggers (recommended for periodic workflows)
@@ -61,7 +61,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 - **Sensors**: Operators that block until an external condition is met. In reschedule mode, they release the worker between checks.
 - **Dynamic Task Mapping** (`expand()`): Fan-out at runtime based on upstream output.
 
-**Key insight for workgraph**: Airflow's approach of "loops live outside the graph" via scheduling is simple and proven. A workgraph equivalent would be a `wg schedule` command that periodically re-instantiates a task subgraph.
+**Key insight for wg**: Airflow's approach of "loops live outside the graph" via scheduling is simple and proven. A wg equivalent would be a `wg schedule` command that periodically re-instantiates a task subgraph.
 
 **Task states**: `none → scheduled → queued → running → success/failed/up_for_retry/skipped/upstream_failed`
 
@@ -77,11 +77,11 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 **Retry strategy**: Per-template with `limit`, `retryPolicy` (OnFailure/OnError/Always), backoff duration/factor/maxDuration, and CEL expressions for conditional retry.
 
-**Key insight for workgraph**: Each loop iteration creates a **separate node** in the workflow tree, named `step(0)`, `step(1)`, etc. This "unroll the loop into instances" pattern keeps the execution history clean.
+**Key insight for wg**: Each loop iteration creates a **separate node** in the workflow tree, named `step(0)`, `step(1)`, etc. This "unroll the loop into instances" pattern keeps the execution history clean.
 
 ### 1.4 n8n
 
-**Model**: DAG with **explicit cycle support**. This is the most relevant precedent for workgraph.
+**Model**: DAG with **explicit cycle support**. This is the most relevant precedent for wg.
 
 **Cycle mechanism**: n8n allows connecting a node's output back to a previous node's input, creating actual cycles in the graph. It handles this using **Tarjan's strongly connected components (SCC) algorithm** for cycle detection in O(V + E).
 
@@ -90,7 +90,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 **Partial execution rule**: If any node within a cycle is "dirty" (needs re-execution), the **entire cycle** must restart from its entry point.
 
-**Key insight for workgraph**: n8n proves that a practical workflow tool can support cycles without abandoning the graph model. The SCC-based approach means cycles are first-class citizens that the engine understands and handles safely.
+**Key insight for wg**: n8n proves that a practical workflow tool can support cycles without abandoning the graph model. The SCC-based approach means cycles are first-class citizens that the engine understands and handles safely.
 
 **Loop prevention**: **None built-in.** Documentation warns that manual loops without termination conditions will run forever.
 
@@ -104,7 +104,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 - Subflows for compositional repetition
 - Deployments with cron/interval/RRule schedules for recurring execution
 
-**Key insight for workgraph**: Prefect v1's `LOOP` signal is interesting — it's an explicit "re-run me" primitive at the task level, with iteration state visible in the task's history. This maps well to a `loop_count` field on workgraph tasks.
+**Key insight for wg**: Prefect v1's `LOOP` signal is interesting — it's an explicit "re-run me" primitive at the task level, with iteration state visible in the task's history. This maps well to a `loop_count` field on wg tasks.
 
 ### 1.6 BPMN / Camunda
 
@@ -125,7 +125,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 3. **Sequence Flow Cycles**: Explicit back-edges using XOR gateways as while-loop conditions
 
-**Key insight for workgraph**: BPMN distinguishes between **structured loops** (well-nested, with clear entry/exit) and **arbitrary cycles** (spaghetti back-edges). workgraph should follow this — structured loops are safe and analyzable; arbitrary cycles need explicit opt-in.
+**Key insight for wg**: BPMN distinguishes between **structured loops** (well-nested, with clear entry/exit) and **arbitrary cycles** (spaghetti back-edges). wg should follow this — structured loops are safe and analyzable; arbitrary cycles need explicit opt-in.
 
 ### 1.7 Cylc
 
@@ -133,7 +133,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 **Cycle mechanism**: Tasks repeat on different intervals within the same workflow. Cylc "unrolls the cycle loop" to create a single non-cycling workflow of repeating tasks, each with its own **cycle point** (timestamp or integer). Inter-cycle dependencies use notation like `[-P1]` (previous cycle point) or `[-P2]` (two cycles back).
 
-**Key insight for workgraph**: Cylc's approach of parameterizing tasks by cycle point — `task_A[cycle=3]` depends on `task_A[cycle=2]` — is elegant. It keeps the graph acyclic by making each iteration a distinct node, but the *definition* is cyclic. This "template + instantiation" pattern is powerful.
+**Key insight for wg**: Cylc's approach of parameterizing tasks by cycle point — `task_A[cycle=3]` depends on `task_A[cycle=2]` — is elegant. It keeps the graph acyclic by making each iteration a distinct node, but the *definition* is cyclic. This "template + instantiation" pattern is powerful.
 
 ### 1.8 AWS Step Functions
 
@@ -151,11 +151,11 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 The simplest extension: classify edges using DFS into **tree edges**, **forward edges**, **cross edges**, and **back-edges**. A back-edge points from a descendant to an ancestor in the DFS tree — it's what creates cycles. A directed graph is cyclic iff DFS produces at least one back-edge.
 
-**For workgraph**: Add a `loop_to` or `iterates_to` edge type that is explicitly marked as a back-edge. The topological sort ignores these edges (so scheduling still works), but the executor respects them for re-activation. Attach `max_iterations` and a `guard` condition.
+**For wg**: Add a `loop_to` or `iterates_to` edge type that is explicitly marked as a back-edge. The topological sort ignores these edges (so scheduling still works), but the executor respects them for re-activation. Attach `max_iterations` and a `guard` condition.
 
 **Complexity**: O(V + E) for detection and classification.
 
-**Assessment**: Lowest implementation effort. Already 80% implemented — workgraph's `check.rs` does DFS-based cycle detection and `loops.rs` classifies cycles by tag.
+**Assessment**: Lowest implementation effort. Already 80% implemented — wg's `check.rs` does DFS-based cycle detection and `loops.rs` classifies cycles by tag.
 
 ### 2.2 Petri Nets
 
@@ -174,7 +174,7 @@ The simplest extension: classify edges using DFS into **tree edges**, **forward 
 - **Boundedness**: Token counts stay within limits (finite state space, analyzable)
 - **Soundness** (for Workflow Nets): From any reachable state, completion is achievable; completion means exactly one token in the end place
 
-**Assessment**: Most formally rigorous. Directly applicable — workgraph tasks map to transitions, dependency edges to places, resources to resource-places. The `wg check` command could perform soundness analysis instead of just cycle detection. But EXPSPACE-hard for general soundness checking, and adds conceptual overhead.
+**Assessment**: Most formally rigorous. Directly applicable — wg tasks map to transitions, dependency edges to places, resources to resource-places. The `wg check` command could perform soundness analysis instead of just cycle detection. But EXPSPACE-hard for general soundness checking, and adds conceptual overhead.
 
 ### 2.3 Statecharts (Harel)
 
@@ -182,23 +182,23 @@ The simplest extension: classify edges using DFS into **tree edges**, **forward 
 
 **Cycles**: Simply transitions that return to a previously visited state. Key innovation: **history states** (H / H*) that remember which sub-state was last active when re-entering a composite state. Deep history (H*) is particularly relevant — re-entering a review phase resumes from the specific step that flagged the issue, not from scratch.
 
-**Assessment**: Good fit for modeling individual task lifecycles (the Open→InProgress→Done state machine already in workgraph). Less natural for modeling the inter-task dependency graph. Best used as a complementary conceptual model.
+**Assessment**: Good fit for modeling individual task lifecycles (the Open→InProgress→Done state machine already in wg). Less natural for modeling the inter-task dependency graph. Best used as a complementary conceptual model.
 
 ### 2.4 Workflow Nets (van der Aalst)
 
 **Model**: A Petri net subclass specifically designed for business processes. Has a source place (start), sink place (end), and every node lies on a path between them.
 
-**Soundness criterion**: (1) completion is always reachable, (2) completion means all other places are empty, (3) no dead transitions. This is exactly the property workgraph needs for safe cycles.
+**Soundness criterion**: (1) completion is always reachable, (2) completion means all other places are empty, (3) no dead transitions. This is exactly the property wg needs for safe cycles.
 
 **Extended WF-net**: Add a feedback transition from sink to source to model "run the workflow again." If the extended net is live and bounded, the original WF-net is sound.
 
-**Assessment**: Most directly applicable formalism. Your workgraph is essentially already a WF-net. The soundness criterion gives formal backing to the Intentional/Warning/Info cycle classification already in `loops.rs`.
+**Assessment**: Most directly applicable formalism. Your wg is essentially already a WF-net. The soundness criterion gives formal backing to the Intentional/Warning/Info cycle classification already in `loops.rs`.
 
 ### 2.5 Hypergraphs
 
 **Model**: Edges connect sets of nodes to sets of nodes (many-to-many). A single hyperarc can express "if both deploy-staging AND deploy-prod fail, re-open the design task."
 
-**Assessment**: Theoretically elegant but practically too exotic. Few tools, hard to visualize, unfamiliar to developers. Not recommended for workgraph.
+**Assessment**: Theoretically elegant but practically too exotic. Few tools, hard to visualize, unfamiliar to developers. Not recommended for wg.
 
 ### 2.6 Process Algebras (CSP, Pi-Calculus)
 
@@ -215,7 +215,7 @@ The simplest extension: classify edges using DFS into **tree edges**, **forward 
 - **Circuit breakers**: After N failures, the retry stream is cut
 - **TTL/hop count**: Events carry a counter decremented on each cycle traversal
 
-**Assessment**: Complementary to the graph model. workgraph's service daemon already handles task lifecycle events — adding explicit retry/revision events with backpressure gives safe cycle execution without changing the graph representation.
+**Assessment**: Complementary to the graph model. wg's service daemon already handles task lifecycle events — adding explicit retry/revision events with backpressure gives safe cycle execution without changing the graph representation.
 
 ---
 
@@ -241,11 +241,11 @@ Every system answers this differently:
 
 **B) Mutable status, re-activation** (n8n, BPMN, Step Functions): The same task transitions back from Done to an active state. Simpler model but muddier history.
 
-### 3.2 Recommendation for workgraph
+### 3.2 Recommendation for wg
 
 **Hybrid approach**: Use **both** philosophies depending on the use case.
 
-**For retry/revision loops** (short cycles, same work unit): Allow `Done → Open` re-activation on the same task. workgraph already supports `Failed → Open` via `wg retry` and `PendingReview → Open` via `wg reject`. Extending this to `Done → Open` via a loop edge is natural.
+**For retry/revision loops** (short cycles, same work unit): Allow `Done → Open` re-activation on the same task. wg already supports `Failed → Open` via `wg retry` and `PendingReview → Open` via `wg reject`. Extending this to `Done → Open` via a loop edge is natural.
 
 **For recurring processes** (sprint cycles, periodic reviews): Create **new task instances** from a template. `sprint-review[2026-W07]` is a distinct task from `sprint-review[2026-W08]`. Keep the template as a definition, instantiate per cycle.
 
@@ -259,7 +259,7 @@ Three trigger models from the survey:
 
 3. **Schedule-based** (Airflow, Argo CronWorkflow): Time triggers a new cycle. "Every Monday, create a new sprint planning task."
 
-For workgraph, condition-based triggers are the most natural fit for inline cycles. Schedule-based triggers are best for recurring processes. Event-based triggers could be added later via the service daemon.
+For wg, condition-based triggers are the most natural fit for inline cycles. Schedule-based triggers are best for recurring processes. Event-based triggers could be added later via the service daemon.
 
 ---
 
@@ -279,7 +279,7 @@ For workgraph, condition-based triggers are the most natural fit for inline cycl
 | **Backpressure** | Reactive systems | Bounded queues prevent runaway |
 | **SCC-based restart** | n8n | Entire cycle restarts from entry, bounded by input |
 
-### 4.2 Recommendation for workgraph
+### 4.2 Recommendation for wg
 
 Use **defense in depth** — multiple layers:
 
@@ -296,7 +296,7 @@ Use **defense in depth** — multiple layers:
 
 ---
 
-## 5. Minimal Design for workgraph
+## 5. Minimal Design for wg
 
 ### 5.1 Design Principles
 

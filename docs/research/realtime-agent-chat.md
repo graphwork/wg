@@ -352,7 +352,7 @@ Spawn a lightweight "monitor" agent alongside the main agent:
    There is no "cancel current generation" mechanism in the Messages API.
 
 4. **Session resume is available:** `--resume <session-id>` continues a
-   conversation, preserving full context. This is already used by workgraph.
+   conversation, preserving full context. This is already used by wg.
 
 5. **Process signals work:** The Claude CLI process can be killed with signals.
    It saves session state on graceful termination.

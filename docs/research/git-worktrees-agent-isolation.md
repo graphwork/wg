@@ -75,7 +75,7 @@ Every build tool needs two things configured per worktree:
 1. **Output directory**: where compiled/generated artifacts go
 2. **Cache sharing**: whether and how to share cached artifacts across worktrees
 
-The workgraph integration should:
+The wg integration should:
 
 1. **Detect** the project type (look for `Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`, `Makefile`, etc.)
 2. **Set environment variables** or config that redirects build output per worktree
@@ -166,7 +166,7 @@ make BUILD_DIR="$WORKTREE_PATH/build"
 The worktree setup hook should expose:
 
 ```bash
-# Set by workgraph before agent starts
+# Set by wg before agent starts
 WG_WORKTREE_PATH=/path/to/worktree      # agent's working directory
 WG_PROJECT_ROOT=/path/to/main/repo       # original repo root
 WG_AGENT_ID=agent-XXXX                   # agent identifier

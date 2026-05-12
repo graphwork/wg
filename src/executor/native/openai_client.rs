@@ -1416,9 +1416,9 @@ impl OpenAiClient {
         if self.provider_hint.as_deref() == Some("openrouter") {
             headers.insert(
                 "http-referer",
-                HeaderValue::from_static("https://github.com/anthropics/workgraph"),
+                HeaderValue::from_static("https://github.com/graphwork/wg"),
             );
-            headers.insert("x-title", HeaderValue::from_static("workgraph"));
+            headers.insert("x-title", HeaderValue::from_static("wg"));
         }
 
         headers

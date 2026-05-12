@@ -1,6 +1,6 @@
 # Phantom Edge Analysis
 
-> **Contributor doc — not required to USE workgraph.** This is a research
+> **Contributor doc — not required to USE wg.** This is a research
 > snapshot of how `wg add` validates `--after` blockers. The user-facing
 > rules for chat agents creating tasks (always use `--after`, validate
 > dependencies exist) are summarized in `wg agent-guide` (bundled with the
@@ -54,7 +54,7 @@ The `wg publish` command (`src/commands/resume.rs:178-205`) calls `validate_task
 
 ```rust
 // src/commands/resume.rs:178-205
-fn validate_task_deps(graph: &WorkGraph, task_id: &str, is_publish: bool) -> Result<()> {
+fn validate_task_deps(graph: &wg, task_id: &str, is_publish: bool) -> Result<()> {
     let task = graph.get_task_or_err(task_id)?;
     let mut missing = Vec::new();
     for dep_id in &task.after {

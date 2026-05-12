@@ -44,7 +44,7 @@ The coordinator lifecycle has undergone significant fixes and architectural chan
 
 **End-to-end Flow:**
 1. `handle_create_coordinator()` in `src/commands/service/ipc.rs:1173+`
-2. Loads current graph from `.workgraph/graph.jsonl`
+2. Loads current graph from `.wg/graph.jsonl`
 3. Finds next available coordinator ID starting from 0 using `is_coordinator_slot_available()`
 4. Skips archived (.coordinator-0), abandoned (.coordinator-1 through .coordinator-12), and any active coordinators
 5. Creates new task with format `.coordinator-{next_id}` where next_id > 12 (current highest graph ID)
@@ -60,7 +60,7 @@ The coordinator lifecycle has undergone significant fixes and architectural chan
 
 **Isolation Mechanisms:**
 - Each coordinator gets fresh task creation with new timestamps
-- Coordinator state files in `.workgraph/service/coordinator-state-{id}.json` are per-ID
+- Coordinator state files in `.wg/service/coordinator-state-{id}.json` are per-ID
 - Graph task isolation: new ID = clean slate
 - Archive process removes "coordinator-loop" tag, preventing reactivation
 
@@ -74,7 +74,7 @@ The coordinator lifecycle has undergone significant fixes and architectural chan
 - Next graph coordinator would be: `.coordinator-13`
 
 **Native Coordinator State Files:**
-- Highest file: `coordinator-state-31.json` in `.workgraph/service/`
+- Highest file: `coordinator-state-31.json` in `.wg/service/`
 - Suggests native system has spawned up to coordinator-31
 - Native and graph systems use different numbering/lifecycle
 
@@ -143,8 +143,8 @@ The original issues (coordinator resurrection, compilation errors) have been suc
 | `src/commands/service/ipc.rs` | 1146-1170 | `is_coordinator_slot_available()` - fixed function |
 | `src/commands/service/ipc.rs` | 1173-1221 | `handle_create_coordinator()` - uses fixed slot detection |
 | `src/commands/service/ipc.rs` | 1319-1358 | `handle_archive_coordinator()` - archiving implementation |
-| `.workgraph/graph.jsonl` | N/A | Contains .coordinator-0 through .coordinator-12 |
-| `.workgraph/service/coordinator-state-*.json` | N/A | Native coordinator states 0-31 |
+| `.wg/graph.jsonl` | N/A | Contains .coordinator-0 through .coordinator-12 |
+| `.wg/service/coordinator-state-*.json` | N/A | Native coordinator states 0-31 |
 
 ## Conclusion
 

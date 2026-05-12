@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Comprehensive analysis reveals **exceptional CLI documentation coverage** for workgraph with potential 100% coverage.
+Comprehensive analysis reveals **exceptional CLI documentation coverage** for wg with potential 100% coverage.
 
 **Key Findings:**
 - **Coverage Rate**: 98%+ (likely 100% - further verification needed for 1-2 edge cases)
@@ -114,6 +114,6 @@ init, cleanup, check, archive, reschedule, artifact, tui, replay, runs, gc, comp
 
 ## Conclusion
 
-workgraph CLI documentation coverage is **exceptional**, likely achieving 100% command coverage with excellent quality. The documentation provides comprehensive command references with examples, detailed options, and good organization. Any remaining gaps are minimal edge cases that require minor verification rather than significant documentation work.
+wg CLI documentation coverage is **exceptional**, likely achieving 100% command coverage with excellent quality. The documentation provides comprehensive command references with examples, detailed options, and good organization. Any remaining gaps are minimal edge cases that require minor verification rather than significant documentation work.
 
-**This analysis confirms workgraph has achieved comprehensive CLI documentation coverage that meets or exceeds industry standards.**
+**This analysis confirms wg has achieved comprehensive CLI documentation coverage that meets or exceeds industry standards.**

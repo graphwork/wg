@@ -1,11 +1,11 @@
-# workgraph Manual
+# wg Manual
 
-A conceptual manual for humans who want to understand and use workgraph and its agency system. This is not an API reference or CLI cheat-sheet — it is a book of tight, precise prose that builds understanding from first principles.
+A conceptual manual for humans who want to understand and use wg and its agency system. This is not an API reference or CLI cheat-sheet — it is a book of tight, precise prose that builds understanding from first principles.
 
 ## Contents
 
 1. **Glossary** — precise definitions for every term used in the manual
-2. **System Overview** — what workgraph is, what the agency adds, and how they relate
+2. **System Overview** — what wg is, what the agency adds, and how they relate
 3. **The Task Graph** — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns
 4. **The Agency Model** — roles, motivations, agents, content-hash IDs, skills, and trust
 5. **Coordination & Execution** — the service daemon, coordinator tick, dispatch cycle, and parallelism
@@ -16,20 +16,20 @@ A conceptual manual for humans who want to understand and use workgraph and its 
 The manual is written in [Typst](https://typst.app/). To compile:
 
 ```bash
-typst compile docs/manual/workgraph-manual.typ
+typst compile docs/manual/wg-manual.typ
 ```
 
-This produces `workgraph-manual.pdf` in the same directory.
+This produces `wg-manual.pdf` in the same directory.
 
 To watch for changes and recompile automatically:
 
 ```bash
-typst watch docs/manual/workgraph-manual.typ
+typst watch docs/manual/wg-manual.typ
 ```
 
 ## Source files
 
-The unified manual (`workgraph-manual.typ`) is composed from five section files written independently and then harmonized:
+The unified manual (`wg-manual.typ`) is composed from five section files written independently and then harmonized:
 
 | File | Section |
 |------|---------|

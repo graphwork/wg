@@ -9,7 +9,7 @@
 
 ## 1. Problem Statement
 
-Each Terminal Bench trial creates a temporary workgraph in `/tmp/tb-wg-XXXX/` that gets destroyed after the trial completes. This means:
+Each Terminal Bench trial creates a temporary wg in `/tmp/tb-wg-XXXX/` that gets destroyed after the trial completes. This means:
 
 1. **Evaluation data is lost** — FLIP scores, agent performance, task outcomes disappear with `shutil.rmtree`
 2. **Agency primitives are not shared** — each trial bootstraps from starter roles/tradeoffs via `wg agency init`, never learning from prior trials
@@ -25,7 +25,7 @@ The goal: make TB trials federate with a persistent base project so that evaluat
 ```
                     ┌──────────────────────────────┐
                     │  Hub: tb-evaluations/         │
-                    │  .workgraph/                  │
+                    │  .wg/                  │
                     │    agency/                    │
                     │      cache/roles/             │  ← accumulated roles
                     │      primitives/tradeoffs/    │  ← accumulated tradeoffs
@@ -48,10 +48,10 @@ The goal: make TB trials federate with a persistent base project so that evaluat
 
 ### 2.2 Hub Project: Dedicated `tb-evaluations/`
 
-**Decision: Use a dedicated project, NOT the main workgraph repo.**
+**Decision: Use a dedicated project, NOT the main wg repo.**
 
 Rationale:
-- The main workgraph project's agency pool serves production use — polluting it with benchmark-model evaluations (e.g., minimax-m2.7 results) would distort evolution for production agents
+- The main wg project's agency pool serves production use — polluting it with benchmark-model evaluations (e.g., minimax-m2.7 results) would distort evolution for production agents
 - A dedicated hub keeps benchmark data isolated while still using the full federation machinery
 - The hub can optionally federate *upstream* to the main project for roles/tradeoffs that prove universally good, but this is a deliberate manual step, not automatic
 
@@ -59,7 +59,7 @@ Location: `terminal-bench/tb-evaluations/` (checked into the repo, .gitignored f
 
 ```
 terminal-bench/tb-evaluations/
-├── .workgraph/
+├── .wg/
 │   ├── config.toml          # hub config (no coordinator needed)
 │   ├── federation.yaml      # optional upstream remote to main project
 │   └── agency/
@@ -74,9 +74,9 @@ terminal-bench/tb-evaluations/
 └── .gitignore               # ignore evaluations/ (large, generated)
 ```
 
-### 2.3 Why Not Global `~/.workgraph/agency/`?
+### 2.3 Why Not Global `~/.wg/agency/`?
 
-The global agency store (`~/.workgraph/agency/`) is another candidate hub, but:
+The global agency store (`~/.wg/agency/`) is another candidate hub, but:
 - It mixes benchmark results with production agent data
 - It's user-specific, not reproducible across machines
 - It can't be checked into the repo or shared with collaborators
@@ -151,7 +151,7 @@ class WorkgraphAgent(BaseAgent):
     def __init__(
         self,
         ...
-        federation_hub: str | None = None,  # path to tb-evaluations/.workgraph
+        federation_hub: str | None = None,  # path to tb-evaluations/.wg
         evolve_after_n: int = 0,            # run evolve every N trials (0 = never)
         pull_primitives: bool = True,       # pull roles/tradeoffs from hub before trial
         push_evaluations: bool = True,      # push evaluations to hub after trial
@@ -212,7 +212,7 @@ New flow:
 
 ```python
 async def _write_trial_federation_config(wg_dir: str, hub_path: str) -> None:
-    """Write .workgraph/federation.yaml pointing to the hub."""
+    """Write .wg/federation.yaml pointing to the hub."""
     config = {
         "remotes": {
             "hub": {
@@ -231,7 +231,7 @@ async def _write_trial_federation_config(wg_dir: str, hub_path: str) -> None:
 ```python
 async def _ensure_hub_initialized(hub_path: str, wg_bin: str) -> None:
     """Initialize the federation hub if it doesn't exist."""
-    wg_dir = os.path.join(hub_path, ".workgraph")
+    wg_dir = os.path.join(hub_path, ".wg")
     if os.path.isdir(os.path.join(wg_dir, "agency")):
         return  # already initialized
     
@@ -262,7 +262,7 @@ Three strategies, from simplest to most sophisticated:
 **Strategy 1: Manual (recommended for initial deployment)**
 ```bash
 # After running a batch of trials:
-wg evolve run --dir terminal-bench/tb-evaluations/.workgraph
+wg evolve run --dir terminal-bench/tb-evaluations/.wg
 ```
 
 This keeps the operator in control. Run it after completing a full trial sweep (e.g., all 6 conditions × N replicas).
@@ -275,12 +275,12 @@ if evolve_after_n > 0 and trial_count % evolve_after_n == 0:
     await _exec_wg_cmd_host(hub_wg_dir, wg_bin, ["evolve", "run"])
 ```
 
-Risk: concurrent trials could trigger multiple evolve runs. Mitigate with file locking (the hub's `.workgraph/` already uses flock).
+Risk: concurrent trials could trigger multiple evolve runs. Mitigate with file locking (the hub's `.wg/` already uses flock).
 
 **Strategy 3: Hub-Resident Cycle (fully automated)**
 Create a cycle task in the hub project:
 ```bash
-wg add "Evolve agency pool" --dir tb-evaluations/.workgraph \
+wg add "Evolve agency pool" --dir tb-evaluations/.wg \
   --max-iterations 100 \
   --verify "wg evolve run --dry-run | grep -q 'operations'"
 ```
@@ -293,7 +293,7 @@ This runs as a wg task, managed by the hub's coordinator. Most sophisticated, bu
 
 ```bash
 wg evolve run \
-  --dir terminal-bench/tb-evaluations/.workgraph \
+  --dir terminal-bench/tb-evaluations/.wg \
   --strategy balanced \         # use balanced mutation/crossover
   --budget 5                    # max 5 new primitives per cycle
 ```
@@ -329,7 +329,7 @@ This is the core value proposition: **benchmark trials drive agency evolution, a
 
 ```
 terminal-bench/tb-evaluations/
-├── .workgraph/
+├── .wg/
 │   ├── config.toml
 │   ├── graph.jsonl              # empty initially (hub doesn't need tasks)
 │   └── agency/
@@ -353,22 +353,22 @@ context_scope = "clean"
 
 ```gitignore
 # Large generated data — don't check in
-.workgraph/agency/evaluations/
-.workgraph/service/
+.wg/agency/evaluations/
+.wg/service/
 
 # DO check in evolved primitives (they're the value)
-!.workgraph/agency/cache/
-!.workgraph/agency/primitives/
+!.wg/agency/cache/
+!.wg/agency/primitives/
 ```
 
 ### 7.4 Optional: Upstream Federation to Main Project
 
 ```yaml
-# terminal-bench/tb-evaluations/.workgraph/federation.yaml
+# terminal-bench/tb-evaluations/.wg/federation.yaml
 remotes:
   upstream:
-    path: "../../.workgraph/agency"
-    description: "Main workgraph project agency pool"
+    path: "../../.wg/agency"
+    description: "Main wg project agency pool"
 ```
 
 This allows:
@@ -385,7 +385,7 @@ The adapter currently calls `shutil.copytree(wg_dir, logs_dir / "workgraph_state
 
 ```python
 #!/usr/bin/env python3
-"""Recover evaluations from archived trial workgraph states."""
+"""Recover evaluations from archived trial wg states."""
 
 import os
 import subprocess
@@ -393,7 +393,7 @@ import sys
 
 def recover_evaluations(logs_root: str, hub_path: str, wg_bin: str = "wg"):
     """Scan archived trial states and push evaluations to hub."""
-    hub_wg = os.path.join(hub_path, ".workgraph")
+    hub_wg = os.path.join(hub_path, ".wg")
     
     for trial_dir in sorted(os.listdir(logs_root)):
         state_dir = os.path.join(logs_root, trial_dir, "workgraph_state")
@@ -416,7 +416,7 @@ def recover_evaluations(logs_root: str, hub_path: str, wg_bin: str = "wg"):
 
 ### 8.3 Realistic Assessment
 
-Most existing trial data was generated with the old litellm-based adapter, which did NOT run `wg evaluate`. Those archived `.workgraph/` directories contain task graphs but no evaluation JSONs. Recovery is only possible for trials run after the native wg adapter was deployed AND evaluation was wired in.
+Most existing trial data was generated with the old litellm-based adapter, which did NOT run `wg evaluate`. Those archived `.wg/` directories contain task graphs but no evaluation JSONs. Recovery is only possible for trials run after the native wg adapter was deployed AND evaluation was wired in.
 
 **Bottom line: treat migration as best-effort. The main value is forward-looking.**
 
@@ -446,7 +446,7 @@ For strict consistency, evolve only between trial batches (Strategy 1).
 ### Phase 1: Hub Setup (no code changes)
 1. Create `terminal-bench/tb-evaluations/` directory structure
 2. Initialize with `wg init` + `wg agency init`
-3. Seed from main project: `wg agency pull ../../.workgraph/agency`
+3. Seed from main project: `wg agency pull ../../.wg/agency`
 
 ### Phase 2: Adapter Federation Wiring
 1. Add `federation_hub` parameter to `WorkgraphAgent.__init__()`

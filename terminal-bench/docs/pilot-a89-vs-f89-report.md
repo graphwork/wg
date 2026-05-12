@@ -1,8 +1,8 @@
 # Does Task Coordination Infrastructure Make AI Agents Better at Coding?
 
-## Pilot Results: Vanilla vs. Workgraph-Native Execution on Terminal Bench
+## Pilot Results: Vanilla vs. wg-Native Execution on Terminal Bench
 
-**Authors:** Workgraph Research Team
+**Authors:** wg Research Team
 **Date:** April 2026
 **Status:** Pilot study — matched-set experiment recommended before publication
 
@@ -13,7 +13,7 @@
 We tested whether task coordination infrastructure — context injection, dependency awareness, and self-healing surveillance loops — materially improves AI agent performance on coding tasks. Using MiniMax M2.7 (a mid-tier language model) on 18 Terminal Bench coding tasks, we compared two conditions:
 
 - **Condition A (Vanilla):** The model receives only the task prompt. No coordination tools, no context, no awareness of the broader task graph. Pass rate: **41.6%** (37/89 trials).
-- **Condition F (Full Coordination):** The model receives the task prompt plus workgraph context — a dependency graph, workflow tools, and a surveillance loop that can retry failed work. Pass rate: **98.9%** (89/90 trials).
+- **Condition F (Full Coordination):** The model receives the task prompt plus wg context — a dependency graph, workflow tools, and a surveillance loop that can retry failed work. Pass rate: **98.9%** (89/90 trials).
 
 On the 8 tasks tested in both conditions, vanilla execution passed 50% (4/8); coordinated execution passed 100% (40/40 trials across 5 replicas). The model never failed a task that it could solve without coordination — coordination was strictly additive.
 
@@ -95,7 +95,7 @@ Under Condition A, the agent receives:
 - The task description (what to do)
 - The verification command (how success is measured)
 
-That's it. No coordination tools, no task graph, no awareness of dependencies or related work. The agent operates in a clean Docker container (`docker_agent_loop` executor) with access to standard development tools (compilers, interpreters, package managers) but no workgraph infrastructure.
+That's it. No coordination tools, no task graph, no awareness of dependencies or related work. The agent operates in a clean Docker container (`docker_agent_loop` executor) with access to standard development tools (compilers, interpreters, package managers) but no wg infrastructure.
 
 ### What This Represents
 
@@ -104,13 +104,13 @@ Condition A is the **baseline** — what a bare model can do on a coding task wi
 ### Execution Details
 
 - **Executor:** `docker_agent_loop` — each trial runs in an isolated Docker container
-- **Environment sanitization:** Verified — no workgraph context leaked into the container
+- **Environment sanitization:** Verified — no wg context leaked into the container
 - **Concurrency:** Up to 4 trials in parallel (`max_concurrent_trials: 4`)
 - **Wall clock:** 7.2 hours total for 89 trials (25,784 seconds)
 
 ---
 
-## 5. Condition F: Full Workgraph-Native with Surveillance
+## 5. Condition F: Full wg-Native with Surveillance
 
 ### What the Model Sees
 
@@ -118,7 +118,7 @@ Under Condition F, the agent receives everything from Condition A *plus*:
 
 - **`CLAUDE.md` context:** Project instructions, conventions, and workflow patterns
 - **`MEMORY.md` context:** Persistent memory from prior sessions
-- **Workgraph CLI (`wg`):** Commands for logging progress, recording artifacts, inspecting the task graph, and signaling completion
+- **wg CLI (`wg`):** Commands for logging progress, recording artifacts, inspecting the task graph, and signaling completion
 - **Task graph awareness:** The agent can see its task within a dependency graph — what came before, what depends on it
 - **WG Quick Guide:** A condensed reference for how to use the coordination tools effectively
 
@@ -175,7 +175,7 @@ For the `financial-document-processor` task, the agent logged:
            Verified: 5 extracted JSON files, 5 CSV rows, grand_total = $6089.25
 ```
 
-The agent verified intermediate results (5 files, specific dollar amount) before marking done — a behavior enabled by having workgraph tools available for structured logging.
+The agent verified intermediate results (5 files, specific dollar amount) before marking done — a behavior enabled by having wg tools available for structured logging.
 
 The `algorithm` task (key-value store with transactions) showed the tightest execution:
 
@@ -196,7 +196,7 @@ Condition A agents had no logging infrastructure. From the trial metrics, we can
 - **`financial-document-processor` (FAILED, 239s, 9 turns):** Low turn count (9) and low token usage (17,966) suggest the agent couldn't get past the initial problem decomposition stage.
 - **`build-cython-ext` (PASSED, 249s, 50 turns):** On tasks where A succeeded, it often used many more turns — 50 turns for build-cython-ext compared to F's mean of 124s with structured logging.
 
-#### Did Condition F Agents Use Workgraph Features?
+#### Did Condition F Agents Use wg Features?
 
 Yes, consistently. Across all successful F trials:
 
@@ -205,7 +205,7 @@ Yes, consistently. Across all successful F trials:
 - **`wg done`** was used with appropriate flags to signal completion
 - **`wg show`** and **`wg context`** were used to inspect task requirements
 
-The agents treated the workgraph tools as first-class parts of their workflow, not afterthoughts.
+The agents treated the wg tools as first-class parts of their workflow, not afterthoughts.
 
 #### Did Surveillance Loops Catch Real Issues?
 
@@ -297,7 +297,7 @@ F's median is lower than A's (162s vs 246s) because F's easy/medium tasks comple
 | Tokens per pass (aggregate) | 490,859 | 717,726 | 1.5x |
 | **Tokens per pass (matched 8 tasks)** | **725,822** | **201,919** | **0.28x** |
 
-The token overhead is 3.5x at the per-trial level, driven primarily by context injection (the workgraph context adds ~3,000–5,000 input tokens per turn). But when measured by *tokens per successful pass* on the matched tasks, **F is 3.6x more cost-effective** — because A wastes substantial tokens on failed attempts.
+The token overhead is 3.5x at the per-trial level, driven primarily by context injection (the wg context adds ~3,000–5,000 input tokens per turn). But when measured by *tokens per successful pass* on the matched tasks, **F is 3.6x more cost-effective** — because A wastes substantial tokens on failed attempts.
 
 Both conditions report $0.00 via OpenRouter's M2.7 pricing. At typical commercial API rates, the 3.5x token overhead would be significant, but may be justified by the dramatically higher success rate.
 
@@ -383,7 +383,7 @@ Key learning: Sequential trial execution creates systematic bias when operationa
 
 ### Orchestration
 
-The experiment was orchestrated through workgraph itself — task definitions, dependency chains, and agent dispatching were all managed as workgraph tasks. The research meta-structure (design experiment → run conditions → compare results → synthesize findings) was itself a task graph, with each phase producing artifacts consumed by downstream analysis tasks.
+The experiment was orchestrated through wg itself — task definitions, dependency chains, and agent dispatching were all managed as wg tasks. The research meta-structure (design experiment → run conditions → compare results → synthesize findings) was itself a task graph, with each phase producing artifacts consumed by downstream analysis tasks.
 
 ---
 
@@ -409,7 +409,7 @@ The experiment was orchestrated through workgraph itself — task definitions, d
 
 1. **Matched-set experiment (minimum viable).** Run Condition A on F's 18 tasks with 5 replicas each (90 trials). This creates a proper matched comparison — same tasks, same replicas, different treatment — and would provide definitive evidence for or against the treatment effect.
 
-2. **Condition G: Context without surveillance.** Since surveillance added zero value at 3.5x token cost, a condition with workgraph context but *without* the surveillance loop would isolate the cost-benefit of context injection alone. Our prediction: G ≈ F in pass rate at ~2x lower token cost.
+2. **Condition G: Context without surveillance.** Since surveillance added zero value at 3.5x token cost, a condition with wg context but *without* the surveillance loop would isolate the cost-benefit of context injection alone. Our prediction: G ≈ F in pass rate at ~2x lower token cost.
 
 3. **Cross-model validation.** Test the A-vs-F comparison on models of varying capability: a stronger model (e.g., Claude Sonnet, GPT-4o) and a weaker model (e.g., Haiku-class). This would reveal whether coordination benefits scale with model capability or have a sweet spot.
 

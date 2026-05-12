@@ -49,7 +49,7 @@ wg add "default-test" --verify "cargo test"
 
 #### Implementation Steps
 1. **Detection**: Check if worktree isolation is enabled in config
-2. **Setup script**: Create/update `.workgraph/worktree-setup.sh` with cargo target export
+2. **Setup script**: Create/update `.wg/worktree-setup.sh` with cargo target export
 3. **Environment**: Ensure `CARGO_TARGET_DIR` is passed to spawned agents
 4. **Testing**: Verify agents use separate target directories
 
@@ -259,7 +259,7 @@ wg add "critical-task" --verify "cargo test" --verify-timeout "300s" --no-triage
 ### Week -1: Preparation
 - 📧 Notify users of upcoming changes via documentation update
 - 🔧 Deploy monitoring infrastructure for baseline metrics
-- 🧪 Set up test environment with parallel workgraph instances
+- 🧪 Set up test environment with parallel wg instances
 
 ### Week 1-2: Foundation & Isolation
 - 📝 Release notes for configuration options

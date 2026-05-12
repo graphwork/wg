@@ -17,7 +17,7 @@ The Harbor adapter (`terminal-bench/wg/adapter.py`) implements seven conditions 
 | **D** | Yes | Full | Task context scope | `(programmer, careful)` | 1 agent | Agency identity assigned |
 | **E** | Yes | Full | Graph context scope | `(architect, thorough)` | 1 agent | Broader graph awareness |
 | **F** | Yes | Full | **Distilled context** (`CONDITION_F_MEMORY`) + `WG_QUICK_GUIDE` | None | 1 agent | Full project knowledge parity |
-| **G** | Yes | Architect bundle (read-only + wg tools) | **Autopoietic meta-prompt** (`CONDITION_G_META_PROMPT`) | None | Up to 8 | Agent builds its own workgraph |
+| **G** | Yes | Architect bundle (read-only + wg tools) | **Autopoietic meta-prompt** (`CONDITION_G_META_PROMPT`) | None | Up to 8 | Agent builds its own wg |
 | **G-smart** | Yes | Full (can implement directly) | **Smart fanout meta-prompt** (try-first, decompose-if-needed) | None | Up to 4 | Direct implementation preferred, fanout available |
 
 ### Key Finding: Binary Upload is Universal

@@ -2,11 +2,11 @@
 
 ## Overview
 
-This document outlines the design for adding cron-style scheduling to workgraph, enabling time-based task triggers beyond the existing cycle iteration mechanism.
+This document outlines the design for adding cron-style scheduling to wg, enabling time-based task triggers beyond the existing cycle iteration mechanism.
 
 ## Current State Analysis
 
-Workgraph currently supports:
+wg currently supports:
 - **Cycles**: Iteration-based scheduling with `max_iterations`, restart on failure, and convergence
 - **Time delays**: `delay` field in `CycleConfig` for delaying cycle re-activation
 - **Task timing**: `not_before`, `ready_after` for single-time delays
@@ -161,7 +161,7 @@ wg service start
 
 1. **Operational tasks**: Enable scheduled maintenance, backups, health checks
 2. **Automation**: Reduce manual intervention for recurring work
-3. **Integration**: Leverages existing workgraph task management and agent dispatch
+3. **Integration**: Leverages existing wg task management and agent dispatch
 4. **Flexibility**: Standard cron expressions provide rich scheduling options
 5. **Observability**: Task instances provide full audit trail of scheduled executions
 
@@ -175,4 +175,4 @@ wg service start
 
 ---
 
-*This design enables workgraph to handle both event-driven coordination and time-driven operational tasks, providing a complete task orchestration platform.*
+*This design enables wg to handle both event-driven coordination and time-driven operational tasks, providing a complete task orchestration platform.*

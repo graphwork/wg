@@ -33,7 +33,7 @@ Legend: [COVERED] = tested, [EXISTS] = original tests exist, [GAP] = no test cov
 **Description:** Trace a task that was completed manually (no agent was ever spawned). The agent_runs list should be empty and summary.agent_run_count should be 0.
 
 **Setup:**
-1. Create a workgraph with one task `t1` (status: Done, started_at and completed_at set).
+1. Create a wg with one task `t1` (status: Done, started_at and completed_at set).
 2. Record provenance entries for `add_task`, `claim` (by human), and `done`.
 3. Do NOT create any `log/agents/t1/` directory.
 
@@ -52,7 +52,7 @@ Legend: [COVERED] = tested, [EXISTS] = original tests exist, [GAP] = no test cov
 **Description:** Trace a task that was retried, producing multiple agent run archive directories.
 
 **Setup:**
-1. Create a workgraph with task `t1`.
+1. Create a wg with task `t1`.
 2. Create two archive directories under `log/agents/t1/`:
    - `2026-02-18T10:00:00Z/` with `prompt.txt` and `output.txt`
    - `2026-02-18T11:00:00Z/` with `prompt.txt` and `output.txt`
@@ -130,7 +130,7 @@ JSON output contains:
 **Description:** Tracing a task that doesn't exist should return an error.
 
 **Setup:**
-1. Create a workgraph with task `t1`.
+1. Create a wg with task `t1`.
 
 **Expected outcome:**
 - `wg trace nonexistent` returns non-zero exit code.
@@ -212,7 +212,7 @@ JSON output contains:
 
 ### 1.11 trace_uninitialized_workgraph [COVERED]
 
-**Description:** Tracing when no workgraph exists should return an error.
+**Description:** Tracing when no wg exists should return an error.
 
 **Setup:** Empty temp directory (no `.wg/`).
 
@@ -676,7 +676,7 @@ JSON output contains:
 **Description:** Replay on a graph with no tasks.
 
 **Setup:**
-1. Initialize workgraph with empty graph (no tasks).
+1. Initialize wg with empty graph (no tasks).
 
 **Expected outcome:**
 - `wg replay --failed-only` succeeds with "No tasks match" message.
@@ -1320,7 +1320,7 @@ JSON output contains:
 **Description:** If `graph.jsonl` doesn't exist at snapshot time (edge case — normally impossible since we just loaded it), the snapshot skips the copy. This means the run directory has `meta.json` but no `graph.jsonl`.
 
 **Setup:**
-1. Create a workgraph, then manually delete graph.jsonl before triggering snapshot via the runs API.
+1. Create a wg, then manually delete graph.jsonl before triggering snapshot via the runs API.
 2. Alternatively: test via `runs::snapshot()` directly when graph.jsonl is absent.
 
 **Expected outcome:**
@@ -1371,7 +1371,7 @@ JSON output contains:
 **Description:** `restore_graph` (runs.rs:127-134) only restores `graph.jsonl`, NOT `config.toml`. Even though config.toml is snapshotted, restore does not copy it back. This is by design — config changes should be deliberate.
 
 **Setup:**
-1. Create workgraph with config.toml containing custom settings.
+1. Create wg with config.toml containing custom settings.
 2. Replay to create snapshot (captures both graph.jsonl and config.toml).
 3. Modify config.toml.
 4. Restore from snapshot.

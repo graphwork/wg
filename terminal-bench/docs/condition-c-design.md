@@ -1,4 +1,4 @@
-# Condition C Design: Workgraph Skill Injection + Planning Phase
+# Condition C Design: wg Skill Injection + Planning Phase
 
 **Status**: Draft
 **Author**: tb-design-condition-c agent
@@ -6,7 +6,7 @@
 
 ## 1. Problem Statement
 
-Condition B gives the agent workgraph tools but the agent doesn't use them.
+Condition B gives the agent wg tools but the agent doesn't use them.
 Calibration data (8 tasks, Qwen3-32B) shows the agent called `wg_done` on every task
 but **never** used `wg_log`, `wg_add`, `wg_artifact`, or `wg_show`. The full benchmark
 (267 trials, Minimax M2.7) shows Condition B scoring 16.2% mean reward vs Condition A's
@@ -53,8 +53,8 @@ and modify the system message. The benchmark evaluates outcomes, not prompting s
 
 ### 3.1 Core Idea: Skill-Injected Decomposition
 
-Condition C adds a **workgraph skill prompt** to the system message that teaches:
-1. What workgraph is (external memory + task graph)
+Condition C adds a **wg skill prompt** to the system message that teaches:
+1. What wg is (external memory + task graph)
 2. When to decompose vs solve directly (complexity heuristic)
 3. How to use the tools effectively (patterns, not just syntax)
 4. A mandatory planning phase before execution
@@ -62,9 +62,9 @@ Condition C adds a **workgraph skill prompt** to the system message that teaches
 ### 3.2 Skill Prompt Segment
 
 ```
-## Workgraph Skill: Stigmergic Task Decomposition
+## wg Skill: Stigmergic Task Decomposition
 
-You have access to a workgraph — a persistent task graph that survives context limits.
+You have access to a wg — a persistent task graph that survives context limits.
 Use it strategically, not on every task.
 
 ### When to decompose (use wg_add)
@@ -171,7 +171,7 @@ For Condition C, we capture the same artifacts plus additional analysis data:
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| `workgraph_state/` | `logs_dir/workgraph_state/` | Full `.workgraph/` directory snapshot |
+| `workgraph_state/` | `logs_dir/workgraph_state/` | Full `.wg/` directory snapshot |
 | `agent_loop.ndjson` | `logs_dir/agent_loop.ndjson` | LLM call log with tool calls |
 | `planning_turn.json` | `logs_dir/planning_turn.json` | Extracted first-turn planning analysis |
 
@@ -216,7 +216,7 @@ finds the first `type: "turn"` entry, and writes it to `planning_turn.json`.
        """Condition C: wg tools + skill injection + planning phase."""
        @staticmethod
        def name() -> str:
-           return "workgraph-condition-c"
+           return "wg-condition-c"
        def __init__(self, *args, **kwargs):
            kwargs["condition"] = "C"
            super().__init__(*args, **kwargs)
@@ -249,7 +249,7 @@ finds the first `type: "turn"` entry, and writes it to `planning_turn.json`.
 - Tool definitions (`CONDITION_B_TOOLS`) — C uses the same tools as B
 - Tool execution handlers (`execute_tool`, `_exec_wg_cmd_host`) — unchanged
 - Harbor BaseAgent interface — we already conform
-- Workgraph initialization logic — same as B
+- wg initialization logic — same as B
 
 ### Implementation order
 
@@ -291,9 +291,9 @@ capability, not instruction quality, which guides future work (try C with a stro
 You are an AI agent completing a Terminal Bench task.
 Your root task ID is: **{root_task_id}**
 
-## Workgraph: Your External Memory
+## wg: Your External Memory
 
-You have a workgraph — a persistent task graph that acts as external memory.
+You have a wg — a persistent task graph that acts as external memory.
 It survives even if your context fills up. Use it.
 
 ### Always do this

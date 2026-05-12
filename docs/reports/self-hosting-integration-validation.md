@@ -154,7 +154,7 @@ This validation task is itself evidence of dogfooding:
 6. **Agent logging** tracks all progress via `wg log`
 7. **Concurrent execution**: This agent runs alongside agent-5753 (implementing coordinator agent)
 
-The system successfully manages its own development workflow — tasks are created, dispatched, executed, and validated through the workgraph system itself.
+The system successfully manages its own development workflow — tasks are created, dispatched, executed, and validated through the wg system itself.
 
 ---
 
@@ -267,6 +267,6 @@ The non-LLM portions of the chat pipeline are extremely fast (<20ms). The LLM re
 
 The self-hosting foundation is solid. Phases 1, 4, and 5 are complete and well-tested. The TUI has evolved from a read-only viewer to a multi-panel control surface with task creation, quick actions, and panel switching. The native executor provides Rust-only LLM execution with a clean tool/bundle system. Stigmergy patterns are documented and partially implemented (discovery, tag affinity, breadcrumbs).
 
-The critical gap is the persistent coordinator agent (Phase 2), which is the bridge between user intent and graph manipulation. It is actively being implemented. Once complete, the full E2E flow will be testable, and workgraph will truly host itself.
+The critical gap is the persistent coordinator agent (Phase 2), which is the bridge between user intent and graph manipulation. It is actively being implemented. Once complete, the full E2E flow will be testable, and wg will truly host itself.
 
 **Performance is excellent**: all CLI operations under 26ms on a 704-task graph, coordinator overhead <0.4%, clean worktree state, and the system has already managed 1,279 agent sessions.

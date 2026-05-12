@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-A systematic audit of workgraph's manual documentation reveals **significant completeness gaps** alongside generally accurate existing content. While individual sections maintain good technical accuracy, **critical CLI coverage deficiencies** severely limit the manual's utility as a complete reference.
+A systematic audit of wg's manual documentation reveals **significant completeness gaps** alongside generally accurate existing content. While individual sections maintain good technical accuracy, **critical CLI coverage deficiencies** severely limit the manual's utility as a complete reference.
 
 **Key Finding:** 57 out of 99 CLI commands (57%) are completely missing from the unified manual, representing a critical documentation gap.
 
@@ -18,7 +18,7 @@ A systematic audit of workgraph's manual documentation reveals **significant com
 - docs/manual/03-agency.md/.typ
 - docs/manual/04-coordination.md/.typ
 - docs/manual/05-evolution.md/.typ
-- docs/manual/workgraph-manual.md/.typ (unified)
+- docs/manual/wg-manual.md/.typ (unified)
 - docs/manual/README.md, PLAN.md, UPDATE-SPEC.md (supporting)
 
 **Methodology:** Each section audited against current CLI help output and runtime behavior for accuracy and completeness.
@@ -224,7 +224,7 @@ A systematic audit of workgraph's manual documentation reveals **significant com
 
 ## Conclusion
 
-The workgraph manual demonstrates strong technical accuracy in documented areas but suffers from **critical completeness gaps** that severely limit its utility. The 57% CLI coverage gap represents a fundamental documentation failure that must be addressed immediately.
+The wg manual demonstrates strong technical accuracy in documented areas but suffers from **critical completeness gaps** that severely limit its utility. The 57% CLI coverage gap represents a fundamental documentation failure that must be addressed immediately.
 
 **Recommended Action:** Implement Priority 1 fixes immediately, followed by strategic content expansion to achieve comprehensive CLI coverage and professional documentation quality standards.
 

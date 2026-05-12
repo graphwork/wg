@@ -1,8 +1,8 @@
-# Research: Autopoietic TB-workgraph Integration
+# Research: Autopoietic TB-wg Integration
 
 ## Summary
 
-Terminal Bench (TB) trials currently bypass workgraph's agency pipeline. The harbor
+Terminal Bench (TB) trials currently bypass wg's agency pipeline. The harbor
 adapter (`terminal-bench/wg/adapter.py`) runs agents directly via litellm inside
 Docker containers, managing its own agent loop. The full agency lifecycle
 (`.assign` -> agent executes -> `.flip` -> `.evaluate` -> `.verify`) never fires.
@@ -18,7 +18,7 @@ start`, enabling FLIP-based false-PASS detection.
 The adapter implements Harbor's `BaseAgent` protocol:
 
 1. **`setup()`** (line 1296): Creates a temp directory on the host, runs `wg init`
-   to initialize a host-side workgraph. For conditions D/E, it bootstraps agency
+   to initialize a host-side wg. For conditions D/E, it bootstraps agency
    (`wg agency init`, `wg agent create`).
 
 2. **`run()`** (line 1351): Runs an LLM-in-the-loop agent. Key flow:
@@ -33,14 +33,14 @@ The adapter implements Harbor's `BaseAgent` protocol:
    container with `exec()` method) and `AgentContext` (metadata accumulator). The
    adapter does ALL orchestration — Harbor just provides the sandbox and scoring.
 
-**What's missing**: The host-side workgraph is isolated per trial (tempdir). No
+**What's missing**: The host-side wg is isolated per trial (tempdir). No
 coordinator runs. No `.assign-*`, `.flip-*`, or `.evaluate-*` tasks are ever created
 because `scaffold_full_pipeline()` (`src/commands/eval_scaffold.rs`) only runs inside
 the coordinator loop (`src/commands/service/coordinator.rs`).
 
 ---
 
-## Q2: Making TB Tasks Into Real workgraph Tasks
+## Q2: Making TB Tasks Into Real wg Tasks
 
 **Goal**: Replace the adapter's custom agent loop with `wg service start`.
 
@@ -98,7 +98,7 @@ A. **Shell executor + Docker bridge**: Configure tasks with `exec_mode: shell` a
    have the exec command start a Docker container matching the Harbor task spec. The
    agent's bash commands get proxied into the container.
 
-B. **Custom executor type**: Add a `harbor` executor to workgraph that wraps
+B. **Custom executor type**: Add a `harbor` executor to wg that wraps
    `BaseEnvironment.exec()`. This is the cleanest but requires Rust code changes.
 
 C. **Host-side execution only**: For tasks that don't need specialized Docker envs

@@ -165,11 +165,11 @@ if let Some(worktree_path) = agent_context.worktree_path {
 
 **File**: `src/commands/spawn/worktree.rs`
 
-**Changes**: Generate `.workgraph/worktree-setup.sh` if missing:
+**Changes**: Generate `.wg/worktree-setup.sh` if missing:
 
 ```rust
 fn ensure_worktree_setup_script(project_root: &Path) -> Result<()> {
-    let script_path = project_root.join(".workgraph/worktree-setup.sh");
+    let script_path = project_root.join(".wg/worktree-setup.sh");
     
     if !script_path.exists() {
         let script_content = r#"#!/bin/bash
@@ -780,7 +780,7 @@ mod tests {
 
 ### Files to Create
 - `tests/integration_verify_timeout.rs` - Integration tests
-- `.workgraph/worktree-setup.sh` - Auto-generated setup script
+- `.wg/worktree-setup.sh` - Auto-generated setup script
 
 ### Estimated Implementation Effort
 - **Phase 1**: 2-3 days (configuration foundation)

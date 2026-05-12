@@ -8,7 +8,7 @@
 
 ## 1. What Is Condition G?
 
-Condition G is the **autopoietic** treatment condition in the Terminal-Bench experiment. Unlike conditions A-F where the agent receives a task and works on it directly, Condition G gives the agent guidance (via a meta-prompt) to **build its own self-correcting workgraph** with verification cycles, sub-task decomposition, and iterative refinement.
+Condition G is the **autopoietic** treatment condition in the Terminal-Bench experiment. Unlike conditions A-F where the agent receives a task and works on it directly, Condition G gives the agent guidance (via a meta-prompt) to **build its own self-correcting wg** with verification cycles, sub-task decomposition, and iterative refinement.
 
 ### Definition (current, as of commit `a8fdb3f9`)
 
@@ -39,7 +39,7 @@ The agent is **not forced** to follow this structure -- it has full tools and ca
 
 ### Key Distinction From Other Conditions
 
-Condition G emulates what a **human** does when using workgraph: reading the problem, breaking it down, building a plan, checking results, and iterating. The agent is both the worker and the consciousness that evaluates completeness.
+Condition G emulates what a **human** does when using wg: reading the problem, breaking it down, building a plan, checking results, and iterating. The agent is both the worker and the consciousness that evaluates completeness.
 
 ---
 
@@ -87,7 +87,7 @@ Condition G went through two distinct phases:
 | Commit | Date | Description |
 |--------|------|-------------|
 | `47ed02d8` | Apr 7 | Formalize Condition G naming across docs |
-| `84c2d81b` | Apr 8 | Initial implementation -- autopoietic self-correcting workgraph |
+| `84c2d81b` | Apr 8 | Initial implementation -- autopoietic self-correcting wg |
 | `2e829ba7` | Apr 8 | Clarify meta-prompt for convergence signaling |
 | `46f0f4a0` | Apr 8 | Bump max_agents to 8, push parallel decomposition |
 | `b61a9e6b` | Apr 8 | Architect bundle for seed task (restrict tools to delegation-only) |
@@ -190,7 +190,7 @@ A more capable model (e.g., Claude Sonnet/Opus) might handle the autopoietic pat
 
 ---
 
-## 7. Workgraph Tasks Related to Condition G
+## 7. wg Tasks Related to Condition G
 
 From `wg list`, the following tasks reference Condition G:
 
@@ -200,7 +200,7 @@ From `wg list`, the following tasks reference Condition G:
 | `.flip-formalize-condition-g` | Done | FLIP evaluation |
 | `research-condition-g` | In-progress | This research task |
 
-No open implementation or execution tasks for G exist in the current graph. A full-scale G run has not been scheduled as a workgraph task.
+No open implementation or execution tasks for G exist in the current graph. A full-scale G run has not been scheduled as a wg task.
 
 ---
 

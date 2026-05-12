@@ -72,7 +72,7 @@ match attempt_worktree_merge(&wt, id)? {
 
 The same path executes for every executor (`claude`, `codex`, `amplifier`, `native`). Claude tasks usually escape the trap because the claude agent guide explicitly tells the agent to `git add && git commit && git push` *before* `wg done`. Tasks whose description tells the agent "stage and let wg done handle the commit" — regardless of executor — hit this trap.
 
-The original suspicion (codex handler doesn't commit/merge like claude) was a wrong lead. There is no commit step in either handler — workgraph relies on the *agent* to commit on its branch, then `wg done` squash-merges that branch to `main`.
+The original suspicion (codex handler doesn't commit/merge like claude) was a wrong lead. There is no commit step in either handler — wg relies on the *agent* to commit on its branch, then `wg done` squash-merges that branch to `main`.
 
 ## Suggested fixes
 

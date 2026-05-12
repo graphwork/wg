@@ -286,17 +286,17 @@ This image would be ~80-100MB (bookworm-slim base + git + wg binary).
 
 | Path (in container) | Purpose | Persistence |
 |---------------------|---------|-------------|
-| `/var/tmp/tb-trial-<uuid>/.workgraph/` | Graph state (graph.jsonl, config.toml) | Per-trial, ephemeral |
-| `.workgraph/agents/<id>/` | Agent logs (stream.jsonl, agent.ndjson) | Per-trial, downloaded post-run |
-| `.workgraph/service/` | Daemon state (state.json, daemon.log) | Per-trial, ephemeral |
-| `.workgraph/bundles/` | Tool bundles (condition-specific TOML) | Written in setup() |
-| `.workgraph/agency/` | Agency primitives (for conditions D/E) | Written in setup() |
+| `/var/tmp/tb-trial-<uuid>/.wg/` | Graph state (graph.jsonl, config.toml) | Per-trial, ephemeral |
+| `.wg/agents/<id>/` | Agent logs (stream.jsonl, agent.ndjson) | Per-trial, downloaded post-run |
+| `.wg/service/` | Daemon state (state.json, daemon.log) | Per-trial, ephemeral |
+| `.wg/bundles/` | Tool bundles (condition-specific TOML) | Written in setup() |
+| `.wg/agency/` | Agency primitives (for conditions D/E) | Written in setup() |
 
 ### Current Approach: No Host Mounts
 
-The adapter creates everything inside the container during `setup()`. The `.workgraph/` directory is fully ephemeral — created in an isolated `/var/tmp/tb-trial-<uuid>` directory, downloaded post-run via `_download_wg_artifacts()`, then the container is destroyed.
+The adapter creates everything inside the container during `setup()`. The `.wg/` directory is fully ephemeral — created in an isolated `/var/tmp/tb-trial-<uuid>` directory, downloaded post-run via `_download_wg_artifacts()`, then the container is destroyed.
 
-This isolation is critical: some containers share the host `/home/erik` filesystem, so defaulting to CWD would corrupt the host's `.workgraph/`.
+This isolation is critical: some containers share the host `/home/erik` filesystem, so defaulting to CWD would corrupt the host's `.wg/`.
 
 ### If We Wanted Persistent Mounts
 
@@ -306,7 +306,7 @@ For development/debugging, you could mount host directories:
     "environment": {
         "mounts_json": "[
             \"target/bookworm-out/wg:/usr/local/bin/wg:ro\",
-            \"/tmp/tb-debug/.workgraph:/workspace/.workgraph\"
+            \"/tmp/tb-debug/.wg:/workspace/.wg\"
         ]"
     }
 }
@@ -373,7 +373,7 @@ class WgDockerEnvironment(DockerEnvironment):
     async def start(self, force_build: bool) -> None:
         await super().start(force_build)
         # Copy wg from a known location (mounted volume, pre-built image, etc.)
-        await self.exec(command="curl -sL https://github.com/ekg/workgraph/releases/latest/wg -o /usr/local/bin/wg && chmod +x /usr/local/bin/wg")
+        await self.exec(command="curl -sL https://github.com/ekg/wg/releases/latest/wg -o /usr/local/bin/wg && chmod +x /usr/local/bin/wg")
 ```
 
 ### Option 3: Cargo binstall (no custom image)
@@ -466,7 +466,7 @@ The existing adapter (`wg/adapter.py`) IS the wg Harbor service definition. It i
 | Config JSON | `import_path: "wg.adapter:ConditionXAgent"` | Working |
 | Conditions A-G | Differentiated by `CONDITION_CONFIG` dict | Working |
 | Model routing | `_normalize_model()` + config.toml + env var | Working |
-| Metric collection | Download `.workgraph/agents/*/stream.jsonl` | Working |
+| Metric collection | Download `.wg/agents/*/stream.jsonl` | Working |
 | Trial isolation | `/var/tmp/tb-trial-<uuid>` per container | Working |
 
 ### What Would Change for `wg nex --eval-mode`

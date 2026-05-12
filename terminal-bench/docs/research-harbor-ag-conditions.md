@@ -5,7 +5,7 @@
 
 ---
 
-## 1. How are 'a' (agent-only) and 'g' (graph/workgraph) conditions invoked for a TB task?
+## 1. How are 'a' (agent-only) and 'g' (graph/wg) conditions invoked for a TB task?
 
 There are **two execution paths**: Harbor (Docker-based, for official TB benchmarks) and host-native (for quick local pilots).
 
@@ -14,7 +14,7 @@ There are **two execution paths**: Harbor (Docker-based, for official TB benchma
 Both conditions use the same adapter (`wg/adapter.py`) with condition-specific agent classes:
 
 ```bash
-# Condition A: bare agent, no workgraph tools
+# Condition A: bare agent, no wg tools
 harbor run \
   --agent-import-path "wg.adapter:ConditionAAgent" \
   -m "openrouter:openai/gpt-oss-120b" \
@@ -53,12 +53,12 @@ harbor run \
 Used by scripts like `run_pilot_a_vs_g_haiku.py` and `run_pilot_free_smoke.py`:
 
 ```bash
-# Condition A (workgraph-coordinated, single agent)
+# Condition A (wg-coordinated, single agent)
 python terminal-bench/run_pilot_free_smoke.py \
   --model "openrouter:openai/gpt-oss-120b" \
   --run-id pilot-gpt-oss-120b-a
 
-# Condition G (raw Claude Code, no workgraph) — uses `claude` CLI
+# Condition G (raw Claude Code, no wg) — uses `claude` CLI
 # NOTE: This path is Claude-specific and doesn't work with Harbor models.
 # For non-Claude models, use the Harbor path.
 ```
@@ -101,7 +101,7 @@ CONDITION_CONFIG = {
 When `cfg.get("autopoietic")` is True (older path), a meta-prompt is prepended to the task instruction telling the agent to:
 1. Read the task and understand it
 2. Explore the working directory
-3. Build a workgraph with `wg add` (parallel tasks where possible)
+3. Build a wg with `wg add` (parallel tasks where possible)
 4. Create a verify task that closes a self-correcting cycle
 5. Mark its own seed task done, letting the coordinator dispatch workers
 
@@ -194,7 +194,7 @@ find <results-dir> -name "stream.jsonl" -exec grep -il "claude\|anthropic\|sonne
 | GPT-OSS-120B | `openai/gpt-oss-120b` | `openai/gpt-oss-120b:free` | $0.039 in / $0.19 out |
 | Nemotron 3 Super | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nemotron-3-super-120b-a12b:free` | $0.10 in / $0.50 out |
 
-### Workgraph model format
+### wg model format
 
 Harbor and wg use different formats:
 - **Harbor `-m` flag**: `openrouter:openai/gpt-oss-120b` (normalized by `_normalize_model()`)
@@ -336,8 +336,8 @@ cd ~/workgraph
     agent/
       trial_summary.json               # Agent metrics (tokens, turns, cost)
       agent_loop.ndjson                # Full interaction trace
-      wg-artifacts/                    # Downloaded .workgraph/ from container
-        .workgraph/
+      wg-artifacts/                    # Downloaded .wg/ from container
+        .wg/
           graph.jsonl                  # Task graph state
           config.toml                  # Applied config
           service/daemon.log           # Coordinator/daemon log
@@ -360,7 +360,7 @@ cat <jobs-dir>/*/text-processing__*/verifier/reward.txt
 terminal-bench/results/<run-id>/
   summary.json                         # Aggregate results
   <trial-id>/
-    workgraph_state/                   # Copied .workgraph/ directory
+    workgraph_state/                   # Copied .wg/ directory
       graph.jsonl
       config.toml
       agents/*/stream.jsonl

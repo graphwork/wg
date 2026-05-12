@@ -7,8 +7,8 @@
 
 ## Conditions
 
-- **Condition A (wg):** Workgraph-coordinated. Isolated wg service + native-exec agent.
-- **Condition G (raw):** Raw Claude Code. `claude --model haiku -p` with no workgraph.
+- **Condition A (wg):** wg-coordinated. Isolated wg service + native-exec agent.
+- **Condition G (raw):** Raw Claude Code. `claude --model haiku -p` with no wg.
 
 ## Results
 
@@ -31,7 +31,7 @@
 
 ## Conclusion
 
-Both conditions performed **equally** — workgraph was neutral on this task set.
+Both conditions performed **equally** — wg was neutral on this task set.
 Condition G was faster on average (33.0s vs 39.0s).
 
 ## Trial Details

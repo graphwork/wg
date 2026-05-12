@@ -1,10 +1,10 @@
-# workgraph Analysis: Practical Perspectives on Task Coordination Graphs
+# wg Analysis: Practical Perspectives on Task Coordination Graphs
 
-This document explores what "analysis" and "verification" should mean for a task coordination system like workgraph. The focus is on practical, useful analysis that engineers and project managers actually need, rather than academic formal verification.
+This document explores what "analysis" and "verification" should mean for a task coordination system like wg. The focus is on practical, useful analysis that engineers and project managers actually need, rather than academic formal verification.
 
 ## Table of Contents
 
-1. [Context: What workgraph Is](#context-what-workgraph-is)
+1. [Context: What wg Is](#context-what-wg-is)
 2. [Structural Analysis](#1-structural-analysis)
 3. [Health Metrics](#2-health-metrics)
 4. [Temporal Analysis](#3-temporal-analysis)
@@ -14,14 +14,14 @@ This document explores what "analysis" and "verification" should mean for a task
 
 ---
 
-## Context: What workgraph Is
+## Context: What wg Is
 
-workgraph is a task coordination CLI with:
+wg is a task coordination CLI with:
 
 - **Tasks**: Work items with dependencies (`blocked_by`), estimates (hours/cost), status (open/in-progress/done/blocked), and assignments
 - **Actors**: Humans and AI agents who can be assigned to tasks
 - **Resources**: Budgets, compute capacity, and other constraints
-- **Cycles are allowed**: Unlike traditional acyclic task managers, workgraph allows cycles for recurring tasks
+- **Cycles are allowed**: Unlike traditional acyclic task managers, wg allows cycles for recurring tasks
 
 The current implementation already provides:
 - `wg check` - Detects cycles (as warnings) and orphan references (as errors)
@@ -112,7 +112,7 @@ A **disconnected subgraph** is a set of tasks with no dependency relationship to
 
 **Detection:**
 ```rust
-fn find_connected_components(graph: &WorkGraph) -> Vec<Vec<&Task>> {
+fn find_connected_components(graph: &wg) -> Vec<Vec<&Task>> {
     // Union-find or BFS from each unvisited node
 }
 ```
@@ -502,7 +502,7 @@ A comprehensive health report combining key metrics.
 ```
 $ wg analyze
 
-=== workgraph Health Report ===
+=== wg Health Report ===
 
 SUMMARY
   Total tasks: 30 (15 open, 3 in-progress, 10 done, 2 blocked)
@@ -713,7 +713,7 @@ The existing research documents cover Petri nets and CSP for formal verification
 
 ## References
 
-- Existing workgraph implementation: `src/check.rs`, `src/query.rs`
+- Existing wg implementation: `src/check.rs`, `src/query.rs`
 - Petri nets research: `docs/petri-nets-research.md`
 - CSP research: `docs/csp-process-algebra-research.md`
 - Task format research: `docs/task-format-research.md`

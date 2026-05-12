@@ -312,7 +312,7 @@ terminal-bench/results/scale-run-001/
   condition-A/summary.json
   condition-G/summary.json
   condA-file-ops-r0.json           # Per-trial result file
-  condA-file-ops-r0/workgraph_state/  # Preserved .workgraph (post-hoc analysis)
+  condA-file-ops-r0/workgraph_state/  # Preserved .wg (post-hoc analysis)
   ...
 ```
 

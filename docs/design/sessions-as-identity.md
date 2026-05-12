@@ -8,7 +8,7 @@
 > The process is an ephemeral *handler* that embodies the session
 > while it's running.
 
-Every LLM-backed task in workgraph — coordinator, agent, evaluator,
+Every LLM-backed task in wg — coordinator, agent, evaluator,
 interactive nex — is (a) a persistent *session* on disk, plus (b) a
 currently-active *handler* process. The session is the identity; the
 handler is the body. Bodies can die and be reborn; the session persists.
@@ -25,7 +25,7 @@ This document specifies the full model. The sibling
 
 ## What collapses
 
-Today workgraph has three parallel mental models for "thing an LLM is
+Today wg has three parallel mental models for "thing an LLM is
 doing":
 
 1. **Coordinator.** Spawned by the daemon, identified by numeric id
@@ -313,7 +313,7 @@ Daemon stops being the coordinator-owner. New role:
 - **Event sink.** Notification backends (Matrix, Telegram) still hook
   into lifecycle events emitted by handlers.
 
-Daemon is opt-in. Running workgraph without a daemon works: the TUI
+Daemon is opt-in. Running wg without a daemon works: the TUI
 (or `wg spawn-task` at a terminal) owns any handler you care about.
 Daemon is for users who want autonomous-when-I'm-away behavior.
 

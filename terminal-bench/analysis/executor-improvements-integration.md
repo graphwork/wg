@@ -46,7 +46,7 @@ All 5 branches were co-committed to main via shared worktrees. No merge conflict
 - **Status: FUNCTIONAL**
 
 ### 4. wg context injection for non-Claude models (impl-executor-context-injection)
-- `read_wg_guide()` reads `.workgraph/wg-guide.md` or falls back to built-in default
+- `read_wg_guide()` reads `.wg/wg-guide.md` or falls back to built-in default
 - Injected when `executor_type == "native"` (src/commands/spawn/execution.rs:311-316)
 - **Status: FUNCTIONAL**
 

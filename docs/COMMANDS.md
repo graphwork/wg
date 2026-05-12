@@ -1,6 +1,6 @@
-# workgraph Command Reference
+# wg Command Reference
 
-Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom workgraph directory.
+Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom wg directory.
 
 ## Table of Contents
 
@@ -41,7 +41,7 @@ wg add <TITLE> [OPTIONS]
 | `--id <ID>` | Custom task ID (auto-generated from title if not provided) |
 | `-d, --description <TEXT>` | Detailed description, acceptance criteria |
 | `--after <ID>` | This task comes after another task (repeatable) |
-| `--repo <REPO>` | Create the task in a peer workgraph (by name or path) |
+| `--repo <REPO>` | Create the task in a peer wg (by name or path) |
 | `--assign <AGENT>` | Assign to an agent |
 | `--hours <N>` | Estimated hours |
 | `--cost <N>` | Estimated cost |
@@ -1206,7 +1206,7 @@ wg func apply impl-feature --input feature_name=auth --dry-run
 
 ### `wg func bootstrap`
 
-Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a workgraph workflow.
+Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a wg workflow.
 
 ```bash
 wg func bootstrap [OPTIONS]
@@ -1746,7 +1746,7 @@ wg agency create --dry-run
 
 ### `wg agency import`
 
-Import Agency's starter.csv primitives into workgraph.
+Import Agency's starter.csv primitives into wg.
 
 ```bash
 wg agency import <CSV_PATH> [OPTIONS]
@@ -2380,11 +2380,11 @@ wg checkpoint my-task --list
 
 ## Peer Commands
 
-Manage peer workgraph instances for cross-repo communication and function sharing.
+Manage peer wg instances for cross-repo communication and function sharing.
 
 ### `wg peer add`
 
-Register a peer workgraph instance.
+Register a peer wg instance.
 
 ```bash
 wg peer add <NAME> <PATH> [-d <DESCRIPTION>]
@@ -2783,7 +2783,7 @@ wg service stop-chat <ID>
 
 ### `wg watch`
 
-Stream workgraph events as JSON lines. Useful for live monitoring, external dashboards, or piping into other tools.
+Stream wg events as JSON lines. Useful for live monitoring, external dashboards, or piping into other tools.
 
 ```bash
 wg watch [OPTIONS]
@@ -3450,7 +3450,7 @@ wg openrouter set-limit --global 100 --session 10 --task 2
 
 ### `wg init`
 
-Initialize a new workgraph in the current directory.
+Initialize a new wg in the current directory.
 
 ```bash
 wg init
@@ -3468,7 +3468,7 @@ cd my-project && wg init
 
 ### `wg which`
 
-Print the workgraph directory that `wg` would use from here, and show which resolver step won (CLI flag / env / walk-up / home / default). Useful when you're confused about which graph `wg add` is talking to.
+Print the wg directory that `wg` would use from here, and show which resolver step won (CLI flag / env / walk-up / home / default). Useful when you're confused about which graph `wg add` is talking to.
 
 ```bash
 wg which
@@ -3515,7 +3515,7 @@ wg secret <SUBCOMMAND>
 
 ### `wg html`
 
-Render the workgraph as a static, clickable HTML viewer (TUI-parity).
+Render the wg as a static, clickable HTML viewer (TUI-parity).
 
 ```bash
 wg html [OUTPUT]
@@ -3994,7 +3994,7 @@ wg setup
 **Example:**
 ```bash
 wg setup
-# Launches interactive prompts to configure your workgraph project
+# Launches interactive prompts to configure your wg project
 ```
 
 ---
@@ -4393,7 +4393,7 @@ All commands support these options:
 
 | Option | Description |
 |--------|-------------|
-| `--dir <PATH>` | workgraph directory (default: .wg) |
+| `--dir <PATH>` | wg directory (default: .wg) |
 | `--json` | Output as JSON for machine consumption |
 | `-h, --help` | Show help (use `--help-all` for full command list) |
 | `--help-all` | Show all commands in help output (including less common ones) |

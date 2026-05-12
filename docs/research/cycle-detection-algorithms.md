@@ -1,4 +1,4 @@
-# Cycle Detection Algorithms for workgraph
+# Cycle Detection Algorithms for wg
 
 **Date:** 2026-02-21
 **Task:** research-cycle-detection
@@ -8,7 +8,7 @@
 
 ## Motivation
 
-workgraph currently distinguishes two edge types:
+wg currently distinguishes two edge types:
 
 - **`blocked_by`**: regular dependency edges (must complete before I start)
 - **`loops_to`**: special back-edges that fire on completion, re-opening upstream tasks
@@ -68,13 +68,13 @@ function STRONGCONNECT(v):
 
 **Complexity:** O(V + E) time, O(V) space.
 
-**Properties relevant to workgraph:**
+**Properties relevant to wg:**
 - Finds ALL cycles simultaneously (grouped into SCCs)
 - Single-pass algorithm — efficient for static graph analysis
 - The condensation graph (collapsing each SCC to a single node) is always a DAG
 - Does NOT identify individual cycles within an SCC or determine cycle headers
 
-**Limitations for workgraph:**
+**Limitations for wg:**
 - Identifies *which* nodes participate in cycles but not *how* the cycles are structured
 - Cannot distinguish a simple 3-node cycle from a complex SCC with multiple interlocking cycles
 - No concept of loop headers, nesting, or iteration order
@@ -99,7 +99,7 @@ algorithm KOSARAJU_SCC(G):
 
 **Comparison to Tarjan:** Same time complexity, but requires two passes and storing the transpose graph. Conceptually simpler but uses more memory. Less suitable for incremental updates.
 
-**Relevance to workgraph:** Equivalent to Tarjan for SCC discovery. The two-pass structure is less amenable to online/incremental use. Not preferred.
+**Relevance to wg:** Equivalent to Tarjan for SCC discovery. The two-pass structure is less amenable to online/incremental use. Not preferred.
 
 ### 1.3 Havlak's Loop Nesting Forest (1997)
 
@@ -136,14 +136,14 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 
 **Complexity:** Havlak claimed O(V·α(V,E)) — almost linear via UNION-FIND. However, Ramalingam (1999) showed the original algorithm is actually O(V·E) in the worst case due to how irreducible loops are handled.
 
-**Properties relevant to workgraph:**
+**Properties relevant to wg:**
 - Identifies loop *headers* — the natural "entry point" to each loop
 - Captures nesting hierarchy — loops inside loops
 - Handles irreducible loops (multiple entry points)
 - Assigns every node to its innermost enclosing loop
 
 **Limitations:**
-- Requires a rooted graph (single entry point), which workgraph may not have
+- Requires a rooted graph (single entry point), which wg may not have
 - Depends on the DFS spanning tree used — different trees can yield different headers for irreducible loops
 - Havlak proposes a normalization to maximize reducible loops discovered, but this adds complexity
 
@@ -165,7 +165,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 
 **Complexity:** O(V·α(V,E)) ≈ O(V+E) for all practical purposes (α is the inverse Ackermann function, effectively ≤ 4 for any realistic input).
 
-**Relevance to workgraph:** If we pursue loop nesting forests, Ramalingam's corrected algorithm is the one to implement. The complexity is effectively linear.
+**Relevance to wg:** If we pursue loop nesting forests, Ramalingam's corrected algorithm is the one to implement. The complexity is effectively linear.
 
 ---
 
@@ -181,7 +181,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 
 **Complexity:** O((V + E)(C + 1)) time, O(V + E) space, where C is the number of elementary circuits.
 
-**Relevance to workgraph:** This is the *wrong* algorithm for workgraph. The number of elementary cycles can be exponential in graph size (e.g., a complete graph on n vertices has O(n!) cycles). We don't need to enumerate all cycles — we need to identify cycle *structure* (headers, nesting). SCC decomposition + loop nesting is the right approach.
+**Relevance to wg:** This is the *wrong* algorithm for wg. The number of elementary cycles can be exponential in graph size (e.g., a complete graph on n vertices has O(n!) cycles). We don't need to enumerate all cycles — we need to identify cycle *structure* (headers, nesting). SCC decomposition + loop nesting is the right approach.
 
 ### 2.2 Nuutila & Soisalon-Soininen — Improved Tarjan (1994)
 
@@ -193,7 +193,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 - Reduces space from v(2 + 5w) to v(1 + 4w) bits (where w is word size)
 - Presented an efficient transitive closure algorithm as an application
 
-**Relevance to workgraph:** Marginal improvement. workgraph's task graphs are small (hundreds to low thousands of nodes). The space savings are irrelevant at this scale. Petgraph already implements an optimized Tarjan variant.
+**Relevance to wg:** Marginal improvement. wg's task graphs are small (hundreds to low thousands of nodes). The space savings are irrelevant at this scale. Petgraph already implements an optimized Tarjan variant.
 
 ### 2.3 Sreedhar, Gao & Lee — DJ-Graphs for Loop Identification (1996)
 
@@ -205,7 +205,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 
 **Complexity:** O(V·E) worst-case (quadratic), but Ramalingam showed how to fix it to almost-linear.
 
-**Relevance to workgraph:** Interesting because it explicitly uses dominators, which are well-understood and available in petgraph. However, it requires a single entry point, which workgraph graphs may not have. The dominator-based approach is more naturally suited to control-flow graphs (which always have a single entry) than task dependency graphs.
+**Relevance to wg:** Interesting because it explicitly uses dominators, which are well-understood and available in petgraph. However, it requires a single entry point, which wg graphs may not have. The dominator-based approach is more naturally suited to control-flow graphs (which always have a single entry) than task dependency graphs.
 
 ### 2.4 Pearce — Space-Efficient SCC (2016)
 
@@ -213,7 +213,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 
 **Key contribution:** Reduces space to v(1 + 3w) bits by combining the index and lowlink arrays into a single `rindex` array. This is the algorithm used by petgraph's `tarjan_scc` implementation.
 
-**Relevance to workgraph:** This is what we'd get "for free" by using petgraph. Optimal space efficiency at the same O(V+E) time complexity.
+**Relevance to wg:** This is what we'd get "for free" by using petgraph. Optimal space efficiency at the same O(V+E) time complexity.
 
 ### 2.5 Incremental Cycle Detection (2018-2024)
 
@@ -227,8 +227,8 @@ The problem of detecting cycles as edges are added to a graph (without recomputi
 
 **McCauley, Moseley et al. (2024):** "Incremental Topological Ordering and Cycle Detection with Predictions" — leverages ML predictions about graph structure to achieve O(mη) time where η is prediction error. Experiments show 36x cost reduction with even mildly accurate predictions.
 
-**Relevance to workgraph:**
-Highly relevant. workgraph graphs change dynamically as tasks and dependencies are added/removed. Full recomputation (O(V+E) Tarjan) after every edge addition is cheap for small graphs but wasteful for large ones. However, given workgraph's current scale (typically <1000 tasks), the practical benefit of incremental algorithms is minimal — a full Tarjan pass takes microseconds. The incremental algorithms become important only at scale (>100K nodes).
+**Relevance to wg:**
+Highly relevant. wg graphs change dynamically as tasks and dependencies are added/removed. Full recomputation (O(V+E) Tarjan) after every edge addition is cheap for small graphs but wasteful for large ones. However, given wg's current scale (typically <1000 tasks), the practical benefit of incremental algorithms is minimal — a full Tarjan pass takes microseconds. The incremental algorithms become important only at scale (>100K nodes).
 
 **Recommendation:** Start with full recomputation (Tarjan). If profiling shows cycle detection is a bottleneck, the STOC 2024 algorithm provides a nearly-optimal incremental solution. For practical use, maintaining a topological sort and detecting violations on edge insertion is simpler and sufficient.
 
@@ -257,13 +257,13 @@ The compiler optimization literature defines loops differently from graph theory
 - If they share the same header, they can be merged into a single loop
 - Loop nesting is always well-defined for reducible graphs
 
-**Relevance to workgraph:** This is the most directly applicable model. In a task graph:
+**Relevance to wg:** This is the most directly applicable model. In a task graph:
 - The "header" is the task that gets re-opened when the loop iterates
 - The "back edge" is the dependency that creates the cycle
 - The "loop body" is the set of tasks that re-execute each iteration
 - Nesting corresponds to inner loops (sub-cycles within a larger cycle)
 
-The key challenge is that natural loop detection requires dominators, which require a single entry point. workgraph graphs can have multiple root tasks. Solutions: (1) add a virtual root node, (2) compute dominators per connected component, or (3) use SCC-based loop detection instead.
+The key challenge is that natural loop detection requires dominators, which require a single entry point. wg graphs can have multiple root tasks. Solutions: (1) add a virtual root node, (2) compute dominators per connected component, or (3) use SCC-based loop detection instead.
 
 ### 2.7 Petri Net Cycle Analysis
 
@@ -274,15 +274,15 @@ Petri nets model concurrent systems with places (states), transitions (events), 
 - **Soundness:** A workflow net is sound if every case eventually completes and no tasks are left running — incompatible with unbounded cycles
 - **Invariants:** Place invariants (P-invariants) identify sets of places whose total token count is conserved — cycle analysis helps find these
 
-**Relevance to workgraph:**
+**Relevance to wg:**
 - Petri nets distinguish between *structure* (the net topology) and *behavior* (token flow) — analogous to distinguishing graph structure from execution semantics
-- The concept of "soundness" maps to workgraph's need for bounded loops (max_iterations)
+- The concept of "soundness" maps to wg's need for bounded loops (max_iterations)
 - P-invariants could identify conservation laws in task cycles (e.g., "exactly one task in this cycle is active at any time")
-- However, Petri net analysis is significantly more complex than what workgraph needs — it solves a more general concurrency problem
+- However, Petri net analysis is significantly more complex than what wg needs — it solves a more general concurrency problem
 
 ---
 
-## 3. Application to workgraph
+## 3. Application to wg
 
 ### 3.1 Current Model
 
@@ -402,7 +402,7 @@ Both A and B are entry points. There is no single header.
 2. **Pick one:** Arbitrarily choose a header (e.g., the one with the lowest ID). May not match user intent.
 3. **Allow multiple headers:** Each entry point can independently trigger the loop. More complex iteration tracking.
 
-**Recommendation:** For v1, reject irreducible loops. workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all reducible — they have a clear starting point. If irreducible loops are needed later, option 3 can be added.
+**Recommendation:** For v1, reject irreducible loops. wg's use cases (review-revise, CI retry, monitor-fix-verify) are all reducible — they have a clear starting point. If irreducible loops are needed later, option 3 can be added.
 
 ### 3.7 Dynamic Graph Changes
 
@@ -413,7 +413,7 @@ Both A and B are entry points. There is no single header.
 2. **Task removed from a cycle:** The cycle may break, reducing to a DAG path.
 3. **New dependency creates a cycle:** Previously acyclic tasks become cyclic.
 
-**Strategy:** Recompute cycle detection on every graph mutation. Given workgraph's scale (<1000 tasks), a full Tarjan pass is O(V+E) ≈ microseconds. No need for incremental algorithms.
+**Strategy:** Recompute cycle detection on every graph mutation. Given wg's scale (<1000 tasks), a full Tarjan pass is O(V+E) ≈ microseconds. No need for incremental algorithms.
 
 **Caching:** Store the cycle analysis result alongside the graph. Invalidate on any structural change (add/remove task, add/remove dependency).
 
@@ -424,7 +424,7 @@ Currently, `ready_tasks()` requires ALL blockers to be Done. In a cycle, this is
 **Proposed change to `ready_tasks()`:**
 
 ```rust
-fn ready_tasks(graph: &WorkGraph, cycle_info: &CycleInfo) -> Vec<&Task> {
+fn ready_tasks(graph: &wg, cycle_info: &CycleInfo) -> Vec<&Task> {
     graph.tasks().filter(|task| {
         if task.status != Status::Open { return false; }
         if task.paused { return false; }
@@ -505,7 +505,7 @@ However, Option A has the advantage of simplicity — the header task is what th
 
 ```
 ┌─────────────────────────────────────────┐
-│              WorkGraph                   │
+│              wg                   │
 │                                         │
 │  tasks: HashMap<String, Task>           │
 │  blocked_by edges (may contain cycles)  │
@@ -714,7 +714,7 @@ Petgraph provides the following relevant algorithms:
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DiGraph;
 
-fn analyze_cycles(graph: &WorkGraph) -> CycleAnalysis {
+fn analyze_cycles(graph: &wg) -> CycleAnalysis {
     // 1. Build petgraph DiGraph from blocked_by edges
     let mut pg = DiGraph::<&str, ()>::new();
     let mut node_map: HashMap<&str, NodeIndex> = HashMap::new();
@@ -766,7 +766,7 @@ This requires:
 
 ### 6.3 Incremental Update Strategy
 
-For workgraph's current scale, full recomputation is fine:
+For wg's current scale, full recomputation is fine:
 
 ```rust
 impl WorkGraph {
@@ -793,7 +793,7 @@ impl WorkGraph {
 }
 ```
 
-If workgraph grows to >10K tasks and graph mutations are frequent, consider:
+If wg grows to >10K tasks and graph mutations are frequent, consider:
 1. **Dirty flag per-SCC:** Only recompute SCCs that are affected by the changed edge
 2. **Online topological sort with cycle detection:** Maintain a topological order; on edge insertion, check if it creates a cycle by verifying if the target precedes the source. O(affected_vertices) per update.
 3. **Full incremental SCC:** Bernstein et al. 2024 algorithm, but this is research-grade and complex to implement.
@@ -825,9 +825,9 @@ The current `loops_to` system is well-designed and battle-tested. Replacing it w
 
 3. **Long-term: Evaluate whether loops_to should be deprecated.** After gaining experience with structural cycles, decide whether the simplification justifies the migration cost. The answer may be "no" — having both models provides flexibility.
 
-4. **Do NOT implement Havlak/Ramalingam unless needed.** SCC decomposition is sufficient for workgraph's use cases. Loop nesting forests add complexity that's only justified for deeply nested cycles (rare in task graphs).
+4. **Do NOT implement Havlak/Ramalingam unless needed.** SCC decomposition is sufficient for wg's use cases. Loop nesting forests add complexity that's only justified for deeply nested cycles (rare in task graphs).
 
-5. **Do NOT implement incremental cycle detection.** workgraph's scale doesn't justify it. Full Tarjan on every mutation is microseconds for <1000 tasks.
+5. **Do NOT implement incremental cycle detection.** wg's scale doesn't justify it. Full Tarjan on every mutation is microseconds for <1000 tasks.
 
 ### Implementation Status (2026-02-21)
 
@@ -835,7 +835,7 @@ The current `loops_to` system is well-designed and battle-tested. Replacing it w
 >
 > - **Custom std-only implementation** — petgraph was not used. A custom iterative Tarjan SCC (~160 lines) avoids adding a dependency for a straightforward algorithm.
 > - **All four algorithms implemented:** Tarjan SCC, Havlak Loop Nesting Forest, Incremental Cycle Detection, and Cycle Metadata Extraction.
-> - **53 tests passing** covering edge cases, performance, and workgraph-specific scenarios.
+> - **53 tests passing** covering edge cases, performance, and wg-specific scenarios.
 > - Recommendations 4 and 5 (don't implement Havlak/incremental) were overridden during implementation — both are useful for diagnostic analysis and the implementation is clean. They remain read-only analysis tools (Phase 1 scope) and don't affect execution behavior.
 >
 > Validation report: All 559 unit tests + 4 doc-tests pass. No regressions.
@@ -865,7 +865,7 @@ The current `loops_to` system is well-designed and battle-tested. Replacing it w
 ### Related Algorithms
 
 5. **Johnson, D.B. (1975).** "Finding All the Elementary Circuits of a Directed Graph." *SIAM J. Computing*, 4(1):77-84.
-   Enumerates all simple cycles in O((V+E)(C+1)) time. Not suitable for workgraph — the number of cycles can be exponential. Useful only when you need to *list* all cycles.
+   Enumerates all simple cycles in O((V+E)(C+1)) time. Not suitable for wg — the number of cycles can be exponential. Useful only when you need to *list* all cycles.
    Available at: https://www.cs.tufts.edu/comp/150GA/homeworks/hw1/Johnson%2075.PDF
 
 6. **Nuutila, E. & Soisalon-Soininen, E. (1994).** "On Finding the Strongly Connected Components in a Directed Graph." *Information Processing Letters*, 49(1):9-14.

@@ -178,7 +178,7 @@ def build_condition_e_prompt(instruction: str, root_task_id: str, agent_identity
         "every triage decision. Your log is the organization's memory.\n"
         "5. **Iterate, don't spin.** Each fix attempt must be DIFFERENT from the last. "
         "If you're trying the same thing twice, step back and reconsider.\n\n"
-        "## Workgraph Tools\n\n"
+        "## wg Tools\n\n"
         f'- `wg_log("{root_task_id}", "message")` — Record progress (every phase)\n'
         f'- `wg_done("{root_task_id}")` — Root task complete (ONLY after PASS verdict)\n'
         f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with full diagnostics)\n'
@@ -234,7 +234,7 @@ class ConditionEAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-e"
+        return "wg-condition-e"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "E"
@@ -667,7 +667,7 @@ class ConditionEAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-e"
+        return "wg-condition-e"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "E"
@@ -675,7 +675,7 @@ class ConditionEAgent(WorkgraphAgent):
         super().__init__(*args, **kwargs)
 ```
 
-### 12.6 Save workgraph state (add "E" to condition check)
+### 12.6 Save wg state (add "E" to condition check)
 
 Change:
 ```python
@@ -758,7 +758,7 @@ harbor run \
 5. [ ] Modify `run()` to route condition "E" (prompt + assignment + tracking)
 6. [ ] Add E-specific tracking (decomposition, verdicts, triage) to tool loop
 7. [ ] Add enhanced metadata fields to `context.metadata`
-8. [ ] Add "E" to workgraph state save condition
+8. [ ] Add "E" to wg state save condition
 9. [ ] Update module docstring
 10. [ ] Smoke test with 1 trial on `constraints-scheduling`
 11. [ ] Verify workgraph_state has decomposed task graph

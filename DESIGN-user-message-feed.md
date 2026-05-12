@@ -2,7 +2,7 @@
 
 ## Context
 
-This document addresses the message collection UX in the workgraph TUI, specifically for coordinator tasks that collect user/agent messages via a feed-like interface.
+This document addresses the message collection UX in the wg TUI, specifically for coordinator tasks that collect user/agent messages via a feed-like interface.
 
 **Related**: `design-coordinator-lifecycle` (sibling) covers coordinator state management. This document focuses on the **message data layer** — storage, archival, and display of messages collected by coordinator tasks.
 
@@ -24,7 +24,7 @@ When the coordinator sends a message to a task (via `wg msg send`), the message 
 
 When `wg archive` runs on a task:
 1. The task is removed from `graph.jsonl` and appended to `archive.jsonl`
-2. The task's message file (`.workgraph/messages/{task-id}.jsonl`) is **silently orphaned and lost**
+2. The task's message file (`.wg/messages/{task-id}.jsonl`) is **silently orphaned and lost**
 
 This is a data-resilience failure. The archive contains only the Task node, not its message history.
 
@@ -69,7 +69,7 @@ When a task is archived, its message file should be **moved** to an archive loca
 
 ```
 Archive structure:
-.workgraph/
+.wg/
   archive/
     tasks/               # Existing: archived Task nodes
       archive.jsonl
@@ -80,8 +80,8 @@ Archive structure:
 **Implementation in `src/commands/archive.rs`**:
 - Add `messages_archive_dir()` → `dir.join("archive").join("messages")`
 - When archiving a task, call `maybe_archive_messages(dir, task_id)` which:
-  1. Checks if `.workgraph/messages/{task-id}.jsonl` exists
-  2. If yes, move it to `.workgraph/archive/messages/{task-id}.jsonl`
+  1. Checks if `.wg/messages/{task-id}.jsonl` exists
+  2. If yes, move it to `.wg/archive/messages/{task-id}.jsonl`
   3. Create parent directories as needed
 - When restoring a task, move messages back
 

@@ -1,7 +1,7 @@
-# Workgraph Feedback: Agency Needs Broader Role Coverage
+# wg Feedback: Agency Needs Broader Role Coverage
 
 **Date:** 2026-03-02
-**Context:** Used workgraph to coordinate an NIH biosketch writing pipeline — web research, scientific writing (personal statement, honors, contributions to science), paper analysis, and validation/harmonization. Full DAG with fanout and fan-in.
+**Context:** Used wg to coordinate an NIH biosketch writing pipeline — web research, scientific writing (personal statement, honors, contributions to science), paper analysis, and validation/harmonization. Full DAG with fanout and fan-in.
 
 ## Problem
 
@@ -34,7 +34,7 @@ At minimum, the seed set should include non-programming roles:
 | **Writer** | Polished prose document | drafting, revision, tone/style matching, constraint compliance (char limits, format rules) |
 | **Analyst** | Recommendations with rationale | data gathering, comparative analysis, strategic reasoning |
 
-These cover the vast majority of "knowledge work" tasks that aren't code. The current seed set assumes workgraph = software dev tool. It's not — it's a task coordination system, and the agency should reflect that.
+These cover the vast majority of "knowledge work" tasks that aren't code. The current seed set assumes wg = software dev tool. It's not — it's a task coordination system, and the agency should reflect that.
 
 ## Concrete Suggestion: Creator-Driven Role Discovery
 

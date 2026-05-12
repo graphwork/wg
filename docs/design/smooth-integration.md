@@ -10,9 +10,9 @@
 
 The question is not "how do we merge nikete's code" but **"what abstractions and interfaces make integration frictionless?"**
 
-We want to make it as easy as possible for nikete — and any future VX system — to work with workgraph without requiring deep coupling, invasive merges, or synchronized releases. The ideal outcome: nikete can build his VX exchange client as an independent tool that talks to `wg` through stable, documented interfaces, while we continue evolving core features without breaking his tooling.
+We want to make it as easy as possible for nikete — and any future VX system — to work with wg without requiring deep coupling, invasive merges, or synchronized releases. The ideal outcome: nikete can build his VX exchange client as an independent tool that talks to `wg` through stable, documented interfaces, while we continue evolving core features without breaking his tooling.
 
-This means designing workgraph as a **platform** rather than a **monolith**. External systems should be able to observe, react to, and extend workgraph behavior through well-defined surfaces — not by forking and modifying internals.
+This means designing wg as a **platform** rather than a **monolith**. External systems should be able to observe, react to, and extend wg behavior through well-defined surfaces — not by forking and modifying internals.
 
 ---
 
@@ -52,7 +52,7 @@ These don't exist yet but are needed for VX integration:
 | `wg veracity scores --json` | Query per-task veracity scores | Aggregation view. |
 | `wg veracity sensitivity <task-id> <level>` | Set task sensitivity | Requires new `sensitivity` field on Task. |
 | `wg veracity check --json` | Validate sensitivity constraints | Graph constraint checker. |
-| `wg capabilities --json` | Advertise what this workgraph instance can do | See §3.4 below. |
+| `wg capabilities --json` | Advertise what this wg instance can do | See §3.4 below. |
 
 **Design principle:** Every `wg veracity` command should have `--json` from day one. These are integration-facing by nature.
 
@@ -72,7 +72,7 @@ External systems touch these file formats directly or indirectly:
 
 ### 1.5 Events and Hooks
 
-Currently workgraph has one event mechanism: the `IpcRequest::GraphChanged` notification sent over the Unix socket at `.wg/service.socket`. The coordinator uses this for fast scheduling after graph mutations.
+Currently wg has one event mechanism: the `IpcRequest::GraphChanged` notification sent over the Unix socket at `.wg/service.socket`. The coordinator uses this for fast scheduling after graph mutations.
 
 For external integration, we need a richer event surface:
 
@@ -118,7 +118,7 @@ A formal plugin system (dynamic loading, trait objects, etc.) would add complexi
 
 ### 2.1 The Problem
 
-When workgraph instances want to share knowledge across organizational boundaries, what's the envelope? You can't send raw graph state (contains internal prompts, credentials, agent IDs). You can't send just task titles (too lossy). You need a **sanitized, structured view** of what was done, how it worked, and what was learned.
+When wg instances want to share knowledge across organizational boundaries, what's the envelope? You can't send raw graph state (contains internal prompts, credentials, agent IDs). You can't send just task titles (too lossy). You need a **sanitized, structured view** of what was done, how it worked, and what was learned.
 
 nikete's `Canon` concept is exactly this: a materialized view of work product, designed for sharing.
 
@@ -210,7 +210,7 @@ wg canon export portfolio-root --zone public
 # → Strips internal task IDs, agent IDs, raw prompts
 # → Hashes data references instead of including data
 
-# Import a canon (from a peer suggestion, or from another workgraph)
+# Import a canon (from a peer suggestion, or from another wg)
 wg canon import suggestion-from-peer7f3a.canon.yaml
 # → Creates a task (or task subgraph) pre-populated with canon context
 # → Sets source: "canon:peer7f3a:sha256:def456"
@@ -257,7 +257,7 @@ wg veracity score suggestion-abc123                # compare against baseline
 
 ### 3.1 Design Philosophy: Thin Adapter, Fat CLI
 
-The VX exchange client should be a **thin adapter** that translates between VX protocol concepts and `wg` CLI calls. It should NOT duplicate workgraph logic. The adapter's job:
+The VX exchange client should be a **thin adapter** that translates between VX protocol concepts and `wg` CLI calls. It should NOT duplicate wg logic. The adapter's job:
 
 1. **Translate**: VX protocol messages ↔ `wg` CLI invocations
 2. **Filter**: Apply sensitivity rules before data leaves the node
@@ -279,7 +279,7 @@ The VX exchange client should be a **thin adapter** that translates between VX p
                         │  calls wg CLI with --json
                         ▼
 ┌───────────────────────────────────────────────────┐
-│                   workgraph (wg)                   │
+│                   wg (wg)                   │
 │                                                    │
 │  graph · agency · provenance · federation · runs   │
 └────────────────────────────────────────────────────┘
@@ -323,7 +323,7 @@ The adapter needs these `wg` commands. All exist or are planned:
 
 ### 3.3 Event Stream: `wg watch --json`
 
-The adapter needs to react to workgraph events without polling. `wg watch` tails the operations log:
+The adapter needs to react to wg events without polling. `wg watch` tails the operations log:
 
 ```bash
 # Stream all events
@@ -347,7 +347,7 @@ The `--since` flag enables reconnection after adapter restart — no lost events
 
 ### 3.4 Capability Discovery: `wg capabilities --json`
 
-An external tool (VX adapter, federation peer, or any integration) can ask "what can this workgraph do?"
+An external tool (VX adapter, federation peer, or any integration) can ask "what can this wg do?"
 
 ```json
 {
@@ -436,7 +436,7 @@ This keeps the internal/external distinction clear: `wg evaluate` = internal LLM
 | **Custom assigner agents** | `agency.assigner_agent` in config | VX could factor in peer credibility when assigning agents to tasks |
 | **Custom evolver agents** | `agency.evolver_agent` in config | VX could use GEPA-based evolution with outcome data as the fitness function |
 | **Federation remotes** | `AgencyStore` trait in `federation.rs` | New backend implementations (HTTP, git-hosted) for remote agency stores |
-| **CLI as API** | `wg <cmd> --json` | Any external tool can read/write workgraph state |
+| **CLI as API** | `wg <cmd> --json` | Any external tool can read/write wg state |
 
 ### 5.2 New Extension Points Needed
 
@@ -511,7 +511,7 @@ ls .wg/agency/  # Check for identity/ vs agency/ directory naming
 The graph format (`.wg/graph.jsonl`) is compatible between forks. Both use the same `Task` struct with the same core fields. Copy it directly:
 
 ```bash
-cp -r .wg/graph.jsonl /path/to/upstream-workgraph/.wg/
+cp -r .wg/graph.jsonl /path/to/upstream-wg/.wg/
 ```
 
 **Step 3: Agency migration**
@@ -648,11 +648,11 @@ This is a **collaboration through interfaces**, not a merge. Both codebases cont
 
 ### Why Not: Native Rust Integration (Shared Crate)
 
-A `workgraph-core` crate with shared types sounds clean but creates tight coupling. Both sides would need to coordinate releases, agree on type definitions, and handle version skew. The CLI-as-API approach gives the same integration surface with zero coordination overhead. If convergent evolution continues (provenance, models, GC), a shared crate becomes more natural — but don't force it.
+A `wg-core` crate with shared types sounds clean but creates tight coupling. Both sides would need to coordinate releases, agree on type definitions, and handle version skew. The CLI-as-API approach gives the same integration surface with zero coordination overhead. If convergent evolution continues (provenance, models, GC), a shared crate becomes more natural — but don't force it.
 
 ### Why Not: gRPC/REST API Server
 
-Adds deployment complexity (running a server), authentication concerns, and network latency for local operations. The CLI does everything a local API server would do, with better composability (pipes, scripts) and zero infrastructure. If workgraph eventually needs remote access (multi-machine deployment), a server makes sense — but that's a different problem from VX integration.
+Adds deployment complexity (running a server), authentication concerns, and network latency for local operations. The CLI does everything a local API server would do, with better composability (pipes, scripts) and zero infrastructure. If wg eventually needs remote access (multi-machine deployment), a server makes sense — but that's a different problem from VX integration.
 
 ### Why Not: Full Plugin System
 

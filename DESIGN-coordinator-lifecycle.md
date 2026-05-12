@@ -2,7 +2,7 @@
 
 ## Context
 
-This document addresses the coordinator lifecycle UX in the workgraph TUI — specifically, the problems that arise when users try to create new coordinators or resume existing ones, and the system behaves unexpectedly by resurrecting archived state.
+This document addresses the coordinator lifecycle UX in the wg TUI — specifically, the problems that arise when users try to create new coordinators or resume existing ones, and the system behaves unexpectedly by resurrecting archived state.
 
 **Related**: `design-user-message-feed` (sibling) covers message storage alongside coordinator tasks. This document focuses on **coordinator state management** — the lifecycle of coordinator tasks, the distinction between active/archived/dormant states, and the TUI's handling of these transitions.
 

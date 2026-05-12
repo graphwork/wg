@@ -111,7 +111,7 @@ curl -s http://localhost:11435/v1/chat/completions \
 
 ## WG Model Format
 
-For workgraph config, use:
+For wg config, use:
 - `ollama:qwen3-coder:30b-a3b-q8_0` (faster, recommended)
 - `ollama:qwen3-coder-next:q4_K_M` (best quality)
 

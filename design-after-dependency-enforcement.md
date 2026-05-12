@@ -2,13 +2,13 @@
 
 ## 1. Introduction and Background
 
-In modern task coordination systems, the proper sequencing of tasks is critical to prevent race conditions, file conflicts, and execution order issues. The workgraph system utilizes `--after` dependencies to explicitly define the execution order between tasks, ensuring that tasks which modify shared resources are executed in a safe and predictable sequence.
+In modern task coordination systems, the proper sequencing of tasks is critical to prevent race conditions, file conflicts, and execution order issues. The wg system utilizes `--after` dependencies to explicitly define the execution order between tasks, ensuring that tasks which modify shared resources are executed in a safe and predictable sequence.
 
 However, current coordinator prompts often create tasks without proper dependency wiring, leading to potential conflicts and system inefficiencies. This document outlines the design for enforcing proper `--after` dependencies in coordinator prompts to ensure reliable and predictable task execution.
 
 ### 1.1 The `--after` Dependency Mechanism
 
-The `--after` dependency mechanism in workgraph provides explicit control over task execution order. When a task B is created with `--after task-a`, it ensures that task B will not execute until task A has successfully completed. This is particularly important when multiple tasks may modify the same files or shared resources.
+The `--after` dependency mechanism in wg provides explicit control over task execution order. When a task B is created with `--after task-a`, it ensures that task B will not execute until task A has successfully completed. This is particularly important when multiple tasks may modify the same files or shared resources.
 
 ### 1.2 Current Challenges
 

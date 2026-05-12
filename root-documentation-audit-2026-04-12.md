@@ -54,7 +54,7 @@ CLI shows **93 total commands** available. README.md demonstrates extensive comm
 
 #### ❓ **Requires Verification**
 1. **Installation URLs**: 
-   - GitHub URL: `https://github.com/graphwork/workgraph` (line 26)
+   - GitHub URL: `https://github.com/graphwork/wg` (line 26)
    - Need to verify this matches actual repository location
 
 2. **Model Provider Examples**:
@@ -65,8 +65,8 @@ CLI shows **93 total commands** available. README.md demonstrates extensive comm
    - `wg key add openai` examples - verify current syntax matches CLI
 
 4. **Configuration Paths**:
-   - `~/.workgraph/config.toml` global config location
-   - `.workgraph/` project structure
+   - `~/.wg/config.toml` global config location
+   - `.wg/` project structure
 
 #### ✅ **Strengths**
 - Excellent progressive disclosure: basic → advanced features
@@ -81,7 +81,7 @@ CLI shows **93 total commands** available. README.md demonstrates extensive comm
 **Size:** 3,443 bytes, 71 lines
 
 #### Content Analysis
-Provides clear, specific instructions for AI agents using workgraph:
+Provides clear, specific instructions for AI agents using wg:
 
 **Key Instructions Verified:**
 - `wg quickstart` for session orientation ✅
@@ -103,7 +103,7 @@ Provides clear, specific instructions for AI agents using workgraph:
 - Crisp, actionable instructions
 - Correct technical details align with CLI capabilities
 - Clear role separation for orchestrating agents
-- Appropriate focus on workgraph-native workflows
+- Appropriate focus on wg-native workflows
 
 #### 🔍 **Minor Notes**
 - File is 1 month older than README.md but content appears current
@@ -132,14 +132,14 @@ These are working documents rather than user-facing documentation, so excluded f
 
 ### ✅ **Accurate and Current**
 1. **Core Command Coverage**: README.md demonstrates extensive, accurate CLI command usage
-2. **Workflow Documentation**: Both README.md and CLAUDE.md reflect current workgraph capabilities  
+2. **Workflow Documentation**: Both README.md and CLAUDE.md reflect current wg capabilities  
 3. **Technical Instructions**: Configuration commands, environment variables, and development workflow are correct
 4. **Agency System**: Comprehensive and current documentation of roles, tradeoffs, and FLIP evaluation
 
 ### ❓ **Requires Verification**  
-1. **GitHub Repository URL**: `https://github.com/graphwork/workgraph` in README.md installation section
+1. **GitHub Repository URL**: `https://github.com/graphwork/wg` in README.md installation section
 2. **Model Provider Integration**: OpenAI example syntax and available provider profiles
-3. **Global Config Path**: `~/.workgraph/config.toml` location assumption
+3. **Global Config Path**: `~/.wg/config.toml` location assumption
 
 ### 🔍 **Observations**
 1. **README.md Comprehensiveness**: At 40KB, it's extremely thorough but may benefit from a quick-start section for new users
@@ -155,9 +155,9 @@ These are working documents rather than user-facing documentation, so excluded f
 
 ## Recommendations
 
-1. **Verify Installation URL**: Confirm `https://github.com/graphwork/workgraph` matches actual repository
+1. **Verify Installation URL**: Confirm `https://github.com/graphwork/wg` matches actual repository
 2. **Model Provider Verification**: Test OpenAI integration syntax and update examples if needed  
-3. **Configuration Path Verification**: Confirm `~/.workgraph/config.toml` global config location
+3. **Configuration Path Verification**: Confirm `~/.wg/config.toml` global config location
 4. **Consider Quick-Start Section**: README.md is comprehensive but might benefit from a 5-minute quick-start for immediate productivity
 
 ---

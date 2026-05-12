@@ -7,7 +7,7 @@ README opening as the visual front door.
 To record:
 
 ```bash
-# in a real workgraph project with active work
+# in a real wg project with active work
 asciinema rec wg-tui.cast -c "wg tui"
 agg wg-tui.cast wg-tui.gif        # asciinema-agg, or convert via gifski
 ```

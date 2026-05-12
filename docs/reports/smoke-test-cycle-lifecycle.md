@@ -6,7 +6,7 @@
 
 ## Summary
 
-Tested the full cycle lifecycle in workgraph: creation, multi-iteration execution, convergence, cycle delay, and edge cases. All core functionality works correctly.
+Tested the full cycle lifecycle in wg: creation, multi-iteration execution, convergence, cycle delay, and edge cases. All core functionality works correctly.
 
 | Test | Result | Notes |
 |------|--------|-------|

@@ -1,4 +1,4 @@
-# Unified Synthesis: Design Tensions in workgraph's Coordination Model
+# Unified Synthesis: Design Tensions in wg's Coordination Model
 
 ## A Cross-Cutting Analysis of 10 Research Perspectives
 
@@ -6,7 +6,7 @@
 
 ## 1. Introduction
 
-This document synthesizes the findings of 10 independent research statements, each examining workgraph's coordination model from a distinct disciplinary angle. The researchers studied: coordinator architecture (R1), task messaging asymmetry (R2), agent lifecycle management (R3), TUI/UX design patterns (R4), autopoietic systems theory (R5), abstraction consistency (R6), multi-party conversation protocols (R7), graph-based workflow orchestration (R8), human-agent interaction models (R9), and stigmergic coordination (R10).
+This document synthesizes the findings of 10 independent research statements, each examining wg's coordination model from a distinct disciplinary angle. The researchers studied: coordinator architecture (R1), task messaging asymmetry (R2), agent lifecycle management (R3), TUI/UX design patterns (R4), autopoietic systems theory (R5), abstraction consistency (R6), multi-party conversation protocols (R7), graph-based workflow orchestration (R8), human-agent interaction models (R9), and stigmergic coordination (R10).
 
 The synthesis that follows maps core tensions, clusters themes, articulates trade-offs, surfaces open questions, and proposes a preliminary conceptual framework for resolving the identified tensions.
 
@@ -22,7 +22,7 @@ This is the single most debated question across the 10 statements. Every researc
 
 **The "separate-entirely" camp (R6):** R6 stands alone in arguing that coordinators should NOT be tasks. After cataloging eight axes of divergence (identity conventions, lifecycle management, cycle configuration, tags, chat system, TUI integration, agent model, and configuration namespace), R6 concludes that the coordinator-as-task abstraction is a leaky abstraction providing "negative value" — it creates a false sense of uniformity while requiring special-case handling in all 49 source files that reference coordinators. R6 recommends a Kubernetes-style Kind system where coordinators and tasks share metadata conventions but are explicitly different node types.
 
-**The nuanced middle (R1, R8):** R1 proposes the most precise formulation: "The coordinator IS a task AND it is special. Both are true." The system's job is to make the specialness visible and well-defined, not to eliminate it. R8, while not directly addressing this question, notes that workgraph's position is "genuinely novel" in the workflow orchestration landscape — it need not conform to patterns from systems with fundamentally different architectures.
+**The nuanced middle (R1, R8):** R1 proposes the most precise formulation: "The coordinator IS a task AND it is special. Both are true." The system's job is to make the specialness visible and well-defined, not to eliminate it. R8, while not directly addressing this question, notes that wg's position is "genuinely novel" in the workflow orchestration landscape — it need not conform to patterns from systems with fundamentally different architectures.
 
 **Where the researchers agree:** All 10 agree that coordinators are functionally different from regular tasks. The disagreement is about whether this difference should be modeled as a specialization within a unified type (the Erlang/OTP approach) or as a distinct type with shared metadata (the Kubernetes approach). No researcher argues that coordinators are just tasks with no special treatment needed.
 
@@ -38,7 +38,7 @@ R10 reframes communication through stigmergy: the graph itself (task logs, artif
 
 ### 2.3 Tension C: The Lifecycle Problem — Persistent vs. Ephemeral
 
-**The binary split is correct (R3):** R3 provides the deepest analysis of agent lifecycle, mapping workgraph's model to Kubernetes (Deployments vs. Jobs), Erlang/OTP (permanent vs. temporary restart strategies), Temporal (durable workflows vs. ephemeral activities), and Dapr (virtual actors). The conclusion: "The persistent coordinator / ephemeral task agent split is fundamentally correct and should be preserved." It maps to the orchestration/worker distinction found in every successful distributed system.
+**The binary split is correct (R3):** R3 provides the deepest analysis of agent lifecycle, mapping wg's model to Kubernetes (Deployments vs. Jobs), Erlang/OTP (permanent vs. temporary restart strategies), Temporal (durable workflows vs. ephemeral activities), and Dapr (virtual actors). The conclusion: "The persistent coordinator / ephemeral task agent split is fundamentally correct and should be preserved." It maps to the orchestration/worker distinction found in every successful distributed system.
 
 **But the boundaries are blurred (R1, R6):** R1 identifies the "turn-as-iteration conflation" — recording chat turns as cycle iterations is a category error. A chat turn is I/O; a cycle iteration is convergent work. R6 calls this "semantic abuse" of the cycle machinery to model persistence. Both argue that coordinator lifecycle should have its own semantics rather than being shoehorned into the task lifecycle model.
 
@@ -52,11 +52,11 @@ R9 (Human-Agent) frames the user as a "variable-geometry participant" who fluidl
 
 R4 (TUI/UX) provides concrete design recommendations: reduce the 9-tab interface to 4 primary tabs, add a command palette for discovery, implement three-tier navigation (zone focus → within-zone navigation → command palette), add unread indicators, and enlarge touch targets for mobile terminals. R4 draws on tmux, k9s, htop, Slack, and VS Code to establish universal principles: progressive disclosure, persistent orientation cues, Escape as universal "go back," and maximum ~5 primary visible actions.
 
-R8 (Workflow Orchestration) implicitly argues for the outer loop: workgraph's graph-as-data model is its distinctive strength. The graph is inspectable, analyzable, and visualizable in ways that code-based workflow systems (Temporal, Prefect) cannot match. Sacrificing this for inner-loop immediacy would trade away workgraph's competitive advantage.
+R8 (Workflow Orchestration) implicitly argues for the outer loop: wg's graph-as-data model is its distinctive strength. The graph is inspectable, analyzable, and visualizable in ways that code-based workflow systems (Temporal, Prefect) cannot match. Sacrificing this for inner-loop immediacy would trade away wg's competitive advantage.
 
 ### 2.5 Tension E: The Self-Organization Boundary — How Much Autonomy?
 
-**Agreement on the risk of excess (R5, R9, R10):** R5 identifies workgraph as "proto-autopoietic" — a sympoietic system with autopoietic mechanisms. The evolution loop (evaluate → evolve → execute) is a genuine self-producing cycle. But R5 warns that the risk is "excessive autopoiesis, not insufficient autopoiesis." Specifically: runaway self-production (recursive task decomposition), loss of coherence (locally-optimizing agents producing globally incoherent graphs), self-modification paradoxes (the evolver modifying the coordinator that dispatches the evolver), and homeostatic traps (premature convergence at local optima).
+**Agreement on the risk of excess (R5, R9, R10):** R5 identifies wg as "proto-autopoietic" — a sympoietic system with autopoietic mechanisms. The evolution loop (evaluate → evolve → execute) is a genuine self-producing cycle. But R5 warns that the risk is "excessive autopoiesis, not insufficient autopoiesis." Specifically: runaway self-production (recursive task decomposition), loss of coherence (locally-optimizing agents producing globally incoherent graphs), self-modification paradoxes (the evolver modifying the coordinator that dispatches the evolver), and homeostatic traps (premature convergence at local optima).
 
 R9 frames this as a trust calibration problem: over-trusting leads to undetected errors; under-trusting leads to micromanagement. The user's attention is the fundamental scarce resource. Push-based monitoring (exception-driven alerts) is essential because pull-based monitoring (`wg tui`, `wg status`) doesn't scale.
 
@@ -84,7 +84,7 @@ Cross-references: R1§5.3 (synthesis: sound with acknowledged asymmetry), R3§7 
 Three researchers focus specifically on how information flows through the system:
 
 - **R2** analyzes the structural causes of messaging unreliability: single-turn execution model, no interrupt mechanism, probabilistic prompt compliance. Proposes: hard gate on message checking, interrupt-and-resume for urgent messages, keep coordinator uniquely conversable.
-- **R7** surveys classical protocols (blackboard, CNP, FIPA-ACL) and modern frameworks (AutoGen, CrewAI, LangGraph, MetaGPT). Concludes the fan-out + synthesis pattern is superior to real-time multi-party chat for most workgraph use cases. Proposes: formalize fan-out+synthesis as a trace function, add minimal message typing (`inform`, `request`, `acknowledge`, `position`), invest in semi-sync TUI threads.
+- **R7** surveys classical protocols (blackboard, CNP, FIPA-ACL) and modern frameworks (AutoGen, CrewAI, LangGraph, MetaGPT). Concludes the fan-out + synthesis pattern is superior to real-time multi-party chat for most wg use cases. Proposes: formalize fan-out+synthesis as a trace function, add minimal message typing (`inform`, `request`, `acknowledge`, `position`), invest in semi-sync TUI threads.
 - **R10** frames all communication as stigmergy — the graph is the shared medium, chat is the exception. Proposes: make chat interactions deposit traces in the graph.
 
 Key agreement: Don't build real-time multi-party chat. The evidence that it improves outcomes over async fan-out is weak (R7§7.2), and the complexity cost is high.
@@ -107,7 +107,7 @@ Cross-references: R4§9 (preliminary position: three-tier architecture), R9§6 (
 Three researchers provide theoretical frameworks that illuminate the design:
 
 - **R5** applies Maturana & Varela's autopoiesis theory, Beth Dempster's autopoietic-sympoietic distinction, and homeostasis theory. Key insight: "The coordinator provides just enough top-down structure to prevent the sympoietic agent swarm from losing coherence, while the stigmergic graph medium provides just enough bottom-up flexibility to prevent the top-down structure from becoming rigid."
-- **R10** applies Grassé's stigmergy (sematectonic and marker-based), Crowston's FLOSS stigmergy work, and Heylighen's universal coordination framework. Key insight: "workgraph is a predominantly stigmergic system with strategically placed non-stigmergic escape hatches."
+- **R10** applies Grassé's stigmergy (sematectonic and marker-based), Crowston's FLOSS stigmergy work, and Heylighen's universal coordination framework. Key insight: "wg is a predominantly stigmergic system with strategically placed non-stigmergic escape hatches."
 - **R7** applies blackboard systems, contract net protocol, and FIPA-ACL speech act theory. Key insight: "The question isn't 'why can't they all be conversations?' but 'when is conversation valuable enough to justify its cost?'"
 
 Cross-references: R5§9 (sympoietic with autopoietic mechanisms), R10§10 (stigmergic with escape hatches), R7§9 (the graph IS the conversation).
@@ -116,7 +116,7 @@ Cross-references: R5§9 (sympoietic with autopoietic mechanisms), R10§10 (stigm
 
 Five researchers draw on specific external systems for comparison:
 
-| System | Used by | Lesson for workgraph |
+| System | Used by | Lesson for wg |
 |--------|---------|---------------------|
 | Erlang/OTP | R1, R2, R3 | Same type, different behaviour; call vs cast; permanent vs temporary |
 | Kubernetes | R1, R3, R6, R8 | Uniform metadata, specialized Kind; controller-as-workload |
@@ -128,7 +128,7 @@ Five researchers draw on specific external systems for comparison:
 | AutoGen | R7 | GroupChatManager as host/moderator pattern |
 | LangGraph | R2, R7 | State-mediated communication; interrupt-and-resume |
 
-The most cited system is Erlang/OTP (3 researchers), followed by Kubernetes (4 researchers). These two provide the strongest external validation for workgraph's architectural choices.
+The most cited system is Erlang/OTP (3 researchers), followed by Kubernetes (4 researchers). These two provide the strongest external validation for wg's architectural choices.
 
 ---
 
@@ -232,23 +232,23 @@ The most cited system is Erlang/OTP (3 researchers), followed by Kubernetes (4 r
 
 ### 5.5 Questions That Span Multiple Perspectives
 
-13. **The naming problem:** R6 argues that ".coordinator" implies hierarchy, conflicting with workgraph's stigmergic design. Alternatives proposed include "session," "channel," "nexus," "hub," and "steward." Which term best captures the coordinator's actual role? Does it matter? (Raised by R6§6)
+13. **The naming problem:** R6 argues that ".coordinator" implies hierarchy, conflicting with wg's stigmergic design. Alternatives proposed include "session," "channel," "nexus," "hub," and "steward." Which term best captures the coordinator's actual role? Does it matter? (Raised by R6§6)
 
 14. **Graph explosion mitigation:** R8 identifies the risk that agents over-decompose work into fine-grained tasks. Current limits (999 subtasks, 999 depth) are generous. Should the system dynamically adjust decomposition depth based on graph size or agent performance? (Raised by R8§6, R5§7.1)
 
-15. **Failure propagation model:** R8 notes that workgraph's "terminal-unblocks-all" model is unusual — most orchestration systems treat upstream failure as a hard block. Is this the right default for all cases? Should there be a way to declare "hard dependencies" that DO block on failure? (Raised by R8§6)
+15. **Failure propagation model:** R8 notes that wg's "terminal-unblocks-all" model is unusual — most orchestration systems treat upstream failure as a hard block. Is this the right default for all cases? Should there be a way to declare "hard dependencies" that DO block on failure? (Raised by R8§6)
 
 ---
 
 ## 6. Preliminary Conceptual Framework: The Layered Coordination Model
 
-Drawing on all 10 research perspectives, we propose a **Layered Coordination Model** that resolves the identified tensions by organizing workgraph's design around three explicit layers:
+Drawing on all 10 research perspectives, we propose a **Layered Coordination Model** that resolves the identified tensions by organizing wg's design around three explicit layers:
 
 ### Layer 1: The Stigmergic Medium (The Graph)
 
 **Principle:** The graph is the primary coordination mechanism. All durable state lives here.
 
-This layer embodies R10's insight that the graph is a stigmergic medium — agents coordinate indirectly through traces left in the shared environment. It validates R7's position that "the graph IS the conversation" and R8's argument that graph-as-data is workgraph's distinctive competitive advantage.
+This layer embodies R10's insight that the graph is a stigmergic medium — agents coordinate indirectly through traces left in the shared environment. It validates R7's position that "the graph IS the conversation" and R8's argument that graph-as-data is wg's distinctive competitive advantage.
 
 **What lives here:**
 - Task definitions, statuses, dependencies, artifacts, logs
@@ -317,7 +317,7 @@ Design rules:
 
 **The inner loop question (R9):**
 - Rather than blurring the orchestrator/worker boundary, optimize the outer loop for speed. Target sub-minute dispatch-to-completion for trivial tasks. If the outer loop is fast enough, the inner loop gap becomes irrelevant for all but the most interactive use cases.
-- For genuinely interactive workflows (pair programming, exploratory debugging), integrate with inner-loop tools (Claude Code, Cursor) rather than trying to replicate their functionality within workgraph.
+- For genuinely interactive workflows (pair programming, exploratory debugging), integrate with inner-loop tools (Claude Code, Cursor) rather than trying to replicate their functionality within wg.
 
 ### How the Framework Resolves Each Tension
 
@@ -333,9 +333,9 @@ Design rules:
 
 ## 7. Conclusion: The View From All Ten Angles
 
-The ten research perspectives, while differing on specifics, converge on a shared understanding of workgraph's fundamental nature:
+The ten research perspectives, while differing on specifics, converge on a shared understanding of wg's fundamental nature:
 
-1. **workgraph is a stigmergic system with strategic non-stigmergic escape hatches** (R10, validated by R5, R7). The graph is the primary coordination medium, and this should be deepened, not replaced.
+1. **wg is a stigmergic system with strategic non-stigmergic escape hatches** (R10, validated by R5, R7). The graph is the primary coordination medium, and this should be deepened, not replaced.
 
 2. **The coordinator-task distinction is real and should be made explicit** (all 10 researchers). Whether through a TaskKind field (R1), a NodeKind enum (R6), or simply "acknowledged asymmetry" (R1, R5), the fiction that coordinators are just tasks should be retired in favor of honest typing.
 
@@ -345,9 +345,9 @@ The ten research perspectives, while differing on specifics, converge on a share
 
 5. **The UX bottleneck is attention, not functionality** (R4, R9). The TUI has too many options and too little progressive disclosure. The command palette + reduced tab count would be the single highest-impact UX improvement.
 
-6. **Self-organization should be bounded by immutable organizational invariants** (R5). The evolution loop is workgraph's most distinctive feature. It should be deepened (resource-aware self-regulation, environmental sensing) while maintaining the safety boundaries that prevent the system from modifying its own control logic without human approval.
+6. **Self-organization should be bounded by immutable organizational invariants** (R5). The evolution loop is wg's most distinctive feature. It should be deepened (resource-aware self-regulation, environmental sensing) while maintaining the safety boundaries that prevent the system from modifying its own control logic without human approval.
 
-7. **workgraph occupies a genuinely novel position in the orchestration landscape** (R8). Structural cycles, graph-as-data, terminal-unblocks-all, and seed tasks are distinctive innovations. The system should resist the temptation to become a general-purpose workflow engine and instead deepen its strengths in AI agent coordination.
+7. **wg occupies a genuinely novel position in the orchestration landscape** (R8). Structural cycles, graph-as-data, terminal-unblocks-all, and seed tasks are distinctive innovations. The system should resist the temptation to become a general-purpose workflow engine and instead deepen its strengths in AI agent coordination.
 
 The preliminary Layered Coordination Model proposed in §6 offers one path toward resolving these tensions. It is not the only path — the deliberation phase that follows will stress-test these proposals against the expertise of each researcher. But it provides a shared vocabulary and structural framework for that discussion.
 

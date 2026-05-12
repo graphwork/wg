@@ -1,4 +1,4 @@
-# workgraph Code Review Synthesis
+# wg Code Review Synthesis
 
 > **Note:** This document synthesizes findings from a Feb 11, 2026 code review. Detailed review documents have been archived to `docs/archive/reviews/`. Some recommendations may be partially completed or outdated. Use the Top 10 Recommendations section below as a prioritized action list.
 
@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-workgraph is a well-engineered task graph coordinator with a clean core and ambitious feature set. The foundational layer — graph model, parser, query engine, validation — is solid at ~2,100 lines with good test coverage and few issues. The service daemon with IPC-based coordination is architecturally sound. The agency system (roles/motivations/agents) is the most thoroughly tested subsystem.
+wg is a well-engineered task graph coordinator with a clean core and ambitious feature set. The foundational layer — graph model, parser, query engine, validation — is solid at ~2,100 lines with good test coverage and few issues. The service daemon with IPC-based coordination is architecturally sound. The agency system (roles/motivations/agents) is the most thoroughly tested subsystem.
 
 **However, the codebase has grown organically to ~45,800 lines and shows signs of accumulated tech debt:**
 
@@ -35,7 +35,7 @@ workgraph is a well-engineered task graph coordinator with a clean core and ambi
 | **5** | **Consolidate Matrix code** — extract shared command parser and executor into `matrix_common` | High — eliminates ~560 lines of copy-paste; fixes zero-test coverage on lite commands | Med — requires careful `#[cfg]` wiring | Matrix |
 | **6** | **Add `Task::new(id, title)` constructor with defaults** | Med — eliminates 22+ duplicated `make_task` helpers, makes 28-field struct manageable | Low — simple constructor + Default impl | Core Graph |
 | **7** | **Resolve Executor trait question** — either use it in production or remove it (+ `src/executors/` dead code) | Med — removes confusion about where spawning logic lives; ~1,500 lines clarified or deleted | Med — requires deciding the target architecture | Service Layer |
-| **8** | **Reduce graph loads in `coordinator_tick()`** — load once, pass `&mut WorkGraph`, save once | Med — eliminates up to 5 redundant graph loads per tick; closes TOCTOU windows | Med — requires refactoring 300-line function | Service Layer |
+| **8** | **Reduce graph loads in `coordinator_tick()`** — load once, pass `&mut wg`, save once | Med — eliminates up to 5 redundant graph loads per tick; closes TOCTOU windows | Med — requires refactoring 300-line function | Service Layer |
 | **9** | **Update COMMANDS.md** — add ~30 missing commands, fix stale entries | High for adoption — the command reference is at 50% accuracy | Med — significant writing effort | Documentation |
 | **10** | **Merge redundant analysis commands** — fold `bottlenecks` and `structure` into `analyze` | Med — reduces command count, eliminates duplicated computation | Low-Med — `analyze` already has equivalent sections | Analysis |
 

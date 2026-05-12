@@ -1,7 +1,7 @@
 #!/bin/bash
 # wg-connect.sh - Connection dispatcher for all transports
 #
-# Determines the workgraph user and attaches to (or creates) a tmux session
+# Determines the wg user and attaches to (or creates) a tmux session
 # running `wg tui`. Used as the entry point for:
 #   - ttyd launch command
 #   - SSH ForceCommand
@@ -41,11 +41,11 @@ SESSION_NAME="${WG_USER}-wg"
 
 if ! command -v wg >/dev/null 2>&1; then
     cat <<'SETUP'
-workgraph (wg) is not installed or not in PATH.
+wg is not installed or not in PATH.
 
 To install:
   1. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  2. Install wg:   cargo install --git https://github.com/anthropics/workgraph
+  2. Install wg:   cargo install --git https://github.com/graphwork/wg
   3. Re-run this script
 
 If wg is already installed, make sure it is on your PATH:

@@ -83,7 +83,7 @@ enum FuncCommands {
         /// Function ID (prefix match supported)
         function_id: String,
 
-        /// Load function from a peer workgraph (peer:function-id) or file path
+        /// Load function from a peer wg (peer:function-id) or file path
         #[arg(long)]
         from: Option<String>,
 
@@ -176,7 +176,7 @@ Func {
 **Solution:** In `func_extract.rs::collect_subgraph()`, filter out tasks whose ID matches the pattern `evaluate-*` or that have the tag `coordinator:evaluation`:
 
 ```rust
-fn collect_subgraph<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
+fn collect_subgraph<'a>(root_id: &str, graph: &'a wg) -> Vec<&'a Task> {
     // ... existing BFS traversal ...
     // After collecting, filter:
     result.retain(|t| !is_coordinator_noise(t));
@@ -241,7 +241,7 @@ for (i, num) in numbers.iter().enumerate() {
 **Current behavior (`generalize_with_executor`, lines 364-427):**
 - Single prompt asking the LLM to replace instance-specific values
 - No validation of the LLM's output beyond YAML parsing
-- No understanding of task roles or workgraph patterns
+- No understanding of task roles or wg patterns
 
 **Solution:** Multi-pass generalization pipeline:
 

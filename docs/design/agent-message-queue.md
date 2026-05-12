@@ -231,7 +231,7 @@ poll_messages() {
         if wg msg poll "$TASK_ID" --agent "$AGENT_ID" --json > /tmp/wg-msg-$AGENT_ID.new 2>/dev/null; then
             # New messages arrived — but we can't inject them into claude --print
             # Log them so the agent sees them next time it reads its output
-            echo "[workgraph] New messages received:" >> "$OUTPUT_FILE"
+            echo "[wg] New messages received:" >> "$OUTPUT_FILE"
             cat /tmp/wg-msg-$AGENT_ID.new >> "$OUTPUT_FILE"
         fi
         sleep 10

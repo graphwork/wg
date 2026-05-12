@@ -144,7 +144,7 @@ All spawn paths correctly propagate OpenRouter-related configuration.
 
 **Key file features (all working):**
 - Absolute paths
-- Relative paths (resolved against workgraph dir)
+- Relative paths (resolved against wg dir)
 - `~` expansion to home directory
 - Whitespace trimming
 - Empty file detection (returns error)

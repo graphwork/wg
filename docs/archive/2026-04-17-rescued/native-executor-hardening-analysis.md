@@ -232,7 +232,7 @@ timeout_ms = 300000
 max_read_size_mb = 100
 max_write_size_mb = 50
 allowed_read_paths = [".", ".wg"]
-allowed_write_paths = [".", ".wg", "/tmp/workgraph-*"]
+allowed_write_paths = [".", ".wg", "/tmp/wg-*"]
 forbidden_patterns = ["../", "/etc/", "/home/.ssh/"]
 
 [network]

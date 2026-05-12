@@ -123,7 +123,7 @@ if is_cycle_edge {
 ### 4.1 `VizOutput` (`src/commands/viz/mod.rs:15`)
 
 **No change needed.** The cycle membership computation happens in the TUI layer,
-not in the viz output. The TUI already has access to the workgraph directory and
+not in the viz output. The TUI already has access to the wg directory and
 can load the graph to compute `CycleAnalysis`. The `char_edge_map` already
 contains `(source_id, target_id)` pairs — we just need to know which IDs are
 cycle members to color them.
@@ -272,7 +272,7 @@ and the back-edge arc both get yellow.
 `NamedGraph::analyze_cycles` which calls `extract_cycle_metadata` — need to
 verify self-loops are handled. If `include_self_loops` is false in
 `find_cycles`, self-loops won't appear as SCCs and the self-loop arc won't be
-yellow. This is acceptable — self-loops are uncommon in workgraph and the arc
+yellow. This is acceptable — self-loops are uncommon in wg and the arc
 rendering already distinguishes them visually.
 
 ### Large SCC (e.g., 5 tasks in a ring)
@@ -326,5 +326,5 @@ This is the correct behavior — the boundary is clearly visible.
 3. **Snapshot test:** Add a prompt snapshot test that renders a graph with a
    cycle and verifies the output is stable.
 
-4. **Manual verification:** `wg watch` on a workgraph with cycles, navigate
+4. **Manual verification:** `wg watch` on a wg with cycles, navigate
    to cycle members, confirm yellow edges appear.

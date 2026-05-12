@@ -1,19 +1,19 @@
-# Repro 3 — Knowledge Tier Injection in workgraph
+# Repro 3 — Knowledge Tier Injection in wg
 
 **Task:** `repro-3-knowledge-tier`
 **Date:** 2026-05-06
-**Question:** How does workgraph's knowledge-tier classification shape what an
+**Question:** How does wg's knowledge-tier classification shape what an
 LLM worker actually sees, why did `gpt-5`/`gpt-4` fall through to the wrong
 tier, and what does the recent fix change about agent behavior?
 
 ---
 
-## 1. How workgraph classifies models into knowledge tiers
+## 1. How wg classifies models into knowledge tiers
 
-Worker prompts in workgraph are built by `build_tiered_guide()` in
+Worker prompts in wg are built by `build_tiered_guide()` in
 `src/commands/spawn/context.rs`. Before assembling a prompt, the spawn pipeline
 calls `classify_model_tier(model)` (lines 614–642 of the same file) to decide
-how much of the workgraph contract to inline. The classifier is a substring
+how much of the wg contract to inline. The classifier is a substring
 matcher over the lowercased model id, with three explicit buckets and a
 conservative fallback:
 
@@ -35,7 +35,7 @@ conservative fallback:
 
 `build_tiered_guide()` then routes each tier to a builder
 (`build_essential_guide`, `build_core_guide`, `build_full_guide`) and the
-result is injected as a `## workgraph Usage Guide` section by
+result is injected as a `## wg Usage Guide` section by
 `service/executor.rs:1077-1083`. From the model's point of view this is
 indistinguishable from the rest of the prompt — the tier choice is a hard
 upstream gate on what the model is even *aware* of.
@@ -100,7 +100,7 @@ The deeper lesson — well established in the 2025 prompt-injection literature
 (see Liu et al. and the OWASP LLM01:2025 entry) — is that the system prompt is
 not a neutral preamble: it is the operating contract. When the contract is
 under-specified, model behavior degrades in ways that look like model
-weakness but are actually *missing context*. Workgraph's tiered guide is a
+weakness but are actually *missing context*. wg's tiered guide is a
 direct, mechanical lever on that contract surface, and `classify_model_tier`
 is the policy layer that decides which lever a given worker pulls. Keeping
 this classifier in sync with newly-released model families is now an

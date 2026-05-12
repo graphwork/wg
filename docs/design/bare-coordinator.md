@@ -7,7 +7,7 @@
 
 ## Summary
 
-The **bare coordinator** is a coordinator agent that runs as a regular looping task in the workgraph — not as a special entity outside the graph. Context compaction is a first-class graph task (`.compact-N`), not an implicit crash-recovery mechanism. The coordinator exits cleanly when context approaches its limit, a compaction task runs to produce a summary, and a new coordinator era begins with the compacted context injected.
+The **bare coordinator** is a coordinator agent that runs as a regular looping task in the wg — not as a special entity outside the graph. Context compaction is a first-class graph task (`.compact-N`), not an implicit crash-recovery mechanism. The coordinator exits cleanly when context approaches its limit, a compaction task runs to produce a summary, and a new coordinator era begins with the compacted context injected.
 
 This document specifies the complete bare coordinator design: its lifecycle state machine, journal-based compaction, signal/exit/resume protocol, deprecation plan, and the invariants that must hold.
 

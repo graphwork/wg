@@ -4,7 +4,7 @@
 **Date:** 2026-04-06
 **Sources synthesized:**
 1. `/home/erik/executors/REPORT-claude-code-memory-systems.md` (280 lines)
-2. `/home/erik/.claude/projects/-home-erik-workgraph/memory/MEMORY.md` (92 lines)
+2. `/home/erik/.claude/projects/-home-erik-wg/memory/MEMORY.md` (92 lines)
 3. `/home/erik/workgraph/terminal-bench/wg/adapter.py` (916 lines)
 
 ---
@@ -30,10 +30,10 @@ Claude Code has a 10-layer memory stack. Three layers matter for the condition F
 ## 2. Distilled Memory Document (~1.2K tokens)
 
 ```
-## Workgraph Project Memory (Distilled)
+## wg Project Memory (Distilled)
 
 ### Architecture
-- **Graph storage**: `.workgraph/graph.jsonl` — one JSON object per line, append-only, human-readable
+- **Graph storage**: `.wg/graph.jsonl` — one JSON object per line, append-only, human-readable
 - **Task lifecycle**: open → in-progress → done | failed | abandoned | blocked | waiting
   - Tasks with `--verify` gates pass through `pending-validation` before `done`
 - **Dependencies**: Directed graph (supports cycles). Use `--after <task-id>` to declare edges
@@ -49,7 +49,7 @@ Claude Code has a 10-layer memory stack. Three layers matter for the condition F
 
 ### Project Structure
 ```
-.workgraph/
+.wg/
 ├── graph.jsonl          # Task graph (source of truth)
 ├── config.toml          # Coordinator/agent/model config
 ├── agency/              # Roles, tradeoffs, agents, evaluations
@@ -118,10 +118,10 @@ Replace the `WG_QUICK_GUIDE` constant (adapter.py:377-386) with a new `CONDITION
 
 ```python
 # adapter.py line 377 — replace WG_QUICK_GUIDE entirely
-CONDITION_F_MEMORY = """## Workgraph Project Memory (Distilled)
+CONDITION_F_MEMORY = """## wg Project Memory (Distilled)
 
 ### Architecture
-- **Graph storage**: `.workgraph/graph.jsonl` — one JSON object per line, append-only
+- **Graph storage**: `.wg/graph.jsonl` — one JSON object per line, append-only
 - **Task lifecycle**: open → in-progress → done | failed | abandoned | blocked | waiting
   - Tasks with `--verify` gates pass through `pending-validation` before `done`
 - **Dependencies**: Directed graph. Use `--after <task-id>` to declare edges
@@ -136,9 +136,9 @@ CONDITION_F_MEMORY = """## Workgraph Project Memory (Distilled)
 - **Same files = sequential edges**: NEVER parallelize tasks modifying the same files
 
 ### Project Structure
-.workgraph/graph.jsonl — task graph (source of truth)
-.workgraph/config.toml — coordinator/agent/model config
-.workgraph/agency/ — roles, tradeoffs, agents, evaluations
+.wg/graph.jsonl — task graph (source of truth)
+.wg/config.toml — coordinator/agent/model config
+.wg/agency/ — roles, tradeoffs, agents, evaluations
 
 ### Build & Test
 - Build: `cargo build`

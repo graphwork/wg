@@ -74,7 +74,7 @@ Could simpler measures get 80%?
 
 - **Better `--after` sequencing**: Prevents agents from running in parallel when they shouldn't. But we already do this — the problem is agents on legitimately independent tasks that happen to share files (e.g., both modify `Cargo.toml` by adding different dependencies).
 - **File-level locking**: The file-locking audit (docs/research/file-locking-audit.md) explored this. It prevents concurrent writes but doesn't solve build isolation — two agents can modify different files and still break each other's builds.
-- **Sequential execution only**: Works but defeats the purpose of concurrent agents. We'd lose the parallelism that makes workgraph valuable.
+- **Sequential execution only**: Works but defeats the purpose of concurrent agents. We'd lose the parallelism that makes wg valuable.
 
 **Verdict:** Simpler measures don't solve build isolation, which is the biggest pain point. You can sequence file writes, but you can't sequence `cargo build` across agents sharing one `target/` without serializing all work. Worktrees solve both problems simultaneously: file isolation AND build isolation.
 
@@ -108,7 +108,7 @@ The smallest change that eliminates agent interference:
    - `git worktree remove --force` on completion/failure
 2. **`.wg` symlink**: So `wg` CLI works from worktree
 3. **Env vars**: `WG_WORKTREE_PATH`, `WG_BRANCH`, `WG_PROJECT_ROOT`
-4. **Opt-in config**: `worktree_isolation = true` in workgraph config (default off initially)
+4. **Opt-in config**: `worktree_isolation = true` in wg config (default off initially)
 5. **Basic cleanup**: On service restart, prune stale worktrees
 6. **`.wg-worktrees/` in `.gitignore`**
 
@@ -164,4 +164,4 @@ While the decision is clearly worktrees, two ideas from the GitButler research a
 | **Rollout** | Opt-in config flag, phased adoption |
 | **First phase scope** | Worktree create/remove lifecycle, .wg symlink, env vars |
 
-**We are building git worktree isolation as the agent isolation mechanism for workgraph.** Phase 1 delivers the core lifecycle (create, run, cleanup) behind an opt-in config flag. Phase 2 adds merge-back and build optimization. Phase 3 hardens operations. GitButler is not part of the plan.
+**We are building git worktree isolation as the agent isolation mechanism for wg.** Phase 1 delivers the core lifecycle (create, run, cleanup) behind an opt-in config flag. Phase 2 adds merge-back and build optimization. Phase 3 hardens operations. GitButler is not part of the plan.

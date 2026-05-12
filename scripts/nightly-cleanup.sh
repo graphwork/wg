@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== Workgraph Nightly Cleanup $(date) ==="
+echo "=== wg Nightly Cleanup $(date) ==="
 
 # Configuration
 DRY_RUN=${DRY_RUN:-true}

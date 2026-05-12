@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This audit examines the worktree cleanup mechanisms when agents exit normally or crash in the workgraph system. The investigation reveals a comprehensive cleanup infrastructure with multiple entry points and safety nets, though some gaps exist in testing and edge case handling.
+This audit examines the worktree cleanup mechanisms when agents exit normally or crash in the wg system. The investigation reveals a comprehensive cleanup infrastructure with multiple entry points and safety nets, though some gaps exist in testing and edge case handling.
 
 ## Current Cleanup Architecture
 
@@ -145,4 +145,4 @@ This audit examines the worktree cleanup mechanisms when agents exit normally or
 
 ## Conclusion
 
-The workgraph agent exit worktree cleanup system is architecturally sound with comprehensive coverage of normal operations. The multi-layered approach (coordinator ticks + service startup + process monitoring) provides good resilience against most failure modes. However, testing gaps around crash scenarios and edge cases represent the primary areas for improvement. The cleanup infrastructure is well-designed but would benefit from enhanced error handling and monitoring capabilities.
+The wg agent exit worktree cleanup system is architecturally sound with comprehensive coverage of normal operations. The multi-layered approach (coordinator ticks + service startup + process monitoring) provides good resilience against most failure modes. However, testing gaps around crash scenarios and edge cases represent the primary areas for improvement. The cleanup infrastructure is well-designed but would benefit from enhanced error handling and monitoring capabilities.

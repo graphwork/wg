@@ -1,4 +1,4 @@
-# Organizational Patterns & Formal Models for workgraph
+# Organizational Patterns & Formal Models for wg
 
 *A mathematics of organizations mapped onto task graph primitives*
 
@@ -6,7 +6,7 @@
 
 # Executive Summary
 
-workgraph’s primitives—tasks, dependency edges, roles, motivations, agents, a coordinator, evaluations, and an evolve loop—are not arbitrary design choices. They map precisely onto well-established concepts from organizational theory, cybernetics, workflow science, and distributed systems. This document develops a vocabulary and framework — a “mathematics of organizations“—that helps users think rigorously about how to structure work in workgraph.
+wg’s primitives—tasks, dependency edges, roles, motivations, agents, a coordinator, evaluations, and an evolve loop—are not arbitrary design choices. They map precisely onto well-established concepts from organizational theory, cybernetics, workflow science, and distributed systems. This document develops a vocabulary and framework — a “mathematics of organizations“—that helps users think rigorously about how to structure work in wg.
 
 **Key findings:**
 
@@ -16,13 +16,13 @@ workgraph’s primitives—tasks, dependency edges, roles, motivations, agents, 
 
 3.  **The execute→evaluate→evolve loop is autopoietic.** The system literally produces the components (agent definitions) that produce the system (task completions that trigger evaluations that trigger evolution). This is Maturana & Varela’s self-producing network, Luhmann’s operationally closed social system, and Argyris & Schön’s double-loop learning—all at once.
 
-4.  **Fork-Join is the natural topology of `after` graphs.** The planner→N workers→synthesizer pattern is workgraph’s most fundamental parallel decomposition. It maps to MapReduce, scatter-gather, and WCP2+WCP3.
+4.  **Fork-Join is the natural topology of `after` graphs.** The planner→N workers→synthesizer pattern is wg’s most fundamental parallel decomposition. It maps to MapReduce, scatter-gather, and WCP2+WCP3.
 
 5.  **The coordinator is a cybernetic regulator** operating an OODA loop, subject to Ashby’s Law of Requisite Variety: the number of distinct roles must match or exceed the variety of task types, or the system becomes under-regulated.
 
 6.  **Evaluations solve the principal-agent problem.** The human principal delegates to autonomous agents under information asymmetry. Evaluations are the monitoring mechanism; motivations are the bonding mechanism; evolution is the incentive-alignment mechanism.
 
-7.  **Role design is an Inverse Conway Maneuver.** Conway’s Law predicts that system architecture mirrors org structure. In workgraph, deliberately designing roles shapes the task decomposition and therefore the output architecture.
+7.  **Role design is an Inverse Conway Maneuver.** Conway’s Law predicts that system architecture mirrors org structure. In wg, deliberately designing roles shapes the task decomposition and therefore the output architecture.
 
 8.  **The provenance log is organizational memory.** `wg trace` records the full causal chain of every workflow—not just what the current state is (stigmergy) but how it got there. This is Luhmann’s structural memory: the system’s capacity to selectively remember and forget its own history.
 
@@ -55,11 +55,11 @@ There are two fundamental types:
 | **Replay** | Org Learning (double-loop learning—Argyris & Schön; exploration/exploitation—March), Autopoiesis (self-reproduction with variation), Evolutionary Theory (reproduction with mutation—Nelson & Winter), Cybernetics (counterfactual testing) | The learning mechanism |
 | **Runs** | VSM (S3* audit baseline), Org Learning (experimental records), Evolutionary Theory (generational snapshots) | The experimental record |
 
-## workgraph is a Stigmergic System
+## wg is a Stigmergic System
 
-A workgraph task graph is a stigmergic medium. Agents do not communicate with each other directly—they read and write to the shared graph, and the graph’s state stimulates their actions.
+A wg task graph is a stigmergic medium. Agents do not communicate with each other directly—they read and write to the shared graph, and the graph’s state stimulates their actions.
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -68,7 +68,7 @@ A workgraph task graph is a stigmergic medium. Agents do not communicate with ea
 | **Stigmergic coordination** | The coordinator polls the graph for "ready" tasks (all `after` predecessors terminal)—it reads the markers |
 | **Self-reinforcing trails** | Tasks with good evaluation scores reinforce the role/motivation patterns that produced them (via evolve) |
 
-This is not a metaphor. It is a precise structural correspondence. The defining characteristic of stigmergy—that agents coordinate through a shared medium rather than through direct communication—is exactly how workgraph agents operate. Agent A completes task X, modifying the graph (setting status to `Done`, recording artifacts). Agent B, working on task Y with `after = [X]`, is now unblocked. B never spoke to A. The graph mediated the coordination.
+This is not a metaphor. It is a precise structural correspondence. The defining characteristic of stigmergy—that agents coordinate through a shared medium rather than through direct communication—is exactly how wg agents operate. Agent A completes task X, modifying the graph (setting status to `Done`, recording artifacts). Agent B, working on task Y with `after = [X]`, is now unblocked. B never spoke to A. The graph mediated the coordination.
 
 ## Real-World Stigmergic Systems
 
@@ -76,7 +76,7 @@ Wikipedia is the canonical human example of stigmergy. An editor sees a stub art
 
 The theoretical literature connects stigmergy to self-organization, emergence, and scalability. Stigmergic systems scale better than centrally planned systems because adding agents does not increase communication overhead—the coordination cost is absorbed by the shared medium.
 
-## Implications for workgraph Users
+## Implications for wg Users
 
 - **The task graph is your communication channel.** Write descriptive task titles, clear descriptions, and meaningful log entries—these are the “pheromone trails” that guide downstream agents.
 
@@ -96,7 +96,7 @@ These patterns provide a precise vocabulary for what any workflow system can and
 
 ## Patterns Natively Supported by `after`
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -104,11 +104,11 @@ These patterns provide a precise vocabulary for what any workflow system can and
 | **Simple Merge** | WCP5 | Single successor of multiple predecessors, where only one fires | `{hotfix, feature} → deploy` (only one path active) |
 | **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph |
 
-These five patterns—the basic directed-graph patterns—are the bread and butter of `after` graphs. (Note: workgraph is a directed graph, not necessarily a DAG — structural cycles are intentional.)
+These five patterns—the basic directed-graph patterns—are the bread and butter of `after` graphs. (Note: wg is a directed graph, not necessarily a DAG — structural cycles are intentional.)
 
 ## Patterns Added by Structural Cycles
 
-| Pattern | ID | workgraph Expression |
+| Pattern | ID | wg Expression |
 | --- | --- | --- |
 | **Arbitrary Cycles** | WCP10 | `after` edges forming a cycle, detected by Tarjan's SCC algorithm, with `CycleConfig` on the cycle header (`--max-iterations`, optional guard and delay) |
 | **Structured Loop** | WCP21 | Structural cycle with a guard condition on the `CycleConfig` |
@@ -131,7 +131,7 @@ These patterns cannot be expressed with static edges alone but can be achieved t
 
 Beyond control-flow, Van der Aalst’s Resource Patterns describe how work is distributed to agents. Several map directly:
 
-| Resource Pattern | workgraph Equivalent |
+| Resource Pattern | wg Equivalent |
 | --- | --- |
 | **Role-Based Distribution** (WRP2) | Tasks matched to agents by role |
 | **Capability-Based Distribution** (WRP8) | Task `skills` matched against role capabilities |
@@ -162,7 +162,7 @@ These three patterns represent variations of the same fundamental idea — paral
 | **MapReduce** | A map phase applies a function to each element in parallel; a reduce phase aggregates results | Dean & Ghemawat 2004, functional programming | Data-parallel. Decomposition driven by data partitioning, not task structure. Includes shuffle/sort between map and reduce. |
 | **Scatter-Gather** | A request is scattered to N recipients; responses are gathered by an aggregator | Enterprise Integration Patterns (Hohpe & Woolf 2003) | Message-oriented. Recipients may be heterogeneous. Aggregation may accept partial results. |
 
-## Fork-Join in workgraph
+## Fork-Join in wg
 
 Fork-Join is the natural topology of `after` graphs:
 
@@ -178,11 +178,11 @@ wg add "Worker 3" --id worker-3 --blocked-by planner
 wg add "Synthesize results" --id synthesizer --blocked-by worker-1 worker-2 worker-3
 ```
 
-This is WCP2 (Parallel Split) composed with WCP3 (Synchronization). It is workgraph’s most fundamental parallel pattern. Every fan-out from a single task is a fork; every convergence point with multiple `after` entries is a join.
+This is WCP2 (Parallel Split) composed with WCP3 (Synchronization). It is wg’s most fundamental parallel pattern. Every fan-out from a single task is a fork; every convergence point with multiple `after` entries is a join.
 
-## MapReduce in workgraph
+## MapReduce in wg
 
-MapReduce adds data-parallel semantics to fork-join. In workgraph, this is expressed as:
+MapReduce adds data-parallel semantics to fork-join. In wg, this is expressed as:
 
 1.  A **planner** task that analyzes input data and produces a decomposition
 
@@ -192,11 +192,11 @@ MapReduce adds data-parallel semantics to fork-join. In workgraph, this is expre
 
 The coordinator creates the N map tasks dynamically based on the planner’s output. The “shuffle” phase is implicit—each reduce task’s description specifies which map outputs it consumes.
 
-This is workgraph’s most common pattern for parallelizable research, analysis, and implementation tasks.
+This is wg’s most common pattern for parallelizable research, analysis, and implementation tasks.
 
-## Scatter-Gather in workgraph
+## Scatter-Gather in wg
 
-Scatter-Gather differs from fork-join in two ways: recipients may be heterogeneous (different roles), and the aggregator may not require all responses. In workgraph:
+Scatter-Gather differs from fork-join in two ways: recipients may be heterogeneous (different roles), and the aggregator may not require all responses. In wg:
 
 - **Heterogeneous scatter**: Assign different roles to the worker tasks. A security analyst, a performance engineer, and a UX reviewer all examine the same codebase.
 
@@ -204,7 +204,7 @@ Scatter-Gather differs from fork-join in two ways: recipients may be heterogeneo
 
 ## Work-Stealing
 
-Doug Lea’s Fork/Join framework introduced work-stealing: idle threads steal tasks from busy threads’ queues, achieving dynamic load balancing without central scheduling. The workgraph coordinator does something similar—when an agent finishes a task, the coordinator assigns it the next ready task regardless of which “queue” it originated from. The coordinator’s `max_agents` parameter is the thread pool size.
+Doug Lea’s Fork/Join framework introduced work-stealing: idle threads steal tasks from busy threads’ queues, achieving dynamic load balancing without central scheduling. The wg coordinator does something similar—when an agent finishes a task, the coordinator assigns it the next ready task regardless of which “queue” it originated from. The coordinator’s `max_agents` parameter is the thread pool size.
 
 —
 
@@ -218,7 +218,7 @@ A pipeline is a serial chain of specialized processing stages:
 
 Each stage transforms inputs into outputs consumed by the next stage. This maps directly to manufacturing and operations concepts:
 
-| Manufacturing Concept | workgraph Expression |
+| Manufacturing Concept | wg Expression |
 | --- | --- |
 | **Assembly line** | A chain of tasks with sequential `after` edges, each assigned to a different specialized role |
 | **Work station** | A role—the specialized capability at each pipeline stage |
@@ -236,11 +236,11 @@ These two patterns are complementary, not competing:
 | **Parallelism type** | Task-level (different stages run concurrently on different work items) | Data-level (same operation applied to multiple items simultaneously) |
 | **Role assignment** | Different role per stage | Same role for all workers |
 | **When to use** | Work requires sequential specialized transformation | Work is decomposable into independent parallel units |
-| **workgraph shape** | Long chain | Wide diamond |
+| **wg shape** | Long chain | Wide diamond |
 
 ## Combined Patterns
 
-Real workflows combine both. A common workgraph pattern:
+Real workflows combine both. A common wg pattern:
 
     ┌─── implement-module-1 ───┐
     plan ────┼─── implement-module-2 ───┼─── integrate ─── review ─── deploy
@@ -274,7 +274,7 @@ Eliyahu Goldratt’s Theory of Constraints (1984) applies directly to pipelines:
 
 5.  **Repeat**—the bottleneck shifts; find the new one
 
-In workgraph terms: if the `reviewer` role is the bottleneck, either assign more agents to that role, or decompose review into sub-roles (security review, code style review, correctness review) that can run in parallel.
+In wg terms: if the `reviewer` role is the bottleneck, either assign more agents to that role, or decompose review into sub-roles (security review, code style review, correctness review) that can run in parallel.
 
 —
 
@@ -322,7 +322,7 @@ Key properties:
 
 Niklas Luhmann (1984) adapted autopoiesis for sociology with a radical move: **social systems are made of communications, not people.** People are in the *environment* of social systems, not their components. A social system is autopoietic because each communication connects to previous communications and stimulates subsequent ones — communications producing communications.
 
-This reframing is strikingly applicable to workgraph: the *system* is the network of task state transitions and evaluations, not the agents themselves. Agents are in the environment of the workgraph system. What matters is the network of communications: “task X is done” triggers “task Y is ready” triggers “agent A starts work” triggers “task Y is in-progress“—communications producing communications.
+This reframing is strikingly applicable to wg: the *system* is the network of task state transitions and evaluations, not the agents themselves. Agents are in the environment of the wg system. What matters is the network of communications: “task X is done” triggers “task Y is ready” triggers “agent A starts work” triggers “task Y is in-progress“—communications producing communications.
 
 ## The Evolve Loop is Autopoietic
 
@@ -428,9 +428,9 @@ The provenance log connects to the organizational memory literature:
 
 - **Levitt & March (1988)**, “Organizational Learning”: Organizations learn by encoding inferences from history into routines that guide behavior. The provenance log is the raw “history” that, through replay and trace-as-functions (Section 8), gets encoded into reusable routines.
 
-## The Three Layers of Memory in workgraph
+## The Three Layers of Memory in wg
 
-workgraph’s memory architecture comprises three distinct layers:
+wg’s memory architecture comprises three distinct layers:
 
     Layer 1: OPERATIVE MEMORY (the task graph)
       - Current task statuses, dependencies, assignments
@@ -681,7 +681,7 @@ James March’s (1991) framework of **exploration** (search, variation, risk-tak
 | **Runs** | VSM (S3* audit baseline), Org Learning (experimental records), Evolutionary Theory (generational snapshots) | The experimental record |
 8
 
-March warns that organizations tend to over-exploit (stick with what worked before) at the expense of exploration (trying new patterns). In workgraph, this tension manifests as:
+March warns that organizations tend to over-exploit (stick with what worked before) at the expense of exploration (trying new patterns). In wg, this tension manifests as:
 
 - **Over-exploitation**: Always replaying the same workflow pattern, even when the problem domain has changed
 
@@ -713,7 +713,7 @@ Martha Feldman and Brian Pentland (2003) reconceptualized organizational routine
 | **Runs** | VSM (S3* audit baseline), Org Learning (experimental records), Evolutionary Theory (generational snapshots) | The experimental record |
 9
 
-workgraph’s trace captures the **performative** aspect with high fidelity (every operation, every agent conversation). The **ostensive** aspect emerges from comparing multiple performances: if three different projects all used a spec→fanout→validate pattern, the shared topology is the ostensive routine.
+wg’s trace captures the **performative** aspect with high fidelity (every operation, every agent conversation). The **ostensive** aspect emerges from comparing multiple performances: if three different projects all used a spec→fanout→validate pattern, the shared topology is the ostensive routine.
 
 The evolve mechanism connects the two: when evaluation scores reveal that a performative deviation (e.g., adding a review step) improved outcomes, the evolve mechanism can update roles and motivations to institutionalize that deviation—modifying the ostensive routine.
 
@@ -745,7 +745,7 @@ Synthesizing Nelson & Winter + March + Feldman & Pentland yields a unified evolu
            ▼
     VARIATION (back to top)
 
-This is biological evolution applied to organizational workflow, with workgraph primitives as the substrate:
+This is biological evolution applied to organizational workflow, with wg primitives as the substrate:
 
 - **Genes** = workflow topologies + role assignments (the ostensive routine)
 
@@ -767,7 +767,7 @@ This is biological evolution applied to organizational workflow, with workgraph 
 
 Cybernetics (from Greek *kybernetes* “steersman”) is the study of regulatory systems—feedback loops, circular causality, and the science of control and communication. Founded by Norbert Wiener (1948) and W. Ross Ashby (1956), it provides the mathematical framework for understanding how systems maintain stability in changing environments.
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -779,7 +779,7 @@ Cybernetics (from Greek *kybernetes* “steersman”) is the study of regulatory
 
 ## The Coordinator as Cybernetic Regulator
 
-The workgraph coordinator operates a control loop:
+The wg coordinator operates a control loop:
 
     ┌──────────────────────────────────────┐
            │                                      │
@@ -809,7 +809,7 @@ This is simultaneously: - An **OODA loop** (Boyd): Observe the graph state → O
 
 Ashby’s Law states: **“Only variety can absorb variety.”** A regulator must have at least as many response options as the system has disturbance types. Formally: V(Regulator) ≥ V(Disturbances).
 
-Applied to workgraph quantitatively:
+Applied to wg quantitatively:
 
 - Let **V** = the number of distinct task types in the graph (identified by required skills, complexity, domain)
 
@@ -819,7 +819,7 @@ Applied to workgraph quantitatively:
 
 The `evolve` mechanism is precisely how the system increases its requisite variety: when evaluations reveal that existing roles cannot handle certain task types, the evolver creates new roles (increasing R) to match the growing variety of disturbances (V).
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -831,7 +831,7 @@ The `evolve` mechanism is precisely how the system increases its requisite varie
 
 ## Single-Loop vs. Double-Loop Learning
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -843,7 +843,7 @@ The `evolve` mechanism is precisely how the system increases its requisite varie
 
 Single-loop: “This agent performed poorly on this task. Assign a different agent next time.” Double-loop: “The role definition itself is wrong. Modify the role’s skills and desired outcome.”
 
-Argyris and Schön argued that organizations that cannot double-loop learn become rigid and eventually fail. In workgraph, an agency that only re-assigns tasks without evolving its roles and motivations will plateau in performance.
+Argyris and Schön argued that organizations that cannot double-loop learn become rigid and eventually fail. In wg, an agency that only re-assigns tasks without evolving its roles and motivations will plateau in performance.
 
 —
 
@@ -853,7 +853,7 @@ Argyris and Schön argued that organizations that cannot double-loop learn becom
 
 Stafford Beer’s Viable System Model (VSM) describes the organizational structure of any autonomous system capable of surviving in a changing environment. The model is **recursive**: every viable system contains viable systems and is contained within a viable system.
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -865,9 +865,9 @@ Stafford Beer’s Viable System Model (VSM) describes the organizational structu
 
 The critical homeostatic balance is the **S3-S4 homeostat**: S3 wants stability and optimization of current operations; S4 wants exploration and adaptation. S5 mediates this tension.
 
-## Mapping to workgraph
+## Mapping to wg
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -879,7 +879,7 @@ The critical homeostatic balance is the **S3-S4 homeostat**: S3 wants stability 
 
 ## The S3-S4 Balance in Practice
 
-In workgraph, the S3-S4 tension manifests as:
+In wg, the S3-S4 tension manifests as:
 
 - **S3 pull (stability)**: “Keep using the existing roles and motivations—they’re working fine. Optimize assignment. Don’t change what isn’t broken.”
 
@@ -897,7 +897,7 @@ The principal-agent problem, formalized by Ross (1973) and Jensen & Meckling (19
 
 Two core information asymmetries:
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -909,11 +909,11 @@ Two core information asymmetries:
 
 Agency costs (Jensen & Meckling 1976) = Monitoring costs + Bonding costs + Residual loss.
 
-## workgraph as an Agency Relationship
+## wg as an Agency Relationship
 
-This mapping is unusually precise because workgraph literally has primitives called “agents,” “evaluations,” and “motivations“—the vocabulary of agency theory.
+This mapping is unusually precise because wg literally has primitives called “agents,” “evaluations,” and “motivations“—the vocabulary of agency theory.
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -925,7 +925,7 @@ This mapping is unusually precise because workgraph literally has primitives cal
 
 ## Mechanism Design Implications
 
-Agency theory suggests specific design principles for workgraph:
+Agency theory suggests specific design principles for wg:
 
 1.  **Invest in monitoring (evaluations) proportional to risk.** High-stakes tasks deserve more thorough evaluation. Low-stakes tasks can be spot-checked.
 
@@ -943,7 +943,7 @@ Agency theory suggests specific design principles for workgraph:
 
 ## Conway’s Law
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -959,9 +959,9 @@ Conway’s argument: a system design is decomposed into parts, each assigned to 
 
 Coined by Jonny LeRoy and Matt Simons (2010): if org structure shapes system architecture, then **deliberately designing org structure can drive desired system architecture**. Rather than accepting that your system mirrors your org chart, you restructure teams to produce the architecture you want.
 
-## Mapping to workgraph
+## Mapping to wg
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -985,7 +985,7 @@ If you want a cohesive monolith, define cross-cutting roles: - `backend-develope
 
 Tasks will be decomposed by layer, not by domain, producing a layered monolith.
 
-The profound implication: **in workgraph, the role ontology IS the org chart, and the task graph IS the system architecture.** Conway’s Law predicts they will converge. The Inverse Conway Maneuver says: design the roles first, and the task graph (and resulting code) will follow.
+The profound implication: **in wg, the role ontology IS the org chart, and the task graph IS the system architecture.** Conway’s Law predicts they will converge. The Inverse Conway Maneuver says: design the roles first, and the task graph (and resulting code) will follow.
 
 —
 
@@ -997,7 +997,7 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 
 **Four team types:**
 
-| Stigmergy Concept | workgraph Equivalent |
+| Stigmergy Concept | wg Equivalent |
 | --- | --- |
 | **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
@@ -1009,7 +1009,7 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 
 **Three interaction modes:**
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1018,9 +1018,9 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 | **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph |
 0
 
-## Mapping to workgraph Roles
+## Mapping to wg Roles
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1029,7 +1029,7 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 | **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph |
 1
 
-## Practical Guidance for workgraph Users
+## Practical Guidance for wg Users
 
 1.  **Most roles should be stream-aligned.** If you have a “build the feature” type of work, that’s stream-aligned. Don’t over-specialize.
 
@@ -1047,7 +1047,7 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 
 ## Division of Labor
 
-Adam Smith’s pin factory (1776): splitting work into specialized steps increases productivity. In workgraph, this maps to:
+Adam Smith’s pin factory (1776): splitting work into specialized steps increases productivity. In wg, this maps to:
 
 - **Task decomposition**: Breaking a large task into smaller subtasks, each with a specific focus
 
@@ -1055,25 +1055,25 @@ Adam Smith’s pin factory (1776): splitting work into specialized steps increas
 
 - **The pipeline pattern**: Sequential stages of specialized work (Section 4)
 
-The tradeoff: over-specialization increases coordination costs (more `after` edges, more handoffs, more potential for misalignment). This is the fundamental tension in organizational design, and it applies directly to workgraph agency design.
+The tradeoff: over-specialization increases coordination costs (more `after` edges, more handoffs, more potential for misalignment). This is the fundamental tension in organizational design, and it applies directly to wg agency design.
 
 ## Span of Control
 
-The number of subordinates a manager can effectively supervise. In workgraph: the number of agents a single coordinator tick can effectively manage. The `max_agents` parameter is the span of control.
+The number of subordinates a manager can effectively supervise. In wg: the number of agents a single coordinator tick can effectively manage. The `max_agents` parameter is the span of control.
 
-Research suggests 5-9 direct reports as optimal for human managers (Urwick, 1956). For workgraph, the constraint is computational: how many agents can the coordinator monitor, evaluate, and evolve without losing oversight quality.
+Research suggests 5-9 direct reports as optimal for human managers (Urwick, 1956). For wg, the constraint is computational: how many agents can the coordinator monitor, evaluate, and evolve without losing oversight quality.
 
 ## Coordination Costs
 
 Every dependency edge (`after`) is a coordination point. The total coordination cost of a task graph scales with the number of edges, not the number of tasks. This connects to Brooks’s Law: “Adding manpower to a late software project makes it later“—because the number of communication channels grows as n(n-1)/2 with n participants.
 
-In workgraph terms: adding more agents (higher `max_agents`) only helps if the task graph has enough parallelism to exploit. If the graph is a serial chain, more agents are wasted. If the graph is a wide diamond (fork-join), more agents directly increase throughput—up to the point where coordination overhead dominates.
+In wg terms: adding more agents (higher `max_agents`) only helps if the task graph has enough parallelism to exploit. If the graph is a serial chain, more agents are wasted. If the graph is a wide diamond (fork-join), more agents directly increase throughput—up to the point where coordination overhead dominates.
 
 ## Transaction Cost Economics
 
 Oliver Williamson’s Transaction Cost Economics (1975, 1985) asks: when should work be done inside the organization (“make”) vs. outside (“buy“)? The answer depends on:
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1082,7 +1082,7 @@ Oliver Williamson’s Transaction Cost Economics (1975, 1985) asks: when should 
 | **Implicit Termination** | WCP11 | Tasks with no successors simply complete | Leaf tasks in the graph |
 2
 
-In workgraph, this maps to the choice between: - **Internal agents** (agency-defined roles with specialized capabilities) for recurring, high-specificity work - **External agents** (human operators, one-off shell executors) for infrequent, well-defined tasks
+In wg, this maps to the choice between: - **Internal agents** (agency-defined roles with specialized capabilities) for recurring, high-specificity work - **External agents** (human operators, one-off shell executors) for infrequent, well-defined tasks
 
 The `executor` field on agents (`claude`, `matrix`, `email`, `shell`) represents this make-vs-buy boundary.
 
@@ -1135,7 +1135,7 @@ Several deep identities connect these frameworks:
 
 5.  **Fork-Join + Workflow Patterns + `after`**: Fork-Join is the computational realization of WCP2+WCP3, which are the two most fundamental `after`-edge graph topologies.
 
-6.  **Autopoiesis + Evolve + Double-Loop Learning**: The execute→evaluate→evolve→execute cycle is simultaneously autopoietic (self-producing), double-loop (questioning governing variables), and cybernetic (feedback-driven regulation). This is the single most theoretically dense primitive in workgraph.
+6.  **Autopoiesis + Evolve + Double-Loop Learning**: The execute→evaluate→evolve→execute cycle is simultaneously autopoietic (self-producing), double-loop (questioning governing variables), and cybernetic (feedback-driven regulation). This is the single most theoretically dense primitive in wg.
 
 7.  **Stigmergy + Trace + Organizational Memory**: Stigmergy creates *present* traces in the environment; the provenance log creates *persistent* traces about the environment. Stigmergy is the system’s working memory; trace is its long-term memory. Together they provide the memory architecture for the autopoietic system (Luhmann’s structural memory).
 
@@ -1151,9 +1151,9 @@ Several deep identities connect these frameworks:
 
 ## Agency Design Checklist
 
-Based on the theoretical frameworks above, here is a checklist for designing a workgraph agency:
+Based on the theoretical frameworks above, here is a checklist for designing a wg agency:
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1164,7 +1164,7 @@ Based on the theoretical frameworks above, here is a checklist for designing a w
 
 ## Pattern Selection Guide
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1185,7 +1185,7 @@ This is autopoiesis at the task level. Recall Maturana and Varela’s definition
 
 The concept admits several names, each suited to a different register:
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1202,7 +1202,7 @@ The seed pattern deepens the autopoietic analysis from Section 5. The evolve loo
 
 - **Inner loop (graph):** seed → subtasks → integrate → (new seed). The graph produces the nodes that constitute the graph.
 
-A workgraph project in full operation exhibits both loops simultaneously. Seed tasks grow the graph; the coordinator dispatches work to agents shaped by evolution; evaluations feed back into agent definitions; and new seed tasks are created to address what the evaluations reveal. The graph is not a static plan executed once—it is a living structure that grows, evaluates, and adapts.
+A wg project in full operation exhibits both loops simultaneously. Seed tasks grow the graph; the coordinator dispatches work to agents shaped by evolution; evaluations feed back into agent definitions; and new seed tasks are created to address what the evaluations reveal. The graph is not a static plan executed once—it is a living structure that grows, evaluates, and adapts.
 
 In Luhmann’s terms: each seed task is a *communication* that stimulates further communications. The graph is a social system whose elements (task state transitions) produce the elements (new tasks) that constitute the system. This is operational closure at the level of the work itself.
 
@@ -1218,7 +1218,7 @@ In Luhmann’s terms: each seed task is a *communication* that stimulates furthe
 
 ## Anti-Patterns
 
-| Pattern | ID | workgraph Expression | Example |
+| Pattern | ID | wg Expression | Example |
 | --- | --- | --- | --- |
 | **Sequence** | WCP1 | `B.after = [A]` | `write-code → review-code` |
 | **Parallel Split** | WCP2 | Multiple tasks sharing the same predecessor: `B.after = [A]`, `C.after = [A]` | `plan → {implement-frontend, implement-backend}` |
@@ -1248,7 +1248,7 @@ In Luhmann’s terms: each seed task is a *communication* that stimulates furthe
 | **Replay** | Org Learning (double-loop learning—Argyris & Schön; exploration/exploitation—March), Autopoiesis (self-reproduction with variation), Evolutionary Theory (reproduction with mutation—Nelson & Winter), Cybernetics (counterfactual testing) | The learning mechanism |
 | **Runs** | VSM (S3* audit baseline), Org Learning (experimental records), Evolutionary Theory (generational snapshots) | The experimental record |
 
-## Theoretical Density of workgraph Primitives
+## Theoretical Density of wg Primitives
 
 | Primitive | Frameworks That Map To It | Theoretical "Load" |
 | --- | --- | --- |

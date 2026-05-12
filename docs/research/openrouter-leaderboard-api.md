@@ -7,7 +7,7 @@
 
 OpenRouter exposes model quality data through two channels: (1) its own `/api/v1/models` endpoint (pricing/architecture only, no benchmarks), and (2) Artificial Analysis benchmark scores embedded in the rankings page SSR payload. For structured API access to benchmark scores, the Artificial Analysis API (`/api/v2/data/llms/models`) is the authoritative source — free, rate-limited to 1,000 req/day.
 
-**Recommendation for workgraph:** Use the OpenRouter `/api/v1/models` API for pricing, context window, and model availability. Use the Artificial Analysis API for quality scoring (coding_index and intelligence_index are the most relevant metrics). Parse OpenRouter's SSR payload for throughput/latency if needed, but this is fragile.
+**Recommendation for wg:** Use the OpenRouter `/api/v1/models` API for pricing, context window, and model availability. Use the Artificial Analysis API for quality scoring (coding_index and intelligence_index are the most relevant metrics). Parse OpenRouter's SSR payload for throughput/latency if needed, but this is fragile.
 
 ---
 
@@ -227,13 +227,13 @@ Benchmark scores: Updated as new models are added; methodology versions change p
 
 ---
 
-## 4. Metric Relevance for workgraph Agent Tasks
+## 4. Metric Relevance for wg Agent Tasks
 
 ### 4.1 Relevance Ranking
 
 | Rank | Metric | Relevance | Why |
 |------|--------|-----------|-----|
-| **1** | `coding_index` | **Critical** | Direct measure of coding ability — the primary workgraph agent task |
+| **1** | `coding_index` | **Critical** | Direct measure of coding ability — the primary wg agent task |
 | **2** | `intelligence_index` | **Critical** | Composite including agents, coding, reasoning, instruction following |
 | **3** | Agentic score (SSR only) | **High** | Measures tool use and multi-step task completion — core agent behavior |
 | **4** | `livecodebench` | **High** | Live coding problems; closest to real development tasks |
@@ -242,14 +242,14 @@ Benchmark scores: Updated as new models are added; methodology versions change p
 | **7** | `p50_throughput` | **Medium** | Faster models = faster task completion, but quality matters more |
 | **8** | `gpqa` | **Medium** | Graduate-level reasoning — relevant for complex design/research tasks |
 | **9** | `pricing` | **Medium** | Cost matters for sustained agent operation at scale |
-| **10** | `math_index` | **Low** | Rarely relevant to workgraph's software engineering tasks |
+| **10** | `math_index` | **Low** | Rarely relevant to wg's software engineering tasks |
 | **11** | `p50_latency` | **Low** | TTFT matters less for long-running agent tasks |
 | **12** | `request_count` (popularity) | **Low** | Popularity ≠ quality; can indicate reliability/availability |
 | **13** | `hle` | **Low** | Frontier academic knowledge — not typical agent work |
 
-### 4.2 Recommended Composite for workgraph
+### 4.2 Recommended Composite for wg
 
-For a "workgraph agent quality score," weight:
+For a "wg agent quality score," weight:
 - **50%** coding_index — primary work is code
 - **30%** intelligence_index — overall reasoning/instruction capability
 - **20%** agentic score — tool use and multi-step planning

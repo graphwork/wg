@@ -153,7 +153,7 @@ Ordered by dependency + risk.
    - Then a non-trivial task
    - Document failure modes if any
 
-5. **Let loose in workgraph itself** (real work)
+5. **Let loose in wg itself** (real work)
 
 ## Deferred / separate design
 

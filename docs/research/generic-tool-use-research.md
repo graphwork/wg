@@ -10,7 +10,7 @@
 
 ### 1.1 Executor Types
 
-workgraph has four executor types, each providing a different level of tool access:
+wg has four executor types, each providing a different level of tool access:
 
 | Executor | Description | Tool Access | How Tools Work |
 |----------|-------------|-------------|----------------|
@@ -106,7 +106,7 @@ The native executor's bare bundle has in-process wg tools but is **missing key c
 
 Amplifier (Microsoft MADE:Explorations, MIT license) uses a **kernel + module** architecture inspired by the Linux kernel. Key components:
 
-| Component | Purpose | Analog in workgraph |
+| Component | Purpose | Analog in wg |
 |-----------|---------|---------------------|
 | `amplifier-core` (~2600 LOC Python) | Session lifecycle, module loading, event bus | `executor/native/` |
 | `Orchestrator` protocol | Drives the LLM interaction loop | `AgentLoop` |
@@ -131,7 +131,7 @@ The orchestrator is responsible for the tool-use loop:
 5. Add tool results to context
 6. Loop until no more tool calls
 
-**Key insight**: The orchestrator is **provider-agnostic**. It works with any provider that implements the `Provider` protocol. The provider handles wire-format translation. This is almost exactly what workgraph's native executor already does.
+**Key insight**: The orchestrator is **provider-agnostic**. It works with any provider that implements the `Provider` protocol. The provider handles wire-format translation. This is almost exactly what wg's native executor already does.
 
 ### 2.3 How Amplifier Handles OpenRouter
 
@@ -139,13 +139,13 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 
 **OpenRouter-specific handling**: OpenRouter proxies tool-use calls transparently for most models. Models that support tool use (Claude, GPT-4, Gemini, etc.) work through OpenRouter without any special shim. The `_response_handling.py` module handles parsing tool calls from the response.
 
-### 2.4 What workgraph Can Learn from Amplifier
+### 2.4 What wg Can Learn from Amplifier
 
-1. **workgraph already has the right pattern.** The `AgentLoop` + `Provider` trait + `ToolRegistry` is structurally identical to Amplifier's `Orchestrator` + `Provider` + `Tool` pattern.
+1. **wg already has the right pattern.** The `AgentLoop` + `Provider` trait + `ToolRegistry` is structurally identical to Amplifier's `Orchestrator` + `Provider` + `Tool` pattern.
 
-2. **The gap is not architectural — it's feature completeness.** workgraph's native executor already handles multi-turn tool use with both Anthropic and OpenAI-compatible providers. The gap is that bare-mode agents don't get enough tools.
+2. **The gap is not architectural — it's feature completeness.** wg's native executor already handles multi-turn tool use with both Anthropic and OpenAI-compatible providers. The gap is that bare-mode agents don't get enough tools.
 
-3. **Bundle-based tool filtering is the right approach.** Both systems use bundles/tiers to control tool access. workgraph just needs to expand what's in the bare bundle.
+3. **Bundle-based tool filtering is the right approach.** Both systems use bundles/tiers to control tool access. wg just needs to expand what's in the bare bundle.
 
 ---
 
@@ -154,7 +154,7 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 ### 3.1 Anthropic (Claude)
 
 - **Native tool use** via Messages API: `tools` array in request, `tool_use` content blocks in response
-- **workgraph leverages this** via `AnthropicClient` (`src/executor/native/client.rs`) which serializes `ToolDefinition` as Anthropic tool schemas and parses `tool_use` content blocks
+- **wg leverages this** via `AnthropicClient` (`src/executor/native/client.rs`) which serializes `ToolDefinition` as Anthropic tool schemas and parses `tool_use` content blocks
 - **Multi-turn**: Fully supported. Agent loop sends tool results as `tool_result` content blocks in the next user message.
 - **All Claude models** support tool use (Haiku, Sonnet, Opus)
 
@@ -162,19 +162,19 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 
 - **Transparent proxy** for tool use: If the underlying model supports function calling, OpenRouter passes tool definitions and tool calls through
 - **OpenAI-compatible format**: Uses `tools` array in request, `tool_calls` in response (same as OpenAI Chat Completions API)
-- **workgraph leverages this** via `OpenAiClient` (`src/executor/native/openai_client.rs`) which translates between Anthropic-style canonical types and OpenAI wire format
+- **wg leverages this** via `OpenAiClient` (`src/executor/native/openai_client.rs`) which translates between Anthropic-style canonical types and OpenAI wire format
 - **Haiku on OpenRouter**: Yes, Claude Haiku via OpenRouter supports multi-turn tool use. The tool calls are proxied through the OpenAI-compatible format
-- **Non-tool-use models** (e.g., DeepSeek R1): workgraph already handles this via `ModelRegistry.supports_tool_use()` — if false, tools are omitted from the request. These models get `supports_tools: false` in `AgentLoop`
+- **Non-tool-use models** (e.g., DeepSeek R1): wg already handles this via `ModelRegistry.supports_tool_use()` — if false, tools are omitted from the request. These models get `supports_tools: false` in `AgentLoop`
 
 ### 3.3 OpenAI
 
 - **Function calling / tool use**: `tools` array in request, `tool_calls` in assistant message
-- **workgraph supports this** via the same `OpenAiClient` (OpenAI and OpenRouter use the same wire format)
+- **wg supports this** via the same `OpenAiClient` (OpenAI and OpenRouter use the same wire format)
 - **All GPT-4 variants** support tool use
 
 ### 3.4 Common Abstraction Layer
 
-workgraph already has a provider-agnostic abstraction: the `Provider` trait (`src/executor/native/provider.rs`):
+wg already has a provider-agnostic abstraction: the `Provider` trait (`src/executor/native/provider.rs`):
 
 ```rust
 pub trait Provider: Send + Sync {
@@ -195,7 +195,7 @@ Both `AnthropicClient` and `OpenAiClient` implement this trait. The `AgentLoop` 
 
 ### 4.1 Problem Summary
 
-The fundamental problem is NOT "models can't do tool use" — they can, and workgraph already supports it. The problem is:
+The fundamental problem is NOT "models can't do tool use" — they can, and wg already supports it. The problem is:
 
 1. **Bare bundle is too restrictive**: Only 7 wg tools, missing `wg edit`, `wg publish`, `wg msg`, `wg assign`, etc.
 2. **No bash tool in bare mode**: The native executor's bare bundle excludes the `bash` tool entirely. Even a restricted bash (wg commands only) would solve the problem.
@@ -215,7 +215,7 @@ The fundamental problem is NOT "models can't do tool use" — they can, and work
 ### 4.3 Models Without Tool Use
 
 For models that don't support tool use (e.g., DeepSeek R1, some Ollama models):
-- workgraph sets `supports_tools: false` and omits tools from the request
+- wg sets `supports_tools: false` and omits tools from the request
 - The model gets a pure text prompt and produces a text response
 - **No multi-turn interaction** is possible — the model can only reason and produce text
 - This is fine for truly text-only tasks, but placement/assignment tasks need to run commands
@@ -283,9 +283,9 @@ The current approach (placement tasks use exec_mode=bare with a tool-capable mod
 
 ---
 
-## 6. Architecture Comparison: workgraph vs Amplifier
+## 6. Architecture Comparison: wg vs Amplifier
 
-| Aspect | workgraph (native executor) | Amplifier |
+| Aspect | wg (native executor) | Amplifier |
 |--------|---------------------------|-----------|
 | Language | Rust | Python |
 | Provider abstraction | `Provider` trait | `Provider` protocol |
@@ -297,7 +297,7 @@ The current approach (placement tasks use exec_mode=bare with a tool-capable mod
 | Multi-turn | Yes (loop until EndTurn) | Yes (loop until no tool_calls) |
 | OpenRouter support | Yes (via OpenAiClient) | Yes (via provider-openai) |
 
-**Key takeaway**: workgraph's native executor is architecturally complete. It already has a generic, provider-agnostic tool-use layer. The only gap is the bare bundle's tool set being too restrictive.
+**Key takeaway**: wg's native executor is architecturally complete. It already has a generic, provider-agnostic tool-use layer. The only gap is the bare bundle's tool set being too restrictive.
 
 ---
 
@@ -309,6 +309,6 @@ The current approach (placement tasks use exec_mode=bare with a tool-capable mod
 | Where is tool access granted? | `build_inner_command()` for Claude executor, `resolve_bundle()` + `filter_registry()` for native executor |
 | How does Claude executor give Bash? | Via `--tools Bash(wg:*)` flag — already working |
 | What would it take for bare-mode bash? | Add `bash` to bare bundle + optional command prefix filter (~50-80 LOC) |
-| How does Amplifier handle tool use? | Orchestrator protocol drives provider-agnostic tool loop — same pattern as workgraph's AgentLoop |
+| How does Amplifier handle tool use? | Orchestrator protocol drives provider-agnostic tool loop — same pattern as wg's AgentLoop |
 | OpenRouter tool-use? | Transparent proxy — works with any model that supports function calling |
 | Recommendation | **Option A**: Add bash to bare bundle with wg-prefix restriction. Minimal change, immediate fix. |

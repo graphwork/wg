@@ -157,7 +157,7 @@ Harbor Runner
            │
            └─ Poll wg show <id> until terminal status
            └─ Collect metrics from stream.jsonl
-           └─ Download .workgraph/ artifacts
+           └─ Download .wg/ artifacts
 ```
 
 **Characteristics:**
@@ -204,7 +204,7 @@ A `NexEvalAgent` would be a Harbor `BaseAgent` subclass that shells out to `wg n
 | Completion detection | Poll `wg show` until terminal | Wait for process exit |
 | Metrics | Parse `stream.jsonl` from container | Parse JSON summary from stdout |
 | Verify gate | `--verify` flag on `wg add` | Harness runs test after agent exits |
-| Graph state | Full .workgraph/ with task lifecycle | Minimal (just for model/endpoint config) |
+| Graph state | Full .wg/ with task lifecycle | Minimal (just for model/endpoint config) |
 | Conditions | A–G | A only (expandable to B/C/F with work) |
 
 ### Concrete Sketch
@@ -219,7 +219,7 @@ class NexEvalAgent(BaseAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-nex-eval"
+        return "wg-nex-eval"
 
     def version(self) -> str | None:
         return "0.1.0"
@@ -250,7 +250,7 @@ class NexEvalAgent(BaseAgent):
         self._trial_workdir = f"{_TRIAL_WORKDIR_PREFIX}{uuid.uuid4().hex[:12]}"
         await environment.exec(command=f"mkdir -p {self._trial_workdir}")
 
-        # Initialize workgraph (needed for model/endpoint config)
+        # Initialize wg (needed for model/endpoint config)
         await environment.exec(
             command=f"cd {self._trial_workdir} && wg init --no-agency"
         )
@@ -263,7 +263,7 @@ class NexEvalAgent(BaseAgent):
         b64 = base64.b64encode(config.encode()).decode()
         await environment.exec(
             command=f"echo '{b64}' | base64 -d > "
-                    f"{self._trial_workdir}/.workgraph/config.toml"
+                    f"{self._trial_workdir}/.wg/config.toml"
         )
 
         # Export API key for the agent process
@@ -289,7 +289,7 @@ class NexEvalAgent(BaseAgent):
         cmd = (
             f'export OPENROUTER_API_KEY="{api_key}" && '
             f'cd {self._trial_workdir} && '
-            f'WG_DIR="{self._trial_workdir}/.workgraph" '
+            f'WG_DIR="{self._trial_workdir}/.wg" '
             f'wg nex --eval-mode --max-turns {self._max_turns} '
             f'-m "{self._model}" '
             f'"$(cat /tmp/nex-instruction.txt)"'
@@ -338,7 +338,7 @@ class NexEvalAgent(BaseAgent):
 
 2. **Instruction passing**: Use base64-encode → file → `$(cat file)` pattern (same as existing adapter) to avoid shell quoting issues with Harbor's `exec()` stdin piping.
 
-3. **WG_DIR**: Point to the trial's `.workgraph/` so wg finds its config. The `--dir` flag or `WG_DIR` env var controls this.
+3. **WG_DIR**: Point to the trial's `.wg/` so wg finds its config. The `--dir` flag or `WG_DIR` env var controls this.
 
 4. **No polling needed**: Unlike `_run_native_executor()`, eval-mode is synchronous — `environment.exec()` blocks until the agent finishes. Harbor's timeout handles the abort case.
 
@@ -372,7 +372,7 @@ The existing adapter handles this by writing `config.toml` — the NexEvalAgent 
 ### Gap 5: Container filesystem assumptions
 Eval-mode runs in CWD. Harbor's container CWD may or may not be the task's working directory. The `cd $trial_workdir &&` prefix in the exec command handles this, but the agent's tool calls (bash, write_file) will operate relative to CWD. Need to ensure the container's CWD is set to the task's repo directory, not the trial workdir.
 
-**Specific concern**: The current adapter creates a trial workdir at `/var/tmp/tb-trial-<uuid>/` and runs all wg commands there. But the *task* files (the repo being evaluated) live at the container's default CWD. The NexEvalAgent needs to run `wg nex` from the task repo directory, with `WG_DIR` pointing to the trial's `.workgraph/` separately.
+**Specific concern**: The current adapter creates a trial workdir at `/var/tmp/tb-trial-<uuid>/` and runs all wg commands there. But the *task* files (the repo being evaluated) live at the container's default CWD. The NexEvalAgent needs to run `wg nex` from the task repo directory, with `WG_DIR` pointing to the trial's `.wg/` separately.
 
 ### Gap 6: stderr capture for debugging
 Eval-mode suppresses most stderr output. When debugging failures, this makes it hard to see what happened. The existing adapter captures stderr to a log file — NexEvalAgent should do the same.

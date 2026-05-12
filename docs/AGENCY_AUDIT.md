@@ -2,7 +2,7 @@
 
 *Audit date: 2026-02-27*
 
-This document describes the actual running state of the Agency system in workgraph, then compares it section-by-section against the specification at `~/agency/specification.md`.
+This document describes the actual running state of the Agency system in wg, then compares it section-by-section against the specification at `~/agency/specification.md`.
 
 ---
 
@@ -301,7 +301,7 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 - Named remotes stored in `.wg/federation.yaml`
 - Transfer system with dry-run, entity filtering, conflict resolution
 - Access policy enforcement (Private → reject, Shared → confirm, Open → allow)
-- Peer workgraph discovery
+- Peer wg discovery
 
 ### Commands
 

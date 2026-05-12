@@ -68,7 +68,7 @@ result = agent.run(
 ## Architecture
 
 The adapter:
-1. Creates a temporary workgraph directory
+1. Creates a temporary wg directory
 2. Writes a Condition A bundle (`condition-a.toml`) with bash + file tools only
 3. Writes a minimal system prompt with tool descriptions
 4. Calls `wg native-exec` with `--exec-mode condition-a --no-resume`

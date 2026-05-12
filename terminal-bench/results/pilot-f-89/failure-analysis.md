@@ -199,7 +199,7 @@ The failed trials took 3x longer (due to retry/timeout overhead) but accomplishe
 No failures can be attributed to:
 - Model capability limitations (M2.7 never got to attempt the tasks)
 - Task design issues (verify commands and task specs are valid)
-- Workgraph/surveillance infrastructure bugs (the system correctly spawned agents and detected failures)
+- wg/surveillance infrastructure bugs (the system correctly spawned agents and detected failures)
 
 ### Corrected Performance Estimate
 

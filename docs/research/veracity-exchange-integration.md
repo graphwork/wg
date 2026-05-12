@@ -1,4 +1,4 @@
-# Veracity Exchange Integration with workgraph
+# Veracity Exchange Integration with wg
 
 **Author:** scout (analyst)
 **Date:** 2026-02-18
@@ -8,7 +8,7 @@
 
 ## 1. The Vision
 
-Nikete's veracity exchange concept connects workgraph to a broader trust and performance market. The core idea: workflow sub-units produce measurable real-world outcomes, and those outcomes become the basis for a trust network where demonstrated competence earns access to more valuable work.
+Nikete's veracity exchange concept connects wg to a broader trust and performance market. The core idea: workflow sub-units produce measurable real-world outcomes, and those outcomes become the basis for a trust network where demonstrated competence earns access to more valuable work.
 
 Five pillars:
 
@@ -22,7 +22,7 @@ Five pillars:
 
 5. **Latent payoff** — Some workflow sub-units have potentially latent payoffs — results that take time to evaluate (e.g., portfolio performance over weeks).
 
-This document examines what workgraph already provides, what's missing, and how a veracity exchange system would interact with the existing architecture.
+This document examines what wg already provides, what's missing, and how a veracity exchange system would interact with the existing architecture.
 
 ---
 
@@ -150,9 +150,9 @@ The `build_task_context()` function in `spawn.rs` aggregates dependency artifact
 
 **What's needed:**
 
-- **Publishing.** Export a task's public-facing data (redacted prompt, outcome spec, outcome result) to an exchange format. This is an _export_ problem, not a core workgraph change.
-- **Suggestion intake.** Accept suggested improvements from external parties, attribute them, and evaluate their quality. This could work through workgraph's existing task model: a suggestion is a task with a reference back to the original.
-- **Exchange identity.** How a workgraph node identifies itself on the exchange. The content-hash agent identity system is a strong foundation, but needs a way to present a public profile without revealing internal role/motivation details.
+- **Publishing.** Export a task's public-facing data (redacted prompt, outcome spec, outcome result) to an exchange format. This is an _export_ problem, not a core wg change.
+- **Suggestion intake.** Accept suggested improvements from external parties, attribute them, and evaluate their quality. This could work through wg's existing task model: a suggestion is a task with a reference back to the original.
+- **Exchange identity.** How a wg node identifies itself on the exchange. The content-hash agent identity system is a strong foundation, but needs a way to present a public profile without revealing internal role/motivation details.
 
 ### 3.4 Credibility Tracking
 
@@ -168,14 +168,14 @@ The `build_task_context()` function in `spawn.rs` aggregates dependency artifact
 
 ## 4. Interface Design
 
-How would a veracity exchange system interact with workgraph? Three options, from least to most integrated.
+How would a veracity exchange system interact with wg? Three options, from least to most integrated.
 
 ### 4.1 Option A: External Service with CLI Bridge
 
-The exchange runs as a separate service. workgraph interacts with it via CLI commands or a thin adapter.
+The exchange runs as a separate service. wg interacts with it via CLI commands or a thin adapter.
 
 ```
-workgraph (local)           veracity exchange (remote)
+wg (local)           veracity exchange (remote)
     │                              │
     ├── wg exchange publish ───────►  publish task outcomes
     ├── wg exchange suggest ───────►  submit improvement suggestions
@@ -185,12 +185,12 @@ workgraph (local)           veracity exchange (remote)
     ◄── wg exchange apply ─────────  apply accepted suggestion as task
 ```
 
-**Implementation:** New `wg exchange` subcommand group. Exchange client library as a dependency. Outcome recording, visibility fields, and credibility tracking are local workgraph features. The exchange protocol is the only networked component.
+**Implementation:** New `wg exchange` subcommand group. Exchange client library as a dependency. Outcome recording, visibility fields, and credibility tracking are local wg features. The exchange protocol is the only networked component.
 
 **Pros:**
-- Clear separation of concerns. workgraph handles task management; the exchange handles the market.
+- Clear separation of concerns. wg handles task management; the exchange handles the market.
 - Exchange can evolve independently.
-- Local workgraph features (outcome scoring, visibility) are useful even without the exchange.
+- Local wg features (outcome scoring, visibility) are useful even without the exchange.
 
 **Cons:**
 - Manual publish/pull workflow adds friction.
@@ -198,7 +198,7 @@ workgraph (local)           veracity exchange (remote)
 
 ### 4.2 Option B: Event Hooks
 
-workgraph emits events that an exchange plugin can subscribe to. The provenance system's operation log is already an event stream.
+wg emits events that an exchange plugin can subscribe to. The provenance system's operation log is already an event stream.
 
 ```
 wg done task-x
@@ -214,7 +214,7 @@ wg done task-x
     │           evaluate suggestion quality
 ```
 
-**Implementation:** Add a hook system to workgraph that fires on task state transitions. The provenance system already records these transitions — hooks would be a "side-effect" triggered by the same events. Hooks could be configured in `config.toml`:
+**Implementation:** Add a hook system to wg that fires on task state transitions. The provenance system already records these transitions — hooks would be a "side-effect" triggered by the same events. Hooks could be configured in `config.toml`:
 
 ```toml
 [hooks]
@@ -233,24 +233,24 @@ on_outcome = ["wg-exchange-hook record {{task_id}}"]
 
 ### 4.3 Option C: Native Integration
 
-The exchange is a first-class workgraph feature, like the agency system.
+The exchange is a first-class wg feature, like the agency system.
 
-**Implementation:** New module (`src/exchange.rs`) alongside `src/agency.rs`. Exchange identity, credibility tracking, and outcome scoring are core workgraph types. The exchange protocol is part of the workgraph daemon.
+**Implementation:** New module (`src/exchange.rs`) alongside `src/agency.rs`. Exchange identity, credibility tracking, and outcome scoring are core wg types. The exchange protocol is part of the wg daemon.
 
 **Pros:**
 - Tightest integration. Outcome scoring and credibility tracking work with zero configuration.
-- Can leverage internal workgraph state directly (graph structure, evaluation history, agent identities).
+- Can leverage internal wg state directly (graph structure, evaluation history, agent identities).
 
 **Cons:**
 - Massively increases scope. The agency system is ~2,346 lines; an exchange module would be comparable or larger.
-- Couples workgraph to a specific exchange protocol.
-- Forces all workgraph users to install exchange dependencies even if they don't use the feature.
+- Couples wg to a specific exchange protocol.
+- Forces all wg users to install exchange dependencies even if they don't use the feature.
 
 ### 4.4 Recommendation
 
 **Start with Option A (CLI bridge) for the protocol, combined with local features that support all options.**
 
-The local features — outcome scoring, visibility classification, credibility tracking — are valuable regardless of how the exchange is accessed. Build these as core workgraph features. Then implement the exchange interaction as a CLI subcommand that can be upgraded to event hooks (Option B) when friction becomes a felt problem.
+The local features — outcome scoring, visibility classification, credibility tracking — are valuable regardless of how the exchange is accessed. Build these as core wg features. Then implement the exchange interaction as a CLI subcommand that can be upgraded to event hooks (Option B) when friction becomes a felt problem.
 
 Do not build native integration (Option C) until the exchange protocol is stable and proven. Premature coupling to an unstable protocol is worse than the friction of a CLI bridge.
 
@@ -258,7 +258,7 @@ Do not build native integration (Option C) until the exchange protocol is stable
 
 ## 5. What Requires Forking vs. Extensions
 
-### 5.1 Changes to Core workgraph (Requires Modification)
+### 5.1 Changes to Core wg (Requires Modification)
 
 These changes affect fundamental data structures and must happen in the main codebase:
 
@@ -274,7 +274,7 @@ These changes affect fundamental data structures and must happen in the main cod
 
 ### 5.2 Extensions (No Core Changes Needed)
 
-These can be built as separate tools/scripts that use workgraph's existing CLI and data files:
+These can be built as separate tools/scripts that use wg's existing CLI and data files:
 
 | Extension | What | Why It's External |
 |-----------|------|-------------------|
@@ -472,7 +472,7 @@ These features are useful independently of any exchange.
 
 4. **Scale of trust network.** The agency system's performance tracking works well for tens of agents. A trust network might have thousands of peers. The `PerformanceRecord` structure may need indexing or summarization for large peer sets.
 
-5. **Bootstrapping the trust market.** The trust market requires an initial set of public tasks with measurable outcomes. workgraph's existing evaluation system could bootstrap this: tasks with high evaluation scores and public visibility become the initial "proven work" that attracts suggestions.
+5. **Bootstrapping the trust market.** The trust market requires an initial set of public tasks with measurable outcomes. wg's existing evaluation system could bootstrap this: tasks with high evaluation scores and public visibility become the initial "proven work" that attracts suggestions.
 
 6. **Incentive alignment.** Why would someone post good suggestions publicly? The answer is credibility → access to private paid tasks. But this only works if there are enough private paid tasks to make credibility valuable. Bootstrapping both sides of this market is a classic chicken-and-egg problem.
 

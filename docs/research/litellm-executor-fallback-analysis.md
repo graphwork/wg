@@ -203,7 +203,7 @@ Additionally, provider-specific env vars are set (`OPENROUTER_API_KEY`, etc.) at
 
 1. **CLI arguments**: `build_inner_command()` passes `--model`, `--provider`, etc. directly to the executor command line.
 2. **Environment variables**: The env vars above are set on the `Command` before `.spawn()`.
-3. **Config file**: The agent runs in the workgraph directory (or worktree), so it reads `.wg/config.toml` at startup.
+3. **Config file**: The agent runs in the wg directory (or worktree), so it reads `.wg/config.toml` at startup.
 
 **Potential gap**: If a parent wg service's env vars leak into a nested trial's subprocess (the bug fixed in fab4ae74), the env vars can override the trial's config.toml settings.
 

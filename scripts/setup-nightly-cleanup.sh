@@ -1,5 +1,5 @@
 #!/bin/bash
-# Setup script to create a nightly cleanup task using workgraph cron scheduling
+# Setup script to create a nightly cleanup task using wg cron scheduling
 #
 # Usage: ./scripts/setup-nightly-cleanup.sh [--time "0 0 2 * * *"]
 
@@ -9,7 +9,7 @@ echo "Setting up nightly cleanup task with schedule: $CRON_SCHEDULE"
 echo "This will run every night at 2 AM by default"
 
 # Create the cron task
-wg add "Nightly workgraph cleanup" \
+wg add "Nightly wg cleanup" \
     --cron "$CRON_SCHEDULE" \
     --exec "./scripts/nightly-cleanup.sh --verbose" \
     --timeout "30m" \

@@ -28,14 +28,14 @@ File: `src/commands/spawn/execution.rs`
    - Agent communication protocol
    - Advanced graph patterns
    - The CLAUDE.md content (via `read_claude_md_content()` in `build_essential_guide`)
-5. `build_prompt()` injects this as a `"## workgraph Usage Guide"` section at Task scope+
+5. `build_prompt()` injects this as a `"## wg Usage Guide"` section at Task scope+
    (`service/executor.rs:1078-1082`)
 6. The assembled prompt is piped as stdin to `claude --print`
 
 ### Path 2: `CLAUDE.md` file read by Claude CLI automatically
 
 Claude Code reads `CLAUDE.md` from the project root at session start. The `CLAUDE.md`
-in every workgraph project (written by `wg init` / `wg setup`) contains:
+in every wg project (written by `wg init` / `wg setup`) contains:
 
 ```
 Run `wg agent-guide` at session start (or read its output from a previous
@@ -102,7 +102,7 @@ For coordinator/chat sessions dispatched via `wg spawn-task .coordinator-N` or
 `build_handler_system_prompt` for non-coordinator codex sessions:
 ```rust
 } else {
-    String::from("You are a workgraph task agent.")
+    String::from("You are a wg task agent.")
 }
 ```
 (`codex_handler.rs:231-239`)
@@ -122,7 +122,7 @@ sessions get the minimal string.
 | Tiered guide in spawn prompt | Yes — Full tier (`build_full_guide`) | Yes — **Essential tier only** (model not in classify_model_tier) |
 | `AGENT_GUIDE_TEXT` in spawn prompt | No (only CLAUDE.md pointer in tiered guide) | No (only AGENTS.md pointer in tiered guide, if included at all) |
 | CLAUDE.md / AGENTS.md automatic read | Yes — Claude CLI reads CLAUDE.md always | Uncertain — depends on `--skip-git-repo-check` behavior |
-| System prompt for non-coordinator sessions | `"You are a workgraph task agent."` (same stub) | `"You are a workgraph task agent."` (same stub) |
+| System prompt for non-coordinator sessions | `"You are a wg task agent."` (same stub) | `"You are a wg task agent."` (same stub) |
 | Completion contract injected | Yes — via Full tiered guide + REQUIRED_WORKFLOW_SECTION | Partially — via Essential tiered guide (shorter) |
 | Smoke gate contract | Yes — in Full guide | **No — not present in Essential guide** |
 | Validation section requirement | Yes | **Partial — mentioned in Essential guide but without detail** |

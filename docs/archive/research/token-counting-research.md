@@ -1,6 +1,6 @@
 # Token Counting Research for Role Weight Calculation
 
-This document summarizes research on token counting approaches for calculating role weights in workgraph.
+This document summarizes research on token counting approaches for calculating role weights in wg.
 
 ## 1. Rust Tokenizer Options
 
@@ -123,7 +123,7 @@ Testing the same text across tokenizers shows:
 
 ### Does Accuracy Matter?
 
-For role weight calculation in workgraph, consider what the token count is used for:
+For role weight calculation in wg, consider what the token count is used for:
 
 1. **Context budget decisions:** "Can this role fit in the context window?"
    - 10% error: Unlikely to cause problems (200K context, 10% = 20K tokens of buffer)
@@ -138,7 +138,7 @@ For role weight calculation in workgraph, consider what the token count is used 
 
 **Recommendation:** For role weight, ~10-15% accuracy is sufficient. The role definitions are markdown files of moderate size (typically <10K tokens), so even 20% error means ±2K tokens—well within the margins of modern context windows.
 
-## 4. Recommendation for workgraph
+## 4. Recommendation for wg
 
 ### Pragmatic Choice: Simple Heuristic with Optional Calibration
 
@@ -205,7 +205,7 @@ wg config set role_weights.chars_per_token 3.5  # For Claude users
 Consider adding tiktoken-rs as an optional feature if:
 - Users request billing-grade accuracy
 - Role definitions become very large (>50K chars)
-- workgraph adds support for precise context management
+- wg adds support for precise context management
 
 ```toml
 # Cargo.toml

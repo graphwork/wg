@@ -1,7 +1,7 @@
 # Verify Timeout Research Summary
 
 ## Overview
-Investigation of the workgraph verify timeout mechanism, configuration, and contention patterns.
+Investigation of the wg verify timeout mechanism, configuration, and contention patterns.
 
 ## Key Findings
 
@@ -72,7 +72,7 @@ fn default_max_verify_failures() -> u32 {
 - **Enabled**: Via `config.coordinator.worktree_isolation` (default: false)
 - **Implementation**: Each agent gets isolated git worktree at `.wg-worktrees/<agent-id>/`
 - **Branch**: `wg/<agent-id>/<task-id>`
-- **Symlink**: `.workgraph` directory symlinked into each worktree
+- **Symlink**: `.wg` directory symlinked into each worktree
 
 **Cargo Target Directory**:
 - **No isolation found** - agents share the same `target/` directory in project root
@@ -83,7 +83,7 @@ fn default_max_verify_failures() -> u32 {
   - `Cargo.lock` file (though read-mostly)
 
 **Worktree Setup Hook**:
-- Optional `worktree-setup.sh` script can be placed in `.workgraph/` directory
+- Optional `worktree-setup.sh` script can be placed in `.wg/` directory
 - Runs during worktree creation but no custom script found in this project
 - Could be used to configure per-agent `CARGO_TARGET_DIR`
 
@@ -145,7 +145,7 @@ fn default_max_verify_failures() -> u32 {
 **Solution**: Configure per-agent `CARGO_TARGET_DIR` in worktree setup:
 
 ```bash
-# In .workgraph/worktree-setup.sh
+# In .wg/worktree-setup.sh
 export CARGO_TARGET_DIR="$1/target"
 mkdir -p "$CARGO_TARGET_DIR"
 ```

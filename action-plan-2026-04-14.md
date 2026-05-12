@@ -10,7 +10,7 @@
 
 **Intense reliability of the native executor running on free, fast local models (qwen3-coder-30b on lambda01 via sglang).** Local models are cheap, fast (~200 tok/sec out, even faster in), and don't burn API credits — but they have small context windows (32k for our target). Most of our failures on these models stem from **context exhaustion**, not from the model's reasoning ability. Fix the context-management infrastructure and qwen3-coder-30b becomes a serious, reliable agent for long-running work.
 
-The end state: a workgraph service on native+qwen3 that can run indefinitely on long tasks, never fails structurally due to context, and self-heals through summarization and journaling rather than crashing.
+The end state: a wg service on native+qwen3 that can run indefinitely on long tasks, never fails structurally due to context, and self-heals through summarization and journaling rather than crashing.
 
 ---
 
@@ -36,7 +36,7 @@ Everything below is in service of maintaining this invariant structurally, so co
 
 ## What's done (Layer 0 — in PR #10)
 
-Shipped 2026-04-14 on branch `fix-worktree-lifecycle`, [PR #10](https://github.com/graphwork/workgraph/pull/10):
+Shipped 2026-04-14 on branch `fix-worktree-lifecycle`, [PR #10](https://github.com/graphwork/wg/pull/10):
 
 **Commit `b36842de`** — initial overhead accounting:
 - `ContextBudget` tracks `overhead_tokens` (system prompt + tool definitions + completion reservation) so `check_pressure` reflects real API budget usage.
@@ -55,7 +55,7 @@ Shipped 2026-04-14 on branch `fix-worktree-lifecycle`, [PR #10](https://github.c
 
 ### Smoke test results (2026-04-14 through 2026-04-15 early morning)
 
-Five smoke tests against fresh `/home/erik/wg-e2e-smoke/` + lambda01/qwen3-coder-30b on a 32k context window. Each is intentionally progressively harder, stressing a different layer of the stack.
+Five smoke tests against fresh `/home/erik/workgraph-e2e-smoke/` + lambda01/qwen3-coder-30b on a 32k context window. Each is intentionally progressively harder, stressing a different layer of the stack.
 
 | # | Task | Result | Validates |
 |---|---|---|---|
@@ -120,7 +120,7 @@ Layer names and ordering, in priority of leverage:
 
 ### L1 — Tool output channeling (prevention, highest impact)
 
-**Rule:** any tool whose output *could* be large writes to `.workgraph/output/agent-<id>/tool-outputs/<N>.log` and returns a small handle like:
+**Rule:** any tool whose output *could* be large writes to `.wg/output/agent-<id>/tool-outputs/<N>.log` and returns a small handle like:
 
 ```
 [wrote 12345 bytes to tool-outputs/7.log; rows 0–18 of 340; use grep/head/tail/offset+limit to inspect]
@@ -226,11 +226,11 @@ Before starting L1+L2, we want to **smoke-test L0** in a controlled environment 
 
 ### Smoke test setup (not yet executed)
 
-- **Fresh clean directory:** `/home/erik/wg-e2e-smoke/` or similar. NOT the current `/home/erik/workgraph/.workgraph/` which is too noisy (1665 done + 567 abandoned + 211 open + paused flip tasks + stale state).
+- **Fresh clean directory:** `/home/erik/workgraph-e2e-smoke/` or similar. NOT the current `/home/erik/workgraph/.wg/` which is too noisy (1665 done + 567 abandoned + 211 open + paused flip tasks + stale state).
 - **Minimal config:** ~25 lines. Three tiers all pointing to `openai:qwen3-coder-30b`, lambda01-local endpoint marked `is_default = true`, qwen3 in `model_registry`, native executor, `worktree_isolation = false`, `max_agents = 1`. **No FLIP, no auto_evaluate, no auto_assign** for the first smoke — we're verifying compaction only, not agency pipeline.
 - **One task:** terminal-bench-style self-contained task. Small bug in a Python file, find and fix it, run the test. Chatty enough to exercise many tool calls but bounded enough to complete.
 - **Watch the log for:** proactive compaction firing at the right threshold (~65% effective utilization, not ~100%); if hard limit is reached, hard compact + halved max_tokens retry should succeed.
-- **Keep the existing `.workgraph/` as-is** — don't delete, it's evidence for the issues doc.
+- **Keep the existing `.wg/` as-is** — don't delete, it's evidence for the issues doc.
 
 ### What comes after the smoke test
 
@@ -264,5 +264,5 @@ If L0 doesn't verify:
 - [`issues-2026-04-14.md`](issues-2026-04-14.md) — historical record of Problems 1–15 and the post-mortem
 - [`damage-diff-2026-04-14.patch`](damage-diff-2026-04-14.patch) — full diff of the 2185-line deletion incident from earlier tonight
 - `study-damaged-worktree-fix-2026-04-14/` — preserved artifacts from the failed run (stub `liveness.rs`, scaffolded `shared_state.rs`, etc.)
-- Commit [`b36842de`](https://github.com/graphwork/workgraph/pull/10/commits/b36842de) — the L0 fix
-- [PR #10](https://github.com/graphwork/workgraph/pull/10) — the L0 fix under CI review
+- Commit [`b36842de`](https://github.com/graphwork/wg/pull/10/commits/b36842de) — the L0 fix
+- [PR #10](https://github.com/graphwork/wg/pull/10) — the L0 fix under CI review

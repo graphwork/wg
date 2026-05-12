@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Manual section 4 (Coordination) provides comprehensive documentation of workgraph's service daemon, coordinator features, dispatch mechanisms, and execution models. The audit reveals **high accuracy** between documented features and current CLI implementation, with all major command groups and configuration options verified as correct.
+Manual section 4 (Coordination) provides comprehensive documentation of wg's service daemon, coordinator features, dispatch mechanisms, and execution models. The audit reveals **high accuracy** between documented features and current CLI implementation, with all major command groups and configuration options verified as correct.
 
 ## Verification Results
 

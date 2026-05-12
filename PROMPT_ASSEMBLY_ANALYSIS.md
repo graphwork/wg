@@ -7,7 +7,7 @@ All built-in executors (claude, codex, amplifier, native) share the **same `buil
 1. **How the prompt reaches the model** (delivery mechanism)
 2. **What supplementary context is injected** (wg guide, CLAUDE.md, bundle suffixes)
 3. **How exec modes affect tool access and prompt structure** (bare/light/full)
-4. **What the model "sees" beyond the workgraph prompt** (Claude CLI's own context injection)
+4. **What the model "sees" beyond the wg prompt** (Claude CLI's own context injection)
 
 ---
 
@@ -79,9 +79,9 @@ if settings.executor_type == "native" {
 }
 ```
 
-The `wg_guide_content` is **only populated for native executors**. It contains the `DEFAULT_WG_GUIDE` constant (`src/service/executor.rs:535-597`) — a concise guide to wg commands, task lifecycle, dependencies, and environment variables. This guide is rendered in `build_prompt()` at task+ scope as a `## Workgraph Usage Guide` section (line 800-805).
+The `wg_guide_content` is **only populated for native executors**. It contains the `DEFAULT_WG_GUIDE` constant (`src/service/executor.rs:535-597`) — a concise guide to wg commands, task lifecycle, dependencies, and environment variables. This guide is rendered in `build_prompt()` at task+ scope as a `## wg Usage Guide` section (line 800-805).
 
-**For Claude executors:** The wg guide is NOT injected because Claude agents read `CLAUDE.md` from the project root, which contains equivalent (and more detailed) workgraph instructions. The Claude CLI loads `CLAUDE.md` automatically as part of its own context injection — this happens **outside** the workgraph prompt.
+**For Claude executors:** The wg guide is NOT injected because Claude agents read `CLAUDE.md` from the project root, which contains equivalent (and more detailed) wg instructions. The Claude CLI loads `CLAUDE.md` automatically as part of its own context injection — this happens **outside** the wg prompt.
 
 **For amplifier/codex executors:** The wg guide is also NOT injected. These executors receive only what `build_prompt()` generates. If their context scope is < full, they won't see CLAUDE.md content either, leaving them without wg usage documentation.
 
@@ -103,7 +103,7 @@ if scope >= ContextScope::Full && !ctx.claude_md_content.is_empty() {
 ```
 
 For **Claude executor agents**, CLAUDE.md is loaded **twice**:
-1. At full scope, it's included in the workgraph-assembled prompt
+1. At full scope, it's included in the wg-assembled prompt
 2. The Claude CLI **independently** loads CLAUDE.md from the working directory as part of its system context
 
 For **native/codex/amplifier agents** at scopes below `full` (clean, task, graph), CLAUDE.md content is **absent** from the prompt entirely. The native executor doesn't have an independent CLAUDE.md loading mechanism.
@@ -121,7 +121,7 @@ The `SYSTEM_AWARENESS_PREAMBLE` (explaining coordinator, agency, cycles, trace f
 **File:** `src/executor/native/bundle.rs:1-155`
 **File:** `src/commands/native_exec.rs:64-77`
 
-The native executor has a **bundle system** that adds a `system_prompt_suffix` to the workgraph prompt:
+The native executor has a **bundle system** that adds a `system_prompt_suffix` to the wg prompt:
 
 ```rust
 let system_prompt = if system_suffix.is_empty() {
@@ -178,7 +178,7 @@ All executors receive:
 ```
 # Task Assignment
 
-You are an AI agent working on a task in a workgraph project.
+You are an AI agent working on a task in a wg project.
 
 ## Agent Identity
 [identity block]
@@ -234,9 +234,9 @@ Begin working on the task now.
 
 **Native executor receives (same build_prompt output) PLUS:**
 ```
-## Workgraph Usage Guide
+## wg Usage Guide
 
-**Workgraph (wg)** is a task coordination graph for AI agents...
+**wg (wg)** is a task coordination graph for AI agents...
 [DEFAULT_WG_GUIDE: commands table, dependency syntax, verify syntax, env vars]
 ```
 
@@ -250,7 +250,7 @@ Begin working on the task now.
 
 1. **Prompt content is identical across executors** — `build_prompt()` produces the same output given the same inputs. The real differences are in **what surrounds the prompt**.
 
-2. **Claude executor double-loads CLAUDE.md** — once in the workgraph prompt (at full scope) and once via Claude CLI's own mechanism. This is redundant but harmless.
+2. **Claude executor double-loads CLAUDE.md** — once in the wg prompt (at full scope) and once via Claude CLI's own mechanism. This is redundant but harmless.
 
 3. **Native executor gets wg guide; Claude doesn't** — The native executor needs explicit wg CLI documentation because it lacks CLAUDE.md auto-loading. This is the single code-path difference in `ScopeContext` population (`execution.rs:312-317`).
 

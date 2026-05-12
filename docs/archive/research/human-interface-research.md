@@ -1,6 +1,6 @@
-# Human Interface Options for workgraph
+# Human Interface Options for wg
 
-This document researches human interface options for workgraph, covering TUI, web interfaces, IDE integrations, and other integrations.
+This document researches human interface options for wg, covering TUI, web interfaces, IDE integrations, and other integrations.
 
 ---
 
@@ -31,7 +31,7 @@ Ratatui is the actively maintained fork of tui-rs, and has become the de facto s
 - Backend-agnostic: supports crossterm (cross-platform), termion, termwiz
 - Active community and maintenance
 
-**Example structure for workgraph TUI:**
+**Example structure for wg TUI:**
 
 ```rust
 use ratatui::{
@@ -109,7 +109,7 @@ Dialog-based TUI library with a retained-mode API (more like traditional GUI pro
 
 The original library that ratatui forked from. No longer maintained - use ratatui instead.
 
-### 1.2 What Would a workgraph TUI Look Like?
+### 1.2 What Would a wg TUI Look Like?
 
 **Core Views:**
 
@@ -190,7 +190,7 @@ Modern, ergonomic web framework built on tokio and tower, from the tokio team.
 - WebSocket support
 - Good documentation
 
-**Basic server for workgraph:**
+**Basic server for wg:**
 
 ```rust
 use axum::{
@@ -201,7 +201,7 @@ use axum::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-type AppState = Arc<RwLock<workgraph>>;
+type AppState = Arc<RwLock<wg>>;
 
 async fn list_tasks(State(state): State<AppState>) -> Json<Vec<Task>> {
     let wg = state.read().await;
@@ -286,13 +286,13 @@ static/
 <!DOCTYPE html>
 <html>
 <head>
-    <title>workgraph Dashboard</title>
+    <title>wg Dashboard</title>
     <link rel="stylesheet" href="/style.css">
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body x-data="workgraph()">
+<body x-data="wg()">
     <div class="container">
-        <h1>workgraph</h1>
+        <h1>wg</h1>
 
         <div class="stats">
             <span x-text="stats.ready + ' ready'"></span>
@@ -380,7 +380,7 @@ const network = new vis.Network(container, { nodes, edges }, options);
 Text-based graph definition. Easy to generate from backend.
 
 ```javascript
-// Generate Mermaid syntax from workgraph
+// Generate Mermaid syntax from wg
 const mermaidDef = `
 graph LR
     task-a[Task A] --> task-b[Task B]
@@ -399,7 +399,7 @@ mermaid.render('graph', mermaidDef);
 - Works in GitHub markdown
 - Supports multiple diagram types
 
-**Recommended for workgraph:** Mermaid for simplicity, vis.js if you need interactivity.
+**Recommended for wg:** Mermaid for simplicity, vis.js if you need interactivity.
 
 ### 2.4 Serving Static Files with axum
 
@@ -448,11 +448,11 @@ let app = Router::new()
    - Click to quick-claim
 
 3. **Commands** (Command Palette)
-   - `workgraph: List Ready Tasks`
-   - `workgraph: Claim Task`
-   - `workgraph: Mark Done`
-   - `workgraph: Add Task`
-   - `workgraph: Show Graph`
+   - `wg: List Ready Tasks`
+   - `wg: Claim Task`
+   - `wg: Mark Done`
+   - `wg: Add Task`
+   - `wg: Show Graph`
 
 4. **CodeLens** (optional)
    - Show task references in code comments
@@ -472,19 +472,19 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('workgraph.ready', async () => {
+        vscode.commands.registerCommand('wg.ready', async () => {
             const output = await execWg('ready --json');
             const tasks = JSON.parse(output);
             // Show quick pick or tree view
         }),
 
-        vscode.commands.registerCommand('workgraph.claim', async (taskId: string) => {
+        vscode.commands.registerCommand('wg.claim', async (taskId: string) => {
             await execWg(`claim ${taskId}`);
             taskProvider.refresh();
             vscode.window.showInformationMessage(`Claimed: ${taskId}`);
         }),
 
-        vscode.commands.registerCommand('workgraph.done', async (taskId: string) => {
+        vscode.commands.registerCommand('wg.done', async (taskId: string) => {
             await execWg(`done ${taskId}`);
             taskProvider.refresh();
         })
@@ -494,7 +494,7 @@ export function activate(context: vscode.ExtensionContext) {
     const statusBar = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Left
     );
-    statusBar.command = 'workgraph.ready';
+    statusBar.command = 'wg.ready';
     updateStatusBar(statusBar);
 
     // File watcher for .wg changes
@@ -531,7 +531,7 @@ function execWg(args: string): Promise<string> {
 **Implementation sketch:**
 
 ```lua
--- lua/workgraph/init.lua
+-- lua/wg/init.lua
 local M = {}
 
 function M.ready()
@@ -606,12 +606,12 @@ return M
 
 **Bidirectional sync possibilities:**
 
-1. **GitHub -> workgraph**
+1. **GitHub -> wg**
    - Import issues as tasks
    - Map labels to metadata
    - Issue dependencies (if using project boards) map to blocked-by
 
-2. **workgraph -> GitHub**
+2. **wg -> GitHub**
    - Create issues from tasks
    - Update issue status when task status changes
    - Add comments with progress updates
@@ -621,7 +621,7 @@ return M
 ```rust
 use octocrab::Octocrab;
 
-async fn sync_from_github(wg: &mut workgraph, repo: &str) -> Result<()> {
+async fn sync_from_github(wg: &mut wg, repo: &str) -> Result<()> {
     let octocrab = Octocrab::builder()
         .personal_token(env::var("GITHUB_TOKEN")?)
         .build()?;
@@ -656,7 +656,7 @@ async fn sync_from_github(wg: &mut workgraph, repo: &str) -> Result<()> {
 - GitHub API rate limits
 - Mapping between task states and issue states
 
-**Recommendation:** Start with one-way import (GitHub -> workgraph). Bidirectional sync adds significant complexity.
+**Recommendation:** Start with one-way import (GitHub -> wg). Bidirectional sync adds significant complexity.
 
 ### 4.2 Slack/Discord Notifications
 
@@ -678,7 +678,7 @@ async fn notify_slack(webhook_url: &str, message: &str) -> Result<()> {
 }
 
 // Example usage
-async fn on_task_completed(task: &Task, wg: &workgraph) {
+async fn on_task_completed(task: &Task, wg: &wg) {
     let unblocked = wg.get_unblocked_by(task.id);
     if !unblocked.is_empty() {
         let msg = format!(
@@ -715,14 +715,14 @@ async fn on_task_completed(task: &Task, wg: &workgraph) {
 **Other CI/CD integrations:**
 - Block merge if critical tasks incomplete
 - Auto-create release tasks when version bumped
-- Track deployment tasks in workgraph
+- Track deployment tasks in wg
 
 ### 4.4 MCP (Model Context Protocol) Server
 
-Since workgraph is designed for both humans and agents, an MCP server would be natural:
+Since wg is designed for both humans and agents, an MCP server would be natural:
 
 ```rust
-// Expose workgraph as MCP tools
+// Expose wg as MCP tools
 #[mcp_tool]
 async fn ready_tasks() -> Vec<Task> {
     wg.ready()
@@ -739,7 +739,7 @@ async fn add_task(title: String, blocked_by: Vec<String>) -> Task {
 }
 ```
 
-This would allow any MCP-compatible agent to interact with workgraph directly.
+This would allow any MCP-compatible agent to interact with wg directly.
 
 ---
 
@@ -757,7 +757,7 @@ This would allow any MCP-compatible agent to interact with workgraph directly.
 | **TUI** | Medium | High | Best for terminal-centric users |
 | **VS Code extension** | Medium | High (for VS Code users) | Larger user base than Neovim |
 | **GitHub sync** | Medium-High | Medium | Complex to do well |
-| **MCP server** | Medium | Very High (for agent use) | Natural fit for workgraph's mission |
+| **MCP server** | Medium | Very High (for agent use) | Natural fit for wg's mission |
 
 ### 5.2 What Serves Both Humans and Agents Well?
 
@@ -813,7 +813,7 @@ This would allow any MCP-compatible agent to interact with workgraph directly.
 
 ### 5.5 Final Thoughts
 
-The workgraph CLI already provides excellent machine-readable output via `--json`. The highest-value addition for humans is **visualization** - seeing the dependency graph, understanding bottlenecks visually, and getting real-time status updates.
+The wg CLI already provides excellent machine-readable output via `--json`. The highest-value addition for humans is **visualization** - seeing the dependency graph, understanding bottlenecks visually, and getting real-time status updates.
 
 For a project serving both humans and agents:
 - **Agents** benefit most from an MCP server

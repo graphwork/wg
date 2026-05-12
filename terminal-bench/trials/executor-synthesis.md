@@ -3,7 +3,7 @@
 **Date:** 2026-04-05
 **Sources:**
 - Head-to-head trial: `terminal-bench/trials/executor-h2h-results.md` (84 trials, 4 conditions, 7 tasks, minimax-m2.7)
-- Multi-model live trial: `.workgraph/research/multi-model-live-trial-summary.md` (5 models, real workgraph tasks)
+- Multi-model live trial: `.wg/research/multi-model-live-trial-summary.md` (5 models, real wg tasks)
 
 ---
 
@@ -30,7 +30,7 @@ The H2H trial compared four executor strategies across 84 trials on 7 hard tasks
 
 ## 2. Model Recommendations
 
-The multi-model live trial tested 5 models on real workgraph tasks through the native executor. Combined with H2H data (all on minimax-m2.7), here are production recommendations:
+The multi-model live trial tested 5 models on real wg tasks through the native executor. Combined with H2H data (all on minimax-m2.7), here are production recommendations:
 
 ### Tier 1: Production-Ready
 

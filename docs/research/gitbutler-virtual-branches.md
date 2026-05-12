@@ -12,7 +12,7 @@ GitButler virtual branches are a **change-sorting mechanism**, not a filesystem 
 
 **Verdict: Skip as primary isolation. Consider as supplementary tooling.**
 
-GitButler cannot replace git worktrees for agent isolation because it provides no filesystem, build, or process isolation — all agents would still share one working directory and fight over the same files. However, it offers interesting capabilities as a **commit-organization layer** on top of worktree-based isolation, and its MCP server integration could complement workgraph's agent spawning.
+GitButler cannot replace git worktrees for agent isolation because it provides no filesystem, build, or process isolation — all agents would still share one working directory and fight over the same files. However, it offers interesting capabilities as a **commit-organization layer** on top of worktree-based isolation, and its MCP server integration could complement wg's agent spawning.
 
 ---
 
@@ -160,7 +160,7 @@ They do **not** help with concurrent agent isolation because:
 
 ---
 
-## 4. Integration with workgraph: Assessment
+## 4. Integration with wg: Assessment
 
 ### The GitButler + Claude Code Blog Post
 
@@ -171,11 +171,11 @@ GitButler published a blog post titled ["Managing Multiple Claude Code Sessions 
 3. Result: one branch per session, one commit per chat round
 4. **Limitation acknowledged**: this is **sorting**, not isolation
 
-### Could This Work for workgraph?
+### Could This Work for wg?
 
-**The blog post scenario differs critically from workgraph's:**
+**The blog post scenario differs critically from wg's:**
 
-| Dimension | Blog Post Scenario | workgraph Scenario |
+| Dimension | Blog Post Scenario | wg Scenario |
 |-----------|-------------------|-------------------|
 | Agents | 2-3 Claude Code sessions | 5-10 concurrent agents |
 | File overlap | Carefully chosen non-overlapping tasks | Frequently overlapping (same codebase) |
@@ -183,7 +183,7 @@ GitButler published a blog post titled ["Managing Multiple Claude Code Sessions 
 | Duration | Short interactive sessions | Long autonomous tasks (10-30 min) |
 | Failure mode | Human notices and intervenes | Unattended — failures must be automated |
 
-### Why Virtual Branches Cannot Replace Worktrees for workgraph
+### Why Virtual Branches Cannot Replace Worktrees for wg
 
 1. **No filesystem isolation**: Two agents writing `src/lib.rs` simultaneously will corrupt each other's work. GitButler sorts diffs after the fact — it cannot prevent concurrent writes.
 
@@ -282,7 +282,7 @@ GitButler's MCP server, commit management, and visual review capabilities could 
 - GitButler CLI reaches stable release
 - Linux support matures (no known compatibility issues)
 - MCP server gains full branch management (not just commit recording)
-- workgraph has worktree isolation working and stable
+- wg has worktree isolation working and stable
 
 ### Decision Matrix
 

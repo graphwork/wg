@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://workgraph.dev/schemas/tool-manifest.schema.json",
-  "title": "Workgraph Tool Manifest",
-  "description": "Schema for workgraph tool manifest configuration",
+  "$id": "https://graphwork.github.io/schemas/tool-manifest.schema.json",
+  "title": "wg Tool Manifest",
+  "description": "Schema for wg tool manifest configuration",
   "type": "object",
   "required": ["meta"],
   "properties": {

@@ -1,7 +1,7 @@
 # Nightly Cleanup System Design
 
 ## Overview
-Design for automated nightly maintenance to keep the workgraph project healthy and performant.
+Design for automated nightly maintenance to keep the wg project healthy and performant.
 
 ## Cleanup Categories
 
@@ -102,9 +102,9 @@ MAX_ABANDONED_AGE_DAYS=14 DRY_RUN=false ./scripts/nightly-cleanup.sh
 ```
 
 #### Scheduled Execution
-- Uses workgraph's native cron scheduling with `--cron` flag
+- Uses wg's native cron scheduling with `--cron` flag
 - Integrates with existing coordinator and service infrastructure
-- Inherits all workgraph features (logging, artifacts, verification)
+- Inherits all wg features (logging, artifacts, verification)
 
 ### Validation Results
 ✅ **Script tested successfully** - analyzed 1522 tasks, identified cleanup opportunities  
@@ -115,6 +115,6 @@ MAX_ABANDONED_AGE_DAYS=14 DRY_RUN=false ./scripts/nightly-cleanup.sh
 ### Architecture Benefits
 - **Non-invasive** - doesn't modify core cleanup.rs (avoided compilation issues)
 - **Extensible** - script can be enhanced without touching Rust code
-- **Observable** - integrates with workgraph logging and artifact tracking
+- **Observable** - integrates with wg logging and artifact tracking
 - **Configurable** - environment variables for all parameters
 - **Recoverable** - dry-run mode for safe testing

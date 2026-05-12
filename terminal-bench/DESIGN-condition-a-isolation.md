@@ -11,12 +11,12 @@ collection — all as runnable code.
 
 ## 1. Directory Structure
 
-Each problem gets a fresh temporary directory with its own `.workgraph/`:
+Each problem gets a fresh temporary directory with its own `.wg/`:
 
 ```
 /tmp/tb-condA-{timestamp}/
 ├── {problem-id}-r{replica}/           # one per trial
-│   ├── .workgraph/
+│   ├── .wg/
 │   │   ├── graph.jsonl
 │   │   ├── config.toml                # locked to native executor + target model
 │   │   ├── service/
@@ -33,7 +33,7 @@ Each problem gets a fresh temporary directory with its own `.workgraph/`:
     └── {problem-id}-r{replica}.json   # per-trial result
 ```
 
-**Key property:** Each trial's `.workgraph/` is independent — no shared state,
+**Key property:** Each trial's `.wg/` is independent — no shared state,
 no shared service socket, no shared graph. Parallel trials cannot interfere.
 
 The `tempfile.mkdtemp()` approach from `run_full_a_prime_vs_f.py` is proven and
@@ -47,7 +47,7 @@ nothing else about the isolation model changes.
 ### Starting N independent services
 
 Each trial gets its own `wg service start`. The services are independent because
-they operate on separate `.workgraph/` directories (separate daemon sockets,
+they operate on separate `.wg/` directories (separate daemon sockets,
 separate PID files).
 
 ```python
@@ -112,7 +112,7 @@ For real-time monitoring of all N services at once:
 # Watch all running services (from runner script)
 for dir in /tmp/tb-condA-*/*/; do
   echo "=== $(basename $dir) ==="
-  wg --dir "$dir/.workgraph" list --status in-progress 2>/dev/null
+  wg --dir "$dir/.wg" list --status in-progress 2>/dev/null
   echo
 done
 ```
@@ -250,7 +250,7 @@ def verify_executor_path(wg_dir: str, expected_model: str) -> dict:
 
 ### Layer 3: config.toml + service flags audit (structural)
 
-After the trial, copy the entire `.workgraph/` directory to results. The
+After the trial, copy the entire `.wg/` directory to results. The
 downstream consumer can independently verify:
 
 1. `config.toml` says `executor = "native"` and `model = "{expected}"`
@@ -358,7 +358,7 @@ def aggregate_results(results: list[dict]) -> dict:
 
 ### Result preservation
 
-After each trial completes, copy the entire `.workgraph/` to the results
+After each trial completes, copy the entire `.wg/` to the results
 directory for post-hoc analysis:
 
 ```python
@@ -410,7 +410,7 @@ async def run_condition_a_trial(
 
     # 1. Create isolated directory
     tmpdir = tempfile.mkdtemp(prefix=f"tb-condA-{trial_id}-")
-    wg_dir = os.path.join(tmpdir, ".workgraph")
+    wg_dir = os.path.join(tmpdir, ".wg")
     start = time.monotonic()
 
     try:

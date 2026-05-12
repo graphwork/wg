@@ -1,12 +1,12 @@
 # Agent AskUser & Cross-Executor Human Input
 
-Research report on how agents request human input during execution, and a design for cross-executor human input in workgraph.
+Research report on how agents request human input during execution, and a design for cross-executor human input in wg.
 
 ---
 
 ## 1. What is AskUserQuestion?
 
-`AskUserQuestion` is a **built-in Claude Code tool** — not a workgraph concept. It appears in the `system` init event that Claude Code emits at the start of every session:
+`AskUserQuestion` is a **built-in Claude Code tool** — not a wg concept. It appears in the `system` init event that Claude Code emits at the start of every session:
 
 ```json
 {
@@ -50,9 +50,9 @@ The Claude Code UI renders this as a chooser widget with clickable options.
 
 Agents run via `claude --print`, which is non-interactive. Key finding:
 
-**No agent in the workgraph logs has ever actually called `AskUserQuestion`.**
+**No agent in the wg logs has ever actually called `AskUserQuestion`.**
 
-I scanned all `.wg/agents/*/output.log` files (across dozens of agents) and found zero instances of `AskUserQuestion` appearing as a `tool_use` call. The tool is _listed_ in the init event (because Claude Code always advertises its full tool set), but agents operating under workgraph prompts don't attempt to use it — they follow the `wg` commands in the Required Workflow section instead.
+I scanned all `.wg/agents/*/output.log` files (across dozens of agents) and found zero instances of `AskUserQuestion` appearing as a `tool_use` call. The tool is _listed_ in the init event (because Claude Code always advertises its full tool set), but agents operating under wg prompts don't attempt to use it — they follow the `wg` commands in the Required Workflow section instead.
 
 This means the problem is **preemptive** rather than reactive: we're designing for a scenario that will become important as agents become more autonomous, rather than fixing a current bug.
 
@@ -68,7 +68,7 @@ In `--print` mode, Claude Code would attempt to present the question but there's
 
 ## 2. How the JSONL Stream Works Today
 
-The workgraph stream capture system (`src/stream_event.rs`) translates Claude CLI JSONL events into a unified `StreamEvent` enum:
+The wg stream capture system (`src/stream_event.rs`) translates Claude CLI JSONL events into a unified `StreamEvent` enum:
 
 | Claude CLI event type | StreamEvent variant | Captured? |
 |---|---|---|
@@ -107,7 +107,7 @@ The native executor (`src/executor/native/agent.rs`) runs a tool-use loop. It co
 Amplifier has its own approval system (`ApprovalSystem` in amplifier-core). It could:
 
 1. Map `wg ask` to its internal approval flow
-2. Or delegate to workgraph's mechanism via the `WG_TASK_ID` env var
+2. Or delegate to wg's mechanism via the `WG_TASK_ID` env var
 
 ### Generic pattern
 

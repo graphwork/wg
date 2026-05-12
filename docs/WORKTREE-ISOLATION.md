@@ -60,7 +60,7 @@ Git worktrees allow multiple working trees to share the same `.git` repository. 
 
 1. **No two worktrees can have the same branch checked out.** Each worktree must be on a unique branch (or detached HEAD). This is enforced by git.
 2. **Creating a worktree is fast** — it's essentially `cp -r` of the working tree + index setup. No object copying.
-3. **Disk usage** — each worktree is a full copy of the working tree. For a Rust project like workgraph (~25MB source), this is negligible. For large repos, it can matter.
+3. **Disk usage** — each worktree is a full copy of the working tree. For a Rust project like wg (~25MB source), this is negligible. For large repos, it can matter.
 4. **Build artifacts are NOT shared.** Each worktree gets its own `target/` directory (assuming it's gitignored). This means each agent pays the full build cost. For Rust, this is significant (~2-5 min for initial build).
 
 ### 2.4 Concurrency Safety
@@ -110,7 +110,7 @@ Examples:
 - `wg/agent-43/fix-build-warnings`
 
 Rationale:
-- `wg/` prefix makes workgraph branches instantly identifiable
+- `wg/` prefix makes wg branches instantly identifiable
 - Agent ID ensures uniqueness even if the same task is retried
 - Task ID provides human-readable context
 
@@ -257,7 +257,7 @@ This repo already has a Claude Code worktree at `.claude/worktrees/agent-a4f4340
 - `.git` file pointing to `.git/worktrees/agent-a4f43401`
 - **No `.wg` directory** — this is the shared state problem in action
 
-## 5. Integration Points in workgraph
+## 5. Integration Points in wg
 
 ### 5.1 Where Worktree Creation Happens
 
@@ -617,7 +617,7 @@ wg add "Update .gitignore and docs" --after all -d "Add .wg-worktrees/ to .gitig
 
 ## Appendix B: Comparison with Claude Code's Approach
 
-| Aspect | Claude Code | workgraph (Proposed) |
+| Aspect | Claude Code | wg (Proposed) |
 |--------|-------------|---------------------|
 | Trigger | User-initiated (`EnterWorktree` tool) | Automatic (coordinator config) |
 | Location | `.claude/worktrees/<name>` | `.wg-worktrees/<agent-id>` |

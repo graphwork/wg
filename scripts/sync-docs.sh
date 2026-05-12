@@ -109,7 +109,7 @@ done
 
 # Concatenate chapters into full manual markdown
 echo "  Assembling full manual..."
-cat "$REPO_ROOT"/docs/manual/0[1-5]-*.md > "$REPO_ROOT/docs/manual/workgraph-manual.md"
+cat "$REPO_ROOT"/docs/manual/0[1-5]-*.md > "$REPO_ROOT/docs/manual/wg-manual.md"
 
 # Organizational patterns
 if [[ -f "$REPO_ROOT/docs/research/organizational-patterns.typ" ]]; then
@@ -124,7 +124,11 @@ echo "Done. Markdown files generated."
 if [[ -n "$WEBSITE_DIR" && -d "$WEBSITE_DIR" ]]; then
     echo ""
     echo "Syncing to website: $WEBSITE_DIR"
-    cp "$REPO_ROOT/docs/manual/workgraph-manual.md" "$WEBSITE_DIR/"
-    cp "$REPO_ROOT/docs/research/organizational-patterns.md" "$WEBSITE_DIR/" 2>/dev/null || true
+    WEBSITE_PUBLIC="$WEBSITE_DIR/public"
+    if [[ ! -d "$WEBSITE_PUBLIC" ]]; then
+        WEBSITE_PUBLIC="$WEBSITE_DIR"
+    fi
+    cp "$REPO_ROOT/docs/manual/wg-manual.md" "$WEBSITE_PUBLIC/"
+    cp "$REPO_ROOT/docs/research/organizational-patterns.md" "$WEBSITE_PUBLIC/" 2>/dev/null || true
     echo "Website markdown updated."
 fi

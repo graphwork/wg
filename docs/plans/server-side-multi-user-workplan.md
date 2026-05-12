@@ -321,7 +321,7 @@ Create a `wg server init` command that automates server setup for multi-user dep
 **Priority:** P1
 
 **Description:**
-Integrate tmux session management with workgraph:
+Integrate tmux session management with wg:
 - `wg server connect [user]` — creates or attaches to a user's tmux session (`${WG_USER}-wg`)
 - Verify the TUI works correctly inside tmux (already should, but validate)
 - Ensure `wg tui` detects it's inside tmux and adjusts behavior if needed (e.g., no nested tmux)

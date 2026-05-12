@@ -88,7 +88,7 @@ ready_tasks_with_peers_cycle_aware() → Vec<&Task>  // FIFO, insertion order
 Replace the simple `take(slots_available)` with a **scored sort**:
 
 ```rust
-fn score_task(task: &Task, graph: &WorkGraph, dir: &Path) -> i64 {
+fn score_task(task: &Task, graph: &wg, dir: &Path) -> i64 {
     let mut score: i64 = 0;
 
     // 1. Priority (dominant factor): invert so lower priority value = higher score

@@ -2,7 +2,7 @@
 
 ## Summary
 
-The cron trigger system has been fully integrated into workgraph, enabling time-based task scheduling for operational workloads like nightly cleanups, health checks, and recurring maintenance tasks.
+The cron trigger system has been fully integrated into wg, enabling time-based task scheduling for operational workloads like nightly cleanups, health checks, and recurring maintenance tasks.
 
 ## Components Implemented
 
@@ -105,4 +105,4 @@ The cron trigger system is complete and production-ready:
 ✅ **Comprehensive testing**: Unit tests, integration tests, manual verification  
 ✅ **Clear documentation**: Usage examples and architecture explanation
 
-The system enables workgraph to handle both event-driven coordination and time-driven operational tasks, providing a complete task orchestration platform.
+The system enables wg to handle both event-driven coordination and time-driven operational tasks, providing a complete task orchestration platform.

@@ -257,7 +257,7 @@ Both require `--max-iterations` (same validation as `--no-converge`).
 
 ```rust
 fn reactivate_cycle(
-    graph: &mut WorkGraph,
+    graph: &mut wg,
     members: &[String],
     config_owner_id: &str,
     cycle_config: &CycleConfig,

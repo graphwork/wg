@@ -14,7 +14,7 @@
 
 ### Session TTL
 - Claude session persistence is server-side. Exact TTL is not publicly documented but empirical evidence suggests sessions survive for **hours to days** (not weeks).
-- **Current blocker**: workgraph spawns agents with `--no-session-persistence` (see `src/commands/spawn/execution.rs:401,437,466`). This flag **must be removed** (or made configurable) to enable `--resume` for resurrection.
+- **Current blocker**: wg spawns agents with `--no-session-persistence` (see `src/commands/spawn/execution.rs:401,437,466`). This flag **must be removed** (or made configurable) to enable `--resume` for resurrection.
 - Sessions created with `--no-session-persistence` are ephemeral and **cannot** be resumed.
 
 ### Context preservation
@@ -168,7 +168,7 @@ Any message to a completed task triggers resurrection, which spawns an agent wit
 
 **Tier 4 — Message content scanning (future):**
 - Scan resurrection-triggering messages for prompt injection patterns.
-- This is orthogonal to workgraph and belongs in the executor layer.
+- This is orthogonal to wg and belongs in the executor layer.
 
 ### Recommendation
 Implement Tier 1 + Tier 2 for v1. Tier 3 is a config option for sensitive workflows. Tier 4 is out of scope.

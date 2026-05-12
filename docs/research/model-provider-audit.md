@@ -1,7 +1,7 @@
 # Model/Provider Dispatch Audit
 
 Research document for task `research-audit-all`. Comprehensive audit of every
-model/provider dispatch point in the workgraph codebase.
+model/provider dispatch point in the wg codebase.
 
 ---
 

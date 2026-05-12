@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Condition A' (bare agent, `ConditionAAgent`) and Condition F (workgraph-native, `ConditionFAgent`) produce **statistically indistinguishable pass rates** on the full TB catalog at the m2.7 model scale. The headline numbers:
+Condition A' (bare agent, `ConditionAAgent`) and Condition F (wg-native, `ConditionFAgent`) produce **statistically indistinguishable pass rates** on the full TB catalog at the m2.7 model scale. The headline numbers:
 
 | Metric | A' (bare) | F (wg-native) | Δ |
 |--------|-----------|---------------|---|
@@ -34,9 +34,9 @@ Condition A' (bare agent, `ConditionAAgent`) and Condition F (workgraph-native, 
 - **Config:** `timeout_multiplier=6.0`, `n_concurrent_trials=5`
 - **Run duration:** ~6.2 hours wall clock
 
-### Condition F — Workgraph-Native
+### Condition F — wg-Native
 - **Agent:** `wg.adapter:ConditionFAgent`
-- **Behavior:** Agent with workgraph task decomposition and coordination
+- **Behavior:** Agent with wg task decomposition and coordination
 - **Dataset:** `terminal-bench` (same tasks, different registry ref)
 - **Config:** `timeout_multiplier=1.0`, `n_concurrent_trials=4`
 - **Run duration:** ~14.5 hours wall clock (longer due to lower timeout × longer tasks)
@@ -350,13 +350,13 @@ The token efficiency gain suggests F's graph structure actually helps with *givi
 
 5. **Increase reps for power.** With 3 reps, a 10pp true difference has ~40% power to detect. Increase to 5-7 reps for meaningful per-task comparisons, or use a larger task catalog.
 
-### For Workgraph Users
+### For wg Users
 
 1. **Use A' (bare agent) for simple, self-contained tasks.** The graph overhead doesn't help and costs a small reliability penalty (more API calls → more error chances).
 
 2. **Use F (wg-native) when cost matters.** If token budget is constrained, F's 52% token savings are valuable even at equivalent accuracy.
 
-3. **Reserve graph coordination for genuine multi-step work.** The value proposition of workgraph is coordination, not single-task execution. TB results confirm this.
+3. **Reserve graph coordination for genuine multi-step work.** The value proposition of wg is coordination, not single-task execution. TB results confirm this.
 
 ---
 

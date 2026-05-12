@@ -133,7 +133,7 @@ Keep `after()` as-is for backward compatibility (many callers). Add:
 
 ```rust
 /// Return dependency IDs that don't resolve to any task in the graph.
-pub fn phantom_blockers(task: &Task, graph: &WorkGraph) -> Vec<String> {
+pub fn phantom_blockers(task: &Task, graph: &wg) -> Vec<String> {
     task.after.iter()
         .filter(|id| graph.get_task(id).is_none())
         .filter(|id| federation::parse_remote_ref(id).is_none())

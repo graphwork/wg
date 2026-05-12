@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Six parallel research threads investigated validation in workgraph from every angle — existing mechanisms, agent behavior, graph structure, evaluation quality, cycle iteration, and agent teaching. Five cross-cutting findings emerge:
+Six parallel research threads investigated validation in wg from every angle — existing mechanisms, agent behavior, graph structure, evaluation quality, cycle iteration, and agent teaching. Five cross-cutting findings emerge:
 
 1. **Agents don't validate because nobody tells them to.** The prompt template, AGENT-GUIDE.md, and CLAUDE.md contain zero validation guidance. The word "validate" appears nowhere in agent-facing prompts. Code agents validate ~60% of the time (model training), but documentation and research agents almost never do.
 

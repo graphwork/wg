@@ -84,7 +84,7 @@ Located in `src/service/coordinator_cycle.rs`:
 ```rust
 /// Validate coordinator cycle structure
 pub fn validate_coordinator_cycle(
-    graph: &WorkGraph,
+    graph: &wg,
     coordinator_id: &str,
 ) -> Vec<CoordinatorCycleWarning> {
     let mut warnings = Vec::new();

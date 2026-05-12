@@ -9,7 +9,7 @@
 
 ## Context
 
-workgraph is built on autopoetic principles — tasks should have agency, can spawn dependents at any graph point, and complete independently. The native graph iteration design (`.flip-design-native-graph`) introduced task retry mechanics. This document expands the autopoetic vision into a concrete design covering five areas.
+wg is built on autopoetic principles — tasks should have agency, can spawn dependents at any graph point, and complete independently. The native graph iteration design (`.flip-design-native-graph`) introduced task retry mechanics. This document expands the autopoetic vision into a concrete design covering five areas.
 
 This document assumes familiarity with:
 - The `CycleConfig` / `loop_iteration` mechanism in `src/graph.rs`
@@ -405,7 +405,7 @@ The propagation logic lives in `src/graph.rs` alongside existing cycle restart l
 ```rust
 /// Propagate a retry/restart to downstream dependents based on their policy.
 pub fn propagate_retry_to_dependents(
-    graph: &mut WorkGraph,
+    graph: &mut wg,
     source_task_id: &str,
     source_round: u32,
     propagation_strategy: PropagationStrategy,
@@ -608,7 +608,7 @@ When the evaluator recommends `Reassign`, the coordinator must:
 
 ```rust
 // In coordinator.rs — handle EvaluatorDecision::Reassign
-fn handle_reassign(task_id: &str, decision: &EvaluatorDecision, graph: &mut WorkGraph) {
+fn handle_reassign(task_id: &str, decision: &EvaluatorDecision, graph: &mut wg) {
     if let EvaluatorDecision::Reassign { reason, suggested_role, .. } = decision {
         // Clear execution state
         if let Some(task) = graph.get_task_mut(task_id) {

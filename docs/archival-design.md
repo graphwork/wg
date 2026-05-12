@@ -134,7 +134,7 @@ The current state is incoherent:
 - `wg archive --list`, `wg archive search` — only see the archive.
 
 **Recommendation:**
-1. Add a shared loader `parser::load_graph_with_archive(dir, since, until) -> WorkGraph` that returns a single `WorkGraph` with archived tasks tagged on a per-node `archived: bool` *projection field* (in-memory only — disk format unchanged).
+1. Add a shared loader `parser::load_graph_with_archive(dir, since, until) -> wg` that returns a single `wg` with archived tasks tagged on a per-node `archived: bool` *projection field* (in-memory only — disk format unchanged).
 2. Add a uniform `--include-archived [--since DATE] [--until DATE]` flag to `wg list`, `wg show`, `wg viz`, `wg ready`. They all pass through to the new loader.
 3. The TUI gains a toggle (e.g., `A`) that flips the same flag on the active panel.
 4. `wg archive --list` / `wg archive search` keep their current archive-only meaning — they're the "drill into the archive" surface, distinct from "merge into my view".
@@ -146,7 +146,7 @@ This matches the chat module's existing pattern (`read_all_history_for` ≈ "wit
 The user asked about both "big graph of past stuff" (read) and implicitly "share a graph with someone else" (transport).
 
 - **Read overlay:** `archive.jsonl` already round-trips through `Node::Task`. Nothing more is needed for in-process overlay.
-- **Inter-project transport:** A workgraph "archive bundle" should be a tarball of:
+- **Inter-project transport:** A wg "archive bundle" should be a tarball of:
   - `archive.jsonl` (tasks)
   - `log/operations.jsonl` (provenance, optionally filtered by date)
   - A manifest of `refs/archive/*` git tip SHAs that the archived tasks reference (so a sister project can `git fetch` them if they share the upstream).
@@ -162,7 +162,7 @@ The user asked about both "big graph of past stuff" (read) and implicitly "share
 - Optional follow-up: link archived tasks to their git ref by storing `archived_branch_ref: "refs/archive/wg/agent-141/nex-ux-600s"` on the task before archive (only when the agent that produced it had a worktree branch). Enables "from this archived task, get me back to the diff."
 
 ### 4.2 In-process
-- New: `parser::load_graph_with_archive(dir, since: Option<DateTime>, until: Option<DateTime>) -> Result<WorkGraph>`.
+- New: `parser::load_graph_with_archive(dir, since: Option<DateTime>, until: Option<DateTime>) -> Result<wg>`.
   - Reads `graph.jsonl`, then merges archive entries that fall in `[since, until]`.
   - Tags merged-in nodes via a transient `archived: true` projection (NOT serialized).
   - Where ids collide, live wins; archive entry is dropped with a warning.

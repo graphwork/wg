@@ -10,7 +10,7 @@
 
 MINIMAX M2.7 (`openrouter:minimax/minimax-m2.7`, resolved to `minimax/minimax-m2.7` via OpenRouter) is confirmed as the **sole execution model** for task agent execution across both pilot conditions (A and F). No Claude Opus, Sonnet, or any other model was used for trial agent execution.
 
-The workgraph system itself (coordinator, evaluations, assignments, FLIP scoring) uses different models (Opus, Sonnet, Haiku) — this is by design and does not affect the experiment's execution model.
+The wg system itself (coordinator, evaluations, assignments, FLIP scoring) uses different models (Opus, Sonnet, Haiku) — this is by design and does not affect the experiment's execution model.
 
 ---
 
@@ -38,14 +38,14 @@ model = "openrouter:minimax/minimax-m2.7"
 
 And passes `--model openrouter:minimax/minimax-m2.7` explicitly to each `wg` spawn command.
 
-### 2.2 Global workgraph config (NOT used for trials)
+### 2.2 Global wg config (NOT used for trials)
 
-The project-level `.workgraph/config.toml` sets:
+The project-level `.wg/config.toml` sets:
 - `[agent] model = "claude:opus"`
 - `[coordinator] model = "claude:opus"`
 - `[models.task_agent] model = "claude:opus"`
 
-**This config is irrelevant to the pilots** — each trial creates its own isolated `.workgraph/` directory with its own `config.toml`. The global config governs only the orchestrating coordinator that manages experiment tasks.
+**This config is irrelevant to the pilots** — each trial creates its own isolated `.wg/` directory with its own `config.toml`. The global config governs only the orchestrating coordinator that manages experiment tasks.
 
 ---
 
@@ -180,7 +180,7 @@ Uses the same model-locked isolation pattern as the pilots.
 
 ## 5. Evaluation Model vs Execution Model (Expected Distinction)
 
-The workgraph system uses different models for different roles. This is **by design** and does not contaminate the experiment:
+The wg system uses different models for different roles. This is **by design** and does not contaminate the experiment:
 
 | Role | Model | Purpose | Affects trials? |
 |------|-------|---------|----------------|
@@ -213,7 +213,7 @@ Checked for mechanisms that could silently substitute a different model:
 | Executor fallback | No fallback exists | Code inspection: no hardcoded fallback model |
 | Claude CLI default model | Overridden by `--model` flag | Flag is always passed (lines 769-874 in execution.rs) |
 | Environment variable leak | Prevented | Runner scripts strip `WG_*` and `CLAUDECODE` env vars |
-| `config.toml` global leak | Prevented | Each trial creates isolated `.workgraph/config.toml` |
+| `config.toml` global leak | Prevented | Each trial creates isolated `.wg/config.toml` |
 
 ---
 
@@ -228,4 +228,4 @@ Evidence strength:
 - **Three layers of confirmation**: config-level (runner scripts), code-level (executor spawn path), and trace-level (per-trial agent_info verification)
 - **Isolation architecture** prevents global config from leaking into trial execution
 
-The concern about Opus being invoked for spawned agents is unfounded: the runner scripts create fully isolated workgraph environments with explicit model configuration, and pass `--model` flags to every spawn command. The global `config.toml` (which does set `claude:opus`) is never read by trial agents.
+The concern about Opus being invoked for spawned agents is unfounded: the runner scripts create fully isolated wg environments with explicit model configuration, and pass `--model` flags to every spawn command. The global `config.toml` (which does set `claude:opus`) is never read by trial agents.

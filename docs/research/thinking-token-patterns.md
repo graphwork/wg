@@ -125,11 +125,11 @@ Testing 5 models via OpenRouter (GLM-5, Kimi K2.5, MiniMax M2.5, Claude Sonnet 4
 - **Kimi K2.5** maintained reasoning across all test modes (best performer)
 - **GPT-5.2** was worst: drops reasoning fields during tool calls and JSON modes
 
-## 4. Current State in workgraph
+## 4. Current State in wg
 
 ### Executor Code Audit
 
-**Finding: The workgraph native executor has ZERO handling of reasoning/thinking tokens.**
+**Finding: The wg native executor has ZERO handling of reasoning/thinking tokens.**
 
 Specific gaps:
 

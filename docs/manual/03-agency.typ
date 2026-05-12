@@ -338,7 +338,7 @@ the same role.
 == Federation: Sharing Across Projects <federation>
 
 An agency built in one project is not confined to that project. The federation system
-lets you share roles, motivations, and agents across workgraph projects---transferring
+lets you share roles, motivations, and agents across wg projects---transferring
 proven identities from one context into another, complete with their performance
 histories and lineage chains.
 

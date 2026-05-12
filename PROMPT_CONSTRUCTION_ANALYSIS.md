@@ -5,7 +5,7 @@
 The **same `build_prompt()` function** assembles prompts for **all** built-in executor types
 (claude, native, amplifier, codex). The key differences are:
 
-1. **WG Guide injection** — native executor gets an explicit workgraph usage guide; Claude executor relies on CLAUDE.md
+1. **WG Guide injection** — native executor gets an explicit wg usage guide; Claude executor relies on CLAUDE.md
 2. **Prompt delivery mechanism** — Claude receives prompt via stdin pipe; native uses it as a system prompt
 3. **User message** — native executor adds a short user-turn message; Claude treats the piped prompt as the initial user message
 4. **State injection** — native executor has mid-turn `<system-reminder>` injection; Claude uses its own conversation management
@@ -60,13 +60,13 @@ if settings.executor_type == "native" {
 
 **File:** `src/commands/spawn/context.rs:556-569`
 
-The guide is loaded from `.workgraph/wg-guide.md` (user-customizable) or falls back to
+The guide is loaded from `.wg/wg-guide.md` (user-customizable) or falls back to
 the built-in `DEFAULT_WG_GUIDE` constant (`src/service/executor.rs:535-597`).
 
 **Injected at:** `src/service/executor.rs:799-805` (Task+ scope):
 ```rust
 if scope >= ContextScope::Task && !ctx.wg_guide_content.is_empty() {
-    parts.push(format!("## Workgraph Usage Guide\n\n{}", ctx.wg_guide_content));
+    parts.push(format!("## wg Usage Guide\n\n{}", ctx.wg_guide_content));
 }
 ```
 
@@ -103,10 +103,10 @@ cat /path/to/prompt.txt | claude --print --verbose --permission-mode bypassPermi
 
 The Claude CLI treats this piped input as the **user's initial message**. Claude Code's
 own system prompt, CLAUDE.md, and harness instructions are added by the Claude Code
-harness itself — these are invisible to workgraph.
+harness itself — these are invisible to wg.
 
 **Key insight:** Claude agents get TWO layers of instructions:
-1. **workgraph prompt** (via stdin) — task details, workflow commands, etc.
+1. **wg prompt** (via stdin) — task details, workflow commands, etc.
 2. **Claude Code harness** (invisible) — CLAUDE.md, system-reminders, tool definitions, etc.
 
 ### Claude Executor (bare mode)
@@ -169,7 +169,7 @@ The native executor has a `StateInjector` that runs before each API turn:
 These are injected as ephemeral `<system-reminder>` blocks that appear for one turn only.
 
 Claude agents get similar information through the Claude Code harness's own system-reminder
-mechanism, but workgraph does not control that — it happens at a different layer.
+mechanism, but wg does not control that — it happens at a different layer.
 
 ---
 
@@ -198,7 +198,7 @@ The native tools are implemented in `src/executor/native/tools/`:
 - `edit_file` — surgical file editing
 - `glob_tool` — file pattern matching
 - `grep_tool` — content search
-- `wg_done`, `wg_fail`, `wg_log`, `wg_add`, etc. — workgraph operations
+- `wg_done`, `wg_fail`, `wg_log`, `wg_add`, etc. — wg operations
 - `web_search` — DuckDuckGo search
 - `web_fetch` — URL fetching
 
@@ -221,7 +221,7 @@ The native tools are implemented in `src/executor/native/tools/`:
 ## 7. CLAUDE.md Propagation Path
 
 ### For Claude Executor
-1. `wg init` or `wg setup` writes workgraph directives to `~/.claude/CLAUDE.md` and project-level `CLAUDE.md`
+1. `wg init` or `wg setup` writes wg directives to `~/.claude/CLAUDE.md` and project-level `CLAUDE.md`
    - **File:** `src/commands/setup.rs:215-282`
 2. The Claude Code harness reads CLAUDE.md automatically at startup
 3. At `Full` context scope, CLAUDE.md content is ALSO included in the assembled prompt
@@ -245,7 +245,7 @@ The native tools are implemented in `src/executor/native/tools/`:
 ```
 # Task Assignment
 
-You are an AI agent working on a task in a workgraph project.
+You are an AI agent working on a task in a wg project.
 
 ## Agent Identity
 [role/tradeoff from agency system]
@@ -301,9 +301,9 @@ Begin working on the task now.
 Same as above, PLUS this additional section injected after "Context from Dependencies":
 
 ```
-## Workgraph Usage Guide
+## wg Usage Guide
 
-**Workgraph (wg)** is a task coordination graph for AI agents...
+**wg (wg)** is a task coordination graph for AI agents...
 
 ### Task Lifecycle
 Tasks move through: open → in-progress → done / failed / abandoned.

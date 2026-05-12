@@ -13,7 +13,7 @@
 Group commands into three tiers based on usage frequency, with the most-used commands shown first.
 
 ```
-wg - workgraph task management
+wg - wg task management
 
 Commands (by usage):
   list        List tasks with filters
@@ -119,7 +119,7 @@ Commands not in this list appear alphabetically at the end.
 When using defaults, show a flat list (no tiers) since we don't have data to justify groupings:
 
 ```
-wg - workgraph task management
+wg - wg task management
 
 Commands:
   list        List tasks with filters
@@ -181,7 +181,7 @@ Rationale:
 
 ### Future: Global Fallback
 
-Later enhancement: when per-repo stats are insufficient AND `~/.config/workgraph/stats.json` exists, blend them:
+Later enhancement: when per-repo stats are insufficient AND `~/.config/wg/stats.json` exists, blend them:
 
 ```rust
 fn get_effective_counts(repo_stats: &Stats, global_stats: &Stats) -> HashMap<String, u64> {
@@ -253,7 +253,7 @@ Shows all commands without truncation, still respecting ordering preference.
 
 ### Integration Point: Clap Custom Help
 
-workgraph uses `clap` for argument parsing. Custom help formatting requires:
+wg uses `clap` for argument parsing. Custom help formatting requires:
 
 ```rust
 use clap::{Command, CommandFactory};
@@ -309,7 +309,7 @@ Track the overhead and ensure total --help latency stays under 50ms.
 ### With Usage Stats
 
 ```
-wg - workgraph task management
+wg - wg task management
 
 Your most-used:
   list        List tasks with filters
@@ -329,7 +329,7 @@ More commands (--help-all for full list):
   ... and 40 more
 
 Options:
-  -d, --dir <PATH>  workgraph directory [default: .wg]
+  -d, --dir <PATH>  wg directory [default: .wg]
   -h, --help        Print help (--help-all for all commands)
   -V, --version     Print version
 ```
@@ -337,7 +337,7 @@ Options:
 ### Without Stats (Cold Start)
 
 ```
-wg - workgraph task management
+wg - wg task management
 
 Commands:
   list        List tasks with filters
@@ -352,7 +352,7 @@ Commands:
   ... and 40 more (--help-all)
 
 Options:
-  -d, --dir <PATH>  workgraph directory [default: .wg]
+  -d, --dir <PATH>  wg directory [default: .wg]
   -h, --help        Print help (--help-all for all commands)
   -V, --version     Print version
 ```
@@ -360,7 +360,7 @@ Options:
 ### Alphabetical Mode (Opt-Out)
 
 ```
-wg - workgraph task management
+wg - wg task management
 
 Commands:
   add         Create a new task
@@ -373,7 +373,7 @@ Commands:
   ...
 
 Options:
-  -d, --dir <PATH>  workgraph directory [default: .wg]
+  -d, --dir <PATH>  wg directory [default: .wg]
   -h, --help        Print help
   -V, --version     Print version
 ```

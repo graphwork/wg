@@ -188,7 +188,7 @@ No record of which CLI commands were run, by whom, or with what arguments. Examp
 
 ## 3. Nikete's Use Case: Workflow Replay with Different Models
 
-The goal is **enough provenance to replay a project's workflow with a different model** — i.e., take everything that happened in a workgraph session and re-execute it with a different LLM backend, then compare results.
+The goal is **enough provenance to replay a project's workflow with a different model** — i.e., take everything that happened in a wg session and re-execute it with a different LLM backend, then compare results.
 
 ### 3.1 What Replay Requires
 

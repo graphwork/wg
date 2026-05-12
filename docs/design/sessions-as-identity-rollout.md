@@ -63,7 +63,7 @@ adapters:
 
 - `adapter_native(task)` → `wg nex --chat <uuid> --resume --role <role>`
 - `adapter_claude(task)` → `claude --resume <claude-session-id>` with
-  workgraph MCP server launched as a sidecar
+  wg MCP server launched as a sidecar
 - `adapter_codex(task)` → equivalent for codex
 - `adapter_gemini(task)` → TBD, probably stub with a "not yet supported"
   error until the CLI is verified
@@ -232,7 +232,7 @@ supervisor logic is ~300.
 in Phase 2 but stubbed. For each:
 
 - Locate the CLI binary (configurable path).
-- Map workgraph chat-ref → CLI session-id. Store the mapping in
+- Map wg chat-ref → CLI session-id. Store the mapping in
   session metadata so re-spawning resumes cleanly.
 - Launch `wg-mcp` sidecar (already exists) and pass its connection
   string to the CLI via the CLI's MCP config mechanism.
@@ -253,7 +253,7 @@ PTY. Tools work via MCP.
 
 **Size:** ~200 LOC per adapter, plus MCP plumbing shared across them
 (~300 LOC). Feature-gated so a user without claude installed can
-still build workgraph.
+still build wg.
 
 ## Dependency graph
 
@@ -308,5 +308,5 @@ is nex in a PTY" vision. 4–6 clean up. 7 opens the executor choice.
 - `native_coordinator_loop` is deleted.
 
 At that point, the vision is implemented. Every piece of LLM
-conversation in workgraph is a session + a handler, and the TUI is
+conversation in wg is a session + a handler, and the TUI is
 the unified viewer.

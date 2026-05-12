@@ -326,9 +326,9 @@ Based on community feedback and experience reports:
 
 ---
 
-## 8. Opportunities for workgraph
+## 8. Opportunities for wg
 
-Based on this analysis, workgraph could address several limitations:
+Based on this analysis, wg could address several limitations:
 
 ### 1. Simpler Data Model
 

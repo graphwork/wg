@@ -37,7 +37,7 @@
 
 ## 2. Conditions Tested
 
-### Condition A — Bare Agent (No Workgraph)
+### Condition A — Bare Agent (No wg)
 - **Data source:** `results/rerun-condition-a/` (21 trials)
 - **Agent:** `ConditionAAgent` — bash + file tools only, no graph awareness, no wg tools
 - **Matches plan:** Condition A (bare agent, no decomposition, no verification)
@@ -59,7 +59,7 @@
 
 ### Methodology Note
 
-The trial plan specified conditions controlled by `coordinator.decomp_guidance`, `coordinator.auto_test_discovery`, and `coordinator.verify_mode` config flags — features that operate at the workgraph coordinator level (`wg service start`). Terminal Bench trials run through the harbor framework with TB adapter agents in Docker containers, which do not use the coordinator dispatch path. Instead, the adapter agents (ConditionA-F) implement their own prompting strategies that approximate the coordinator behaviors:
+The trial plan specified conditions controlled by `coordinator.decomp_guidance`, `coordinator.auto_test_discovery`, and `coordinator.verify_mode` config flags — features that operate at the wg coordinator level (`wg service start`). Terminal Bench trials run through the harbor framework with TB adapter agents in Docker containers, which do not use the coordinator dispatch path. Instead, the adapter agents (ConditionA-F) implement their own prompting strategies that approximate the coordinator behaviors:
 
 - ConditionA = no wg tools (plan's Condition A)
 - ConditionC = skill injection + planning phase (plan's Condition C enhanced features)

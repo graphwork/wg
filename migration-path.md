@@ -246,7 +246,7 @@ pub async fn serve_command(args: ServeMCPArgs) -> Result<()> {
 
 #### 3.2 Claude Executor Enhancement
 ```rust
-// Update claude executor configuration to use workgraph MCP server
+// Update claude executor configuration to use wg MCP server
 pub async fn configure_claude_mcp() -> Result<()> {
     let mcp_config_path = dirs::home_dir().unwrap().join(".claude/mcp.json");
     
@@ -256,15 +256,15 @@ pub async fn configure_claude_mcp() -> Result<()> {
         json!({ "mcpServers": {} })
     };
     
-    // Add workgraph as MCP server
-    config["mcpServers"]["workgraph"] = json!({
+    // Add wg as MCP server
+    config["mcpServers"]["wg"] = json!({
         "command": "wg",
         "args": ["mcp", "serve", "--stdio"]
     });
     
     std::fs::write(&mcp_config_path, serde_json::to_string_pretty(&config)?)?;
     
-    println!("Added workgraph MCP server to Claude configuration");
+    println!("Added wg MCP server to Claude configuration");
     Ok(())
 }
 ```
@@ -330,7 +330,7 @@ impl AmplifierExecutor {
 ```
 
 **Validation criteria:**
-- Workgraph tools available in Claude via MCP
+- wg tools available in Claude via MCP
 - Shell executor can use structured tools via wrappers
 - Amplifier executor routes based on tool requirements
 - Cross-executor tool sharing works seamlessly

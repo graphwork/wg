@@ -49,7 +49,7 @@ Nearly every command follows this exact pattern:
 pub fn run(dir: &Path, ...) -> Result<()> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("wg not initialized. Run 'wg init' first.");
     }
     let mut graph = load_graph(&path).context("Failed to load graph")?;
     let task = graph.get_task_mut(id)
@@ -175,7 +175,7 @@ A `with_task_mut(dir, id, |task| { ... })` helper would eliminate ~100 lines of 
 ```rust
 // Potential helper in commands/mod.rs
 pub fn with_task_mut<F>(dir: &Path, id: &str, f: F) -> Result<()>
-where F: FnOnce(&mut Task, &WorkGraph) -> Result<()>
+where F: FnOnce(&mut Task, &wg) -> Result<()>
 ```
 
 **R5. Split `Config` into subcommands.**

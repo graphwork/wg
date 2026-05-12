@@ -27,8 +27,8 @@
 
 1. User installs Termux from F-Droid (Google Play version is unmaintained)
 2. Runs one-time setup: `curl -sL wg.example.com/setup/termux | bash`
-3. Script installs mosh, tmux, openssh; writes `~/.shortcuts/workgraph` with server address
-4. User taps "workgraph" shortcut (via Termux:Widget) or types `workgraph` in Termux
+3. Script installs mosh, tmux, openssh; writes `~/.shortcuts/wg` with server address
+4. User taps "wg" shortcut (via Termux:Widget) or types `wg` in Termux
 5. mosh connects → tmux attach → TUI appears
 6. Phone sleeps / switches to Wi-Fi → mosh reconnects transparently
 
@@ -88,7 +88,7 @@
 ### Task 3: ttyd Deployment Guide + Configuration
 
 - **Platform:** Web
-- **Decision:** INTEGRATE — ttyd + Caddy, zero workgraph code changes
+- **Decision:** INTEGRATE — ttyd + Caddy, zero wg code changes
 - **Complexity:** S
 - **Description:** Write deployment documentation for web access:
   - Minimal setup (LAN, no auth): single `ttyd` command
@@ -148,7 +148,7 @@
 - **Decision:** INTEGRATE — Termux + mosh, we provide setup automation
 - **Complexity:** S
 - **Description:** Create the Android onboarding experience:
-  - `wg-termux-setup.sh`: installs mosh, tmux, openssh; creates `~/.shortcuts/workgraph`
+  - `wg-termux-setup.sh`: installs mosh, tmux, openssh; creates `~/.shortcuts/wg`
   - Guide: F-Droid install instructions (NOT Google Play — the Play version is outdated)
   - Guide: Termux:Widget setup for home screen shortcut
   - Guide: Termux:Styling for font/color customization
@@ -221,11 +221,11 @@
 - **Platform:** Cross-platform
 - **Decision:** INTEGRATE — leverage existing distribution channels
 - **Complexity:** S
-- **Description:** Document how users get access to workgraph on each platform:
+- **Description:** Document how users get access to wg on each platform:
 
   | Platform | Distribution | Method |
   |----------|-------------|--------|
-  | Server   | `cargo install workgraph` or prebuilt binary | Installed once on shared VPS |
+  | Server   | `cargo install wg` or prebuilt binary | Installed once on shared VPS |
   | Desktop  | SSH client (pre-installed) + mosh (`brew install mosh`, `apt install mosh`) | User's own machine |
   | Web      | URL (e.g., `wg.example.com`) | Zero-install, just a browser |
   | Android  | Termux (F-Droid) + setup script | One-time install |
@@ -262,7 +262,7 @@
 - **Complexity:** M
 - **Description:** One-command server setup that configures everything for multi-user + all client access:
   - `wg-server-setup.sh`:
-    - Installs workgraph binary (from GitHub Releases)
+    - Installs wg binary (from GitHub Releases)
     - Installs and configures: tmux, mosh-server, ttyd, Caddy
     - Generates Caddyfile with TLS + basic auth
     - Creates systemd units for ttyd and wg service
@@ -338,7 +338,7 @@
 |------|----------|----------|-----------|
 | 1. Responsive TUI | Cross | **BUILD** | Core TUI must adapt to small screens — no existing tool solves this |
 | 2. Single-Panel Nav | Cross | **BUILD** | Navigation logic for single-panel mode is application-specific |
-| 3. ttyd Deployment | Web | **INTEGRATE** | ttyd + Caddy are mature, zero code changes to workgraph |
+| 3. ttyd Deployment | Web | **INTEGRATE** | ttyd + Caddy are mature, zero code changes to wg |
 | 4. PWA Manifest | Web | **BUILD** (small) | Static web assets — trivial to create, but don't exist yet |
 | 5. xterm.js Validation | Web | **BUILD** (small) | May require minor TUI rendering fixes |
 | 6. Termux Setup | Android | **INTEGRATE** | Termux + mosh work today, we just automate setup |
@@ -369,7 +369,7 @@ Total estimated effort: ~8-10 weeks with 1-2 agents, or ~4-5 weeks with parallel
 
 | Platform | v0.x Distribution | v1.0+ Distribution | Notes |
 |----------|-------------------|-------------------|-------|
-| **Server** | `cargo install workgraph` or GitHub Release binary | Same + distro packages (deb, rpm) | Single install per project |
+| **Server** | `cargo install wg` or GitHub Release binary | Same + distro packages (deb, rpm) | Single install per project |
 | **Desktop** | SSH/mosh (pre-installed or one `brew`/`apt` command) | Same | Zero-install for most users |
 | **Web** | URL (`wg.example.com`) | Same, possibly hosted offering | True zero-install |
 | **Android** | Termux (F-Droid) + setup script | Consider custom app if demand | F-Droid, not Google Play |

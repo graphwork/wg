@@ -14,7 +14,7 @@
 
 Condition G has evolved through two phases: Phase 1 (F-without-surveillance, context-only) and Phase 2 (autopoietic, agent-builds-own-graph). Phase 2 reached 64% pass rate on TB 2.0 but suffers from prompt competition, convergence signaling failures, and model capability limitations with M2.7.
 
-This design defines **Phase 3: heartbeat-orchestrated coordinator**. Instead of asking the seed agent to build its own workgraph (Phase 2), the coordinator itself runs as a persistent strategist on a 30-second heartbeat loop — reviewing graph state, dispatching work, recovering from failures, and adapting strategy. This replicates the quality of interactive coordinator sessions in autonomous mode.
+This design defines **Phase 3: heartbeat-orchestrated coordinator**. Instead of asking the seed agent to build its own wg (Phase 2), the coordinator itself runs as a persistent strategist on a 30-second heartbeat loop — reviewing graph state, dispatching work, recovering from failures, and adapting strategy. This replicates the quality of interactive coordinator sessions in autonomous mode.
 
 ### Key Changes from Phase 2
 
@@ -138,7 +138,7 @@ TB runner (adapter.py)
 ### 3.1 Config for TB Heartbeat Runs
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [coordinator]
 coordinator_agent = true
 heartbeat_interval = 30       # seconds between synthetic heartbeats

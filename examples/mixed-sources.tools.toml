@@ -8,7 +8,7 @@ description = "Multi-source tool configuration for complex projects"
 [sources.native]
 type = "builtin"
 tools = ["file", "bash", "wg", "web_search", "bg"]
-description = "Full native workgraph toolset"
+description = "Full native wg toolset"
 
 [sources.claude-skills]
 type = "mcp"

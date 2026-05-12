@@ -4,7 +4,7 @@
 #set par(justify: true)
 
 #align(center)[
-  #text(size: 18pt, weight: "bold")[Arena Evaluation for workgraph]
+  #text(size: 18pt, weight: "bold")[Arena Evaluation for wg]
   #v(0.5em)
   #text(size: 12pt)[Integrating FLIP Backward-Inference Scoring into Agent Evaluation, Selection, and Evolution]
   #v(1em)
@@ -15,13 +15,13 @@
 
 = Abstract
 
-FLIP (FLipped Inference for Prompt reconstruction) converts evaluation from judgment --- hard for small models --- into generation, measuring response quality via word-level F1 between original instructions and backward-inferred instructions (Wang et al., 2025). This report analyzes four integration points where FLIP can improve workgraph: task evaluation, model selection, context/prompt selection, and agent evolution. Together these form a closed-loop system: cheap FLIP scores on every task feed dense signal into evolution, which produces better agent configurations, which are validated through arena comparisons before deployment. The result is a self-improving agency system that replaces sparse, expensive LLM-as-Judge evaluations with continuous, adversarially-robust measurement.
+FLIP (FLipped Inference for Prompt reconstruction) converts evaluation from judgment --- hard for small models --- into generation, measuring response quality via word-level F1 between original instructions and backward-inferred instructions (Wang et al., 2025). This report analyzes four integration points where FLIP can improve wg: task evaluation, model selection, context/prompt selection, and agent evolution. Together these form a closed-loop system: cheap FLIP scores on every task feed dense signal into evolution, which produces better agent configurations, which are validated through arena comparisons before deployment. The result is a self-improving agency system that replaces sparse, expensive LLM-as-Judge evaluations with continuous, adversarially-robust measurement.
 
 = Paper Summary
 
 == Problem and Motivation
 
-LLM-as-a-Judge evaluation --- the approach used by workgraph's current `wg evaluate` command --- relies on the evaluator model having strong reasoning and judgment capabilities. Small models perform approximately 41% worse than large models at direct judgment (FLIP paper, \u{00A7}1, p.2), making cheap, scalable evaluation unreliable. This "validation-generation gap" (\u{00A7}5, p.8) means that even GPT-4 achieves only 76% consistency between generating and validating answers; small models exhibit an even larger gap, being relatively better at generation than judgment.
+LLM-as-a-Judge evaluation --- the approach used by wg's current `wg evaluate` command --- relies on the evaluator model having strong reasoning and judgment capabilities. Small models perform approximately 41% worse than large models at direct judgment (FLIP paper, \u{00A7}1, p.2), making cheap, scalable evaluation unreliable. This "validation-generation gap" (\u{00A7}5, p.8) means that even GPT-4 achieves only 76% consistency between generating and validating answers; small models exhibit an even larger gap, being relatively better at generation than judgment.
 
 == FLIP Method
 
@@ -60,7 +60,7 @@ No learned parameters, no training data, no fine-tuning. The method requires onl
 
 = Integration Architecture
 
-FLIP integrates into workgraph at four points that form a feedback loop:
+FLIP integrates into wg at four points that form a feedback loop:
 
 #align(center)[
   #block(stroke: 0.5pt, inset: 1em, radius: 4pt)[
@@ -105,12 +105,12 @@ Current limitations: each evaluation requires a full LLM API call (\u{007E}\$0.0
 
 == FLIP as Evaluation Component
 
-FLIP maps directly onto workgraph concepts:
+FLIP maps directly onto wg concepts:
 
 #table(
   columns: (1fr, 1fr),
   inset: 8pt,
-  [*FLIP concept*], [*workgraph equivalent*],
+  [*FLIP concept*], [*wg equivalent*],
   [Instruction $x$], [Task description + title],
   [Response $y$], [Agent log entries + artifact contents],
   [Model $phi$], [Any small LM (1B--12B), configurable],
@@ -376,7 +376,7 @@ Downstream consumers (`evolve.rs`, `stats`, `show`) can filter or weight by sour
 
 = Open Questions
 
-+ *FLIP model selection:* Which small model works best for backward inference on workgraph tasks? The paper tests 1B--12B models (\u{00A7}4.1); we need empirical validation on code-heavy task outputs. Running a small benchmark across 2--3 candidate FLIP models would determine the default `flip_model` config value.
++ *FLIP model selection:* Which small model works best for backward inference on wg tasks? The paper tests 1B--12B models (\u{00A7}4.1); we need empirical validation on code-heavy task outputs. Running a small benchmark across 2--3 candidate FLIP models would determine the default `flip_model` config value.
 
 + *Response length normalization:* FLIP scores correlate with response length (\u{00A7}5, Figure 5). Within-arena relative ranking handles this, but automatic evaluation scores on individual tasks may need normalization --- e.g., dividing by `log(response_length)` or bucketing by response size.
 

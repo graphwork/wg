@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-The current research tools in the workgraph environment lack proper source tracking and citation capabilities, which significantly limits their utility for academic and professional applications.
+The current research tools in the wg environment lack proper source tracking and citation capabilities, which significantly limits their utility for academic and professional applications.
 
 ## Current Limitations
 

@@ -31,7 +31,7 @@ interruptions and completes ~445+ trials per condition.
 
 | Format | Per Trial | 445 Trials | Notes |
 |--------|-----------|-----------|-------|
-| wg-native (Condition F) | ~3.3 MB | ~1.5 GB | Includes workgraph state per trial |
+| wg-native (Condition F) | ~3.3 MB | ~1.5 GB | Includes wg state per trial |
 | Harbor native (Condition A) | ~1.1 MB | ~0.5 GB | Lighter, just result.json + config |
 
 **All conditions combined:** ~2-4 GB of result data. **Negligible** on both local

@@ -43,7 +43,7 @@ We recommend implementing **all** the following layers as they address different
 **Implementation**: Extend worktree setup to configure per-agent `CARGO_TARGET_DIR`
 
 ```bash
-# In .workgraph/worktree-setup.sh (auto-generated if not exists)
+# In .wg/worktree-setup.sh (auto-generated if not exists)
 #!/bin/bash
 WORKTREE_PATH="$1"
 export CARGO_TARGET_DIR="$WORKTREE_PATH/target"

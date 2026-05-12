@@ -1,16 +1,16 @@
 # Cycle Support Audit
 
-> **Note:** workgraph supports cycles as a first-class feature via `loops_to` edges with iteration guards and max counts. This document catalogs places where code was originally written with DAG assumptions that needed updating. It remains useful as a reference for understanding which subsystems are cycle-aware.
+> **Note:** wg supports cycles as a first-class feature via `loops_to` edges with iteration guards and max counts. This document catalogs places where code was originally written with DAG assumptions that needed updating. It remains useful as a reference for understanding which subsystems are cycle-aware.
 
 **Date:** 2026-02-14
-**Scope:** Entire workgraph codebase and documentation
+**Scope:** Entire wg codebase and documentation
 **Purpose:** Catalog every location where the code originally assumed the task graph was acyclic, and track which have been updated for cycle support.
 
 ---
 
 ## Executive Summary
 
-The workgraph codebase has a **mixed posture** toward cycles. Documentation explicitly states cycles are allowed ("Unlike traditional DAG-based task managers, workgraph allows cycles for recurring tasks"), and several subsystems have been hardened with `visited` sets to tolerate cycles. However, the codebase retains significant DAG terminology (the `wg dag` command itself), uses the `ascii-dag` crate which requires acyclic input, and has several algorithms that would infinite-loop or produce incorrect results on cyclic graphs without their protective `visited` guards.
+The wg codebase has a **mixed posture** toward cycles. Documentation explicitly states cycles are allowed ("Unlike traditional DAG-based task managers, wg allows cycles for recurring tasks"), and several subsystems have been hardened with `visited` sets to tolerate cycles. However, the codebase retains significant DAG terminology (the `wg dag` command itself), uses the `ascii-dag` crate which requires acyclic input, and has several algorithms that would infinite-loop or produce incorrect results on cyclic graphs without their protective `visited` guards.
 
 **Finding count:** 42 distinct locations across 8 categories.
 
@@ -59,9 +59,9 @@ The workgraph codebase has a **mixed posture** toward cycles. Documentation expl
 - **What:** "Tasks form a directed graph through `blocked_by` relationships. While typically a DAG (directed acyclic graph), cycles are permitted for iterative/recurring work patterns."
 - **Difficulty to change:** **N/A** — this is already the correct nuanced statement.
 
-### 1.9 — docs/workgraph-analysis-research.md: DAG mention
-- **File:** `docs/workgraph-analysis-research.md:24`
-- **What:** "Cycles are allowed: Unlike traditional DAG-based task managers, workgraph allows cycles for recurring tasks"
+### 1.9 — docs/wg-analysis-research.md: DAG mention
+- **File:** `docs/wg-analysis-research.md:24`
+- **What:** "Cycles are allowed: Unlike traditional DAG-based task managers, wg allows cycles for recurring tasks"
 - **Difficulty to change:** **N/A** — already cycle-aware documentation.
 
 ---
@@ -81,7 +81,7 @@ The workgraph codebase has a **mixed posture** toward cycles. Documentation expl
 - **Difficulty to change:** **Already handled** — back-edge detection (`detect_back_edges` at line 120) strips cycles before calling ascii-dag. The code explicitly handles cycles with `has_cycles` flag and `back_edges` list.
 
 ### 2.3 — docs: topological sort references in research docs
-- **Files:** `docs/workgraph-analysis-research.md:81`, `docs/petri-nets-research.md:358-363,523,593,603,608`, `docs/rust-ecosystem-research.md:31,70-87`, `docs/review-core-graph.md:138`
+- **Files:** `docs/wg-analysis-research.md:81`, `docs/petri-nets-research.md:358-363,523,593,603,608`, `docs/rust-ecosystem-research.md:31,70-87`, `docs/review-core-graph.md:138`
 - **What:** Research documents discuss topological sort as a technique for cycle detection, critical path analysis, and task ordering.
 - **Difficulty to change:** **N/A** — research documents, not active code.
 
@@ -280,7 +280,7 @@ The workgraph codebase has a **mixed posture** toward cycles. Documentation expl
 | 1.6 | SKILL.md references | SKILL.md:47,157-159 | Naming only | N/A | Trivial |
 | 1.7 | ascii-dag crate | Cargo.toml:34 | External crate | Handled via back-edge stripping | N/A |
 | 1.8 | docs/README.md | docs/README.md:81 | Already nuanced | N/A | N/A |
-| 1.9 | Analysis research doc | docs/workgraph-analysis-research.md:24 | Already cycle-aware | N/A | N/A |
+| 1.9 | Analysis research doc | docs/wg-analysis-research.md:24 | Already cycle-aware | N/A | N/A |
 | 2.1 | TUI tree comment | tui/app.rs:583-588 | Misleading comment | Code is safe | Trivial |
 | 2.2 | ascii-dag topo depth | tui/dag_layout.rs:8 | Crate requires DAG | Handled | Already handled |
 | 2.3 | Research docs | Multiple docs | Discussion only | N/A | N/A |

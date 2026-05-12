@@ -9,7 +9,7 @@
 |------|------|---------|
 | Global config | `~/.wg/config.toml` | User-wide defaults |
 | Local config | `.wg/config.toml` | Project-specific overrides |
-| Matrix credentials | `~/.config/workgraph/matrix.toml` | Sensitive Matrix login (separate to avoid committing secrets) |
+| Matrix credentials | `~/.config/wg/matrix.toml` | Sensitive Matrix login (separate to avoid committing secrets) |
 
 **Merge rule:** `Config::load_merged()` deep-merges global + local, with local values winning. `ConfigSource` tracks provenance (Global/Local/Default) for `wg config --list`.
 
@@ -237,7 +237,7 @@ Already exists at `src/commands/setup.rs`. Interactive wizard that:
 6. Asks about agency (auto_assign, auto_evaluate)
 7. Asks about max_agents
 8. Writes to global config (`~/.wg/config.toml`)
-9. Configures `~/.claude/CLAUDE.md` with workgraph directives
+9. Configures `~/.claude/CLAUDE.md` with wg directives
 10. Also configures project-level `CLAUDE.md`
 
 Non-interactive mode via `--provider` flag with `--api-key-file`, `--api-key-env`, `--url`, `--model`, `--skip-validation`.

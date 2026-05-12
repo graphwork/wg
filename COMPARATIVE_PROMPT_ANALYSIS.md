@@ -43,7 +43,7 @@ Comprehensive analysis of 11 captured agent prompts (6 from earlier instrumentat
 
 **✅ YES - extensive wg CLI guidance included**
 
-All prompts include comprehensive workgraph CLI instructions:
+All prompts include comprehensive wg CLI instructions:
 - "## Required Workflow" section with specific wg commands (wg log, wg done, wg msg, wg artifact)
 - "## CRITICAL: Use wg CLI, NOT built-in tools" warnings
 - Explicit prohibition against built-in TaskCreate/TaskUpdate tools
@@ -118,7 +118,7 @@ Comparing claude-sonnet vs claude-opus prompts:
 
 **This is the most significant finding.** Despite claims in CAPTURE_SUMMARY.md about "CLAUDE.md inclusion," **NO spawned agents receive project-specific instructions from CLAUDE.md**. This means:
 
-- Agents don't know about project conventions (use workgraph for task management, wg quickstart orientation, etc.)
+- Agents don't know about project conventions (use wg for task management, wg quickstart orientation, etc.)
 - Agents don't get the critical guidance about being "thin orchestrators" vs implementors  
 - Agents miss the "do NOT use Task tools" instruction that's project-specific
 - Context scope (Task vs Full) appears to have no impact on CLAUDE.md inclusion

@@ -1,6 +1,6 @@
-# Arena Evaluation Integration with workgraph
+# Arena Evaluation Integration with wg
 
-Analysis of how FLIP (Wang et al., 2025, arXiv:2602.13551) integrates with workgraph's evaluation system.
+Analysis of how FLIP (Wang et al., 2025, arXiv:2602.13551) integrates with wg's evaluation system.
 
 ## 1. Current Evaluation System
 
@@ -36,9 +36,9 @@ There is also `wg evaluate record` (evaluate.rs:327) for externally-sourced eval
 
 Instead of asking an LLM "how good is this output?" (judgment), ask a small model "what instruction produced this output?" (generation) and measure instruction recovery via F1.
 
-### Mapping to workgraph concepts
+### Mapping to wg concepts
 
-| FLIP concept | workgraph equivalent |
+| FLIP concept | wg equivalent |
 |---|---|
 | Instruction `x` | Task description + title (`EvaluatorInput.task_description`) |
 | Response `y` | Agent output: log entries + artifact contents |

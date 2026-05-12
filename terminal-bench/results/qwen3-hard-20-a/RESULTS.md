@@ -4,7 +4,7 @@
 **Model:** Qwen3-Coder-30B (local:qwen3-coder-30b)
 **Endpoint:** http://lambda01:30000/v1 (SGLang, RTX 6000 Ada 48GB)
 **Context Window:** 32,768 tokens
-**Condition:** A (agent-only, no workgraph decomposition)
+**Condition:** A (agent-only, no wg decomposition)
 
 ## Executive Summary
 
@@ -93,5 +93,5 @@ The task description requested 20 hardest tasks, but only 18 local task definiti
 ## Raw Data
 
 - `combined_summary.json` — full results with per-task metrics
-- `qwen3-hard-20-a-{task}/workgraph_state/` — saved workgraph state per trial
+- `qwen3-hard-20-a-{task}/workgraph_state/` — saved wg state per trial
 - `qwen3-hard-20-a-{task}/workgraph_state/agents/agent-1/output.log` — full agent conversation

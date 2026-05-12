@@ -186,7 +186,7 @@ The compactor was recently wired in (`fix-restore-wg` commit from 2026-03-07). T
 | chore | 2 (1.3%) |
 | other | 2 (1.3%) |
 
-74 of 155 commits (47.7%) include task ID suffixes in parentheses (e.g., `(tui-unified-markdown)`), enabling traceability back to workgraph tasks.
+74 of 155 commits (47.7%) include task ID suffixes in parentheses (e.g., `(tui-unified-markdown)`), enabling traceability back to wg tasks.
 
 ### Stash Count
 

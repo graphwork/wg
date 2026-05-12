@@ -53,7 +53,7 @@ The Bash tool (44.8% of all calls) is used for:
 
 ### Already covered (native tools exist)
 1. **File I/O:** `read_file`, `write_file`, `edit_file`, `glob`, `grep` — covers Read, Write, Edit, Glob, Grep
-2. **workgraph core:** `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
+2. **wg core:** `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
 3. **Shell execution:** `bash` — covers all cargo, git, and misc commands
 
 ### Missing tools (prioritized by impact)
@@ -106,7 +106,7 @@ The current toolset (bash, read_file, write_file, edit_file, glob, grep, wg_*) h
 
 The native executor can already handle **~94%** of tool calls. Adding `list_dir` and `wg_msg` would push this to ~96%. The remaining ~4% (web search/fetch, piped commands, git/cargo) is well-served by the Bash fallback.
 
-**For 80% of workgraph _tasks_ (not just tool calls):** The current toolset is sufficient for:
+**For 80% of wg _tasks_ (not just tool calls):** The current toolset is sufficient for:
 - All code implementation tasks (read, edit, write, bash for build/test)
 - All code review/evaluation tasks
 - All documentation tasks

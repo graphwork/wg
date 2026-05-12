@@ -474,9 +474,9 @@ chan = Channel()
 
 ## 7. Practical Recommendations
 
-### 7.1 For workgraph Specifically
+### 7.1 For wg Specifically
 
-Given workgraph's focus on organizational task workflows:
+Given wg's focus on organizational task workflows:
 
 1. **Start with lightweight static analysis**
    - Dependency cycle detection (graph algorithms)

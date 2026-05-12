@@ -101,14 +101,14 @@ Model 'openrouter:minimax/minimax-m2.7' is non-Anthropic, switching executor fro
 ## Files Examined
 
 ### Service Logs
-- `.workgraph/service/daemon.log`: Agent spawning patterns, executor routing logic
+- `.wg/service/daemon.log`: Agent spawning patterns, executor routing logic
 - Lines showing executor switching: ~13934, 14241, etc.
 
 ### Agent Logs
-- `/home/erik/workgraph/.workgraph/agents/agent-14967/`: Decomposition behavior evidence
-- `/home/erik/workgraph/.workgraph/agents/agent-14708/`: Monolithic behavior evidence  
-- `/home/erik/workgraph/.workgraph/agents/agent-14710/`: Monolithic behavior evidence
-- `/home/erik/workgraph/.workgraph/agents/agent-14902/`: Monolithic behavior evidence
+- `/home/erik/workgraph/.wg/agents/agent-14967/`: Decomposition behavior evidence
+- `/home/erik/workgraph/.wg/agents/agent-14708/`: Monolithic behavior evidence  
+- `/home/erik/workgraph/.wg/agents/agent-14710/`: Monolithic behavior evidence
+- `/home/erik/workgraph/.wg/agents/agent-14902/`: Monolithic behavior evidence
 
 ### Task Status
 - Task completion patterns in graph via `wg show` commands

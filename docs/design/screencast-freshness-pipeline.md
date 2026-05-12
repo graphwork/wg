@@ -366,7 +366,7 @@ When a push to `main` triggers a re-render and the diff is within auto-commit th
         if: github.ref == 'refs/heads/main' && steps.diff.outputs.changed == '1'
         run: |
           git config user.name "wg-screencast-bot"
-          git config user.email "bot@workgraph.dev"
+          git config user.email "bot@wg.dev"
           git add screencast/recordings/*.cast
           git commit -m "chore: auto-regenerate screencasts for $(git rev-parse --short HEAD)"
           git push

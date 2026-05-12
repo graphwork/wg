@@ -27,8 +27,8 @@
 
 | Condition | Name | Key Feature |
 |-----------|------|-------------|
-| **A** | Bare agent | Minimal prompt, bash + file tools, no workgraph |
-| **C** | WG + skill injection | Workgraph tools with explicit templates, 81% wg adoption |
+| **A** | Bare agent | Minimal prompt, bash + file tools, no wg |
+| **C** | WG + skill injection | wg tools with explicit templates, 81% wg adoption |
 | **D** | Autopoietic verification | Attempt→verify→iterate loop, agency identity, self-verification gate |
 | **E** | Organization generation | Orchestrator framing, decomposition + independent verification |
 
@@ -174,7 +174,7 @@ Most rerun trials lacked LLM eval scores (16/24 missing), limiting comparison.
 | A (n=21→16) | 0.134 | 0.153 | +0.019 |
 | C (n=21→3) | 0.697 | 0.603 | −0.094 |
 
-Condition A FLIP scores remain fundamentally low. The evolution did not alter the structural gap between Condition A (bare agent, no workgraph) and Conditions C/D/E (full scaffolding).
+Condition A FLIP scores remain fundamentally low. The evolution did not alter the structural gap between Condition A (bare agent, no wg) and Conditions C/D/E (full scaffolding).
 
 ### 5.2 FLIP by Condition: Statistical Separation
 
@@ -268,7 +268,7 @@ The scaffolding conditions (C, D, E) produce dramatically higher FLIP scores tha
 
 ### 7.3 Should Another Evolution Iteration Run?
 
-**Not on this benchmark.** The terminal-bench tasks have saturated — there are no failures to optimize against, and FLIP improvements in Condition A are bounded by the condition's structural limitations (no workgraph, no verification loop).
+**Not on this benchmark.** The terminal-bench tasks have saturated — there are no failures to optimize against, and FLIP improvements in Condition A are bounded by the condition's structural limitations (no wg, no verification loop).
 
 Another evolution iteration would be valuable if:
 1. **Harder tasks are introduced** — tasks with non-trivial failure rates (e.g., the H2H trial's 33% false-PASS rate on cython builds, nginx config, LaTeX processing)
@@ -289,7 +289,7 @@ Another evolution iteration would be valuable if:
 
 ### 8.2 Evolution Pipeline
 
-4. **Deploy new agents to production tasks.** The 3 experimental agents have zero evaluation data. Assign them to real workgraph tasks and collect evaluation scores before the next evolution iteration.
+4. **Deploy new agents to production tasks.** The 3 experimental agents have zero evaluation data. Assign them to real wg tasks and collect evaluation scores before the next evolution iteration.
 
 5. **Evaluate coordinator prompt changes separately.** The two coordinator-level operations (evolved-amendments, common-patterns) affect all agents. Their impact should be measured through A/B testing on coordinator performance, not through terminal-bench agent trials.
 
@@ -306,7 +306,7 @@ Another evolution iteration would be valuable if:
 ### 8.4 Next Steps (Priority Order)
 
 1. Design and run a "hard task" sweep with tasks known to produce failures
-2. Deploy the 3 experimental agents to production workgraph tasks
+2. Deploy the 3 experimental agents to production wg tasks
 3. Collect 100+ evaluations on new/modified entities
 4. Run evolution iteration 2 with failure data as input
 5. Re-assess FLIP threshold calibration with actual false-PASS data

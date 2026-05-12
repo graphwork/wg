@@ -126,7 +126,7 @@ Each of the auto-assign and auto-evaluate blocks loads, mutates, and saves the g
 
 **Recommendation:**
 - Extract `auto_assign_subgraph()` and `auto_evaluate_subgraph()` into separate functions
-- Load the graph once, pass `&mut WorkGraph` through, save once at the end
+- Load the graph once, pass `&mut wg` through, save once at the end
 - The current pattern of repeated load/save is both inefficient and creates TOCTOU windows
 
 ### 2.3 Two Parallel Prompt Systems
@@ -248,13 +248,13 @@ The coordinator detects dead agents via `is_process_alive(pid)` only. The heartb
 
 1. **Deduplicate `spawn.rs`**: Extract `spawn_inner()` shared by both `run()` and `spawn_agent()`. This eliminates ~250 lines of duplication and prevents drift.
 
-2. **Reduce graph loads in `coordinator_tick()`**: Load graph once, pass `&mut WorkGraph`, save once. Current pattern loads up to 5 times per tick.
+2. **Reduce graph loads in `coordinator_tick()`**: Load graph once, pass `&mut wg`, save once. Current pattern loads up to 5 times per tick.
 
 3. **Resolve the Executor trait question**: Either use the trait in production (move wrapper script logic into `Executor::spawn()`) or remove the trait and implementations.
 
 ### Medium Priority
 
-4. **Extract auto-assign and auto-evaluate into functions**: Each is 90-120 lines embedded in `coordinator_tick()`. They should be standalone functions taking `&mut WorkGraph`.
+4. **Extract auto-assign and auto-evaluate into functions**: Each is 90-120 lines embedded in `coordinator_tick()`. They should be standalone functions taking `&mut wg`.
 
 5. **Add coordinator-level spawn failure tracking**: Prevent re-attempting tasks that consistently fail to spawn (e.g., missing executor).
 

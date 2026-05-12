@@ -9,11 +9,11 @@ Initial inventory and decomposition of docs/manual/ directory audit against curr
 ## Manual Documentation Inventory
 
 ### Core Manual Structure
-The manual is organized as a conceptual guide for humans to understand workgraph, structured in 6 main components:
+The manual is organized as a conceptual guide for humans to understand wg, structured in 6 main components:
 
 #### Source Files Inventoried
 - **README.md** — Manual overview, compilation instructions, structure guide
-- **workgraph-manual.md/.typ** — Unified manual with comprehensive glossary  
+- **wg-manual.md/.typ** — Unified manual with comprehensive glossary  
 - **01-overview.md/.typ** — System overview, core concepts
 - **02-task-graph.md/.typ** — Tasks, dependencies, cycles, readiness
 - **03-agency.md/.typ** — Roles, tradeoffs, agents, federation  

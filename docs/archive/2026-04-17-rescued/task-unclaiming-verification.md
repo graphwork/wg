@@ -173,4 +173,4 @@ This document verifies that when an agent process dies unexpectedly (crash, kill
 
 ## Conclusion
 
-The workgraph task unclaiming system is **robust and well-tested**. Agent death detection and task unclaiming work correctly across multiple scenarios including process exits, daemon restarts, and race conditions. The dual safety mechanism (primary cleanup + reconciliation fallback) ensures no tasks can be permanently stuck in claimed state after agent death.
+The wg task unclaiming system is **robust and well-tested**. Agent death detection and task unclaiming work correctly across multiple scenarios including process exits, daemon restarts, and race conditions. The dual safety mechanism (primary cleanup + reconciliation fallback) ensures no tasks can be permanently stuck in claimed state after agent death.

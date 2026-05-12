@@ -2,10 +2,10 @@
 name = "workgraph"
 version = "0.1.0"
 edition = "2024"
-description = "A lightweight work coordination graph for humans and AI agents"
+description = "A lightweight wg coordination graph for humans and AI agents"
 license = "MIT"
-repository = "https://github.com/erikg/workgraph"
-homepage = "https://github.com/erikg/workgraph"
+repository = "https://github.com/graphwork/wg"
+homepage = "https://github.com/graphwork/wg"
 
 [[bin]]
 name = "wg"

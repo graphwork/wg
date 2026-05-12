@@ -21,7 +21,7 @@ See `docs/KEY_DOCS.md` for the canonical list of documentation files to keep in 
 cargo install --path .          # rebuild global wg binary
 wg service stop                 # stop before rebuilding
 cargo test                      # run tests
-typst compile docs/manual/workgraph-manual.typ   # rebuild manual PDF
+typst compile docs/manual/wg-manual.typ   # rebuild manual PDF
 typst compile docs/research/organizational-patterns.typ  # rebuild org patterns PDF
 ```
 
@@ -30,7 +30,7 @@ typst compile docs/research/organizational-patterns.typ  # rebuild org patterns 
 **Typst (.typ) files are the ground truth.** Markdown versions exist for developers who prefer .md and for the website. Keep them in sync.
 
 Markdown locations:
-- `docs/manual/workgraph-manual.md` — full manual (glossary + chapters 01-05)
+- `docs/manual/wg-manual.md` — full manual (glossary + chapters 01-05)
 - `docs/research/organizational-patterns.md` — theory document
 - `graphwork.github.io/` — website copies (same files)
 
@@ -49,7 +49,7 @@ pandoc -f typst -t gfm --wrap=none docs/manual/01-overview.typ -o out.md
 # scripts/typst-to-md.py (if available) or see the convert-typst-docs task
 # logs for the preprocessing approach.
 #
-# The full manual is assembled from: glossary (from workgraph-manual.typ)
+# The full manual is assembled from: glossary (from wg-manual.typ)
 # + chapters 01-05, each converted separately, then concatenated.
 ```
 

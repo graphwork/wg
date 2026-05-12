@@ -318,7 +318,7 @@ The coordinator maintains identity through:
 When Era N+1 boots, its prompt includes:
 
 ```
-You are the workgraph coordinator resuming after context compaction (Era {N+1}).
+You are the wg coordinator resuming after context compaction (Era {N+1}).
 
 ## Previous Session Summary
 {content of era-{N}-summary.md}
@@ -556,7 +556,7 @@ Move the hardcoded system prompt from `build_system_prompt()` into the agency sy
 name: coordinator
 description: "Persistent coordinator agent that manages the task graph"
 system_prompt: |
-  You are the workgraph coordinator...
+  You are the wg coordinator...
   (current content of build_system_prompt())
 default_exec_mode: full
 default_bundle: coordinator

@@ -7,7 +7,7 @@
 
 ## 1. Event Sourcing Analogy
 
-workgraph's `stream.jsonl` is already an event log. Every tool call produces `ToolStart`/`ToolEnd` events, every LLM turn produces `Turn` events with token usage. The agent's observable state is the reduction of all stream events.
+wg's `stream.jsonl` is already an event log. Every tool call produces `ToolStart`/`ToolEnd` events, every LLM turn produces `Turn` events with token usage. The agent's observable state is the reduction of all stream events.
 
 **Can we replay events to restore state?**
 
@@ -48,7 +48,7 @@ The LLM's "state" lives in two places:
 
 ### Summary of stolen ideas
 
-| Pattern | Source | Application to workgraph |
+| Pattern | Source | Application to wg |
 |---------|--------|------------------------|
 | Continue-as-new | Temporal | Handoff document → new agent with summary |
 | AOF compaction | Redis | Summarize stream.jsonl into checkpoint |
@@ -158,7 +158,7 @@ Agent writes a structured progress summary before dying (or periodically). Succe
 
 ### Is it sufficient?
 
-**For most workgraph tasks: yes.** Here's why:
+**For most wg tasks: yes.** Here's why:
 
 1. Tasks are typically scoped (20-60 min of work)
 2. The task description provides goal and validation criteria

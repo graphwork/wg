@@ -27,7 +27,7 @@ Terminal Bench has two distinct execution paths:
 | E | Yes (temp dir on host) | Yes + `wg assign` | Yes (`wg agency init`) | orchestrator/architect/thorough | Yes | No |
 | F | Yes (temp dir on host) | Yes | No | No | Yes (enhanced: `--verify`, `--id`) | No |
 
-**Key finding:** `wg service start` is NEVER called in any condition. This is correct because the adapter itself acts as the agent loop — it doesn't need the wg service to dispatch agents. The wg tools (`wg_add`, `wg_done`, `wg_log`, etc.) are function-calling tools that route to `_exec_wg_cmd_host()`, which runs the wg binary on the host pointing at the temp workgraph directory.
+**Key finding:** `wg service start` is NEVER called in any condition. This is correct because the adapter itself acts as the agent loop — it doesn't need the wg service to dispatch agents. The wg tools (`wg_add`, `wg_done`, `wg_log`, etc.) are function-calling tools that route to `_exec_wg_cmd_host()`, which runs the wg binary on the host pointing at the temp wg directory.
 
 ### The Host-Side Architecture (Critical)
 
@@ -39,7 +39,7 @@ Terminal Bench has two distinct execution paths:
 │  │  - LLM loop (litellm)         │  │
 │  │  - Tool dispatch               │  │
 │  │    ├─ bash/file → env.exec()  │───│──→ Docker container
-│  │    └─ wg_* → wg binary (host) │───│──→ /tmp/tb-wg-XXXX/.workgraph
+│  │    └─ wg_* → wg binary (host) │───│──→ /tmp/tb-wg-XXXX/.wg
 │  └────────────────────────────────┘  │
 └──────────────────────────────────────┘
 ```
@@ -150,7 +150,7 @@ The high Docker failure rate in A-full and B-orig is a Harbor environment issue,
 
 ### wg IS reliably available in all conditions B-F
 
-- Every condition B-F properly initializes a workgraph directory on the host
+- Every condition B-F properly initializes a wg directory on the host
 - The wg binary is found and used without errors
 - All wg tool calls succeed (0% error rate across 1,166 calls)
 - Agents in conditions D and E achieve 97-100% wg adoption

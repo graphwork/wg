@@ -3,13 +3,13 @@
 ## 🚨 CRITICAL SECURITY ISSUE RESOLVED ✅
 
 **Date:** April 11, 2026  
-**Issue:** GitGuardian detected exposed Telegram Bot Token in workgraph repository  
+**Issue:** GitGuardian detected exposed Telegram Bot Token in wg repository  
 **Status:** PRIMARY SECURITY RISK MITIGATED ✅
 
 ## Current Status Summary
 
 ### ✅ COMPLETED - Security Critical Actions
-1. **Token Identified**: Located exposed token `***REDACTED-TOKEN***` in `~/.config/workgraph/notify.toml`
+1. **Token Identified**: Located exposed token `***REDACTED-TOKEN***` in `~/.config/wg/notify.toml`
 2. **Immediate Alert Sent**: Notified Erik via Telegram about critical security breach
 3. **Token Revoked**: ✅ **OLD TOKEN IS NO LONGER VALID** - API returns `401 Unauthorized`
 4. **Alternative Communication**: Successfully notified Erik via Matrix channel about status
@@ -19,7 +19,7 @@
 - Remediation tools prepared and ready to deploy
 
 ### 📋 PENDING - Final Steps Once New Token Received
-1. Replace old token with new token in `~/.config/workgraph/notify.toml`
+1. Replace old token with new token in `~/.config/wg/notify.toml`
 2. Verify new token works correctly
 3. Update documentation
 

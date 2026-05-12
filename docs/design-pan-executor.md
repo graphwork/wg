@@ -1,4 +1,4 @@
-# Pan-Executor Architecture: workgraph as a Self-Sufficient Execution Universe
+# Pan-Executor Architecture: wg as a Self-Sufficient Execution Universe
 
 ## Status
 
@@ -12,7 +12,7 @@ Last updated: 2026-03-04
 
 ### Executor landscape
 
-workgraph has **four executor types**, all sharing a fire-and-forget subprocess model:
+wg has **four executor types**, all sharing a fire-and-forget subprocess model:
 
 | Executor | Runtime | Model Access | Tool Provision | Streaming | Status |
 |---|---|---|---|---|---|
@@ -45,7 +45,7 @@ The native executor (`src/executor/native/`) is the most strategically important
 
 **Tools (12 total):**
 - File I/O: `bash`, `read_file`, `write_file`, `list_files`
-- workgraph: `wg_log`, `wg_artifact`, `wg_done`, `wg_fail`, `wg_show`, `wg_add`, `wg_msg_send`, `wg_msg_read`
+- wg: `wg_log`, `wg_artifact`, `wg_done`, `wg_fail`, `wg_show`, `wg_add`, `wg_msg_send`, `wg_msg_read`
 
 **Agent loop:** Standard tool-use loop with turn limiting, usage tracking, NDJSON logging via `StreamWriter`.
 
@@ -278,15 +278,15 @@ api_base = "http://localhost:8000"
 
 A2A (v0.3, under Linux Foundation) defines HTTP-based agent-to-agent communication with tasks, messages, artifacts, and streaming. However:
 
-- **Impedance mismatch:** A2A tasks are flat RPCs between two agents. workgraph tasks are graph nodes with dependencies, cycles, and verification. Wrapping workgraph in A2A would strip away its core value.
-- **Ephemeral agents:** workgraph agents are short-lived subprocesses, not HTTP servers. Implementing A2A would require a persistent HTTP layer.
+- **Impedance mismatch:** A2A tasks are flat RPCs between two agents. wg tasks are graph nodes with dependencies, cycles, and verification. Wrapping wg in A2A would strip away its core value.
+- **Ephemeral agents:** wg agents are short-lived subprocesses, not HTTP servers. Implementing A2A would require a persistent HTTP layer.
 - **Pre-1.0 spec:** Still evolving rapidly.
 
 **Future path:** When A2A reaches 1.0+ with ecosystem traction, add an `a2a` executor type alongside `claude`/`matrix`/`email`/`shell`. The coordinator would discover an A2A agent via its card, send the task description, poll/stream for completion, and record artifacts — structurally identical to the existing fire-and-forget model.
 
 **State mapping** (for future reference):
 
-| A2A State | workgraph Status |
+| A2A State | wg Status |
 |-----------|-----------------|
 | submitted/working | InProgress |
 | input_required | Blocked (+ HITL notification) |
@@ -298,7 +298,7 @@ A2A (v0.3, under Linux Foundation) defines HTTP-based agent-to-agent communicati
 
 **Recommendation: Adopt now (as MCP client).**
 
-MCP and A2A are complementary: MCP provides tools/context to a single agent; A2A provides inter-agent communication. workgraph should consume MCP (for tool extensibility) but not expose agents as MCP servers.
+MCP and A2A are complementary: MCP provides tools/context to a single agent; A2A provides inter-agent communication. wg should consume MCP (for tool extensibility) but not expose agents as MCP servers.
 
 See Section 4 for full integration plan.
 
@@ -338,11 +338,11 @@ See Section 4 for full integration plan.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-The native executor contains all four layers. Claude CLI and Amplifier provide their own Agent Runtime + Tool Layer + LLM Layer, leaving workgraph only the Executor shell.
+The native executor contains all four layers. Claude CLI and Amplifier provide their own Agent Runtime + Tool Layer + LLM Layer, leaving wg only the Executor shell.
 
 ### Target state
 
-**To make workgraph self-sufficient, the native executor must reach feature parity with Claude Code's agent capabilities.** Claude CLI and Amplifier become optional "premium" executors, not requirements.
+**To make wg self-sufficient, the native executor must reach feature parity with Claude Code's agent capabilities.** Claude CLI and Amplifier become optional "premium" executors, not requirements.
 
 | Layer | Claude CLI | Amplifier | Native (current) | Native (target) |
 |---|---|---|---|---|
@@ -454,7 +454,7 @@ Phases 2 and 3 can partially overlap since they touch different parts of the cod
 | **Web fetch** | Via MCP server or build (~100 lines) | Trivial with reqwest |
 | **Streaming** | Keep ours (StreamEvent) | Custom event format, already built |
 | **Cost tracking** | Build (~200 lines) | Custom integration with price table |
-| **Multi-agent coordination** | Keep ours | This IS workgraph |
+| **Multi-agent coordination** | Keep ours | This IS wg |
 | **A2A interop** | Defer | Pre-1.0 spec, low priority |
 
 ---

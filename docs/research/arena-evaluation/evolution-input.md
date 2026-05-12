@@ -1,6 +1,6 @@
 # Arena Evaluation as Evolution Input
 
-How FLIP-style arena evaluation (Wang et al., 2025, arXiv:2602.13551) can feed into workgraph's agent evolution system.
+How FLIP-style arena evaluation (Wang et al., 2025, arXiv:2602.13551) can feed into wg's agent evolution system.
 
 ## 1. Current Evolution: How `wg evolve` Works
 

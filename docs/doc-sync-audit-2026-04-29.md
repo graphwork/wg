@@ -27,7 +27,7 @@ Canonical glossary (per `src/text/agent_guide.md` and CLAUDE.md): three distinct
 |---|---|
 | **dispatcher** | The daemon launched by `wg service start` — polls the graph, spawns worker agents |
 | **chat agent** | The persistent LLM session the user talks to (TUI / Claude Code / codex / nex) |
-| **worker agent** | An LLM process spawned by the dispatcher to do a single workgraph task |
+| **worker agent** | An LLM process spawned by the dispatcher to do a single wg task |
 
 Resolution: in user-facing prose, replace role-noun "coordinator" / "orchestrator" with the appropriate canonical term. CLI command names (`wg service create-coordinator`, `[coordinator] model = ...`) and config-key names retain their legacy spellings as **back-compat aliases** of the new chat-named surface (`wg service create-chat`, `[dispatcher]`).
 

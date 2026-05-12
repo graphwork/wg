@@ -13,7 +13,7 @@
 
 ### 1. Problem Analysis
 
-**Root Cause**: GitGuardian detected a Telegram Bot Token exposed in the graphwork/workgraph repository, committed April 11th 2026 23:51:26 UTC.
+**Root Cause**: GitGuardian detected a Telegram Bot Token exposed in the graphwork/wg repository, committed April 11th 2026 23:51:26 UTC.
 
 **Risk Profile**: 
 - **Severity**: Critical (exposed authentication credential)
@@ -26,9 +26,9 @@
 The remediation followed a structured multi-phase approach:
 
 **Phase 1: Discovery and Validation**
-- Located exposed token in `~/.config/workgraph/notify.toml`
+- Located exposed token in `~/.config/wg/notify.toml`
 - Verified token was active and functional
-- Confirmed bot identity: workgraph bot (@workgraph1_bot), ID: [REDACTED_ID]
+- Confirmed bot identity: wg bot (@workgraph1_bot), ID: [REDACTED_ID]
 
 **Phase 2: Immediate Revocation**
 - Coordinated with human operator (Erik) for @BotFather access
@@ -120,7 +120,7 @@ evaluate::run(workgraph_dir, &task.id, None, false, false)
 
 **Technical Debt**: Verification architecture requires refinement to prevent false negative gates that obscure successful security remediation.
 
-**Strategic Impact**: This incident validates the workgraph system's ability to coordinate rapid security response across distributed agents while maintaining operational integrity.
+**Strategic Impact**: This incident validates the wg system's ability to coordinate rapid security response across distributed agents while maintaining operational integrity.
 
 ---
 

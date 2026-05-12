@@ -5,7 +5,7 @@
 
 set -e
 
-echo "=== Workgraph Robustness Integration Test ==="
+echo "=== wg Robustness Integration Test ==="
 echo
 
 # Test 1: Verify cleanup commands are available and functional

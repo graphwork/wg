@@ -65,7 +65,7 @@ machine-readable events while keeping daemon.log for low-level debugging.
 
 ### 4. What about multiple coordinators or restarts?
 
-The coordinator entity is **singleton per workgraph** and persists across restarts:
+The coordinator entity is **singleton per wg** and persists across restarts:
 
 - `coordinator-state.json` already persists tick count, config, last tick time
 - The new `coordinator-activity.jsonl` appends across sessions (rotated by size)

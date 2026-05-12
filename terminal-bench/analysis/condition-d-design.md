@@ -17,7 +17,7 @@ Conditions B and C were **cursed replicates**:
 - **Neither B nor C**: initialized `wg` properly (no `wg service`, no agency, no assignments)
 - **Both B and C**: used `max_turns=50`, which penalized tool-heavy agents (25% of A trials hit the cap; wg tool calls count against it)
 
-Condition D is the **first fair test** of whether workgraph augmentation helps. It must fix every issue above.
+Condition D is the **first fair test** of whether wg augmentation helps. It must fix every issue above.
 
 ---
 
@@ -45,7 +45,7 @@ class ConditionDAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-d"
+        return "wg-condition-d"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"
@@ -173,7 +173,7 @@ def build_condition_d_prompt(instruction: str, root_task_id: str, agent_identity
         "**CRITICAL**: Never call `wg_done` without first running a verification step "
         "that succeeded. Never spin indefinitely — if 3 consecutive fix attempts fail "
         "on the same issue, call `wg_fail` with diagnostics.\n\n"
-        "## Workgraph Tools\n\n"
+        "## wg Tools\n\n"
         f'- `wg_log("{root_task_id}", "message")` — Record progress (do this at each step)\n'
         f'- `wg_done("{root_task_id}")` — Task complete (ONLY after verification passes)\n'
         f'- `wg_fail("{root_task_id}", "reason")` — Cannot complete (with diagnostics)\n'
@@ -463,7 +463,7 @@ class ConditionDAgent(WorkgraphAgent):
 
     @staticmethod
     def name() -> str:
-        return "workgraph-condition-d"
+        return "wg-condition-d"
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"

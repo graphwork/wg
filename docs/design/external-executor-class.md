@@ -163,7 +163,7 @@ is where most of the value of "pluggable executors" lives.
 ## Relation to self-bootstrap goal
 
 `nex-executor-improvements.md` frames the overall work around:
-make `wg nex` strong enough for workgraph to self-dispatch. Phase
+make `wg nex` strong enough for wg to self-dispatch. Phase
 4a directly helps (users can see claude/codex/amplifier configs
 side-by-side, pick the right one for their billing/capability
 situation). Phases 4b-4c are architectural consolidation — they

@@ -9,12 +9,12 @@
 
 ## 1. Problem Statement
 
-The current TB adapter (`terminal-bench/wg/adapter.py`, 1730 lines) reimplements workgraph's entire agent execution loop using litellm. This means TB benchmarks measure the adapter's custom loop, not workgraph's actual execution machinery. Specifically:
+The current TB adapter (`terminal-bench/wg/adapter.py`, 1730 lines) reimplements wg's entire agent execution loop using litellm. This means TB benchmarks measure the adapter's custom loop, not wg's actual execution machinery. Specifically:
 
 1. **Agent loop** is a hand-rolled `for turn in range(max_turns)` loop with `litellm.acompletion()` — native wg uses coordinator → executor dispatch
 2. **Tool schemas** are reimplemented as OpenAI function-call JSON — native wg provides tools via Claude Code / amplifier bundles
 3. **Prompts** are six hand-crafted functions — native wg uses `src/agency/prompt.rs` composition
-4. **Graph state** lives in `/tmp/tb-wg-XXXX/` and is destroyed — native wg uses persistent `.workgraph/`
+4. **Graph state** lives in `/tmp/tb-wg-XXXX/` and is destroyed — native wg uses persistent `.wg/`
 5. **`wg service start`** is never called — the adapter *is* the agent loop
 
 ## 2. Decision: Host-with-Bridge Architecture
@@ -157,7 +157,7 @@ Each trial gets an isolated graph + working directory:
 ```
 /tmp/tb-trials/<run-id>/
 ├── <condition>-<task>-r<replica>/
-│   ├── .workgraph/           # Trial-specific graph
+│   ├── .wg/           # Trial-specific graph
 │   │   ├── graph.jsonl
 │   │   ├── config.toml       # Pre-configured executor + model
 │   │   ├── executors/
@@ -167,7 +167,7 @@ Each trial gets an isolated graph + working directory:
 │   │   └── (task files created here)
 │   └── logs/                  # Trial logs for analysis
 │       ├── agent-output/
-│       └── workgraph_state/   # Copied from .workgraph/ after trial
+│       └── workgraph_state/   # Copied from .wg/ after trial
 ```
 
 This preserves per-trial isolation without Docker containers for the wg layer.
@@ -226,12 +226,12 @@ class WorkgraphAgent(BaseAgent):
 
 ```python
 async def _write_trial_executor_config(trial_dir, model, condition):
-    """Write .workgraph/executors/native.toml for this trial."""
+    """Write .wg/executors/native.toml for this trial."""
     # Configures native executor with BENCHMARK_MODEL
     # Sets exec_mode based on condition (bare/light/full)
 
 async def _write_trial_wg_config(trial_dir, condition):
-    """Write .workgraph/config.toml for this trial."""
+    """Write .wg/config.toml for this trial."""
     # Sets context_scope, model, disable auto_assign for A
     # Configures endpoint for OpenRouter
 
@@ -278,22 +278,22 @@ The native executor (`wg native-exec`) can be configured to exclude wg tools fro
 
 ```
 1. Create temp directory: /tmp/tb-trials/<run-id>/<condition>-<task>-r<replica>/
-2. Initialize: wg init --dir <trial-dir>/.workgraph
-3. Write executor config: <trial-dir>/.workgraph/executors/native.toml
+2. Initialize: wg init --dir <trial-dir>/.wg
+3. Write executor config: <trial-dir>/.wg/executors/native.toml
    - type = "native"
    - model = BENCHMARK_MODEL
    - endpoint/provider for OpenRouter
-4. Write wg config: <trial-dir>/.workgraph/config.toml
+4. Write wg config: <trial-dir>/.wg/config.toml
    - coordinator.model = BENCHMARK_MODEL
    - coordinator.max_agents = 1
    - coordinator.worktree_isolation = false  (trial is already isolated)
    - coordinator.auto_test_discovery = (true for F, false otherwise)
    - coordinator.context_scope = (per condition)
 5. Bootstrap agency (conditions D, E):
-   - wg agency init --dir <trial-dir>/.workgraph
+   - wg agency init --dir <trial-dir>/.wg
    - wg agent create <name> --role <role> --tradeoff <tradeoff>
 6. Create root task:
-   - wg add "<title>" --id <root-task-id> --dir <trial-dir>/.workgraph
+   - wg add "<title>" --id <root-task-id> --dir <trial-dir>/.wg
    - (D, E) wg assign <root-task-id> <agent-name>
    - (F) wg add with --verify
 ```
@@ -302,15 +302,15 @@ The native executor (`wg native-exec`) can be configured to exclude wg tools fro
 
 ```
 1. Start service:
-   wg service start --dir <trial-dir>/.workgraph --max-agents 1
+   wg service start --dir <trial-dir>/.wg --max-agents 1
 
 2. Poll for completion:
    loop every 2s for up to <timeout>:
-     status = wg show <root-task-id> --dir <trial-dir>/.workgraph --json
+     status = wg show <root-task-id> --dir <trial-dir>/.wg --json
      if status in (done, failed, abandoned): break
 
 3. Stop service:
-   wg service stop --dir <trial-dir>/.workgraph
+   wg service stop --dir <trial-dir>/.wg
 ```
 
 ### 6.3 Teardown Phase (in adapter `run()`, after execution)
@@ -330,7 +330,7 @@ The native executor (`wg native-exec`) can be configured to exclude wg tools fro
 3. Write structured trial log (TrialLogger)
 
 4. Archive:
-   shutil.copytree(<trial-dir>/.workgraph, <logs-dir>/workgraph_state)
+   shutil.copytree(<trial-dir>/.wg, <logs-dir>/workgraph_state)
 
 5. Cleanup:
    shutil.rmtree(<trial-dir>)

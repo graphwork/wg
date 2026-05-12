@@ -1,6 +1,6 @@
 # Specification: Agency Bootstrapping & Loop Convergence Fixes
 
-This spec covers two bugs that degrade the out-of-box experience for workgraph's agency and looping systems.
+This spec covers two bugs that degrade the out-of-box experience for wg's agency and looping systems.
 
 ---
 
@@ -42,7 +42,7 @@ if alive_count == 0 && coord.ticks > 0 && coord.agents_spawned == 0 && coord.tas
 For the JSON output (after line 3036), add a `note` field under `agents` when this condition holds.
 
 **Test case:** Add a test `test_status_shows_note_when_tasks_ready_but_no_agents_spawned` that:
-1. Creates a workgraph dir with an agency agent defined
+1. Creates a wg dir with an agency agent defined
 2. Simulates a coordinator state with `ticks > 0`, `agents_spawned == 0`, `tasks_ready > 0`
 3. Asserts the text output contains the "tasks are ready but no agents have been spawned" note
 
@@ -236,7 +236,7 @@ Add to `commands.completion`:
 **Change:** After the dependency context is built (line 117), check if the task has loop edges and append loop metadata:
 
 ```rust
-fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Task) -> String {
+fn build_task_context(graph: &workgraph::graph::WorkGraph, task: &workgraph::graph::Task) -> String {
     let mut context_parts = Vec::new();
 
     // ... existing dependency artifact/log code (lines 92-111) ...

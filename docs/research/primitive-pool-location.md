@@ -2,7 +2,7 @@
 
 ## Summary
 
-The full upstream primitive pool **is already vendored** in the workgraph source tree at `agency/starter.csv` (committed in `64bcf83`). The `wg agency init` code path already auto-imports it. The gap between the hardcoded starter set and the full pool is documented below.
+The full upstream primitive pool **is already vendored** in the wg source tree at `agency/starter.csv` (committed in `64bcf83`). The `wg agency init` code path already auto-imports it. The gap between the hardcoded starter set and the full pool is documented below.
 
 ---
 
@@ -10,7 +10,7 @@ The full upstream primitive pool **is already vendored** in the workgraph source
 
 **File:** `agency/starter.csv` (180 KB, 638 lines including header)
 
-Git-tracked since commit `64bcf83` ("feat: bundle Agency starter.csv into workgraph repo").
+Git-tracked since commit `64bcf83` ("feat: bundle Agency starter.csv into wg repo").
 
 ### Entity counts in the full pool
 

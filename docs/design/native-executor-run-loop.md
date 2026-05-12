@@ -2,7 +2,7 @@
 
 Design + phased implementation plan for restructuring the native executor
 around a **turn-boundary-based run loop** that is shared between two
-surfaces — `wg nex` (interactive TUI) and workgraph-spawned agents
+surfaces — `wg nex` (interactive TUI) and wg-spawned agents
 (headless). Also rewires compaction to be always-on and content-preserving
 rather than emergency-only.
 
@@ -24,7 +24,7 @@ The current native executor fails in three coupled ways:
    turn.
 3. **Nothing is interruptible.** Ctrl-C does not return to a prompt.
    Users cannot correct a thrashing agent without killing the process.
-   There is no inbox, so a workgraph coordinator cannot tell a running
+   There is no inbox, so a wg coordinator cannot tell a running
    agent "stop doing that." This is a *category* of missing capability,
    not a single bug.
 
@@ -59,7 +59,7 @@ downstream capability is a ~dozen-line addition.
           └─────────────┘   └─────────────┘
 ```
 
-The difference between `wg nex` and a workgraph agent is **only** (a)
+The difference between `wg nex` and a wg agent is **only** (a)
 which `Inbox` implementation is plugged in and (b) which `Renderer` is
 plugged in. The loop, the compaction logic, the journal, the
 cancellation model — all identical.
@@ -120,8 +120,8 @@ capability we've discussed fits too.
 | **Single Ctrl-C**                   | Cooperative cancel. In-flight tool finishes; in-flight LLM request is aborted at the network level. Next turn-boundary returns to prompt. |
 | **Double Ctrl-C** (<500ms apart)    | Hard cancel. Tree-kill current subprocesses (bash children, headless Chrome, etc.). In-flight LLM request aborted. Immediate return to prompt. |
 | **`nohup`/`disown`'d children**     | Survive both forms of cancel. Standard Unix semantic — the user explicitly requested that the process outlive its parent. |
-| **workgraph "stop" message**        | Equivalent to single Ctrl-C: cooperative cancel via the inbox. |
-| **workgraph "kill" command**        | Equivalent to double Ctrl-C: hard cancel. |
+| **wg "stop" message**        | Equivalent to single Ctrl-C: cooperative cancel via the inbox. |
+| **wg "kill" command**        | Equivalent to double Ctrl-C: hard cancel. |
 
 Implementation note: a single `CancelToken` with two levels
 (`Cooperative`, `Hard`) fed from multiple sources (signal handler,
@@ -154,9 +154,9 @@ is a separate piece of render state: text typed into the buffer is
 contents are pushed into the inbox queue as `Note` (or `Interrupt`
 when a hotkey modifier is held) and the buffer clears.
 
-### workgraph implementation
+### wg implementation
 
-A file-based inbox at `<workgraph>/inbox/<agent-id>.jsonl`. Writers
+A file-based inbox at `<wg>/inbox/<agent-id>.jsonl`. Writers
 (coordinator, `wg send`, other agents) append one line per message.
 The agent tails the file and `drain()` returns everything appended
 since the last drain. File-based keeps the everything-is-a-file ethos
@@ -174,7 +174,7 @@ for lower latency in latency-critical flows. The trait stays the same.
 │  ← Read 214 lines, 7312 bytes.                                                │
 │                                                                               │
 │  > summarize README.md what does this project do?                             │
-│  ← workgraph is a lightweight task coordination graph for humans and AI…      │
+│  ← wg is a lightweight task coordination graph for humans and AI…      │
 │                                                                               │
 │  [context compacted: 29100 → 14200 tokens via microcompact]                   │
 │                                                                               │
@@ -371,12 +371,12 @@ next turn boundary without cancelling in-flight work.
 multi-line editing, IME, paste. Ship with a simple editor first,
 iterate.
 
-### Stage F: workgraph IPC inbox + `wg send`
+### Stage F: wg IPC inbox + `wg send`
 
 **Goal**: Implement the file-based `AgentInbox` at
-`<workgraph>/inbox/<agent-id>.jsonl`. Add a `wg send <agent-id>
+`<wg>/inbox/<agent-id>.jsonl`. Add a `wg send <agent-id>
 "message" [--interrupt]` CLI that appends to the target agent's
-inbox. workgraph coordinator uses this to cooperatively steer
+inbox. wg coordinator uses this to cooperatively steer
 in-flight agents.
 
 **Verification**: Coordinator dispatches an agent. Before it
@@ -417,11 +417,11 @@ Deliberately out of scope:
 
 ## Related documents
 
-- `docs/design/smooth-integration.pdf` — the broader workgraph
+- `docs/design/smooth-integration.pdf` — the broader wg
   integration story this plan fits into.
 - `docs/design/agent-lifecycle.md` — how agents are spawned, killed,
   reaped. The cancellation model in Stage B must agree with this.
 - `docs/design/coordinator-chat-protocol.md` — the coordinator-agent
-  message format. The workgraph inbox in Stage F must be compatible.
+  message format. The wg inbox in Stage F must be compatible.
 - `docs/design/unified-path-forward.md` — the prior "Gate 1–4"
   readiness plan. This plan supersedes Gate 1 (context management).

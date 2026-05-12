@@ -26,7 +26,7 @@ add, edit, done, fail, abandon, retry, requeue, claim, unclaim, reclaim, log, as
 
 - **`agency`** - "Manage the agency (roles + tradeoffs)" - Missing documentation
 - **`func`** - "Function management: extract, apply, list, show, bootstrap" - Missing documentation  
-- **`peer`** - "Manage peer workgraph instances for cross-repo communication" - Missing documentation
+- **`peer`** - "Manage peer wg instances for cross-repo communication" - Missing documentation
 - **`resource`** - "Manage resources" - Missing documentation (note: `resources` IS documented)
 - **`service`** - "Manage the agent service daemon" - Missing documentation
 - **`trace`** - "Trace commands: execution history, export, import" - Missing documentation
@@ -58,7 +58,7 @@ Comparing CLI help descriptions with COMMANDS.md documentation:
 - **Impact**: High - Function management is a significant feature
 
 ### `peer` Command
-- **CLI Description**: "Manage peer workgraph instances for cross-repo communication"  
+- **CLI Description**: "Manage peer wg instances for cross-repo communication"  
 - **Status**: No documentation in COMMANDS.md
 - **Impact**: Medium - Cross-repo communication functionality
 

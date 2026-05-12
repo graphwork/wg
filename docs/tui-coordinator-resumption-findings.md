@@ -89,13 +89,13 @@ coordinator_agent.rs → supervisor loop
 
 | Storage location | Field/key | What it holds | Scope |
 |---|---|---|---|
-| `.wg/tui-state.json` | `active_coordinator_id` | `u32` coordinator number (e.g. `0`, `1`) | Per-workgraph, TUI focus only |
-| `.wg/tui-state.json` | `right_panel_tab` | Tab name string | Per-workgraph, TUI focus only |
-| `.wg/chat/sessions.json` | `sessions[uuid].aliases[]` | `"coordinator-N"`, `"N"` | Per-workgraph, all executors |
-| `.wg/chat/<uuid>/` | Directory existence | Chat session data dir (inbox, outbox, conversation, lock) | Per-workgraph, native executor |
-| `.wg/chat-history-{N}.jsonl` | TUI chat history | TUI-layer chat messages (not Claude/nex session state) | Per-workgraph, TUI display only |
-| `.wg/graph.jsonl` | `task.session_id` on `.coordinator-{N}` | Claude CLI session UUID (from stream Init event) | Per-workgraph, spawn/resume only |
-| `.wg/service/coordinator-state-{N}.json` | Various coordinator runtime fields | Enabled, paused, model, executor overrides | Per-workgraph, daemon only |
+| `.wg/tui-state.json` | `active_coordinator_id` | `u32` coordinator number (e.g. `0`, `1`) | Per-wg, TUI focus only |
+| `.wg/tui-state.json` | `right_panel_tab` | Tab name string | Per-wg, TUI focus only |
+| `.wg/chat/sessions.json` | `sessions[uuid].aliases[]` | `"coordinator-N"`, `"N"` | Per-wg, all executors |
+| `.wg/chat/<uuid>/` | Directory existence | Chat session data dir (inbox, outbox, conversation, lock) | Per-wg, native executor |
+| `.wg/chat-history-{N}.jsonl` | TUI chat history | TUI-layer chat messages (not Claude/nex session state) | Per-wg, TUI display only |
+| `.wg/graph.jsonl` | `task.session_id` on `.coordinator-{N}` | Claude CLI session UUID (from stream Init event) | Per-wg, spawn/resume only |
+| `.wg/service/coordinator-state-{N}.json` | Various coordinator runtime fields | Enabled, paused, model, executor overrides | Per-wg, daemon only |
 | `~/.claude/projects/<cwd-slug>/*.jsonl` | Claude CLI's own session files | Claude's internal conversation data | Per-project-dir, Claude-global |
 | In-memory `VizApp.coordinator_chats` | `HashMap<u32, ChatState>` | Per-coordinator chat messages, cursor, history | TUI runtime only |
 | In-memory `VizApp.task_panes` | `HashMap<String, PtyPane>` keyed by `.coordinator-{N}` | Live PTY process | TUI runtime only |
@@ -195,12 +195,12 @@ This means even if we could use `--resume <uuid>`, the TUI has no record of whic
 ## 6. Reproduction Recipe
 
 ### Prerequisites
-- A workgraph project with `[coordinator] executor = "claude"` in `.wg/config.toml`
+- A wg project with `[coordinator] executor = "claude"` in `.wg/config.toml`
 - Claude CLI installed and authenticated (`claude` on PATH)
 
 ### Steps
 
-1. **Start the TUI with a fresh workgraph:**
+1. **Start the TUI with a fresh wg:**
    ```bash
    wg init my-test-project && cd my-test-project
    wg config --coordinator-executor claude

@@ -188,7 +188,7 @@ From the bug report's "Acceptance criteria":
 
 The structural fix is high-confidence, but a real Android Firefox
 verification step on the published mirror
-(https://ulivo.poietic.life/wg/feeds/workgraph-itself/) would close
+(https://ulivo.poietic.life/wg/feeds/wg-itself/) would close
 the loop:
 
 1. Open the page on Android Firefox.

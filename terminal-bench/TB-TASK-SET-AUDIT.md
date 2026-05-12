@@ -117,9 +117,9 @@ These runners (`run_qwen3_hard_20_a.py`, etc.) can only run tasks that exist in 
 
 `run_qwen3_hard_20_a.py` was named with "20" tasks planned, but `wg/tasks.py` only has 18. The docstring correctly states: *"The full TB 2.0 catalog has 89 tasks but only 18 have local runner definitions."*
 
-### Step 4: Workgraph task names compound the confusion
+### Step 4: wg task names compound the confusion
 
-The workgraph tasks created to manage these runs (`tb-qwen3-hard-20-g`, `tb-qwen3-local-10-g`) have "20" and "10" in their names, which are different numbers from the actual task counts (18 and 10 respectively). An agent looking at these wg task IDs could easily confuse them with the TB task counts.
+The wg tasks created to manage these runs (`tb-qwen3-hard-20-g`, `tb-qwen3-local-10-g`) have "20" and "10" in their names, which are different numbers from the actual task counts (18 and 10 respectively). An agent looking at these wg task IDs could easily confuse them with the TB task counts.
 
 ### The "18 out of 89" claim is accurate
 
@@ -168,5 +168,5 @@ Keep the current setup but make it clear:
 
 1. **Rename misleading scripts**: `run_qwen3_hard_20_a.py` → `run_qwen3_local_18_a.py` (or keep the name but fix the docstring)
 2. **Add a comment to wg/tasks.py** explaining this is a subset, with a pointer to Harbor for the full 89
-3. **Update workgraph task descriptions** for future TB runs to clearly state whether they target the 18-task local set or the 89-task Harbor set
+3. **Update wg task descriptions** for future TB runs to clearly state whether they target the 18-task local set or the 89-task Harbor set
 4. **For local model evals on all 89**: Create a Harbor config that routes through the local SGLang endpoint (like `local-qwen3-coder-30b-condition-a-config.json` already does — this config correctly references `terminal-bench@2.0` and would run all 89 tasks if executed via `harbor run`)

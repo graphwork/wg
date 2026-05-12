@@ -33,7 +33,7 @@ The pattern is clear: features land with design docs or test specs, but user-fac
 | File | Lines | Covers |
 |------|-------|--------|
 | `docs/AGENCY.md` | ~572 | Agency system: roles, motivations, agents, evolution |
-| `docs/AGENT-GUIDE.md` | ~353 | Operating AI agents with workgraph |
+| `docs/AGENT-GUIDE.md` | ~353 | Operating AI agents with wg |
 | `docs/AGENT-SERVICE.md` | ~327 | Service daemon architecture and lifecycle |
 | `docs/LOGGING.md` | ~175 | Provenance and logging system |
 
@@ -269,7 +269,7 @@ The new phase slots in alongside auto-evaluate. Both create meta-tasks blocked o
 
 ### Doc generation from code
 **Pros:** Single source of truth.
-**Cons:** Only works for reference docs (command help). Conceptual guides, tutorials, and architectural docs can't be generated. Most of workgraph's documentation is explanatory, not reference.
+**Cons:** Only works for reference docs (command help). Conceptual guides, tutorials, and architectural docs can't be generated. Most of wg's documentation is explanatory, not reference.
 **Verdict:** Out of scope. Could complement this system but doesn't replace it.
 
 ## Cost Analysis

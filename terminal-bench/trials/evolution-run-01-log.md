@@ -219,8 +219,8 @@ Key finding from data collection: FLIP does NOT predict verify failure (all pass
 
 ## Files
 
-- Synthesis result: `.workgraph/evolve-runs/run-20260405-051623/synthesis-result.json`
-- Apply results: `.workgraph/evolve-runs/run-20260405-051623/apply-results.json`
-- Evolution report: `.workgraph/evolve-runs/run-20260405-051623/evolution-report.json`
-- Pre-evolution snapshot: `.workgraph/evolve-runs/run-20260405-051623/snapshot-iter-0.json`
-- Analyzer proposals: `.workgraph/evolve-runs/run-20260405-051623/*-proposals.json` (7 files)
+- Synthesis result: `.wg/evolve-runs/run-20260405-051623/synthesis-result.json`
+- Apply results: `.wg/evolve-runs/run-20260405-051623/apply-results.json`
+- Evolution report: `.wg/evolve-runs/run-20260405-051623/evolution-report.json`
+- Pre-evolution snapshot: `.wg/evolve-runs/run-20260405-051623/snapshot-iter-0.json`
+- Analyzer proposals: `.wg/evolve-runs/run-20260405-051623/*-proposals.json` (7 files)
