@@ -42,7 +42,7 @@ fn test_coordinator_id_allocation_skips_archived() {
     graph.add_node(workgraph::graph::Node::Task(coordinator_2));
 
     // Save the graph
-    parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
     // Test the coordinator slot availability function
     // This is a copy of the function from ipc.rs to test it independently
@@ -125,10 +125,10 @@ fn test_coordinator_archiving_sets_correct_state() {
         ..Default::default()
     };
     graph.add_node(workgraph::graph::Node::Task(coordinator));
-    parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
     // Simulate the archive process (from handle_archive_coordinator in ipc.rs)
-    let mut modified_graph = parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+    let mut modified_graph = parser::load_graph(dir.join("graph.jsonl")).unwrap();
     let task = modified_graph.get_task_mut(".coordinator-5").unwrap();
     task.status = Status::Done;
     task.tags.retain(|t| t != "coordinator-loop");
@@ -137,10 +137,10 @@ fn test_coordinator_archiving_sets_correct_state() {
     }
 
     // Save the updated graph
-    parser::save_graph(&modified_graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&modified_graph, dir.join("graph.jsonl")).unwrap();
 
     // Verify the changes
-    let final_graph = parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+    let final_graph = parser::load_graph(dir.join("graph.jsonl")).unwrap();
     let archived_task = final_graph.get_task(".coordinator-5").unwrap();
 
     assert_eq!(
@@ -249,7 +249,7 @@ fn test_archive_then_create_flow() {
         ..Default::default()
     };
     graph.add_node(workgraph::graph::Node::Task(coordinator));
-    parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
     // Test the coordinator slot availability function
     fn is_coordinator_slot_available(graph: &WorkGraph, task_id: &str) -> bool {
@@ -282,7 +282,7 @@ fn test_archive_then_create_flow() {
     assert_eq!(next_id, 1, "With active coordinator-0, next ID should be 1");
 
     // Archive coordinator-0 (simulate handle_archive_coordinator)
-    let mut updated_graph = parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+    let mut updated_graph = parser::load_graph(dir.join("graph.jsonl")).unwrap();
     let task = updated_graph.get_task_mut(".coordinator-0").unwrap();
     task.status = Status::Done;
     task.tags.retain(|t| t != "coordinator-loop");
@@ -295,10 +295,10 @@ fn test_archive_then_create_flow() {
         user: Some("test".to_string()),
         message: "Coordinator archived".to_string(),
     });
-    parser::save_graph(&updated_graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&updated_graph, dir.join("graph.jsonl")).unwrap();
 
     // After archiving, coordinator-0 should still not be available (archived coordinators are skipped)
-    let archived_graph = parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+    let archived_graph = parser::load_graph(dir.join("graph.jsonl")).unwrap();
     let mut next_id_after_archive = 0u32;
     loop {
         let task_id = format!(".coordinator-{}", next_id_after_archive);
@@ -360,7 +360,7 @@ fn test_no_id_reuse_with_gaps() {
     };
     graph.add_node(workgraph::graph::Node::Task(coord_4));
 
-    parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
     fn is_coordinator_slot_available(graph: &WorkGraph, task_id: &str) -> bool {
         match graph.get_task(task_id) {

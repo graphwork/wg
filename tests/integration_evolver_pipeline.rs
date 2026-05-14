@@ -283,7 +283,7 @@ fn test_evolver_e2e_full_pipeline_structure() {
     );
 
     // Load graph and verify all pipeline stages exist
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let partition = graph
         .tasks()
@@ -429,7 +429,7 @@ fn test_evolver_e2e_partition_creates_slice_files() {
         .map(|e| e.path())
         .filter(|p| {
             p.file_name()
-                .map_or(false, |n| n.to_string_lossy().ends_with("-slice.json"))
+                .is_some_and(|n| n.to_string_lossy().ends_with("-slice.json"))
         })
         .collect();
     assert!(
@@ -471,7 +471,7 @@ fn test_evolver_e2e_autopoietic_cycle_structure() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let partition = graph
         .tasks()
@@ -554,7 +554,7 @@ fn test_evolver_e2e_non_autopoietic_no_cycle() {
 
     wg_ok(&wg_dir, &["evolve", "run", "--force-fanout"]);
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let evaluate = graph
         .tasks()
@@ -614,7 +614,7 @@ fn test_evolver_e2e_convergence_detection_stable_scores() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let evaluate = graph
         .tasks()
@@ -673,7 +673,7 @@ fn test_evolver_e2e_partial_failure_graph_structure() {
 
     wg_ok(&wg_dir, &["evolve", "run", "--force-fanout"]);
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let analyzers: Vec<&Task> = graph
         .tasks()
@@ -752,7 +752,7 @@ fn test_evolver_e2e_dry_run_no_side_effects() {
     );
 
     // Graph should be empty
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(
         graph.tasks().count(),
         0,
@@ -774,7 +774,7 @@ fn test_evolver_e2e_default_cycle_parameters() {
     // Autopoietic without explicit max-iterations or cycle-delay → defaults
     wg_ok(&wg_dir, &["evolve", "run", "--autopoietic"]);
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let evaluate = graph
         .tasks()
@@ -806,7 +806,7 @@ fn test_evolver_e2e_analyzer_model_tiers() {
 
     wg_ok(&wg_dir, &["evolve", "run", "--force-fanout"]);
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     // Check that analyzers have model assignments
     let analyzers: Vec<&Task> = graph
@@ -972,7 +972,7 @@ fn test_evolver_e2e_specific_strategy() {
         &["evolve", "run", "--force-fanout", "--strategy", "mutation"],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let analyzers: Vec<&Task> = graph
         .tasks()
@@ -1042,7 +1042,7 @@ fn test_evolver_fanout_codex_route_emits_codex_models() {
 
     wg_ok(&wg_dir, &["evolve", "run", "--force-fanout"]);
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let evolve_tasks: Vec<&Task> = graph
         .tasks()
@@ -1131,7 +1131,7 @@ fn test_evolver_fanout_cli_model_override_wins() {
         &["evolve", "run", "--force-fanout", "--model", override_model],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     let evolve_tasks: Vec<&Task> = graph
         .tasks()

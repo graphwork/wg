@@ -118,7 +118,7 @@ fn strip_comments_and_strings(src: &str) -> String {
     out
 }
 
-fn relpath(src_root: &Path, file: &Path) -> String {
+fn relpath(_src_root: &Path, file: &Path) -> String {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rel = file.strip_prefix(&manifest).unwrap_or(file);
     rel.to_string_lossy().replace('\\', "/")

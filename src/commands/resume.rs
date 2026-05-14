@@ -1269,7 +1269,7 @@ mod tests {
     fn test_topo_sort_subset_orders_deps_before_dependents() {
         // Direct unit test on the helper: deps come strictly before
         // dependents in the result order.
-        let mut a = make_task("a", "A", Status::Open);
+        let a = make_task("a", "A", Status::Open);
         let mut b = make_task("b", "B", Status::Open);
         b.after = vec!["a".to_string()];
         let mut c = make_task("c", "C", Status::Open);
@@ -1278,7 +1278,6 @@ mod tests {
         for t in [a.clone(), b.clone(), c.clone()] {
             graph.add_node(workgraph::graph::Node::Task(t));
         }
-        let _ = (a, b, c); // silence unused-mut lints from clones above
         let sorted = topo_sort_subset(&graph, &["c".to_string(), "b".to_string(), "a".to_string()]);
         assert_eq!(
             sorted,
@@ -1288,10 +1287,10 @@ mod tests {
 
     #[test]
     fn test_discover_wcc_isolates_components() {
-        let mut a = make_task("a", "A", Status::Open);
+        let a = make_task("a", "A", Status::Open);
         let mut b = make_task("b", "B", Status::Open);
         b.after = vec!["a".to_string()];
-        let mut x = make_task("x", "X", Status::Open);
+        let x = make_task("x", "X", Status::Open);
         let mut y = make_task("y", "Y", Status::Open);
         y.after = vec!["x".to_string()];
         let mut graph = WorkGraph::new();

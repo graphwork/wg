@@ -1752,7 +1752,7 @@ mod tests {
 
     #[test]
     fn spawn_echo_and_read_output() {
-        let mut pane =
+        let pane =
             PtyPane::spawn("/bin/echo", &["hello from pty"], &[], 5, 40).expect("spawn echo");
         for _ in 0..40 {
             std::thread::sleep(std::time::Duration::from_millis(50));

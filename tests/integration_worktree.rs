@@ -84,7 +84,7 @@ fn create_test_worktree(project_root: &Path, agent_id: &str) -> std::path::PathB
     let worktree_dir = project_root.join(".wg-worktrees").join(agent_id);
     let branch = format!("wg/{}/test-task", agent_id);
 
-    std::fs::create_dir_all(&worktree_dir.parent().unwrap())
+    std::fs::create_dir_all(worktree_dir.parent().unwrap())
         .expect("Failed to create worktrees dir");
 
     let output = Command::new("git")
@@ -347,7 +347,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
         status: Status::Done,
         ..Task::default()
     }));
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+    workgraph::parser::save_graph(&graph, wg_dir.join("graph.jsonl"))
         .expect("Failed to write graph");
 
     // Merge the branch into main so retention is satisfied
@@ -415,7 +415,7 @@ fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
         status: Status::Failed,
         ..Task::default()
     }));
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+    workgraph::parser::save_graph(&graph, wg_dir.join("graph.jsonl"))
         .expect("Failed to write graph");
 
     let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");

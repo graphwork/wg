@@ -308,7 +308,7 @@ mod tests {
         };
 
         let now = Utc::now();
-        assert_eq!(is_cron_due(&task, now), false);
+        assert!(!is_cron_due(&task, now));
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         };
 
         let now = Utc::now();
-        assert_eq!(is_cron_due(&task, now), false);
+        assert!(!is_cron_due(&task, now));
     }
 
     #[test]
@@ -334,7 +334,7 @@ mod tests {
         };
 
         let now = Utc::now();
-        assert_eq!(is_cron_due(&task, now), false);
+        assert!(!is_cron_due(&task, now));
     }
 
     #[test]
@@ -350,11 +350,11 @@ mod tests {
 
         // Test at 2 AM - should be due
         let now = Utc.with_ymd_and_hms(2024, 1, 1, 2, 0, 0).unwrap();
-        assert_eq!(is_cron_due(&task, now), true);
+        assert!(is_cron_due(&task, now));
 
         // Test at 3 AM - should not be due
         let now = Utc.with_ymd_and_hms(2024, 1, 1, 3, 0, 0).unwrap();
-        assert_eq!(is_cron_due(&task, now), false);
+        assert!(!is_cron_due(&task, now));
     }
 
     #[test]
@@ -372,15 +372,15 @@ mod tests {
 
         // Test at 1 AM next day - should not be due yet
         let now = Utc.with_ymd_and_hms(2024, 1, 2, 1, 0, 0).unwrap();
-        assert_eq!(is_cron_due(&task, now), false);
+        assert!(!is_cron_due(&task, now));
 
         // Test at 2 AM next day - should be due
         let now = Utc.with_ymd_and_hms(2024, 1, 2, 2, 0, 0).unwrap();
-        assert_eq!(is_cron_due(&task, now), true);
+        assert!(is_cron_due(&task, now));
 
         // Test at 3 AM next day - should be due (missed the 2 AM window)
         let now = Utc.with_ymd_and_hms(2024, 1, 2, 3, 0, 0).unwrap();
-        assert_eq!(is_cron_due(&task, now), true);
+        assert!(is_cron_due(&task, now));
     }
 
     #[test]

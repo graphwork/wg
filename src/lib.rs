@@ -282,13 +282,11 @@ mod tests {
             assert_eq!(current_user(), "unknown");
 
             // Restore
-            match orig_wg {
-                Some(v) => std::env::set_var("WG_USER", v),
-                None => {}
+            if let Some(v) = orig_wg {
+                std::env::set_var("WG_USER", v)
             }
-            match orig_user {
-                Some(v) => std::env::set_var("USER", v),
-                None => {}
+            if let Some(v) = orig_user {
+                std::env::set_var("USER", v)
             }
         }
     }

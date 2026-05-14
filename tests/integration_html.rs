@@ -1158,11 +1158,11 @@ fn read_rendered_html(out_dir: &Path) -> String {
     if let Ok(rd) = fs::read_dir(out_dir.join("tasks")) {
         for entry in rd.flatten() {
             let p = entry.path();
-            if p.extension().map(|e| e == "html").unwrap_or(false) {
-                if let Ok(s) = fs::read_to_string(&p) {
-                    buf.push_str(&s);
-                    buf.push('\n');
-                }
+            if p.extension().map(|e| e == "html").unwrap_or(false)
+                && let Ok(s) = fs::read_to_string(&p)
+            {
+                buf.push_str(&s);
+                buf.push('\n');
             }
         }
     }

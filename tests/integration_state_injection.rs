@@ -185,7 +185,7 @@ async fn test_message_injection_appears_in_api_request() {
 
     // Check that the first API call contained the injected message
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 1, "Expected at least 1 API call");
+    assert!(!calls.is_empty(), "Expected at least 1 API call");
 
     // The first call should contain the message injection
     let first_call = &calls[0];
@@ -258,7 +258,7 @@ async fn test_graph_change_injection_appears_in_api_request() {
 
     // The first API call should contain the graph change injection
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 1);
+    assert!(!calls.is_empty());
 
     let first_call = &calls[0];
     assert!(
@@ -484,7 +484,7 @@ async fn test_context_pressure_injection_in_api_request() {
     // graph changes are tested in other integration tests. This test confirms
     // the agent loop correctly passes through the injection when present.
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 1, "Expected at least 1 API call");
+    assert!(!calls.is_empty(), "Expected at least 1 API call");
 
     // Verify no crash and basic agent loop execution with state injection enabled
     // even when there's nothing to inject
@@ -629,7 +629,7 @@ async fn test_combined_injection_in_api_request() {
     agent.run("Do the task.").await.unwrap();
 
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 1);
+    assert!(!calls.is_empty());
 
     let first_call = &calls[0];
 

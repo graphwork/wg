@@ -229,13 +229,12 @@ impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
         stop_daemon_env(self.wg_dir, &self.env_refs());
         let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                }
+        if let Ok(content) = fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(pid) = state["pid"].as_u64()
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }
@@ -1550,8 +1549,7 @@ fn native_coordinator_task_dispatch_with_shell_executor() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let config = format!(
-        r#"[coordinator]
+    let config = r#"[coordinator]
 coordinator_agent = true
 executor = "native"
 model = "openrouter:deepseek/deepseek-chat"
@@ -1564,7 +1562,7 @@ provider = "openai"
 auto_assign = false
 auto_evaluate = false
 "#
-    );
+    .to_string();
     fs::write(wg_dir.join("config.toml"), &config).unwrap();
 
     // Set up a shell executor for task agents
@@ -1622,15 +1620,14 @@ PATH = "{}"
         if let Ok(content) = fs::read_to_string(&state_path)
             && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
             && let Some(socket_path) = state["socket_path"].as_str()
+            && let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path)
         {
-            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
-                let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
-                let _ = stream.flush();
-                let mut reader = BufReader::new(&stream);
-                let mut response = String::new();
-                if reader.read_line(&mut response).is_ok() && !response.is_empty() {
-                    return true;
-                }
+            let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
+            let _ = stream.flush();
+            let mut reader = BufReader::new(&stream);
+            let mut response = String::new();
+            if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+                return true;
             }
         }
         false

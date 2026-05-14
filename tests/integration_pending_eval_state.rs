@@ -197,7 +197,7 @@ fn test_dep_unblocks_after_eval_pass() {
 
     // Promote PendingEval → Done in the graph (simulating the dispatcher
     // phase 2.46 resolution path).
-    workgraph::parser::modify_graph(&wg_dir.join("graph.jsonl"), |g| {
+    workgraph::parser::modify_graph(wg_dir.join("graph.jsonl"), |g| {
         // Reuse the same logic the dispatcher runs by calling its public test
         // hook via direct status flip — the function is private so we model
         // the post-resolution graph state directly.

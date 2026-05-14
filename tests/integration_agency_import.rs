@@ -333,30 +333,30 @@ fn test_imported_yaml_has_correct_fields() {
 
         // Required fields: name, description, category, lineage
         assert!(
-            map.contains_key(&serde_yaml::Value::String("name".to_string())),
+            map.contains_key(serde_yaml::Value::String("name".to_string())),
             "Component YAML should have 'name' field. File: {:?}\nContent:\n{}",
             entry.path(),
             content
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("description".to_string())),
+            map.contains_key(serde_yaml::Value::String("description".to_string())),
             "Component YAML should have 'description' field. File: {:?}",
             entry.path()
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("category".to_string())),
+            map.contains_key(serde_yaml::Value::String("category".to_string())),
             "Component YAML should have 'category' field. File: {:?}",
             entry.path()
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("lineage".to_string())),
+            map.contains_key(serde_yaml::Value::String("lineage".to_string())),
             "Component YAML should have 'lineage' field. File: {:?}",
             entry.path()
         );
 
         // Verify category is "translated" (all fixture skills are)
         let category = map
-            .get(&serde_yaml::Value::String("category".to_string()))
+            .get(serde_yaml::Value::String("category".to_string()))
             .unwrap();
         assert_eq!(
             category.as_str().unwrap(),
@@ -380,25 +380,25 @@ fn test_imported_yaml_has_correct_fields() {
         let map = yaml.as_mapping().expect("YAML should be a mapping");
 
         assert!(
-            map.contains_key(&serde_yaml::Value::String("name".to_string())),
+            map.contains_key(serde_yaml::Value::String("name".to_string())),
             "Outcome YAML should have 'name' field"
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("description".to_string())),
+            map.contains_key(serde_yaml::Value::String("description".to_string())),
             "Outcome YAML should have 'description' field"
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("lineage".to_string())),
+            map.contains_key(serde_yaml::Value::String("lineage".to_string())),
             "Outcome YAML should have 'lineage' field"
         );
 
         // Verify lineage has created_by field
         let lineage = map
-            .get(&serde_yaml::Value::String("lineage".to_string()))
+            .get(serde_yaml::Value::String("lineage".to_string()))
             .unwrap();
         let lineage_map = lineage.as_mapping().expect("lineage should be a mapping");
         assert!(
-            lineage_map.contains_key(&serde_yaml::Value::String("created_by".to_string())),
+            lineage_map.contains_key(serde_yaml::Value::String("created_by".to_string())),
             "Lineage should have 'created_by' field"
         );
     }
@@ -418,15 +418,15 @@ fn test_imported_yaml_has_correct_fields() {
         let map = yaml.as_mapping().expect("YAML should be a mapping");
 
         assert!(
-            map.contains_key(&serde_yaml::Value::String("name".to_string())),
+            map.contains_key(serde_yaml::Value::String("name".to_string())),
             "Tradeoff YAML should have 'name' field"
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("description".to_string())),
+            map.contains_key(serde_yaml::Value::String("description".to_string())),
             "Tradeoff YAML should have 'description' field"
         );
         assert!(
-            map.contains_key(&serde_yaml::Value::String("lineage".to_string())),
+            map.contains_key(serde_yaml::Value::String("lineage".to_string())),
             "Tradeoff YAML should have 'lineage' field"
         );
     }
@@ -476,7 +476,7 @@ fn test_custom_provenance_tag() {
                 let map = yaml.as_mapping().unwrap();
 
                 let access = map
-                    .get(&serde_yaml::Value::String("access_control".to_string()))
+                    .get(serde_yaml::Value::String("access_control".to_string()))
                     .unwrap_or_else(|| {
                         panic!(
                             "Missing access_control in {:?}\nContent:\n{}",
@@ -487,7 +487,7 @@ fn test_custom_provenance_tag() {
                 let owner = access
                     .as_mapping()
                     .unwrap()
-                    .get(&serde_yaml::Value::String("owner".to_string()))
+                    .get(serde_yaml::Value::String("owner".to_string()))
                     .unwrap_or_else(|| {
                         panic!(
                             "Missing access_control.owner in {:?}\nContent:\n{}",
@@ -506,12 +506,12 @@ fn test_custom_provenance_tag() {
                 // Custom provenance remains on access_control.owner; lineage.created_by
                 // is constrained to the agency v1.2.4 enum domain.
                 let lineage = map
-                    .get(&serde_yaml::Value::String("lineage".to_string()))
+                    .get(serde_yaml::Value::String("lineage".to_string()))
                     .unwrap();
                 let created_by = lineage
                     .as_mapping()
                     .unwrap()
-                    .get(&serde_yaml::Value::String("created_by".to_string()))
+                    .get(serde_yaml::Value::String("created_by".to_string()))
                     .unwrap();
                 assert_eq!(created_by.as_str().unwrap(), "import");
 

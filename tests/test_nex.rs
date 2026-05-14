@@ -660,16 +660,15 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
                         .content
                         .iter()
                         .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
-                if let Some(prev) = prev_role {
-                    if prev == workgraph::executor::native::client::Role::User
-                        && msg.role == workgraph::executor::native::client::Role::User
-                        && !is_tool_result
-                    {
-                        return Err(anyhow::anyhow!(
-                            "Invalid: consecutive text-only user messages at call {}",
-                            count
-                        ));
-                    }
+                if let Some(prev) = prev_role
+                    && prev == workgraph::executor::native::client::Role::User
+                    && msg.role == workgraph::executor::native::client::Role::User
+                    && !is_tool_result
+                {
+                    return Err(anyhow::anyhow!(
+                        "Invalid: consecutive text-only user messages at call {}",
+                        count
+                    ));
                 }
                 prev_role = Some(msg.role);
             }
@@ -841,15 +840,14 @@ fn start_recording_oai_stub(num_requests: usize) -> (String, Arc<std::sync::Mute
                     Ok(0) => break,
                     Ok(n) => {
                         buf.extend_from_slice(&tmp[..n]);
-                        if header_end.is_none() {
-                            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                                header_end = Some(idx + 4);
-                                let header_str =
-                                    String::from_utf8_lossy(&buf[..idx]).to_lowercase();
-                                for line in header_str.lines() {
-                                    if let Some(rest) = line.strip_prefix("content-length:") {
-                                        content_length = rest.trim().parse().ok();
-                                    }
+                        if header_end.is_none()
+                            && let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                        {
+                            header_end = Some(idx + 4);
+                            let header_str = String::from_utf8_lossy(&buf[..idx]).to_lowercase();
+                            for line in header_str.lines() {
+                                if let Some(rest) = line.strip_prefix("content-length:") {
+                                    content_length = rest.trim().parse().ok();
                                 }
                             }
                         }

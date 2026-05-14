@@ -582,7 +582,7 @@ fn test_recovery_verification_multiple_branches() {
     );
 
     // Verify branch names are distinct and don't conflict
-    let all_branches = vec![alpha_branch, beta_branch, gamma_branch];
+    let all_branches = [alpha_branch, beta_branch, gamma_branch];
     let unique_branches: std::collections::HashSet<_> = all_branches.iter().collect();
     assert_eq!(
         unique_branches.len(),

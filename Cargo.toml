@@ -11,6 +11,60 @@ homepage = "https://github.com/graphwork/wg"
 name = "wg"
 path = "src/main.rs"
 
+# Project-wide lint policy. Applies to lib, bin, and integration tests (so the
+# crate-local `#![allow(...)]` blocks in lib.rs / main.rs don't have to be
+# duplicated into every tests/*.rs).
+#
+# Most of these were added when CI's toolchain (`dtolnay/rust-toolchain@stable`)
+# rolled from 1.93 to 1.95 and a fresh batch of lints fired against existing
+# code. Where the lint is style-preference rather than a correctness issue, we
+# allow crate-wide rather than churn every site. Genuinely incorrect code
+# (overly_complex_bool_expr) is left at its default `deny` and fixed instead.
+[lints.rust]
+dead_code = "allow"
+unused_assignments = "allow"
+
+[lints.clippy]
+# Carried over from the lib.rs/main.rs blocks (1.93-era lint additions).
+while_let_loop = "allow"
+manual_div_ceil = "allow"
+manual_checked_ops = "allow"
+useless_conversion = "allow"
+unnecessary_sort_by = "allow"
+collapsible_match = "allow"
+collapsible_if = "allow"
+collapsible_else_if = "allow"
+# Added for 1.95.
+doc_lazy_continuation = "allow"
+doc_overindented_list_items = "allow"
+empty_line_after_doc_comments = "allow"
+field_reassign_with_default = "allow"
+too_many_arguments = "allow"
+if_same_then_else = "allow"
+large_enum_variant = "allow"
+enum_variant_names = "allow"
+type_complexity = "allow"
+# More 1.95-era style preferences (high-volume noise; not correctness issues).
+needless_borrows_for_generic_args = "allow"
+vec_init_then_push = "allow"
+useless_format = "allow"
+useless_vec = "allow"
+clone_on_copy = "allow"
+nonminimal_bool = "allow"
+iter_cloned_collect = "allow"
+manual_range_contains = "allow"
+manual_str_repeat = "allow"
+manual_repeat_n = "allow"
+cloned_ref_to_slice_refs = "allow"
+let_unit_value = "allow"
+needless_return = "allow"
+assertions_on_constants = "allow"
+absurd_extreme_comparisons = "allow"
+module_inception = "allow"
+items_after_test_module = "allow"
+unnecessary_filter_map = "allow"
+unnecessary_get_then_check = "allow"
+
 [features]
 default = ["matrix-lite"]
 matrix = ["dep:matrix-sdk"]

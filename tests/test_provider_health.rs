@@ -372,8 +372,8 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     );
 
     // Step 5: Test state persistence
-    provider_health.save(&temp_dir.path())?;
-    let loaded_health = ProviderHealth::load(&temp_dir.path())?;
+    provider_health.save(temp_dir.path())?;
+    let loaded_health = ProviderHealth::load(temp_dir.path())?;
 
     // Verify persistence worked correctly
     assert!(loaded_health.service_paused);
@@ -388,7 +388,7 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     assert!(loaded_provider.last_error.is_some());
 
     // Step 6: Test resume functionality
-    let mut resume_health = ProviderHealth::load(&temp_dir.path())?;
+    let mut resume_health = ProviderHealth::load(temp_dir.path())?;
     let was_paused = resume_health.service_paused;
 
     // Apply resume logic
@@ -407,8 +407,8 @@ fn test_provider_health_end_to_end_integration() -> Result<()> {
     assert_eq!(resumed_provider.consecutive_failures, 0); // Reset on resume
 
     // Test resume persistence
-    resume_health.save(&temp_dir.path())?;
-    let final_health = ProviderHealth::load(&temp_dir.path())?;
+    resume_health.save(temp_dir.path())?;
+    let final_health = ProviderHealth::load(temp_dir.path())?;
     assert!(!final_health.service_paused);
     assert!(final_health.pause_reason.is_none());
 

@@ -424,7 +424,7 @@ fn why_blocked_labels_phantom_deps() {
 
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let output = wg_cmd(&wg_dir, &["why-blocked", "my-task"]);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -445,7 +445,7 @@ fn why_blocked_json_includes_phantom_field() {
 
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let output = wg_cmd(&wg_dir, &["--json", "why-blocked", "my-task"]);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -470,7 +470,7 @@ fn check_reports_phantom_edges() {
 
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     let (stdout, stderr) = wg_fail(&wg_dir, &["check"]);
     let combined = format!("{}{}", stdout, stderr);

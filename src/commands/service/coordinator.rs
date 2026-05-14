@@ -3916,7 +3916,7 @@ fn record_spawn_failure(
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &workgraph::graph::WorkGraph,
-    executor: &str,
+    _executor: &str,
     config: &Config,
     default_model: Option<&str>,
     slots_available: usize,

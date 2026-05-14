@@ -2656,6 +2656,19 @@ fn render_chat_hidden_notice(visibility: &str) -> String {
     )
 }
 
+#[cfg(test)]
+impl std::fmt::Debug for ChatRender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChatRender::None => write!(f, "ChatRender::None"),
+            ChatRender::Render(r) => write!(f, "ChatRender::Render({r:?})"),
+            ChatRender::HiddenByVisibility(v) => {
+                write!(f, "ChatRender::HiddenByVisibility({v:?})")
+            }
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
@@ -3346,18 +3359,5 @@ mod tests {
             inline.contains("has-unread-msg"),
             "expected unread class for fresh user message: {inline}"
         );
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for ChatRender {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChatRender::None => write!(f, "ChatRender::None"),
-            ChatRender::Render(r) => write!(f, "ChatRender::Render({r:?})"),
-            ChatRender::HiddenByVisibility(v) => {
-                write!(f, "ChatRender::HiddenByVisibility({v:?})")
-            }
-        }
     }
 }

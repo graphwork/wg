@@ -6422,7 +6422,7 @@ fn test_shell_checker_cycle_logs_preserved() {
     // Logs should be preserved (append-only, not cleared)
     let shell = graph.get_task("run-batch").unwrap();
     assert!(
-        shell.log.len() >= 1,
+        !shell.log.is_empty(),
         "Shell task logs should be preserved across reset"
     );
     assert!(
@@ -6432,7 +6432,7 @@ fn test_shell_checker_cycle_logs_preserved() {
 
     let check = graph.get_task("check-batch").unwrap();
     assert!(
-        check.log.len() >= 1,
+        !check.log.is_empty(),
         "Checker logs should be preserved across reset"
     );
     assert!(
@@ -6498,7 +6498,7 @@ fn test_cli_add_with_exec_flag() {
         output
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph
         .get_task("run-batch-script")
         .expect("Task should exist");
@@ -6534,7 +6534,7 @@ fn test_cli_add_with_exec_and_timeout() {
         ],
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("long-render").expect("Task should exist");
     assert_eq!(task.exec.as_deref(), Some("render.sh"));
     assert_eq!(task.timeout.as_deref(), Some("6h"));

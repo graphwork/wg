@@ -195,13 +195,13 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
 
     // Initialize a WG project
     std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
     // Create a task with verify timeout using CLI
     let output = std::process::Command::new("wg")
-        .args(&[
+        .args([
             "add",
             "Test CLI verify timeout",
             "--verify-timeout",
@@ -248,13 +248,13 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
 
     // Initialize WG
     std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
     // Add task with verify timeout
     std::process::Command::new("wg")
-        .args(&["add", "Serialization test", "--verify-timeout", "999s"])
+        .args(["add", "Serialization test", "--verify-timeout", "999s"])
         .current_dir(project_root)
         .output()?;
 
@@ -278,7 +278,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
     let project_root = temp_dir.path();
 
     std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -289,7 +289,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
         let title = format!("Test timeout {}", timeout);
 
         let output = std::process::Command::new("wg")
-            .args(&["add", &title, "--verify-timeout", timeout])
+            .args(["add", &title, "--verify-timeout", timeout])
             .current_dir(project_root)
             .output()?;
 
@@ -349,13 +349,13 @@ fn test_legacy_verify_flag_is_rejected() -> Result<()> {
     // lives in the task description under a ## Validation section.
     let temp_dir = TempDir::new()?;
     std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(temp_dir.path())
         .output()?;
 
     // Legacy commands should still work
     let output = std::process::Command::new("wg")
-        .args(&["add", "Legacy test", "--verify", "cargo test"])
+        .args(["add", "Legacy test", "--verify", "cargo test"])
         .current_dir(temp_dir.path())
         .output()?;
 

@@ -93,8 +93,7 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     );
 
     // Create config with crash detection settings
-    let config_content = format!(
-        "[agent]
+    let config_content = "[agent]
 reaper_grace_seconds = 1
 heartbeat_timeout = 3
 
@@ -106,7 +105,7 @@ poll_interval = 1
 auto_assign = false
 auto_evaluate = false
 "
-    );
+    .to_string();
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 
     let executors_dir = wg_dir.join("executors");
@@ -198,15 +197,14 @@ fn wait_for_service_ready(wg_dir: &Path, timeout: Duration) -> bool {
         if let Ok(content) = fs::read_to_string(&state_path)
             && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
             && let Some(socket_path) = state["socket_path"].as_str()
+            && let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path)
         {
-            if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
-                let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
-                let _ = stream.flush();
-                let mut reader = BufReader::new(&stream);
-                let mut response = String::new();
-                if reader.read_line(&mut response).is_ok() && !response.is_empty() {
-                    return true;
-                }
+            let _ = writeln!(stream, r#"{{"cmd":"status"}}"#);
+            let _ = stream.flush();
+            let mut reader = BufReader::new(&stream);
+            let mut response = String::new();
+            if reader.read_line(&mut response).is_ok() && !response.is_empty() {
+                return true;
             }
         }
         false
@@ -243,13 +241,12 @@ impl Drop for ServiceGuard<'_> {
 
         // Belt-and-suspenders: read PID from state.json and kill directly
         let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                }
+        if let Ok(content) = fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(pid) = state["pid"].as_u64()
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }
@@ -706,19 +703,18 @@ fn test_crash_scenarios_multiple_agent_crash() {
 
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(500));
-        if let Some(registry) = read_registry(&wg_dir) {
-            if let Some(agents) = registry["agents"].as_object() {
-                for agent in agents.values() {
-                    if let Some(task_id) = agent["task_id"].as_str() {
-                        if task_ids.contains(&task_id) && agent["status"].as_str() != Some("dead") {
-                            if let Some(pid) = agent["pid"].as_u64() {
-                                if let Some(id) = agent["id"].as_str() {
-                                    agent_pids.push(pid as i32);
-                                    agent_ids.push(id.to_string());
-                                }
-                            }
-                        }
-                    }
+        if let Some(registry) = read_registry(&wg_dir)
+            && let Some(agents) = registry["agents"].as_object()
+        {
+            for agent in agents.values() {
+                if let Some(task_id) = agent["task_id"].as_str()
+                    && task_ids.contains(&task_id)
+                    && agent["status"].as_str() != Some("dead")
+                    && let Some(pid) = agent["pid"].as_u64()
+                    && let Some(id) = agent["id"].as_str()
+                {
+                    agent_pids.push(pid as i32);
+                    agent_ids.push(id.to_string());
                 }
             }
         }
@@ -884,16 +880,16 @@ working_dir = "/nonexistent/directory"
         );
 
         // Registry should not have stuck "in-progress" agents for this task
-        if let Some(registry) = read_registry(&wg_dir) {
-            if let Some(agents) = registry["agents"].as_object() {
-                for agent in agents.values() {
-                    if agent["task_id"].as_str() == Some("spawn-fail-task") {
-                        let status = agent["status"].as_str().unwrap_or("");
-                        assert_ne!(
-                            status, "alive",
-                            "Should not have alive agent for failed spawn task"
-                        );
-                    }
+        if let Some(registry) = read_registry(&wg_dir)
+            && let Some(agents) = registry["agents"].as_object()
+        {
+            for agent in agents.values() {
+                if agent["task_id"].as_str() == Some("spawn-fail-task") {
+                    let status = agent["status"].as_str().unwrap_or("");
+                    assert_ne!(
+                        status, "alive",
+                        "Should not have alive agent for failed spawn task"
+                    );
                 }
             }
         }

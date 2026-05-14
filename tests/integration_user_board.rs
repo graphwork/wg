@@ -52,7 +52,7 @@ fn setup_wg_dir() -> TempDir {
 }
 
 fn graph_at(dir: &Path) -> WorkGraph {
-    load_graph(&dir.join("graph.jsonl")).unwrap()
+    load_graph(dir.join("graph.jsonl")).unwrap()
 }
 
 // ---------------------------------------------------------------------------

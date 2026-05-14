@@ -43,8 +43,8 @@ pub fn run_with_route(
     // 0. If `--executor` was supplied, emit a single deprecation line and
     //    keep going. We never refuse the flag: existing scripts / tests
     //    must keep working for one release.
-    if executor.is_some() {
-        emit_executor_deprecation_warning(executor.unwrap());
+    if let Some(executor) = executor {
+        emit_executor_deprecation_warning(executor);
     }
 
     // 1. If only `-m` is given (no `-x`, no `--route`), derive the route
@@ -490,17 +490,13 @@ pub fn run(
         println!("No global config found. Run `wg setup` to configure defaults.");
     }
 
-    // Check skill/bundle status for the chosen executor.
-    match executor {
-        "claude" => {
-            if !super::setup::is_claude_skill_installed() {
-                println!();
-                println!("Hint: The wg skill for Claude Code is not installed.");
-                println!("  Spawned agents won't know wg commands without it.");
-                println!("  Run: wg skill install");
-            }
-        }
-        _ => {} // Custom executor — user knows what they're doing
+    // Check skill/bundle status for the chosen executor. Custom executors
+    // skip this hint — the user knows what they're doing.
+    if executor == "claude" && !super::setup::is_claude_skill_installed() {
+        println!();
+        println!("Hint: The wg skill for Claude Code is not installed.");
+        println!("  Spawned agents won't know wg commands without it.");
+        println!("  Run: wg skill install");
     }
 
     // Configure project-level agent guides for Claude Code / Claude CLI and Codex.

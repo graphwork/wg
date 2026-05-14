@@ -189,7 +189,7 @@ fn test_accidental_cycle_auto_recovery() {
     assert_eq!(cycle.members.len(), 3, "Cycle should have 3 members");
 
     // Verify all tasks are in the cycle
-    let cycle_members: HashSet<String> = cycle.members.iter().map(|m| m.clone()).collect();
+    let cycle_members: HashSet<String> = cycle.members.iter().cloned().collect();
     assert!(cycle_members.contains("a"));
     assert!(cycle_members.contains("b"));
     assert!(cycle_members.contains("c"));

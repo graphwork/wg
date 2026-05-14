@@ -372,13 +372,12 @@ impl Drop for CoordinatorDaemonGuard<'_> {
 
         // Belt-and-suspenders: kill daemon by PID directly
         let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = std::fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                }
+        if let Ok(content) = std::fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(pid) = state["pid"].as_u64()
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }
@@ -509,7 +508,7 @@ fn coordinator_agent_cursor_tracking() {
     guard.chat_ok("cursor test one", 15);
     let responses1 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert!(
-        responses1.len() >= 1,
+        !responses1.is_empty(),
         "Coordinator should write at least one response after first message, got {}",
         responses1.len()
     );
@@ -768,13 +767,12 @@ impl Drop for RealDaemonGuard<'_> {
     fn drop(&mut self) {
         stop_daemon(self.wg_dir);
         let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = std::fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                }
+        if let Ok(content) = std::fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(pid) = state["pid"].as_u64()
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }

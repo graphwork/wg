@@ -219,7 +219,7 @@ fn test_retry_after_failure_with_eval_task() {
             ..Task::default()
         };
         g.add_node(Node::Task(eval));
-        save_graph(&g, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&g, wg_dir.join("graph.jsonl")).unwrap();
     }
 
     // Fail the task
@@ -432,7 +432,7 @@ fn test_no_zombie_accumulation_across_multiple_abandons() {
         };
         g.add_node(Node::Task(eval));
         g.add_node(Node::Task(verify));
-        save_graph(&g, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&g, wg_dir.join("graph.jsonl")).unwrap();
     }
 
     // Abandon all 3
@@ -516,7 +516,7 @@ fn test_full_lifecycle_abandon_supersede_cascade() {
         };
         g.add_node(Node::Task(eval));
         g.add_node(Node::Task(verify));
-        save_graph(&g, &wg_dir.join("graph.jsonl")).unwrap();
+        save_graph(&g, wg_dir.join("graph.jsonl")).unwrap();
     }
 
     // Abandon with supersession

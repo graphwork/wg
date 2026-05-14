@@ -19,7 +19,7 @@ fn workgraph_dir(tmp: &TempDir) -> std::path::PathBuf {
 }
 
 fn write_graph(dir: &Path, graph: &WorkGraph) {
-    save_graph(graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(graph, dir.join("graph.jsonl")).unwrap();
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_create_chat_does_not_create_compact_companion() {
     write_graph(&dir, &graph);
 
     // Simulate what the IPC handler now does: create just the chat task.
-    let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
     graph.add_node(Node::Task(Task {
         id: format_chat_task_id(0),
         title: "Chat 0".to_string(),
@@ -50,10 +50,10 @@ fn test_create_chat_does_not_create_compact_companion() {
         tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
         ..Default::default()
     }));
-    save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
     // Reload and check no companion `.compact-N` task exists.
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task(".chat-0").is_some(), "chat task missing");
     assert!(
         graph.get_task(".compact-0").is_none(),
@@ -75,7 +75,7 @@ fn test_create_chat_does_not_create_archive_companion() {
     write_graph(&dir, &graph);
 
     // Simulate the dispatcher creating a chat task.
-    let mut graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let mut graph = load_graph(dir.join("graph.jsonl")).unwrap();
     graph.add_node(Node::Task(Task {
         id: format_chat_task_id(0),
         title: "Chat 0".to_string(),
@@ -83,9 +83,9 @@ fn test_create_chat_does_not_create_archive_companion() {
         tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
         ..Default::default()
     }));
-    save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, dir.join("graph.jsonl")).unwrap();
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert!(graph.get_task(".chat-0").is_some(), "chat task missing");
     assert!(
         graph.get_task(".archive-0").is_none(),
@@ -157,7 +157,7 @@ fn test_legacy_compact_archive_tasks_loaded_then_abandoned() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(dir.join("graph.jsonl")).unwrap();
     assert_eq!(
         graph.get_task(".compact-0").unwrap().status,
         Status::Abandoned,

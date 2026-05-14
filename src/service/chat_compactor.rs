@@ -466,7 +466,7 @@ mod tests {
         assert!(recurring >= 75);
         // Total may exceed 400 slightly due to section floor clamping
         let total = decisions + threads + prefs + recurring;
-        assert!(total >= 400 && total <= 500);
+        assert!((400..=500).contains(&total));
     }
 
     #[test]

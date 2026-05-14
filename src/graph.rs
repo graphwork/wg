@@ -3612,7 +3612,7 @@ cache_read_discount = 0.5
         task.assigned = Some("agent-live-codex".to_string());
         task.model = Some("codex:gpt-5.5".to_string());
         graph.add_node(Node::Task(task));
-        crate::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        crate::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
         let log_path = agent_dir.join("output.log");
         std::fs::write(

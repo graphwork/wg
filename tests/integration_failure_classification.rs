@@ -17,7 +17,7 @@ fn setup_wg(project_dir: &std::path::Path, tasks: Vec<Task>) -> std::path::PathB
     for t in tasks {
         g.add_node(Node::Task(t));
     }
-    save_graph(&g, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&g, wg_dir.join("graph.jsonl")).unwrap();
     wg_dir
 }
 
@@ -133,7 +133,7 @@ fn test_wg_fail_with_class_persists() {
         "wg fail should exit 0. stdout={stdout} stderr={stderr}"
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("t1").unwrap();
     assert_eq!(task.status, Status::Failed);
     assert_eq!(

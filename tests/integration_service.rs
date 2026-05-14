@@ -56,14 +56,12 @@ fn should_skip_timing_tests() -> bool {
     }
 
     // Skip if system load is high (simple heuristic)
-    if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
-        if let Some(first_load) = loadavg.split_whitespace().next() {
-            if let Ok(load) = first_load.parse::<f64>() {
-                if load > 2.0 {
-                    return true;
-                }
-            }
-        }
+    if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg")
+        && let Some(first_load) = loadavg.split_whitespace().next()
+        && let Ok(load) = first_load.parse::<f64>()
+        && load > 2.0
+    {
+        return true;
     }
 
     false
@@ -271,13 +269,12 @@ impl Drop for ServiceGuard<'_> {
         // Belt-and-suspenders: read PID from state.json and kill directly
         // in case `wg service stop` itself fails or the daemon is unresponsive.
         let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                }
+        if let Ok(content) = fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(pid) = state["pid"].as_u64()
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }
@@ -308,13 +305,13 @@ fn coordinator_ticks(wg_dir: &Path) -> u64 {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("coordinator-state") && name_str.ends_with(".json") {
-                if let Ok(content) = fs::read_to_string(entry.path())
-                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
-                {
-                    let ticks = val["ticks"].as_u64().unwrap_or(0);
-                    max_ticks = max_ticks.max(ticks);
-                }
+            if name_str.starts_with("coordinator-state")
+                && name_str.ends_with(".json")
+                && let Ok(content) = fs::read_to_string(entry.path())
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                let ticks = val["ticks"].as_u64().unwrap_or(0);
+                max_ticks = max_ticks.max(ticks);
             }
         }
         if max_ticks > 0 {

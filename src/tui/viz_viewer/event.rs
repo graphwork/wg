@@ -1432,7 +1432,6 @@ pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u1
     }
     if endpoint_hit.height > 0 && endpoint_hit.contains(pos) {
         launcher.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
-        return;
     }
     // Click in launcher area but no row matched: just no-op.
 }

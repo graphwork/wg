@@ -27,7 +27,7 @@ fn test_verify_timeout_cli_basic() -> Result<()> {
 
     // Initialize a WG project
     let init_output = std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -41,7 +41,7 @@ fn test_verify_timeout_cli_basic() -> Result<()> {
 
     // Create a task with verify timeout using CLI
     let output = std::process::Command::new("wg")
-        .args(&["add", "Test CLI verify timeout", "--verify-timeout", "999s"])
+        .args(["add", "Test CLI verify timeout", "--verify-timeout", "999s"])
         .current_dir(project_root)
         .output()?;
 
@@ -58,7 +58,7 @@ fn test_verify_timeout_cli_basic() -> Result<()> {
 
     // Check that task was created successfully
     let list_output = std::process::Command::new("wg")
-        .args(&["list"])
+        .args(["list"])
         .current_dir(project_root)
         .output()?;
 
@@ -77,7 +77,7 @@ fn test_verify_timeout_duration_formats() -> Result<()> {
     let project_root = temp_dir.path();
 
     let init_output = std::process::Command::new("wg")
-        .args(&["init", "--route", "claude-cli"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -92,7 +92,7 @@ fn test_verify_timeout_duration_formats() -> Result<()> {
         let title = format!("Test timeout {}", timeout);
 
         let output = std::process::Command::new("wg")
-            .args(&["add", &title, "--verify-timeout", timeout])
+            .args(["add", &title, "--verify-timeout", timeout])
             .current_dir(project_root)
             .output()?;
 

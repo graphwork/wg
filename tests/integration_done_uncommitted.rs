@@ -178,7 +178,7 @@ fn wg_done_refuses_staged_uncommitted_in_worktree() {
     );
 
     // 4. Task is NOT marked done.
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).expect("load graph");
+    let graph = load_graph(wg_dir.join("graph.jsonl")).expect("load graph");
     let task = graph.get_task(task_id).expect("task exists");
     assert_ne!(
         task.status,
@@ -247,7 +247,7 @@ fn wg_done_does_not_block_on_untracked_files() {
     );
 
     // Task should be Done (no eval task exists, so it goes straight to Done).
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).expect("load graph");
+    let graph = load_graph(wg_dir.join("graph.jsonl")).expect("load graph");
     let task = graph.get_task(task_id).expect("task exists");
     assert_eq!(task.status, Status::Done);
 }

@@ -243,21 +243,19 @@ fn detect_orphaned_worktrees(project_root: &Path) -> Result<Vec<String>, String>
     let mut orphans = Vec::new();
 
     if let Ok(entries) = fs::read_dir(&worktrees_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Check for any agent directory (agent-, dead-agent-, alive-agent-, etc.)
-                if name.contains("agent-") {
-                    // Check if this agent is alive
-                    let is_alive = registry
-                        .agents
-                        .get(&name)
-                        .map(|a| a.is_alive())
-                        .unwrap_or(false);
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Check for any agent directory (agent-, dead-agent-, alive-agent-, etc.)
+            if name.contains("agent-") {
+                // Check if this agent is alive
+                let is_alive = registry
+                    .agents
+                    .get(&name)
+                    .map(|a| a.is_alive())
+                    .unwrap_or(false);
 
-                    if !is_alive {
-                        orphans.push(name);
-                    }
+                if !is_alive {
+                    orphans.push(name);
                 }
             }
         }
@@ -497,12 +495,12 @@ fn test_startup_coordinator_cleanup_integration() {
             barrier_clone.wait();
 
             // Detect orphaned worktrees
-            let orphans = detect_orphaned_worktrees(&*project_clone).unwrap_or_default();
+            let orphans = detect_orphaned_worktrees(&project_clone).unwrap_or_default();
 
             // Simulate cleanup on detected orphans
             let mut cleanup_count = 0;
             for agent_id in &orphans {
-                if simulate_cleanup_operations(&*project_clone, agent_id).is_ok() {
+                if simulate_cleanup_operations(&project_clone, agent_id).is_ok() {
                     cleanup_count += 1;
                 }
             }
@@ -525,7 +523,7 @@ fn test_startup_coordinator_cleanup_integration() {
             thread::sleep(Duration::from_millis(10)); // Simulate coordinator tick delay
 
             // Detect any remaining orphaned worktrees (might find fewer if startup already ran)
-            let orphans = detect_orphaned_worktrees(&*project_clone).unwrap_or_default();
+            let orphans = detect_orphaned_worktrees(&project_clone).unwrap_or_default();
 
             // Simulate additional cleanup operations
             let mut cleanup_count = 0;
@@ -537,7 +535,7 @@ fn test_startup_coordinator_cleanup_integration() {
                     let has_target = worktree_path.join("target").exists();
 
                     if has_symlink || has_target {
-                        if simulate_cleanup_operations(&*project_clone, agent_id).is_ok() {
+                        if simulate_cleanup_operations(&project_clone, agent_id).is_ok() {
                             cleanup_count += 1;
                         }
                     }
