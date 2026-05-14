@@ -51,7 +51,7 @@ Total root-level .md files: **57**
    - Cycle detection and analysis (`wg cycles`)
    - Functions system (`wg func`)
    - Telegram integration (`wg telegram`)
-   - Peer workgraphs (`wg peer`)
+   - Peer WG instances (`wg peer`)
    - Cost tracking (`wg spend`, `wg cost`)
    - Many analysis commands (`wg analyze`, `wg structure`, `wg bottlenecks`)
 
@@ -135,7 +135,7 @@ Total root-level .md files: **57**
 3. **Functions system introduction** - Brief mention of workflow pattern reuse
 
 ### Low Priority
-1. **Advanced features reference** - Multi-coordinator, peer workgraphs, traces/replay
+1. **Advanced features reference** - Multi-coordinator, peer WG instances, traces/replay
 2. **Developer tools section** - TUI debugging, screencast generation
 3. **Consider CLI reference appendix** - Link to or embed `wg quickstart` output
 

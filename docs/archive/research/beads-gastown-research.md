@@ -215,7 +215,7 @@ Polecats exist in exactly three states:
 
 ---
 
-## 5. Molecules: Work Graphs
+## 5. Molecules: WG Task Graphs
 
 Molecules represent the same concept as epics but with explicit execution semantics:
 
