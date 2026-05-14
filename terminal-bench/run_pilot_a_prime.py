@@ -2,11 +2,11 @@
 """
 TB Pilot Runner: Condition A' (bare agent, no turn cap)
 
-Runs calibration tasks through the native wg executor with per-trial
+Runs calibration tasks through the native WG executor with per-trial
 isolation and federation to tb-evaluations/ hub.
 
 Each trial:
-  1. Creates isolated temp workgraph
+  1. Creates isolated temp WG state
   2. Configures A' (clean context, no wg tools, no turn cap)
   3. Federation pull from hub
   4. Creates root task with instructions + verify
@@ -485,7 +485,7 @@ async def main(
     tasks = task_names or list(TB_TASKS.keys())
     total = len(tasks) * replicas
 
-    print(f"TB Pilot: Condition A' (native wg adapter + federation)")
+    print(f"TB Pilot: Condition A' (native WG adapter + federation)")
     print(f"  Tasks: {tasks}")
     print(f"  Replicas: {replicas}")
     print(f"  Total trials: {total}")
@@ -574,7 +574,7 @@ async def main(
     summary = {
         "run_id": "pilot-condition-a-prime-native",
         "condition": "A'",
-        "description": "Condition A' (bare agent, no turn cap) via native wg executor with federation",
+        "description": "Condition A' (bare agent, no turn cap) via native WG executor with federation",
         "model": model,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "total_trials": total_trials,
@@ -610,7 +610,7 @@ async def main(
         f.write(f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n")
         f.write(f"**Model:** {model}\n")
         f.write(f"**Trials:** {total_trials}\n")
-        f.write(f"**Executor:** native wg (per-trial service instances)\n")
+        f.write(f"**Executor:** native WG (per-trial service instances)\n")
         f.write(f"**Federation:** tb-evaluations/ hub\n\n")
         f.write(f"---\n\n")
 
@@ -672,7 +672,7 @@ async def main(
 
         f.write(f"\n## Validation Checklist\n\n")
         f.write(f"- [{'x' if total_trials >= 10 else ' '}] At least 10 trials ran to completion\n")
-        f.write(f"- [{'x' if native_exec == total_trials else ' '}] Each trial used native wg executor\n")
+        f.write(f"- [{'x' if native_exec == total_trials else ' '}] Each trial used native WG executor\n")
         f.write(f"- [{'x' if own_service == total_trials else ' '}] Each trial had its own wg service instance\n")
         f.write(f"- [{'x' if fed_pulled == total_trials else ' '}] Federation pull verified for each trial\n")
         f.write(f"- [{'x' if fed_pushed == total_trials else ' '}] Federation push verified for each trial\n")
@@ -697,7 +697,7 @@ async def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run TB pilot: Condition A' (native wg)")
+    parser = argparse.ArgumentParser(description="Run TB pilot: Condition A' (native WG)")
     parser.add_argument("--replicas", type=int, default=DEFAULT_REPLICAS)
     parser.add_argument("--tasks", type=str, default=None, help="Comma-separated task names")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)

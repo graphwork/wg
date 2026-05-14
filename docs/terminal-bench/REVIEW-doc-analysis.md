@@ -73,24 +73,24 @@ All are factual references to Claude Code as a benchmark competitor. None reveal
 
 ### 4. REPORT-claude-code-vs-wg-architecture.md
 
-**Summary:** A deep architectural comparison of Claude Code TS and wg as multi-agent orchestration systems. Covers architecture (conversation-first vs graph-first), executor comparison (Claude Code's single in-process QueryEngine vs wg's four executor types), task/dependency systems (3-state flat model vs 60-field graph with cycles), coordinator patterns (conversation mode vs daemon tick loop), TUI/rendering approaches, embedding opportunities, messaging models, and concrete recommendations for each system. Key finding: each has critical capabilities the other lacks.
+**Summary:** A deep architectural comparison of Claude Code TS and WG as multi-agent orchestration systems. Covers architecture (conversation-first vs graph-first), executor comparison (Claude Code's single in-process QueryEngine vs WG's four executor types), task/dependency systems (3-state flat model vs 60-field graph with cycles), coordinator patterns (conversation mode vs daemon tick loop), TUI/rendering approaches, embedding opportunities, messaging models, and concrete recommendations for each system. Key finding: each has critical capabilities the other lacks.
 
 **Feedback:**
 
 **Valuable insights:**
 - The "conversation-first vs graph-first" framing is excellent — it precisely captures the fundamental architectural difference and why each system makes the tradeoffs it does.
 - The gap analysis tables (Section 3.3) are actionable. The native executor's missing capabilities are clearly prioritized.
-- Section 7.3 ("What wg's Native Executor Needs to Replace the Claude Executor") is the most operationally useful part — the 93.8% tool call coverage figure and the 16-25 hour gap estimate are concrete planning inputs.
-- The coordinator comparison (Section 5) highlights a real weakness: wg's coordinator doesn't synthesize. It dispatches and monitors but doesn't reason about task content. This is worth thinking about long-term.
+- Section 7.3 ("What WG's Native Executor Needs to Replace the Claude Executor") is the most operationally useful part — the 93.8% tool call coverage figure and the 16-25 hour gap estimate are concrete planning inputs.
+- The coordinator comparison (Section 5) highlights a real weakness: WG's coordinator doesn't synthesize. It dispatches and monitors but doesn't reason about task content. This is worth thinking about long-term.
 
 **Patterns that could inform wg development:**
 - **System-reminder injection pattern**: Claude Code's ephemeral per-turn context injection (Section 9.1 reference, detailed more in REFERENCE-executor-lessons.md) is exactly the pattern described in DESIGN doc #1. Validating that a production system at scale uses this approach increases confidence in the design.
 - **Progressive rendering**: Claude Code's collapsed summaries for repetitive tool calls ("Read 15 files" instead of 15 entries) would improve the TUI experience.
-- **Permission model**: Not urgent, but as wg agents become more autonomous, some form of permission gating for destructive operations (especially in native executor) would be prudent. Worth a future task.
+- **Permission model**: Not urgent, but as WG agents become more autonomous, some form of permission gating for destructive operations (especially in native executor) would be prudent. Worth a future task.
 
 **Concerns/disagreements:**
 - The recommendation to "embed Claude Code's QueryEngine directly" (Section 7.2A) is correctly assessed as low feasibility, but it's borderline distracting to even include. The native executor path is clearly the right one.
-- The "in-process sub-agents" recommendation for wg (Section 8.2, point 6) is interesting but conflicts with wg's isolation model. Each agent gets its own worktree precisely to prevent file conflicts. In-process sub-agents sharing a working tree would need careful scoping to read-only tasks.
+- The "in-process sub-agents" recommendation for wg (Section 8.2, point 6) is interesting but conflicts with WG's isolation model. Each agent gets its own worktree precisely to prevent file conflicts. In-process sub-agents sharing a working tree would need careful scoping to read-only tasks.
 
 ---
 
@@ -134,7 +134,7 @@ All are factual references to Claude Code as a benchmark competitor. None reveal
 
 **Concerns:**
 - This doc contains the most Claude Code implementation detail (specific file names, line numbers, function names). It's correctly marked as "not to commit," and indeed it should stay private. The detailed source references (`query.ts:847-862`, `toolResultStorage.ts`, etc.) could be seen as derived from proprietary analysis.
-- The 10-item concurrency max from Claude Code (Section 8) is presented without discussion of whether it's optimal. For wg's use case (Rust, lighter-weight tools), a different default might be appropriate.
+- The 10-item concurrency max from Claude Code (Section 8) is presented without discussion of whether it's optimal. For WG's use case (Rust, lighter-weight tools), a different default might be appropriate.
 
 ---
 

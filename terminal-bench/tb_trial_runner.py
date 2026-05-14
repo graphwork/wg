@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TB Trial Runner — creates workgraph tasks from Terminal Bench task definitions.
+TB Trial Runner — creates WG tasks from Terminal Bench task definitions.
 
 Converts TB calibration tasks into wg tasks that run through the full agency
 pipeline: .assign → execute → .flip → .evaluate → .verify
@@ -111,7 +111,7 @@ def create_trial_task(
     wg_dir: str | None,
     run_id: str | None = None,
 ) -> str:
-    """Create a single trial task in the workgraph. Returns the task ID."""
+    """Create a single trial task in the WG task graph. Returns the task ID."""
     cond_cfg = CONDITION_CONFIGS[condition]
     if run_id:
         task_id = f"tb-{run_id}-{condition.lower()}-{task_def['id']}-r{replica}"
@@ -365,7 +365,7 @@ def cmd_collect(args):
     with open(manifest_path) as f:
         manifest = json.load(f)
 
-    # Determine the workgraph agency directory
+    # Determine the WG agency directory
     if wg_dir:
         agency_dir = os.path.join(wg_dir, "agency", "evaluations")
     else:
@@ -521,7 +521,7 @@ def compute_statistics(results: list[dict], conditions: list[str]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="TB Trial Runner — create workgraph tasks from Terminal Bench definitions"
+        description="TB Trial Runner — create WG tasks from Terminal Bench definitions"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

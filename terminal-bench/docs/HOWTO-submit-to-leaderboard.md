@@ -1,6 +1,6 @@
 # How to Submit to Terminal Bench 2.0 Leaderboard
 
-Adapted from the Harbor HOWTO for wg's multi-condition experiment.
+Adapted from the Harbor HOWTO for WG's multi-condition experiment.
 
 ## Submission Format
 
@@ -43,7 +43,7 @@ models:
 | F | `ConditionFAgent` | Full wg context + surveillance loops |
 
 All conditions use **Minimax M2.7** via OpenRouter. The core thesis comparison
-is A vs F: same model, dramatically different results with wg coordination.
+is A vs F: same model, dramatically different results with WG coordination.
 
 ## Running the Benchmark
 

@@ -3,7 +3,7 @@
 ## Overview
 
 Condition A runs each terminalbench problem inside its own isolated `wg` instance
-with up to 8 parallel agents, using wg's native executor. This document specifies
+with up to 8 parallel agents, using WG's native executor. This document specifies
 the directory structure, service lifecycle, config, verification, and results
 collection — all as runnable code.
 
@@ -141,7 +141,7 @@ auto_assign = false
 auto_evaluate = false
 ```
 
-**Why `native` executor?** The native executor is wg's built-in LLM client
+**Why `native` executor?** The native executor is WG's built-in LLM client
 (`src/executor/native/`). It calls OpenRouter/Anthropic APIs directly via
 `openai_client.rs`. There is no litellm in this path — the Rust code makes
 HTTP requests to the API endpoint configured in the model registry or endpoint

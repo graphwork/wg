@@ -11,9 +11,9 @@
 
 ### 1.1 Agent Loop (adapter.py:1351–1541)
 
-The adapter reimplements the entire agent execution loop that native wg provides via its executor system (`src/commands/service/coordinator.rs` → executor dispatch).
+The adapter reimplements the entire agent execution loop that native WG provides via its executor system (`src/commands/service/coordinator.rs` → executor dispatch).
 
-| Bypass Point | File:Line | What adapter does | What native wg does |
+| Bypass Point | File:Line | What adapter does | What native WG does |
 |---|---|---|---|
 | **Agent loop** | adapter.py:1450–1541 | Custom `for turn in range(self.max_turns)` loop with litellm | Coordinator spawns executor (claude/amplifier/shell) per task |
 | **Tool dispatch** | adapter.py:817–875 | `execute_tool()` switch on tool name strings | Native executor has built-in tool handling via Claude Code or amplifier |
@@ -27,7 +27,7 @@ The adapter reimplements the entire agent execution loop that native wg provides
 
 ### 1.2 Graph State Management (adapter.py:1296–1349)
 
-| Bypass Point | File:Line | What adapter does | What native wg does |
+| Bypass Point | File:Line | What adapter does | What native WG does |
 |---|---|---|---|
 | **Graph init** | adapter.py:1300–1311 | `tempfile.mkdtemp()` + `wg init` on host | Graph lives in project `.wg/` directory |
 | **Graph lifecycle** | adapter.py:1592–1603 | `shutil.copytree()` to logs, then `shutil.rmtree()` | Persistent graph; no cleanup |
@@ -37,12 +37,12 @@ The adapter reimplements the entire agent execution loop that native wg provides
 
 ### 1.3 Tool Schema Reimplementation (adapter.py:44–503)
 
-Every tool is defined as an OpenAI function-calling JSON schema, bypassing native wg's tool system entirely.
+Every tool is defined as an OpenAI function-calling JSON schema, bypassing native WG's tool system entirely.
 
 | Tool Category | Tools | Lines | Notes |
 |---|---|---|---|
 | **File/bash tools** | `bash`, `read_file`, `write_file`, `edit_file`, `glob`, `grep` | 44–209 | Reimplements Claude Code's built-in tools as custom JSON schemas |
-| **Web tools** | `web_search`, `web_fetch` | 211–257 | Not present in native wg — adapter-specific additions |
+| **Web tools** | `web_search`, `web_fetch` | 211–257 | Not present in native WG — adapter-specific additions |
 | **WG tools** | `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`, `wg_msg_send`, `wg_msg_read` | 272–423 | Reimplements wg CLI commands as function-call tools |
 | **Condition F enhanced** | `wg_add` (with `verify` + `id` params) | 447–503 | Extended version of wg_add; native CLI already supports these flags |
 
@@ -63,7 +63,7 @@ Every tool is defined as an OpenAI function-calling JSON schema, bypassing nativ
 
 Every `wg_*` tool routes through `_exec_wg_cmd_host()` (adapter.py:788–814), which runs the real `wg` binary on the host against the temp directory.
 
-| Adapter Tool | `execute_tool()` Handler | Native wg CLI Equivalent | Differences |
+| Adapter Tool | `execute_tool()` Handler | Native WG CLI Equivalent | Differences |
 |---|---|---|---|
 | `wg_show(task_id)` | adapter.py:841–842 | `wg show <task_id>` | Identical (pass-through) |
 | `wg_list(status?)` | adapter.py:843–847 | `wg list [--status X]` | Identical |
@@ -240,8 +240,7 @@ Harbor invocation: `harbor run --agent-import-path wg.adapter:ConditionBAgent`
 - **Harbor container execution** — native runs in host or worktree, not Docker; changes the security/isolation model
 
 ### Key architectural tension
-The adapter exists because Harbor provides **containerized execution** (Docker environments with `env.exec()`) while native wg provides **host/worktree execution**. Swapping to native executor means either:
-1. Running native wg inside Harbor containers (requires wg binary injection, which the adapter explicitly avoids — see adapter.py:788 comment)
+The adapter exists because Harbor provides **containerized execution** (Docker environments with `env.exec()`) while native WG provides **host/worktree execution**. Swapping to native executor means either:
+1. Running native WG inside Harbor containers (requires wg binary injection, which the adapter explicitly avoids — see adapter.py:788 comment)
 2. Running Harbor tasks outside containers (loses isolation)
-3. A hybrid: native wg executor that delegates file/bash to Harbor's `env.exec()` (new executor type)
-
+3. A hybrid: native WG executor that delegates file/bash to Harbor's `env.exec()` (new executor type)

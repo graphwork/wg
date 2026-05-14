@@ -98,13 +98,13 @@ if [[ -z "$RESULTS_DIR" ]]; then
 fi
 mkdir -p "$RESULTS_DIR"
 
-# ── Set up temp workgraph directory ──────────────────────────────────────────
+# ── Set up temp WG directory ─────────────────────────────────────────────────
 WORK_DIR="$(mktemp -d /tmp/tb-harness-XXXXXX)"
 WG_DIR="$WORK_DIR/.workgraph"
 FAKE_HOME="$WORK_DIR/home"
 mkdir -p "$FAKE_HOME"
 
-# Initialize workgraph
+# Initialize WG
 HOME="$FAKE_HOME" "$WG_BIN" --dir "$WG_DIR" init 2>/dev/null
 
 # Set up OpenRouter endpoint
@@ -146,22 +146,22 @@ ${TASK_TEXT}
 PROMPT
 
 elif [[ "$CONDITION" == "B" ]]; then
-    # Condition B: agent + workgraph, all tools
+    # Condition B: agent + WG, all tools
     EXEC_MODE="full"
     RESUME_FLAG=""
 
-    # Create the root task in workgraph
+    # Create the root task in the WG task graph
     HOME="$FAKE_HOME" "$WG_BIN" --dir "$WG_DIR" add "$TASK_TEXT" --id "$TASK_ID" --context-scope task 2>/dev/null
 
     # Build the Condition B system prompt (trimmed for token efficiency)
     cat > "$WORK_DIR/prompt.txt" <<PROMPT
 # Task Assignment
 
-You are an AI agent working on a task. You have bash, file tools, and workgraph tools.
+You are an AI agent working on a task. You have bash, file tools, and WG tools.
 
 ## Your Task ID: ${TASK_ID}
 
-## Workgraph Tools
+## WG Tools
 - wg_log("${TASK_ID}", "msg") — log progress (persists across context limits)
 - wg_add("title") — create subtask for complex work
 - wg_artifact("${TASK_ID}", "path") — record output files
@@ -177,12 +177,12 @@ ${TASK_TEXT}
 PROMPT
 
 elif [[ "$CONDITION" == "C" ]]; then
-    # Condition C: agent + workgraph + skill injection + planning phase
+    # Condition C: agent + WG + skill injection + planning phase
     # Same wg tools as B, but with a skill prompt that teaches decomposition heuristics
     EXEC_MODE="full"
     RESUME_FLAG=""
 
-    # Create the root task in workgraph
+    # Create the root task in the WG task graph
     HOME="$FAKE_HOME" "$WG_BIN" --dir "$WG_DIR" add "$TASK_TEXT" --id "$TASK_ID" --context-scope task 2>/dev/null
 
     # Build the Condition C system prompt (skill injection + planning phase)
@@ -192,9 +192,9 @@ elif [[ "$CONDITION" == "C" ]]; then
 You are an AI agent completing a Terminal Bench task.
 Your root task ID is: **${TASK_ID}**
 
-## Workgraph: Your External Memory
+## WG: Your External Memory
 
-You have a workgraph — a persistent task graph that acts as external memory.
+You have a WG task graph — a persistent task graph that acts as external memory.
 It survives even if your context fills up. Use it.
 
 ### Always do this
@@ -305,7 +305,7 @@ INPUT_TOKENS="${INPUT_TOKENS:-0}"
 OUTPUT_TOKENS=$(grep -oP '(?<=\+)\d+(?= tokens)' "$RESULTS_DIR/stderr.log" 2>/dev/null | head -1 || true)
 OUTPUT_TOKENS="${OUTPUT_TOKENS:-0}"
 
-# Copy workgraph state if Condition B or C
+# Copy WG state if Condition B or C
 if [[ "$CONDITION" == "B" || "$CONDITION" == "C" ]]; then
     cp -r "$WG_DIR" "$RESULTS_DIR/workgraph_state" 2>/dev/null || true
 fi

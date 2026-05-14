@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Benchmark model — ALL conditions MUST use this for reproducibility
-# Format: workgraph-style "provider:model"
+# Format: WG-style "provider:model"
 # ---------------------------------------------------------------------------
 BENCHMARK_MODEL = "openrouter:minimax/minimax-m2.7"
 
@@ -83,7 +83,7 @@ _TRIAL_WORKDIR_PREFIX = "/var/tmp/tb-trial-"
 
 
 # ---------------------------------------------------------------------------
-# Condition → native wg config mapping
+# Condition → native WG config mapping
 # ---------------------------------------------------------------------------
 
 # Maps each condition to its native executor configuration.
@@ -167,7 +167,7 @@ CONDITION_CONFIG = {
 async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
     """Execute a wg command on the HOST (not in a container).
 
-    The workgraph state lives on the host in a temp directory per trial.
+    The WG state lives on the host in a temp directory per trial.
     """
     cmd = [wg_bin, "--dir", wg_dir] + subcmd
     # Strip ALL WG_* env vars and CLAUDECODE from the parent agent/service
@@ -204,15 +204,15 @@ async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 # Known LiteLLM provider prefixes that use "/" in their model format
-# but should use ":" in workgraph format.
+# but should use ":" in WG format.
 _KNOWN_PROVIDERS = {"openrouter", "openai", "anthropic", "together_ai", "groq", "ollama"}
 
 
 def _normalize_model(model: str) -> str:
-    """Normalize a model string to workgraph format (provider:model).
+    """Normalize a model string to WG format (provider:model).
 
     Harbor and LiteLLM use "/" separators ("openrouter/minimax/minimax-m2.7")
-    while workgraph uses ":" ("openrouter:minimax/minimax-m2.7").
+    while WG uses ":" ("openrouter:minimax/minimax-m2.7").
 
     If the model already uses ":" format, it is returned as-is.
     If the first path segment is a known provider, convert the first "/" to ":".
@@ -518,7 +518,7 @@ Your job:
 1. Read the task below and understand what needs to be done
 2. Explore the working directory (`ls`, `cat`) to understand the codebase
 3. Check `ls tests/` to find the test scripts that verify success
-4. Build a workgraph that solves the problem, then mark YOUR task done
+4. Build a WG task graph that solves the problem, then mark YOUR task done
 
 DO NOT write code. DO NOT modify files. Only create wg tasks.
 
@@ -569,7 +569,7 @@ coordinator dispatches worker agents to your tasks automatically.
 
 ARCHITECT_BUNDLE_TOML = """\
 name = "bare"
-description = "Graph architect agent: reads the problem, designs the workgraph, delegates all implementation."
+description = "Graph architect agent: reads the problem, designs the WG task graph, delegates all implementation."
 tools = ["bash", "read_file", "glob", "grep", "wg_show", "wg_list", "wg_add", "wg_done", "wg_fail", "wg_log", "wg_artifact"]
 context_scope = "clean"
 system_prompt_suffix = ""
@@ -782,7 +782,7 @@ async def _run_native_executor(
     cfg = CONDITION_CONFIG[condition]
 
     # For Condition G, prepend the autopoietic meta-prompt to the instruction
-    # so the agent knows to build a self-correcting workgraph.
+    # so the agent knows to build a self-correcting WG task graph.
     # Also inject the verify command into the meta-prompt so the architect
     # can include it in subtask descriptions (the verify gate on the seed
     # task is auto-deferred by wg done when children are detected, but the
@@ -1035,7 +1035,7 @@ You are working inside a task environment. Complete the task described below.
 # Gives open models equivalent project knowledge to what Claude gets natively.
 # ---------------------------------------------------------------------------
 
-CONDITION_F_MEMORY = """## Workgraph Project Memory (Distilled)
+CONDITION_F_MEMORY = """## WG Project Memory (Distilled)
 
 ### Architecture
 - **Graph storage**: `.workgraph/graph.jsonl` — one JSON object per line, append-only
@@ -1368,12 +1368,12 @@ class WorkgraphAgent(BaseAgent):
 
     Supports seven experimental conditions:
       condition="A" — bare agent (bash + file tools, no graph)
-      condition="B" — agent + workgraph (full tools, journal/resume)
-      condition="C" — agent + workgraph + skill injection + planning phase
-      condition="D" — agent + workgraph + autopoietic verification + agency identity
-      condition="G" — autopoietic: agent builds its own self-correcting workgraph
-      condition="E" — agent + workgraph + organization generation + independent verification
-      condition="F" — agent + workgraph + distilled context injection + empirical verification
+      condition="B" — agent + WG task graph (full tools, journal/resume)
+      condition="C" — agent + WG task graph + skill injection + planning phase
+      condition="D" — agent + WG task graph + autopoietic verification + agency identity
+      condition="G" — autopoietic: agent builds its own self-correcting WG task graph
+      condition="E" — agent + WG task graph + organization generation + independent verification
+      condition="F" — agent + WG task graph + distilled context injection + empirical verification
 
     Usage:
         harbor run \\
@@ -1489,7 +1489,7 @@ class WorkgraphAgent(BaseAgent):
         if git_check.return_code != 0:
             logger.warning("git may not be available in container")
 
-        # 2. Create isolated trial directory and initialize workgraph there.
+        # 2. Create isolated trial directory and initialize WG there.
         #    Some containers share the host filesystem (/home/erik), so the
         #    default CWD may already contain a .workgraph/ from the host.
         #    Using a fresh unique directory guarantees isolation.
@@ -1502,7 +1502,7 @@ class WorkgraphAgent(BaseAgent):
             raise RuntimeError(
                 f"wg init failed inside container: {init_result.stderr}"
             )
-        logger.info(f"Initialized trial workgraph at {self._trial_workdir}")
+        logger.info(f"Initialized trial WG state at {self._trial_workdir}")
 
         # 3. Write config.toml inside the container via base64 encoding.
         #    Heredocs fail because Harbor's exec() pipes commands to bash
@@ -1688,7 +1688,7 @@ class WorkgraphAgent(BaseAgent):
 # ---------------------------------------------------------------------------
 
 class ConditionAAgent(WorkgraphAgent):
-    """Condition A (control): bare agent, no workgraph tools."""
+    """Condition A (control): bare agent, no WG tools."""
 
     @staticmethod
     def name() -> str:
@@ -1701,7 +1701,7 @@ class ConditionAAgent(WorkgraphAgent):
 
 
 class ConditionBAgent(WorkgraphAgent):
-    """Condition B (treatment): full workgraph tools + journal/resume."""
+    """Condition B (treatment): full WG tools + journal/resume."""
 
     @staticmethod
     def name() -> str:
@@ -1773,7 +1773,7 @@ class ConditionFAgent(WorkgraphAgent):
 
 
 class ConditionGAgent(WorkgraphAgent):
-    """Condition G (treatment): autopoietic — agent builds self-correcting workgraph."""
+    """Condition G (treatment): autopoietic — agent builds a self-correcting WG task graph."""
 
     @staticmethod
     def name() -> str:

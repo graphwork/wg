@@ -193,7 +193,7 @@ Sources:
 
 **Answer: Multiple possible causes, depending on executor type.**
 
-### For Claude executor (wg's default)
+### For Claude executor (WG's default)
 The wrapper script (`src/commands/spawn/execution.rs:985-1103`) captures the exit code and handles it:
 
 - **Exit code 0**: Agent succeeded → wrapper runs `wg done`

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# reproduce.sh — Reproduce the Terminal-Bench experiment from the workgraph paper
+# reproduce.sh — Reproduce the Terminal-Bench experiment from the WG paper
 #
 # This script runs all three experimental conditions (A, B, C) against the full
 # Terminal-Bench 2.0 task suite. Each condition uses the same model (Minimax M2.7
@@ -10,7 +10,7 @@
 #   - Python 3.10+ with harbor framework installed: pip install harbor-bench
 #   - Docker daemon running (TB tasks run in containers)
 #   - Pre-pulled Docker images: bash terminal-bench/pre-pull-images.sh
-#   - Workgraph adapter installed: pip install -e terminal-bench/
+#   - WG adapter installed: pip install -e terminal-bench/
 #
 # Usage:
 #   bash terminal-bench/reproduce.sh [--trials N] [--condition A|B|C|all] [--output-dir DIR]
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Conditions:"
             echo "  A  Bare agent (control): bash + file tools only"
-            echo "  B  Stigmergic workgraph: A + wg tools + graph context"
+            echo "  B  Stigmergic WG: A + wg tools + graph context"
             echo "  C  Enhanced planning: B + skill injection + snapshots"
             exit 0
             ;;

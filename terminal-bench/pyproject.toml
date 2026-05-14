@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wg-terminal-bench"
 version = "0.1.0"
-description = "Terminal Bench harness for Workgraph: Condition A (bare), B (agent + wg), C (agent + wg + skill injection)"
+description = "Terminal Bench harness for WG: Condition A (bare), B (agent + wg), C (agent + wg + skill injection)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

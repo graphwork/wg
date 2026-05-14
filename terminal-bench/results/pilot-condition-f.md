@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-05 21:11 UTC
 **Condition:** F (distilled context injection + empirical verification)
-**Executor:** Native wg (not litellm)
+**Executor:** Native WG (not litellm)
 **Mode:** Lifecycle pilot (no LLM execution -- verifies adapter + federation pipeline)
 **Hub:** terminal-bench/tb-evaluations/
 
@@ -41,7 +41,7 @@
 ## Validation Checklist
 
 - [x] At least 10 condition F trials ran to completion (14 total, 14 passed)
-- [x] Each trial used native wg executor (14/14)
+- [x] Each trial used native WG executor (14/14)
 - [x] Federation pull verified (14/14)
 - [x] Federation push verified (14/14)
 - [x] Results summary with pass/fail counts, timing

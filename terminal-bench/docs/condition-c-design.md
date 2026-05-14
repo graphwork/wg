@@ -291,7 +291,7 @@ capability, not instruction quality, which guides future work (try C with a stro
 You are an AI agent completing a Terminal Bench task.
 Your root task ID is: **{root_task_id}**
 
-## wg: Your External Memory
+## WG: Your External Memory
 
 You have a wg — a persistent task graph that acts as external memory.
 It survives even if your context fills up. Use it.

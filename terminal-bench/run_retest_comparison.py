@@ -101,7 +101,7 @@ CONDITION_G_META_PROMPT = """You are a graph architect. You do NOT implement sol
 Your job:
 1. Read the task below and understand what needs to be done
 2. Explore the working directory (`ls`, `cat`) to understand the codebase
-3. Build a workgraph that solves the problem, then mark YOUR task done
+3. Build a WG task graph that solves the problem, then mark YOUR task done
 
 DO NOT write code. DO NOT modify files. Only create wg tasks.
 
@@ -766,7 +766,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save workgraph state
+        # Save WG state
         state_dst = os.path.join(results_dir, trial_id, "workgraph_state")
         try:
             os.makedirs(os.path.dirname(state_dst), exist_ok=True)
@@ -915,7 +915,7 @@ def load_condition_a_results(task_names: list[str]) -> dict:
         elapsed = t.get("elapsed_s", 0)
 
         # If from combined_summary (no elapsed_s), try to reconstruct from
-        # workgraph state or leave as 0
+        # WG state or leave as 0
         if not elapsed and ct and not st:
             elapsed = 0  # No timing data available for this task
 

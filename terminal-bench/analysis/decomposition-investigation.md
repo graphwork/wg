@@ -267,15 +267,15 @@ The highest-impact interventions are elsewhere:
 - **Empirical verification** (F's Step 4): Trust test results, not self-assessment.
 - **Removing turn caps** (A' → A): 48% → 80% pass rate from this alone.
 
-### 5. For wg's value proposition specifically
+### 5. For WG's value proposition specifically
 
-The TB2 benchmark setting (single agent, isolated Docker containers, 30-minute timeout) is the *worst case* for wg's coordination features. wg shines when:
+The TB2 benchmark setting (single agent, isolated Docker containers, 30-minute timeout) is the *worst case* for WG's coordination features. WG shines when:
 - Multiple agents work concurrently on shared codebases
 - Context exhaustion forces agent handoffs
 - Dependencies control execution order across workers
 - The work genuinely spans sessions or teams
 
-To demonstrate wg's decomposition value, test on:
+To demonstrate WG's decomposition value, test on:
 - Multi-agent scenarios (wg service with 2–4 agents per task)
 - Longer tasks (multi-hour, context-exhausting)
 - Tasks with genuine parallelism (independent modules that different agents can implement simultaneously)

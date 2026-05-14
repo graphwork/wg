@@ -455,7 +455,7 @@ This section addresses the key question: *Should F even use wg, or is wg overhea
 | E (heavy wg) = 75% pass rate | Pilot data | More wg usage doesn't help more |
 | 80% of B agents ignore wg | Full run data | Model naturally gravitates away from wg |
 | E uses 5× more wg calls than D | Pilot data | wg overhead is measurable in tokens and turns |
-| Zero `--after` dependencies in E | Pilot data | Agents create flat lists, not graphs — wg's dependency model is unused |
+| Zero `--after` dependencies in E | Pilot data | Agents create flat lists, not graphs — WG's dependency model is unused |
 | No wg service running | Architecture | No coordinator, no parallel agents, no task dispatch |
 
 ### 5.2 What wg Provides in Harbor Trials

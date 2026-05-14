@@ -22,7 +22,7 @@ The pure baseline. A Claude agent receives only the task description and standar
 
 ### Condition B — Agent + wg, Old Executor
 
-The wg executor as it existed **before** the five improvement tracks were merged. This is the executor with:
+The WG executor as it existed **before** the five improvement tracks were merged. This is the executor with:
 - Static `AUTOPOIETIC_GUIDANCE` (generic decomposition patterns, not task-adaptive)
 - No pre-task test discovery (no `discover_test_files()` scanning)
 - Inline verification only (`verify_mode = "inline"` — same agent verifies its own work)
@@ -128,7 +128,7 @@ All conditions use the **same model** across all trials:
 - **Max turns:** 200 (safety valve; matches prior D/E experiments)
 - **Wall-clock timeout:** 30 minutes per trial
 
-Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial uses the wg's native executor model (`claude:opus`) because the enhanced executor features (decomp_guidance, separate-verify) are designed for the `claude` executor path, not the `native` executor. Using the same model removes model capability as a confound.
+Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial uses the WG's native executor model (`claude:opus`) because the enhanced executor features (decomp_guidance, separate-verify) are designed for the `claude` executor path, not the `native` executor. Using the same model removes model capability as a confound.
 
 ### Randomization
 
@@ -179,7 +179,7 @@ Note: Prior TB experiments used `openrouter:minimax/minimax-m2.7`. This trial us
 
 ### What "Old Executor" Means
 
-The "old executor" (Condition B) is the wg executor with the five improvement tracks **disabled by config flags**. This approach is preferred over checking out an older git commit because:
+The "old executor" (Condition B) is the WG executor with the five improvement tracks **disabled by config flags**. This approach is preferred over checking out an older git commit because:
 
 1. It isolates exactly the features being tested (decomp, test discovery, verify mode)
 2. All other executor improvements and bug fixes are shared across conditions

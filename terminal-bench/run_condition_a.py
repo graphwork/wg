@@ -3,7 +3,7 @@
 Condition A Runner — isolated wg service per terminalbench problem, 8 parallel agents.
 
 Each terminalbench problem runs in its own wg service instance with up to 8
-parallel agents, using wg's native executor (no litellm/harbor fallback).
+parallel agents, using WG's native executor (no litellm/harbor fallback).
 
 Design: terminal-bench/DESIGN-condition-a-isolation.md
 

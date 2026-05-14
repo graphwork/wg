@@ -2,8 +2,8 @@
 """
 Pilot: Condition A vs G — Claude Haiku, 5 diverse tasks.
 
-Condition A: Workgraph-coordinated execution (isolated wg service + native-exec agent)
-Condition G: Raw Claude Code (claude CLI in print mode, no workgraph)
+Condition A: WG-coordinated execution (isolated wg service + native-exec agent)
+Condition G: Raw Claude Code (claude CLI in print mode, no WG task graph)
 
 Both conditions use Claude Haiku as the execution model.
 
@@ -266,13 +266,13 @@ async def collect_metrics(wg_dir: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Condition A: With Workgraph
+# Condition A: With WG
 # ---------------------------------------------------------------------------
 
 async def run_condition_a(
     task_def: dict, timeout: float,
 ) -> dict:
-    """Run a single Condition A trial (workgraph-coordinated)."""
+    """Run a single Condition A trial (WG-coordinated)."""
     trial_id = f"condA-{task_def['id']}"
     result = {
         "trial_id": trial_id,
@@ -294,7 +294,7 @@ async def run_condition_a(
     wg_dir = os.path.join(tmpdir, ".workgraph")
     start = time.monotonic()
 
-    print(f"  [{trial_id}] Starting (workgraph, model={MODEL})...", flush=True)
+    print(f"  [{trial_id}] Starting (WG, model={MODEL})...", flush=True)
 
     try:
         # Init isolated graph
@@ -383,13 +383,13 @@ async def run_condition_a(
 
 
 # ---------------------------------------------------------------------------
-# Condition G: Raw Claude Code (no workgraph)
+# Condition G: Raw Claude Code (no WG task graph)
 # ---------------------------------------------------------------------------
 
 async def run_condition_g(
     task_def: dict, timeout: float,
 ) -> dict:
-    """Run a single Condition G trial (raw Claude Code, no workgraph)."""
+    """Run a single Condition G trial (raw Claude Code, no WG task graph)."""
     trial_id = f"condG-{task_def['id']}"
     result = {
         "trial_id": trial_id,
@@ -415,7 +415,7 @@ async def run_condition_g(
     try:
         instruction = load_instruction(task_def)
 
-        # Run claude CLI in print mode — no workgraph, just raw Claude Code
+        # Run claude CLI in print mode — no WG task graph, just raw Claude Code
         # --model haiku: use Haiku model
         # --print: non-interactive
         # --dangerously-skip-permissions: allow tool execution without prompts
@@ -428,7 +428,7 @@ async def run_condition_g(
             "--output-format", "json",
         ]
 
-        # Strip WG_* env vars so claude doesn't pick up workgraph context
+        # Strip WG_* env vars so claude doesn't pick up WG context
         clean_env = {
             k: v for k, v in os.environ.items()
             if not k.startswith("WG_") and k != "CLAUDECODE"
@@ -672,8 +672,8 @@ async def main(task_names: list[str] | None, timeout: float, smoke: bool):
         f.write(f"**Total wall clock:** {total_wall_clock:.1f}s ({total_wall_clock/60:.1f}min)\n\n")
 
         f.write("## Conditions\n\n")
-        f.write("- **Condition A (wg):** Workgraph-coordinated. Isolated wg service + native-exec agent.\n")
-        f.write("- **Condition G (raw):** Raw Claude Code. `claude --model haiku -p` with no workgraph.\n\n")
+        f.write("- **Condition A (wg):** WG-coordinated. Isolated wg service + native-exec agent.\n")
+        f.write("- **Condition G (raw):** Raw Claude Code. `claude --model haiku -p` with no WG task graph.\n\n")
 
         f.write("## Results\n\n")
         f.write(table + "\n\n")
@@ -693,11 +693,11 @@ async def main(task_names: list[str] | None, timeout: float, smoke: bool):
         a_pass = cond_stats["A"]["pass_rate"]
         g_pass = cond_stats["G"]["pass_rate"]
         if a_pass > g_pass:
-            f.write("Workgraph coordination (Condition A) **improved** performance over raw Claude Code.\n")
+            f.write("WG coordination (Condition A) **improved** performance over raw Claude Code.\n")
         elif g_pass > a_pass:
-            f.write("Raw Claude Code (Condition G) performed **better** than workgraph coordination.\n")
+            f.write("Raw Claude Code (Condition G) performed **better** than WG coordination.\n")
         else:
-            f.write("Both conditions performed **equally** — workgraph was neutral on this task set.\n")
+            f.write("Both conditions performed **equally** — WG was neutral on this task set.\n")
 
         a_time = cond_stats["A"]["mean_time_s"]
         g_time = cond_stats["G"]["mean_time_s"]

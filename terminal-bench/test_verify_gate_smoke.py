@@ -3,7 +3,7 @@
 Smoke test for the --verify gate in TB trial tasks.
 
 This script demonstrates the verify gate behavior by:
-1. Creating a workgraph with a task that has --verify set
+1. Creating a WG task graph with a task that has --verify set
 2. Showing the task has the verify field (wg show)
 3. Showing that wg done fails when verify fails
 4. Making verify pass and showing task completes

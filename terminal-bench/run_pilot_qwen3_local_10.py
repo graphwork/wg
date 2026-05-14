@@ -2,8 +2,8 @@
 """
 TB Pilot: Qwen3-Coder-30B local (SGLang on lambda01), 10 diverse tasks.
 
-Condition A (agent-only, no workgraph decomposition).
-Uses the native wg executor with local:qwen3-coder-30b model spec,
+Condition A (agent-only, no WG task graph decomposition).
+Uses the native WG executor with local:qwen3-coder-30b model spec,
 routing to http://lambda01:30000/v1 via [native_executor] api_base config.
 
 Usage:
@@ -349,7 +349,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save workgraph state before cleanup
+        # Save WG state before cleanup
         state_dst = os.path.join(RESULTS_DIR, trial_id, "workgraph_state")
         try:
             os.makedirs(os.path.dirname(state_dst), exist_ok=True)

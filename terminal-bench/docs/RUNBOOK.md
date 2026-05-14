@@ -656,7 +656,7 @@ encourages the agent to:
 The agent is not forced to follow this — it has full tools and can solve
 problems directly. In practice, some tasks are solved directly (like F),
 while others benefit from the graph-building and iteration guidance.
-This emulates what a human does when using wg: the agent is both
+This emulates what a human does when using WG: the agent is both
 the worker and the consciousness that evaluates whether the work is done.
 
 ### Condition Comparison

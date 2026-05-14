@@ -11,7 +11,7 @@ Task: `tb-adapter-audit`
 ### `setup()` (line 834)
 1. Creates a host-side temp dir (`tempfile.mkdtemp(prefix="tb-wg-")`)
 2. Calls `wg init` on the **host** via `_exec_wg_cmd_host()` (line 843)
-3. Normalizes the model string from Harbor's `/` format to wg's `:` format (line 849)
+3. Normalizes the model string from Harbor's `/` format to WG's `:` format (line 849)
 4. Writes `.wg/config.toml` via `_write_trial_wg_config()` (line 853) — sets coordinator.executor=native, coordinator.model, agent.model, context_scope, exec_mode, max_agents=1
 5. Writes custom bundle TOML for Condition A via `_write_trial_bundle()` (line 859) — excludes wg tools
 6. For federation conditions (D, E, F): initializes hub, writes federation.yaml, pulls agency primitives (lines 862–886)
@@ -373,7 +373,7 @@ Note: `_collect_agent_metrics()` expects the path to contain an `agents/` subdir
 - Remove `AGENT_TOOLS` (lines 484–540)
 - Remove `_run_docker_agent_loop()` (lines 543–754) — or keep as a deprecated fallback behind a flag
 - Remove `litellm` import (or make it conditional)
-- Remove `WG_QUICK_GUIDE` and `CONDITION_F_MEMORY` — these are now handled by wg's native context assembly
+- Remove `WG_QUICK_GUIDE` and `CONDITION_F_MEMORY` — these are now handled by WG's native context assembly
 
 ### Files to modify
 1. **`terminal-bench/wg/adapter.py`** — all the changes above

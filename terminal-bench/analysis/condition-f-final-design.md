@@ -10,9 +10,9 @@
 
 The previous F proposal (conditions-and-f-design.md §4.3, Decision 1) recommended dropping wg tools entirely, reasoning that A' (bare, 80%) outperforms D (wg + verify, 73%) and E (wg + org, 75%). This reasoning is wrong for two reasons:
 
-1. **It abandons the thesis.** The entire experiment asks: "Does wg add value over bare agents?" Dropping wg from F means F can only match A', never prove wg's value. A positive F-without-wg result would be evidence *against* wg.
+1. **It abandons the thesis.** The entire experiment asks: "Does WG add value over bare agents?" Dropping WG from F means F can only match A', never prove WG's value. A positive F-without-WG result would be evidence *against* WG.
 
-2. **It misattributes E's failure.** E failed not because wg is bad, but because M2.7 was never taught how to use wg. Zero `--after` dependencies across 30 E trials. 80% of B agents ignored wg tools entirely. The model gravitates away from wg because the system prompt doesn't teach it effectively — Claude agents succeed with wg because CLAUDE.md and MEMORY.md provide operational patterns that M2.7 never receives.
+2. **It misattributes E's failure.** E failed not because WG is bad, but because M2.7 was never taught how to use WG. Zero `--after` dependencies across 30 E trials. 80% of B agents ignored wg tools entirely. The model gravitates away from WG because the system prompt doesn't teach it effectively — Claude agents succeed with WG because CLAUDE.md and MEMORY.md provide operational patterns that M2.7 never receives.
 
 **F's design principle:** Close the context gap. Give M2.7 the same wg operational knowledge that makes Claude agents effective, then measure whether wg adds value.
 
@@ -88,7 +88,7 @@ def build_condition_f_prompt(instruction: str, root_task_id: str) -> str:
     """Condition F: wg-native agent with full context parity.
 
     Design principles:
-    - Keep wg tools (proves wg adds value over bare agents)
+    - Keep wg tools (proves WG adds value over bare agents)
     - Inject distilled wg knowledge (closes context gap with Claude agents)
     - Empirical verification first (test discovery before self-assessment)
     - Adaptive decomposition (multi-step = decompose; atomic = direct)
@@ -661,16 +661,16 @@ The previous F proposal argued (§5.1-5.4) that wg is overhead in single-agent H
 - A' (no wg) = 80% > D (wg) = 73% > B (wg, passive) = 38%
 - 80% of B agents ignore wg tools
 - E uses 5× more wg calls than D for no benefit
-- Zero `--after` usage means wg's dependency model is unused
+- Zero `--after` usage means WG's dependency model is unused
 - No wg service running (no coordinator, no parallel agents)
 
 This analysis is correct about the *current* state but draws the wrong conclusion. The evidence shows that **untaught wg usage is overhead** — it does not show that wg is inherently overhead.
 
 Consider an analogy: if you give a new developer git without teaching them branching, they'll use `git add -A && git commit` as a save button. The lack of branching usage doesn't prove git branches are overhead — it proves the developer needs training.
 
-E's zero `--after` usage is the smoking gun. The agent creates flat subtask lists because the prompt says "create tasks for each step using wg_add" without teaching that steps with dependencies need `--after` edges. CLAUDE.md's first principle is "use `--after` for dependency edges." Without this instruction, the agent can't use wg's dependency model.
+E's zero `--after` usage is the smoking gun. The agent creates flat subtask lists because the prompt says "create tasks for each step using wg_add" without teaching that steps with dependencies need `--after` edges. CLAUDE.md's first principle is "use `--after` for dependency edges." Without this instruction, the agent can't use WG's dependency model.
 
-F tests whether the context gap is the bottleneck. If F achieves >80% with wg, it validates the thesis. If F achieves ≤80% despite proper wg teaching, *then* we have evidence that wg is overhead in single-agent trials — and only then should we consider dropping it.
+F tests whether the context gap is the bottleneck. If F achieves >80% with WG, it validates the thesis. If F achieves ≤80% despite proper WG teaching, *then* we have evidence that WG is overhead in single-agent trials — and only then should we consider dropping it.
 
 ## Appendix B: Token Estimate for WG Context Injection
 

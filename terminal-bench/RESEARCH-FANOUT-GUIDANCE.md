@@ -121,7 +121,7 @@ The meta-prompt is prepended to the task instruction, which then becomes the tas
 1. The TB meta-prompt (from adapter.py, in the description)
 2. The wg decomposition guidance (from AUTOPOIETIC_GUIDANCE or build_decomposition_guidance, injected by build_prompt)
 
-**This is a key tension**: The wg system's decomposition guidance says "default to implementing directly," but the TB Condition G meta-prompt says "DO NOT write code." They conflict.
+**This is a key tension**: The WG system's decomposition guidance says "default to implementing directly," but the TB Condition G meta-prompt says "DO NOT write code." They conflict.
 
 ### 2.3 Coordinator Heartbeat (TB-related)
 

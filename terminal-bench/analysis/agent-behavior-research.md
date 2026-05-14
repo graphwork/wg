@@ -87,7 +87,7 @@ To validly compare B vs C, use the original `full-condition-b` data (which ran `
 
 This +20.8pp gap suggests wg usage (particularly logging and completion signaling) correlates with more methodical problem-solving, though the causal direction is unclear — it may be that harder tasks where agents fail also happen to overwhelm the model enough to skip optional tools.
 
-### Why aren't 100% of agents using wg?
+### Why aren't 100% of agents using WG?
 
 **Primary cause: prompt compliance gap.** Minimax-m2.7 treats wg tools as optional supplements. When the task is straightforward (fix a git repo, write a simple script), the model takes the shortest path using only bash and file tools. The Condition C prompt says "Always do this: wg_log before first action" but ~14% of agents ignore this instruction entirely.
 

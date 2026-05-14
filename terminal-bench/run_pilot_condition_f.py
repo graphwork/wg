@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Condition F Pilot Runner — runs 14 condition-F trials through the full
-native wg adapter lifecycle with federation.
+native WG adapter lifecycle with federation.
 
 Each trial:
-  1. Init per-trial workgraph in temp dir
+  1. Init per-trial WG state in temp dir
   2. Write condition F config (graph context, native executor)
   3. Federation pull from tb-evaluations/ hub
   4. Create root task
@@ -116,7 +116,7 @@ async def run_trial(task_type: str, replica: int) -> TrialResult:
     wg_dir = os.path.join(tmpdir, ".workgraph")
 
     try:
-        # 1. Init workgraph
+        # 1. Init WG
         init_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, ["init"])
         if "error" in init_out.lower() and "already" not in init_out.lower():
             raise RuntimeError(f"Init failed: {init_out}")
@@ -271,7 +271,7 @@ def write_results_markdown(results, data, output_path):
         "",
         f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         f"**Condition:** F (distilled context injection + empirical verification)",
-        f"**Executor:** Native wg (not litellm)",
+        f"**Executor:** Native WG (not litellm)",
         f"**Mode:** Lifecycle pilot (no LLM execution -- verifies adapter + federation pipeline)",
         f"**Hub:** terminal-bench/tb-evaluations/",
         "",
@@ -308,7 +308,7 @@ def write_results_markdown(results, data, output_path):
         "## Validation Checklist",
         "",
         f"- [{'x' if total >= 10 else ' '}] At least 10 condition F trials ran to completion ({total} total, {passed} passed)",
-        f"- [{'x' if data['native_executor_used'] == total else ' '}] Each trial used native wg executor ({data['native_executor_used']}/{total})",
+        f"- [{'x' if data['native_executor_used'] == total else ' '}] Each trial used native WG executor ({data['native_executor_used']}/{total})",
         f"- [{'x' if data['federation_pulled'] >= passed else ' '}] Federation pull verified ({data['federation_pulled']}/{total})",
         f"- [{'x' if data['federation_pushed'] >= passed else ' '}] Federation push verified ({data['federation_pushed']}/{total})",
         f"- [{'x' if passed >= 10 else ' '}] Results summary with pass/fail counts, timing",

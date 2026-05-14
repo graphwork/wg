@@ -6,7 +6,7 @@
 
 Run Terminal Bench two ways:
 - **Condition A**: Bare agent (no wg) -- the baseline everyone else has
-- **Condition B**: Same agent with wg as external memory -- the thesis
+- **Condition B**: Same agent with WG as external memory -- the thesis
 
 Show that B dramatically outperforms A. Prove that memory makes computation universal.
 
@@ -263,7 +263,7 @@ This is the main result. If Minimax M2.7 + wg meaningfully outperforms bare Mini
 
 ### 4b. Smaller open model via OpenRouter (stretch)
 
-Repeat with a smaller/cheaper model. The hypothesis is that wg helps smaller models even more, because they hit context limits sooner and benefit more from externalized memory.
+Repeat with a smaller/cheaper model. The hypothesis is that WG helps smaller models even more, because they hit context limits sooner and benefit more from externalized memory.
 
 ### 4c. Claude Sonnet via native executor (calibration)
 
@@ -293,9 +293,9 @@ For each model x condition:
 ### The Story
 
 1. **The thesis**: Memory makes computation universal (link to your paper)
-2. **The construction**: wg as external stigmergic memory for LLMs
+2. **The construction**: WG as external stigmergic memory for LLMs
 3. **The experiment**: Terminal Bench, two conditions, same model
-4. **The result**: [X]% improvement with wg on Minimax M2.7
+4. **The result**: [X]% improvement with WG on Minimax M2.7
 5. **The implication**: The bottleneck isn't the model. It's the memory architecture. You can make a $0 open model outperform a $200/month subscription by giving it the right external memory system.
 
 ### Artifacts
@@ -362,7 +362,7 @@ If the experiment works:
 
 Or even better:
 
-**"Minimax M2.7 with wg solves [X]% of Terminal Bench. Bare Minimax M2.7 solves [Y]%. The graph is worth [X-Y] percentage points of performance -- equivalent to a [N]x model size increase."**
+**"Minimax M2.7 with WG solves [X]% of Terminal Bench. Bare Minimax M2.7 solves [Y]%. The graph is worth [X-Y] percentage points of performance -- equivalent to a [N]x model size increase."**
 
 That's the number that changes everything. That's the constructive proof of your theorem. That's what turns 5 stars into 5,000.
 

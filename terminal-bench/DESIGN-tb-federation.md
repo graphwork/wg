@@ -51,7 +51,7 @@ The goal: make TB trials federate with a persistent base project so that evaluat
 **Decision: Use a dedicated project, NOT the main wg repo.**
 
 Rationale:
-- The main wg project's agency pool serves production use — polluting it with benchmark-model evaluations (e.g., minimax-m2.7 results) would distort evolution for production agents
+- The main WG project's agency pool serves production use — polluting it with benchmark-model evaluations (e.g., minimax-m2.7 results) would distort evolution for production agents
 - A dedicated hub keeps benchmark data isolated while still using the full federation machinery
 - The hub can optionally federate *upstream* to the main project for roles/tradeoffs that prove universally good, but this is a deliberate manual step, not automatic
 
@@ -368,7 +368,7 @@ context_scope = "clean"
 remotes:
   upstream:
     path: "../../.wg/agency"
-    description: "Main wg project agency pool"
+    description: "Main WG project agency pool"
 ```
 
 This allows:
@@ -416,7 +416,7 @@ def recover_evaluations(logs_root: str, hub_path: str, wg_bin: str = "wg"):
 
 ### 8.3 Realistic Assessment
 
-Most existing trial data was generated with the old litellm-based adapter, which did NOT run `wg evaluate`. Those archived `.wg/` directories contain task graphs but no evaluation JSONs. Recovery is only possible for trials run after the native wg adapter was deployed AND evaluation was wired in.
+Most existing trial data was generated with the old litellm-based adapter, which did NOT run `wg evaluate`. Those archived `.wg/` directories contain task graphs but no evaluation JSONs. Recovery is only possible for trials run after the native WG adapter was deployed AND evaluation was wired in.
 
 **Bottom line: treat migration as best-effort. The main value is forward-looking.**
 

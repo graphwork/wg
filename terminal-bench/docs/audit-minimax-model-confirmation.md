@@ -10,7 +10,7 @@
 
 MINIMAX M2.7 (`openrouter:minimax/minimax-m2.7`, resolved to `minimax/minimax-m2.7` via OpenRouter) is confirmed as the **sole execution model** for task agent execution across both pilot conditions (A and F). No Claude Opus, Sonnet, or any other model was used for trial agent execution.
 
-The wg system itself (coordinator, evaluations, assignments, FLIP scoring) uses different models (Opus, Sonnet, Haiku) — this is by design and does not affect the experiment's execution model.
+The WG system itself (coordinator, evaluations, assignments, FLIP scoring) uses different models (Opus, Sonnet, Haiku) — this is by design and does not affect the experiment's execution model.
 
 ---
 
@@ -180,7 +180,7 @@ Uses the same model-locked isolation pattern as the pilots.
 
 ## 5. Evaluation Model vs Execution Model (Expected Distinction)
 
-The wg system uses different models for different roles. This is **by design** and does not contaminate the experiment:
+The WG system uses different models for different roles. This is **by design** and does not contaminate the experiment:
 
 | Role | Model | Purpose | Affects trials? |
 |------|-------|---------|----------------|

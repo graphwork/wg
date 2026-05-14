@@ -1,4 +1,4 @@
-"""Smoke trials for TB native wg adapter + federation.
+"""Smoke trials for TB native WG adapter + federation.
 
 Runs 12+ trials across conditions (A, B, D, F) × tasks × replicas,
 validating the full lifecycle:
@@ -129,7 +129,7 @@ async def run_smoke_trial(
     result.wg_dir = wg_dir
 
     try:
-        # Step 1: Initialize per-trial workgraph
+        # Step 1: Initialize per-trial WG state
         init_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, ["init"])
         assert "error" not in init_out.lower() or "already" in init_out.lower(), (
             f"Init failed: {init_out}"
@@ -297,7 +297,7 @@ class TestSmokeTrialCount:
 
 
 class TestNativeExecutor:
-    """Every trial must use the native wg executor, not litellm."""
+    """Every trial must use the native WG executor, not litellm."""
 
     def test_all_used_native_executor(self, all_smoke_results):
         for r in all_smoke_results:

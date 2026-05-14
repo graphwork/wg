@@ -694,7 +694,7 @@ exec_mode = "full"
 **Distinction from F:** F uses `max_agents=1` and no meta-prompt — the agent gets
 a single task and works on it. G uses `max_agents=8`, an active coordinator, and
 the autopoietic meta-prompt that encourages graph decomposition and iterative
-verification. G emulates what a human does with wg: reading the problem,
+verification. G emulates what a human does with WG: reading the problem,
 breaking it down, building a plan, checking results, and iterating.
 
 **Historical note:** Originally formalized as "F without surveillance" (context-only).

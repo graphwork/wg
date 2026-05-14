@@ -2,9 +2,9 @@
 """
 TB Pilot: Qwen3-Coder-30B local (SGLang on lambda01), 10 tasks, Condition G.
 
-Condition G (workgraph-assisted): the seed agent decomposes the task into
+Condition G (WG-assisted): the seed agent decomposes the task into
 subtasks using `wg add`, and the coordinator dispatches worker agents. This
-tests whether workgraph decomposition helps (or hurts) compared to Condition A
+tests whether WG task graph decomposition helps (or hurts) compared to Condition A
 where a single agent tackles the task directly.
 
 Uses the SAME 10-task subset as run_pilot_qwen3_local_10.py for direct A/G
@@ -82,7 +82,7 @@ CONDITION_G_META_PROMPT = """You are a graph architect. You do NOT implement sol
 Your job:
 1. Read the task below and understand what needs to be done
 2. Explore the working directory (`ls`, `cat`) to understand the codebase
-3. Build a workgraph that solves the problem, then mark YOUR task done
+3. Build a WG task graph that solves the problem, then mark YOUR task done
 
 DO NOT write code. DO NOT modify files. Only create wg tasks.
 
@@ -486,7 +486,7 @@ async def run_trial(
             f"**Model:** {MODEL}\n"
             f"**Endpoint:** {SGLANG_BASE_URL}\n"
             f"**Context Window:** {CONTEXT_WINDOW}\n"
-            f"**Condition:** G (workgraph-assisted, autopoietic)\n\n"
+            f"**Condition:** G (WG-assisted, autopoietic)\n\n"
             f"## Instructions\n\n{full_instruction}\n"
         )
 
@@ -585,7 +585,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save workgraph state before cleanup
+        # Save WG state before cleanup
         state_dst = os.path.join(RESULTS_DIR, trial_id, "workgraph_state")
         try:
             os.makedirs(os.path.dirname(state_dst), exist_ok=True)
@@ -735,7 +735,7 @@ async def main(timeout: float, tasks: list[str] | None = None):
 
     # Print summary
     print(f"\n{'='*70}")
-    print(f"SUMMARY: {RUN_ID} — Condition G (workgraph-assisted)")
+    print(f"SUMMARY: {RUN_ID} — Condition G (WG-assisted)")
     print(f"{'='*70}")
     print(f"  Model: {MODEL}")
     print(f"  Endpoint: {SGLANG_BASE_URL}")
@@ -771,7 +771,7 @@ async def main(timeout: float, tasks: list[str] | None = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="TB Pilot: Qwen3-Coder-30B Local — Condition G (workgraph)"
+        description="TB Pilot: Qwen3-Coder-30B Local — Condition G (WG)"
     )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help=f"Per-trial timeout in seconds (default: {DEFAULT_TIMEOUT})")

@@ -146,7 +146,7 @@ llama.cpp now has MCP client support (merged March 2026), enabling tool calling 
 
 ## 4. wg / Harbor Integration
 
-### Path A: Direct wg Native Executor (Recommended for Condition A/G)
+### Path A: Direct WG Native Executor (Recommended for Condition A/G)
 
 wg already supports local providers natively. The provider routing in `src/executor/native/provider.rs` handles:
 

@@ -403,7 +403,7 @@ Condition F synthesizes the key lessons from A through E:
 
 1. **F's FLIP scores.** Until FLIP evaluations are collected for F, we cannot quantify whether F achieves Tier 2 understanding.
 2. **F vs D on harder tasks.** The full-sweep tasks are too easy. The Harbor H2H tasks (33% false-PASS rate) are the right difficulty target.
-3. **Multi-agent effects.** All data is single-agent. wg's coordination features (dependency dispatch, agent handoffs, concurrent execution) have never been tested in the benchmark.
+3. **Multi-agent effects.** All data is single-agent. WG's coordination features (dependency dispatch, agent handoffs, concurrent execution) have never been tested in the benchmark.
 4. **Model interaction effects.** Conditions may rank differently with different models. The only cross-model data point is minimax m2.7 (Harbor) vs Sonnet 4.6 (full-sweep), which confounds model capability with condition effects.
 
 ### 8.5 Actionable Next Steps
@@ -411,7 +411,7 @@ Condition F synthesizes the key lessons from A through E:
 1. **Complete Condition F sweep.** 4 trials remain in-progress. Once done, collect FLIP/LLM eval via tb-collect-condition-f.
 2. **Run harder tasks.** Port the H2H trial tasks (cancel-async-tasks, regex-log, build-cython-ext, overfull-hbox, etc. — known to produce failures) into a new sweep with conditions D, E, and F.
 3. **Fix the FLIP model mismatch.** Implement per-task FLIP model override (`src/commands/evaluate.rs:674`) so F's Gemini trials are scored by a Gemini evaluator, not Sonnet.
-4. **Test multi-agent scenarios.** Run the benchmark with `wg service --max-agents 4` to test whether wg's coordination features improve outcomes on tasks with genuine parallelism.
+4. **Test multi-agent scenarios.** Run the benchmark with `wg service --max-agents 4` to test whether WG's coordination features improve outcomes on tasks with genuine parallelism.
 5. **Increase replicas.** 3 replicas per cell produces wide confidence intervals. 5–10 replicas on a focused task set would enable within-Tier-2 discrimination.
 
 ---

@@ -3,7 +3,7 @@
 **Date:** 2026-04-05
 **Model:** openrouter:minimax/minimax-m2.7
 **Trials:** 14
-**Executor:** native wg (per-trial service instances)
+**Executor:** native WG (per-trial service instances)
 **Federation:** tb-evaluations/ hub
 
 ---
@@ -66,7 +66,7 @@
 ## Validation Checklist
 
 - [x] At least 10 trials ran to completion
-- [x] Each trial used native wg executor
+- [x] Each trial used native WG executor
 - [x] Each trial had its own wg service instance
 - [x] Federation pull verified for each trial
 - [x] Federation push verified for each trial

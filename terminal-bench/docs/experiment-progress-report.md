@@ -70,7 +70,7 @@ were easier and more amenable to context-driven solutions.
 
 ### 4.3 Condition G's autopoietic design is promising but fighting the executor
 
-**The core tension:** wg's native executor injects a `REQUIRED_WORKFLOW` section
+**The core tension:** WG's native executor injects a `REQUIRED_WORKFLOW` section
 into every agent's prompt that says "do the work, validate, `wg done`." This
 conflicts with the Condition G meta-prompt that says "build a graph, delegate,
 don't implement." M2.7 follows the louder, more structured REQUIRED_WORKFLOW
@@ -95,7 +95,7 @@ and ignores the meta-prompt in the task description.
 
 ### 4.4 Cycle dispatch bug found and fixed
 
-Discovered and fixed a bug in wg's cycle readiness computation (`src/graph.rs`).
+Discovered and fixed a bug in WG's cycle readiness computation (`src/graph.rs`).
 When a user creates a cycle with `wg edit X --add-after Y --max-iterations N`,
 the task X should be the entry point. But Havlak's algorithm sometimes picked a
 different header based on DFS traversal order, causing cycles to start from the

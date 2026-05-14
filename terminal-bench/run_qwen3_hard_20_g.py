@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-TB Stress Test: Qwen3-Coder-30B, hardest tasks, Condition G (workgraph-assisted).
+TB Stress Test: Qwen3-Coder-30B, hardest tasks, Condition G (WG-assisted).
 
 Runs all 18 available local TB tasks against Qwen3-Coder-30B on lambda01,
 ordered hardest-first. Uses the SAME task set as run_qwen3_hard_20_a.py
 for direct A vs G comparison.
 
 Condition G: the seed agent decomposes the task into subtasks using `wg add`,
-and the coordinator dispatches worker agents. Tests whether workgraph
+and the coordinator dispatches worker agents. Tests whether WG task graph
 decomposition helps on hard tasks — especially with 32k context pressure.
 
 Hypothesis: On hard tasks, Condition G should outperform A because:
@@ -110,7 +110,7 @@ CONDITION_G_META_PROMPT = """You are a graph architect. You do NOT implement sol
 Your job:
 1. Read the task below and understand what needs to be done
 2. Explore the working directory (`ls`, `cat`) to understand the codebase
-3. Build a workgraph that solves the problem, then mark YOUR task done
+3. Build a WG task graph that solves the problem, then mark YOUR task done
 
 DO NOT write code. DO NOT modify files. Only create wg tasks.
 
@@ -667,7 +667,7 @@ async def run_trial(
             f"**Model:** {MODEL}\n"
             f"**Endpoint:** {SGLANG_BASE_URL}\n"
             f"**Context Window:** {CONTEXT_WINDOW} tokens\n"
-            f"**Condition:** G (workgraph-assisted, decomposition enabled)\n"
+            f"**Condition:** G (WG-assisted, decomposition enabled)\n"
             f"**Max Parallel Agents:** {MAX_AGENTS}\n\n"
             f"## Instructions\n\n{full_instruction}\n"
         )
@@ -765,7 +765,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save workgraph state before cleanup
+        # Save WG state before cleanup
         state_dst = os.path.join(RESULTS_DIR, trial_id, "workgraph_state")
         try:
             os.makedirs(os.path.dirname(state_dst), exist_ok=True)
@@ -1081,7 +1081,7 @@ async def main(timeout: float, tasks: list[str] | None = None, smart: bool = Fal
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="TB Stress Test: Qwen3-Coder-30B, hardest tasks, Condition G (workgraph)")
+        description="TB Stress Test: Qwen3-Coder-30B, hardest tasks, Condition G (WG)")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help=f"Per-trial timeout in seconds (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("--tasks", nargs="*", help="Override task list")

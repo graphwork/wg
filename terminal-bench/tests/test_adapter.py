@@ -1,4 +1,4 @@
-"""Tests for the Terminal Bench native wg executor adapter.
+"""Tests for the Terminal Bench native WG executor adapter.
 
 Covers:
   - CONDITION_CONFIG validity

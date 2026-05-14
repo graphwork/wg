@@ -3,7 +3,7 @@
 TB Pilot Runner: Free model smoke test (5 diverse tasks)
 
 Runs 5 diverse terminalbench tasks through a free OpenRouter model using
-the native wg executor. Each trial gets its own isolated workgraph.
+the native WG executor. Each trial gets its own isolated WG state.
 
 Designed for comparability across free models — all free-model pilots
 should use the SAME 5 tasks (defined in SMOKE_TASKS below).
@@ -323,7 +323,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save workgraph state before cleanup
+        # Save WG state before cleanup
         state_dst = os.path.join(
             SCRIPT_DIR, "results", run_id, trial_id, "workgraph_state"
         )

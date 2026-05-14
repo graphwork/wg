@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the knowledge base for the Terminal Bench validation campaign. wg agents executing tasks in this campaign should read this for context. It captures research, architectural analysis, competitive intelligence, and strategic decisions made during planning.
+This document is the knowledge base for the Terminal Bench validation campaign. WG agents executing tasks in this campaign should read this for context. It captures research, architectural analysis, competitive intelligence, and strategic decisions made during planning.
 
 ---
 
@@ -13,7 +13,7 @@ This document is the knowledge base for the Terminal Bench validation campaign. 
 - Transformers in a single forward pass are TC0 (bounded parallel)
 - Chain-of-thought (feeding output back as input) makes them Turing-complete
 - But attention is O(n^2) -- quadratic cost for memory
-- External memory (the wg) provides the same universality at linear cost
+- External memory (the WG task graph) provides the same universality at linear cost
 - The graph is CRISPR for LLMs: a chronological log of computational history that bounded agents can read back
 
 **Blog post**: http://thinks.lol/2025/01/memory-makes-computation-universal/
@@ -56,7 +56,7 @@ tb run \
 2. Direct Python integration (full logging + API access)
 3. MCP server (exposes tmux session)
 
-**Prompt injection**: Agents receive the task instruction as their prompt. Custom system prompts are injected by the agent harness BEFORE the task instruction. This is where ForgeCode puts identity, planning rules, tool descriptions, and skills. This is where wg puts the wg CLI instructions, graph context, and scope-based prompt assembly.
+**Prompt injection**: Agents receive the task instruction as their prompt. Custom system prompts are injected by the agent harness BEFORE the task instruction. This is where ForgeCode puts identity, planning rules, tool descriptions, and skills. This is where WG puts the wg CLI instructions, graph context, and scope-based prompt assembly.
 
 ---
 
@@ -96,9 +96,9 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 
 **Key result**: With identical Gemini 3.1 Pro weights, ForgeCode scored 78.4% vs Google's own agent at 68.5%. **10-point delta from scaffold alone.**
 
-### ForgeCode vs wg: Architectural Comparison
+### ForgeCode vs WG: Architectural Comparison
 
-| Dimension | ForgeCode | wg |
+| Dimension | ForgeCode | WG |
 |-----------|-----------|-----------|
 | Planning | Enforced `todo_write` (flat checklist) | Task graph with dependencies, cycles, verification gates |
 | Agent decomposition | 3 fixed agents (Muse/Forge/Sage) | Arbitrary agent types via agency system, composable from primitives |
@@ -112,15 +112,15 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 | Language | Rust | Rust |
 | License | Apache 2.0 | (Erik's project) |
 
-### What wg Can Do That ForgeCode Cannot
+### What WG Can Do That ForgeCode Cannot
 
-1. **Persistent external memory**: ForgeCode's todo_write is in-context. wg's task log survives context exhaustion.
-2. **Dependency-driven execution**: ForgeCode's agents follow a fixed sequence. wg's coordinator dispatches based on graph topology -- ready tasks spawn automatically.
-3. **Cycles**: ForgeCode has no iteration concept. wg supports structural cycles with convergence detection.
-4. **Cross-agent artifact sharing**: ForgeCode's agents share conversational context. wg agents share typed artifacts through the graph, discoverable by any future agent.
-5. **Agent resume**: If a ForgeCode agent dies, it starts over. wg agents resume from journal with stale-state detection.
-6. **Verification gates**: ForgeCode's verification is a prompt. wg's `--verify` runs an actual command and blocks downstream until it passes.
-7. **Arbitrary decomposition depth**: ForgeCode has 3 agents. wg can spawn N agents for N subtasks, each with their own subtasks.
+1. **Persistent external memory**: ForgeCode's todo_write is in-context. WG's task log survives context exhaustion.
+2. **Dependency-driven execution**: ForgeCode's agents follow a fixed sequence. WG dispatches based on graph topology -- ready tasks spawn automatically.
+3. **Cycles**: ForgeCode has no iteration concept. WG supports structural cycles with convergence detection.
+4. **Cross-agent artifact sharing**: ForgeCode's agents share conversational context. WG agents share typed artifacts through the graph, discoverable by any future agent.
+5. **Agent resume**: If a ForgeCode agent dies, it starts over. WG agents resume from journal with stale-state detection.
+6. **Verification gates**: ForgeCode's verification is a prompt. WG's `--verify` runs an actual command and blocks downstream until it passes.
+7. **Arbitrary decomposition depth**: ForgeCode has 3 agents. WG can spawn N agents for N subtasks, each with their own subtasks.
 
 ---
 
@@ -179,7 +179,7 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 - System prompt: minimal (tool descriptions + task instruction)
 - This is what everyone else has
 
-**Condition B: Agent + wg (Treatment)**
+**Condition B: Agent + WG (Treatment)**
 - Native executor with full wg tool access
 - Tools: everything in Condition A + wg_show, wg_list, wg_add, wg_done, wg_fail, wg_log, wg_artifact
 - Journal/resume enabled (survives context exhaustion)
@@ -225,8 +225,8 @@ Calibration: **Claude Haiku** via native executor (Anthropic API)
 ### Expected Results
 
 - **Easy tasks**: Both conditions similar. Single session suffices.
-- **Medium tasks**: wg helps. Decomposition, logging, artifact sharing improve reliability.
-- **Hard tasks**: wg's thesis. Bare agent hits context wall. Graph agent decomposes, checkpoints, resumes. This is where the gap opens.
+- **Medium tasks**: WG helps. Decomposition, logging, artifact sharing improve reliability.
+- **Hard tasks**: WG's thesis. Bare agent hits context wall. Graph agent decomposes, checkpoints, resumes. This is where the gap opens.
 
 ---
 
@@ -240,7 +240,7 @@ Terminal Bench gives each agent:
 
 The agent harness wraps the task instruction with its own system prompt. This is where scaffold engineering happens. ForgeCode injects identity, planning rules, tool schemas, skills, and non-interactive mode directives.
 
-For wg:
+For WG:
 - **Condition A system prompt**: Minimal. "You are a coding agent. Complete the following task. You have access to bash and file tools."
 - **Condition B system prompt**: The scope-based prompt assembly from `src/service/executor.rs`. This includes the REQUIRED_WORKFLOW_SECTION (wg CLI commands, message handling, validation, completion gates), the GRAPH_PATTERNS_SECTION (cycle awareness, golden rule), and task-specific context.
 
@@ -372,7 +372,7 @@ submissions/terminal-bench/2.0/<agent>__<model>/
 **Step 3: Create metadata.yaml**
 ```yaml
 agent_url: https://github.com/graphwork/wg
-agent_display_name: "wg Native"
+agent_display_name: "WG Native"
 agent_org_display_name: "Erik Garrison"
 
 models:
@@ -477,7 +477,7 @@ Current top entries on Terminal Bench 2.0:
 | 39 | Claude Code | Claude Opus 4.6 | 58.0% |
 | Last | (worst) | -- | 3.1% |
 
-**Our target**: Beat Claude Code's 58% with an open model. If wg + Minimax M2.7 scores above 58%, we've shown that a model with the right memory architecture beats a frontier model with a basic scaffold. That alone is newsworthy.
+**Our target**: Beat Claude Code's 58% with an open model. If WG + Minimax M2.7 scores above 58%, we've shown that a model with the right memory architecture beats a frontier model with a basic scaffold. That alone is newsworthy.
 
 **Dream target**: Approach or beat ForgeCode's 78-82% range. If we do that with Minimax M2.7, it's paradigm-shifting.
 
@@ -603,13 +603,13 @@ cargo test -- --ignored test_openrouter       # OpenRouter tests only
 
 1. **ForgeCode proved scaffold > model** (10-point delta, same weights). We're proving memory > scaffold.
 
-2. **Enforced planning was ForgeCode's biggest win** (+28 points). wg's task graph is enforced planning on steroids -- with dependencies, verification, and persistence.
+2. **Enforced planning was ForgeCode's biggest win** (+28 points). WG's task graph is enforced planning with dependencies, verification, and persistence.
 
-3. **The hard tasks are where wg wins.** Easy tasks don't need external memory. Hard tasks exceed context limits. That's where the graph provides value.
+3. **The hard tasks are where WG wins.** Easy tasks don't need external memory. Hard tasks exceed context limits. That's where the graph provides value.
 
 4. **Context exhaustion is a feature, not a bug.** When Condition A agents hit context limits and fail, Condition B agents resume from journal. The failure IS the proof.
 
-5. **The system prompt is the scaffold.** Terminal Bench tasks come as plain instructions. The system prompt wrapper is where all the agent engineering lives. wg's scope-based prompt assembly IS the competitive advantage.
+5. **The system prompt is the scaffold.** Terminal Bench tasks come as plain instructions. The system prompt wrapper is where all the agent engineering lives. WG's scope-based prompt assembly is the competitive advantage.
 
 6. **Token cost doesn't matter if pass rate improves.** Even if Condition B uses more tokens per task (because of wg tool calls, graph context), higher pass rate is the primary metric.
 
@@ -624,20 +624,20 @@ cargo test -- --ignored test_openrouter       # OpenRouter tests only
 This campaign is not just a benchmark run. It's a **constructive proof of a theoretical result**:
 
 - **The paper** (arXiv:2412.17794): Universality requires (1) stable evolution of thought and (2) reliable access to history of thought. Memory makes computation universal.
-- **The construction** (wg): A stigmergic task graph that provides externalized memory to bounded LLM agents. The graph is CRISPR for LLMs -- a chronological log that agents read back to act on their full computational history.
-- **The proof** (Terminal Bench): Show that agents with external memory (wg) outperform agents without it, same model, same tools. The delta IS the value of memory.
+- **The construction** (WG): A stigmergic task graph that provides externalized memory to bounded LLM agents. The graph is CRISPR for LLMs -- a chronological log that agents read back to act on their full computational history.
+- **The proof** (Terminal Bench): Show that agents with external memory (WG) outperform agents without it, same model, same tools. The delta is the value of memory.
 
 ### Why This Is Different From ForgeCode's Approach
 
 ForgeCode optimized the scaffold: enforced planning, progressive thinking, schema tricks, subagent parallelization. All within a single session. All within the context window.
 
-wg optimizes the **memory architecture**: persistent state that survives context exhaustion, dependency-driven execution, stigmergic coordination through shared graph state, crash recovery via journal/resume.
+WG optimizes the **memory architecture**: persistent state that survives context exhaustion, dependency-driven execution, stigmergic coordination through shared graph state, crash recovery via journal/resume.
 
 ForgeCode proved scaffold > model (10-point delta). We're proving memory > scaffold. If a $0 open model with the right memory architecture beats expensive frontier models with sophisticated scaffolds, that's a fundamental result about the nature of intelligence -- not just an engineering win.
 
 ### The Self-Bootstrapping Argument
 
-wg was built by wg. 216K lines of Rust, 103K lines of design docs, 1,057 commits, 75 days, 1 person. The system orchestrated the agents that wrote the system. This is the ultimate proof-of-concept, but it's self-referential. Terminal Bench makes it legible to the outside world by providing an independent, third-party evaluation.
+WG was built by WG. 216K lines of Rust, 103K lines of design docs, 1,057 commits, 75 days, 1 person. The system orchestrated the agents that wrote the system. This is the ultimate proof-of-concept, but it's self-referential. Terminal Bench makes it legible to the outside world by providing an independent, third-party evaluation.
 
 ### Deadline
 
@@ -647,7 +647,7 @@ wg was built by wg. 216K lines of Rust, 103K lines of design docs, 1,057 commits
 
 ## 12. Links Index
 
-### wg
+### WG
 - Paper: https://arxiv.org/abs/2412.17794
 - Blog: http://thinks.lol/2025/01/memory-makes-computation-universal/
 - Repository: https://github.com/graphwork/wg

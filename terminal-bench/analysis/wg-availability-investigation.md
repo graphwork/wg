@@ -86,7 +86,7 @@ This means **agents cannot run `wg` via the bash tool** — there is no wg binar
 
 2. **C (86%)**: Skill injection prompt with explicit templates (`wg_log("{root_task_id}", "Starting: <plan>")`) dramatically increases adoption. But only 8% use `wg_add` for decomposition — agents prefer to solve directly.
 
-3. **D (100%)**: The autopoietic verification loop prompt makes `wg_log` and `wg_done` mandatory parts of the protocol. But almost no decomposition (3%) — the prompt frames wg as a verification/logging tool.
+3. **D (100%)**: The autopoietic verification loop prompt makes `wg_log` and `wg_done` mandatory parts of the protocol. But almost no decomposition (3%) — the prompt frames WG as a verification/logging tool.
 
 4. **E (97%/93% wg_add)**: The organization-generation prompt explicitly frames the agent as an "ORCHESTRATOR" who decomposes tasks. This drives both overall wg usage and decomposition.
 

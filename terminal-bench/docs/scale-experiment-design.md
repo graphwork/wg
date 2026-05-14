@@ -579,4 +579,4 @@ Note: Condition G is now the primary treatment condition. Running Condition F al
 
 3. **Should we use Docker-in-Docker for `/tmp` isolation of custom tasks?** Wrapping custom tasks in Docker would eliminate the `/tmp` collision problem but adds complexity. The per-task mutex is simpler and sufficient.
 
-4. **Notification on completion?** For an 8-hour unattended run, the runner should notify on completion/failure. Options: email, Slack webhook, or Matrix (all supported by wg's notification system).
+4. **Notification on completion?** For an 8-hour unattended run, the runner should notify on completion/failure. Options: email, Slack webhook, or Matrix (all supported by WG's notification system).

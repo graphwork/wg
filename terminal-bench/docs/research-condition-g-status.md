@@ -39,7 +39,7 @@ The agent is **not forced** to follow this structure -- it has full tools and ca
 
 ### Key Distinction From Other Conditions
 
-Condition G emulates what a **human** does when using wg: reading the problem, breaking it down, building a plan, checking results, and iterating. The agent is both the worker and the consciousness that evaluates completeness.
+Condition G emulates what a **human** does when using WG: reading the problem, breaking it down, building a plan, checking results, and iterating. The agent is both the worker and the consciousness that evaluates completeness.
 
 ---
 

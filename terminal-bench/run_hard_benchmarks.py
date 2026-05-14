@@ -46,7 +46,7 @@ WG_BIN = shutil.which("wg") or os.path.expanduser("~/.cargo/bin/wg")
 # WG Quick Guide for condition F distilled context injection
 WG_QUICK_GUIDE = """## WG Quick Reference (Distilled)
 
-You are working inside a workgraph-managed task. Use these commands:
+You are working inside a WG-managed task. Use these commands:
 
 ### Progress tracking
 - `wg log <task-id> "message"` — log progress
@@ -598,7 +598,7 @@ async def run_trial(
         # Always stop the daemon before cleanup (handles both normal and error paths)
         daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
-        # Save graph state
+        # Save WG state
         state_dst = os.path.join(RESULTS_DIR, trial_id, "workgraph_state")
         try:
             os.makedirs(os.path.dirname(state_dst), exist_ok=True)
