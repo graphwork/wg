@@ -16,7 +16,7 @@ use crate::executor::native::client::ToolDefinition;
 
 /// The bg tool for managing background tasks.
 pub struct BackgroundTool {
-    /// Path to the workgraph directory.
+    /// Path to the WG directory.
     workgraph_dir: PathBuf,
     /// Shared job store with async mutex.
     job_store: Arc<TokioMutex<Option<JobStore>>>,

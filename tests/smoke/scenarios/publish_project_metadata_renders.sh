@@ -81,14 +81,14 @@ if ! grep -q '<p class="project-byline">override byline</p>' "$dest/index.html";
     loud_fail "rendered html missing per-deployment byline 'override byline'"
 fi
 if ! grep -q '<title>Override Title — all tasks</title>' "$dest/index.html"; then
-    loud_fail "configured title should drive browser title instead of generic workgraph or host path"
+    loud_fail "configured title should drive browser title instead of generic WG or host path"
 fi
 if ! grep -q '<h1>Override Title</h1>' "$dest/index.html"; then
-    loud_fail "configured title should replace the visible minimal workgraph header"
+    loud_fail "configured title should replace the visible minimal WG header"
 fi
 
 # (3) Project-level cascade: config.toml [project] + about.md
-# Find the workgraph dir (.wg or .wg) so we can append to config.toml
+# Find the WG dir (.wg or .wg) so we can append to config.toml
 # and write about.md.
 wg_dir=""
 for candidate in .wg .wg; do
@@ -98,7 +98,7 @@ for candidate in .wg .wg; do
     fi
 done
 if [[ -z "$wg_dir" ]]; then
-    loud_fail "could not find workgraph dir under $scratch (.wg or .wg)"
+    loud_fail "could not find WG dir under $scratch (.wg or .wg)"
 fi
 
 # Replace the empty [project] block with one that has title + byline.
@@ -193,7 +193,7 @@ if ! grep -Fq "<h1>${expected_source}</h1>" "$empty_dest/index.html"; then
     loud_fail "empty-meta visible h1 should be '${expected_source}'; got: $(grep '<h1>' "$empty_dest/index.html" | head -1)"
 fi
 if grep -q '<title>workgraph' "$empty_dest/index.html"; then
-    loud_fail "empty-meta browser title must not fall back to generic workgraph"
+    loud_fail "empty-meta browser title must not fall back to generic WG"
 fi
 
 echo "PASS: --title/--byline/--abstract advertised + per-deployment override + project-config cascade + about.md markdown abstract + empty-meta source title/header"

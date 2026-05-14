@@ -133,7 +133,7 @@ export WG_SMOKE_SCRATCHES_FILE WG_SMOKE_DAEMONS_FILE
 : >"$WG_SMOKE_DAEMONS_FILE"
 
 # Add a cleanup hook (function name) to run before daemon teardown. Use
-# this to e.g. `tmux kill-session` before the workgraph dir disappears.
+# this to e.g. `tmux kill-session` before the WG dir disappears.
 # (Hooks run in the parent shell; this stays as an in-memory array.)
 add_cleanup_hook() {
     WG_SMOKE_CLEANUP_HOOKS+=("$1")
@@ -145,7 +145,7 @@ register_scratch() {
     printf '%s\n' "$1" >>"$WG_SMOKE_SCRATCHES_FILE"
 }
 
-# Register a daemon (real PID, workgraph dir) for teardown. Format:
+# Register a daemon (real PID, WG dir) for teardown. Format:
 # `<pid> <dir>` on one line; dir is read with `read pid dir` so dirs with
 # spaces are not supported, but the smoke root never contains spaces.
 register_wg_daemon() {
@@ -166,7 +166,7 @@ graph_dir_in() {
 
 # ── Read the canonical daemon PID from service/state.json ────────────
 # `wg service start` forks a child that becomes the real daemon, then
-# exits. The child is the only process that knows the workgraph dir; its
+# exits. The child is the only process that knows the WG dir; its
 # PID is recorded in state.json. Capturing `$!` from `wg service start &`
 # captures the wrapper, NOT the daemon, and on wrapper exit the daemon is
 # re-parented to init — `kill $wrapper_pid` then `pkill -P $wrapper_pid`
@@ -193,7 +193,7 @@ wait_for_daemon_pid() {
 # ── Start wg service daemon and register for teardown ────────────────
 # Usage: start_wg_daemon <scratch> [extra wg service start args...]
 # After this returns, $WG_SMOKE_DAEMON_PID and $WG_SMOKE_DAEMON_DIR hold
-# the canonical daemon PID and the workgraph dir housing it. The daemon
+# the canonical daemon PID and the WG dir housing it. The daemon
 # is registered so `wg_smoke_cleanup` (installed by this file) tears it
 # down on script exit.
 start_wg_daemon() {

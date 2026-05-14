@@ -27,7 +27,7 @@ use crate::config::Config;
 /// A file attachment on a chat message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Attachment {
-    /// Path relative to the workgraph root (e.g. ".wg/attachments/20260303-143022-a1b2c3.png")
+    /// Path relative to the WG root (e.g. ".wg/attachments/20260303-143022-a1b2c3.png")
     pub path: String,
     /// MIME type (e.g. "image/png")
     pub mime_type: String,
@@ -1134,7 +1134,7 @@ pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachmen
             .with_context(|| format!("Failed to write attachment: {}", dest.display()))?;
     }
 
-    // Return path relative to workgraph dir's parent (project root).
+    // Return path relative to WG dir's parent (project root).
     let relative = format!(".wg/attachments/{}", filename);
 
     Ok(Attachment {

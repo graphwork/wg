@@ -129,7 +129,7 @@ fn parse_wait_spec(s: &str, graph: &workgraph::graph::WorkGraph) -> Result<WaitS
 pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;

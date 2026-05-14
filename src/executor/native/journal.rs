@@ -41,7 +41,7 @@ pub enum JournalEntryKind {
         system_prompt: String,
         /// Tool definitions available in this conversation.
         tools: Vec<ToolDefinition>,
-        /// Task ID if running within workgraph.
+        /// Task ID if running within WG.
         #[serde(skip_serializing_if = "Option::is_none")]
         task_id: Option<String>,
     },

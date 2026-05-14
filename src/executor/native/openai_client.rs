@@ -1426,8 +1426,8 @@ impl OpenAiClient {
 
     /// Build the auth-config hint string injected into 401/403 error
     /// messages. Names the `[[llm_endpoints.endpoints]]` block to set
-    /// `api_key` in — NEVER an env var, per the workgraph credential
-    /// contract (credentials live in workgraph config exclusively).
+    /// `api_key` in — NEVER an env var, per the WG credential
+    /// contract (credentials live in WG config exclusively).
     fn auth_config_hint(&self) -> String {
         match &self.endpoint_name {
             Some(name) => format!(
@@ -1491,7 +1491,7 @@ fn resolve_openai_api_key() -> Result<String> {
     resolve_openai_api_key_from_dir(workgraph_dir)
 }
 
-/// Resolve API key from a specific workgraph directory.
+/// Resolve API key from a specific WG directory.
 ///
 /// Loads config and delegates to `Config::resolve_api_key_for_provider`.
 pub fn resolve_openai_api_key_from_dir(workgraph_dir: &std::path::Path) -> Result<String> {
@@ -1575,7 +1575,7 @@ fn oai_api_error(status: u16, body: &str) -> anyhow::Error {
     ApiError { status, message }.into()
 }
 
-/// Same as `oai_api_error`, but appends a workgraph-config-pointing hint
+/// Same as `oai_api_error`, but appends a WG-config-pointing hint
 /// when the status is auth-related (401/403). The hint names the
 /// `[[llm_endpoints.endpoints]]` block — never an env var.
 fn oai_api_error_with_hint(status: u16, body: &str, config_hint: &str) -> anyhow::Error {

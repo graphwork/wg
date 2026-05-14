@@ -46,7 +46,7 @@ fn make_task_with_skills(id: &str, title: &str, skills: Vec<&str>) -> Task {
     t
 }
 
-/// Set up a workgraph directory with graph.jsonl containing the given tasks.
+/// Set up a WG directory with graph.jsonl containing the given tasks.
 fn setup_workgraph(dir: &Path, tasks: Vec<Task>) {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join("graph.jsonl");
@@ -704,7 +704,7 @@ fn test_full_assignment_pipeline() {
     let (agent_id, _, _) = setup_agency(dir);
     let _second_agent_id = setup_second_agent(dir);
 
-    // Set up workgraph with a task that needs assignment
+    // Set up WG with a task that needs assignment
     let task = make_task_with_desc(
         "feature-1",
         "Add authentication",
@@ -998,7 +998,7 @@ mod llm_tests {
         path
     }
 
-    /// Run `wg` with given args in a specific workgraph directory.
+    /// Run `wg` with given args in a specific WG directory.
     fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         let wg = wg_binary();
         Command::new(&wg)
@@ -1061,9 +1061,9 @@ mod llm_tests {
         false
     }
 
-    /// Set up a workgraph directory via `wg init`, then write a claude executor
+    /// Set up a WG directory via `wg init`, then write a claude executor
     /// config with working_dir and PATH so the wrapper script's bare `wg`
-    /// commands find the test binary and the workgraph.
+    /// commands find the test binary and the WG directory.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
         let wg_dir = tmp_root.join(".wg");
         wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
@@ -1093,7 +1093,7 @@ PATH = "{path}"
 template = """
 # Task Assignment
 
-You are an AI agent working on a task in a workgraph project.
+You are an AI agent working on a task in a WG project.
 
 {{{{task_identity}}}}
 ## Your Task

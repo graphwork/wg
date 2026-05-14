@@ -354,7 +354,7 @@ mod tests {
             .save_tradeoff(&make_motivation("m1", "quality"))
             .unwrap();
 
-        // Set up a workgraph dir for the target
+        // Set up a WG dir for the target
         let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
@@ -386,7 +386,7 @@ mod tests {
         let source = setup_store(&tmp, "source");
         source.save_role(&make_role("r1", "remote-role")).unwrap();
 
-        // Set up workgraph dir with federation.yaml
+        // Set up WG dir with federation.yaml
         let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");

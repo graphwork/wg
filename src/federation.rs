@@ -26,7 +26,7 @@ pub struct Remote {
     pub last_sync: Option<String>,
 }
 
-/// A peer workgraph instance (another repo with its own .wg/).
+/// A peer WG project (another repo with its own .wg/).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PeerConfig {
     pub path: String,
@@ -39,7 +39,7 @@ pub struct PeerConfig {
 pub struct FederationConfig {
     #[serde(default)]
     pub remotes: BTreeMap<String, Remote>,
-    /// Peer workgraph instances for cross-repo communication.
+    /// Peer WG projects for cross-repo communication.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peers: BTreeMap<String, PeerConfig>,
 }
@@ -330,7 +330,7 @@ pub fn resolve_peer(reference: &str, workgraph_dir: &Path) -> Result<ResolvedPee
     let wg_dir = project_path.join(".wg");
     if !wg_dir.is_dir() {
         anyhow::bail!(
-            "No .wg directory found at '{}'. Is this a workgraph project?",
+            "No .wg directory found at '{}'. Is this a WG project?",
             project_path.display()
         );
     }
@@ -350,7 +350,7 @@ pub struct PeerServiceStatus {
     pub started_at: Option<String>,
 }
 
-/// Check whether a peer's workgraph service is running.
+/// Check whether a peer's WG service is running.
 ///
 /// Reads `<workgraph_dir>/service/state.json` and checks if the PID is alive.
 pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
@@ -447,7 +447,7 @@ pub enum RemoteResolution {
     Unreachable(String),
 }
 
-/// Resolve the status of a task in a remote peer workgraph.
+/// Resolve the status of a task in a remote peer WG project.
 ///
 /// Resolution order (per §4.4 of cross-repo design doc):
 /// 1. Look up peer path from federation config or parse as path
@@ -1776,11 +1776,11 @@ mod tests {
     fn resolve_remote_task_status_via_direct_file_access() {
         let tmp = TempDir::new().unwrap();
 
-        // Set up local workgraph with federation config pointing to a peer
+        // Set up local WG project with federation config pointing to a peer
         let local_wg = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(&local_wg).unwrap();
 
-        // Set up peer workgraph with a task
+        // Set up peer WG project with a task
         let peer_project = tmp.path().join("peer-project");
         let peer_wg = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg).unwrap();

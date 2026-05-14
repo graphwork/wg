@@ -4,7 +4,7 @@ use std::path::Path;
 use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 /// Default content for .wg/.gitignore
-const GITIGNORE_CONTENT: &str = r#"# workgraph gitignore
+const GITIGNORE_CONTENT: &str = r#"# WG gitignore
 # Agent output logs (can be large)
 agents/
 
@@ -122,7 +122,7 @@ pub fn run_with_route(
 
     // Route-driven init: create dir, write config from route defaults.
     if dir.exists() {
-        anyhow::bail!("workgraph already initialized at {}", dir.display());
+        anyhow::bail!("WG already initialized at {}", dir.display());
     }
     if let Some(parent) = dir.parent()
         && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
@@ -134,7 +134,7 @@ pub fn run_with_route(
             let sibling_path = parent.join(sibling);
             if sibling_path.is_dir() {
                 anyhow::bail!(
-                    "workgraph already initialized at {} (legacy dir name). \
+                    "WG already initialized at {} (legacy dir name). \
                      Either use it as-is, or remove/rename it before running `wg init`.",
                     sibling_path.display()
                 );
@@ -142,7 +142,7 @@ pub fn run_with_route(
         }
     }
 
-    fs::create_dir_all(dir).context("Failed to create workgraph directory")?;
+    fs::create_dir_all(dir).context("Failed to create WG directory")?;
     write_repo_gitignore(dir)?;
     let graph_path = dir.join("graph.jsonl");
     fs::write(&graph_path, "").context("Failed to create graph.jsonl")?;
@@ -150,7 +150,7 @@ pub fn run_with_route(
     fs::write(&gitignore_path, GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
     write_executor_templates(dir)?;
 
-    println!("Initialized workgraph at {}", dir.display());
+    println!("Initialized WG at {}", dir.display());
 
     let params = RouteParams {
         api_key_env: None,
@@ -284,7 +284,7 @@ fn suggested_model_for_executor(executor: &str) -> &'static str {
     }
 }
 
-/// Write the repo-level .gitignore entry for the workgraph dir basename.
+/// Write the repo-level .gitignore entry for the WG dir basename.
 fn write_repo_gitignore(dir: &Path) -> Result<()> {
     let dir_basename = dir
         .file_name()
@@ -373,7 +373,7 @@ pub fn run(
     };
 
     if dir.exists() {
-        anyhow::bail!("workgraph already initialized at {}", dir.display());
+        anyhow::bail!("WG already initialized at {}", dir.display());
     }
     // Refuse if the sibling legacy dir exists — we'd silently shadow it.
     // e.g. user asks for `.wg` but `.wg` already exists next to it.
@@ -387,7 +387,7 @@ pub fn run(
             let sibling_path = parent.join(sibling);
             if sibling_path.is_dir() {
                 anyhow::bail!(
-                    "workgraph already initialized at {} (legacy dir name). \
+                    "WG already initialized at {} (legacy dir name). \
                      Either use it as-is, or remove/rename it before running `wg init`.",
                     sibling_path.display()
                 );
@@ -395,7 +395,7 @@ pub fn run(
         }
     }
 
-    fs::create_dir_all(dir).context("Failed to create workgraph directory")?;
+    fs::create_dir_all(dir).context("Failed to create WG directory")?;
 
     // Add the dir name (`.wg` for new projects, `.workgraph` for legacy
     // init targets) to repo-level .gitignore.
@@ -464,7 +464,7 @@ pub fn run(
             .with_context(|| format!("Failed to write executor template {}", name))?;
     }
 
-    println!("Initialized workgraph at {}", dir.display());
+    println!("Initialized WG at {}", dir.display());
 
     // Always write the executor choice to config.toml.
     apply_executor(dir, executor).context("Failed to write executor config")?;
@@ -741,7 +741,7 @@ mod tests {
 
         run(&wg_dir, true, Some("shell"), None, None).unwrap();
 
-        // workgraph dir and graph.jsonl should exist
+        // WG dir and graph.jsonl should exist
         assert!(wg_dir.exists());
         assert!(wg_dir.join("graph.jsonl").exists());
 

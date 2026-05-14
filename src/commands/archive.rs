@@ -249,7 +249,7 @@ pub fn restore(dir: &Path, task_id: &str, reopen: bool) -> Result<()> {
     let arch_path = archive_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let tasks = load_archive(&arch_path)?;
@@ -305,7 +305,7 @@ pub fn undo(dir: &Path) -> Result<()> {
     let arch_path = archive_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let task_ids = load_batch_metadata(dir)?;
@@ -382,7 +382,7 @@ pub fn run(
     let arch_path = archive_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Handle --list: show archived tasks

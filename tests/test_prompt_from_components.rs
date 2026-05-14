@@ -561,7 +561,7 @@ fn evolver_prompt_uses_components_when_configured() {
 
     // Should NOT contain the hardcoded evolver intro
     assert!(
-        !identity.contains("You are the evolver agent for a workgraph agency system"),
+        !identity.contains("You are the evolver agent for a WG agency system"),
         "Should NOT contain hardcoded evolver template when agent is configured"
     );
 

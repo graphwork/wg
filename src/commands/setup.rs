@@ -1,4 +1,4 @@
-//! Interactive configuration wizard for first-time workgraph setup.
+//! Interactive configuration wizard for first-time WG setup.
 //!
 //! Creates/updates ~/.wg/config.toml via guided prompts using dialoguer.
 
@@ -13,15 +13,15 @@ use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use workgraph::models::ModelRegistry;
 use workgraph::notify::config as notify_config;
 
-/// Marker used to detect whether workgraph directives are already present in agent guides.
-const CLAUDE_MD_MARKER: &str = "<!-- workgraph-managed -->";
+/// Marker used to detect whether WG directives are already present in agent guides.
+const CLAUDE_MD_MARKER: &str = "<!-- WG-managed -->";
 
-/// The workgraph directives block appended to agent guides.
-const CLAUDE_MD_DIRECTIVES: &str = r#"<!-- workgraph-managed -->
-# workgraph (project-specific guide)
+/// The WG directives block appended to agent guides.
+const CLAUDE_MD_DIRECTIVES: &str = r#"<!-- WG-managed -->
+# WG (project-specific guide)
 
 This file is the **layer-2** project guide for agents working in this
-workgraph project. It is NOT the universal chat-agent / worker-agent
+WG project. It is NOT the universal chat-agent / worker-agent
 contract — that is bundled inside the `wg` binary and emitted by:
 
 ```
@@ -387,7 +387,7 @@ pub fn format_summary(choices: &SetupChoices) -> String {
     lines.join("\n")
 }
 
-/// Check whether a CLAUDE.md file already contains workgraph directives.
+/// Check whether a CLAUDE.md file already contains WG directives.
 pub fn has_workgraph_directives(path: &Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
         content.contains(CLAUDE_MD_MARKER)
@@ -396,11 +396,11 @@ pub fn has_workgraph_directives(path: &Path) -> bool {
     }
 }
 
-/// Configure ~/.claude/CLAUDE.md with workgraph directives.
+/// Configure ~/.claude/CLAUDE.md with WG directives.
 ///
 /// - If ~/.claude/ doesn't exist, it is created.
 /// - If CLAUDE.md doesn't exist, it is created with the directives.
-/// - If CLAUDE.md exists but has no workgraph marker, directives are appended.
+/// - If CLAUDE.md exists but has no WG marker, directives are appended.
 /// - If CLAUDE.md already contains the marker, it is left unchanged (idempotent).
 ///
 /// Returns a status string for display and whether changes were made.
@@ -455,7 +455,7 @@ fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
         std::fs::write(claude_md, new_content)
             .with_context(|| format!("Failed to write {}", claude_md.display()))?;
         Ok((
-            format!("Updated {} with workgraph directives", claude_md.display()),
+            format!("Updated {} with WG directives", claude_md.display()),
             true,
         ))
     } else {
@@ -463,7 +463,7 @@ fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
         std::fs::write(claude_md, CLAUDE_MD_DIRECTIVES)
             .with_context(|| format!("Failed to create {}", claude_md.display()))?;
         Ok((
-            format!("Created {} with workgraph directives", claude_md.display()),
+            format!("Created {} with WG directives", claude_md.display()),
             true,
         ))
     }
@@ -1317,7 +1317,7 @@ pub fn run() -> Result<()> {
     let existing = Config::load_global()?.unwrap_or_default();
     let global_path = Config::global_config_path()?;
 
-    println!("Hey! Welcome to workgraph setup.");
+    println!("Hey! Welcome to WG setup.");
     println!("We'll get you configured at {}", global_path.display());
     println!("(Press Ctrl-C at any prompt to exit without saving.)");
     println!();
@@ -1515,7 +1515,7 @@ pub fn run() -> Result<()> {
 
     // 4. Agency
     println!();
-    println!("Agency lets workgraph automatically match the best agent identity to each task");
+    println!("Agency lets WG automatically match the best agent identity to each task");
     println!("and evaluate their work when done. It's the evolutionary identity system.");
     let agency_enabled = Confirm::new()
         .with_prompt("Enable agency?")
@@ -1592,7 +1592,7 @@ pub fn run() -> Result<()> {
 
     // 7. Notification setup (optional)
     println!();
-    println!("Notifications let workgraph ping you when tasks need attention,");
+    println!("Notifications let WG ping you when tasks need attention,");
     println!("agents get stuck, or work is done.");
     let notify_status = guide_notification_setup()?;
 
@@ -1971,9 +1971,7 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
             if is_claude_skill_installed() {
                 Ok("wg skill installed ✓".to_string())
             } else {
-                println!(
-                    "Spawned Claude Code agents need the wg skill to understand workgraph commands."
-                );
+                println!("Spawned Claude Code agents need the wg skill to understand WG commands.");
                 let install = Confirm::new()
                     .with_prompt("Install wg skill for Claude Code? (recommended)")
                     .default(true)
@@ -2156,13 +2154,13 @@ fn guide_claude_md_install() -> Result<String> {
         return Ok("already configured ✓".to_string());
     }
 
-    println!("Claude Code's built-in task and agent tools conflict with workgraph.");
+    println!("Claude Code's built-in task and agent tools conflict with WG.");
     println!(
         "Configuring ~/.claude/CLAUDE.md suppresses them so Claude uses `wg` commands instead."
     );
 
     let action = if claude_md.exists() {
-        "Append workgraph directives to"
+        "Append WG directives to"
     } else {
         "Create"
     };
@@ -2268,7 +2266,7 @@ fn guide_notification_setup() -> Result<String> {
     let channel_keys = &["telegram", "slack", "email", "webhook", "skip"];
 
     let idx = Select::new()
-        .with_prompt("How should workgraph notify you?")
+        .with_prompt("How should WG notify you?")
         .items(channel_options)
         .default(4)
         .interact()?;
@@ -2740,7 +2738,7 @@ mod tests {
         // Original content preserved
         assert!(content.contains("# My Existing Config"));
         assert!(content.contains("Some custom rules here."));
-        // workgraph directives appended
+        // WG directives appended
         assert!(content.contains(CLAUDE_MD_MARKER));
         assert!(content.contains("wg agent-guide"));
     }

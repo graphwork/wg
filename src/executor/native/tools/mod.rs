@@ -220,7 +220,8 @@ impl ToolRegistry {
     /// for small local models (reduces prefill cost).
     pub fn keep_only_tools(&mut self, names: &[&str]) {
         let keep_set: std::collections::HashSet<&str> = names.iter().copied().collect();
-        self.tools.retain(|name, _| keep_set.contains(name.as_str()));
+        self.tools
+            .retain(|name, _| keep_set.contains(name.as_str()));
     }
 
     /// Check whether a tool is read-only by name.

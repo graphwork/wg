@@ -245,10 +245,10 @@ If no placement changes are needed, set `placement` to null.
 {exec_mode_descriptions}
 
 ## context_scope Selection
-- **clean**: Self-contained computation/writing, no workgraph interaction needed.
+- **clean**: Self-contained computation/writing, no WG interaction needed.
 - **task**: Standard implementation (default if unsure).
 - **graph**: Integration tasks spanning multiple components (3+ dependencies).
-- **full**: Meta-tasks about workgraph itself.
+- **full**: Meta-tasks about WG itself.
 {placement_section}
 ## Response
 

@@ -48,7 +48,7 @@ fn init_git_repo(path: &Path) {
         .expect("Failed to create initial commit");
 }
 
-/// Create a mock workgraph project directory structure
+/// Create a mock WG project directory structure
 fn setup_workgraph_project(path: &Path) {
     init_git_repo(path);
 

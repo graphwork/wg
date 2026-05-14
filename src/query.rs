@@ -377,7 +377,7 @@ pub fn is_blocker_satisfied(
     if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
         // Cross-repo dependency
         let Some(wg_dir) = workgraph_dir else {
-            return false; // Can't resolve without workgraph dir; treat as blocked
+            return false; // Can't resolve without WG dir; treat as blocked
         };
         let remote =
             crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);

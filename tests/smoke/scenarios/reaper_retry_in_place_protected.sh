@@ -12,7 +12,7 @@
 # under it (forcing a slow cargo rebuild on resume).
 #
 # Strategy:
-#   1. Initialise a workgraph project.
+#   1. Initialise a WG project.
 #   2. Create `.wg-worktrees/agent-A/` with a fake `target/`.
 #   3. Hand-craft `service/registry.json` with two agents:
 #        - agent-A: PID 0x7FFFFFFE (definitely dead), Failed,
@@ -52,14 +52,14 @@ now="$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
 wt_abs="$scratch/.wg-worktrees/agent-A"
 my_pid="$$"
 
-# Locate the workgraph directory `wg init` created. Tested fixture
+# Locate the WG directory `wg init` created. Tested fixture
 # layouts use `.wg` (newer init); fall back to `.wg` (older init).
 if [ -d .wg ]; then
     wg_dir=".wg"
 elif [ -d .wg ]; then
     wg_dir=".wg"
 else
-    loud_fail "could not find workgraph dir after init: $(ls -la)"
+    loud_fail "could not find WG dir after init: $(ls -la)"
 fi
 
 # Hand-craft the registry. agent-A is the dead original owner (matches

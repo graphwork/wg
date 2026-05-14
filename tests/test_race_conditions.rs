@@ -46,7 +46,7 @@ fn init_git_repo(path: &Path) {
         .unwrap();
 }
 
-/// Create a mock workgraph directory structure
+/// Create a mock WG directory structure
 fn setup_workgraph_project(path: &Path) {
     init_git_repo(path);
 

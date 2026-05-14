@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 pub fn list(workgraph_dir: &Path) -> Result<()> {
     let project_root = workgraph_dir
         .parent()
-        .context("Cannot determine project root from workgraph dir")?;
+        .context("Cannot determine project root from WG dir")?;
     let worktrees_dir = project_root.join(".wg-worktrees");
 
     if !worktrees_dir.exists() {
@@ -64,7 +64,7 @@ pub fn list(workgraph_dir: &Path) -> Result<()> {
 pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()> {
     let project_root = workgraph_dir
         .parent()
-        .context("Cannot determine project root from workgraph dir")?;
+        .context("Cannot determine project root from WG dir")?;
     let worktrees_dir = project_root.join(".wg-worktrees");
     let wt_path = worktrees_dir.join(agent_id);
 
@@ -220,7 +220,7 @@ pub(crate) fn parse_duration(s: &str) -> Result<Duration> {
 
 /// Garbage-collect stale agent worktrees. Dry-run by default.
 ///
-/// Worktrees are sacred — this is the only bulk-removal path in workgraph,
+/// Worktrees are sacred — this is the only bulk-removal path in WG,
 /// and it refuses to act without explicit filters to prevent accidental
 /// nuke-all. Per-worktree removal still goes through `archive --remove`
 /// so uncommitted work is committed to the agent's branch before the
@@ -228,7 +228,7 @@ pub(crate) fn parse_duration(s: &str) -> Result<Duration> {
 pub fn gc(workgraph_dir: &Path, execute: bool, older: Option<&str>, dead_only: bool) -> Result<()> {
     let project_root = workgraph_dir
         .parent()
-        .context("Cannot determine project root from workgraph dir")?;
+        .context("Cannot determine project root from WG dir")?;
     let worktrees_dir = project_root.join(".wg-worktrees");
 
     if !worktrees_dir.exists() {

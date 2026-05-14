@@ -111,7 +111,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // First pass (read-only) to compute closure + meta tasks so we can

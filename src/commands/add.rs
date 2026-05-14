@@ -301,7 +301,7 @@ pub fn run(
 
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // --- Autopoietic guardrails ---
@@ -808,7 +808,7 @@ pub fn run(
     Ok(())
 }
 
-/// Add a task to a remote peer workgraph.
+/// Add a task to a remote peer WG project.
 ///
 /// Dispatch order (per §3.2 of cross-repo design doc):
 /// 1. Resolve peer to a .wg directory
@@ -966,7 +966,7 @@ fn add_task_directly(
     let graph_path = super::graph_path(peer_workgraph_dir);
     if !graph_path.exists() {
         anyhow::bail!(
-            "No graph.jsonl at '{}'. Is this a workgraph project?",
+            "No graph.jsonl at '{}'. Is this a WG project?",
             peer_workgraph_dir.display()
         );
     }
@@ -1120,7 +1120,7 @@ fn add_task_directly(
 
     let task_id = task_id_out;
 
-    // Record provenance in the peer's workgraph
+    // Record provenance in the peer's WG project
     let config = workgraph::config::Config::load_or_default(peer_workgraph_dir);
     let _ = workgraph::provenance::record(
         peer_workgraph_dir,
@@ -1591,7 +1591,7 @@ mod tests {
     fn empty_title_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
-        // Initialize a workgraph
+        // Initialize a WG graph
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();

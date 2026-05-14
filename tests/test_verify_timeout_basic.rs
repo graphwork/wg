@@ -25,7 +25,7 @@ fn test_verify_timeout_cli_basic() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let project_root = temp_dir.path();
 
-    // Initialize a workgraph project
+    // Initialize a WG project
     let init_output = std::process::Command::new("wg")
         .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)

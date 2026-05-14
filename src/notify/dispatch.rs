@@ -1,6 +1,6 @@
 //! Task lifecycle → notification dispatch bridge.
 //!
-//! Converts workgraph task events into notification messages and routes them
+//! Converts WG task events into notification messages and routes them
 //! through the [`NotificationRouter`]. This module is the integration point
 //! between the coordinator/service layer and the notification system.
 

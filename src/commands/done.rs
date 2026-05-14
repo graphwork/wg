@@ -258,7 +258,7 @@ fn is_no_changes_to_commit(stdout: &str, stderr: &str) -> bool {
         .any(|n| stdout.contains(n) || stderr.contains(n))
 }
 
-/// Detect whether we're running inside a workgraph-managed agent worktree
+/// Detect whether we're running inside a WG-managed agent worktree
 /// for the project rooted at `wg_dir`'s parent.
 ///
 /// Reads `WG_WORKTREE_PATH` / `WG_BRANCH` / `WG_PROJECT_ROOT` from the
@@ -277,7 +277,7 @@ fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
     let agent_id = std::env::var("WG_AGENT_ID").ok();
 
     // Sanity-check: WG_PROJECT_ROOT must match the parent of the
-    // workgraph dir we're operating on. Use canonicalized paths so
+    // WG dir we're operating on. Use canonicalized paths so
     // symlinks and `.`/`..` segments don't cause false negatives.
     let expected_root = wg_dir.parent()?;
     let env_root = Path::new(&project_root);
@@ -897,7 +897,7 @@ fn run_llm_verify_evaluation(
         verify_cmd
     );
 
-    // Find the workgraph directory (.wg/, or legacy .workgraph/)
+    // Find the WG directory (.wg/, or legacy .workgraph/)
     let workgraph_dir = project_root
         .ancestors()
         .find(|p| p.join(".wg").exists() || p.join(".wg").exists())
@@ -1130,10 +1130,10 @@ fn run_verify_command(
 }
 
 /// Returns `true` if the path emitted by `git status --porcelain` refers to a
-/// workgraph-internal directory that should never trigger a hygiene warning.
+/// WG-internal directory that should never trigger a hygiene warning.
 ///
 /// Matches `.wg/`, `.wg-worktrees/`, legacy `.workgraph/`, and numbered
-/// worktree dirs like `.workgraph.1/` and `.wg.1/`. These are workgraph's
+/// worktree dirs like `.workgraph.1/` and `.wg.1/`. These are WG's
 /// own data — agents should never commit them, but they are *expected* to
 /// sit untracked in the working tree (see project memory: "stale
 /// `.workgraph.N/` dirs + agency YAMLs sit untracked"), so flagging them
@@ -1167,7 +1167,7 @@ fn porcelain_path(line: &str) -> Option<&str> {
 }
 
 /// Filter `git status --porcelain` output, dropping lines whose path is a
-/// workgraph-internal directory we don't want to warn about.
+/// WG-internal directory we don't want to warn about.
 fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
     status
         .lines()
@@ -1183,7 +1183,7 @@ fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
 ///
 /// Skipped entirely for chat-loop tasks — a chat agent is a conversation
 /// endpoint, not a code agent, and should never be lectured about
-/// uncommitted state (see chat-agent-loops bug B). workgraph-internal
+/// uncommitted state (see chat-agent-loops bug B). WG-internal
 /// paths (`.wg/`, `.wg.*/`, etc.) are filtered from the warning
 /// even when the check does run.
 fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
@@ -2730,7 +2730,7 @@ mod tests {
     fn test_done_uninitialized_workgraph_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        // Don't initialize workgraph
+        // Don't initialize WG
 
         let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
@@ -4424,7 +4424,7 @@ mod tests {
 
     // ------------------------------------------------------------------
     // chat-agent-loops bug B: git hygiene must skip chat-loop tasks and
-    // filter workgraph-internal paths from the warning.
+    // filter WG-internal paths from the warning.
     // ------------------------------------------------------------------
 
     #[test]
@@ -4482,12 +4482,12 @@ mod tests {
 
     #[test]
     fn test_filter_hygiene_porcelain_returns_empty_when_only_ignored() {
-        // The user's repro: only the workgraph-internal noise is present.
+        // The user's repro: only the WG-internal noise is present.
         let raw = "?? .wg/\n?? .wg.1/\n";
         let kept = filter_hygiene_porcelain(raw);
         assert!(
             kept.is_empty(),
-            "filter should drop all workgraph-internal paths, got {:?}",
+            "filter should drop all WG-internal paths, got {:?}",
             kept,
         );
     }

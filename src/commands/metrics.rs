@@ -12,7 +12,7 @@ pub fn run(_dir: &Path, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&metrics)?);
     } else {
-        println!("=== workgraph Cleanup Metrics ===");
+        println!("=== WG Cleanup Metrics ===");
         println!();
 
         // Success/failure statistics

@@ -23,7 +23,7 @@
 //!
 //! Produces:
 //!
-//!   <workgraph>/maps/<timestamp-slug>/
+//!   <wg-dir>/maps/<timestamp-slug>/
 //!     results.md          — aggregated per-chunk finish() results
 //!     items/
 //!       00-chunk-0000/    — sub-executor dir for chunk 0
@@ -79,7 +79,7 @@ impl Tool for ChunkMapTool {
     }
 
     fn is_read_only(&self) -> bool {
-        // Writes only into its own working dirs under `<workgraph>/maps/`.
+        // Writes only into its own working dirs under `<wg-dir>/maps/`.
         // Same convention as `map` + `reader`.
         true
     }

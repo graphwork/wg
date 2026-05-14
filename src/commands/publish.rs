@@ -79,7 +79,7 @@ pub struct Deployment {
     pub byline: Option<String>,
 
     /// Path to a markdown file rendered as the page abstract. Resolved
-    /// relative to the workgraph dir (typical value: `about.md`). When
+    /// relative to the WG dir (typical value: `about.md`). When
     /// unset, the renderer falls back to `<workgraph_dir>/about.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abstract_path: Option<String>,
@@ -109,7 +109,7 @@ impl Deployment {
     }
 }
 
-/// Path to the publish-config file inside a workgraph dir.
+/// Path to the publish-config file inside a WG dir.
 pub fn publish_config_path(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join(PUBLISH_FILE)
 }
@@ -139,7 +139,7 @@ pub fn cron_task_id(name: &str) -> String {
     format!("{}{}", PUBLISH_TASK_PREFIX, name)
 }
 
-/// Load (or initialize) the publish config for a workgraph dir.
+/// Load (or initialize) the publish config for a WG dir.
 pub fn load_config(workgraph_dir: &Path) -> Result<PublishConfig> {
     let path = publish_config_path(workgraph_dir);
     if !path.exists() {
@@ -152,7 +152,7 @@ pub fn load_config(workgraph_dir: &Path) -> Result<PublishConfig> {
     Ok(cfg)
 }
 
-/// Persist the publish config for a workgraph dir.
+/// Persist the publish config for a WG dir.
 pub fn save_config(workgraph_dir: &Path, cfg: &PublishConfig) -> Result<()> {
     let path = publish_config_path(workgraph_dir);
     let raw = toml::to_string_pretty(cfg).context("failed to serialize publish config")?;
@@ -505,7 +505,7 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
         let graph_path = workgraph_dir.join("graph.jsonl");
         if !graph_path.exists() {
             anyhow::bail!(
-                "workgraph not initialized at {}. Run `wg init` first.",
+                "WG not initialized at {}. Run `wg init` first.",
                 workgraph_dir.display()
             );
         }
@@ -567,7 +567,7 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
 ///   2. project-level (`<workgraph_dir>/config.toml [project]` →
 ///      `<workgraph_dir>/about.md`)
 ///   3. when byline/abstract exist without a title, default the project
-///      header title to the workgraph dir name
+///      header title to the WG dir name
 ///
 /// Reads no abstract from disk if `abstract_path` is empty AND the
 /// project-level cascade also has nothing — the default abstract is empty.
@@ -1402,7 +1402,7 @@ mod tests {
     fn publish_run_omits_project_header_when_meta_empty() {
         // Live: a deployment with NO metadata + NO project config + NO
         // about.md MUST NOT render an empty <header class="project-header">
-        // block. The minimal header/title still identify the source workgraph
+        // block. The minimal header/title still identify the source WG directory
         // with the default host:path label.
         let tmp = fresh_dir();
         let dest = TempDir::new().unwrap();
@@ -1419,15 +1419,15 @@ mod tests {
         let source_title = workgraph::html::source_title_for_workgraph_dir(tmp.path());
         assert!(
             html.contains(&format!("<title>{source_title} — all tasks</title>")),
-            "browser title should identify the source workgraph; got: {html}"
+            "browser title should identify the source WG directory; got: {html}"
         );
         assert!(
             html.contains(&format!("<h1>{source_title}</h1>")),
-            "minimal visible header should identify the source workgraph; got: {html}"
+            "minimal visible header should identify the source WG directory; got: {html}"
         );
         assert!(
             !html.contains("<title>workgraph"),
-            "browser title must not fall back to generic workgraph"
+            "browser title must not fall back to generic WG"
         );
         // Sanity: the minimal page header is still present.
         assert!(html.contains("class=\"page-header\""));

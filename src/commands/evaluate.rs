@@ -178,7 +178,7 @@ pub fn run(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("workgraph not initialized. Run `wg init` first.");
+        bail!("WG not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -775,7 +775,7 @@ pub fn run_flip(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("workgraph not initialized. Run `wg init` first.");
+        bail!("WG not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -1223,7 +1223,7 @@ pub fn run_record(
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("workgraph not initialized. Run `wg init` first.");
+        bail!("WG not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -1810,7 +1810,7 @@ pub fn apply_gate_decision(
 ) -> Result<GateAction> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("workgraph not initialized. Run `wg init` first.");
+        bail!("WG not initialized. Run `wg init` first.");
     }
 
     // Snapshot prerequisites and always bump gate_attempts so the caller

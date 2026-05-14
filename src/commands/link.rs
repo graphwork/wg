@@ -18,7 +18,7 @@ pub fn run_link(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> {
 
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
@@ -102,7 +102,7 @@ pub fn run_link(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> {
 pub fn run_unlink(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;

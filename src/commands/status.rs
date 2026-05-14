@@ -1,6 +1,6 @@
 //! Quick status overview command
 //!
-//! Provides a one-screen summary of the workgraph state:
+//! Provides a one-screen summary of the WG state:
 //! - Service status (running/stopped, PID, uptime, socket)
 //! - Coordinator config (max_agents, executor, model, poll_interval)
 //! - Agent summary (alive/dead counts, active agents with tasks)

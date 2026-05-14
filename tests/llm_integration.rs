@@ -41,7 +41,7 @@ fn wg_binary() -> PathBuf {
     path
 }
 
-/// Run `wg` with given args in a specific workgraph directory.
+/// Run `wg` with given args in a specific WG directory.
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
     let wg = wg_binary();
     Command::new(&wg)
@@ -82,7 +82,7 @@ fn claude_cli_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Initialize a fresh workgraph in a temp directory.
+/// Initialize a fresh WG graph in a temp directory.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".wg");
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);

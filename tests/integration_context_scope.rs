@@ -32,7 +32,7 @@ fn make_task(id: &str, title: &str) -> Task {
     }
 }
 
-/// Set up a workgraph directory with graph.jsonl containing the given tasks.
+/// Set up a WG directory with graph.jsonl containing the given tasks.
 fn setup_workgraph(dir: &Path, tasks: Vec<Task>) {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join("graph.jsonl");
@@ -316,7 +316,7 @@ fn test_full_scope_prompt_includes_everything() {
         project_description: "Full project".to_string(),
         graph_summary: "## Graph Status\n\n5 tasks".to_string(),
         full_graph_summary: "## Full Graph Summary\n\n- t1 [done]\n- t2 [open]".to_string(),
-        claude_md_content: "Always use workgraph.".to_string(),
+        claude_md_content: "Always use WG.".to_string(),
         queued_messages: String::new(),
         previous_attempt_context: String::new(),
         ..ScopeContext::default()
@@ -331,7 +331,7 @@ fn test_full_scope_prompt_includes_everything() {
     assert!(prompt.contains("Full project"));
     assert!(prompt.contains("## Graph Status"));
     assert!(prompt.contains("## Full Graph Summary"));
-    assert!(prompt.contains("## Project Instructions (CLAUDE.md)\n\nAlways use workgraph."));
+    assert!(prompt.contains("## Project Instructions (CLAUDE.md)\n\nAlways use WG."));
     assert!(prompt.contains("## Downstream"));
     assert!(prompt.contains("meta"));
 }

@@ -1,6 +1,6 @@
 //! Agent service layer
 //!
-//! Provides agent registry and management for the workgraph agent service.
+//! Provides agent registry and management for the WG agent service.
 //!
 //! This module includes:
 //! - Executor configuration for spawning agents

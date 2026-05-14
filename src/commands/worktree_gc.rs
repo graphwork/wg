@@ -88,7 +88,7 @@ pub fn plan(
 ) -> Result<Vec<Decision>> {
     let project_root = workgraph_dir
         .parent()
-        .context("Cannot determine project root from workgraph dir")?
+        .context("Cannot determine project root from WG dir")?
         .to_path_buf();
     let worktrees_dir = project_root.join(".wg-worktrees");
     if !worktrees_dir.exists() {
@@ -226,7 +226,7 @@ pub fn plan(
 pub fn run(workgraph_dir: &Path, apply: bool, force: bool) -> Result<()> {
     let project_root = workgraph_dir
         .parent()
-        .context("Cannot determine project root from workgraph dir")?
+        .context("Cannot determine project root from WG dir")?
         .to_path_buf();
     let worktrees_dir = project_root.join(".wg-worktrees");
     if !worktrees_dir.exists() {

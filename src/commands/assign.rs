@@ -178,7 +178,7 @@ pub fn run(
     let path = graph_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     if clear {

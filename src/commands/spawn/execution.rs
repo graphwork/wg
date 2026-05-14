@@ -38,7 +38,7 @@ pub(crate) fn spawn_agent_inner(
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Load the graph and get task info
@@ -394,7 +394,7 @@ pub(crate) fn spawn_agent_inner(
     let mut settings = executor_config.apply_templates(&vars);
 
     // Universal wg context injection for all executor types.
-    // Ensures all executors receive consistent workgraph context in their prompts,
+    // Ensures all executors receive consistent WG context in their prompts,
     // with model-appropriate knowledge tier based on context window and capabilities.
     let model_str = settings.model.as_deref().unwrap_or("");
     let model_tier = super::context::classify_model_tier(model_str);
@@ -901,7 +901,7 @@ pub(crate) fn should_create_worktree(
 /// `build_prompt()` to assemble the agent prompt at spawn time.
 ///
 /// CLI handlers (claude, codex) and in-process handlers (native) all need
-/// the same workgraph-context preamble, so the spawn pipeline auto-builds a
+/// the same WG-context preamble, so the spawn pipeline auto-builds a
 /// `PromptTemplate` for any of these when the user hasn't supplied one in
 /// their executor config. Adding a new built-in handler without listing it
 /// here means the spawn writes no prompt.txt and the resulting subprocess
@@ -1051,7 +1051,7 @@ fn build_inner_command(
             for arg in &settings.args {
                 cmd_parts.push(shell_escape(arg));
             }
-            // Prevent agents from spawning sub-agents outside workgraph
+            // Prevent agents from spawning sub-agents outside WG
             cmd_parts.push("--disallowedTools".to_string());
             cmd_parts.push(shell_escape("Agent,EnterWorktree,ExitWorktree"));
 

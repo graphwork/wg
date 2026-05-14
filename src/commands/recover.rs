@@ -440,7 +440,7 @@ pub fn print_plan(plan: &Plan, opts: &RecoverOptions) {
 pub fn run(dir: &Path, opts: RecoverOptions) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     if let Some(m) = &opts.set_model

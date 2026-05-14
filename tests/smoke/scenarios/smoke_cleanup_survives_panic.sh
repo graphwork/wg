@@ -12,7 +12,7 @@
 #   2. wg_smoke_sweep removes leftover scratch dirs under the root.
 #
 # Strategy:
-#   * Spawn a child bash that initialises a workgraph dir and starts a real
+#   * Spawn a child bash that initialises a WG dir and starts a real
 #     `wg service daemon`, then SIGKILLs itself before its trap can run.
 #     The daemon survives, re-parented to init.
 #   * Confirm pre-condition: daemon PID is alive, scratch dir exists.

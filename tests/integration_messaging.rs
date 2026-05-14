@@ -73,7 +73,7 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> String {
     format!("{}{}", stdout, stderr)
 }
 
-/// Initialize a workgraph in a temp directory and return the .wg path.
+/// Initialize WG in a temp directory and return the .wg path.
 fn init_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");

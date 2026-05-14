@@ -104,7 +104,7 @@ fn wg_ok_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> String 
     stdout
 }
 
-/// Initialise a fresh workgraph in a temp directory and return the .wg path.
+/// Initialise a fresh WG graph in a temp directory and return the .wg path.
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--executor", "shell"]);

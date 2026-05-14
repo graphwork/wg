@@ -22,7 +22,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if [[ ! -f "$repo_root/Cargo.toml" ]]; then
-    loud_skip "NOT IN WORKGRAPH REPO" "Cargo.toml not at $repo_root"
+    loud_skip "NOT IN WG REPO" "Cargo.toml not at $repo_root"
 fi
 
 log=$(mktemp -t tui_perf_token.XXXXXX.log)

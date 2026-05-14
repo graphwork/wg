@@ -343,7 +343,7 @@ pub fn lower_priority(p: Priority) -> Priority {
 
 /// A task node.
 ///
-/// A task in the workgraph with dependencies, status, and execution metadata.
+/// A task in the WG task graph with dependencies, status, and execution metadata.
 ///
 /// Custom `Deserialize` handles migration from the old `identity` field
 /// (`{"role_id": "...", "motivation_id": "..."}`) to the new `agent` field
@@ -1780,7 +1780,7 @@ pub struct Resource {
     pub unit: Option<String>,
 }
 
-/// A node in the workgraph (task or resource)
+/// A node in the WG task graph (task or resource)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
@@ -1904,7 +1904,7 @@ impl CycleAnalysis {
     }
 }
 
-/// The workgraph: a directed task graph with dependency edges and optional loop edges.
+/// The WG task graph: a directed graph of work with dependency edges and optional loop edges.
 ///
 /// Tasks depend on other tasks via `after`/`blocks` edges. Resources are
 /// consumed by tasks via `requires` edges. The graph is persisted as JSONL

@@ -105,8 +105,8 @@ pub struct AgentLoop {
     journal_path: Option<PathBuf>,
     /// Task ID for journal metadata.
     task_id: Option<String>,
-    /// workgraph directory root (the `.wg` dir). Set alongside
-    /// task_id to enable the workgraph inbox in interactive mode.
+    /// WG directory root (the `.wg` dir). Set alongside
+    /// task_id to enable the WG inbox in interactive mode.
     workgraph_dir: Option<PathBuf>,
     /// Agent identifier used for inbox cursor tracking.
     agent_id: Option<String>,
@@ -159,7 +159,7 @@ pub struct AgentLoop {
     /// them into `output.log` for TUI display.
     nex_repl_mode: bool,
     /// Chat-file I/O surface. When set, the loop reads user input
-    /// from `<workgraph>/chat/<id>/inbox.jsonl` instead of stdin,
+    /// from `<wg-dir>/chat/<id>/inbox.jsonl` instead of stdin,
     /// mirrors streaming output to `chat/<id>/streaming`, and appends
     /// each finalized assistant turn to `chat/<id>/outbox.jsonl`.
     /// This is what makes `wg nex --chat-id N` serve as a coordinator
@@ -185,7 +185,7 @@ pub struct AgentLoop {
 /// tag correctly.
 struct ChatSurfaceState {
     reader: super::chat_surface::ChatInboxReader,
-    /// workgraph root dir (`.wg/...`), needed for
+    /// WG root dir (`.wg/...`), needed for
     /// `chat::append_outbox_ref` which expects the root, not the
     /// per-chat dir.
     workgraph_dir: PathBuf,
@@ -596,7 +596,7 @@ impl AgentLoop {
         self
     }
 
-    /// Configure a workgraph message-queue inbox for this agent. When
+    /// Configure a WG message-queue inbox for this agent. When
     /// set, interactive-mode sessions drain pending messages at every
     /// turn boundary via `WorkgraphInbox` (Stage F). Urgent-priority
     /// messages trigger a cooperative cancel so in-flight work aborts
@@ -634,7 +634,7 @@ impl AgentLoop {
         self
     }
 
-    /// Set the workgraph root directory. Used by file-producing sub-
+    /// Set the WG root directory. Used by file-producing sub-
     /// systems (L0 defense pending buffers, touched-files re-injection
     /// artifact stash, etc.) that need a stable location to write
     /// artifacts that survive the session.
@@ -645,7 +645,7 @@ impl AgentLoop {
 
     /// Configure the chat-file I/O surface for this agent. When set,
     /// the loop bypasses stdin/stderr and reads/writes the chat
-    /// files under `<workgraph>/chat/<session_ref>/` instead.
+    /// files under `<wg-dir>/chat/<session_ref>/` instead.
     ///
     /// `session_ref` can be a UUID, alias (e.g. `coordinator-0`,
     /// `task-foo`), or legacy numeric id — anything that resolves
@@ -741,7 +741,7 @@ impl AgentLoop {
     /// For chat-file I/O, prefer `with_chat_ref` / `with_chat_id` —
     /// they also set journal/summary paths and the chat_session_ref
     /// needed by `/fork`. `with_surface` is for surfaces that don't
-    /// correspond to a `<workgraph>/chat/<ref>/` directory.
+    /// correspond to a `<wg-dir>/chat/<ref>/` directory.
     pub fn with_surface(mut self, surface: Box<dyn super::surface::ConversationSurface>) -> Self {
         self.surface = Some(surface);
         self
@@ -750,7 +750,7 @@ impl AgentLoop {
     /// Resolve a directory for writing agent-produced buffer artifacts
     /// (L0 defense rescue buffers, etc.). Prefer the configured
     /// workgraph_dir; fall back to `<tempdir>/wg-nex-buffers` so a
-    /// session without a workgraph root still doesn't crash when
+    /// session without a WG root still doesn't crash when
     /// trying to stash an oversized tool_use.
     fn workgraph_dir_for_buffers(&self) -> PathBuf {
         self.workgraph_dir
@@ -1019,7 +1019,7 @@ impl AgentLoop {
         }
 
         // Inbox collects user inputs delivered between turn boundaries.
-        // In interactive mode with a workgraph task_id + workgraph_dir,
+        // In interactive mode with a WG task_id + workgraph_dir,
         // we use the file-based WorkgraphInbox so messages sent via
         // `wg msg send <task-id> "..."` from another terminal arrive
         // here at the next boundary. Urgent-priority messages trigger
@@ -3134,7 +3134,7 @@ impl AgentLoop {
                 // independently from here — new inbox, new outbox,
                 // writes don't affect the parent.
                 let Some(ref wg_dir) = self.workgraph_dir else {
-                    eprintln!("\x1b[33m[nex] /fork unavailable: no workgraph dir in scope\x1b[0m");
+                    eprintln!("\x1b[33m[nex] /fork unavailable: no WG dir in scope\x1b[0m");
                     return NexSlashResult::Continue;
                 };
                 // Source session = the currently-bound chat surface.
@@ -3185,7 +3185,7 @@ impl AgentLoop {
                 // user /quits and re-runs with the printed command.
                 let Some(ref wg_dir) = self.workgraph_dir else {
                     eprintln!(
-                        "\x1b[33m[nex] /{} unavailable: no workgraph dir in scope for this session\x1b[0m",
+                        "\x1b[33m[nex] /{} unavailable: no WG dir in scope for this session\x1b[0m",
                         cmd.trim_start_matches('/')
                     );
                     return NexSlashResult::Continue;

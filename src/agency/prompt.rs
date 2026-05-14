@@ -164,7 +164,9 @@ pub fn resolve_all_components_for_scope(
         .filter_map(|id| {
             // Helper: drop store-backed components whose scope mismatches.
             let scope_ok = |comp: &RoleComponent| -> bool {
-                let Some(req) = required_scope else { return true };
+                let Some(req) = required_scope else {
+                    return true;
+                };
                 let comp_scope = run_mode::component_scope(comp);
                 match comp_scope {
                     None | Some("") => true, // untagged → match everything

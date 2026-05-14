@@ -1,4 +1,4 @@
-//! Matrix commands for workgraph CLI
+//! Matrix commands for WG CLI
 //!
 //! Provides commands for interacting with Matrix:
 //! - `wg matrix listen` - Start the Matrix message listener
@@ -22,7 +22,7 @@ use workgraph::{
 /// Run the Matrix listener
 ///
 /// This starts a background process that listens for commands in configured Matrix rooms
-/// and executes them against the workgraph.
+/// and executes them against WG.
 pub fn run_listen(dir: &Path, room: Option<&str>) -> Result<()> {
     let matrix_config = MatrixConfig::load().context("Failed to load Matrix config")?;
 

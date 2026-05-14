@@ -12,7 +12,7 @@ pub(crate) fn generate_dot(
     annotations: &HashMap<String, super::AnnotationInfo>,
 ) -> String {
     let mut lines = vec![
-        "digraph workgraph {".to_string(),
+        "digraph wg {".to_string(),
         "  rankdir=LR;".to_string(),
         "  node [shape=box];".to_string(),
         String::new(),
@@ -383,7 +383,7 @@ mod tests {
 
         let no_annots = HashMap::new();
         let dot = generate_dot(&graph, &tasks, &task_ids, &critical_path, &no_annots);
-        assert!(dot.contains("digraph workgraph"));
+        assert!(dot.contains("digraph wg"));
         assert!(dot.contains("\"t1\""));
         assert!(dot.contains("Task 1"));
     }

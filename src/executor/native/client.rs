@@ -259,7 +259,7 @@ impl AnthropicClient {
 
     /// Auth-config hint string injected into 401/403 error messages.
     /// Names the `[[llm_endpoints.endpoints]]` block to set `api_key`
-    /// in — NEVER an env var, per the workgraph credential contract.
+    /// in — NEVER an env var, per the WG credential contract.
     fn auth_config_hint(&self) -> String {
         match &self.endpoint_name {
             Some(name) => format!(
@@ -583,7 +583,7 @@ fn resolve_api_key() -> Result<String> {
     ))
 }
 
-/// Resolve the API key, optionally looking in a specific workgraph directory.
+/// Resolve the API key, optionally looking in a specific WG directory.
 pub fn resolve_api_key_from_dir(workgraph_dir: &Path) -> Result<String> {
     // 1. Environment variable
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
@@ -592,7 +592,7 @@ pub fn resolve_api_key_from_dir(workgraph_dir: &Path) -> Result<String> {
         return Ok(key);
     }
 
-    // 2. workgraph config (merged: global + local)
+    // 2. WG config (merged: global + local)
     if let Ok(merged_val) = crate::config::Config::load_merged_toml_value(workgraph_dir)
         && let Some(key) = merged_val
             .get("native_executor")

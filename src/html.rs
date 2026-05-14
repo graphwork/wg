@@ -1,4 +1,4 @@
-//! `wg html`: render the workgraph as a static, clickable HTML viewer.
+//! `wg html`: render the WG task graph as a static, clickable HTML viewer.
 //!
 //! Design goals (v2):
 //! - **TUI parity**: render `wg viz --all` verbatim in a monospace `<pre>`,
@@ -218,7 +218,7 @@ pub fn resolve_project_meta(workgraph_dir: &Path) -> ProjectMeta {
 ///
 /// In a normal project `workgraph_dir` is `<repo>/.wg` (or legacy
 /// `<repo>/.workgraph`), so the repository working directory is its parent.
-/// Tests and library callers sometimes pass a synthetic workgraph directory
+/// Tests and library callers sometimes pass a synthetic WG directory
 /// directly; those paths are used as-is.
 pub fn source_title_for_workgraph_dir(workgraph_dir: &Path) -> String {
     format_source_title(
@@ -505,7 +505,7 @@ pub fn run(
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
         anyhow::bail!(
-            "workgraph not initialized at {}. Run `wg init` first.",
+            "WG not initialized at {}. Run `wg init` first.",
             workgraph_dir.display()
         );
     }

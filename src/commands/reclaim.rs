@@ -16,7 +16,7 @@ use workgraph::parser::load_graph;
 pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
@@ -198,7 +198,7 @@ mod tests {
     fn test_reclaim_uninitialized_workgraph_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        // Don't initialize workgraph
+        // Don't initialize WG
 
         let result = run(dir_path, "t1", "agent-old", "agent-new");
         assert!(result.is_err());

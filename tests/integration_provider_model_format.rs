@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use workgraph::config::{
-    parse_model_spec, parse_model_spec_strict, Config, RoleModelConfig, CLAUDE_OPUS_MODEL_ID,
-    KNOWN_PROVIDERS,
+    CLAUDE_OPUS_MODEL_ID, Config, KNOWN_PROVIDERS, RoleModelConfig, parse_model_spec,
+    parse_model_spec_strict,
 };
 use workgraph::graph::WorkGraph;
 use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};

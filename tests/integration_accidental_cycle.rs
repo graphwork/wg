@@ -93,7 +93,7 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> String {
     stderr
 }
 
-/// Set up a workgraph directory with given tasks
+/// Set up a WG directory with given tasks
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();

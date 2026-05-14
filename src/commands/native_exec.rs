@@ -157,7 +157,7 @@ pub fn run(
         }
     }
     // Register by task-id — task-ids are already unique within a
-    // workgraph, so we use them as the session key directly instead
+    // WG, so we use them as the session key directly instead
     // of a fresh UUID.
     let mut reg = workgraph::chat_sessions::load(workgraph_dir).unwrap_or_default();
     reg.sessions.entry(task_id.to_string()).or_insert_with(|| {

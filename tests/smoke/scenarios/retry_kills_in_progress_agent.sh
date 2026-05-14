@@ -10,7 +10,7 @@
 # `wg agents --alive`, kill it manually, and wait ~30s for the reaper.
 #
 # Strategy:
-#   1. Init a workgraph project.
+#   1. Init a WG project.
 #   2. Spawn a long-running `sleep 600` to stand in for a hung worker.
 #   3. Hand-craft graph.jsonl: one InProgress task assigned to "agent-99"
 #      that points at the sleep PID.
@@ -46,7 +46,7 @@ if [ -d .wg ]; then
 elif [ -d .wg ]; then
     wg_dir=".wg"
 else
-    loud_fail "could not find workgraph dir after init"
+    loud_fail "could not find WG dir after init"
 fi
 
 graph="$wg_dir/graph.jsonl"

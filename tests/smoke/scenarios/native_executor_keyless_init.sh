@@ -5,7 +5,7 @@
 #
 #   wg init -m qwen3-coder -e <URL> --executor nex
 #
-# MUST be sufficient to make a workgraph project usable. No env vars. No
+# MUST be sufficient to make a WG project usable. No env vars. No
 # follow-up edits. No `[native_executor] api_key` workaround. The autohaiku
 # 100%-failure regression had `wg native-exec` crashing immediately with
 #
@@ -88,8 +88,8 @@ if ! wg --dir "$wg_dir" list >list.log 2>&1; then
     loud_fail "wg list crashed against the keyless config. log: $(cat list.log)"
 fi
 if grep -qE 'No Anthropic API key|ANTHROPIC_API_KEY environment variable' list.log; then
-    loud_fail "wg list mentioned ANTHROPIC_API_KEY env var — workgraph credential \
-contract says credentials live in workgraph config exclusively. log: $(cat list.log)"
+    loud_fail "wg list mentioned ANTHROPIC_API_KEY env var — WG credential \
+contract says credentials live in WG config exclusively. log: $(cat list.log)"
 fi
 
 # 4. Defense in depth: assert wg help output for `native-exec` mentions

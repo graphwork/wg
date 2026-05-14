@@ -2,7 +2,7 @@ use anyhow::Result;
 
 const QUICKSTART_TEXT: &str = r###"
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                         WORKGRAPH AGENT QUICKSTART                           ║
+║                            WG AGENT QUICKSTART                               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 GETTING STARTED
@@ -18,8 +18,8 @@ GETTING STARTED
 
 SKILL & BUNDLE SETUP (required for agents to use wg)
 ─────────────────────────────────────────
-  Spawned agents need to know how to use workgraph. Without the right
-  skill or bundle installed, agents won't know wg commands exist.
+  Spawned agents need to know how to use the `wg` CLI. Without the right
+  skill or bundle installed, agents won't know that command surface exists.
 
   Claude Code executor:
     wg skill install             # Installs ~/.claude/skills/wg/SKILL.md
@@ -291,7 +291,7 @@ CONTEXT & ARTIFACTS
 
 CYCLES (repeating workflows)
 ─────────────────────────────────────────
-  workgraph is a directed graph, NOT a DAG. It supports cycles natively.
+  The WG task graph is a directed graph, NOT a DAG. It supports cycles natively.
   Use cycles instead of duplicating tasks (e.g., don't create "pass 1",
   "pass 2", "pass 3" — create one cycle that iterates).
 
@@ -640,20 +640,20 @@ DEAD AGENT DETECTION
   wg dead-agents --purge --delete-dirs  # Also delete agent work directories
   wg dead-agents --threshold 30       # Override heartbeat timeout (minutes)
 
-PEER WORKGRAPHS
+PEER WG PROJECTS
 ─────────────────────────────────────────
-  Cross-repo communication between workgraph instances:
+  Cross-repo communication between WG instances:
 
-  wg peer add <name> <path>           # Register a peer workgraph
+  wg peer add <name> <path>           # Register a peer WG project
   wg peer list                        # List all peers with service status
   wg peer status                      # Quick health check of all peers
-  wg add "Task" --repo <peer>         # Create a task in a peer workgraph
+  wg add "Task" --repo <peer>         # Create a task in a peer WG project
 
 EVALUATION & MONITORING
 ─────────────────────────────────────────
   wg evaluate run <task-id>           # Trigger LLM evaluation of a completed task
   wg evaluate show                    # View evaluation history
-  wg watch                            # Stream workgraph events as JSON lines
+  wg watch                            # Stream WG events as JSON lines
   wg watch --task <id>                # Stream events for a specific task
 
 NOTIFICATION & COMMUNICATION
@@ -1398,8 +1398,8 @@ mod tests {
     }
 
     #[test]
-    fn test_quickstart_text_contains_peer_workgraphs() {
-        assert!(QUICKSTART_TEXT.contains("PEER WORKGRAPHS"));
+    fn test_quickstart_text_contains_peer_wg_projects() {
+        assert!(QUICKSTART_TEXT.contains("PEER WG PROJECTS"));
         assert!(QUICKSTART_TEXT.contains("wg peer add"));
         assert!(QUICKSTART_TEXT.contains("--repo"));
     }
@@ -1445,7 +1445,7 @@ mod tests {
     fn test_quickstart_text_all_sections_present() {
         let text = QUICKSTART_TEXT.trim();
         let required_sections = [
-            "WORKGRAPH AGENT QUICKSTART",
+            "WG AGENT QUICKSTART",
             "GETTING STARTED",
             "SKILL & BUNDLE SETUP",
             "AGENCY SETUP",
@@ -1469,7 +1469,7 @@ mod tests {
             "TRACE, RUNS & REPLAY",
             "ANALYSIS",
             "DEAD AGENT DETECTION",
-            "PEER WORKGRAPHS",
+            "PEER WG PROJECTS",
             "EVALUATION & MONITORING",
             "NOTIFICATION & COMMUNICATION",
             "RESOURCE MANAGEMENT",

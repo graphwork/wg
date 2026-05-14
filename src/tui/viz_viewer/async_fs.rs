@@ -18,8 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -52,8 +52,14 @@ enum RequestKey {
 enum FsRequest {
     LoadGraph(PathBuf),
     Stat(PathBuf),
-    ReadStreaming { path: PathBuf, coord_id: u32 },
-    BumpChatInteraction { workgraph_dir: PathBuf, session_ref: String },
+    ReadStreaming {
+        path: PathBuf,
+        coord_id: u32,
+    },
+    BumpChatInteraction {
+        workgraph_dir: PathBuf,
+        session_ref: String,
+    },
     Shutdown,
 }
 
@@ -61,21 +67,10 @@ enum FsRequest {
 /// written into the shared cache; this message just tells the main thread
 /// "you can dispatch a fresh request for this key now."
 enum FsResponse {
-    LoadGraphDone {
-        duration: Duration,
-        success: bool,
-    },
-    StatDone {
-        path: PathBuf,
-        duration: Duration,
-    },
-    StreamingDone {
-        coord_id: u32,
-        duration: Duration,
-    },
-    BumpDone {
-        duration: Duration,
-    },
+    LoadGraphDone { duration: Duration, success: bool },
+    StatDone { path: PathBuf, duration: Duration },
+    StreamingDone { coord_id: u32, duration: Duration },
+    BumpDone { duration: Duration },
 }
 
 /// Shared state between worker and main thread.
@@ -352,9 +347,7 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: Sender<FsResponse>, inner: Arc<Async
             FsRequest::Shutdown => break,
             FsRequest::LoadGraph(path) => {
                 let start = Instant::now();
-                let mtime = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .ok();
+                let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
                 let result = workgraph::parser::load_graph(&path);
                 let success = result.is_ok();
                 if let Ok(graph) = result {
@@ -368,14 +361,8 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: Sender<FsResponse>, inner: Arc<Async
             }
             FsRequest::Stat(path) => {
                 let start = Instant::now();
-                let mtime = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                inner
-                    .stat_cache
-                    .lock()
-                    .unwrap()
-                    .insert(path.clone(), mtime);
+                let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                inner.stat_cache.lock().unwrap().insert(path.clone(), mtime);
                 let _ = tx.send(FsResponse::StatDone {
                     path,
                     duration: start.elapsed(),
@@ -623,7 +610,8 @@ mod tests {
             max_call_duration < Duration::from_millis(50),
             "max main-thread call duration {:?} exceeded 50ms p99 budget under \
              simulated {:?} FS latency",
-            max_call_duration, injected
+            max_call_duration,
+            injected
         );
     }
 }

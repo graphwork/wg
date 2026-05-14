@@ -96,7 +96,7 @@ pub(crate) fn apply_operation(
     dir: &Path,
 ) -> Result<serde_json::Value> {
     // Self-mutation safety: operations targeting the evolver's own
-    // role or tradeoff are deferred to a verified workgraph task
+    // role or tradeoff are deferred to a verified WG task
     // that requires human approval. This protects both single-shot
     // and fan-out evolution paths.
     if let Some(result) = check_self_mutation(op, agency_dir, dir, run_id) {

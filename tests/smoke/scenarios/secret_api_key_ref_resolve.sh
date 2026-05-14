@@ -12,7 +12,7 @@ set -euo pipefail
 . "$(dirname "$0")/_helpers.sh"
 require_wg
 
-# Use a temp HOME + temp workgraph dir
+# Use a temp HOME + temp WG dir
 SMOKE_HOME=$(mktemp -d)
 SMOKE_DIR=$(mktemp -d)
 add_cleanup_hook "rm -rf $SMOKE_HOME $SMOKE_DIR"
@@ -34,7 +34,7 @@ echo "$SECRET_VALUE" | wg secret set "$SECRET_NAME" --from-stdin 2>&1 \
     | grep -q "stored in keyring backend" \
     || { echo "FAIL: storing test secret via --from-stdin"; exit 1; }
 
-# Initialize a minimal workgraph
+# Initialize a minimal WG
 wg --dir "$SMOKE_DIR" init --name "smoke-test-$$" --yes 2>/dev/null || true
 
 # Write a config with api_key_ref

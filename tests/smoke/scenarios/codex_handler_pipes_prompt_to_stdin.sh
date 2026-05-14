@@ -26,7 +26,7 @@ require_wg
 
 scratch=$(make_scratch)
 
-# Isolate from any user-level workgraph config.
+# Isolate from any user-level WG config.
 fake_home="$scratch/home"
 mkdir -p "$fake_home/.config/workgraph"
 : >"$fake_home/.config/workgraph/config.toml"
@@ -44,6 +44,13 @@ run_wg() {
 
 if ! run_wg init -m codex:gpt-5 >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
+fi
+
+# This smoke owns the codex handler spawn artifact, not the assignment pipeline.
+# Keep the task directly dispatchable so default agency settings cannot
+# interpose an .assign-* task and hide the run.sh we need to inspect.
+if ! run_wg config --auto-assign false --no-reload >config.log 2>&1; then
+    loud_fail "wg config failed: $(tail -10 config.log)"
 fi
 
 if ! run_wg add 'smoke probe codex' --id smoke-probe-codex \

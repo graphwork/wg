@@ -6550,7 +6550,7 @@ fn test_cli_add_with_exec_and_timeout() {
 // cycle) re-Opens the chat task in microseconds. The chat supervisor then
 // spawns another `wg spawn-task .chat-N`, which finds the task Open, claims
 // it, the new agent calls `wg done`, repeat. .chat-2 hit dispatch count 458
-// in the user's autohaiku/workgraph project before manual archive.
+// in the user's autohaiku/WG project before manual archive.
 //
 // The fix lives in graph.rs::reactivate_cycle (covers wg-done sync path)
 // AND graph.rs::evaluate_all_cycle_iterations (covers dispatcher safety net).

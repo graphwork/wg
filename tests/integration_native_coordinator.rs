@@ -56,8 +56,7 @@ fn fake_home_for(wg_dir: &Path) -> PathBuf {
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     isolate_command_env(&mut cmd, wg_dir);
-    cmd
-        .arg("--dir")
+    cmd.arg("--dir")
         .arg(wg_dir)
         .args(args)
         .stdin(Stdio::null())
@@ -437,10 +436,7 @@ mod per_provider_key_resolution {
     }
     impl EnvSnapshot {
         fn new(vars: &[&'static str]) -> Self {
-            let saved = vars
-                .iter()
-                .map(|v| (*v, std::env::var(v).ok()))
-                .collect();
+            let saved = vars.iter().map(|v| (*v, std::env::var(v).ok())).collect();
             for v in vars {
                 unsafe { std::env::remove_var(v) };
             }
@@ -650,7 +646,7 @@ is_default = true
     /// `local:qwen3-coder` + endpoint with `api_key` configured + an
     /// ANTHROPIC_API_KEY env var poisoned with junk → the configured key
     /// wins, env vars are NEVER consulted. Verifies the env-var-isolation
-    /// contract: workgraph config is the SOLE source of credentials.
+    /// contract: WG config is the SOLE source of credentials.
     ///
     /// We don't have a packet sniffer in unit tests, so this asserts the
     /// next-best signal: the resolved provider/model are correct AND the
@@ -943,8 +939,8 @@ is_default = true
                 && !err.contains("OPENAI_API_KEY")
                 && !err.contains("OPENROUTER_API_KEY")
                 && !err.contains("WG_API_KEY"),
-            "401 error must NOT mention any env var name (workgraph credential contract — \
-             credentials live in workgraph config exclusively); got: {}",
+            "401 error must NOT mention any env var name (WG credential contract — \
+             credentials live in WG config exclusively); got: {}",
             err
         );
     }
@@ -1004,7 +1000,7 @@ is_default = true
         );
         assert!(
             !captured.contains("env-poison"),
-            "request must NOT carry any env-var-sourced key (workgraph credential contract); \
+            "request must NOT carry any env-var-sourced key (WG credential contract); \
              captured:\n{}",
             captured
         );
@@ -1521,8 +1517,7 @@ fn native_coordinator_chat_routing() {
     let log = read_daemon_log(&wg_dir);
     assert!(
         log.contains("IPC UserChat: request_id=")
-            && (log.contains("Coordinator-0:")
-                || log.contains("[coordinator-0 stderr]")),
+            && (log.contains("Coordinator-0:") || log.contains("[coordinator-0 stderr]")),
         "Log should show the chat request reached the coordinator supervisor.\nLog:\n{}",
         log
     );
@@ -1788,7 +1783,7 @@ fn no_env_var_credential_lookups_in_credential_path() {
     ];
     // Files we deliberately allow to mention these env vars: helper
     // scripts in tests/, doc comments, `from_env` legacy methods that
-    // are dead-end paths NOT called by the workgraph dispatcher.
+    // are dead-end paths NOT called by the WG dispatcher.
     let banned_substrings = [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
@@ -1817,14 +1812,13 @@ fn no_env_var_credential_lookups_in_credential_path() {
                     // path. Any NEW credential-path code must not
                     // re-introduce env vars.
                     let preceding: Vec<&str> = contents.lines().take(lineno).collect();
-                    let in_legacy =
-                        preceding.iter().rev().take(40).any(|l| {
-                            l.contains("pub fn from_env")
-                                || l.contains("fn resolve_api_key()")
-                                || l.contains("fn resolve_api_key_from_dir")
-                                || l.contains("fn resolve_openai_api_key")
-                                || l.contains("fn resolve_openai_api_key_from_dir")
-                        });
+                    let in_legacy = preceding.iter().rev().take(40).any(|l| {
+                        l.contains("pub fn from_env")
+                            || l.contains("fn resolve_api_key()")
+                            || l.contains("fn resolve_api_key_from_dir")
+                            || l.contains("fn resolve_openai_api_key")
+                            || l.contains("fn resolve_openai_api_key_from_dir")
+                    });
                     if !in_legacy {
                         panic!(
                             "Banned env-var lookup '{}' found in credential path:\n  \

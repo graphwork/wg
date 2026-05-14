@@ -2,7 +2,7 @@
 //! outside world for user input and streaming output.
 //!
 //! The point of this trait is to let a single agent codepath (`nex`
-//! = task-agent = coordinator = evaluate) serve every role workgraph
+//! = task-agent = coordinator = evaluate) serve every WG role
 //! has. Each role differs only in WHERE user input comes from and
 //! WHERE streaming output goes.
 //!

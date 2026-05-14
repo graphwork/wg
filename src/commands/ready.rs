@@ -220,7 +220,7 @@ mod tests {
     fn test_run_uninitialized() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        // Don't initialize workgraph
+        // Don't initialize WG
 
         let result = run(dir_path, false);
         assert!(result.is_err());

@@ -351,7 +351,7 @@ fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Optio
     } else if let Some(r) = role {
         format!("You are acting in the role of: {}.", r)
     } else {
-        String::from("You are a workgraph task agent.")
+        String::from("You are a WG task agent.")
     }
 }
 

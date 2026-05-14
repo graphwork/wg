@@ -138,7 +138,7 @@ impl McpClient {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "workgraph",
+                    "name": "WG",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
             }),

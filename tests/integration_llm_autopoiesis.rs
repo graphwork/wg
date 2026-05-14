@@ -1,7 +1,7 @@
 //! LLM integration tests for autopoietic behaviors.
 //!
 //! Tests that real LLM-backed agents perform autopoietic behaviors correctly
-//! within workgraph: task completion, subtask creation, context reading,
+//! within WG: task completion, subtask creation, context reading,
 //! artifact propagation, cycle convergence, and survey synthesis.
 //!
 //! Run with: cargo test --features llm-tests --test integration_llm_autopoiesis -- --nocapture
@@ -37,7 +37,7 @@ mod llm_autopoiesis {
         path
     }
 
-    /// Run `wg` with given args in a specific workgraph directory.
+    /// Run `wg` with given args in a specific WG directory.
     fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         let wg = wg_binary();
         Command::new(&wg)
@@ -104,9 +104,9 @@ mod llm_autopoiesis {
         std::env::var("WG_TEST_MODEL").unwrap_or_else(|_| "haiku".to_string())
     }
 
-    /// Set up a workgraph directory via `wg init`, then write a claude executor
+    /// Set up a WG directory via `wg init`, then write a claude executor
     /// config with working_dir and PATH so the wrapper script's bare `wg`
-    /// commands find the test binary and the workgraph.
+    /// commands find the test binary and the WG directory.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
         let wg_dir = tmp_root.join(".wg");
         wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
@@ -134,7 +134,7 @@ PATH = "{path}"
 template = """
 # Task Assignment
 
-You are an AI agent working on a task in a workgraph project.
+You are an AI agent working on a task in a WG project.
 
 {{{{task_identity}}}}
 ## Your Task

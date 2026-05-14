@@ -3478,7 +3478,7 @@ pub enum LogViewMode {
     /// Pretty-printed full transcript: every event rendered with its own
     /// formatter, NOT a JSON dump.
     RawPretty,
-    /// workgraph-level log entries only: `wg log` writes, dispatcher
+    /// WG-level log entries only: `wg log` writes, dispatcher
     /// status updates, and task lifecycle transitions sourced from the
     /// task's `log` field on the graph. NO LLM stream content.
     WgLog,
@@ -4924,7 +4924,7 @@ pub struct FuzzyLineMatch {
 
 /// Main application state for the viz viewer.
 pub struct VizApp {
-    /// Path to the workgraph directory.
+    /// Path to the WG directory.
     pub workgraph_dir: PathBuf,
     /// Viz options passed from CLI (--all, --status, --critical-path, etc.).
     viz_options: VizOptions,
@@ -4975,7 +4975,7 @@ pub struct VizApp {
     pub cycle_timing: Vec<CycleTimingEntry>,
 
     // ── Token display toggle ──
-    /// When true, show total workgraph token usage; when false, show visible-tasks only.
+    /// When true, show total WG token usage; when false, show visible-tasks only.
     pub show_total_tokens: bool,
 
     // ── Help overlay ──
@@ -7651,8 +7651,7 @@ impl VizApp {
             let coord_id = self.active_coordinator_id;
             let streaming_path =
                 workgraph::chat::streaming_path_ref(&self.workgraph_dir, &coord_id.to_string());
-            self.async_fs
-                .request_streaming(streaming_path, coord_id);
+            self.async_fs.request_streaming(streaming_path, coord_id);
             let prev = self.chat.streaming_text.clone();
             let streaming = self.async_fs.cached_streaming(coord_id);
             if streaming != prev {
@@ -10415,7 +10414,7 @@ impl VizApp {
     }
 
     /// Construct a VizApp from pre-built VizOutput for unit testing.
-    /// Avoids needing a real workgraph directory on disk.
+    /// Avoids needing a real WG directory on disk.
     #[cfg(test)]
     pub(crate) fn from_viz_output_for_test(viz: &crate::commands::viz::VizOutput) -> Self {
         let lines: Vec<String> = viz.text.lines().map(String::from).collect();
@@ -13754,7 +13753,7 @@ impl VizApp {
     /// For the currently-active coordinator, auto-enable `chat_pty_mode`
     /// and spawn an embedded REPL chosen by the coordinator's effective
     /// executor. The coordinator view is just a container for
-    /// interactive chat sessions associated with this workgraph — we
+    /// interactive chat sessions associated with this WG project — we
     /// pick the child process per executor type:
     ///
     /// - `native`  → `wg nex --resume <ref>` (our own REPL inside a
@@ -13767,7 +13766,7 @@ impl VizApp {
     ///
     /// The tradeoff for claude/codex is ephemeral: the chat transcript
     /// lives in the vendor's session store, not in `chat/<ref>/`. If
-    /// the user wants the workgraph chat history to include those
+    /// the user wants the WG chat history to include those
     /// turns, they should pick the `native` executor with
     /// `-m claude:opus` — that routes through our REPL which does write
     /// inbox/outbox, at the cost of using the raw API budget instead
@@ -18225,7 +18224,7 @@ mod hud_tests {
         (result, graph, tmp)
     }
 
-    /// Build a VizApp with a specific task selected, pointed at a real workgraph dir.
+    /// Build a VizApp with a specific task selected, pointed at a real WG dir.
     fn build_app(viz: &VizOutput, selected_id: &str, workgraph_dir: &std::path::Path) -> VizApp {
         let mut app = VizApp::from_viz_output_for_test(viz);
         app.workgraph_dir = workgraph_dir.to_path_buf();
@@ -22941,7 +22940,7 @@ mod tui_chat_tests {
 
     // ── helpers ──
 
-    /// Create a minimal workgraph with coordinator tasks so list_coordinator_ids works.
+    /// Create a minimal WG with coordinator tasks so list_coordinator_ids works.
     fn setup_workgraph_with_coordinators(
         tmp: &TempDir,
         coordinator_ids: &[u32],
@@ -27763,7 +27762,7 @@ mod message_indicator_refresh_tests {
     use crate::commands::viz::LayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
 
-    /// Build a single-task workgraph on disk and return a VizApp pinned to its
+    /// Build a single-task WG task graph on disk and return a VizApp pinned to its
     /// directory, with `last_graph_mtime` set so a subsequent maybe_refresh
     /// call sees the graph as unchanged. Mirrors the post-initial-load state.
     fn build_app_for_msg_test(task_id: &str) -> (VizApp, tempfile::TempDir) {

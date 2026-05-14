@@ -13,7 +13,7 @@ use workgraph::parser::{load_graph, save_graph};
 pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
@@ -159,7 +159,7 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
 pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
@@ -437,7 +437,7 @@ mod tests {
     fn test_claim_uninitialized_workgraph_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        // Don't initialize workgraph
+        // Don't initialize WG
 
         let result = claim(dir_path, "t1", None);
         assert!(result.is_err());
@@ -516,7 +516,7 @@ mod tests {
     fn test_unclaim_uninitialized_workgraph_fails() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        // Don't initialize workgraph
+        // Don't initialize WG
 
         let result = unclaim(dir_path, "t1");
         assert!(result.is_err());

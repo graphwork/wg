@@ -29,7 +29,7 @@ set -euo pipefail
 OUTDIR=$(mktemp -d)
 trap 'rm -rf "$OUTDIR"' EXIT
 
-# Generate the HTML against the current workgraph (this repo). The
+# Generate the HTML against the current WG project (this repo). The
 # project's own .wg/ has plenty of long-edge cases — exactly the
 # bug-shape geometry the user reported.
 wg html --out "$OUTDIR" >/dev/null 2>&1
@@ -134,7 +134,7 @@ for raw_line in pre_body.split('\n'):
             pass
 
 if not found_long_run:
-    # Soft skip: the workgraph repo's own graph normally has long runs,
+    # Soft skip: the WG repo's own graph normally has long runs,
     # but a freshly-cloned / minimal graph might not. Don't fail the
     # gate — surface a SKIP via exit 77.
     print("SKIP: no long `─` run in current graph; need a fixture with "

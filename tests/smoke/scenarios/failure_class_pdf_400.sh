@@ -38,7 +38,7 @@ if ! head -c 5 "$FIXTURE" | grep -qF '%PDF-'; then
     loud_fail "Fixture $FIXTURE does not start with %PDF- magic bytes"
 fi
 
-# ── Set up scratch workgraph ───────────────────────────────────────────
+# ── Set up scratch WG graph ───────────────────────────────────────────
 scratch=$(make_scratch)
 cd "$scratch"
 wg init --executor shell >init.log 2>&1 || loud_fail "wg init failed: $(cat init.log)"

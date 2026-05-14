@@ -119,7 +119,7 @@ pub fn run(
     let path = graph_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Parse date filters
@@ -147,7 +147,7 @@ pub fn run(
     }
 
     // Print DOT format for visualization
-    println!("digraph workgraph {{");
+    println!("digraph wg {{");
     println!("  rankdir=LR;");
     println!("  node [shape=box];");
 

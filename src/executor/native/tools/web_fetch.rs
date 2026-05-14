@@ -229,7 +229,7 @@ impl Tool for WebFetchTool {
             FetchedBody::Html(ref html) => extract_to_markdown(html, &parsed_url),
         };
 
-        // Write to a file artifact under <workgraph>/nex-sessions/fetched-pages/.
+        // Write to a file artifact under <wg-dir>/nex-sessions/fetched-pages/.
         // The agent can then `cat`/`head`/`grep` it without loading the
         // whole page into context on every turn.
         let capped_markdown = if markdown.len() > self.max_content_chars {
@@ -300,7 +300,7 @@ impl Tool for WebFetchTool {
 }
 
 impl WebFetchTool {
-    /// Write the fetched page to `<workgraph>/nex-sessions/fetched-pages/`
+    /// Write the fetched page to `<wg-dir>/nex-sessions/fetched-pages/`
     /// under a counter-prefixed, URL-slug-based filename. Returns the
     /// canonical absolute path for the agent to reference.
     fn write_artifact(&self, url: &str, title: &str, markdown: &str) -> Result<PathBuf, String> {

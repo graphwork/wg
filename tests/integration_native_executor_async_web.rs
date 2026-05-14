@@ -340,7 +340,7 @@ async fn bg_state_injection_reports_completion() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path();
 
-    // Create minimal workgraph
+    // Create minimal WG
     fs::create_dir_all(wg_dir).unwrap();
     fs::write(
         wg_dir.join("graph.jsonl"),

@@ -1,4 +1,4 @@
-//! Matrix message listener for workgraph (lightweight version)
+//! Matrix message listener for WG (lightweight version)
 //!
 //! Background listener that processes commands from Matrix rooms using
 //! the lightweight reqwest-based client. Command execution logic is shared

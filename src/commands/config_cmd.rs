@@ -102,7 +102,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
-        println!("workgraph Configuration");
+        println!("WG Configuration");
         println!("========================");
         println!();
         println!("[agent]");
@@ -521,9 +521,7 @@ pub fn render_minimal_config(
             workgraph::profile::named::STARTER_CLAUDE.to_string()
         }
 
-        (R::CodexCli, ConfigScope::Global) => {
-            workgraph::profile::named::STARTER_CODEX.to_string()
-        }
+        (R::CodexCli, ConfigScope::Global) => workgraph::profile::named::STARTER_CODEX.to_string(),
 
         (R::Local, ConfigScope::Global) => workgraph::profile::named::STARTER_NEX.to_string(),
 
@@ -1106,7 +1104,7 @@ pub fn list(dir: &Path, json: bool) -> Result<()> {
         let mut entries = Vec::new();
         collect_leaf_entries(&merged_val, "", &sources, &mut entries);
 
-        println!("workgraph Configuration (merged)");
+        println!("WG Configuration (merged)");
         println!("=================================");
         println!();
         for entry in &entries {

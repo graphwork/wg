@@ -3,7 +3,7 @@
 //!
 //! ## Why this module exists
 //!
-//! workgraph has historically exposed six overlapping user-facing concepts —
+//! WG has historically exposed six overlapping user-facing concepts —
 //! executor, provider, endpoint, route, handler, model — that reduce to
 //! exactly two real axes:
 //!

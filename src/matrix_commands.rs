@@ -1,9 +1,9 @@
-//! Shared Matrix command parser and executor for workgraph
+//! Shared Matrix command parser and executor for WG
 //!
 //! This module contains the command parsing and execution logic shared between
 //! the full Matrix SDK implementation (`matrix`) and the lightweight HTTP
 //! implementation (`matrix_lite`). The parser has no external dependencies;
-//! the executor only depends on core workgraph types.
+//! the executor only depends on core WG types.
 //!
 //! Parses human-friendly commands from Matrix messages:
 //! - `claim <task>` - Claim a task for work
@@ -249,7 +249,7 @@ fn parse_actor_arg(words: &[&str]) -> Option<String> {
 
 /// Generate help text for Matrix commands
 pub fn help_text() -> String {
-    r#"**workgraph commands**
+    r#"**WG commands**
 
 • `claim <task>` - Claim a task (e.g., `claim implement-feature`)
 • `claim <task> as <actor>` - Claim for a specific actor
@@ -311,7 +311,7 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let mut result_msg: Option<String> = None;
@@ -388,7 +388,7 @@ pub fn execute_done(workgraph_dir: &Path, task_id: &str) -> String {
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let mut result_msg: Option<String> = None;
@@ -425,7 +425,7 @@ pub fn execute_fail(workgraph_dir: &Path, task_id: &str, reason: Option<&str>) -
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let mut result_msg: Option<String> = None;
@@ -478,7 +478,7 @@ pub fn execute_input(workgraph_dir: &Path, task_id: &str, text: &str, actor: &st
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let actor_owned = actor.to_string();
@@ -518,7 +518,7 @@ pub fn execute_unclaim(workgraph_dir: &Path, task_id: &str) -> String {
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let mut result_msg: Option<String> = None;
@@ -550,7 +550,7 @@ pub fn execute_status(workgraph_dir: &Path) -> String {
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let graph = match load_graph(&graph_path) {
@@ -582,7 +582,7 @@ pub fn execute_ready(workgraph_dir: &Path) -> String {
     let graph_path = workgraph_dir.join("graph.jsonl");
 
     if !graph_path.exists() {
-        return "Error: workgraph not initialized".to_string();
+        return "Error: WG not initialized".to_string();
     }
 
     let graph = match load_graph(&graph_path) {

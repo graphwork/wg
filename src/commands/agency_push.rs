@@ -636,7 +636,7 @@ role_component,verify-install-path,Run install command from documentation in cle
     fn push_via_run_function() {
         let tmp = TempDir::new().unwrap();
 
-        // Set up a workgraph dir as source
+        // Set up a WG dir as source
         let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
@@ -663,7 +663,7 @@ role_component,verify-install-path,Run install command from documentation in cle
     fn push_with_named_remote() {
         let tmp = TempDir::new().unwrap();
 
-        // Set up workgraph dir as source
+        // Set up WG dir as source
         let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");

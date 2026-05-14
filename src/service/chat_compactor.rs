@@ -249,7 +249,7 @@ fn build_chat_compactor_prompt(
     context_window: u64,
 ) -> String {
     let mut prompt = String::from(
-        "You are a conversation compactor for a workgraph chat agent. \
+        "You are a conversation compactor for a WG chat agent. \
          Your job is to produce a concise context summary that captures the essential \
          state of the conversation so far.\n\n",
     );

@@ -842,7 +842,7 @@ mod config_roundtrip_tests {
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
 
-        // Create a key file in the workgraph dir
+        // Create a key file in the WG dir
         let key_path = dir.join("secrets");
         fs::create_dir_all(&key_path).unwrap();
         fs::write(key_path.join("or.key"), "sk-or-from-file-roundtrip").unwrap();

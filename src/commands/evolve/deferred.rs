@@ -51,7 +51,7 @@ pub struct DeferredOperation {
 // Evolver self-mutation deferral
 // ---------------------------------------------------------------------------
 
-/// Create a verified workgraph task for an evolver self-mutation operation.
+/// Create a verified WG task for an evolver self-mutation operation.
 /// The task requires human approval before the mutation can be applied.
 pub(crate) fn defer_self_mutation(
     op: &EvolverOperation,

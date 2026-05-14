@@ -11,7 +11,7 @@ use workgraph::function::{
 ///
 /// Creates or re-extracts the `extract-function` meta-function — a built-in
 /// generative function that describes the extraction process itself as a
-/// workgraph workflow.
+/// WG workflow.
 pub fn run(dir: &Path, force: bool) -> Result<()> {
     let func_dir = function::functions_dir(dir);
 

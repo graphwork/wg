@@ -3,9 +3,9 @@ use anyhow::Result;
 /// Universal agent / chat-agent role contract, bundled into the wg binary.
 ///
 /// This text is project-independent: it describes how agents behave in ANY
-/// workgraph project. Project-specific rules live in that project's
-/// `CLAUDE.md` / `AGENTS.md`. workgraph contributor docs live in
-/// `docs/designs/` and `docs/research/` of the workgraph source repo.
+/// WG project. Project-specific rules live in that project's
+/// `CLAUDE.md` / `AGENTS.md`. WG contributor docs live in
+/// `docs/designs/` and `docs/research/` of the WG source repo.
 pub const AGENT_GUIDE_TEXT: &str = include_str!("../text/agent_guide.md");
 
 pub fn run() -> Result<()> {

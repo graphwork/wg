@@ -13,7 +13,7 @@
 //! The overlay caps the *number* of role components / desired outcomes /
 //! trade-off configurations a given functional-agent type may compose at
 //! assignment time. `all_projects=false` plus a non-empty `project_ids`
-//! list scopes a rule to specific workgraph projects.
+//! list scopes a rule to specific WG projects.
 //!
 //! `CompositionRulesWatcher` re-reads the file on demand using mtime
 //! invalidation — no notify thread, no daemon restart required.
@@ -37,7 +37,7 @@ pub struct CompositionRule {
     pub max_desired_outcomes: Option<u32>,
     /// Maximum number of trade-off configurations per agent.
     pub max_trade_off_configs: Option<u32>,
-    /// If true, this rule applies to every workgraph project.
+    /// If true, this rule applies to every WG project.
     pub all_projects: bool,
     /// If `all_projects=false`, the rule only applies to these project IDs.
     /// Empty list with `all_projects=false` means the rule applies nowhere.
@@ -115,9 +115,8 @@ fn parse_composition_rules(text: &str) -> Result<CompositionRulesOverlay, String
         .headers()
         .map_err(|e| format!("invalid CSV header: {}", e))?
         .clone();
-    let header_index = |name: &str| -> Option<usize> {
-        headers.iter().position(|h| h.eq_ignore_ascii_case(name))
-    };
+    let header_index =
+        |name: &str| -> Option<usize> { headers.iter().position(|h| h.eq_ignore_ascii_case(name)) };
 
     let agent_type_idx = header_index("agent_type")
         .ok_or_else(|| "missing required column: agent_type".to_string())?;
@@ -133,9 +132,7 @@ fn parse_composition_rules(text: &str) -> Result<CompositionRulesOverlay, String
         let record = record.map_err(|e| format!("CSV row {} parse error: {}", line_no + 2, e))?;
         let agent_type = record
             .get(agent_type_idx)
-            .ok_or_else(|| {
-                format!("CSV row {} missing agent_type column", line_no + 2)
-            })?
+            .ok_or_else(|| format!("CSV row {} missing agent_type column", line_no + 2))?
             .trim()
             .to_string();
         if agent_type.is_empty() {
@@ -178,12 +175,11 @@ fn parse_composition_rules(text: &str) -> Result<CompositionRulesOverlay, String
     Ok(CompositionRulesOverlay { rules })
 }
 
-fn parse_u32_cell(
-    idx: Option<usize>,
-    record: &csv::StringRecord,
-) -> Result<Option<u32>, String> {
+fn parse_u32_cell(idx: Option<usize>, record: &csv::StringRecord) -> Result<Option<u32>, String> {
     let Some(i) = idx else { return Ok(None) };
-    let Some(raw) = record.get(i) else { return Ok(None) };
+    let Some(raw) = record.get(i) else {
+        return Ok(None);
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -309,7 +305,10 @@ mod tests {
         let text = "agent_type,rule,max_role_components,max_desired_outcomes,max_trade_off_configs,all_projects,project_ids\n\
                     evolver,exploratory,5,2,1,false,proj-a;proj-b;proj-c\n";
         let overlay = parse_composition_rules(text).unwrap();
-        assert_eq!(overlay.rules[0].project_ids, vec!["proj-a", "proj-b", "proj-c"]);
+        assert_eq!(
+            overlay.rules[0].project_ids,
+            vec!["proj-a", "proj-b", "proj-c"]
+        );
         assert!(!overlay.rules[0].all_projects);
     }
 
@@ -323,14 +322,14 @@ mod tests {
     fn watcher_reloads_after_edit() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rules.csv");
-        std::fs::write(
-            &path,
-            "agent_type,max_role_components\nassigner,5\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "agent_type,max_role_components\nassigner,5\n").unwrap();
         let mut watcher = CompositionRulesWatcher::new(&path);
         assert_eq!(
-            watcher.current().rule_for("assigner").unwrap().max_role_components,
+            watcher
+                .current()
+                .rule_for("assigner")
+                .unwrap()
+                .max_role_components,
             Some(5)
         );
 
@@ -338,7 +337,11 @@ mod tests {
         std::fs::write(&path, "agent_type,max_role_components\nassigner,1\n").unwrap();
 
         assert_eq!(
-            watcher.current().rule_for("assigner").unwrap().max_role_components,
+            watcher
+                .current()
+                .rule_for("assigner")
+                .unwrap()
+                .max_role_components,
             Some(1)
         );
     }

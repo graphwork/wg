@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────────────────────
-   workgraph HTML viewer — interaction layer.
+   WG HTML viewer — interaction layer.
 
    Loaded once per page. Reads:
    - window.WG_TASKS  : { task_id: <task detail object>, ... }

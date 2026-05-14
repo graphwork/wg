@@ -72,7 +72,7 @@ fn smoke_test_full_lifecycle() {
     // ── 1. wg init ──────────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     assert!(
-        output.contains("Initialized workgraph"),
+        output.contains("Initialized WG"),
         "init should confirm initialization, got: {}",
         output
     );

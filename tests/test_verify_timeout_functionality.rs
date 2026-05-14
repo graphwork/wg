@@ -6,11 +6,11 @@ use workgraph::config::CoordinatorConfig;
 use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph, parse_delay};
 use workgraph::parser::load_graph;
 
-/// Helper to load a workgraph from a directory (mimics load_workgraph)
+/// Helper to load a WG task graph from a directory (mimics load_workgraph)
 fn load_workgraph(dir: &Path) -> Result<(WorkGraph, std::path::PathBuf)> {
     let graph_path = dir.join(".wg").join("graph.jsonl");
     if !graph_path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
     let graph = load_graph(&graph_path)?;
     Ok((graph, graph_path))
@@ -193,7 +193,7 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let project_root = temp_dir.path();
 
-    // Initialize a workgraph project
+    // Initialize a WG project
     std::process::Command::new("wg")
         .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)
@@ -246,7 +246,7 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let project_root = temp_dir.path();
 
-    // Initialize workgraph
+    // Initialize WG
     std::process::Command::new("wg")
         .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)

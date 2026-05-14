@@ -1,4 +1,4 @@
-//! Project configuration for workgraph
+//! Project configuration for WG
 //!
 //! Configuration is stored in `.wg/config.toml` and controls
 //! agent behavior, executor settings, and project defaults.
@@ -797,7 +797,7 @@ impl EndpointConfig {
         }
     }
 
-    /// Resolve the API key for this endpoint **from workgraph config
+    /// Resolve the API key for this endpoint **from WG config
     /// only** — the strict variant used by the native executor.
     ///
     /// Unlike [`Self::resolve_api_key`], this method does NOT fall back
@@ -806,7 +806,7 @@ impl EndpointConfig {
     /// fields:
     /// 1. `api_key` — inline literal
     /// 2. `api_key_file` — read file contents (with `~`/relative-path expansion)
-    /// 3. `api_key_env` — explicit, user-named env var (this IS workgraph
+    /// 3. `api_key_env` — explicit, user-named env var (this IS WG
     ///    config; the user wrote `api_key_env = "MY_VAR"`)
     ///
     /// Returns `Ok(None)` when no key is configured. Callers should treat
@@ -3504,7 +3504,7 @@ pub struct ProjectConfig {
     pub description: Option<String>,
 
     /// Display title shown at the top of `wg html` / `wg html publish`
-    /// rendered pages. Falls back to `name` (then to the workgraph
+    /// rendered pages. Falls back to `name` (then to the WG
     /// directory name) when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -3904,7 +3904,7 @@ fn record_sources(
 }
 
 impl Config {
-    /// Return the global workgraph directory.
+    /// Return the global WG directory.
     ///
     /// Resolution order matches `main.rs::resolve_workgraph_dir`:
     /// 1. `~/.wg` if it exists (modern, written by `wg init`).

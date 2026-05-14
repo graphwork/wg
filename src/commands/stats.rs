@@ -1,4 +1,4 @@
-//! `wg stats` — display time investment statistics for the workgraph.
+//! `wg stats` — display time investment statistics for the WG task graph.
 
 use anyhow::Result;
 use std::path::Path;
@@ -88,7 +88,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("workgraph Time Statistics");
+        println!("WG Time Statistics");
         println!("=========================");
         println!();
 

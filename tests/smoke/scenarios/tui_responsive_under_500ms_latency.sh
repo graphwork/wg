@@ -24,7 +24,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 
-# Run from the workgraph repo root.
+# Run from the WG repo root.
 repo_root="$(cd "$HERE/../../.." && pwd)"
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -32,7 +32,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if [[ ! -f "$repo_root/Cargo.toml" ]]; then
-    loud_skip "NOT IN WORKGRAPH REPO" "Cargo.toml not at $repo_root"
+    loud_skip "NOT IN WG REPO" "Cargo.toml not at $repo_root"
 fi
 
 cd "$repo_root"

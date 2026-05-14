@@ -149,18 +149,18 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use workgraph::parser::load_graph;
 
-/// Load the workgraph (immutable) from the given directory.
+/// Load the WG task graph (immutable) from the given directory.
 /// Returns the graph and the path to the graph file (needed for save_graph).
 pub fn load_workgraph(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBuf)> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
     let graph = load_graph(&path).context("Failed to load graph")?;
     Ok((graph, path))
 }
 
-/// Load the workgraph (mutable) from the given directory.
+/// Load the WG task graph (mutable) from the given directory.
 /// Returns the graph and the path to the graph file (needed for save_graph).
 pub fn load_workgraph_mut(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBuf)> {
     load_workgraph(dir)

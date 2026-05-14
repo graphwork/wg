@@ -374,7 +374,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Create a minimal workgraph directory with a graph and a task.
+    /// Create a minimal WG directory with a graph and a task.
     fn setup_workgraph(dir: &Path, task_id: &str, deps: &[(&str, &str)]) {
         fs::create_dir_all(dir).unwrap();
 

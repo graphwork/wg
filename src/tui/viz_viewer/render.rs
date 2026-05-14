@@ -4796,7 +4796,7 @@ fn render_editor_word_wrap(
 ///   * `Events` — one structured event per line (legacy view)
 ///   * `HighLevel` — coarse activity summaries
 ///   * `RawPretty` — full pretty-printed transcript
-///   * `WgLog` — workgraph-level log entries only (`wg log` writes,
+///   * `WgLog` — WG-level log entries only (`wg log` writes,
 ///     dispatcher status, lifecycle transitions). NO LLM stream content.
 ///
 /// The first three modes consume `app.log_pane.stream_events` (parsed
@@ -4867,7 +4867,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Collect display lines for whichever view is active. The first
     // three modes share the same data source (parsed raw_stream events);
-    // WgLog reads workgraph-level entries from `task.log`.
+    // WgLog reads WG-level entries from `task.log`.
     let raw_lines: Vec<Line> = if app.log_pane.view_mode == LogViewMode::WgLog {
         render_wg_log_view(&app.log_pane.rendered_lines)
     } else if !app.log_pane.stream_events.is_empty() {
@@ -15749,7 +15749,7 @@ mod tests {
         use workgraph::parser::save_graph;
         use workgraph::test_helpers::make_task_with_status;
 
-        // 1) Set up a workgraph dir with one in-progress task assigned to agent-77.
+        // 1) Set up a WG dir with one in-progress task assigned to agent-77.
         let mut graph = WorkGraph::new();
         let mut t = make_task_with_status("my-task", "Live Task", Status::InProgress);
         t.assigned = Some("agent-77".to_string());
@@ -15770,7 +15770,7 @@ mod tests {
         // output.log is empty — the only data source must be raw_stream.jsonl.
         std::fs::write(agent_dir.join("output.log"), "").unwrap();
 
-        // 3) Build VizApp pointed at the workgraph dir, select the task,
+        // 3) Build VizApp pointed at the WG dir, select the task,
         //    and switch the right panel to the Log tab — exactly what the
         //    user does when they press '4'.
         let tasks: Vec<_> = graph.tasks().collect();

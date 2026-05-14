@@ -2,7 +2,7 @@
 //!
 //! Single source of truth for "should this agent stop?" signals. Fed
 //! by multiple sources — Ctrl-C (interactive), inbox messages
-//! (workgraph IPC in later stages), external commands — and consulted
+//! (WG IPC in later stages), external commands — and consulted
 //! at every turn boundary and inside every cancellable await.
 //!
 //! Two levels:

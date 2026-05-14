@@ -59,7 +59,7 @@ pub fn run_list(
             println!("No functions found.");
             println!("  Extract one with: wg func extract <task-id>");
             if !include_peers {
-                println!("  Use --include-peers to search federated workgraphs.");
+                println!("  Use --include-peers to search federated WG projects.");
             }
         }
         return Ok(());
@@ -109,14 +109,14 @@ pub fn run_list(
 
         if !has_peers && has_local {
             println!();
-            println!("No functions found in peer workgraphs.");
+            println!("No functions found in peer WG projects.");
         }
     }
 
     Ok(())
 }
 
-/// Load functions from all configured peer workgraphs.
+/// Load functions from all configured peer WG projects.
 fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> {
     let config = workgraph::federation::load_federation_config(dir)?;
     let mut results = Vec::new();

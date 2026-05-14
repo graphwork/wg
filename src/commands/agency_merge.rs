@@ -244,7 +244,7 @@ mod tests {
             .save_tradeoff(&make_motivation("m2", "b-only-mot"))
             .unwrap();
 
-        // Set up a workgraph dir for the target
+        // Set up a WG dir for the target
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
@@ -285,7 +285,7 @@ mod tests {
         let into_dir = tmp.path().join("combined");
         std::fs::create_dir_all(&into_dir).unwrap();
 
-        // Set up a minimal workgraph dir (merge needs it for resolve_source)
+        // Set up a minimal WG dir (merge needs it for resolve_source)
         let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 

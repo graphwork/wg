@@ -69,7 +69,7 @@ struct ExecutorSpec {
 const EXECUTORS: &[ExecutorSpec] = &[
     ExecutorSpec {
         name: "native",
-        description: "nex — workgraph's built-in LLM agent loop (use endpoint URL for non-default servers)",
+        description: "nex — WG's built-in LLM agent loop (use endpoint URL for non-default servers)",
         binary_candidates: &[],
     },
     ExecutorSpec {

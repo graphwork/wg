@@ -8,7 +8,7 @@
 # WG_DIR points at their project, not at the .wg subdir).
 #
 # Five symptoms, ALL traced to one cause: `resolve_workgraph_dir` treated
-# `WG_DIR=<project_root>` literally as the workgraph dir, but `wg init`
+# `WG_DIR=<project_root>` literally as the WG dir, but `wg init`
 # writes everything under `<project_root>/.wg/`. So the dispatcher looked
 # for graph.jsonl, service/, agency/, and config.toml directly under the
 # project root and either fell back to global ~/.wg (claude:opus) or
@@ -43,7 +43,7 @@ require_wg
 
 scratch=$(make_scratch)
 
-# Isolate from any user-level workgraph config. Critically, seed the
+# Isolate from any user-level WG config. Critically, seed the
 # global config with claude:opus — this is the trap that masked Bug 1:
 # when the dispatcher couldn't find project config under WG_DIR=<root>,
 # it silently fell back to this global file.

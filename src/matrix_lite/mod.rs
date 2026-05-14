@@ -142,7 +142,7 @@ impl MatrixClient {
                 "user": localpart
             },
             "password": password,
-            "initial_device_display_name": "workgraph"
+            "initial_device_display_name": "WG"
         });
 
         let resp = http

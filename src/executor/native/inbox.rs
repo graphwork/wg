@@ -5,7 +5,7 @@
 //! - **TUI** (`wg nex` interactive session): the composing buffer at
 //!   the bottom of the terminal feeds the inbox when the user hits
 //!   Enter. Stage E wires this up.
-//! - **workgraph IPC** (headless dispatch): `wg send <agent-id>
+//! - **WG IPC** (headless dispatch): `wg send <agent-id>
 //!   "message"` appends to a file that the agent tails. Stage F
 //!   wires this up.
 //!
@@ -25,7 +25,7 @@
 //!   cancel. The in-flight tool/LLM call is aborted at the next
 //!   boundary, and the message becomes the next user turn. Typical
 //!   path for "stop doing that, try X instead" from either a human
-//!   or a workgraph coordinator.
+//!   or a WG chat agent.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -114,7 +114,7 @@ impl AgentInbox for InMemoryInbox {
     }
 }
 
-/// workgraph message-queue inbox: adapts the existing file-based
+/// WG message-queue inbox: adapts the existing file-based
 /// `wg msg send <task-id>` machinery onto the `AgentInbox` trait.
 /// Producer side is the existing CLI / coordinator / `crate::messages::
 /// send_message` API; this struct is the consumer side.

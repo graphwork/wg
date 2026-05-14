@@ -247,7 +247,7 @@ fn smoke_native_streaming_agent() {
     let _api_key = std::env::var("OPENROUTER_API_KEY")
         .expect("OPENROUTER_API_KEY must be set for this smoke test");
 
-    // ── 1. Set up temp workgraph ─────────────────────────────────────────
+    // ── 1. Set up temp WG graph ─────────────────────────────────────────
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 

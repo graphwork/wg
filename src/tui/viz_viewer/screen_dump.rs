@@ -174,7 +174,7 @@ impl DumpResponse {
 
 // ── Socket server ───────────────────────────────────────────────────────────
 
-/// Path to the TUI dump socket within a workgraph directory.
+/// Path to the TUI dump socket within a WG directory.
 pub fn tui_socket_path(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("service").join("tui.sock")
 }

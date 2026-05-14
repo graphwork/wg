@@ -1409,7 +1409,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let prompt = build_system_prompt(tmp.path());
         // Falls back to hardcoded prompt since no coordinator-prompt dir exists
-        assert!(prompt.contains("workgraph coordinator"));
+        assert!(prompt.contains("WG chat agent"));
         assert!(prompt.contains("Never implement"));
         assert!(prompt.contains("wg add"));
     }
@@ -1430,7 +1430,7 @@ mod tests {
         assert!(prompt.contains("Patterns here"));
         assert!(prompt.contains("Amendments here"));
         // Should NOT contain fallback content
-        assert!(!prompt.contains("workgraph coordinator"));
+        assert!(!prompt.contains("WG chat agent"));
     }
 
     #[test]

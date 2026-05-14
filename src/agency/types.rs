@@ -887,7 +887,7 @@ pub enum AssignmentMode {
 // Assignment source tracking
 // ---------------------------------------------------------------------------
 
-/// Tracks how an assignment was sourced — natively via workgraph's built-in
+/// Tracks how an assignment was sourced — natively via WG's built-in
 /// pipeline, or externally via the Agency server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]

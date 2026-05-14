@@ -1,4 +1,4 @@
-//! Model registry for workgraph.
+//! Model registry for WG.
 //!
 //! Provides a catalog of AI models with cost, capability, and tier metadata.
 //! The registry is loaded from `.wg/models.yaml` and ships with

@@ -71,7 +71,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     stdout
 }
 
-/// Initialize a workgraph in a temp directory and return the .wg path.
+/// Initialize WG in a temp directory and return the .wg path.
 fn init_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let project_root = tmp.path();

@@ -40,7 +40,7 @@ pub struct ManifestCounts {
     pub trade_off_configs: u32,
 }
 
-/// Path to the import manifest within the workgraph agency directory.
+/// Path to the import manifest within the WG agency directory.
 pub fn manifest_path(workgraph_dir: &Path) -> std::path::PathBuf {
     workgraph_dir.join("agency/import-manifest.yaml")
 }
@@ -537,9 +537,7 @@ fn check_collision(
         let on_disk = on_disk_dir.join(format!("{}.yaml", id));
         if on_disk.exists() {
             let (existing_name, existing_scope) = read_existing_name_scope(kind, &on_disk);
-            if existing_name.as_deref() != Some(name)
-                || existing_scope.as_deref() != scope
-            {
+            if existing_name.as_deref() != Some(name) || existing_scope.as_deref() != scope {
                 let collision = ImportCollision {
                     kind,
                     row,
@@ -558,7 +556,10 @@ fn check_collision(
             }
         }
     }
-    seen.insert(id.to_string(), (name.to_string(), scope.map(str::to_string)));
+    seen.insert(
+        id.to_string(),
+        (name.to_string(), scope.map(str::to_string)),
+    );
     None
 }
 
@@ -772,7 +773,7 @@ fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
     CsvFormat::Legacy
 }
 
-/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into workgraph.
+/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into WG.
 ///
 /// Supports two CSV formats:
 ///
@@ -1680,7 +1681,11 @@ mod tests {
         let err = run_from_bytes_with(&wg_dir2, "test://scope-variant.csv", csv, false, None, true)
             .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("--strict"), "strict error should mention --strict, got: {}", msg);
+        assert!(
+            msg.contains("--strict"),
+            "strict error should mention --strict, got: {}",
+            msg
+        );
         assert!(msg.contains("forward-compatible-deferral-spec"));
     }
 
@@ -1728,22 +1733,18 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let comp: RoleComponent =
             agency::load_component(&entries[0].as_ref().unwrap().path()).unwrap();
-        assert_eq!(comp.name, "adapt-research-synthesis-for-non-domain-audience");
+        assert_eq!(
+            comp.name,
+            "adapt-research-synthesis-for-non-domain-audience"
+        );
 
         // Strict mode errors on the same upstream import against a seeded file.
         let tmp2 = tempfile::tempdir().unwrap();
         let wg_dir2 = tmp2.path().join(".wg");
         std::fs::create_dir_all(&wg_dir2).unwrap();
         run_from_bytes_with(&wg_dir2, "test://seed.csv", seed, false, None, false).unwrap();
-        let err = run_from_bytes_with(
-            &wg_dir2,
-            "test://upstream.csv",
-            upstream,
-            false,
-            None,
-            true,
-        )
-        .unwrap_err();
+        let err = run_from_bytes_with(&wg_dir2, "test://upstream.csv", upstream, false, None, true)
+            .unwrap_err();
         assert!(
             err.to_string().contains("--strict"),
             "strict error should mention --strict, got: {}",

@@ -78,7 +78,7 @@ fn is_ready(wg_dir: &Path, id: &str) -> bool {
     output.contains(id)
 }
 
-/// Set up a fresh workgraph and return the .wg dir path.
+/// Set up a fresh WG graph and return the .wg dir path.
 fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");

@@ -1,6 +1,6 @@
 //! Integration tests validating the file-system watcher for multi-user scenarios.
 //!
-//! The workgraph TUI uses `notify-debouncer-mini` (50ms debounce, inotify on Linux)
+//! The WG TUI uses `notify-debouncer-mini` (50ms debounce, inotify on Linux)
 //! to detect `.wg/` changes in real time.  These tests verify:
 //!
 //! 1. **Multiple watchers** — N independent watchers all receive all M events from

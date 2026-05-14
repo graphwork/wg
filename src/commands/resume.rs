@@ -42,7 +42,7 @@ enum Mode {
 fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Use modify_graph for atomic load-modify-save under a single exclusive

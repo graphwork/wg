@@ -1093,7 +1093,7 @@ script = "scenarios/codex_token_usage_capture.sh"
 owners = [
     "fix-codex-agent-2",
 ]
-description = "Pins fix-codex-agent-2: Codex `exec --json` `turn.completed` usage events with input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens must populate workgraph token usage and estimated cost, while Claude assistant-message and native turn parsing still regressions-test cleanly. No live LLM call required."
+description = "Pins fix-codex-agent-2: Codex `exec --json` `turn.completed` usage events with input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens must populate WG token usage and estimated cost, while Claude assistant-message and native turn parsing still regressions-test cleanly. No live LLM call required."
 timeout_seconds = 180
 
 [[scenario]]

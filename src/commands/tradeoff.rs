@@ -299,7 +299,7 @@ mod tests {
 
     fn setup() -> TempDir {
         let tmp = TempDir::new().unwrap();
-        // Create the workgraph dir structure
+        // Create the WG dir structure
         std::fs::create_dir_all(tmp.path().join("agency").join("primitives/tradeoffs")).unwrap();
         tmp
     }

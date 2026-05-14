@@ -202,7 +202,7 @@ pub fn run_tree(
 ) -> Result<()> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Load graph to find all downstream tasks

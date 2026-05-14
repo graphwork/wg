@@ -1010,7 +1010,7 @@ fn test_trace_uninitialized_workgraph() {
     let output = wg_cmd(&fake_dir, &["trace", "show", "t1"]);
     assert!(
         !output.status.success(),
-        "Should fail when workgraph is not initialized"
+        "Should fail when WG is not initialized"
     );
 }
 

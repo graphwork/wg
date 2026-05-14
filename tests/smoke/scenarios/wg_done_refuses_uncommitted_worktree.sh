@@ -52,7 +52,7 @@ mkdir -p "$(dirname "$worktree_dir")"
     >/dev/null 2>&1 \
     || loud_fail "git worktree add failed"
 
-# ── Initialise a workgraph dir under the project ──────────────────────
+# ── Initialise a WG dir under the project ──────────────────────
 wg_dir="$project_root/.wg"
 mkdir -p "$wg_dir"
 cat >"$wg_dir/graph.jsonl" <<EOF

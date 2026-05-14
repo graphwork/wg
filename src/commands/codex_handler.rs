@@ -234,7 +234,7 @@ fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Optio
     } else if let Some(r) = role {
         format!("You are acting in the role of: {}.", r)
     } else {
-        String::from("You are a workgraph task agent.")
+        String::from("You are a WG task agent.")
     }
 }
 
@@ -247,7 +247,7 @@ fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Optio
 const CODEX_CHAT_ADDENDUM: &str = "\
 # STOP — You Are A Chat Agent, Not An Implementer
 
-You are running as a workgraph chat agent. Before you do anything else,
+You are running as a WG chat agent. Before you do anything else,
 read this:
 
 - Your job is to ORCHESTRATE work, not to receive it. The user is talking

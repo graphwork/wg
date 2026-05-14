@@ -578,7 +578,7 @@ fn smoke_context_management_openrouter() {
         &wg_dir,
         &[
             "add",
-            "Context pressure test: list files in the workgraph directory and summarize what you find",
+            "Context pressure test: list files in the WG directory and summarize what you find",
             "--id",
             "context-pressure-test",
             "--context-scope",

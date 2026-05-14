@@ -12,7 +12,7 @@
 //!
 //! | executor | path                                                         |
 //! |----------|--------------------------------------------------------------|
-//! | native   | `<workgraph>/chat/<ref>/conversation.jsonl`                  |
+//! | native   | `<wg-dir>/chat/<ref>/conversation.jsonl`                  |
 //! | claude   | newest `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`  |
 //! | codex    | newest `~/.codex/sessions/…/rollout-*.jsonl` whose           |
 //! |          | `session_meta.payload.cwd` canonicalises to the given cwd    |
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 /// Where a vendor stores conversation history for a given coordinator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VendorHistory {
-    /// `<workgraph>/chat/<ref>/conversation.jsonl` — nex's own format.
+    /// `<wg-dir>/chat/<ref>/conversation.jsonl` — nex's own format.
     Native(PathBuf),
     /// Newest `.jsonl` in `~/.claude/projects/<cwd-slug>/`.
     Claude(PathBuf),
@@ -96,7 +96,7 @@ pub fn read_turns(hist: &VendorHistory) -> Result<Vec<Turn>> {
 }
 
 // ---------------------------------------------------------------------
-// Native: <workgraph>/chat/<ref>/conversation.jsonl
+// Native: <wg-dir>/chat/<ref>/conversation.jsonl
 // ---------------------------------------------------------------------
 
 fn read_native(path: &Path) -> Result<Vec<Turn>> {

@@ -143,7 +143,7 @@ pub const GRAPH_PATTERNS_SECTION: &str = "\
 
 **Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files \u{2014} one will overwrite the other. When unsure, default to pipeline.
 
-**Cycles (back-edges):** workgraph is a directed graph, NOT a DAG. For repeating workflows \
+**Cycles (back-edges):** the WG task graph is a directed graph, NOT a DAG. For repeating workflows \
 (cleanup\u{2192}commit\u{2192}verify, write\u{2192}review, etc.), create ONE cycle with `--max-iterations` \
 instead of duplicating tasks for each pass. Use `wg done --converged` to stop the cycle \
 when no more changes are needed. If you are inside a cycle, check `wg show` for your \
@@ -168,7 +168,7 @@ pub const REUSABLE_FUNCTIONS_SECTION: &str = "\
 pub const CRITICAL_WG_CLI_SECTION: &str = "\
 ## CRITICAL: Use wg CLI, NOT built-in tools
 - You MUST use `wg` CLI commands for ALL task management
-- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools \u{2014} they are a completely separate system that does NOT interact with workgraph
+- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools \u{2014} they are a completely separate system that does NOT interact with WG
 - If you need to create subtasks: `wg add \"title\" --after {{task_id}}`
 - To check task status: `wg show <task-id>`
 - To list tasks: `wg list`\n";
@@ -177,7 +177,7 @@ pub const CRITICAL_WG_CLI_SECTION: &str = "\
 const SYSTEM_AWARENESS_PREAMBLE: &str = "\
 ## System Awareness
 
-You are working within **workgraph**, a task orchestration system. Key concepts:
+You are working within **WG**, a task orchestration system. Key concepts:
 
 - **Coordinator**: A daemon (`wg service start`) that polls for ready tasks and spawns agents.
 - **Agency**: An evolutionary identity system with roles, motivations, and agents. Agents are assigned to tasks based on skills, performance, and fit.
@@ -599,20 +599,20 @@ You share a working tree with other agents. Follow these rules strictly:
 - **Don't touch others' changes.** If `git status` shows files you didn't modify, do not stage, commit, stash, or reset them.
 - **Handle locks gracefully.** `.git/index.lock` or cargo target locks mean another agent is working. Wait 2-3 seconds and retry. Don't delete lock files.\n";
 
-/// Worktree isolation warning for agents running in wg-managed worktrees.
-/// Prevents agents from calling EnterWorktree/ExitWorktree which escapes the wg worktree.
+/// Worktree isolation warning for agents running in WG-managed worktrees.
+/// Prevents agents from calling EnterWorktree/ExitWorktree which escapes the WG worktree.
 pub const WORKTREE_ISOLATION_SECTION: &str = "\
 ## CRITICAL: Worktree Isolation
 
-You are running inside a **workgraph-managed worktree**. Your working directory is already isolated.
+You are running inside a **WG-managed worktree**. Your working directory is already isolated.
 
 **NEVER use the `EnterWorktree` or `ExitWorktree` tools.** Using them will:
 1. Create a SECOND worktree in `.claude/worktrees/`, abandoning this one
-2. Switch your session CWD away from the workgraph branch
+2. Switch your session CWD away from the WG branch
 3. Cause ALL your commits to go to the wrong branch
 4. Result in your work being LOST — the merge-back will find no commits
 
-If you see these tools available, **ignore them completely**. workgraph already provides full git isolation.
+If you see these tools available, **ignore them completely**. WG already provides full git isolation.
 
 ### Prior WIP from a previous attempt
 
@@ -757,7 +757,7 @@ issues direct text-in/text-out LLM calls with no tool loop — cheap, predictabl
 and able to handle sources that would otherwise require many turns of manual \
 chunking. Hard ceiling 1 MB by default (raisable via `max_input_bytes`).
 
-### workgraph task management
+### WG task management
 
 Use the `bash` tool to run `wg` CLI commands. The CLI is the source of truth for \
 task operations:
@@ -791,13 +791,13 @@ for text slicing (`sed -n 'A,Bp'`, `grep -n`, `wc -l`, `head`, `tail`).
 `read_file(offset, limit)` or `delegate` to a sub-agent
 ";
 
-/// Default workgraph usage guide for non-Claude models.
+/// Default WG usage guide for non-Claude models.
 ///
 /// Injected into the prompt when the executor is non-Claude (native) so that models
 /// without CLAUDE.md context understand wg basics. Users can override this by placing
 /// a custom guide at `.wg/wg-guide.md`.
 pub const DEFAULT_WG_GUIDE: &str = "\
-**workgraph (wg)** is a task coordination graph for AI agents. You are an agent \
+**WG** is a task coordination graph for AI agents. You are an agent \
 working on one task in this graph. Other agents work on other tasks concurrently.
 
 ### Task Lifecycle
@@ -962,7 +962,7 @@ pub struct ScopeContext {
     pub queued_messages: String,
     /// Context from a previous agent attempt (injected on retry)
     pub previous_attempt_context: String,
-    /// workgraph usage guide for non-Claude models (injected when model lacks CLAUDE.md)
+    /// WG usage guide for non-Claude models (injected when model lacks CLAUDE.md)
     pub wg_guide_content: String,
     /// Discovered test files formatted for prompt injection (task+ scope)
     pub discovered_tests: String,
@@ -999,8 +999,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
 
     // All scopes: task assignment header
     parts.push(
-        "# Task Assignment\n\nYou are an AI agent working on a task in a workgraph project.\n"
-            .to_string(),
+        "# Task Assignment\n\nYou are an AI agent working on a task in a WG project.\n".to_string(),
     );
 
     // All scopes: agent identity
@@ -1076,10 +1075,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
 
     // Task+ scope: wg usage guide for non-Claude models
     if scope >= ContextScope::Task && !ctx.wg_guide_content.is_empty() {
-        parts.push(format!(
-            "## workgraph Usage Guide\n\n{}",
-            ctx.wg_guide_content
-        ));
+        parts.push(format!("## WG Usage Guide\n\n{}", ctx.wg_guide_content));
     }
 
     // Task+ scope: native-executor file-tool guidance. Teaches the model
@@ -1201,7 +1197,7 @@ pub struct TemplateVars {
 }
 
 impl TemplateVars {
-    /// Create template variables from a task, optional context, and optional workgraph directory.
+    /// Create template variables from a task, optional context, and optional WG directory.
     ///
     /// If the task has an agent set and `workgraph_dir` is provided, the Agent is loaded
     /// by hash and its role and motivation are resolved from agency storage and rendered
@@ -1469,7 +1465,7 @@ impl ExecutorConfig {
         Ok(config)
     }
 
-    /// Load executor configuration from the workgraph executors directory.
+    /// Load executor configuration from the WG executors directory.
     pub fn load_by_name(workgraph_dir: &Path, name: &str) -> Result<Self> {
         let config_path = workgraph_dir
             .join("executors")
@@ -2275,17 +2271,29 @@ args = ["--custom-flag"]
         assert_eq!(config.executor.executor_type, "codex");
         assert_eq!(config.executor.command, "codex");
         // Base invocation flags
-        assert_eq!(&config.executor.args[0..4], &[
-            "exec".to_string(),
-            "--json".to_string(),
-            "--skip-git-repo-check".to_string(),
-            "--dangerously-bypass-approvals-and-sandbox".to_string(),
-        ]);
+        assert_eq!(
+            &config.executor.args[0..4],
+            &[
+                "exec".to_string(),
+                "--json".to_string(),
+                "--skip-git-repo-check".to_string(),
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+            ]
+        );
         // Completion-forcing overrides added for gpt-5.x lazy-completion fix
         let args_str = config.executor.args.join(" ");
-        assert!(args_str.contains("model_verbosity"), "should include model_verbosity override");
-        assert!(args_str.contains("tool_output_token_limit"), "should include tool_output_token_limit override");
-        assert!(args_str.contains("developer_instructions"), "should include developer_instructions override");
+        assert!(
+            args_str.contains("model_verbosity"),
+            "should include model_verbosity override"
+        );
+        assert!(
+            args_str.contains("tool_output_token_limit"),
+            "should include tool_output_token_limit override"
+        );
+        assert!(
+            args_str.contains("developer_instructions"),
+            "should include developer_instructions override"
+        );
         assert_eq!(
             config.executor.working_dir,
             Some("{{working_dir}}".to_string())
@@ -2894,7 +2902,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
 
         assert!(
-            prompt.contains("## workgraph Usage Guide"),
+            prompt.contains("## WG Usage Guide"),
             "Task scope should include wg guide when content is present"
         );
         assert!(
@@ -2912,7 +2920,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
 
         assert!(
-            !prompt.contains("## workgraph Usage Guide"),
+            !prompt.contains("## WG Usage Guide"),
             "Task scope should NOT include wg guide when content is empty"
         );
     }
@@ -2928,7 +2936,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
 
         assert!(
-            !prompt.contains("## workgraph Usage Guide"),
+            !prompt.contains("## WG Usage Guide"),
             "Clean scope should NOT include wg guide"
         );
     }

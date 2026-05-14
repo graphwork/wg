@@ -828,7 +828,7 @@ pub fn generate_systemd_service(dir: &Path) -> Result<()> {
     // ExecStart uses `wg service start` - the service daemon includes the coordinator
     let service_content = format!(
         r#"[Unit]
-Description=workgraph Service ({project_name})
+Description=WG Service ({project_name})
 After=network.target
 
 [Service]
@@ -895,7 +895,7 @@ pub fn run_tick(
 
     let graph_path = graph_path(dir);
     if !graph_path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let model = model
@@ -1071,7 +1071,7 @@ pub fn run_start(
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!(
-                    "Found orphan daemon process(es) for this workgraph: PID {}",
+                    "Found orphan daemon process(es) for this WG project: PID {}",
                     pids.join(", ")
                 );
                 println!("Use 'wg service start --force' to kill them and start fresh.");

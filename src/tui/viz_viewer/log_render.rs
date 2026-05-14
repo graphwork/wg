@@ -10,11 +10,11 @@
 //! 3. **RawPretty** — full pretty-printed transcript: every event
 //!    rendered with its own formatter, NEVER as a JSON dump. Each
 //!    event-kind has a distinct prefix and visual treatment.
-//! 4. **WgLog** — workgraph-level log entries only: `wg log` writes,
+//! 4. **WgLog** — WG-level log entries only: `wg log` writes,
 //!    dispatcher status updates, and task lifecycle transitions sourced
 //!    from the task's `log` field on the graph. Contains no LLM-stream
 //!    content (no tool calls, tokens, thinking, etc.) — useful for
-//!    seeing only the structured workgraph-side narrative.
+//!    seeing only the structured WG-side narrative.
 //!
 //! The first three modes consume the same `&[AgentStreamEvent]` produced
 //! by `parse_raw_stream_line`; WgLog consumes the pre-rendered
@@ -384,7 +384,7 @@ pub fn render_raw_pretty_view(
     out
 }
 
-/// Render the WgLog view: workgraph-level entries only, sourced from
+/// Render the WgLog view: WG-level entries only, sourced from
 /// `task.log` via `load_log_pane()`. The caller passes the pre-formatted
 /// `[<rel-time>] <message>` strings; this renderer styles them and
 /// inserts a placeholder when there are no entries yet. NO LLM-stream
@@ -393,7 +393,7 @@ pub fn render_raw_pretty_view(
 pub fn render_wg_log_view(rendered_lines: &[String]) -> Vec<Line<'static>> {
     if rendered_lines.is_empty() {
         return vec![Line::from(Span::styled(
-            "(no workgraph log entries yet)",
+            "(no WG log entries yet)",
             Style::default().fg(Color::DarkGray),
         ))];
     }
@@ -1159,7 +1159,7 @@ mod tests {
         );
     }
 
-    /// WgLog mode renders one line per pre-formatted workgraph entry,
+    /// WgLog mode renders one line per pre-formatted WG entry,
     /// preserving ordering. The renderer takes pre-formatted strings
     /// (`load_log_pane()` builds `[<rel-time>] <message>` lines from
     /// `task.log`); it must not drop or reorder them.
@@ -1199,7 +1199,7 @@ mod tests {
     }
 
     /// WgLog mode shows a clear placeholder when the task has no
-    /// workgraph-level log entries yet — the user should never see a
+    /// WG-level log entries yet — the user should never see a
     /// silently empty pane.
     #[test]
     fn test_wg_log_mode_renders_placeholder_when_empty() {
@@ -1207,7 +1207,7 @@ mod tests {
         let text = lines_to_text(&lines);
         assert_eq!(lines.len(), 1, "exactly one placeholder line when empty");
         assert!(
-            text.contains("no workgraph log entries"),
+            text.contains("no WG log entries"),
             "placeholder text should signal emptiness, got: {}",
             text
         );
@@ -1427,9 +1427,9 @@ mod tests {
         );
     }
 
-    /// WgLog mode is the "structured workgraph narrative" view: it must
+    /// WgLog mode is the "structured WG narrative" view: it must
     /// NOT include any LLM-stream content. The renderer takes only
-    /// `&[String]` (workgraph log entries from `task.log`), so by
+    /// `&[String]` (WG log entries from `task.log`), so by
     /// construction it cannot show stream events — but assert this
     /// holds at the API boundary so a future refactor doesn't quietly
     /// invert the contract.

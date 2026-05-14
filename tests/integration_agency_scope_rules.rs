@@ -172,8 +172,7 @@ fn test_composition_rules_csv_parser_parses_full_row() {
 /// composition-rules.csv parser: returns an empty overlay when file does not exist.
 #[test]
 fn test_composition_rules_missing_file_returns_empty_overlay() {
-    let overlay =
-        load_composition_rules(Path::new("/nonexistent/composition-rules.csv")).unwrap();
+    let overlay = load_composition_rules(Path::new("/nonexistent/composition-rules.csv")).unwrap();
     assert!(overlay.rules.is_empty());
 }
 

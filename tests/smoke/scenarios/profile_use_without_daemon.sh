@@ -21,7 +21,7 @@ if [[ "$active" != "codex" ]]; then
 fi
 
 # Assert: wg config --merged shows codex agent model
-# (needs a workgraph dir to exist for wg config --merged)
+# (needs a WG dir to exist for wg config --merged)
 mkdir -p "$scratch/proj/.wg"
 merged=$(WG_DIR="$scratch/proj/.wg" wg --dir "$scratch/proj/.wg" config --show 2>&1)
 if ! echo "$merged" | grep -q "codex:gpt-5.5"; then

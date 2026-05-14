@@ -277,13 +277,13 @@ impl NotificationChannel for PushChannel {
 
     async fn send_text(&self, target: &str, message: &str) -> Result<MessageId> {
         let subscription = self.resolve_subscription(target)?;
-        let payload = PushPayload::text("workgraph", message);
+        let payload = PushPayload::text("WG", message);
         self.send_to_subscription(&subscription, &payload).await
     }
 
     async fn send_rich(&self, target: &str, message: &RichMessage) -> Result<MessageId> {
         let subscription = self.resolve_subscription(target)?;
-        let payload = PushPayload::text("workgraph", &message.plain_text);
+        let payload = PushPayload::text("WG", &message.plain_text);
         self.send_to_subscription(&subscription, &payload).await
     }
 
@@ -294,7 +294,7 @@ impl NotificationChannel for PushChannel {
         actions: &[Action],
     ) -> Result<MessageId> {
         let subscription = self.resolve_subscription(target)?;
-        let payload = PushPayload::with_actions("workgraph", message, actions);
+        let payload = PushPayload::with_actions("WG", message, actions);
         self.send_to_subscription(&subscription, &payload).await
     }
 

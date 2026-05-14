@@ -231,9 +231,7 @@ fn truncate_to_fit(
     let preserve_summary = messages.first().is_some_and(is_resume_summary_message);
     let min_len = RESUME_TRUNCATE_FLOOR + usize::from(preserve_summary);
 
-    while messages.len() > min_len
-        && estimate_tokens_with_model(&messages, model) > budget_tokens
-    {
+    while messages.len() > min_len && estimate_tokens_with_model(&messages, model) > budget_tokens {
         let drop_index = if preserve_summary { 1 } else { 0 };
         messages.remove(drop_index);
     }

@@ -157,7 +157,7 @@ pub struct FunctionOutput {
 #[derive(Default)]
 pub enum FunctionVisibility {
     #[default]
-    Internal, // only within this workgraph
+    Internal, // only within this WG project
     Peer,   // discoverable by federated peers, redaction applies
     Public, // fully portable, provenance stripped
 }
@@ -399,7 +399,7 @@ pub fn find_function_by_prefix(
     }
 }
 
-/// Return the functions directory for a workgraph directory.
+/// Return the functions directory for a WG directory.
 pub fn functions_dir(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join(FUNCTIONS_DIR)
 }

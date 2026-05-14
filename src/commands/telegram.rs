@@ -1,4 +1,4 @@
-//! Telegram commands for workgraph CLI
+//! Telegram commands for WG CLI
 //!
 //! Provides commands for interacting with Telegram:
 //! - `wg telegram listen` - Start the Telegram bot listener
@@ -15,7 +15,7 @@ use workgraph::notify::telegram::{TelegramChannel, TelegramConfig};
 /// Run the Telegram listener.
 ///
 /// Starts a long-running process that polls for incoming messages via the
-/// Telegram Bot API and dispatches workgraph commands.
+/// Telegram Bot API and dispatches WG commands.
 pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
     let config = load_telegram_config()?;
     let effective_chat_id = chat_id

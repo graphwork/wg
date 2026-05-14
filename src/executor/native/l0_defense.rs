@@ -73,7 +73,7 @@ pub const DEFAULT_MAX_TOOL_USE_INPUT_BYTES: usize = 19_200;
 /// Monotonic counter for pending-buffer filenames.
 static PENDING_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Subdirectory under `<workgraph>/nex-sessions/` where oversized
+/// Subdirectory under `<wg-dir>/nex-sessions/` where oversized
 /// tool_use inputs get stashed.
 pub const PENDING_DIR: &str = "pending-tool-use-buffers";
 
@@ -114,7 +114,7 @@ impl Rejection {
 
 /// Walk a message's `content`, identify ToolUse blocks whose input
 /// exceeds `max_input_bytes`, save each oversized input to a pending
-/// buffer file under `<workgraph>/nex-sessions/<PENDING_DIR>/`, and
+/// buffer file under `<wg-dir>/nex-sessions/<PENDING_DIR>/`, and
 /// rewrite the ToolUse in place with a compact placeholder.
 ///
 /// Returns one `Rejection` per oversized tool_use found. Caller

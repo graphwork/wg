@@ -529,6 +529,6 @@ fn exec_no_workgraph_initialized_errors() {
     let output = wg_cmd(&wg_dir, &["exec", "any-task", "--dry-run"]);
     assert!(
         !output.status.success(),
-        "exec without initialized workgraph should fail"
+        "exec without initialized WG should fail"
     );
 }

@@ -15,7 +15,7 @@ use workgraph::parser::load_graph;
 pub fn run(dir: &Path, id: &str, priority: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let new_priority = parse_priority(Some(priority));

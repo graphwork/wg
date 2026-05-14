@@ -16,7 +16,7 @@ pub fn run(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Pre-compute the new timestamp (or None to clear)

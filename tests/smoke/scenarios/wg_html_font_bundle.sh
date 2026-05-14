@@ -39,7 +39,7 @@ set -euo pipefail
 OUTDIR=$(mktemp -d)
 trap 'rm -rf "$OUTDIR"' EXIT
 
-# Generate the HTML against the current workgraph (this repo). The asset
+# Generate the HTML against the current WG project (this repo). The asset
 # emission path is identical regardless of graph contents.
 wg html --out "$OUTDIR" >/dev/null 2>&1
 

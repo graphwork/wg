@@ -105,7 +105,7 @@ impl WebhookChannel {
             .client
             .post(&self.config.url)
             .header("Content-Type", "application/json")
-            .header("User-Agent", "workgraph-webhook/1.0");
+            .header("User-Agent", "WG-webhook/1.0");
 
         if let Some(ref secret) = self.config.secret {
             let sig = Self::compute_signature(secret, &body);

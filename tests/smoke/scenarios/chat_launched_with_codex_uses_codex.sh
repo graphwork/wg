@@ -35,7 +35,7 @@ require_wg
 
 scratch=$(make_scratch)
 
-# Isolate from any user-level workgraph config.
+# Isolate from any user-level WG config.
 fake_home="$scratch/home"
 mkdir -p "$fake_home/.config/workgraph"
 : >"$fake_home/.config/workgraph/config.toml"
@@ -63,7 +63,7 @@ if ! run_wg chat create --executor codex --model codex:gpt-5 \
     loud_fail "wg chat create failed: $(tail -10 create.log)"
 fi
 
-# Find the workgraph dir (`.wg` preferred, `.wg` legacy).
+# Find the WG dir (`.wg` preferred, `.wg` legacy).
 graph_dir=""
 for cand in .wg .wg; do
     if [[ -d "$project/$cand" ]]; then

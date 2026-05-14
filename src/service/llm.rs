@@ -1,4 +1,4 @@
-//! Lightweight LLM dispatch for internal workgraph calls (triage, checkpoint, etc.).
+//! Lightweight LLM dispatch for internal WG calls (triage, checkpoint, etc.).
 //!
 //! Resolves model + provider via `resolve_model_for_role()` and dispatches to either:
 //! - Claude CLI (`claude --model X --print --dangerously-skip-permissions PROMPT`)

@@ -3,12 +3,12 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "wg")]
-#[command(about = "workgraph - A lightweight work coordination graph")]
+#[command(about = "WG - A lightweight work coordination graph")]
 #[command(version)]
 #[command(disable_help_flag = true)]
 #[command(disable_help_subcommand = true)]
 pub struct Cli {
-    /// Path to the workgraph directory (default: .wg in current dir; legacy .workgraph accepted)
+    /// Path to the WG directory (default: .wg in current dir; legacy .workgraph accepted)
     #[arg(long, global = true)]
     pub dir: Option<PathBuf>,
 
@@ -35,15 +35,15 @@ pub struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
-    /// Initialize a new workgraph in the current directory
+    /// Initialize a new WG project in the current directory
     Init {
         /// Skip agency initialization (roles, agents, auto-assign config)
         #[arg(long)]
         no_agency: bool,
 
-        /// Initialize the GLOBAL workgraph at `~/.wg` instead of
+        /// Initialize the GLOBAL WG directory at `~/.wg` instead of
         /// the current directory. Useful for `wg nex`-style interactive
-        /// usage from arbitrary directories without littering workgraph
+        /// usage from arbitrary directories without littering WG
         /// dirs everywhere. Resolver precedence: --dir > $WG_DIR >
         /// project discovery (`.wg` preferred, legacy `.workgraph` accepted) >
         /// global (`~/.wg` preferred, legacy `~/.workgraph` accepted) > ./.wg
@@ -86,7 +86,7 @@ pub enum Commands {
         route: Option<String>,
 
         /// Print the config that would be written but don't actually create
-        /// the workgraph directory or files.
+        /// the WG directory or files.
         #[arg(long)]
         dry_run: bool,
     },
@@ -206,7 +206,7 @@ pub enum Commands {
         #[arg(long, short = 'd', alias = "desc")]
         description: Option<String>,
 
-        /// Create the task in a peer workgraph (by name or path)
+        /// Create the task in a peer WG project (by name or path)
         #[arg(long)]
         repo: Option<String>,
 
@@ -1376,7 +1376,7 @@ pub enum Commands {
         command: AgencyCommands,
     },
 
-    /// Manage peer workgraph instances for cross-repo communication
+    /// Manage peer WG projects for cross-repo communication
     Peer {
         #[command(subcommand)]
         command: PeerCommands,
@@ -1934,9 +1934,9 @@ pub enum Commands {
         threshold: Option<u64>,
     },
 
-    /// Render the workgraph as a static, clickable HTML viewer (TUI-parity).
+    /// Render the WG task graph as a static, clickable HTML viewer (TUI-parity).
     #[command(
-        after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nworkgraph state. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, NO chat transcripts are rendered\n(chat task nodes still appear in the viz, but the conversation is\nomitted). Pass `--chat` to render transcripts; `--chat --all` to\ninclude non-public transcripts; `--public-only` to mirror only\n`visibility = public` tasks AND public chats.\n\nA best-effort sanitizer redacts api-key-shaped strings, env-var\nassignments (OPENAI_API_KEY=..., GITHUB_TOKEN=..., etc.), and\npaths under `~/.wg/secrets`. Review transcripts manually before\npublishing — sanitization is NOT a security guarantee.\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # All tasks, no chat transcripts\n  wg html --chat                # All tasks + public chats' transcripts\n  wg html --chat --all          # All tasks + every transcript\n  wg html --chat --public-only  # Public tasks + public chats only\n  wg html --since 24h           # Only tasks touched in the last 24h"
+        after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nWG task graph. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, NO chat transcripts are rendered\n(chat task nodes still appear in the viz, but the conversation is\nomitted). Pass `--chat` to render transcripts; `--chat --all` to\ninclude non-public transcripts; `--public-only` to mirror only\n`visibility = public` tasks AND public chats.\n\nA best-effort sanitizer redacts api-key-shaped strings, env-var\nassignments (OPENAI_API_KEY=..., GITHUB_TOKEN=..., etc.), and\npaths under `~/.wg/secrets`. Review transcripts manually before\npublishing — sanitization is NOT a security guarantee.\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # All tasks, no chat transcripts\n  wg html --chat                # All tasks + public chats' transcripts\n  wg html --chat --all          # All tasks + every transcript\n  wg html --chat --public-only  # Public tasks + public chats only\n  wg html --since 24h           # Only tasks touched in the last 24h"
     )]
     Html {
         /// Optional subcommand. Without one, runs the default render.
@@ -2193,7 +2193,7 @@ pub enum Commands {
         message: Option<String>,
     },
 
-    /// Stream workgraph events as JSON lines
+    /// Stream WG events as JSON lines
     Watch {
         /// Filter events by type (repeatable). Types: task_state, evaluation, agent, all.
         #[arg(long = "event", default_value = "all")]
@@ -2340,17 +2340,17 @@ pub enum Commands {
         /// Searches `.wg/agency/primitives/components/` for a
         /// matching component and appends its content to the system
         /// prompt. Use "coordinator" to load the coordinator prompt;
-        /// workgraph management still happens through `wg` CLI
+        /// WG task management still happens through `wg` CLI
         /// commands run with bash.
         #[arg(long)]
         role: Option<String>,
 
         /// Run as a chat-tethered agent: read user turns from
-        /// `<workgraph>/chat/<id>/inbox.jsonl`, write streaming tokens
-        /// to `<workgraph>/chat/<id>/streaming`, append finalized
-        /// assistant turns to `<workgraph>/chat/<id>/outbox.jsonl`.
+        /// `<wg-dir>/chat/<id>/inbox.jsonl`, write streaming tokens
+        /// to `<wg-dir>/chat/<id>/streaming`, append finalized
+        /// assistant turns to `<wg-dir>/chat/<id>/outbox.jsonl`.
         /// Bypasses stdin/stderr. When set, the journal is stored at
-        /// `<workgraph>/chat/<id>/conversation.jsonl` so `--resume`
+        /// `<wg-dir>/chat/<id>/conversation.jsonl` so `--resume`
         /// picks up the right session automatically.
         ///
         /// Primary use case: this is how `wg nex` serves as the
@@ -2532,7 +2532,7 @@ pub enum Commands {
         model: Option<String>,
     },
 
-    /// Print the workgraph directory that `wg` would use from here,
+    /// Print the WG directory that `wg` would use from here,
     /// and show which resolver step won (CLI flag / env / walk-up /
     /// home / default). Useful when you're confused about which graph
     /// `wg add` is talking to.
@@ -3709,7 +3709,7 @@ pub enum FuncCommands {
         #[arg(long)]
         verbose: bool,
 
-        /// Include functions from federated peer workgraphs
+        /// Include functions from federated peer WG projects
         #[arg(long)]
         include_peers: bool,
 
@@ -3769,7 +3769,7 @@ pub enum FuncCommands {
         /// Function ID (prefix match supported)
         function_id: String,
 
-        /// Load function from a peer workgraph (peer:function-id) or file path
+        /// Load function from a peer WG project (peer:function-id) or file path
         #[arg(long)]
         from: Option<String>,
 
@@ -4036,7 +4036,7 @@ pub enum AgencyCommands {
         dry_run: bool,
     },
 
-    /// Import Agency's starter.csv primitives into workgraph
+    /// Import Agency's starter.csv primitives into WG
     Import {
         /// Path to the CSV file to import (omit when using --url or --upstream)
         csv_path: Option<String>,
@@ -4263,7 +4263,7 @@ pub enum ChatCommands {
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
-    /// List every nex session in this workgraph.
+    /// List every nex session in this WG project.
     List {
         /// Print UUIDs + aliases as JSON instead of a table.
         #[arg(long)]
@@ -4373,7 +4373,7 @@ pub enum SessionAliasCommands {
 
 #[derive(Subcommand)]
 pub enum PeerCommands {
-    /// Register a peer workgraph instance
+    /// Register a peer WG project
     Add {
         /// Peer name (used as shorthand reference)
         name: String,
@@ -5107,7 +5107,7 @@ pub enum MatrixCommands {
 pub enum TelegramCommands {
     /// Start the Telegram bot listener
     ///
-    /// Polls the Telegram Bot API for messages and dispatches workgraph
+    /// Polls the Telegram Bot API for messages and dispatches WG
     /// commands like: claim, done, fail, input, status, ready, help
     Listen {
         /// Telegram chat ID to listen in (uses configured chat_id if not specified)

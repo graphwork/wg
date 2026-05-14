@@ -87,7 +87,7 @@ fn test_openrouter_minimax_tool_loop() {
     let _api_key = std::env::var("OPENROUTER_API_KEY")
         .expect("OPENROUTER_API_KEY must be set for this integration test");
 
-    // ── 1. Set up temp workgraph ─────────────────────────────────────────
+    // ── 1. Set up temp WG graph ─────────────────────────────────────────
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 

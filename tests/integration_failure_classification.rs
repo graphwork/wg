@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use workgraph::graph::{FailureClass, Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
-/// Initialize a workgraph for CLI invocation (creates .wg/graph.jsonl).
+/// Initialize WG for CLI invocation (creates .wg/graph.jsonl).
 fn setup_wg(project_dir: &std::path::Path, tasks: Vec<Task>) -> std::path::PathBuf {
     let wg_dir = project_dir.join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
@@ -196,7 +196,7 @@ fn test_classify_failure_subcommand_pdf_400() {
     .unwrap();
     drop(f);
 
-    // Run classify-failure without a real workgraph dir (it doesn't need one)
+    // Run classify-failure without a real WG dir (it doesn't need one)
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
     cmd.current_dir(tmp.path()).args([
         "classify-failure",

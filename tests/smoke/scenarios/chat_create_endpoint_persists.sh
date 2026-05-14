@@ -28,7 +28,7 @@ if ! wg init -m claude:opus >init.log 2>&1; then
     loud_fail "wg init -m claude:opus failed: $(tail -5 init.log)"
 fi
 
-# Locate the workgraph dir (init writes it as `.wg/` by default).
+# Locate the WG dir (init writes it as `.wg/` by default).
 wg_dir="$scratch/.wg"
 if [[ ! -d "$wg_dir" ]]; then
     loud_fail "expected $wg_dir after wg init; got: $(ls -la "$scratch")"

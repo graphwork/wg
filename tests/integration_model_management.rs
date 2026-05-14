@@ -24,7 +24,7 @@ use workgraph::parser::save_graph;
 // Helpers
 // ===========================================================================
 
-/// Create a minimal workgraph directory with empty graph and default config.
+/// Create a minimal WG directory with empty graph and default config.
 fn setup_workgraph_dir() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();

@@ -81,10 +81,10 @@ fn normalize_oai_compat_base_url(url: &str) -> String {
 /// optional key override. Used by the `-e <url>` shortcut so local
 /// servers (Ollama, vLLM, llama.cpp) work without any config.
 ///
-/// Per the workgraph credential contract, this path NEVER reads
+/// Per the WG credential contract, this path NEVER reads
 /// `OPENAI_API_KEY` / `WG_API_KEY` from the environment. If the user
 /// supplied `--api-key` (the only legitimate keyless input besides
-/// workgraph config), we use it; otherwise the client is built with
+/// WG config), we use it; otherwise the client is built with
 /// an empty key and the HTTP layer skips the Authorization header.
 /// If the endpoint requires auth, the 401 path surfaces a config-
 /// pointing error.
@@ -159,7 +159,7 @@ fn parse_endpoint_model_shorthand(
 
 /// Create a provider, optionally overriding the provider name, endpoint, and/or API key.
 ///
-/// Resolution order for API key (workgraph credential contract — see
+/// Resolution order for API key (WG credential contract — see
 /// `feedback_native_executor_no_env_vars` and the `native-executor-client`
 /// task description):
 /// 1. `api_key_override` parameter (pre-resolved by spawn path; eg `wg nex --api-key`)
@@ -285,7 +285,7 @@ pub fn create_provider_ext(
     //    `provider` field instead.
     //
     // 2. The fallback for unrecognized bare names is `"openai"`, not
-    //    `"anthropic"`. workgraph has shifted toward local/open-model-
+    //    `"anthropic"`. WG has shifted toward local/open-model-
     //    first operation and the overwhelming majority of new deployments
     //    use OpenAI-compatible endpoints (Ollama, vLLM, llama.cpp, lambda,
     //    etc.). Known Claude-family model names (opus, sonnet, haiku,
@@ -344,7 +344,7 @@ pub fn create_provider_ext(
     // STRICT key resolution: read api_key / api_key_file / api_key_env
     // from the matched endpoint's config — NEVER fall back to implicit
     // provider env vars (ANTHROPIC_API_KEY etc). See create_provider_ext
-    // doc comment for the workgraph credential contract.
+    // doc comment for the WG credential contract.
     let endpoint_key = endpoint.and_then(|ep| {
         ep.resolve_api_key_strict(Some(workgraph_dir))
             .ok()
@@ -369,9 +369,9 @@ pub fn create_provider_ext(
     let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
     // Base URL resolution: endpoint config > legacy [native_executor] api_base.
-    // Per the workgraph credential contract, env vars (WG_ENDPOINT_URL,
+    // Per the WG credential contract, env vars (WG_ENDPOINT_URL,
     // OPENAI_BASE_URL, OPENROUTER_BASE_URL) are NOT consulted — endpoint
-    // configuration lives in workgraph config exclusively.
+    // configuration lives in WG config exclusively.
     let api_base: Option<String> = endpoint_url.or_else(|| {
         native_cfg
             .and_then(|c| c.get("api_base"))
@@ -395,7 +395,7 @@ pub fn create_provider_ext(
             // the [[llm_endpoints.endpoints]] block — never an env var.
             //
             // See feedback `native-executor-client` for the rationale: the
-            // user's contract is that credentials live in workgraph config
+            // user's contract is that credentials live in WG config
             // exclusively, and the autohaiku failure was caused by this
             // path bailing with "No Anthropic API key found" before any
             // HTTP call when no env var was set.

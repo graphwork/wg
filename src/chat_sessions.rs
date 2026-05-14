@@ -1,14 +1,14 @@
 //! Session registry for chat-file nex sessions.
 //!
 //! Every nex session — interactive, coordinator, or task-agent —
-//! lives under `<workgraph>/chat/<uuid>/` with the same file layout
+//! lives under `<wg-dir>/chat/<uuid>/` with the same file layout
 //! (inbox.jsonl, outbox.jsonl, .streaming, conversation.jsonl, ...).
 //! A session is identified by its UUID. Humans and legacy code
 //! address sessions by **alias**, which resolves to a UUID via
 //! this registry.
 //!
 //! Aliases:
-//! - `coordinator-0`, `coordinator-1`, ... for workgraph coordinators
+//! - `coordinator-0`, `coordinator-1`, ... for legacy WG coordinators
 //!   (what used to be numeric `chat/0/`, `chat/1/` directly)
 //! - `task-<task-id>` for task-agent sessions
 //! - `tty-<slug>` for interactive sessions pinned to a terminal
@@ -16,7 +16,7 @@
 //!   `wg chat new --alias X`
 //!
 //! The registry is a single JSON file at
-//! `<workgraph>/chat/sessions.json` plus one filesystem symlink per
+//! `<wg-dir>/chat/sessions.json` plus one filesystem symlink per
 //! alias (`chat/<alias>` → `chat/<uuid>`). Symlinks mean existing
 //! code that writes `chat/0/inbox.jsonl` keeps working unchanged —
 //! the kernel resolves the alias for us. The JSON registry is the

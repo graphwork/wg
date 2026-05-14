@@ -42,7 +42,7 @@ pub fn run(
     let path = graph_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     // Validate self-blocking (can be done before loading graph)
@@ -635,7 +635,7 @@ mod tests {
     use workgraph::parser::{load_graph, save_graph};
 
     fn create_test_graph(dir: &Path) -> Result<()> {
-        // Create the workgraph directory if it doesn't exist
+        // Create the WG directory if it doesn't exist
         fs::create_dir_all(dir)?;
 
         // Create an empty graph.jsonl file

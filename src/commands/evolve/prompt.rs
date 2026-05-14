@@ -240,7 +240,7 @@ pub(crate) fn build_evolver_prompt(
     // System instructions
     out.push_str("# Evolver Agent Instructions\n\n");
     out.push_str(
-        "You are the evolver agent for a workgraph agency system. Your job is to improve \
+        "You are the evolver agent for a WG agency system. Your job is to improve \
          the agency's performance by evolving roles and tradeoffs based on performance data.\n\n",
     );
 

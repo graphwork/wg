@@ -9,7 +9,7 @@
 use tempfile::TempDir;
 use workgraph::config::Config;
 
-/// Create a temp workgraph dir with a minimal config.
+/// Create a temp WG dir with a minimal config.
 fn setup_workgraph_dir() -> TempDir {
     let dir = TempDir::new().unwrap();
     let config = Config::default();

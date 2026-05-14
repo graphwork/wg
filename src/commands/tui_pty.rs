@@ -70,7 +70,7 @@ pub fn run(
         }
     }
 
-    // Environment pass-through — propagate the workgraph dir to the
+    // Environment pass-through — propagate the WG dir to the
     // child so it uses the same state we were invoked with. The
     // child resolves WG_DIR at startup just like a normal `wg nex`
     // invocation would.

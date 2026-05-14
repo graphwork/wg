@@ -59,7 +59,7 @@ pub fn run(
             json,
             task_id,
             None,
-            "workgraph not initialized. Run 'wg init' first.",
+            "WG not initialized. Run 'wg init' first.",
         );
     }
 

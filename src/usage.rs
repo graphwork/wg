@@ -1,4 +1,4 @@
-//! Usage statistics tracking for workgraph commands
+//! Usage statistics tracking for WG commands
 //!
 //! This module implements a hybrid approach for tracking command usage:
 //! - Write path: Append-only log file (O(1) writes, no locking via O_APPEND)

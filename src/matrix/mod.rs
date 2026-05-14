@@ -1,4 +1,4 @@
-//! Matrix client wrapper for workgraph
+//! Matrix client wrapper for WG
 //!
 //! Provides a high-level interface for Matrix communication:
 //! - Login and session management (with persistent session storage)
@@ -54,12 +54,12 @@ pub struct IncomingMessage {
 
 /// Matrix client wrapper
 ///
-/// Wraps the matrix-sdk Client with workgraph-specific functionality
+/// Wraps the matrix-sdk Client with WG-specific functionality
 /// including session persistence and simplified API.
 pub struct MatrixClient {
     /// The underlying matrix-sdk client
     client: Client,
-    /// Path to the workgraph directory
+    /// Path to the WG directory
     workgraph_dir: PathBuf,
     /// Our own user ID (after login)
     user_id: Option<OwnedUserId>,
@@ -161,7 +161,7 @@ impl MatrixClient {
         Ok(())
     }
 
-    /// Get or create a device ID for this workgraph instance
+    /// Get or create a device ID for this WG instance
     fn get_or_create_device_id(&self) -> Result<matrix_sdk::ruma::OwnedDeviceId> {
         let device_id_path = self.state_dir().join("device_id");
 
@@ -184,7 +184,7 @@ impl MatrixClient {
         self.client
             .matrix_auth()
             .login_username(user_id.localpart(), password)
-            .initial_device_display_name("workgraph")
+            .initial_device_display_name("WG")
             .await
             .context("Failed to login with password")?;
 

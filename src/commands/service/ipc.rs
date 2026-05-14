@@ -88,7 +88,7 @@ pub enum IpcRequest {
         #[serde(default)]
         profile: Option<String>,
     },
-    /// Create a task in this workgraph (cross-repo dispatch)
+    /// Create a task in this WG project (cross-repo dispatch)
     AddTask {
         title: String,
         #[serde(default)]
@@ -1130,7 +1130,7 @@ fn handle_reconfigure(
     }))
 }
 
-/// Handle AddTask IPC request — create a task in this workgraph from a remote peer.
+/// Handle AddTask IPC request — create a task in this WG project from a remote peer.
 #[allow(clippy::too_many_arguments)]
 fn handle_add_task(
     dir: &Path,

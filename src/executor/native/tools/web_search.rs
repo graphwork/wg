@@ -20,8 +20,8 @@
 //!   but scheduled for replacement by a real-browser backend.
 //!
 //! All backends identify with a descriptive User-Agent including the
-//! workgraph repo URL so upstream operators can contact us if they
-//! object to our traffic. JSON APIs use the workgraph UA; DDG uses a
+//! WG repo URL so upstream operators can contact us if they
+//! object to our traffic. JSON APIs use the WG UA; DDG uses a
 //! realistic browser UA (required to avoid challenge pages).
 //!
 //! The DuckDuckGo *Instant Answer API* (`api.duckduckgo.com`) is NOT
@@ -251,7 +251,7 @@ impl Backend {
 // the stored response without hitting any backend — at research scale
 // this cuts an order of magnitude off query volume.
 //
-// Matches workgraph's everything-is-a-file ethos (graph.jsonl, agent
+// Matches WG's everything-is-a-file ethos (graph.jsonl, agent
 // output logs, nex-sessions/fetched-pages/). Benefits over a SQLite blob:
 //   - Inspectable: `cat`, `grep -r`, `ls -lt`, `find -mtime`
 //   - Distributed-safe: atomic rename works on NFS/Dropbox/sshfs where
@@ -1889,7 +1889,7 @@ async fn get_or_launch_browser() -> Result<Arc<TokioMutex<Option<BrowserHandle>>
     Ok(cell)
 }
 
-/// Reap an orphaned workgraph Chrome holding our profile's
+/// Reap an orphaned WG Chrome holding our profile's
 /// ProcessSingleton lock. Safe because we only kill processes whose
 /// command line references *our* user_data_dir — interactive user
 /// Chrome sessions or other profiles are left alone.
@@ -1941,7 +1941,7 @@ async fn reap_orphan_workgraph_chrome(user_data_dir: &std::path::Path) {
     }
 
     eprintln!(
-        "[browser] Killing orphaned workgraph Chrome (PID {}) holding SingletonLock",
+        "[browser] Killing orphaned WG Chrome (PID {}) holding SingletonLock",
         pid
     );
     let _ = crate::service::kill_process_force(pid);
@@ -2019,7 +2019,7 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // If an orphaned workgraph Chrome is holding the profile's
+    // If an orphaned WG Chrome is holding the profile's
     // SingletonLock, reap it first. Otherwise Chrome's ProcessSingleton
     // logic refuses to start and chromiumoxide surfaces it as a
     // mysterious "Browser process exited" error.

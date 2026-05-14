@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use workgraph::agency;
 use workgraph::config::Config;
 
-/// Helper: run agency init on a fresh temp directory and return the workgraph dir path.
+/// Helper: run agency init on a fresh temp directory and return the WG dir path.
 fn init_fresh() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");

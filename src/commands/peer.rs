@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use workgraph::federation;
 
-/// Add a named peer workgraph instance.
+/// Add a named peer WG project.
 pub fn run_add(
     workgraph_dir: &Path,
     name: &str,
@@ -176,10 +176,10 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
 
     match &resolved {
         Ok(wg_dir) => {
-            println!("  workgraph:   {}", wg_dir.display());
+            println!("  WG dir:      {}", wg_dir.display());
         }
         Err(e) => {
-            println!("  workgraph:   inaccessible ({})", e);
+            println!("  WG dir:      inaccessible ({})", e);
         }
     }
 
@@ -322,7 +322,7 @@ fn check_peer_status_for_config(peer: &federation::PeerConfig) -> federation::Pe
     }
 }
 
-/// Task counts from a workgraph.
+/// Task counts from a WG project.
 #[derive(Debug, Clone, serde::Serialize)]
 struct TaskCounts {
     total: usize,

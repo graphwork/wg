@@ -34,7 +34,7 @@ impl FileLock {
     #[cfg(not(unix))]
     fn acquire<P: AsRef<Path>>(_lock_path: P) -> Result<Self, ParseError> {
         // On non-Unix systems, we can't use flock - return a no-op lock
-        // This is a limitation but workgraph is primarily for Unix systems
+        // This is a limitation but WG is primarily for Unix systems
         Ok(FileLock {})
     }
 
@@ -66,10 +66,8 @@ impl FileLock {
         let fd = file.as_raw_fd();
         let policy = crate::lock::RetryPolicy::default();
         let mut wouldblock = false;
-        let res = crate::lock::retry_acquire(
-            &policy,
-            crate::lock::is_transient_nonblocking,
-            || {
+        let res =
+            crate::lock::retry_acquire(&policy, crate::lock::is_transient_nonblocking, || {
                 let ret = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
                 if ret == 0 {
                     return Ok(());
@@ -80,8 +78,7 @@ impl FileLock {
                     return Ok(()); // Stop retrying; caller proceeds lockless.
                 }
                 Err(err)
-            },
-        );
+            });
 
         match res {
             Ok(()) if wouldblock => Ok(None),
@@ -163,7 +160,7 @@ fn get_lock_path<P: AsRef<Path>>(graph_path: P) -> PathBuf {
     }
 }
 
-/// Load a workgraph from a JSONL file (internal, no locking).
+/// Load a WG task graph from a JSONL file (internal, no locking).
 ///
 /// Callers must hold the flock themselves or use [`load_graph`] which
 /// acquires it automatically.
@@ -202,7 +199,7 @@ fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     Ok(graph)
 }
 
-/// Load a workgraph from a JSONL file.
+/// Load a WG task graph from a JSONL file.
 ///
 /// Uses a non-blocking shared lock (`LOCK_SH | LOCK_NB`). If another process
 /// holds an exclusive lock (e.g. `modify_graph` in the coordinator), the read
@@ -221,7 +218,7 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     // Lock (if acquired) is automatically released when _lock goes out of scope
 }
 
-/// Save a workgraph to a JSONL file (internal, no locking).
+/// Save a WG task graph to a JSONL file (internal, no locking).
 ///
 /// Callers must hold the flock themselves or use [`save_graph`] which
 /// acquires it automatically.
@@ -270,7 +267,7 @@ fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pa
     result
 }
 
-/// Save a workgraph to a JSONL file
+/// Save a WG task graph to a JSONL file
 /// Uses advisory file locking and atomic write (temp file + rename) to
 /// prevent data loss on crash.
 pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {

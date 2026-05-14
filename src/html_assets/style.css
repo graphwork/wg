@@ -33,7 +33,7 @@
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
-   workgraph HTML viewer — TUI-parity stylesheet.
+   WG HTML viewer — TUI-parity stylesheet.
 
    The color palette mirrors the TUI exactly:
    - Status colors come from `flash_color_for_status` in
@@ -228,7 +228,7 @@ code {
 /* ── Project header (above the dependency graph) ─────────────────────────
    Rendered when the user supplied a [project] title/byline/abstract or a
    per-deployment override in html-publish.toml. Omitted entirely when all
-   three fields are empty (the page falls back to the minimal "workgraph /
+   three fields are empty (the page falls back to the minimal "WG /
    N tasks shown" header above). */
 .project-header {
     margin: 0 0 1.25rem;

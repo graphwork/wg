@@ -19,7 +19,7 @@ use workgraph::parser::{load_graph, save_graph};
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Set up a minimal workgraph directory at `<tmp>/<name>/.wg/`
+/// Set up a minimal WG directory at `<tmp>/<name>/.wg/`
 /// with an empty graph.jsonl.
 fn setup_project(tmp: &TempDir, name: &str) -> std::path::PathBuf {
     let project = tmp.path().join(name);
@@ -302,7 +302,7 @@ fn federation_config_peers_roundtrip() {
         "workgraph".to_string(),
         PeerConfig {
             path: "/home/erik/workgraph".to_string(),
-            description: Some("The workgraph tool".to_string()),
+            description: Some("The WG tool".to_string()),
         },
     );
     config.peers.insert(
@@ -320,7 +320,7 @@ fn federation_config_peers_roundtrip() {
     assert_eq!(loaded.peers["workgraph"].path, "/home/erik/workgraph");
     assert_eq!(
         loaded.peers["workgraph"].description.as_deref(),
-        Some("The workgraph tool")
+        Some("The WG tool")
     );
     assert_eq!(loaded.peers["grants"].path, "/home/erik/grants");
     assert!(loaded.peers["grants"].description.is_none());
@@ -890,7 +890,7 @@ fn resolve_remote_task_status_peer_not_found() {
 //   3. Cross-repo dependencies (peer:task-id in after)
 //   4. Trace function portability (instantiate --from peer)
 
-/// Helper: save a trace function to a workgraph's functions directory.
+/// Helper: save a trace function to a WG function directory.
 fn setup_function(wg_dir: &Path) {
     use workgraph::function::{
         FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
@@ -976,7 +976,7 @@ fn end_to_end_cross_repo_all_four_subsystems() {
 
     let tmp = TempDir::new().unwrap();
 
-    // ── Step 1: Set up two workgraph instances ──────────────────────────
+    // ── Step 1: Set up two WG instances ──────────────────────────
     let project_a = setup_project(&tmp, "project-a");
     let project_b = setup_project(&tmp, "project-b");
     let wg_a = project_a.join(".wg");

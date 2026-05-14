@@ -594,7 +594,7 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
     std::fs::read_to_string(&claude_md_path).unwrap_or_default()
 }
 
-/// Read the workgraph usage guide for non-Claude models.
+/// Read the WG usage guide for non-Claude models.
 ///
 /// Checks for a user-customizable guide at `.wg/wg-guide.md`. If that file
 /// exists, its content is used. Otherwise falls back to the built-in default guide
@@ -669,7 +669,7 @@ fn is_telegram_configured(workgraph_dir: &Path) -> bool {
     false
 }
 
-/// Build tiered workgraph knowledge guide based on model capabilities
+/// Build tiered WG knowledge guide based on model capabilities
 pub(crate) fn build_tiered_guide(
     workgraph_dir: &Path,
     tier: KnowledgeTier,
@@ -697,9 +697,9 @@ fn build_essential_guide(workgraph_dir: &Path) -> String {
     let memory_md = read_memory_md(workgraph_dir);
 
     format!(
-        r#"# workgraph Agent Guide (Essential)
+        r#"# WG Agent Guide (Essential)
 
-**You are an AI agent working on one task in a workgraph project.** Other agents work on other tasks concurrently.
+**You are an AI agent working on one task in a WG project.** Other agents work on other tasks concurrently.
 
 ## CRITICAL: Attempt Work Before Failing or Decomposing
 
@@ -910,7 +910,7 @@ fn read_memory_md(workgraph_dir: &Path) -> String {
         }
     }
 
-    // Fallback - try relative to workgraph dir
+    // Fallback - try relative to WG dir
     let memory_path = project_root
         .join(".claude")
         .join("memory")
@@ -929,7 +929,7 @@ fn extract_project_instructions(claude_md: &str) -> String {
 
     if claude_md.contains("orchestrating agent") || claude_md.contains("Orchestrating agent") {
         instructions.push_str("\n## Project Role (from CLAUDE.md)\n");
-        instructions.push_str("**You are a distributed agent** in a workgraph system. Other agents handle other tasks.\n");
+        instructions.push_str("**You are a distributed agent** in WG's graph-based workflow. Other agents handle other tasks.\n");
         instructions.push_str("**CRITICAL:** Use `wg add` for task creation. Do NOT attempt monolithic implementations.\n");
     }
 
@@ -951,9 +951,7 @@ fn extract_project_context(memory_md: &str) -> String {
 
     // Extract key project facts - limit to essential info for Tier 1
     if memory_md.contains("workgraph") {
-        context.push_str(
-            "**Project:** workgraph - task coordination graph for humans and AI agents\n",
-        );
+        context.push_str("**Project:** WG - task coordination graph for humans and AI agents\n");
     }
 
     if memory_md.contains("Rust") {
@@ -993,7 +991,7 @@ fn build_graph_patterns_section() -> String {
     r#"## Advanced Graph Patterns
 
 ### Cycles and Loops
-workgraph supports cycles for recurring work:
+The WG task graph supports cycles for recurring work:
 ```bash
 wg add 'Review code' --after implement-feature --max-iterations 3
 wg add 'Fix issues' --after review-code
@@ -2403,10 +2401,16 @@ mod tests {
     #[test]
     fn test_classify_model_tier_existing_models_unchanged() {
         assert_eq!(classify_model_tier("claude-opus-4-7"), KnowledgeTier::Full);
-        assert_eq!(classify_model_tier("claude-sonnet-4-6"), KnowledgeTier::Full);
+        assert_eq!(
+            classify_model_tier("claude-sonnet-4-6"),
+            KnowledgeTier::Full
+        );
         assert_eq!(classify_model_tier("claude-haiku-4-5"), KnowledgeTier::Core);
         assert_eq!(classify_model_tier("deepseek-v3"), KnowledgeTier::Core);
         assert_eq!(classify_model_tier("minimax-m2"), KnowledgeTier::Essential);
-        assert_eq!(classify_model_tier("unknown-model-xyz"), KnowledgeTier::Essential);
+        assert_eq!(
+            classify_model_tier("unknown-model-xyz"),
+            KnowledgeTier::Essential
+        );
     }
 }

@@ -109,7 +109,7 @@ fn index_title_and_minimal_header_include_host_and_repo_path() {
     );
     assert!(
         !index.contains("<title>workgraph"),
-        "index title must not fall back to generic workgraph"
+        "index title must not fall back to generic WG"
     );
 }
 
@@ -1762,7 +1762,7 @@ fn css_pins_terminal_cell_invariants_on_viz_pre() {
 // lives in the smoke scenario `tests/smoke/scenarios/wg_html_box_drawing_alignment.sh`.
 // The viz capture path subprocesses to `wg viz --json` and depends on a
 // real graph.jsonl on disk, which is exactly what the smoke gate provides
-// (the workgraph repo's own .wg dir has plenty of long-edge cases).
+// (the WG repo's own .wg dir has plenty of long-edge cases).
 
 #[test]
 fn bundles_jetbrains_mono_webfont_for_box_drawing_alignment() {

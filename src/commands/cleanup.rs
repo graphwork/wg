@@ -136,7 +136,7 @@ fn run_orphaned_cleanup(args: OrphanedArgs) -> Result<()> {
         project_root.display()
     );
 
-    // Load workgraph to verify project structure
+    // Load WG task graph to verify project structure
     let (_graph, _graph_path) = load_workgraph(&project_root)?;
 
     let worktrees_dir = project_root.join(WORKTREES_DIR);
@@ -610,7 +610,7 @@ fn run_nightly_cleanup(args: NightlyArgs) -> Result<()> {
 
     let project_root = std::env::current_dir().context("Failed to get current directory")?;
 
-    // Load workgraph for task cleanup
+    // Load WG task graph for task cleanup
     let (graph, _graph_path) = load_workgraph(&project_root)?;
 
     // Initialize cleanup summary

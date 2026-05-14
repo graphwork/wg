@@ -8,7 +8,7 @@
 //!
 //! Tests are split into three groups:
 //! 1. Fresh repo: profile show, short name resolution, config defaults
-//! 2. Workgraph repo: real data integration
+//! 2. WG repo: real data integration
 //! 3. Profile ranking quality: non-alphabetical, meaningful score variance
 
 use std::collections::BTreeMap;
@@ -151,15 +151,12 @@ fn write_model_cache(wg_dir: &Path, model_ids: &[&str]) {
     std::fs::write(wg_dir.join("model_cache.json"), cache.to_string()).unwrap();
 }
 
-/// Initialize a fresh workgraph dir and return the .wg path.
+/// Initialize a fresh WG dir and return the .wg path.
 fn init_fresh_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
-    assert!(
-        wg_dir.exists(),
-        ".wg directory should exist after init"
-    );
+    assert!(wg_dir.exists(), ".wg directory should exist after init");
     (tmp, wg_dir)
 }
 
@@ -435,17 +432,17 @@ fn smoke_no_silent_claude_fallback_on_add() {
 }
 
 // =========================================================================
-// Test Group 2: Profile ranking against the real workgraph repo
+// Test Group 2: Profile ranking against the real WG repo
 // (uses actual .wg if present, else synthetic data)
 // =========================================================================
 
-/// Workgraph repo: `wg profile show` succeeds with real data.
+/// WG repo: `wg profile show` succeeds with real data.
 #[test]
 fn smoke_workgraph_repo_profile_show() {
     let wg_dir = PathBuf::from(".wg");
     if !wg_dir.exists() {
-        // Not running in the workgraph repo — skip gracefully.
-        eprintln!("Skipping: not in workgraph repo (.wg not found)");
+        // Not running in the WG repo — skip gracefully.
+        eprintln!("Skipping: not in WG repo (.wg not found)");
         return;
     }
 
@@ -453,7 +450,7 @@ fn smoke_workgraph_repo_profile_show() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
         output.status.success(),
-        "wg profile show should succeed in workgraph repo.\nstdout: {}\nstderr: {}",
+        "wg profile show should succeed in WG repo.\nstdout: {}\nstderr: {}",
         stdout,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -465,12 +462,12 @@ fn smoke_workgraph_repo_profile_show() {
     );
 }
 
-/// Workgraph repo: `wg profile show -v` shows individual metric breakdown.
+/// WG repo: `wg profile show -v` shows individual metric breakdown.
 #[test]
 fn smoke_workgraph_repo_profile_show_verbose() {
     let wg_dir = PathBuf::from(".wg");
     if !wg_dir.exists() {
-        eprintln!("Skipping: not in workgraph repo (.wg not found)");
+        eprintln!("Skipping: not in WG repo (.wg not found)");
         return;
     }
 

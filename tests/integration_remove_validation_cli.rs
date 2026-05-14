@@ -134,8 +134,8 @@ fn test_cli_add_validation_flag_is_noop_or_unknown() {
         return;
     }
     let tmp = tempfile::TempDir::new().unwrap();
-    // Initialize workgraph so flag-acceptance path can succeed without
-    // hitting the "workgraph not initialized" gate.
+    // Initialize WG so flag-acceptance path can succeed without
+    // hitting the "WG not initialized" gate.
     let init = Command::new(&bin)
         .current_dir(tmp.path())
         .args(["init", "--executor", "shell"])

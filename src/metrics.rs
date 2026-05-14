@@ -1,4 +1,4 @@
-//! Metrics and monitoring infrastructure for workgraph operations.
+//! Metrics and monitoring infrastructure for WG operations.
 //!
 //! This module provides centralized tracking of cleanup operations, timing statistics,
 //! and recovery branch management for observability and debugging purposes.

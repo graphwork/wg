@@ -1,4 +1,4 @@
-//! Telegram command parser and executor for workgraph.
+//! Telegram command parser and executor for WG.
 //!
 //! Reuses the same command parsing logic as [`crate::matrix_commands`] since
 //! the command vocabulary is identical. This module provides Telegram-specific
@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::matrix_commands::{self, MatrixCommand};
 
-/// Parse a Telegram message into a workgraph command.
+/// Parse a Telegram message into a WG command.
 ///
 /// Delegates to the shared parser in [`matrix_commands`]. The command syntax
 /// is identical: `claim <task>`, `done <task>`, `status`, etc.
@@ -17,14 +17,14 @@ pub fn parse(message: &str) -> Option<MatrixCommand> {
     MatrixCommand::parse(message)
 }
 
-/// Execute a parsed command against the workgraph, returning the response text.
+/// Execute a parsed command against WG, returning the response text.
 pub fn execute(workgraph_dir: &Path, command: &MatrixCommand, sender: &str) -> String {
     matrix_commands::execute_command(workgraph_dir, command, sender)
 }
 
 /// Generate Telegram-formatted help text.
 pub fn help_text() -> String {
-    "📋 *workgraph commands*\n\n\
+    "📋 *WG commands*\n\n\
      • `claim <task>` \\- Claim a task\n\
      • `claim <task> as <actor>` \\- Claim for someone\n\
      • `done <task>` \\- Mark done\n\
@@ -62,6 +62,6 @@ mod tests {
     #[test]
     fn help_text_is_nonempty() {
         let text = help_text();
-        assert!(text.contains("workgraph commands"));
+        assert!(text.contains("WG commands"));
     }
 }

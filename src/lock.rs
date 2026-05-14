@@ -66,10 +66,8 @@ pub fn is_transient_blocking(err: &io::Error) -> bool {
 /// taking the shared lock". Retrying `EWOULDBLOCK` there would defeat
 /// the non-blocking contract.
 pub fn is_transient_nonblocking(err: &io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(libc::EIO) | Some(libc::EINTR)
-    ) || err.kind() == io::ErrorKind::Interrupted
+    matches!(err.raw_os_error(), Some(libc::EIO) | Some(libc::EINTR))
+        || err.kind() == io::ErrorKind::Interrupted
 }
 
 /// Run `acquire` until it returns `Ok(())` or the policy gives up.
@@ -80,11 +78,7 @@ pub fn is_transient_nonblocking(err: &io::Error) -> bool {
 /// On budget exhaustion the final error message is augmented with
 /// retry-count + elapsed-time, e.g.
 ///   `"acquire lock failed after 12 retries over 5012ms: <inner>"`.
-pub fn retry_acquire<F, R>(
-    policy: &RetryPolicy,
-    is_retriable: R,
-    mut acquire: F,
-) -> io::Result<()>
+pub fn retry_acquire<F, R>(policy: &RetryPolicy, is_retriable: R, mut acquire: F) -> io::Result<()>
 where
     F: FnMut() -> io::Result<()>,
     R: Fn(&io::Error) -> bool,
@@ -143,7 +137,11 @@ fn jitter(d: Duration) -> Duration {
     if quarter_ms == 0 {
         // For very short delays (<4ms) jitter at the microsecond scale.
         let quarter_us = (d.as_micros() / 4) as u64;
-        let off = if quarter_us == 0 { 0 } else { nanos % (quarter_us + 1) };
+        let off = if quarter_us == 0 {
+            0
+        } else {
+            nanos % (quarter_us + 1)
+        };
         return d + Duration::from_micros(off);
     }
     let off = nanos % (quarter_ms + 1);
@@ -233,11 +231,19 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = format!("{}", err);
-        assert!(msg.contains("retries"), "msg should include retry count: {}", msg);
+        assert!(
+            msg.contains("retries"),
+            "msg should include retry count: {}",
+            msg
+        );
         assert!(msg.contains("ms"), "msg should include elapsed ms: {}", msg);
         // Budget enforcement: must not run forever, but at least make
         // multiple attempts.
-        assert!(attempts.get() >= 2, "expected >=2 attempts, got {}", attempts.get());
+        assert!(
+            attempts.get() >= 2,
+            "expected >=2 attempts, got {}",
+            attempts.get()
+        );
         assert!(
             elapsed < Duration::from_millis(500),
             "retry loop overshot budget by a wide margin: {:?}",

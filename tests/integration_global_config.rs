@@ -5,7 +5,7 @@
 //! annotations (global/local/default), scoped writes, and that downstream
 //! consumers (service daemon config, evaluate config) pick up merged values.
 //!
-//! All tests use temporary directories as fake HOME / local workgraph, so
+//! All tests use temporary directories as fake HOME / local WG project, so
 //! the real user's `~/.wg/config.toml` is never read or modified.
 
 use std::collections::BTreeMap;

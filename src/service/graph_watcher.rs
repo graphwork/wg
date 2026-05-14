@@ -1,4 +1,4 @@
-//! Filesystem watcher for the workgraph graph file.
+//! Filesystem watcher for the WG task graph file.
 //!
 //! Watches `<dir>/graph.jsonl` (and any other coordinator-relevant files) using
 //! [`notify-debouncer-mini`]. When a change is detected, fires a user-provided

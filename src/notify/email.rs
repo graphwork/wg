@@ -11,7 +11,7 @@
 //! smtp_port = 587            # optional, defaults to 587
 //! smtp_user = "user@example.com"
 //! smtp_password = "password"
-//! from = "workgraph@example.com"
+//! from = "wg@example.com"
 //! to = ["user@example.com"]
 //! use_tls = true             # optional, defaults to true
 //! ```
@@ -55,7 +55,7 @@ fn default_use_tls() -> bool {
 }
 
 fn default_subject_prefix() -> String {
-    "[workgraph]".to_string()
+    "[WG]".to_string()
 }
 
 impl EmailConfig {
@@ -314,10 +314,10 @@ mod tests {
             smtp_port: 587,
             smtp_user: "user@example.com".into(),
             smtp_password: "password".into(),
-            from: "workgraph@example.com".into(),
+            from: "wg@example.com".into(),
             to: vec!["user@example.com".into()],
             use_tls: true,
-            subject_prefix: "[workgraph]".into(),
+            subject_prefix: "[WG]".into(),
         }
     }
 
@@ -361,7 +361,7 @@ to = ["admin@example.com"]
         let email = EmailConfig::from_notify_config(&config).unwrap();
         assert_eq!(email.smtp_port, 587);
         assert!(email.use_tls);
-        assert_eq!(email.subject_prefix, "[workgraph]");
+        assert_eq!(email.subject_prefix, "[WG]");
     }
 
     #[test]

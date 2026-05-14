@@ -1,7 +1,7 @@
 //! Cycle detection and loop analysis for directed graphs.
 //!
 //! This module provides standalone cycle detection algorithms that can be used
-//! independently of workgraph's graph structures. The primary algorithms are:
+//! independently of WG's graph structures. The primary algorithms are:
 //!
 //! 1. **Tarjan's SCC** — finds all strongly connected components in O(V+E) time.
 //!    Uses an iterative implementation to avoid stack overflow on large graphs.
@@ -17,14 +17,14 @@
 //!    recomputing the entire graph. O(affected nodes) per edge insertion.
 //!
 //! 4. **Cycle Metadata Extraction** — given detected cycles, extracts member
-//!    tasks, header task, nesting depth, and iteration state for workgraph
+//!    tasks, header task, nesting depth, and iteration state for WG
 //!    integration.
 //!
 //! # Graph Representation
 //!
 //! All algorithms operate on a directed graph represented as an adjacency list:
 //! `HashMap<NodeId, Vec<NodeId>>` where each key maps to its successors.
-//! This is independent of workgraph's internal data structures so the module
+//! This is independent of WG's internal data structures so the module
 //! can be tested in isolation.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -779,7 +779,7 @@ impl IncrementalCycleDetector {
 // 4. Cycle Metadata Extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Metadata about a detected cycle, suitable for workgraph integration.
+/// Metadata about a detected cycle, suitable for WG integration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CycleMetadata {
     /// All node IDs in this cycle's SCC.
@@ -797,7 +797,7 @@ pub struct CycleMetadata {
     pub nesting_depth: usize,
 }
 
-/// Configuration for workgraph cycle iteration behavior.
+/// Configuration for WG cycle iteration behavior.
 /// This is the metadata that must be explicitly provided by the user —
 /// it cannot be inferred from graph structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -982,13 +982,13 @@ pub fn analyze_graph_cycles(num_nodes: usize, adj: &[Vec<NodeId>]) -> Vec<CycleM
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Named Graph Helper (for tests and workgraph integration)
+// Named Graph Helper (for tests and WG integration)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A graph with string-named nodes, providing a convenient API for
 /// building graphs and mapping between string IDs and numeric NodeIds.
 ///
-/// This bridges the gap between workgraph's string-based task IDs and
+/// This bridges the gap between WG's string-based task IDs and
 /// the numeric IDs used by the cycle detection algorithms.
 #[derive(Debug, Clone)]
 pub struct NamedGraph {
@@ -1787,12 +1787,12 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────
-    // workgraph-specific Scenario Tests
+    // WG-specific Scenario Tests
     // ─────────────────────────────────────────────────────
 
     #[test]
     fn test_review_revise_cycle() {
-        // Typical workgraph pattern: write → review → revise → write
+        // Typical WG pattern: write → review → revise → write
         let mut g = NamedGraph::new();
         g.add_edge("write", "review");
         g.add_edge("review", "revise");

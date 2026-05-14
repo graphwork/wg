@@ -139,7 +139,7 @@ pub fn run(
     let mut graph = if graph_file.exists() {
         load_graph(&graph_file).context("Failed to load graph")?
     } else {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     };
 
     // Validate external blocked-by references exist
@@ -1458,13 +1458,13 @@ mod tests {
     fn instantiate_from_peer() {
         let tmp = TempDir::new().unwrap();
 
-        // Set up "local" workgraph
+        // Set up "local" WG project
         let local_dir = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
         save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
-        // Set up "peer" workgraph with a function
+        // Set up "peer" WG project with a function
         let peer_project = tmp.path().join("peer-project");
         let peer_wg_dir = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();
@@ -1508,13 +1508,13 @@ mod tests {
     fn instantiate_from_peer_name_only() {
         let tmp = TempDir::new().unwrap();
 
-        // Set up local workgraph
+        // Set up local WG project
         let local_dir = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
         save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
-        // Set up peer workgraph with a function
+        // Set up peer WG project with a function
         let peer_project = tmp.path().join("peer-project");
         let peer_wg_dir = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();

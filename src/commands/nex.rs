@@ -207,7 +207,7 @@ pub fn run(
     let system = system_prompt.unwrap_or(&system_with_role);
 
     // Every nex session — CLI, coordinator, task-agent — lives under
-    // `<workgraph>/chat/<ref>/`. Pick the reference:
+    // `<wg-dir>/chat/<ref>/`. Pick the reference:
     //   1. `--chat <ref>`  — explicit, wins over everything else.
     //   2. `--chat-id N`   — legacy numeric id, same effect.
     //   3. `--resume`      — interactive picker (no arg) or pattern
@@ -652,7 +652,7 @@ fn build_default_system_prompt(
          Working directory: {}\n\
          Current date: {} ({})\n\
          \n\
-         Use bash to run `wg` CLI commands when you need workgraph task management.\n\
+         Use bash to run `wg` CLI commands when you need WG task management.\n\
          \n\
          When asked to produce content that requires current real-world data \
          (weather, news, prices, dates beyond your training cutoff, schedules, laws, \

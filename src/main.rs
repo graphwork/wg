@@ -24,7 +24,7 @@ mod tui;
 
 use cli::*;
 
-/// Resolve the workgraph directory for this invocation.
+/// Resolve the WG directory for this invocation.
 ///
 /// Precedence (highest first):
 ///
@@ -32,12 +32,12 @@ use cli::*;
 /// 2. **`WG_DIR` environment variable.** Second-highest — lets users
 ///    script `wg` commands against a specific graph without a flag.
 /// 3. **Project discovery.** Walk up from `cwd` looking for a
-///    workgraph directory. Prefer `.wg` (canonical), fall back to the
+///    WG directory. Prefer `.wg` (canonical), fall back to the
 ///    legacy `.workgraph` name. This matches how `git` finds `.git`,
 ///    `cargo` finds `Cargo.toml`, etc.
 /// 4. **Global fallback `~/.wg`.** If the user has a global
-///    workgraph directory in their home, use it. This makes `wg nex`
-///    usable from any directory without littering workgraph dirs
+///    WG directory in their home, use it. This makes `wg nex`
+///    usable from any directory without littering WG dirs
 ///    across the filesystem. Primarily for REPL-style interactive
 ///    commands; project-scoped commands (`wg add`, `wg done`, etc.)
 ///    will still fail-on-missing when they try to load the graph.
@@ -70,7 +70,7 @@ fn resolve_workgraph_dir(
         return descend_into_wg_subdir_if_project_root(p);
     }
 
-    // 3. Walk up from cwd looking for an existing workgraph dir.
+    // 3. Walk up from cwd looking for an existing WG dir.
     //    Prefer `.wg`, fall back to legacy `.workgraph`.
     if let Some(start) = cwd.as_ref() {
         let mut cur: &Path = start;
@@ -109,14 +109,14 @@ fn resolve_workgraph_dir(
 ///
 /// This is what makes `WG_DIR=<project_root>` and `--dir <project_root>`
 /// behave the same as `cd <project_root>` with no env var: the user
-/// usually means "the workgraph for this project", not "use this exact
-/// directory as the workgraph dir even though it's missing graph.jsonl".
+/// usually means "the WG directory for this project", not "use this exact
+/// directory as the WG dir even though it's missing graph.jsonl".
 ///
 /// The descent is skipped when:
 ///   - the path's basename is itself `.wg` or `.workgraph` (already a
-///     workgraph dir — don't descend into a nested .wg/.wg/),
+///     WG dir — don't descend into a nested .wg/.wg/),
 ///   - the path itself contains `graph.jsonl` (treat as a literal
-///     workgraph dir even if its basename is unusual — this preserves
+///     WG dir even if its basename is unusual — this preserves
 ///     the legacy "WG_DIR points at the actual graph dir" behavior for
 ///     users who already do that).
 fn descend_into_wg_subdir_if_project_root(p: PathBuf) -> PathBuf {
@@ -270,7 +270,7 @@ mod resolver_tests {
         let tmp = TempDir::new().unwrap();
         let outside = tmp.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        let home = tmp.path().join("home"); // no workgraph inside
+        let home = tmp.path().join("home"); // no WG directory inside
         let result = resolve_workgraph_dir(None, None, Some(outside.clone()), Some(home));
         // New default is `.wg`
         assert_eq!(result, outside.join(".wg"));
@@ -318,7 +318,7 @@ mod resolver_tests {
 
     /// `--dir <project_root>` should descend into `.wg` for the same
     /// reason WG_DIR does — the user's mental model is "this is the
-    /// project, find its workgraph."
+    /// project, find its WG directory."
     #[test]
     fn cli_dir_descends_into_dot_wg_subdir() {
         let tmp = TempDir::new().unwrap();
@@ -347,7 +347,7 @@ mod resolver_tests {
     }
 
     /// If WG_DIR points at a directory containing graph.jsonl directly,
-    /// treat it as the literal workgraph dir even if its basename is
+    /// treat it as the literal WG dir even if its basename is
     /// unusual. Preserves the existing "WG_DIR is the graph dir" contract
     /// for users who already rely on it.
     #[test]
@@ -411,7 +411,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     let config = Config::load_or_default(dir);
     let use_alphabetical = alphabetical || config.help.ordering == "alphabetical";
 
-    println!("wg - workgraph task management\n");
+    println!("wg - WG task management\n");
 
     if use_alphabetical {
         // Simple alphabetical listing
@@ -519,7 +519,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     }
 
     println!("\nOptions:");
-    println!("  -d, --dir <PATH>    workgraph directory [default: .wg]");
+    println!("  -d, --dir <PATH>    WG directory [default: .wg]");
     println!("  -h, --help          Print help (--help-all for all commands)");
     println!("      --alphabetical  Sort commands alphabetically");
     println!("      --json          Output as JSON");
@@ -713,7 +713,7 @@ fn main() -> Result<()> {
     // Auto-create the global fallback `~/.wg` for REPL-style
     // commands that should Just Work from any directory. Project-
     // scoped commands (wg add, wg list, etc.) still require an
-    // existing workgraph dir and will error cleanly downstream if
+    // existing WG dir and will error cleanly downstream if
     // one isn't found. This mirrors how `gh auth` can create
     // `~/.config/gh` on first use without requiring `gh init`.
     let is_repl_style = matches!(
@@ -727,13 +727,13 @@ fn main() -> Result<()> {
     {
         if let Err(e) = std::fs::create_dir_all(&workgraph_dir) {
             eprintln!(
-                "warning: failed to create global workgraph dir {}: {}",
+                "warning: failed to create global WG dir {}: {}",
                 workgraph_dir.display(),
                 e
             );
         } else {
             eprintln!(
-                "\x1b[2m[wg] created global workgraph directory: {}\x1b[0m",
+                "\x1b[2m[wg] created global WG directory: {}\x1b[0m",
                 workgraph_dir.display()
             );
         }
@@ -2945,7 +2945,7 @@ fn main() -> Result<()> {
                 } else if local {
                     commands::migrate::ConfigMigrateTarget::Local
                 } else {
-                    // Default: migrate the local config in this workgraph dir.
+                    // Default: migrate the local config in this WG dir.
                     commands::migrate::ConfigMigrateTarget::Local
                 };
                 commands::migrate::run_config_migrate(&workgraph_dir, target, dry_run, cli.json)

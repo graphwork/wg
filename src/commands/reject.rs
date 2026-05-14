@@ -14,7 +14,7 @@ use workgraph::parser::{load_graph, save_graph};
 pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("WG not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
