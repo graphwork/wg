@@ -35,7 +35,7 @@ File: `src/commands/spawn/execution.rs`
 ### Path 2: `CLAUDE.md` file read by Claude CLI automatically
 
 Claude Code reads `CLAUDE.md` from the project root at session start. The `CLAUDE.md`
-in every wg project (written by `wg init` / `wg setup`) contains:
+in every WG project (written by `wg init` / `wg setup`) contains:
 
 ```
 Run `wg agent-guide` at session start (or read its output from a previous

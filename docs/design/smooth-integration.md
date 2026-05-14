@@ -52,7 +52,7 @@ These don't exist yet but are needed for VX integration:
 | `wg veracity scores --json` | Query per-task veracity scores | Aggregation view. |
 | `wg veracity sensitivity <task-id> <level>` | Set task sensitivity | Requires new `sensitivity` field on Task. |
 | `wg veracity check --json` | Validate sensitivity constraints | Graph constraint checker. |
-| `wg capabilities --json` | Advertise what this wg instance can do | See §3.4 below. |
+| `wg capabilities --json` | Advertise what this WG instance can do | See §3.4 below. |
 
 **Design principle:** Every `wg veracity` command should have `--json` from day one. These are integration-facing by nature.
 
@@ -118,7 +118,7 @@ A formal plugin system (dynamic loading, trait objects, etc.) would add complexi
 
 ### 2.1 The Problem
 
-When wg instances want to share knowledge across organizational boundaries, what's the envelope? You can't send raw graph state (contains internal prompts, credentials, agent IDs). You can't send just task titles (too lossy). You need a **sanitized, structured view** of what was done, how it worked, and what was learned.
+When WG instances want to share knowledge across organizational boundaries, what's the envelope? You can't send raw graph state (contains internal prompts, credentials, agent IDs). You can't send just task titles (too lossy). You need a **sanitized, structured view** of what was done, how it worked, and what was learned.
 
 nikete's `Canon` concept is exactly this: a materialized view of work product, designed for sharing.
 

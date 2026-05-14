@@ -199,30 +199,30 @@ This is architecturally simpler and more scalable than screen sharing:
 
 ### 5.1 Current State
 
-Federation in wg currently covers **agency entities only** (roles, tradeoffs, agents, evaluations):
+Federation in WG currently covers **agency entities only** (roles, tradeoffs, agents, evaluations):
 
 - **`src/federation.rs`** — Core transfer logic between agency stores. Content-addressed entities (SHA-256 IDs) make federation conflict-free.
-- **`.wg/federation.yaml`** — Named remotes (agency stores) and named peers (other wg instances).
+- **`.wg/federation.yaml`** — Named remotes (agency stores) and named peers (other WG instances).
 - **Commands:** `wg agency pull/push/scan/remote/merge` — all operational today.
 
-The **peer system** (`wg peer add/remove/list/show/status`) is also implemented, providing named references to other wg instances with service status detection.
+The **peer system** (`wg peer add/remove/list/show/status`) is also implemented, providing named references to other WG instances with service status detection.
 
 ### 5.2 Cross-Repo Communication (Designed, Partially Implemented)
 
 The design document at `docs/design/cross-repo-communication.md` describes:
 
-- **`wg add --repo <peer>`** — Create a task in another wg instance (via IPC if service is running, direct file access otherwise)
+- **`wg add --repo <peer>`** — Create a task in another WG instance (via IPC if service is running, direct file access otherwise)
 - **Cross-repo dependencies** — `repo:task-id` syntax for references
 - **`AddTask` and `QueryTask` IPC requests** — New IPC message types for remote task creation and status queries
 - **Peer resolution** — Named peers → path → socket discovery → IPC or file fallback
 
-### 5.3 What Cross-wg Visibility Would Look Like
+### 5.3 What Cross-WG Visibility Would Look Like
 
-For the multi-user scenario on a single VPS, the key insight is that **all wg instances share a filesystem**. This means:
+For the multi-user scenario on a single VPS, the key insight is that **all WG instances share a filesystem**. This means:
 
-1. **Same wg, multiple users** — No federation needed. All users operate on the same `.wg/graph.jsonl`. Each user has their own coordinator (multiple coordinators are already supported via the TUI's coordinator tab system). This is the simplest and most immediately viable model.
+1. **Same WG instance, multiple users** — No federation needed. All users operate on the same `.wg/graph.jsonl`. Each user has their own coordinator (multiple coordinators are already supported via the TUI's coordinator tab system). This is the simplest and most immediately viable model.
 
-2. **Separate workgraphs, same machine** — Use the existing peer system. Each project has its own `.wg/`. Users can `wg peer add` each other's workgraphs. Cross-repo task dispatch via `wg add --repo` sends tasks between them.
+2. **Separate WG instances, same machine** — Use the existing peer system. Each project has its own `.wg/`. Users can `wg peer add` each other's WG instances. Cross-repo task dispatch via `wg add --repo` sends tasks between them.
 
 3. **Separate machines** — Requires network-accessible IPC. The current Unix domain socket is local-only. Options:
    - SSH tunneling: `ssh -L local.sock:remote.sock server` — works today, manual setup
@@ -297,7 +297,7 @@ A CRDT (Conflict-free Replicated Data Type) approach would make the graph merge-
 | Scenario | Strategy | Complexity |
 |----------|----------|-----------|
 | **Single VPS, shared filesystem** | Current flock model — already works | None |
-| **Single VPS, separate workgraphs** | Peer IPC (designed, partially implemented) | Low |
+| **Single VPS, separate WG instances** | Peer IPC (designed, partially implemented) | Low |
 | **Multi-machine, low-frequency sync** | Git-based with custom merge driver | Medium |
 | **Multi-machine, real-time sync** | Operation log + CRDT merge | High |
 
@@ -313,11 +313,11 @@ The pragmatic path:
 
 These decisions gate the multi-user roadmap and should be made before significant implementation:
 
-### Decision 1: Single wg or Per-User Workgraphs?
+### Decision 1: Single WG Instance or Per-User WG Instances?
 
-**Option A: Shared single wg** — All users operate on one `.wg/graph.jsonl`. Simplest. Already works. Risk: coordinator conflicts if multiple users run coordinators simultaneously.
+**Option A: Shared single WG instance** — All users operate on one `.wg/graph.jsonl`. Simplest. Already works. Risk: coordinator conflicts if multiple users run coordinators simultaneously.
 
-**Option B: Per-user workgraphs with federation** — Each user has their own `.wg/` in their home directory, federated via peers. More isolated but loses the "single graph" collaborative feel.
+**Option B: Per-user WG instances with federation** — Each user has their own `.wg/` in their home directory, federated via peers. More isolated but loses the "single graph" collaborative feel.
 
 **Recommendation:** Option A for the initial multi-user experience. It's simpler, already works, and matches the "shared workspace" vision. Add coordinator namespacing to prevent conflicts.
 

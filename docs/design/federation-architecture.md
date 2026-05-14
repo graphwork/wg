@@ -1,6 +1,6 @@
-# Federation & Cross-wg Visibility Architecture
+# Federation & Cross-WG Visibility Architecture
 
-> Each user/team has their own wg endpoint. They can see other federated workgraphs. A network of collaborative workspaces.
+> Each user/team has their own WG endpoint. They can see other federated WG instances. A network of collaborative workspaces.
 
 **Task:** mu-design-federation
 **Date:** 2026-03-25
@@ -9,9 +9,9 @@
 
 ## Executive Summary
 
-This document designs the federation model for wg: the ability for independent wg instances to discover each other, observe each other's state, and optionally dispatch work across boundaries. The design builds on substantial existing infrastructure (peer configs, IPC protocol with `AddTask`/`QueryTask`, agency federation, cross-repo communication design) and maps a path from what works today to a fully federated network.
+This document designs the federation model for WG: the ability for independent WG instances to discover each other, observe each other's state, and optionally dispatch work across boundaries. The design builds on substantial existing infrastructure (peer configs, IPC protocol with `AddTask`/`QueryTask`, agency federation, cross-repo communication design) and maps a path from what works today to a fully federated network.
 
-**Key architectural decision:** Federation is **observation-first, write-optional**. The primary value is visibility -- seeing what's happening across workgraphs. Write capabilities (cross-repo task dispatch) already exist via IPC and are a secondary concern.
+**Key architectural decision:** Federation is **observation-first, write-optional**. The primary value is visibility -- seeing what's happening across WG instances. Write capabilities (cross-repo task dispatch) already exist via IPC and are a secondary concern.
 
 ---
 
@@ -40,7 +40,7 @@ This document designs the federation model for wg: the ability for independent w
 
 | Gap | Why It Matters |
 |-----|----------------|
-| No cross-wg task visibility in TUI | Users can't see peer tasks without CLI commands |
+| No cross-WG task visibility in TUI | Users can't see peer tasks without CLI commands |
 | No periodic peer state refresh | `wg peer status` is point-in-time; no continuous monitoring |
 | No visibility filtering on federation reads | Remote graph is read in full -- no filtering by visibility level |
 | No authentication on IPC | Unix socket is owner-only (0600), sufficient for local; not for TCP |
@@ -51,7 +51,7 @@ This document designs the federation model for wg: the ability for independent w
 
 ## 2. Discovery Model
 
-### 2.1 How Workgraphs Find Each Other
+### 2.1 How WG Instances Find Each Other
 
 Three discovery mechanisms, layered from simplest to most automated:
 
@@ -73,12 +73,12 @@ Three discovery mechanisms, layered from simplest to most automated:
 
 **Layer 0 (exists):** Manual `wg peer add <name> <path>`. This is sufficient for the common case: a user with 2-5 projects on the same machine, or a small team on a shared VPS. No changes needed.
 
-**Layer 1 (v0.1):** `wg peer scan [<root-dir>]` -- walks a directory tree looking for `.wg/` directories, analogous to `wg agency scan`. Reports found workgraphs with task counts and service status. The user can then `wg peer add` any discovered instances. This mirrors the existing `wg agency scan` pattern.
+**Layer 1 (v0.1):** `wg peer scan [<root-dir>]` -- walks a directory tree looking for `.wg/` directories, analogous to `wg agency scan`. Reports found WG instances with task counts and service status. The user can then `wg peer add` any discovered instances. This mirrors the existing `wg agency scan` pattern.
 
 **Layer 2 (future):** For multi-machine scenarios, services could announce themselves via:
 - **Local registry file:** `~/.wg/peers.yaml` as a user-global peer directory
 - **mDNS/DNS-SD:** Announce `_workgraph._tcp` on the local network
-- **Central registry:** An HTTP endpoint listing known wg instances
+- **Central registry:** An HTTP endpoint listing known WG instances
 
 **Decision:** Start with Layers 0+1. Manual config handles the immediate need; scan reduces discovery friction. Layer 2 is deferred until multi-machine federation is implemented.
 
@@ -117,7 +117,7 @@ Tasks already have a `visibility` field with three levels:
 
 | Level | Meaning | Default |
 |-------|---------|---------|
-| `internal` | Only visible within the local wg | Yes |
+| `internal` | Only visible within the local WG instance | Yes |
 | `peer` | Visible to federated peers with credentials | No |
 | `public` | Visible to anyone (sanitized view) | No |
 
@@ -192,7 +192,7 @@ pub struct VerificationSummary {
 For efficiency, peers don't read the full remote graph. Instead, a **snapshot** aggregates the graph state:
 
 ```rust
-/// Aggregated view of a peer's wg state.
+/// Aggregated view of a peer's WG state.
 /// Generated on demand or cached with a TTL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerGraphSnapshot {
@@ -315,24 +315,24 @@ Federation state is refreshed on a **configurable poll interval** separate from 
 
 ## 5. Identity Model
 
-### 5.1 Who Are You Across Workgraphs?
+### 5.1 Who Are You Across WG Instances?
 
-Federation doesn't require a global identity system. Each wg instance has a **local name** and an **owner**:
+Federation doesn't require a global identity system. Each WG instance has a **local name** and an **owner**:
 
 ```yaml
 # .wg/config.toml (new fields)
 [federation]
-# Human-readable name for this wg instance
+# Human-readable name for this WG instance
 name = "wg-tool"
 # Owner identifier (defaults to $USER)
 owner = "erik"
 ```
 
-When wg A queries wg B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
+When WG A queries WG B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
 
 ### 5.2 For Cross-Repo Task Dispatch
 
-When creating a task on a remote wg (`wg add --repo`), the origin is recorded:
+When creating a task on a remote WG instance (`wg add --repo`), the origin is recorded:
 
 ```json
 {
@@ -348,7 +348,7 @@ This provides attribution without requiring a shared user directory.
 For multi-machine federation (v0.3+), SSH public keys provide natural identity:
 - Already available on developer machines
 - Already used for git authentication
-- Can be associated with a wg owner in `config.toml`
+- Can be associated with a WG owner in `config.toml`
 - TCP IPC can use SSH key-based authentication
 
 ---
@@ -376,7 +376,7 @@ For multi-machine federation (v0.3+), SSH public keys provide natural identity:
 └─────────────────────────────────────────────────┘
 ```
 
-**Read is the primary value.** Knowing what's happening across your team's workgraphs is the 80% use case. Write (dispatching tasks to remote graphs) is secondary and already has designed infrastructure.
+**Read is the primary value.** Knowing what's happening across your team's WG instances is the 80% use case. Write (dispatching tasks to remote graphs) is secondary and already has designed infrastructure.
 
 ### 6.2 Why Read-Only Avoids Conflicts
 
@@ -561,8 +561,8 @@ The smallest useful federation: **see your peers' high-level state from the CLI 
 
 ### 9.2 What v0.1 Delivers
 
-A user with 3 wg projects can:
-1. `wg peer scan ~/projects` -- discover all workgraphs
+A user with 3 WG projects can:
+1. `wg peer scan ~/projects` -- discover all WG instances
 2. `wg peer add project-a ~/projects/alpha` -- register peers
 3. `wg peer tasks project-a` -- see peer-visible tasks from CLI
 4. Open TUI, switch to Peers tab -- see all peers' state at a glance

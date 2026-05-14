@@ -384,10 +384,10 @@ jobs:
 
 ## 9. Scope Confirmation
 
-This blog is for the **wg project** specifically:
+This blog is for the **WG project** specifically:
 - The graphwork.github.io repo description is "wg - Task coordination for humans and AI agents"
-- The existing landing page is the wg product page
-- Content will be wg-related posts (project updates, technical deep dives, design philosophy)
+- The existing landing page is the WG product page
+- Content will be WG-related posts (project updates, technical deep dives, design philosophy)
 
 ---
 

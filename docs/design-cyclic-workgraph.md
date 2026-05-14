@@ -1,4 +1,4 @@
-# Design: Cyclic Process Support for wg
+# Design: Cyclic Process Support for WG
 
 **Date:** 2026-02-14
 **Status:** Draft — awaiting review
@@ -8,7 +8,7 @@
 
 ## Problem
 
-wg models task dependencies as a directed graph. While the documentation says cycles are allowed, and the codebase has been partially hardened for them (visited sets, back-edge rendering, cycle classification), **cyclic tasks cannot actually execute**:
+WG models task dependencies as a directed graph. While the documentation says cycles are allowed, and the codebase has been partially hardened for them (visited sets, back-edge rendering, cycle classification), **cyclic tasks cannot actually execute**:
 
 1. `ready_tasks()` requires ALL blockers to be Done — a cycle member's blockers are never all Done.
 2. `wg done` refuses to mark a task done if any blocker is unresolved — in a cycle, at least one always is.

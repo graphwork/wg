@@ -31,7 +31,7 @@ summarize an approach, leave no files behind, and still exit successfully.
 
 The secondary metric, `count(status=done AND commits_ahead=0) == 0`, is at
 least as important as the success ratio. A failed task is recoverable in
-wg: it can be retried, escalated, or inspected. A false `done` task is
+WG: it can be retried, escalated, or inspected. A false `done` task is
 more dangerous because it tells downstream tasks and evaluators that work
 exists when it does not. Fix #3, the wrapper minimum-work gate, is therefore
 not only a guardrail for Codex; it is a graph integrity mechanism. It ensures

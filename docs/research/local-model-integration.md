@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-The wg native executor's `OpenAiClient` is well-positioned to work with local models served by **Ollama** and **vLLM**, both of which expose OpenAI-compatible `/v1/chat/completions` endpoints. Tool calling works with capable models, but quality varies dramatically by model family and size. **Qwen3 30B+ and Llama 3.1/3.3 70B are the most viable local options for agentic wg tasks.**
+The WG native executor's `OpenAiClient` is well-positioned to work with local models served by **Ollama** and **vLLM**, both of which expose OpenAI-compatible `/v1/chat/completions` endpoints. Tool calling works with capable models, but quality varies dramatically by model family and size. **Qwen3 30B+ and Llama 3.1/3.3 70B are the most viable local options for agentic WG tasks.**
 
 ---
 
@@ -13,9 +13,9 @@ The wg native executor's `OpenAiClient` is well-positioned to work with local mo
 
 ### 1.1 Ollama
 
-**API compatibility:** Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) supports tool calling as of late 2024. The wg `OpenAiClient` sends `stream: false` requests, which avoids Ollama's historical streaming+tools issues.
+**API compatibility:** Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`) supports tool calling as of late 2024. The WG `OpenAiClient` sends `stream: false` requests, which avoids Ollama's historical streaming+tools issues.
 
-**Configuration for wg:**
+**Configuration for WG:**
 ```toml
 # .wg/config.toml
 [native_executor]
@@ -36,7 +36,7 @@ Set `OPENAI_API_KEY=ollama` (any non-empty string) as Ollama ignores it but the 
 
 **API compatibility:** vLLM provides a full OpenAI-compatible server with tool calling via `--enable-auto-tool-choice` and `--tool-call-parser <parser>`. Streaming and non-streaming both supported.
 
-**Configuration for wg:**
+**Configuration for WG:**
 ```toml
 # .wg/config.toml
 [native_executor]

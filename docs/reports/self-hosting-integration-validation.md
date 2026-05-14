@@ -154,7 +154,7 @@ This validation task is itself evidence of dogfooding:
 6. **Agent logging** tracks all progress via `wg log`
 7. **Concurrent execution**: This agent runs alongside agent-5753 (implementing coordinator agent)
 
-The system successfully manages its own development workflow — tasks are created, dispatched, executed, and validated through the wg system itself.
+The system successfully manages its own development workflow — tasks are created, dispatched, executed, and validated through the WG system itself.
 
 ---
 

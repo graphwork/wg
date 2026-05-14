@@ -1,6 +1,6 @@
 # Global Telegram Bot: Shared Inbound Routing Across Repos
 
-Design document for a single Telegram bot shared by multiple `wg service` daemons across different wg repos.
+Design document for a single Telegram bot shared by multiple `wg service` daemons across different WG repos.
 
 ---
 
@@ -25,7 +25,7 @@ Design document for a single Telegram bot shared by multiple `wg service` daemon
 
 - **Global telegram-bridge daemon (separate process):** Adds operational complexity — users must remember to start a separate bridge daemon alongside `wg service`. If it crashes, all repos lose Telegram. Creates a management burden for a tool that emphasizes simplicity.
 
-- **Webhook mode:** Requires exposing a port (ngrok, Cloudflare tunnel, or public IP). Most wg users run on laptops/dev machines where exposing a port is unacceptable. Also conflicts with multiple repos wanting the same webhook endpoint.
+- **Webhook mode:** Requires exposing a port (ngrok, Cloudflare tunnel, or public IP). Most WG users run on laptops/dev machines where exposing a port is unacceptable. Also conflicts with multiple repos wanting the same webhook endpoint.
 
 **Chosen approach: Poll-lock leader election**
 
@@ -172,7 +172,7 @@ Where:
 - `repo_name` — from `projects[].repo_name` in routing state (derived from directory name, e.g., `basename $(dirname $project_dir)`)
 - `emoji` — existing emoji mapping from `dispatch.rs` (`📋 ❌ 🚫 🔐 🚨`)
 - `event_label` — `ready`, `failed`, `blocked`, `approval needed`, `URGENT`
-- `task_id` — the wg task ID (in monospace/code format for Telegram)
+- `task_id` — the WG task ID (in monospace/code format for Telegram)
 - `task_title` — human-readable task title
 - `detail` — optional extra context (failure reason, etc.)
 
@@ -279,7 +279,7 @@ fn route_freestanding(text: &str, state: &RoutingState) -> RouteAction:
     // No active project — show picker
     active = state.projects.values().filter(|p| is_pid_alive(p.pid))
     if active.count() == 0:
-        return Info("No active wg projects.")
+        return Info("No active WG projects.")
     elif active.count() == 1:
         return DeliverToCoordinator(active[0].dir, text)
     else:

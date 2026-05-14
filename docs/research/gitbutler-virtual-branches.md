@@ -160,7 +160,7 @@ They do **not** help with concurrent agent isolation because:
 
 ---
 
-## 4. Integration with wg: Assessment
+## 4. Integration with WG: Assessment
 
 ### The GitButler + Claude Code Blog Post
 

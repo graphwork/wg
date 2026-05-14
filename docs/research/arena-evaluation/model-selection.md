@@ -1,6 +1,6 @@
-# Arena-Based Model Selection for wg
+# Arena-Based Model Selection for WG
 
-Research doc covering how FLIP-style arena evaluation (Wang et al., 2025; arXiv:2602.13551) can drive model selection in wg.
+Research doc covering how FLIP-style arena evaluation (Wang et al., 2025; arXiv:2602.13551) can drive model selection in WG.
 
 ## 1. Current Model Selection
 
@@ -29,7 +29,7 @@ The FLIP method (§4.2 of the paper) enables cheap Best-of-N selection:
 3. Score each: `rᵢ = F1(x, x'ᵢ)` — word-level F1 between original task description and inferred instruction
 4. Select the response with the highest score: `y* = argmax rᵢ`
 
-**Why this works for wg:** Task descriptions are explicit instructions. FLIP measures how faithfully a response follows its instruction — exactly the quality signal wg needs. A response that addresses the task description well will allow a small model to reconstruct that description from the response alone.
+**Why this works for WG:** Task descriptions are explicit instructions. FLIP measures how faithfully a response follows its instruction — exactly the quality signal WG needs. A response that addresses the task description well will allow a small model to reconstruct that description from the response alone.
 
 **Scoring is model-agnostic and training-free.** The FLIP evaluator can be any small model (1B-12B parameters). It doesn't need to understand code quality — it just needs to generate plausible instructions from responses. The F1 computation is pure string matching.
 
@@ -175,7 +175,7 @@ This fits naturally into wg's graph model — the probe task completes, sets the
 Start with **Option A** (`wg arena-select` command) because:
 - No changes to coordinator logic
 - Users opt in explicitly
-- Easy to test and validate FLIP scoring accuracy on real wg tasks
+- Easy to test and validate FLIP scoring accuracy on real WG tasks
 - Win-rate data accumulates and informs whether Option B (automatic) is worth building
 
 Then graduate to **Option B** once win-rate data shows meaningful quality differences between models for different task types.

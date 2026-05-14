@@ -1,5 +1,5 @@
 {
-  "topic": "LLM agent completion and engagement patterns: RLHF lazy-completion bias and the three-layer failure model in workgraph's codex:gpt-5.5 dispatch",
+  "topic": "LLM agent completion and engagement patterns: RLHF lazy-completion bias and the three-layer failure model in WG's codex:gpt-5.5 dispatch",
   "key_findings": [
     "RLHF and chat-style alignment reward concise polished prose, which biases batch agents toward summary-shaped output ('I would do X') instead of observable tool calls and commits — Codex CLI catalog defaults (low verbosity, tight per-turn token limit) compound the effect",
     "The codex:gpt-5.5 bail is a three-layer failure: (A) knowledge-tier classifier drops gpt-5.5 to Essential (~8 KB) so the agent never sees the smoke-gate / validation / no-built-in-Task contract; (B) codex CLI is invoked with no -c overrides, so the model runs at low verbosity with no developer_instructions; (C) the wrapper auto-runs `wg done` on EXIT_CODE=0 with no minimum-work gate, converting a model-side bail into a phantom completion",

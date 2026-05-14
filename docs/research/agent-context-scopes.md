@@ -78,7 +78,7 @@ Four tiers, ordered by increasing context breadth:
 
 ### 1.4 `full` — System-Aware
 
-**Purpose:** The agent understands the entire wg system — what it is, how the coordinator works, how tasks flow, what trace functions and the agency model are. For meta-tasks like architecture design, spec writing, workflow optimization, and debugging wg itself.
+**Purpose:** The agent understands the entire WG system — what it is, how the coordinator works, how tasks flow, what trace functions and the agency model are. For meta-tasks like architecture design, spec writing, workflow optimization, and debugging WG itself.
 
 **What the agent receives:**
 - Everything from `graph`

@@ -350,7 +350,7 @@ If `WG_USER` is not set, fall back to:
 ### ADR-1: Single Shared wg (not per-user)
 
 **Decision:** All users operate on one `.wg/graph.jsonl`.
-**Rationale:** Simplest model, already works, matches "shared workspace" vision. Per-user workgraphs would require federation for basic task visibility.
+**Rationale:** Simplest model, already works, matches "shared workspace" vision. Per-user WG instances would require federation for basic task visibility.
 **Consequence:** Conflict resolution is via flock serialization. No access control (all users can modify all tasks).
 
 ### ADR-2: Ephemeral View State (not persisted)

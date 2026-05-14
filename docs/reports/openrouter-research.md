@@ -1,6 +1,6 @@
 # OpenAI-Compatible Endpoints: Research Report
 
-Research for generic OpenAI-compatible endpoint support in wg's native executor.
+Research for generic OpenAI-compatible endpoint support in WG's native executor.
 OpenRouter is the first cloud target; local serving (ollama, vLLM, etc.) is also in scope.
 
 ---
@@ -270,7 +270,7 @@ ollama pull llama3.1
 # API available immediately at http://localhost:11434/v1
 ```
 
-**Config for wg:**
+**Config for WG:**
 ```bash
 export OPENAI_API_KEY=ollama  # Required but ignored
 wg config --model llama3.1 --set-provider local
@@ -301,7 +301,7 @@ vllm serve meta-llama/Llama-3.1-70B-Instruct --port 8000
 # Tool calling: --enable-auto-tool-choice --tool-call-parser llama3_json
 ```
 
-**Config for wg:**
+**Config for WG:**
 ```bash
 export OPENAI_API_KEY=my-secret-key  # If configured
 wg config --model meta-llama/Llama-3.1-70B-Instruct --set-provider openai
@@ -323,7 +323,7 @@ wg config --model meta-llama/Llama-3.1-70B-Instruct --set-provider openai
 
 **Setup:** GUI-based model management. Just-In-Time model loading — auto-loads when API request arrives.
 
-**Config for wg:**
+**Config for WG:**
 ```bash
 export OPENAI_API_KEY=lm-studio  # Or real token if configured
 wg config --model <model-name> --set-provider local

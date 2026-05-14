@@ -1,10 +1,10 @@
-# Cross-Repo wg Communication
+# Cross-Repo WG Communication
 
-> Enable wg instances across repositories to dispatch tasks, share dependencies, observe state, and share trace functions.
+> Enable WG instances across repositories to dispatch tasks, share dependencies, observe state, and share trace functions.
 
 ## 1. Problem Statement
 
-Each wg instance is isolated to a single repository. In practice, projects depend on each other — a grants project (`~/grants/agentic-orgs`) needs features built in the wg tool itself (`~/workgraph`). Today this requires manually switching directories, running separate services, and manually coordinating task completion across repos. We need first-class cross-repo communication.
+Each WG instance is isolated to a single repository. In practice, projects depend on each other — a grants project (`~/grants/agentic-orgs`) needs features built in the WG tool itself (`~/workgraph`). Today this requires manually switching directories, running separate services, and manually coordinating task completion across repos. We need first-class cross-repo communication.
 
 ### 1.1 What Already Exists
 
@@ -46,7 +46,7 @@ remotes:
 
 ### 2.2 Proposed Expansion
 
-Expand federation.yaml to also register **peer workgraphs** (not just agency stores):
+Expand federation.yaml to also register **peer WG instances** (not just agency stores):
 
 ```yaml
 # Agency remotes (existing, unchanged)
@@ -56,11 +56,11 @@ remotes:
     description: "Team shared agency store"
     last_sync: "2026-02-19T22:00:00Z"
 
-# Peer wg instances (NEW)
+# Peer WG instances (NEW)
 peers:
   wg:
     path: /home/erik/workgraph
-    description: "The wg tool itself"
+    description: "The WG tool itself"
     # socket auto-discovered from <path>/.wg/service/state.json
   grants:
     path: /home/erik/grants/agentic-orgs
@@ -83,7 +83,7 @@ Socket discovery for a peer:
 ### 2.4 Data Structures
 
 ```rust
-/// A peer wg instance
+/// A peer WG instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
     pub path: String,
@@ -96,7 +96,7 @@ pub struct FederationConfig {
     /// Agency store remotes (existing)
     #[serde(default)]
     pub remotes: HashMap<String, RemoteConfig>,
-    /// Peer wg instances (new)
+    /// Peer WG instances (new)
     #[serde(default)]
     pub peers: HashMap<String, PeerConfig>,
 }
@@ -290,7 +290,7 @@ When a task completes that is referenced as a dependency in another repo, the co
 
 ```rust
 // In the done/fail command handler:
-// Check if any peer workgraphs have tasks blocked by this task
+// Check if any peer WG instances have tasks blocked by this task
 // If so, send GraphChanged to wake their coordinator
 ```
 

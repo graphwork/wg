@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-This document explores a **supervisory agent pattern** for wg: an oversight mechanism that monitors a working agent and prevents premature failure. The supervisor's job is to keep the worker on track, nudge it toward alternative approaches when stuck, and ensure tasks reach completion rather than being abandoned or half-finished.
+This document explores a **supervisory agent pattern** for WG: an oversight mechanism that monitors a working agent and prevents premature failure. The supervisor's job is to keep the worker on track, nudge it toward alternative approaches when stuck, and ensure tasks reach completion rather than being abandoned or half-finished.
 
 We present three approaches in increasing order of complexity:
 

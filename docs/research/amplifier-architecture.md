@@ -1,4 +1,4 @@
-# Amplifier Bundle for wg: Architectural Summary
+# Amplifier Bundle for WG: Architectural Summary
 
 **Source**: [ramparte/amplifier-bundle-wg](https://github.com/ramparte/amplifier-bundle-wg)
 **Date**: 2026-02-18
@@ -30,15 +30,15 @@ Bundles are referenced by namespace (`wg:path/to/resource`) and can be installed
 amplifier bundle add git+https://github.com/ramparte/amplifier-bundle-wg
 ```
 
-The wg bundle provides: a behavior definition, a planner agent, and context documents that teach Amplifier agents how to use `wg`.
+The WG bundle provides: a behavior definition, a planner agent, and context documents that teach Amplifier agents how to use `wg`.
 
 ## 2. The Bidirectional Integration Model
 
 This is the core architectural insight. The integration works in **two independent directions**, and they compose:
 
-### Direction A: Amplifier → wg
+### Direction A: Amplifier → WG
 
-Add wg awareness to Amplifier sessions. When an Amplifier agent encounters a task with non-linear dependencies (multiple parallel workstreams with ordering constraints), it decomposes it into a wg:
+Add WG awareness to Amplifier sessions. When an Amplifier agent encounters a task with non-linear dependencies (multiple parallel workstreams with ordering constraints), it decomposes it into a WG task graph:
 
 1. Agent detects complex task structure (heuristic: 4+ subtasks, parallelism opportunity, data dependencies between subtasks)
 2. Runs `wg init` and `wg add` to build the task graph
@@ -325,7 +325,7 @@ Several bugs were discovered and fixed during development (commit `fbd612a`):
 
 - **TOML validity**: Parses `amplifier.toml`, checks required fields (`type`, `command`, `args`, `working_dir`, `prompt_template`)
 - **Template variables**: Verifies `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}` present in template
-- **Install script**: Tests installation into valid wg project, verifies files match source
+- **Install script**: Tests installation into valid WG project, verifies files match source
 - **Install validation**: Rejects directories without `.wg/`
 - **Wrapper script**: Tests flag forwarding (`--model`, `--bundle`) and prompt passing via stdin→positional-arg bridge
 - **Bundle structure**: Verifies all expected files exist, bundle.md has YAML frontmatter, agent has meta frontmatter

@@ -1,10 +1,10 @@
-# Self-Hosting wg: Architecture Design
+# Self-Hosting WG: Architecture Design
 
 ## Status: Design (March 2026)
 
 ## Vision
 
-wg becomes its own primary interface. Users interact with the system through the system itself — no separate Claude Code window on top. Two complementary interaction modes: a persistent coordinator agent that lives inside the graph and accepts user messages, and a TUI that serves as a full control surface for viewing, creating, editing, and communicating.
+WG becomes its own primary interface. Users interact with the system through the system itself — no separate Claude Code window on top. Two complementary interaction modes: a persistent coordinator agent that lives inside the graph and accepts user messages, and a TUI that serves as a full control surface for viewing, creating, editing, and communicating.
 
 ## Current State
 

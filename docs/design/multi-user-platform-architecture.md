@@ -6,14 +6,14 @@
 **Inputs:**
 - [TUI Multiplexing & Concurrent Access](tui-multiplexing-concurrent-access.md) (mu-design-tui-concurrency)
 - [Terminal Wrapping Strategy](terminal-wrapping-strategy.md) (mu-design-terminal-wrapping)
-- [Federation & Cross-wg Visibility](federation-architecture.md) (mu-design-federation)
+- [Federation & Cross-WG Visibility](federation-architecture.md) (mu-design-federation)
 - [Real-Time Sync & Liveness UX](live-sync-and-liveness.md) (mu-design-live-sync)
 
 ---
 
 ## Executive Summary
 
-wg's multi-user platform extends the existing single-user tool into a shared workspace where multiple humans and AI agents coordinate through a common graph. The architecture is built on four principles:
+WG's multi-user platform extends the existing single-user tool into a shared workspace where multiple humans and AI agents coordinate through a common graph. The architecture is built on four principles:
 
 1. **The graph is the source of truth.** All coordination flows through `graph.jsonl`, serialized by flock.
 2. **The TUI is the universal interface.** Every platform (desktop, web, mobile) connects to the same TUI via terminal wrapping — no platform-specific frontends.
@@ -152,7 +152,7 @@ The four designs address authentication at different layers:
 
 **No contradiction.** Authentication is layered: transport auth gets you a session; IPC perms control daemon access; visibility filtering controls data exposure. Each layer is independent.
 
-**The reverse proxy is the auth gateway for web users.** wg itself does not implement user authentication. This is deliberate — auth is a solved problem (Caddy, OAuth2 Proxy, Authelia). wg delegates to external auth and trusts the `WG_USER` identity passed downstream.
+**The reverse proxy is the auth gateway for web users.** WG itself does not implement user authentication. This is deliberate — auth is a solved problem (Caddy, OAuth2 Proxy, Authelia). WG delegates to external auth and trusts the `WG_USER` identity passed downstream.
 
 ### 2.3 The Daemon as Central Hub
 
@@ -294,7 +294,7 @@ Components that serve multiple subsystems:
 - 2-7 users on a shared VPS, each with SSH access, each running `wg tui`
 - Changes propagate via fs watcher in <100ms
 - Each user has their own coordinator and agent budget
-- Web access via ttyd (zero code changes to wg)
+- Web access via ttyd (zero code changes to WG)
 - Graph mutations are safe (flock-serialized, TOCTOU-free)
 - Provenance tracks who did what
 
@@ -307,7 +307,7 @@ Components that serve multiple subsystems:
 
 ### v0.2 — Liveness & Federation Visibility
 
-**Goal:** The system feels alive. Users see presence, activity feeds, and peer wg state in the TUI.
+**Goal:** The system feels alive. Users see presence, activity feeds, and peer WG state in the TUI.
 
 **Scope:** ~3000 lines of Rust. Estimated: 4-6 weeks.
 
@@ -331,7 +331,7 @@ Components that serve multiple subsystems:
 - Event-driven TUI updates (<50ms latency)
 - "Who's online" presence indicators
 - Semantic activity feed (not raw logs)
-- Federation: see peer wg state from TUI
+- Federation: see peer WG state from TUI
 - Surveillance dashboard for team leads
 - Alert monitoring with notification routing
 
@@ -412,7 +412,7 @@ Before any multi-user deployment:
 
 ### Step 3: Enable Liveness (v0.2)
 
-1. Upgrade wg binary (the daemon gains event bus + presence)
+1. Upgrade WG binary (the daemon gains event bus + presence)
 2. Restart `wg service` — TUI instances auto-connect to event bus
 3. Configure notification channels in `config.toml` for alerts
 4. Add peers via `wg peer add` for federation visibility
@@ -422,7 +422,7 @@ Before any multi-user deployment:
 1. Install responsive TUI update
 2. Share Termux/Blink setup guides with mobile users
 3. Enable git merge driver for multi-machine teams
-4. Configure cross-repo dependencies if using federated workgraphs
+4. Configure cross-repo dependencies if using federated WG instances
 
 ### Rollback Safety
 
@@ -542,7 +542,7 @@ Layer 2: Operating System Permissions
   ├── .wg/ directory: owned by project group
   ├── daemon.sock: 0660 (group-readable)
   ├── graph.jsonl: 0640 (group-readable)
-  └── Scope: who can access the wg on the machine
+  └── Scope: who can access the WG instance on the machine
 
 Layer 3: Data Visibility Filtering
   ├── internal: never exposed to peers (default)
@@ -559,9 +559,9 @@ Layer 4: Write Protection
 
 ### Trust Model
 
-**Within a wg:** Full trust. All users can read and modify all tasks. The system is collaborative, not adversarial. `WG_USER` is advisory (not enforced). Provenance provides accountability, not access control.
+**Within a WG instance:** Full trust. All users can read and modify all tasks. The system is collaborative, not adversarial. `WG_USER` is advisory (not enforced). Provenance provides accountability, not access control.
 
-**Across workgraphs (federation):** Trust is established by explicit peer configuration (`wg peer add`). Visibility filtering ensures internal tasks are never exposed. Read operations are safe (can't break anything). Write operations (`AddTask`) are opt-in and rate-limited.
+**Across WG instances (federation):** Trust is established by explicit peer configuration (`wg peer add`). Visibility filtering ensures internal tasks are never exposed. Read operations are safe (can't break anything). Write operations (`AddTask`) are opt-in and rate-limited.
 
 **The system is designed for small teams (2-10 people) on a shared VPS.** It is not designed for untrusted multi-tenant environments. Adding per-task ACLs or role-based access control is a v2.0 concern, if ever needed.
 
@@ -569,11 +569,11 @@ Layer 4: Write Protection
 
 ## 10. Architecture Decision Records
 
-### ADR-S1: Single Shared wg per Project
+### ADR-S1: Single Shared WG Instance per Project
 
 **Decision:** All users in a project operate on one `.wg/graph.jsonl`.
 **Sources:** TUI Concurrency ADR-1, Federation §6.
-**Rationale:** Simplest model. Already works. Federation provides cross-project visibility without merging graphs. Per-user workgraphs would require federation for basic task visibility within a team.
+**Rationale:** Simplest model. Already works. Federation provides cross-project visibility without merging graphs. Per-user WG instances would require federation for basic task visibility within a team.
 **Consequence:** No per-user access control within a project. Acceptable for small teams.
 
 ### ADR-S2: Daemon as Single Event Hub
@@ -581,7 +581,7 @@ Layer 4: Write Protection
 **Decision:** All session-layer services (event bus, presence, federation, coordinators) run within the service daemon process.
 **Sources:** Live Sync §7 Decision 1, Federation §4.2, TUI Concurrency §5.
 **Rationale:** The daemon already manages IPC, agents, and coordinators. Adding subsystems to the daemon reuses the IPC socket and avoids new processes. A separate event bus process adds operational complexity without architectural benefit.
-**Consequence:** Daemon restart disrupts all services. Acceptable — wg is not a high-availability system.
+**Consequence:** Daemon restart disrupts all services. Acceptable — WG is not a high-availability system.
 
 ### ADR-S3: tmux as Universal Session Layer
 

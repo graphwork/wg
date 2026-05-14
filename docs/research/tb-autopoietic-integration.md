@@ -217,7 +217,7 @@ The coordinator handles:
 # Create condition-specific configs by setting agency knobs differently
 # Condition A: no agency pipeline
 # Condition D: full pipeline with auto_assign + flip_enabled
-# Run each condition as a separate wg instance (separate .wg dirs)
+# Run each condition as a separate WG instance (separate .wg dirs)
 # OR use coordinator namespacing (separate coordinators per condition)
 ```
 

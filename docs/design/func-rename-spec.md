@@ -118,7 +118,7 @@ enum FuncCommands {
         #[arg(long)]
         verbose: bool,
 
-        /// Include functions from federated peer workgraphs
+        /// Include functions from federated peer WG instances
         #[arg(long)]
         include_peers: bool,
 

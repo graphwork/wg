@@ -1,14 +1,14 @@
 # OpenRouter Model Configuration & Assignment Guide
 
 Research report for task `research-openrouter-model`. Answers 7 specific questions
-about OpenRouter model support in wg after the resolve-model-registry,
+about OpenRouter model support in WG after the resolve-model-registry,
 auto-detect-native, add-config-validation, and update-setup-wizard changes.
 
 ---
 
 ## 1. How does the model_registry in config.toml work?
 
-There are **two separate model registries** in wg:
+There are **two separate model registries** in WG:
 
 ### A. Config-level registry (`config.toml` `[[model_registry]]`)
 
