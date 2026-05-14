@@ -598,7 +598,8 @@ wg html publish run my-blog
 wg html publish show my-blog
 ```
 
-Deployments are persisted to `<workgraph_dir>/html-publish.toml`. Scheduling
+Deployments are persisted to the resolved WG graph directory at
+`<graph_dir>/html-publish.toml`. Scheduling
 uses wg's own cron mechanism: `--schedule` registers a `.html-publish-<name>`
 task with `exec_mode = shell`, fired by `wg service` on the cron schedule.
 Failures are logged to `~/.wg/html-publish.log` and recorded on the
@@ -1089,7 +1090,7 @@ wg func list [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--verbose` | Show input parameters and task templates |
-| `--include-peers` | Include functions from federated peer workgraphs |
+| `--include-peers` | Include functions from federated peer WG instances |
 | `--visibility <LEVEL>` | Filter by visibility level: `internal`, `peer`, `public` |
 
 **Examples:**

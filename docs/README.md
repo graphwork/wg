@@ -297,9 +297,9 @@ wg list --json | jq '[.[] | select(.status == "open")] | length'
 wg ready --json | jq -r '.[].id'
 ```
 
-### Peer Workgraphs
+### Peer WG Instances
 
-wg instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and create cross-repo tasks with `wg add "Task" --repo <peer>`. See the [Command Reference](./COMMANDS.md) for details.
+WG instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and create cross-repo tasks with `wg add "Task" --repo <peer>`. See the [Command Reference](./COMMANDS.md) for details.
 
 ## See Also
 

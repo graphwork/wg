@@ -21,7 +21,7 @@ The graph directory is resolved first, **then** config is loaded:
 |------|-------------|------|
 | graph-dir resolution | `--dir` → `WG_DIR` → walk-up from cwd for `.wg`/`.wg` → `~/.wg`/`~/.wg` → default `./.wg` | `src/main.rs:55-102` |
 | global config | `~/.wg/config.toml` (note: **hardcoded `.wg`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
-| project config | `<workgraph_dir>/config.toml` (whichever name resolved above) | `src/config.rs:3749-3754` (`Config::load_merged`) |
+| project config | `<graph_dir>/config.toml` (whichever name resolved above) | `src/config.rs:3749-3754` (`Config::load_merged`) |
 | matrix creds | `~/.config/wg/matrix.toml` (separate file, not merged into Config) | `src/config.rs:3367-3370` |
 
 **Stale alert:** `Config::global_dir()` joins `.wg` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.wg/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
@@ -33,7 +33,7 @@ For any single setting, resolution flows top-down (highest precedence first):
 1. **Per-task field** (`task.model`, `task.exec`, `task.tags`, `task.context_scope`) — set on the graph entry itself.
 2. **CLI flag** for one-shot overrides — e.g. `wg add ... --model claude:opus`, `wg service start --max-agents 4`. Most wg subcommands accept `--model`/`--endpoint`/etc. (see `src/cli.rs`).
 3. **Tag routing** — `[[tag_routing]]` rules match `task.tags` and provide a model+executor when `task.model` is unset (`src/config.rs:1388-1395`).
-4. **Project-local config** — `<workgraph_dir>/config.toml`.
+4. **Project-local config** — `<graph_dir>/config.toml`.
 5. **Global config** — `~/.wg/config.toml` (deep-merged: project keys override globally; for `[[llm_endpoints.endpoints]]` see special opt-in below).
 6. **Profile defaults** — when `profile = "anthropic"` (etc.) is set, that profile supplies tier defaults (`src/config.rs:2078-2092`).
 7. **Hardcoded defaults** — `default_*()` functions and `Default for *Config` impls (`src/config.rs:184-…`, scattered).
@@ -503,7 +503,7 @@ If `wg show <task>` or `wg config show` displays a value you didn't set, the cas
 1. **Per-task `task.<field>`** — set on the graph entry (`graph.jsonl`).
 2. **CLI flag** — `wg add ... --model X`, `wg service start --max-agents N`.
 3. **Tag routing** — `[[tag_routing]]` rules with matching tag.
-4. **Project `<workgraph_dir>/config.toml`**.
+4. **Project `<graph_dir>/config.toml`**.
 5. **Global `~/.wg/config.toml`** (deep-merged).
 6. **Profile defaults** — when `profile = "..."` is set.
 7. **Hardcoded `default_*()` functions** (`src/config.rs`).

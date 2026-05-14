@@ -1075,9 +1075,9 @@ wg trace import <file>          # import a peer's trace as read-only context
 
 ## 11. Cross-Repo Collaboration
 
-### 11.1 Peer workgraphs
+### 11.1 Peer WG instances
 
-Connect workgraphs across repositories for cross-project coordination:
+Connect WG instances across repositories for cross-project coordination:
 
 ```bash
 wg peer add alice /path/to/alice/repo    # register a peer

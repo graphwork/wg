@@ -669,7 +669,7 @@ wg agency push partner
 
 Performance records merge during transfer; content-hash IDs make this natural.
 
-### Peer workgraphs
+### Peer WG instances
 
 Cross-repo task coordination (separate from agency federation):
 
