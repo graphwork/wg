@@ -4,7 +4,7 @@
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Change to the workgraph directory
+    // Change to the WG checkout directory
     if let Some(workgraph_dir) = env::args().nth(1) {
         env::set_current_dir(&workgraph_dir)?;
     }

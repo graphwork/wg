@@ -1,5 +1,5 @@
 #!/bin/bash
-# Nightly cleanup script for workgraph
+# Nightly cleanup script for WG
 # This script performs comprehensive nightly maintenance tasks
 
 set -e

@@ -70,7 +70,7 @@ if [[ ! -f "$READY" ]]; then
     exit 1
 fi
 
-# Init a fresh workgraph pointing at the fake endpoint.
+# Init a fresh WG graph pointing at the fake endpoint.
 cd "$TMPHOME"
 wg init --no-agency -x nex -m local:fake-model -e "http://127.0.0.1:$PORT" >/dev/null 2>&1
 

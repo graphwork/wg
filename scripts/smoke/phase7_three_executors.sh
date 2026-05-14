@@ -6,7 +6,7 @@
 #   • coordinator-2  codex   (codex exec --json)
 #
 # This is the "legit uses the system" test: three heterogeneous LLM
-# sessions coordinating on one shared workgraph.
+# sessions coordinating on one shared WG graph.
 #
 # Assertions:
 #   A. All three coordinators come up under the same daemon and hold

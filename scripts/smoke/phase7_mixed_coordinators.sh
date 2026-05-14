@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 7 live smoke: ONE workgraph, TWO coordinators on DIFFERENT
+# Phase 7 live smoke: ONE WG graph, TWO coordinators on DIFFERENT
 # executors running side-by-side. Coordinator-0 on the daemon default
 # (claude), coordinator-1 created with --executor native.
 #

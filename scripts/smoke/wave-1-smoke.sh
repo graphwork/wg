@@ -335,7 +335,7 @@ RESP
         return
     fi
 
-    # Init workgraph with nex executor pointing at fake
+    # Init WG with nex executor pointing at fake
     (cd "$scratch" && wg init --no-agency -x nex -m "local:fake-model" -e "http://127.0.0.1:$port") >/dev/null 2>&1
 
     # Turn 1: send a message via wg nex --autonomous (one-shot)

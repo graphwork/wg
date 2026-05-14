@@ -29,7 +29,7 @@ trap cleanup EXIT
 
 cd "$TMPHOME"
 
-# Initialize a native-executor workgraph (cheapest, no auth).
+# Initialize a WG test graph with nex (cheapest, no auth).
 wg init --no-agency -x nex -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
 USER_NAME=$(whoami 2>/dev/null || echo "smoke")
 python3 - "$USER_NAME" <<'PY'

@@ -9,14 +9,14 @@ echo "Setting up nightly cleanup task with schedule: $CRON_SCHEDULE"
 echo "This will run every night at 2 AM by default"
 
 # Create the cron task
-wg add "Nightly wg cleanup" \
+wg add "Nightly WG cleanup" \
     --cron "$CRON_SCHEDULE" \
     --exec "./scripts/nightly-cleanup.sh --verbose" \
     --timeout "30m" \
     --verify "echo 'Cleanup completed'" \
     -d "# Automated Nightly Cleanup
 
-Runs comprehensive workgraph maintenance operations:
+Runs comprehensive WG maintenance operations:
 
 ## Operations Performed
 1. **Sweep orphaned tasks** - Reset stuck in-progress tasks
@@ -43,14 +43,14 @@ For dry-run test: \`./scripts/nightly-cleanup.sh --dry-run --verbose\`
 
 ## Monitoring
 Check cleanup results with: \`wg metrics\`
-View task logs with: \`wg show nightly-workgraph-cleanup\`"
+View task logs with: \`wg show nightly-wg-cleanup\`"
 
 echo ""
 echo "✅ Nightly cleanup task created!"
 echo ""
 echo "To monitor the cleanup:"
 echo "  wg list --status open | grep cleanup"
-echo "  wg show nightly-workgraph-cleanup"
+echo "  wg show nightly-wg-cleanup"
 echo ""
 echo "To run cleanup immediately:"
 echo "  ./scripts/nightly-cleanup.sh --verbose"
