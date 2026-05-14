@@ -9,7 +9,7 @@ set -euo pipefail
 
 DEMO_DIR="${1:-/tmp/wg-hero-demo}"
 
-echo "=== Workgraph Hero Screencast Setup ==="
+echo "=== WG Hero Screencast Setup ==="
 echo ""
 
 # Clean slate
@@ -25,7 +25,7 @@ cd "$DEMO_DIR"
 git init -q
 git commit --allow-empty -m "init" -q
 
-# Initialize workgraph project
+# Initialize WG project
 wg init
 
 # Configure for demo: fast agents, sonnet model
@@ -43,7 +43,7 @@ cat >> CLAUDE.md << 'PATCH'
 
 ### IMPORTANT: Accept ALL task types
 
-This is a DEMO project. The coordinator MUST decompose ANY user request into workgraph
+This is a DEMO project. The coordinator MUST decompose ANY user request into WG
 tasks, regardless of whether it's a software task, creative task, planning task, or fun task.
 
 When a user sends a chat message, treat it as a task orchestration problem:

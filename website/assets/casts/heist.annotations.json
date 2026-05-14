@@ -4,7 +4,7 @@
     {
       "start": 0.0,
       "end": 3.0,
-      "text": "TUI opens with the coordinator running. The graph view shows existing tasks on the left, chat panel on the right.",
+      "text": "TUI opens with the chat agent running. The graph view shows existing tasks on the left, chat panel on the right.",
       "phase": "Setup"
     },
     {
@@ -16,7 +16,7 @@
     {
       "start": 7.0,
       "end": 12.0,
-      "text": "Coordinator receives the message and creates a task graph — parallel sub-tasks for snacks, movie picks, and debate topics.",
+      "text": "The chat agent receives the message and creates a WG task graph — parallel sub-tasks for snacks, movie picks, and debate topics.",
       "phase": "Planning"
     },
     {

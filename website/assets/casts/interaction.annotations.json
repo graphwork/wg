@@ -16,13 +16,13 @@
       "start": 5.5,
       "end": 8.6,
       "phase": "Prompt",
-      "text": "Chatting with the coordinator — \"Build a haiku news pipeline\""
+      "text": "Chatting with the chat agent — \"Build a haiku news pipeline\""
     },
     {
       "start": 8.6,
       "end": 12.6,
       "phase": "Agents",
-      "text": "Coordinator decomposes request into 8 tasks with dependencies"
+      "text": "The chat agent decomposes the request into 8 tasks with dependencies"
     },
     {
       "start": 12.6,

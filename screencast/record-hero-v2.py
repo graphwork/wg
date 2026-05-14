@@ -276,7 +276,7 @@ def record():
 
         print("  CLI intro complete")
 
-        # Reinitialize workgraph for a clean TUI demo
+        # Reinitialize WG state for a clean TUI demo
         subprocess.run(["rm", "-rf", os.path.join(DEMO_DIR, ".workgraph")])
         wg_cmd("init")
         wg_cmd("config", "--max-agents", "0")

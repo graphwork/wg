@@ -2,7 +2,7 @@
 """Record the showcase screencast: 6-scene TUI session with real agents.
 
 Uses the recording harness at 65x38 to capture a real multi-scene
-workgraph session demonstrating the full journey of the haiku-news project.
+WG session demonstrating the full journey of the haiku-news project.
 
 Scenes:
 1. Launch: wg service start → wg tui

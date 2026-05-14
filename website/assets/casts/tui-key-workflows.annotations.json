@@ -4,7 +4,7 @@
       "start": 0.0,
       "end": 3.0,
       "phase": "CHAT",
-      "text": "Press c to enter chat mode \u2014 talk to the coordinator directly"
+      "text": "Press c to enter chat mode \u2014 talk to the chat agent directly"
     },
     {
       "start": 3.0,

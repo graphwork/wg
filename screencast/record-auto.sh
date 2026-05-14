@@ -63,7 +63,7 @@ if ! grep -q "Accept ALL task types" CLAUDE.md 2>/dev/null; then
 
 ### IMPORTANT: Accept ALL task types
 
-This is a DEMO project. The coordinator MUST decompose ANY user request into workgraph
+This is a DEMO project. The coordinator MUST decompose ANY user request into WG
 tasks, regardless of whether it's a software task, creative task, planning task, or fun task.
 
 When a user sends a chat message, treat it as a task orchestration problem:

@@ -10,7 +10,7 @@
     {
       "start": 1.5,
       "end": 5.0,
-      "text": "TUI opens. The coordinator creates the task graph — write-three-haiku fans out to three parallel writers, then pick-the-best gathers results.",
+      "text": "TUI opens. The chat agent creates the WG task graph — write-three-haiku fans out to three parallel writers, then pick-the-best gathers results.",
       "phase": "Planning"
     },
     {

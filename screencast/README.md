@@ -1,7 +1,7 @@
 # Hero Screencast Recording
 
-Record short (~30-45s after compression) screencasts showing wg's TUI
-coordinator handling real multi-agent workflows.
+Record short (~30-45s after compression) screencasts showing WG's TUI
+chat agent handling real multi-agent workflows.
 
 ## Prerequisites
 
@@ -61,7 +61,7 @@ asciinema rec --idle-time-limit 2 recording.cast
 wg tui
 
 # In the TUI:
-# 1. Type your prompt in the coordinator chat input
+# 1. Type your prompt in the chat input
 # 2. Press Enter to submit
 # 3. Watch agents spawn and tasks flow through the graph
 # 4. When done, Ctrl-C to exit TUI
