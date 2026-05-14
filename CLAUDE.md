@@ -1,8 +1,8 @@
 <!-- wg-managed -->
-# wg (project-specific guide)
+# WG (project-specific guide)
 
 This file is the **layer-2** project guide for agents working *on the
-wg codebase itself*. It is NOT the universal chat-agent / worker-agent
+WG codebase itself*. It is NOT the universal chat-agent / worker-agent
 contract — that is bundled inside the `wg` binary and emitted by:
 
 ```
@@ -14,13 +14,13 @@ session) to get the universal role contract: chat agent vs dispatcher vs worker
 distinction, `## Validation` requirement, smoke-gate, cycle handling, git
 hygiene, worktree isolation, "no built-in Task tool" rules, etc.
 
-This file only covers things specific to the wg repo:
+This file only covers things specific to the WG repo:
 
-- How to use `wg` itself in this session
+- How to use the `wg` command itself in this session
 - How to develop and rebuild the `wg` binary
 - Service configuration recipes (model / endpoint pairs)
 - Named profiles (`wg profile use ...`) and secret backends (`wg secret ...`)
-- Agency-task model pinning (a wg-only quirk)
+- Agency-task model pinning (a WG-only quirk)
 
 For project orientation, run `wg quickstart`.
 
@@ -31,7 +31,7 @@ a bug. Update both together.
 
 ---
 
-## Use wg for task management
+## Use WG for task management
 
 **At the start of each session, run `wg quickstart` in your terminal to orient yourself.**
 Use `wg service start` to dispatch work — do not manually claim tasks.
@@ -50,7 +50,7 @@ to update the global binary. Forgetting this step is a common source of "why isn
 
 ## Service Configuration
 
-Pick a **(model, endpoint)** pair — wg derives the handler from the model spec's provider prefix:
+Pick a **(model, endpoint)** pair — the `wg` command derives the handler from the model spec's provider prefix:
 
 - `wg config -m claude:opus` → claude CLI handler (no endpoint needed; CLI auths itself)
 - `wg config -m codex:gpt-5.5` → codex CLI handler (no endpoint needed)
@@ -88,7 +88,7 @@ the older `api_key_env = "VAR_NAME"` is still accepted but
 `keyring` (OS native, default), `keystore` (~/.wg/keystore, 0600), and
 `plaintext` (requires `[secrets].allow_plaintext = true`). Passthrough URI
 schemes (`op://...`, `pass:...`, `env:VAR`, `literal:...`) work without
-storing the secret in wg.
+storing the secret in `wg`.
 
 ### Agency tasks run on claude CLI
 

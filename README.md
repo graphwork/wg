@@ -1,12 +1,14 @@
-# wg
+# WG
 
 **The work OS for human/AI organizations.**
 
+WG stands for works good.
+
 Agents can come and go. The graph remains.
 
-![wg TUI showing tasks, agents, claims, logs, and dependencies](docs/assets/wg-tui.gif)
+![WG TUI showing tasks, agents, claims, logs, and dependencies](docs/assets/wg-tui.gif)
 
-wg records what needs doing, who or what claimed it, what blocked it,
+WG records what needs doing, who or what claimed it, what blocked it,
 what evidence was produced, where judgment entered, what failed, what was
 retried, and how the work changed over time.
 
@@ -16,13 +18,13 @@ Launch the operating surface:
 wg tui
 ```
 
-> **Most AI systems center the agent. wg centers the work.**
+> **Most AI systems center the agent. WG centers the work.**
 
 ## The bottleneck is validation
 
 AI can generate more work than humans can inspect.
 
-wg exists because the hard problem is no longer only execution. It
+WG exists because the hard problem is no longer only execution. It
 is knowing what was done, what failed, what evidence exists, where judgment
 entered, and how the organization should respond.
 
@@ -30,7 +32,7 @@ Generation, evidence, validation, repair, and human judgment stay in the
 same durable structure — so judgment can catch up to generation instead of
 being flattened by it.
 
-## What wg gives you
+## What WG gives you
 
 - **Persistent task graph** — tasks, dependencies, status, and metadata
   stored as plain JSONL on disk. Git-friendly, human-readable, easy to
@@ -47,20 +49,20 @@ being flattened by it.
   the individual processes that embody them, and improve via feedback over
   time.
 
-## What wg is not
+## What WG is not
 
-wg is not primarily a chatbot, an agent benchmark harness, a
+WG is not primarily a chatbot, an agent benchmark harness, a
 project-management app, or an agent orchestration framework (LangGraph,
 CrewAI, AutoGen).
 
 Those categories center messages, scores, tickets, or agents.
 
-wg centers **answerable work**: tasks with dependencies, claims,
+WG centers **answerable work**: tasks with dependencies, claims,
 evidence, validation, failures, handoffs, artifacts, and history.
 
 ## Theory-led design
 
-wg was not designed by starting with agents and adding orchestration.
+WG was not designed by starting with agents and adding orchestration.
 
 It started from a theory of organizations: work needs decomposition,
 dependency, role, motivation, coordination, evaluation, memory, and
@@ -73,7 +75,7 @@ foundational, not optional, reading.
 ## The proof surface
 
 [Poietic PBC](https://poietic.life/) was formed, organized, and grant-funded
-through wg. These are not demos. They are public traces of real
+through WG. These are not demos. They are public traces of real
 institutional work:
 
 - **Company formation** — incorporation, structure, governance
@@ -81,7 +83,7 @@ institutional work:
   was drafted, edited, and submitted through the graph
 - **Scientific analysis** — research coordination and findings
 - **Website and theory development** — the Poietic mission site, the
-  wg theory pages, even copy edits to this repo
+  WG theory pages, even copy edits to this repo
 
 > **The company is not a wrapper around the product. The company is an
 > output of the product.**
@@ -119,7 +121,7 @@ The loop: declare work, let the service dispatch it, watch the graph evolve.
    website's own development.
 3. Read [the theory](https://graphwork.github.io/theory/): how tasks, roles,
    evaluations, traces, and evolution form a cybernetic organization.
-4. Install wg only after you understand the system it instantiates.
+4. Install WG only after you understand the system it instantiates.
 
 ## Storage
 
@@ -142,7 +144,7 @@ tomorrow, the work would still be there.
 - **[docs/GUIDE.md](docs/GUIDE.md)** — operator manual: configuration, the
   service, agent management, models, TUI, troubleshooting, AI assistants
 - **[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — how agents should use
-  wg
+  WG
 - **[docs/AGENT-SERVICE.md](docs/AGENT-SERVICE.md)** — service architecture
   and coordinator lifecycle
 - **[docs/AGENCY.md](docs/AGENCY.md)** — agency system: roles, tradeoffs,
