@@ -1,6 +1,6 @@
 /target
 
-# Workgraph project state — never commit
+# WG project state — never commit
 .workgraph/
 
 # Session/user files
