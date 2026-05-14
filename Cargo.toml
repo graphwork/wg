@@ -63,9 +63,12 @@ cron = "0.12"
 log = "0.4"
 env_logger = "0.11"
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
-# rquest 5.x is yanked on crates.io; 3.0.0 is the newest non-yanked release.
-# It provides built-in Chrome impersonation, so no rquest-util shim is needed.
-rquest = { version = "3.0.0", features = ["json", "gzip", "brotli", "deflate", "zstd"] }
+# Upstream yanked every rquest release on crates.io after renaming the crate
+# to `wreq`. Pin via git to the v3.0.6 tag (last release that still publishes
+# under the `rquest` name). The 3.x line moved browser emulation out of rquest
+# itself into a sibling `rquest-util` crate, so we pull that in too.
+rquest = { git = "https://github.com/0x676e67/wreq.git", tag = "v3.0.6", features = ["json", "gzip", "brotli", "deflate", "zstd"] }
+rquest-util = { version = "2.2.1", features = ["emulation"] }
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
@@ -105,3 +108,10 @@ tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
 workgraph = { path = ".", features = ["test-support"] }
+
+# Force rquest-util's transitive rquest dep through the same git source we use
+# directly. Without this, cargo tries to resolve rquest-util's `rquest =
+# ">=3.0.5"` requirement against crates.io, where every matching version has
+# been yanked by upstream.
+[patch.crates-io]
+rquest = { git = "https://github.com/0x676e67/wreq.git", tag = "v3.0.6" }
