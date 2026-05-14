@@ -1,6 +1,6 @@
 # Coordination & Execution
 
-When you type `wg service start --max-agents 5`, a background process wakes up, binds a Unix socket, and begins to breathe. Every few seconds it opens the graph file, scans for ready tasks, and decides what to do. This is the coordinator—the scheduling brain that turns a static directed graph into a running system. Without it, wg is a notebook. With it, wg is a machine.
+When you type `wg service start --max-agents 5`, a background process wakes up, binds a Unix socket, and begins to breathe. Every few seconds it opens the graph file, scans for ready tasks, and decides what to do. This is the coordinator—the scheduling brain that turns a static directed graph into a running system. Without it, WG is a notebook. With it, WG is a machine.
 
 This section walks through the full lifecycle of work: from the moment the daemon starts, through the dispatch of agents, to the handling of their success, failure, and unexpected death.
 
@@ -308,7 +308,7 @@ Requeue is distinct from `wg retry` (which resets a *failed* task) and from the 
 
 ## Observing the System
 
-The IPC protocol lets tools talk to the daemon. But many integrations need to observe the graph from the outside—a CI system that triggers on task completion, a dashboard that tracks agent progress, a portfolio manager that records outcomes. For these, wg provides `wg watch`.
+The IPC protocol lets tools talk to the daemon. But many integrations need to observe the graph from the outside—a CI system that triggers on task completion, a dashboard that tracks agent progress, a portfolio manager that records outcomes. For these, WG provides `wg watch`.
 
 `wg watch` streams a real-time event feed of graph mutations to standard output. Each line is a JSON object with a type, timestamp, optional task ID, and a data payload carrying the operation detail. The event types mirror the operations log: `task.created`, `task.started`, `task.completed`, `task.failed`, `task.retried`, `evaluation.recorded`, `agent.spawned`, `agent.completed`. The stream reads from the same provenance log that records every mutation to the graph—`wg watch` is not a separate event system but a live tail of the log with structured formatting.
 
@@ -316,7 +316,7 @@ Events can be filtered. The `--event` flag accepts categories—`task_state` for
 
 ### The Adapter Pattern
 
-`wg watch` is one side of a broader integration architecture. External systems interact with wg through five ingestion points, each corresponding to a different kind of information flow:
+`wg watch` is one side of a broader integration architecture. External systems interact with WG through five ingestion points, each corresponding to a different kind of information flow:
 
 | **Point**   | **Command**                      | **What flows**                                                                                               |
 |:------------|:---------------------------------|:-------------------------------------------------------------------------------------------------------------|

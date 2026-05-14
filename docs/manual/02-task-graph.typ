@@ -157,7 +157,7 @@ The `not_before` field enables future scheduling: "do not start this task before
 
 == Structural Cycles: Intentional Iteration
 
-wg is a directed graph, not a DAG. This is a deliberate design choice.
+WG is a directed graph, not a DAG. This is a deliberate design choice.
 
 Most task systems are acyclic by construction—dependencies flow in one direction, and cycles are errors. This works for projects that execute once: design, build, test, deploy, done. But real work is often iterative. You write a draft, a reviewer reads it, you revise based on feedback, the reviewer reads again. A CI pipeline builds, tests, and if tests fail, loops back to build with fixes. A monitoring system checks, investigates, fixes, verifies, and then checks again.
 
@@ -401,7 +401,7 @@ Casually, seed tasks are sometimes called _spark tasks_—the spark that ignites
 
 == Graph Analysis
 
-wg provides several analysis tools that read the graph structure and compute derived properties. These are instruments, not concepts—they report on the graph rather than define it.
+WG provides several analysis tools that read the graph structure and compute derived properties. These are instruments, not concepts—they report on the graph rather than define it.
 
 *Critical path.* The longest dependency chain among active (non-terminal) tasks, measured in estimated hours. The critical path determines the minimum time to completion—no amount of parallelism can shorten it. Tasks on the critical path have zero slack; delays to any of them delay the entire project. `wg critical-path` computes this, skipping cycles to avoid infinite traversals.
 

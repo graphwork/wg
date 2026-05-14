@@ -1,6 +1,6 @@
-# wg Command Reference
+# WG Command Reference
 
-Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom wg directory.
+Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom WG directory.
 
 ## Table of Contents
 
@@ -1207,7 +1207,7 @@ wg func apply impl-feature --input feature_name=auth --dry-run
 
 ### `wg func bootstrap`
 
-Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a wg workflow.
+Bootstrap the `extract-function` meta-function — a built-in version 2 (generative) function that describes the trace extraction process itself as a WG workflow.
 
 ```bash
 wg func bootstrap [OPTIONS]
@@ -1432,7 +1432,7 @@ List and find skills across tasks.
 wg skill list           # list all skills in use
 wg skill task <ID>      # show skills for a specific task
 wg skill find <SKILL>   # find tasks requiring a specific skill
-wg skill install        # install the wg Claude Code skill to ~/.claude/skills/wg/
+wg skill install        # install the WG Claude Code skill to ~/.claude/skills/wg/
 ```
 
 **Examples:**
@@ -1447,7 +1447,7 @@ wg skill task implement-api
 # Shows which skills implement-api requires
 
 wg skill install
-# Installs the wg skill for Claude Code into ~/.claude/skills/wg/
+# Installs the WG skill for Claude Code into ~/.claude/skills/wg/
 ```
 
 ---
@@ -2622,7 +2622,7 @@ wg service tick --executor claude --model haiku
 
 ### `wg service install`
 
-Generate a systemd user service file for the wg service daemon.
+Generate a systemd user service file for the WG service daemon.
 
 ```bash
 wg service install
@@ -3451,7 +3451,7 @@ wg openrouter set-limit --global 100 --session 10 --task 2
 
 ### `wg init`
 
-Initialize a new wg in the current directory.
+Initialize a new WG directory in the current directory.
 
 ```bash
 wg init
@@ -3469,7 +3469,7 @@ cd my-project && wg init
 
 ### `wg which`
 
-Print the wg directory that `wg` would use from here, and show which resolver step won (CLI flag / env / walk-up / home / default). Useful when you're confused about which graph `wg add` is talking to.
+Print the WG directory that `wg` would use from here, and show which resolver step won (CLI flag / env / walk-up / home / default). Useful when you're confused about which graph `wg add` is talking to.
 
 ```bash
 wg which
@@ -3516,7 +3516,7 @@ wg secret <SUBCOMMAND>
 
 ### `wg html`
 
-Render the wg as a static, clickable HTML viewer (TUI-parity).
+Render the WG task graph as a static, clickable HTML viewer (TUI-parity).
 
 ```bash
 wg html [OUTPUT]
@@ -4394,7 +4394,7 @@ All commands support these options:
 
 | Option | Description |
 |--------|-------------|
-| `--dir <PATH>` | wg directory (default: .wg) |
+| `--dir <PATH>` | WG directory (default: .wg) |
 | `--json` | Output as JSON for machine consumption |
 | `-h, --help` | Show help (use `--help-all` for full command list) |
 | `--help-all` | Show all commands in help output (including less common ones) |

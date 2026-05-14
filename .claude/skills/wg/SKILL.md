@@ -1,9 +1,9 @@
 ---
 name: wg
-description: Use this skill for task coordination with wg. Triggers include "wg", task graphs, multi-step projects, tracking dependencies, coordinating agents, or when you see a .wg directory.
+description: Use this skill for task coordination with WG. Triggers include "wg", task graphs, multi-step projects, tracking dependencies, coordinating agents, or when you see a .wg directory.
 ---
 
-# wg
+# WG
 
 ## First: orient and start the service
 
@@ -572,11 +572,11 @@ wg service resume           # Resume dispatching
 | `wg agency push <target>` | Push local entities to another agency store |
 | `wg agency merge <sources...>` | Merge entities from multiple stores |
 
-### Peer workgraphs (cross-repo communication)
+### Peer WG instances (cross-repo communication)
 
 | Command | Purpose |
 |---------|---------|
-| `wg peer add <name> <path>` | Register a peer wg instance |
+| `wg peer add <name> <path>` | Register a peer WG instance |
 | `wg peer remove <name>` | Remove a registered peer |
 | `wg peer list` | List all configured peers with service status |
 | `wg peer show <name>` | Show detailed info about a peer |
@@ -653,13 +653,13 @@ wg service resume           # Resume dispatching
 | `wg skill list` | List all skills used across tasks |
 | `wg skill task <id>` | Show skills for a specific task |
 | `wg skill find <name>` | Find tasks requiring a specific skill |
-| `wg skill install` | Install the wg Claude Code skill to ~/.claude/skills/wg/ |
+| `wg skill install` | Install the WG Claude Code skill to ~/.claude/skills/wg/ |
 
 ### Setup & configuration
 
 | Command | Purpose |
 |---------|---------|
-| `wg init` | Initialize a new wg in the current directory |
+| `wg init` | Initialize a new WG directory in the current directory |
 | `wg setup` | Interactive configuration wizard for first-time setup |
 | `wg config --show` | Show current config |
 | `wg config --list` | Show merged config with source annotations (global/local/default) |
@@ -784,7 +784,7 @@ Tasks can specify `--exec-mode` to control what tools the agent receives:
 |------|-------------|----------|
 | `full` | Full Claude Code tools (file editing, bash, etc.) — default | Standard implementation, debugging |
 | `light` | Read-only tools (no file writes, no destructive commands) | Code review, analysis, audit |
-| `bare` | Only wg CLI instructions, no extra tools | Meta-tasks, workflow management |
+| `bare` | Only `wg` CLI instructions, no extra tools | Meta-tasks, workflow management |
 | `shell` | No LLM — direct shell execution of `exec` command | Scripted automation, CI/CD |
 
 ```bash
@@ -799,8 +799,8 @@ Tasks can specify a `--context-scope` that controls how much context the agent r
 
 | Scope | Description | Use Case |
 |-------|-------------|----------|
-| `clean` | Bare executor — no wg CLI instructions | Pure computation, translation, writing |
-| `task` | Task-aware with wg workflow instructions (default) | Standard implementation, bug fixes |
+| `clean` | Bare executor — no WG CLI instructions | Pure computation, translation, writing |
+| `task` | Task-aware with WG workflow instructions (default) | Standard implementation, bug fixes |
 | `graph` | Adds project description, 1-hop neighborhood, status summary | Integration, cross-component review |
 | `full` | Adds full graph summary, CLAUDE.md, system preamble | Meta-tasks, workflow design |
 

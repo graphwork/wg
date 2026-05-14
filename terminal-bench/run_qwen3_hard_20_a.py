@@ -566,7 +566,7 @@ async def main(timeout: float, tasks: list[str] | None = None):
         "serving_engine": "SGLang",
         "gpu": "RTX 6000 Ada 48GB (lambda01)",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "condition": "A (agent-only, no workgraph decomposition)",
+        "condition": "A (agent-only, no WG task graph)",
         "task_selection": "All 18 available local TB tasks, ordered hardest-first",
         "total_trials": total_trials,
         "passed": passed,

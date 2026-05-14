@@ -705,7 +705,7 @@ async def main(timeout: float, tasks: list[str] | None = None):
         "serving_engine": "SGLang",
         "gpu": "RTX 6000 Ada 48GB (lambda01)",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "condition": "G (workgraph-assisted, autopoietic)",
+        "condition": "G (WG-assisted, autopoietic)",
         "max_agents": MAX_AGENTS,
         "timeout_per_trial_s": timeout,
         "tasks": task_names,

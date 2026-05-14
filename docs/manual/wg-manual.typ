@@ -1,9 +1,9 @@
-// wg Manual
+// WG Manual
 // A conceptual guide to task coordination for humans and AI agents
 
 #set document(
-  title: "wg: A Manual",
-  author: "The wg Project",
+  title: "WG: A Manual",
+  author: "The WG Project",
 )
 
 #set text(font: "New Computer Modern", size: 11pt)

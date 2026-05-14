@@ -2,10 +2,10 @@
 
 ## Problem
 
-Task IDs in a wg are global. When multiple tools or specs add tasks to the same graph, ID collisions are likely — common names like `build`, `test`, `deploy` will clash.
+Task IDs in a WG task graph are global. When multiple tools or specs add tasks to the same graph, ID collisions are likely — common names like `build`, `test`, `deploy` will clash.
 
 This is especially relevant when:
-- A compiler (like Attracty) generates tasks from a spec into an existing wg
+- A compiler (like Attracty) generates tasks from a spec into an existing WG task graph
 - Multiple specs or subgraphs are composed into one graph
 - Agents add tasks with generic names
 
@@ -41,4 +41,4 @@ This is natural (filesystem-like), readable, and avoids ambiguity.
 
 ## Agent Guidance
 
-Agents working in shared workgraphs should be aware that task ID collisions can occur. When generating tasks programmatically or from specs, always namespace task IDs to avoid stomping on existing tasks.
+Agents working in shared WG task graphs should be aware that task ID collisions can occur. When generating tasks programmatically or from specs, always namespace task IDs to avoid stomping on existing tasks.

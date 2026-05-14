@@ -1,6 +1,6 @@
-# wg Documentation
+# WG Documentation
 
-wg (`wg`) is a task coordination system designed for both humans and AI agents. It provides a dependency-aware task graph that enables parallel work coordination, progress tracking, and project analysis.
+WG (`wg`) is a task coordination system designed for both humans and AI agents. It provides a dependency-aware task graph that enables parallel work coordination, progress tracking, and project analysis.
 
 ## Table of Contents
 

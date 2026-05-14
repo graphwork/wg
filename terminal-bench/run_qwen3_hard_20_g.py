@@ -917,7 +917,7 @@ async def main(timeout: float, tasks: list[str] | None = None, smart: bool = Fal
         "serving_engine": "SGLang",
         "gpu": "RTX 6000 Ada 48GB (lambda01)",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "condition": f"G-smart (try-first smart fanout)" if smart else "G (workgraph-assisted, decomposition enabled)",
+        "condition": f"G-smart (try-first smart fanout)" if smart else "G (WG-assisted, decomposition enabled)",
         "smart_fanout": smart,
         "max_agents": MAX_AGENTS,
         "task_selection": "All 18 available local TB tasks, ordered hardest-first (same as Condition A)",

@@ -1,11 +1,11 @@
-# wg Manual
+# WG Manual
 
-A conceptual manual for humans who want to understand and use wg and its agency system. This is not an API reference or CLI cheat-sheet — it is a book of tight, precise prose that builds understanding from first principles.
+A conceptual manual for humans who want to understand and use WG and its agency system. This is not an API reference or CLI cheat-sheet — it is a book of tight, precise prose that builds understanding from first principles.
 
 ## Contents
 
 1. **Glossary** — precise definitions for every term used in the manual
-2. **System Overview** — what wg is, what the agency adds, and how they relate
+2. **System Overview** — what WG is, what the agency adds, and how they relate
 3. **The Task Graph** — tasks, statuses, dependencies, structural cycles, readiness, and emergent patterns
 4. **The Agency Model** — roles, motivations, agents, content-hash IDs, skills, and trust
 5. **Coordination & Execution** — the service daemon, coordinator tick, dispatch cycle, and parallelism

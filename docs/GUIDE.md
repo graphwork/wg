@@ -1,8 +1,8 @@
-# wg Operator Guide
+# WG Operator Guide
 
 This guide is the operator manual: configuration, the service daemon, agent
 management, models, the TUI, and troubleshooting. The [README](../README.md)
-explains *what* wg is; this document explains *how to drive it*.
+explains *what* WG is; this document explains *how to drive it*.
 
 For the agent-side contract (how agents themselves should behave), see
 [AGENT-GUIDE.md](AGENT-GUIDE.md). For the agency system (roles, tradeoffs,

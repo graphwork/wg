@@ -1,6 +1,6 @@
 agent_url: https://github.com/graphwork/wg
-agent_display_name: "Workgraph Condition A (bare agent)"
-agent_org_display_name: "Workgraph"
+agent_display_name: "WG Condition A (bare agent)"
+agent_org_display_name: "WG"
 
 models:
   - model_name: minimax-m2.7
