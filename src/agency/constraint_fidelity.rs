@@ -174,12 +174,12 @@ fn extract_sentence_context(text: &str, match_start: usize, match_end: usize) ->
     let after = &text[match_end..];
 
     let sentence_start = before
-        .rfind(|c: char| c == '.' || c == '\n' || c == '!' || c == '?')
+        .rfind(['.', '\n', '!', '?'])
         .map(|i| i + 1)
         .unwrap_or(0);
 
     let sentence_end = after
-        .find(|c: char| c == '.' || c == '\n' || c == '!' || c == '?')
+        .find(['.', '\n', '!', '?'])
         .map(|i| match_end + i + 1)
         .unwrap_or(text.len());
 

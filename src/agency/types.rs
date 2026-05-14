@@ -139,18 +139,13 @@ pub struct Lineage {
     pub reframing_potential: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CreatedBy {
+    #[default]
     Human,
     Import,
     Evolver,
     AgentCreator,
-}
-
-impl Default for CreatedBy {
-    fn default() -> Self {
-        Self::Human
-    }
 }
 
 impl std::fmt::Display for CreatedBy {

@@ -40,7 +40,7 @@ pub fn is_legacy_coordinator_id(s: &str) -> bool {
 }
 
 /// Look up a chat task by numeric ID, trying `.chat-N` first then `.coordinator-N`.
-pub fn find_chat_task<'g>(graph: &'g WorkGraph, id: u32) -> Option<&'g crate::graph::Task> {
+pub fn find_chat_task(graph: &WorkGraph, id: u32) -> Option<&crate::graph::Task> {
     let new_id = format_chat_task_id(id);
     if let Some(t) = graph.get_task(&new_id) {
         return Some(t);

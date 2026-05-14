@@ -87,7 +87,7 @@ impl GraphWatcher {
                         }
                         // Path may be reported relative to the parent or with a
                         // different canonical form on some FS. Match by filename.
-                        if let (Some(ev_name), Some(ref t_name)) =
+                        if let (Some(ev_name), Some(t_name)) =
                             (e.path.file_name(), target_filename.as_ref())
                             && ev_name == t_name.as_os_str()
                         {
