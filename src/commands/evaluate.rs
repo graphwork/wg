@@ -133,7 +133,7 @@ fn find_originating_user_message(dir: &Path, task: &workgraph::graph::Task) -> O
                             {
                                 // Message must be before (or within 60s of) task creation
                                 let delta = created_ts.signed_duration_since(msg_ts).num_seconds();
-                                if delta >= -60 && delta <= 600 {
+                                if (-60..=600).contains(&delta) {
                                     // Within 10 min window before creation
                                     if best_message
                                         .as_ref()

@@ -3085,6 +3085,7 @@ pub struct CoordinatorConfig {
     /// Verification mode for tasks with legacy verify commands (deprecated).
     /// - "inline" (default): verify command runs in the same agent process that did the work
     /// - "separate": verify runs in a separate agent context (different conversation/context window)
+    ///
     /// New tasks should put validation criteria in a `## Validation` section of the task
     /// description; the agency evaluator (auto_evaluate + FLIP) reads it.
     #[serde(default = "default_verify_mode")]
@@ -3743,8 +3744,7 @@ fn apply_endpoint_inheritance_policy(
         .and_then(|t| t.get("endpoints"))
         .and_then(|v| v.as_array())
         .is_some();
-    let inherit =
-        explicit_inherit.unwrap_or_else(|| active_named_profile && !local_declares_endpoints);
+    let inherit = explicit_inherit.unwrap_or(active_named_profile && !local_declares_endpoints);
     if inherit {
         return;
     }

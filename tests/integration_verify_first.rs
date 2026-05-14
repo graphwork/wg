@@ -280,10 +280,10 @@ fn test_verify_adds_dep_to_eval() {
 
     // Add verify as dep on eval (this is what build_flip_verification_tasks does)
     let eval_task_id = ".evaluate-task-x";
-    if let Some(eval_task) = graph.get_task_mut(eval_task_id) {
-        if !eval_task.after.contains(&verify_task_id) {
-            eval_task.after.push(verify_task_id.clone());
-        }
+    if let Some(eval_task) = graph.get_task_mut(eval_task_id)
+        && !eval_task.after.contains(&verify_task_id)
+    {
+        eval_task.after.push(verify_task_id.clone());
     }
 
     // Verify: eval now depends on both .flip-task-x and .verify-task-x
@@ -299,10 +299,10 @@ fn test_verify_adds_dep_to_eval() {
     assert_eq!(eval.after.len(), 2, "Eval should have exactly 2 deps");
 
     // Verify idempotency: adding again should not create a duplicate
-    if let Some(eval_task) = graph.get_task_mut(eval_task_id) {
-        if !eval_task.after.contains(&verify_task_id) {
-            eval_task.after.push(verify_task_id.clone());
-        }
+    if let Some(eval_task) = graph.get_task_mut(eval_task_id)
+        && !eval_task.after.contains(&verify_task_id)
+    {
+        eval_task.after.push(verify_task_id.clone());
     }
     let eval = graph.get_task(eval_task_id).unwrap();
     assert_eq!(

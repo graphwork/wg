@@ -261,7 +261,7 @@ pub fn generate_graph_with_overrides(
                 ),
             )
         };
-        let width = line1.len().max(line2.len());
+        let _width = line1.len().max(line2.len());
 
         let color = if task.paused && use_color {
             paused_color

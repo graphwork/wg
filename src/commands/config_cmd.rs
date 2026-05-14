@@ -1616,7 +1616,7 @@ fn apply_model_routing_updates(
     let mut changed = false;
 
     if !set_models.is_empty() {
-        if set_models.len() % 2 != 0 {
+        if !set_models.len().is_multiple_of(2) {
             anyhow::bail!("--set-model requires pairs of arguments: <role> <model>");
         }
         for pair in set_models.chunks(2) {
@@ -1634,7 +1634,7 @@ fn apply_model_routing_updates(
     }
 
     if !set_providers.is_empty() {
-        if set_providers.len() % 2 != 0 {
+        if !set_providers.len().is_multiple_of(2) {
             anyhow::bail!("--set-provider requires pairs of arguments: <role> <provider>");
         }
         for pair in set_providers.chunks(2) {
@@ -1652,7 +1652,7 @@ fn apply_model_routing_updates(
     }
 
     if !set_endpoints.is_empty() {
-        if set_endpoints.len() % 2 != 0 {
+        if !set_endpoints.len().is_multiple_of(2) {
             anyhow::bail!("--set-endpoint requires pairs of arguments: <role> <endpoint-name>");
         }
         for pair in set_endpoints.chunks(2) {

@@ -877,7 +877,7 @@ fn subprocess_coordinator_loop(
         // `.coordinator-N`) are honored, then layer the supervisor's
         // explicit `exec_override` as the agency-level executor input.
         let supervisor_config = workgraph::config::Config::load_or_default(dir);
-        let chat_task = match workgraph::parser::load_graph(&crate::commands::graph_path(dir)) {
+        let chat_task = match workgraph::parser::load_graph(crate::commands::graph_path(dir)) {
             Ok(g) => g
                 .get_task(&task_id)
                 .cloned()

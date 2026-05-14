@@ -58,7 +58,7 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    workgraph::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     wg_dir
 }
 
@@ -345,7 +345,7 @@ fn test_no_tier_escalation_flag() {
         &["add", "Test task", "--no-place", "--no-tier-escalation"],
     );
 
-    let graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = workgraph::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();
     assert!(
         task.no_tier_escalation,

@@ -57,7 +57,7 @@ fn fresh_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph = WorkGraph::new();
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     wg_dir
 }
 

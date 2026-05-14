@@ -1756,6 +1756,76 @@ pub fn enqueue_recovery_prune(
     queue.enqueue(job)
 }
 
+/// Fix permissions on a file and attempt removal
+/// This provides a fallback strategy for permission-denied errors
+#[cfg(unix)]
+fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
+    // Try to make the file writable
+    if let Ok(metadata) = fs::metadata(file_path) {
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o644); // Read/write for owner, read for others
+
+        fs::set_permissions(file_path, perms)
+            .with_context(|| format!("Failed to fix file permissions for {:?}", file_path))?;
+
+        // Retry removal after permission fix
+        fs::remove_file(file_path).with_context(|| {
+            format!("Failed to remove file {:?} after permission fix", file_path)
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Fix permissions on a directory and its contents, then attempt removal
+/// This provides a fallback strategy for permission-denied errors
+#[cfg(unix)]
+fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
+    if !dir_path.exists() {
+        return Ok(());
+    }
+
+    // Recursively fix permissions
+    fn fix_permissions_recursive(path: &Path) -> Result<()> {
+        if path.is_dir() {
+            // Make directory executable/readable
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755); // rwxr-xr-x
+                let _ = fs::set_permissions(path, perms);
+            }
+
+            // Fix permissions for all entries
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    fix_permissions_recursive(&entry.path())?;
+                }
+            }
+        } else {
+            // Make file writable
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o644); // rw-r--r--
+                let _ = fs::set_permissions(path, perms);
+            }
+        }
+        Ok(())
+    }
+
+    fix_permissions_recursive(dir_path)
+        .with_context(|| format!("Failed to fix directory permissions for {:?}", dir_path))?;
+
+    // Retry removal after permission fix
+    fs::remove_dir_all(dir_path).with_context(|| {
+        format!(
+            "Failed to remove directory {:?} after permission fix",
+            dir_path
+        )
+    })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1918,7 +1988,7 @@ mod tests {
         assert_eq!(count, 1);
 
         // Recovery branch should exist
-        let recovery_branch = format!("recover/agent-3/task-baz");
+        let recovery_branch = "recover/agent-3/task-baz".to_string();
         let output = Command::new("git")
             .args(["branch", "--list", &recovery_branch])
             .current_dir(&project)
@@ -3031,76 +3101,6 @@ mod tests {
         assert_eq!(reaped, 0);
         assert_eq!(freed, 0);
     }
-}
-
-/// Fix permissions on a file and attempt removal
-/// This provides a fallback strategy for permission-denied errors
-#[cfg(unix)]
-fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
-    // Try to make the file writable
-    if let Ok(metadata) = fs::metadata(file_path) {
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o644); // Read/write for owner, read for others
-
-        fs::set_permissions(file_path, perms)
-            .with_context(|| format!("Failed to fix file permissions for {:?}", file_path))?;
-
-        // Retry removal after permission fix
-        fs::remove_file(file_path).with_context(|| {
-            format!("Failed to remove file {:?} after permission fix", file_path)
-        })?;
-    }
-
-    Ok(())
-}
-
-/// Fix permissions on a directory and its contents, then attempt removal
-/// This provides a fallback strategy for permission-denied errors
-#[cfg(unix)]
-fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
-    if !dir_path.exists() {
-        return Ok(());
-    }
-
-    // Recursively fix permissions
-    fn fix_permissions_recursive(path: &Path) -> Result<()> {
-        if path.is_dir() {
-            // Make directory executable/readable
-            if let Ok(metadata) = fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755); // rwxr-xr-x
-                let _ = fs::set_permissions(path, perms);
-            }
-
-            // Fix permissions for all entries
-            if let Ok(entries) = fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    fix_permissions_recursive(&entry.path())?;
-                }
-            }
-        } else {
-            // Make file writable
-            if let Ok(metadata) = fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o644); // rw-r--r--
-                let _ = fs::set_permissions(path, perms);
-            }
-        }
-        Ok(())
-    }
-
-    fix_permissions_recursive(dir_path)
-        .with_context(|| format!("Failed to fix directory permissions for {:?}", dir_path))?;
-
-    // Retry removal after permission fix
-    fs::remove_dir_all(dir_path).with_context(|| {
-        format!(
-            "Failed to remove directory {:?} after permission fix",
-            dir_path
-        )
-    })?;
-
-    Ok(())
 }
 
 /// Fallback implementations for non-Unix systems

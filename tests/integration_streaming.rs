@@ -122,7 +122,7 @@ async fn streaming_text_content_accumulation() {
 
     // Verify accumulated text
     assert_eq!(response.id, "chatcmpl-test1");
-    assert!(response.content.len() >= 1);
+    assert!(!response.content.is_empty());
     let text = match &response.content[0] {
         ContentBlock::Text { text } => text.as_str(),
         other => panic!("Expected Text block, got: {:?}", other),

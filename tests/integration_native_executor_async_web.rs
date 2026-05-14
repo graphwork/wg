@@ -551,7 +551,7 @@ fn subtask_creates_child_and_waits() {
     );
 
     // Reload graph and check
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
 
     // Child task should exist
     let child = graph.nodes().find(|n| match n {
@@ -618,7 +618,7 @@ fn subtask_child_completion_resumes_parent() {
     // 1. Child is Done
     // 2. Parent still has wait_condition that references the child
     // 3. The wait_condition can be satisfied (child status == Done matches)
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
 
     let child = graph.get_task("resume-child").unwrap();
     assert_eq!(child.status, Status::Done, "Child should be Done");

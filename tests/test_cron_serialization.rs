@@ -1,4 +1,3 @@
-use serde_json;
 use workgraph::graph::{Node, PRIORITY_NORMAL, Status, Task};
 
 #[test]

@@ -90,13 +90,12 @@ fn stop_daemon(wg_dir: &Path, env_vars: &[(&str, &str)]) {
     );
     // Kill by PID as belt-and-suspenders
     let state_path = wg_dir.join("service").join("state.json");
-    if let Ok(content) = fs::read_to_string(&state_path) {
-        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(pid) = state["pid"].as_u64() {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-            }
+    if let Ok(content) = fs::read_to_string(&state_path)
+        && let Ok(state) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(pid) = state["pid"].as_u64()
+    {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
         }
     }
 }
@@ -261,10 +260,10 @@ fn read_captured_args(args_file: &Path) -> Vec<String> {
     let start = Instant::now();
     // The args file may take a moment to appear (process spawning is async)
     loop {
-        if let Ok(content) = fs::read_to_string(args_file) {
-            if !content.is_empty() {
-                return content.lines().map(String::from).collect();
-            }
+        if let Ok(content) = fs::read_to_string(args_file)
+            && !content.is_empty()
+        {
+            return content.lines().map(String::from).collect();
         }
         if start.elapsed() > Duration::from_secs(10) {
             panic!(

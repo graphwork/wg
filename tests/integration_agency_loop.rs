@@ -534,21 +534,21 @@ fn test_no_infinite_regress_for_system_tasks() {
     // are excluded from auto-evaluate
     let dominated_tags = ["evaluation", "assignment", "evolution"];
 
-    let eval_tags = vec!["evaluation".to_string(), "agency".to_string()];
+    let eval_tags = ["evaluation".to_string(), "agency".to_string()];
     assert!(
         eval_tags
             .iter()
             .any(|t| dominated_tags.contains(&t.as_str()))
     );
 
-    let evolve_tags = vec!["evolution".to_string(), "agency".to_string()];
+    let evolve_tags = ["evolution".to_string(), "agency".to_string()];
     assert!(
         evolve_tags
             .iter()
             .any(|t| dominated_tags.contains(&t.as_str()))
     );
 
-    let assign_tags = vec!["assignment".to_string(), "agency".to_string()];
+    let assign_tags = ["assignment".to_string(), "agency".to_string()];
     assert!(
         assign_tags
             .iter()

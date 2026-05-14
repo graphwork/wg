@@ -66,7 +66,7 @@ fn graph(wg_dir: &Path) -> workgraph::graph::WorkGraph {
 }
 
 fn task_status(wg_dir: &Path, id: &str) -> Status {
-    graph(wg_dir).get_task(id).unwrap().status.clone()
+    graph(wg_dir).get_task(id).unwrap().status
 }
 
 fn task_triage_count(wg_dir: &Path, id: &str) -> u32 {

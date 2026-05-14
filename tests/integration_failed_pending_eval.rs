@@ -124,7 +124,7 @@ fn test_rescued_field_serializes_round_trips() {
     );
 
     let parsed: Task = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.rescued, true);
+    assert!(parsed.rescued);
     assert_eq!(parsed.meta_eval_attempts, 1);
 
     // Default (false) should NOT appear in JSON (skip_serializing_if)
@@ -147,7 +147,7 @@ fn test_rescued_false_deserializes_from_legacy_row() {
     // Legacy rows without the rescued field should deserialize to rescued=false
     let json = r#"{"id":"t1","title":"Test","status":"done"}"#;
     let task: Task = serde_json::from_str(json).unwrap();
-    assert_eq!(task.rescued, false);
+    assert!(!task.rescued);
     assert_eq!(task.meta_eval_attempts, 0);
 }
 

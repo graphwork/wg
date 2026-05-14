@@ -100,7 +100,7 @@ fn test_requeue_via_cli() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let graph = load_graph(&graph_path(wg_dir)).unwrap();
+    let graph = load_graph(graph_path(wg_dir)).unwrap();
     let task = graph.get_task("task-b").unwrap();
     assert_eq!(task.status, Status::Open);
     assert_eq!(task.triage_count, 1);
@@ -312,7 +312,7 @@ fn test_loop_prevention_fires_after_max_attempts() {
     assert!(stderr.contains("Triage budget exhausted"));
 
     // Verify final triage_count
-    let graph = load_graph(&graph_path(wg_dir)).unwrap();
+    let graph = load_graph(graph_path(wg_dir)).unwrap();
     assert_eq!(graph.get_task("loop-task").unwrap().triage_count, 3);
 }
 

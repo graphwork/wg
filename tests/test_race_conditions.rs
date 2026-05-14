@@ -226,11 +226,11 @@ fn test_concurrent_cleanup_attempts() {
     // - Coordinator tick cleanup
     // - Service restart cleanup
     // - Manual cleanup operations
-    for i in 0..num_agents {
+    for (i, worktree_path) in worktree_paths.iter().take(num_agents).enumerate() {
         let project_clone = Arc::clone(&project_arc);
         let attempts_clone = Arc::clone(&cleanup_attempts);
         let barrier_clone = Arc::clone(&barrier);
-        let worktree_path = worktree_paths[i].clone();
+        let worktree_path = worktree_path.clone();
 
         let handle = thread::spawn(move || {
             // Wait for all threads to be ready
@@ -241,7 +241,7 @@ fn test_concurrent_cleanup_attempts() {
             let branch = format!("wg/{}/{}", agent_id, task_id);
 
             // Attempt cleanup
-            let result = remove_test_worktree(&*project_clone, &worktree_path, &branch);
+            let result = remove_test_worktree(&project_clone, &worktree_path, &branch);
 
             // Track attempt
             {
@@ -440,11 +440,10 @@ fn test_agent_death_cleanup_race() {
     let mut handles: Vec<std::thread::JoinHandle<String>> = Vec::new();
 
     // Simulate agents "dying" (removing metadata/updating registry)
-    for i in 0..num_agents {
+    for (i, (agent_id, _, _)) in agent_setups.iter().take(num_agents).enumerate() {
         let agents_dir = Arc::clone(&agents_dir_arc);
         let registry_path = Arc::clone(&registry_path_arc);
         let barrier = Arc::clone(&barrier);
-        let (agent_id, _, _) = &agent_setups[i];
         let agent_id = agent_id.clone();
 
         let handle = thread::spawn(move || {
@@ -487,12 +486,12 @@ fn test_agent_death_cleanup_race() {
     }
 
     // Simulate cleanup detection threads
-    for i in 0..num_agents {
+    for (i, setup) in agent_setups.iter().take(num_agents).enumerate() {
         let registry_path = Arc::clone(&registry_path_arc);
         let cleanup_results = Arc::clone(&cleanup_results);
         let barrier = Arc::clone(&barrier);
         let project_clone = project.clone();
-        let (agent_id, task_id, worktree_path) = agent_setups[i].clone();
+        let (agent_id, task_id, worktree_path) = setup.clone();
 
         let handle = thread::spawn(move || {
             barrier.wait();
@@ -503,19 +502,15 @@ fn test_agent_death_cleanup_race() {
             // Try to read registry and detect dead agent
             let mut detected_dead = false;
             for _ in 0..20 {
-                if let Ok(content) = fs::read_to_string(&*registry_path) {
-                    if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(agents) = registry.get("agents") {
-                            if let Some(agent) = agents.get(&agent_id) {
-                                if let Some(status) = agent.get("status") {
-                                    if status == "Dead" {
-                                        detected_dead = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if let Ok(content) = fs::read_to_string(&*registry_path)
+                    && let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(agents) = registry.get("agents")
+                    && let Some(agent) = agents.get(&agent_id)
+                    && let Some(status) = agent.get("status")
+                    && status == "Dead"
+                {
+                    detected_dead = true;
+                    break;
                 }
                 thread::sleep(Duration::from_millis(1));
             }
@@ -617,23 +612,21 @@ fn test_service_restart_coordinator_race() {
             let mut cleaned_up = Vec::new();
 
             if let Ok(entries) = fs::read_dir(&worktrees_dir) {
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            let agent_id = path.file_name().unwrap().to_string_lossy();
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let agent_id = path.file_name().unwrap().to_string_lossy();
 
-                            // Find corresponding orphan info
-                            if let Some((_, task_id, _)) = orphan_paths_clone
-                                .iter()
-                                .find(|(id, _, _)| id == &agent_id.as_ref())
-                            {
-                                let branch = format!("wg/{}/{}", agent_id, task_id);
+                        // Find corresponding orphan info
+                        if let Some((_, task_id, _)) = orphan_paths_clone
+                            .iter()
+                            .find(|(id, _, _)| id == agent_id.as_ref())
+                        {
+                            let branch = format!("wg/{}/{}", agent_id, task_id);
 
-                                // Attempt cleanup
-                                let result = remove_test_worktree(&*project_clone, &path, &branch);
-                                cleaned_up.push((agent_id.to_string(), result.is_ok()));
-                            }
+                            // Attempt cleanup
+                            let result = remove_test_worktree(&project_clone, &path, &branch);
+                            cleaned_up.push((agent_id.to_string(), result.is_ok()));
                         }
                     }
                 }
@@ -666,7 +659,7 @@ fn test_service_restart_coordinator_race() {
             // Try to clean each orphan
             for (agent_id, task_id, worktree_path) in orphan_paths_clone {
                 let branch = format!("wg/{}/{}", agent_id, task_id);
-                let result = remove_test_worktree(&*project_clone, &worktree_path, &branch);
+                let result = remove_test_worktree(&project_clone, &worktree_path, &branch);
                 cleaned_up.push((agent_id, result.is_ok()));
             }
 

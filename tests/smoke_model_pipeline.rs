@@ -140,7 +140,7 @@ fn write_model_cache(wg_dir: &Path, model_ids: &[&str]) {
         .map(|id| {
             serde_json::json!({
                 "id": id,
-                "name": id.split('/').last().unwrap_or(id),
+                "name": id.split('/').next_back().unwrap_or(id),
             })
         })
         .collect();

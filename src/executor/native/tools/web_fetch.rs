@@ -402,7 +402,7 @@ enum FetchedBody {
 
 async fn fetch_via_rquest(url: &str, timeout_secs: u64) -> Result<FetchedBody, String> {
     let client = rquest::Client::builder()
-        .impersonate(rquest::Impersonate::Chrome131)
+        .emulation(rquest_util::Emulation::Chrome131)
         .timeout(Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| format!("client build: {}", e))?;

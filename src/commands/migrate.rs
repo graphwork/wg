@@ -152,7 +152,7 @@ pub fn run_chat_rename(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
             // Phase 4: re-key the HashMap so lookups by the NEW id work.
             // We pull each renamed task out by its old key and re-add it,
             // which inserts at the new key (add_node uses node.id()).
-            for (old_id, _new_id) in &id_remap {
+            for old_id in id_remap.keys() {
                 if let Some(node) = graph.take_node(old_id) {
                     graph.add_node(node);
                 }

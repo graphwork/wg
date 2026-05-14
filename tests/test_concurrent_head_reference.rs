@@ -131,7 +131,7 @@ fn test_concurrent_worktree_creation_head_reference() {
             let task_id = format!("task-{}", i);
 
             // Attempt to create worktree
-            let result = create_test_worktree(&*project_clone, &agent_id, &task_id);
+            let result = create_test_worktree(&project_clone, &agent_id, &task_id);
 
             match result {
                 Ok(worktree_path) => {
@@ -169,7 +169,7 @@ fn test_concurrent_worktree_creation_head_reference() {
 
                     // Cleanup
                     let branch = format!("wg/{}/{}", agent_id, task_id);
-                    remove_test_worktree(&*project_clone, &worktree_path, &branch).unwrap();
+                    remove_test_worktree(&project_clone, &worktree_path, &branch).unwrap();
 
                     Ok(())
                 }
@@ -273,13 +273,13 @@ fn test_worktree_creation_with_git_operations_in_progress() {
                 .current_dir(&*project_bg)
                 .output();
 
-            if let Ok(output) = add_result {
-                if output.status.success() {
-                    let _ = Command::new("git")
-                        .args(["commit", "-m", &format!("Background commit {}", i)])
-                        .current_dir(&*project_bg)
-                        .output();
-                }
+            if let Ok(output) = add_result
+                && output.status.success()
+            {
+                let _ = Command::new("git")
+                    .args(["commit", "-m", &format!("Background commit {}", i)])
+                    .current_dir(&*project_bg)
+                    .output();
             }
 
             thread::sleep(std::time::Duration::from_millis(10));
@@ -297,7 +297,7 @@ fn test_worktree_creation_with_git_operations_in_progress() {
             let agent_id = format!("concurrent-agent-{}", i);
             let task_id = format!("concurrent-task-{}", i);
 
-            let result = create_test_worktree(&*project_clone, &agent_id, &task_id);
+            let result = create_test_worktree(&project_clone, &agent_id, &task_id);
 
             match result {
                 Ok(worktree_path) => {
@@ -321,7 +321,7 @@ fn test_worktree_creation_with_git_operations_in_progress() {
 
                     // Cleanup
                     let branch = format!("wg/{}/{}", agent_id, task_id);
-                    remove_test_worktree(&*project_clone, &worktree_path, &branch).unwrap();
+                    remove_test_worktree(&project_clone, &worktree_path, &branch).unwrap();
                     Ok(())
                 }
                 Err(e) => Err(format!("Agent {}: {}", i, e)),

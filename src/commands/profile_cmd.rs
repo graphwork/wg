@@ -550,7 +550,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
                 items.push(serde_json::json!({
                     "name": p.name,
                     "kind": "legacy-builtin",
-                    "active": active.is_none() && false,
+                    "active": false,
                     "description": p.description,
                 }));
             }

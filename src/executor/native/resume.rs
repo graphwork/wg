@@ -2386,7 +2386,7 @@ mod tests {
         // static_tokens ≈ (4000 + 4 + 200 + 40) / 4 ≈ 1061
         // total ≈ 1061 + 2048 = 3109
         assert!(
-            overhead >= 2048 + 1000 && overhead <= 2048 + 1100,
+            (2048 + 1000..=2048 + 1100).contains(&overhead),
             "overhead should roughly sum system + tools + max_tokens, got {}",
             overhead
         );

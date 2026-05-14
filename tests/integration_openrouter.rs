@@ -258,7 +258,7 @@ fn test_openrouter_minimax_tool_loop() {
         .collect();
 
     assert!(
-        assistant_entries.len() >= 1,
+        !assistant_entries.is_empty(),
         "Should have at least 1 assistant turn, got {}",
         assistant_entries.len()
     );
@@ -323,7 +323,7 @@ fn test_openrouter_minimax_tool_loop() {
         .collect();
 
     assert!(
-        tool_result_blocks.len() >= 1,
+        !tool_result_blocks.is_empty(),
         "Should have at least 1 tool_result block in user messages, got {}",
         tool_result_blocks.len()
     );
@@ -486,11 +486,11 @@ fn test_openrouter_bash_tool_execution() {
         let output = wg_cmd(&wg_dir, &["show", "bash-tool-test", "--json"]);
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if val.get("status").and_then(|s| s.as_str()) == Some("done") {
-                    completed = true;
-                    break;
-                }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout)
+                && val.get("status").and_then(|s| s.as_str()) == Some("done")
+            {
+                completed = true;
+                break;
             }
         }
         std::thread::sleep(Duration::from_secs(5));
@@ -574,11 +574,11 @@ fn test_openrouter_journal_completeness() {
         let output = wg_cmd(&wg_dir, &["show", "journal-test", "--json"]);
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if val.get("status").and_then(|s| s.as_str()) == Some("done") {
-                    completed = true;
-                    break;
-                }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout)
+                && val.get("status").and_then(|s| s.as_str()) == Some("done")
+            {
+                completed = true;
+                break;
             }
         }
         std::thread::sleep(Duration::from_secs(5));

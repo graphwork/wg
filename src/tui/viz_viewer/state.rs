@@ -3563,7 +3563,7 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                                     .get("file_path")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("?");
-                                Some(format!("{}", path))
+                                Some(path.to_string())
                             }
                             "Grep" | "Glob" => input
                                 .get("pattern")
@@ -9657,10 +9657,7 @@ impl VizApp {
         if self.iteration_archives.is_empty() {
             return false;
         }
-        match self.viewing_iteration {
-            None => false, // already on live
-            Some(_) => true,
-        }
+        self.viewing_iteration.is_some()
     }
 
     /// Build the informative center label shown in the Detail tab iteration
@@ -16395,6 +16392,7 @@ impl VizApp {
     /// entry carries its origin (`built-in default` / `global` / `local`)
     /// so the Settings tab can show source per key without requiring the
     /// user to drop to `wg config --list`.
+    #[allow(clippy::vec_init_then_push)]
     pub fn load_settings_panel(&mut self) {
         let (config, sources) =
             match workgraph::config::Config::load_with_sources(&self.workgraph_dir) {
@@ -26161,8 +26159,8 @@ mod agent_stream_tests {
 
     #[test]
     fn test_log_view_renders_agent_stream_events_for_inprogress_task() {
+        use crate::commands::viz::LayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
-        use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
         use workgraph::graph::{Node, Status, WorkGraph};
         use workgraph::parser::save_graph;
@@ -26354,7 +26352,7 @@ mod chat_pty_executor_resolution_tests {
     use crate::commands::service::CoordinatorState;
 
     fn write_state(dir: &std::path::Path, cid: u32, executor: Option<&str>, model: Option<&str>) {
-        let mut state = CoordinatorState {
+        let state = CoordinatorState {
             executor_override: executor.map(String::from),
             model_override: model.map(String::from),
             ..CoordinatorState::default()

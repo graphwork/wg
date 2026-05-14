@@ -51,7 +51,7 @@ fn setup_graph(tasks: &[(&str, &str)]) -> TempDir {
     for &(id, title) in tasks {
         graph.add_node(Node::Task(make_task(id, title)));
     }
-    save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
     tmp
 }
 
@@ -141,7 +141,7 @@ fn test_placement_edit_applied_to_graph() {
     );
 
     // Verify graph was updated
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert!(
         task.after.contains(&"dep-a".to_string()),
@@ -173,7 +173,7 @@ fn test_placement_noop_no_changes() {
     let wg_dir = tmp.path().join(".wg");
 
     // Capture graph state before
-    let graph_before = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph_before = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let after_before = graph_before.get_task("my-task").unwrap().after.clone();
 
     let output_dir = tmp.path().join("agent-output");
@@ -196,7 +196,7 @@ fn test_placement_noop_no_changes() {
     );
 
     // Verify graph was NOT changed
-    let graph_after = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph_after = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let after_after = graph_after.get_task("my-task").unwrap().after.clone();
     assert_eq!(
         after_before, after_after,
@@ -296,7 +296,7 @@ fn test_placement_multiline_last_line_command() {
         stderr
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert!(
         task.after.contains(&"prereq".to_string()),
@@ -347,7 +347,7 @@ fn test_placement_comma_separated_deps() {
         stderr
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert_eq!(
         task.after,
@@ -383,7 +383,7 @@ fn test_placement_backtick_wrapped_command() {
         stderr
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert!(
         task.after.contains(&"foundation".to_string()),
@@ -436,7 +436,7 @@ fn test_placement_trailing_whitespace() {
         stderr
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert!(task.after.contains(&"dep".to_string()));
 }
@@ -461,7 +461,7 @@ fn test_placement_blocked_by_alias() {
         stderr
     );
 
-    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("my-task").unwrap();
     assert!(
         task.after.contains(&"blocker".to_string()),

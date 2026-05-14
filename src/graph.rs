@@ -357,7 +357,6 @@ pub struct Task {
     pub description: Option<String>,
     #[serde(default)]
     pub status: Status,
-    #[serde(default = "default_priority")]
     pub priority: Priority,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned: Option<String>,
@@ -1073,7 +1072,7 @@ fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
 
     let agent_id = agent_dir.file_name().and_then(|name| name.to_str())?;
     let workgraph_dir = infer_workgraph_dir(output_log_path)?;
-    let graph = crate::parser::load_graph(&workgraph_dir.join("graph.jsonl")).ok()?;
+    let graph = crate::parser::load_graph(workgraph_dir.join("graph.jsonl")).ok()?;
     graph
         .tasks()
         .find(|task| task.assigned.as_deref() == Some(agent_id))
@@ -1254,10 +1253,11 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
     }
 }
 
-/// Process-wide cache for `parse_token_usage_live`, keyed by output-log path
-/// + mtime. The TUI's `live_token_usage` and `agency_token_usage` maps
-/// previously walked + parsed every active agent's `output.log` (and every
-/// archived `log/agents/<task>/<run>/output.txt`) on every fs-change tick.
+/// Process-wide cache for `parse_token_usage_live`, keyed by
+/// `(output-log path, mtime)`. The TUI's `live_token_usage` and
+/// `agency_token_usage` maps previously walked and parsed every active
+/// agent's `output.log` (and every archived
+/// `log/agents/<task>/<run>/output.txt`) on every fs-change tick.
 /// `output.log` is appended to many times per second by streaming agents,
 /// but the parse result only changes when the file mtime advances — so
 /// memoizing on (path, mtime) is exact, not approximate.
@@ -1280,11 +1280,7 @@ pub fn parse_token_usage_live_cached(output_log_path: &std::path::Path) -> Optio
     let mtime = std::fs::metadata(output_log_path)
         .and_then(|m| m.modified())
         .ok();
-    if mtime.is_none() {
-        // File doesn't exist — caller treats this as "no usage", and we
-        // intentionally don't cache absent files (they may appear later).
-        return None;
-    }
+    mtime?;
     let key: TokenUsageCacheKey = (output_log_path.to_path_buf(), mtime);
 
     if let Ok(cache) = token_usage_cache().lock()
@@ -1402,10 +1398,6 @@ pub fn format_tokens(tokens: u64) -> String {
 
 fn default_visibility() -> String {
     "internal".to_string()
-}
-
-fn default_priority() -> Priority {
-    PRIORITY_DEFAULT
 }
 
 /// Deserialize loops_to accepting both old string format and array format.
@@ -3620,7 +3612,7 @@ cache_read_discount = 0.5
         task.assigned = Some("agent-live-codex".to_string());
         task.model = Some("codex:gpt-5.5".to_string());
         graph.add_node(Node::Task(task));
-        crate::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+        crate::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
         let log_path = agent_dir.join("output.log");
         std::fs::write(

@@ -4295,6 +4295,7 @@ fn draw_chat_booting_placeholder(frame: &mut Frame, area: Rect, app: &VizApp, ci
 
 /// Render the "chat agent died" error panel inside `area`.
 /// Shown instead of the normal chat content when the PTY process has exited.
+#[allow(clippy::vec_init_then_push)]
 fn draw_chat_agent_death_panel(
     frame: &mut Frame,
     area: Rect,
@@ -6988,7 +6989,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 };
                 let label_w = preset.label.len();
                 let pad_w = if label_w < 16 { 16 - label_w } else { 1 };
-                let pad: String = std::iter::repeat(' ').take(pad_w).collect();
+                let pad: String = std::iter::repeat_n(' ', pad_w).collect();
                 let row_idx = lines.len();
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {}{}{}", bullet, preset.label, pad), style),

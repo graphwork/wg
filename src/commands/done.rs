@@ -1455,9 +1455,7 @@ fn run_inner(
     // smoke scenario it owns is failing. Refuse the agent escape hatch unless
     // a separate override is set, so an agent can't smother a real regression
     // by adding `--skip-smoke` to its `wg done`.
-    if let Err(e) = run_smoke_gate(dir, id, full_smoke, skip_smoke, is_agent) {
-        return Err(e);
-    }
+    run_smoke_gate(dir, id, full_smoke, skip_smoke, is_agent)?;
 
     // Auto-defer verify when the task has been decomposed into subtasks.
     // When an agent decomposes a parent task into children (via `wg add --after parent`),

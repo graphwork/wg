@@ -72,48 +72,46 @@ fn start_capturing_stub_server() -> (String, Arc<Mutex<Vec<String>>>) {
     let captured_clone = captured.clone();
 
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            if let Ok(mut s) = stream {
-                let captured_inner = captured_clone.clone();
-                std::thread::spawn(move || {
-                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut buf = vec![0u8; 16384];
-                    let n = s.read(&mut buf).unwrap_or(0);
-                    if n > 0 {
-                        let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                        captured_inner.lock().unwrap().push(req);
+        for mut s in listener.incoming().flatten() {
+            let captured_inner = captured_clone.clone();
+            std::thread::spawn(move || {
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = vec![0u8; 16384];
+                let n = s.read(&mut buf).unwrap_or(0);
+                if n > 0 {
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    captured_inner.lock().unwrap().push(req);
+                }
+                // Send a minimal OAI-compat Chat Completions reply.
+                let body = serde_json::json!({
+                    "id": "chatcmpl-stub",
+                    "object": "chat.completion",
+                    "created": 1714155600u64,
+                    "model": "qwen3-coder",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "stub-reply"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2
                     }
-                    // Send a minimal OAI-compat Chat Completions reply.
-                    let body = serde_json::json!({
-                        "id": "chatcmpl-stub",
-                        "object": "chat.completion",
-                        "created": 1714155600u64,
-                        "model": "qwen3-coder",
-                        "choices": [{
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": "stub-reply"
-                            },
-                            "finish_reason": "stop"
-                        }],
-                        "usage": {
-                            "prompt_tokens": 1,
-                            "completion_tokens": 1,
-                            "total_tokens": 2
-                        }
-                    })
-                    .to_string();
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = s.write_all(resp.as_bytes());
-                    let _ = s.flush();
-                });
-            }
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = s.write_all(resp.as_bytes());
+                let _ = s.flush();
+            });
         }
     });
 

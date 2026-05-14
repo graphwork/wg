@@ -749,9 +749,6 @@ struct VizJson {
     /// Rendered ASCII (may contain ANSI escapes).
     #[serde(default)]
     text: String,
-    /// task_id → line index.
-    #[serde(default)]
-    node_lines: BTreeMap<String, usize>,
     /// per-character edge cells.
     #[serde(default)]
     char_edges: Vec<CharEdge>,
@@ -841,10 +838,10 @@ fn strip_ansi(s: &str) -> String {
             // Push the next valid UTF-8 character (avoid splitting multibyte chars).
             let ch_start = i;
             let first = bytes[i];
-            let len = if first < 0x80 {
+            // ASCII (<0x80) or stray continuation byte (<0xc0, shouldn't
+            // happen for valid UTF-8) — treat both as a 1-byte step.
+            let len = if first < 0xc0 {
                 1
-            } else if first < 0xc0 {
-                1 // shouldn't happen for valid UTF-8 — treat as 1
             } else if first < 0xe0 {
                 2
             } else if first < 0xf0 {
@@ -988,7 +985,7 @@ fn render_viz_html(
                     {
                         char_start -= 2;
                     }
-                    let decorator_start = if char_end > id_end { id_end } else { id_end };
+                    let decorator_start = id_end;
                     task_ranges.push((char_start, decorator_start, char_end, id, st, paused));
                     if let Some(time) = find_time_suffix_after(&line_chars, char_end) {
                         time_ranges.push(time);
@@ -1442,7 +1439,7 @@ fn render_messages_section(bundle: Option<&TaskMessages>) -> String {
             ""
         };
         s.push_str(&format!(
-            "<li class=\"msg-row {role} {status_row}{prio}\">\
+            "<li class=\"msg-row {role} msg-row-{status}{prio}\">\
              <div class=\"msg-head\">\
              <span class=\"msg-id\">#{id}</span>\
              <span class=\"msg-sender\">{sender}</span>\
@@ -1452,7 +1449,7 @@ fn render_messages_section(bundle: Option<&TaskMessages>) -> String {
              <pre class=\"msg-body\">{body}</pre>\
              </li>\n",
             role = role_cls,
-            status_row = format!("msg-row-{}", msg.status),
+            status = msg.status,
             prio = priority_cls,
             id = msg.id,
             sender = escape_html(&msg.sender),
@@ -2241,8 +2238,8 @@ fn render_task_page(
                     .map(|t| t.status)
                     .unwrap_or(Status::Open);
                 deps_html.push_str(&format!(
-                    "<li><a href=\"{href}\"><span class=\"badge {cls}\">{st}</span> <code>{id}</code></a></li>",
-                    href = format!("./{}.html", url_encode_id(dep)),
+                    "<li><a href=\"./{href_id}.html\"><span class=\"badge {cls}\">{st}</span> <code>{id}</code></a></li>",
+                    href_id = url_encode_id(dep),
                     cls = status_class(dep_status),
                     st = dep_status,
                     id = escape_html(dep),
@@ -2280,8 +2277,8 @@ fn render_task_page(
             if included_ids.contains(d) {
                 let dep_status = graph.get_task(d).map(|t| t.status).unwrap_or(Status::Open);
                 dependents_html.push_str(&format!(
-                    "<li><a href=\"{href}\"><span class=\"badge {cls}\">{st}</span> <code>{id}</code></a></li>",
-                    href = format!("./{}.html", url_encode_id(d)),
+                    "<li><a href=\"./{href_id}.html\"><span class=\"badge {cls}\">{st}</span> <code>{id}</code></a></li>",
+                    href_id = url_encode_id(d),
                     cls = status_class(dep_status),
                     st = dep_status,
                     id = escape_html(d),
@@ -2657,6 +2654,19 @@ fn render_chat_hidden_notice(visibility: &str) -> String {
          </section>\n",
         escape_html(visibility),
     )
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for ChatRender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChatRender::None => write!(f, "ChatRender::None"),
+            ChatRender::Render(r) => write!(f, "ChatRender::Render({r:?})"),
+            ChatRender::HiddenByVisibility(v) => {
+                write!(f, "ChatRender::HiddenByVisibility({v:?})")
+            }
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -3349,18 +3359,5 @@ mod tests {
             inline.contains("has-unread-msg"),
             "expected unread class for fresh user message: {inline}"
         );
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for ChatRender {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChatRender::None => write!(f, "ChatRender::None"),
-            ChatRender::Render(r) => write!(f, "ChatRender::Render({r:?})"),
-            ChatRender::HiddenByVisibility(v) => {
-                write!(f, "ChatRender::HiddenByVisibility({v:?})")
-            }
-        }
     }
 }

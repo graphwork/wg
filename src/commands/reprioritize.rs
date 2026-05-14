@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::graph::{
-    PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW,
-};
+use workgraph::graph::PRIORITY_DEFAULT;
 use workgraph::parser::modify_graph;
 
 use super::add::parse_priority;
 
 #[cfg(test)]
 use super::graph_path;
+#[cfg(test)]
+use workgraph::graph::{PRIORITY_CRITICAL, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW};
 #[cfg(test)]
 use workgraph::parser::load_graph;
 

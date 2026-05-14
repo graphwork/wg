@@ -28,20 +28,16 @@ const KEYRING_SERVICE: &str = "wg";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum Backend {
     /// OS native credential store (macOS Keychain, secret-service, etc.) with
     /// automatic fallback to the file keystore when unreachable.
+    #[default]
     Keyring,
     /// Explicit file keystore at `~/.wg/keystore/<name>` (0600 / 0700 perms).
     Keystore,
     /// Plaintext file at `~/.wg/secrets/<name>` (requires allow_plaintext=true).
     Plaintext,
-}
-
-impl Default for Backend {
-    fn default() -> Self {
-        Self::Keyring
-    }
 }
 
 impl std::fmt::Display for Backend {

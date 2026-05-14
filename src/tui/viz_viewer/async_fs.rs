@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn slow_op_indicator_set_when_threshold_exceeded() {
-        let mut afs = AsyncFs::new();
+        let afs = AsyncFs::new();
         // Synthetic slow op via the internal hook.
         afs.note_op("synthetic", Duration::from_millis(800));
         let ind = afs.slow_disk_indicator();

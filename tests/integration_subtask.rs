@@ -98,7 +98,7 @@ fn subtask_creates_child_and_parks_parent() {
         stdout
     );
 
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
 
     let child = graph.get_task("research-something").unwrap();
     assert_eq!(child.status, Status::Open);
@@ -187,7 +187,7 @@ fn subtask_child_does_not_depend_on_parent() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let child = graph.get_task("quick-research").unwrap();
 
     assert!(
@@ -224,7 +224,7 @@ fn subtask_with_explicit_after() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+    let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let child = graph.get_task("subtask-with-dep").unwrap();
 
     assert!(child.after.contains(&"dep-task".to_string()));
@@ -275,12 +275,11 @@ fn subtask_coordinator_resumes_parent_on_child_done() {
                 WaitSpec::All(c) | WaitSpec::Any(c) => c,
             };
             for cond in conditions {
-                if let WaitCondition::TaskStatus { task_id, status } = cond {
-                    if let Some(dep) = graph.get_task(task_id) {
-                        if dep.status == *status {
-                            did_change = true;
-                        }
-                    }
+                if let WaitCondition::TaskStatus { task_id, status } = cond
+                    && let Some(dep) = graph.get_task(task_id)
+                    && dep.status == *status
+                {
+                    did_change = true;
                 }
             }
         }
@@ -334,12 +333,11 @@ fn subtask_coordinator_resumes_parent_on_child_failed() {
                 _ => panic!("Expected Any"),
             };
             for cond in conditions {
-                if let WaitCondition::TaskStatus { task_id, status } = cond {
-                    if let Some(dep) = graph.get_task(task_id) {
-                        if dep.status == *status {
-                            did_change = true;
-                        }
-                    }
+                if let WaitCondition::TaskStatus { task_id, status } = cond
+                    && let Some(dep) = graph.get_task(task_id)
+                    && dep.status == *status
+                {
+                    did_change = true;
                 }
             }
         }

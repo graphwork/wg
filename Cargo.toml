@@ -11,6 +11,60 @@ homepage = "https://github.com/graphwork/wg"
 name = "wg"
 path = "src/main.rs"
 
+# Project-wide lint policy. Applies to lib, bin, and integration tests (so the
+# crate-local `#![allow(...)]` blocks in lib.rs / main.rs don't have to be
+# duplicated into every tests/*.rs).
+#
+# Most of these were added when CI's toolchain (`dtolnay/rust-toolchain@stable`)
+# rolled from 1.93 to 1.95 and a fresh batch of lints fired against existing
+# code. Where the lint is style-preference rather than a correctness issue, we
+# allow crate-wide rather than churn every site. Genuinely incorrect code
+# (overly_complex_bool_expr) is left at its default `deny` and fixed instead.
+[lints.rust]
+dead_code = "allow"
+unused_assignments = "allow"
+
+[lints.clippy]
+# Carried over from the lib.rs/main.rs blocks (1.93-era lint additions).
+while_let_loop = "allow"
+manual_div_ceil = "allow"
+manual_checked_ops = "allow"
+useless_conversion = "allow"
+unnecessary_sort_by = "allow"
+collapsible_match = "allow"
+collapsible_if = "allow"
+collapsible_else_if = "allow"
+# Added for 1.95.
+doc_lazy_continuation = "allow"
+doc_overindented_list_items = "allow"
+empty_line_after_doc_comments = "allow"
+field_reassign_with_default = "allow"
+too_many_arguments = "allow"
+if_same_then_else = "allow"
+large_enum_variant = "allow"
+enum_variant_names = "allow"
+type_complexity = "allow"
+# More 1.95-era style preferences (high-volume noise; not correctness issues).
+needless_borrows_for_generic_args = "allow"
+vec_init_then_push = "allow"
+useless_format = "allow"
+useless_vec = "allow"
+clone_on_copy = "allow"
+nonminimal_bool = "allow"
+iter_cloned_collect = "allow"
+manual_range_contains = "allow"
+manual_str_repeat = "allow"
+manual_repeat_n = "allow"
+cloned_ref_to_slice_refs = "allow"
+let_unit_value = "allow"
+needless_return = "allow"
+assertions_on_constants = "allow"
+absurd_extreme_comparisons = "allow"
+module_inception = "allow"
+items_after_test_module = "allow"
+unnecessary_filter_map = "allow"
+unnecessary_get_then_check = "allow"
+
 [features]
 default = ["matrix-lite"]
 matrix = ["dep:matrix-sdk"]
@@ -63,9 +117,12 @@ cron = "0.12"
 log = "0.4"
 env_logger = "0.11"
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
-# rquest 5.x is yanked on crates.io; 3.0.0 is the newest non-yanked release.
-# It provides built-in Chrome impersonation, so no rquest-util shim is needed.
-rquest = { version = "3.0.0", features = ["json", "gzip", "brotli", "deflate", "zstd"] }
+# Upstream yanked every rquest release on crates.io after renaming the crate
+# to `wreq`. Pin via git to the v3.0.6 tag (last release that still publishes
+# under the `rquest` name). The 3.x line moved browser emulation out of rquest
+# itself into a sibling `rquest-util` crate, so we pull that in too.
+rquest = { git = "https://github.com/0x676e67/wreq.git", tag = "v3.0.6", features = ["json", "gzip", "brotli", "deflate", "zstd"] }
+rquest-util = { version = "2.2.1", features = ["emulation"] }
 
 # Optional Matrix integration (requires sqlite3)
 matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite"], optional = true }
@@ -105,3 +162,10 @@ tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
 workgraph = { path = ".", features = ["test-support"] }
+
+# Force rquest-util's transitive rquest dep through the same git source we use
+# directly. Without this, cargo tries to resolve rquest-util's `rquest =
+# ">=3.0.5"` requirement against crates.io, where every matching version has
+# been yanked by upstream.
+[patch.crates-io]
+rquest = { git = "https://github.com/0x676e67/wreq.git", tag = "v3.0.6" }

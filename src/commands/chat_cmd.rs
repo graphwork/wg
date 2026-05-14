@@ -290,7 +290,7 @@ fn run_create_direct(
 pub fn run_list(dir: &Path, json: bool) -> Result<()> {
     migrate_existing_chat_tasks(dir)?;
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
 
     let daemon_running = service_is_running(dir);
     let supervised = supervised_chat_ids(dir);
@@ -335,7 +335,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<6}  {:<14}  {:<24}  {}", "ID", "STATUS", "TASK", "TITLE");
+    println!("{:<6}  {:<14}  {:<24}  TITLE", "ID", "STATUS", "TASK");
     for (cid, t, s) in rows {
         let suffix = if matches!(s, ChatRuntimeStatus::Dormant) && !daemon_running {
             " — service stopped"
@@ -362,7 +362,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
 pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
     migrate_existing_chat_tasks(dir)?;
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
 
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
@@ -425,7 +425,7 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
 /// queues until the daemon (re)starts.
 pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 
@@ -467,7 +467,7 @@ pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Resul
 /// Requires the daemon (the supervisor owns the handler).
 pub fn run_stop(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     if !service_is_running(dir) {
@@ -485,7 +485,7 @@ pub fn run_stop(dir: &Path, reference: &str, json: bool) -> Result<()> {
 /// Requires the daemon. Errors clearly when down.
 pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     if !service_is_running(dir) {
@@ -541,7 +541,7 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
 /// chats can still be inspected; their dirs are moved to .archive/).
 pub fn run_archive(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     let result = if service_is_running(dir) {
@@ -600,7 +600,7 @@ fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
 /// `wg chat delete` — abandon the graph task and remove the chat dir.
 pub fn run_delete(dir: &Path, reference: &str, yes: bool, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 
@@ -685,7 +685,7 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
 ///      enqueue messages.
 pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        workgraph::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 

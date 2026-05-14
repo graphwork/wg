@@ -64,7 +64,7 @@ fn setup_env(tmp: &TempDir) -> (PathBuf, PathBuf) {
 
     // Create minimal graph.jsonl
     let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    workgraph::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
 
     (fake_home, wg_dir)
 }
