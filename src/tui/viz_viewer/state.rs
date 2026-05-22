@@ -1212,7 +1212,7 @@ pub struct LauncherState {
     /// True between Enter-to-launch and the IPC roundtrip completing.
     /// Closes the input gate (no double-submit, no field edits) and
     /// keeps the pane visible so we don't briefly fall back to the
-    /// previously-active chat while `wg service create-coordinator`
+    /// previously-active chat while `wg chat create --json`
     /// runs on the worker thread. Cleared in `drain_commands` —
     /// success drops the launcher entirely; failure resets this flag
     /// so the user can fix their selection and retry.
@@ -5227,6 +5227,10 @@ pub struct VizApp {
     /// Ordered list of coordinator IDs shown as tabs. This is ephemeral TUI
     /// state — closing a tab removes it here without touching the graph task.
     pub active_tabs: Vec<u32>,
+    /// Freshly-created chat whose focus is protected until a graph refresh
+    /// observes it. This covers the create-chat race where IPC returns the new
+    /// cid before the TUI's cached graph/tab data has caught up.
+    pending_new_chat_focus: Option<u32>,
     /// Coordinator IDs the user explicitly closed this session.
     /// Prevents closed tabs from reappearing on graph refresh.
     closed_tabs: std::collections::HashSet<u32>,
@@ -5780,6 +5784,7 @@ impl VizApp {
             },
             active_coordinator_id: 0,
             active_tabs: Vec::new(),
+            pending_new_chat_focus: None,
             closed_tabs: std::collections::HashSet::new(),
             coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
@@ -10563,6 +10568,7 @@ impl VizApp {
             },
             active_coordinator_id: 0,
             active_tabs: Vec::new(),
+            pending_new_chat_focus: None,
             closed_tabs: std::collections::HashSet::new(),
             coordinator_chats: HashMap::new(),
             chat: ChatState::default(),
@@ -11012,6 +11018,30 @@ impl VizApp {
         }
     }
 
+    fn parse_first_json_value(output: &str) -> Option<serde_json::Value> {
+        for (start, _) in output.match_indices('{') {
+            let mut stream = serde_json::Deserializer::from_str(&output[start..])
+                .into_iter::<serde_json::Value>();
+            if let Some(Ok(value)) = stream.next() {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn parse_created_coordinator_id(output: &str) -> Option<u32> {
+        let data = Self::parse_first_json_value(output)?;
+        data.get("coordinator_id")
+            .or_else(|| data.get("chat_id"))
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok())
+            .or_else(|| {
+                data.get("task_id")
+                    .and_then(|value| value.as_str())
+                    .and_then(workgraph::chat_id::parse_chat_task_id)
+            })
+    }
+
     /// Drain any completed background commands and apply their effects.
     /// Returns `true` if any commands were processed.
     pub fn drain_commands(&mut self) -> bool {
@@ -11110,31 +11140,10 @@ impl VizApp {
                         // and new-chat-ready — fix-tui-new symptom 2.
                         self.launcher = None;
                         self.input_mode = InputMode::Normal;
-                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output)
-                        {
-                            if let Some(cid) = data["coordinator_id"].as_u64() {
-                                let cid = cid as u32;
-                                self.force_refresh();
-                                // Eagerly record the new tab BEFORE
-                                // switching focus. Without this, a
-                                // subsequent `sync_active_tabs_from_graph`
-                                // — fired by the trailing force_refresh
-                                // below or any later refresh — sees
-                                // `active_coordinator_id` missing from
-                                // `active_tabs` and (pre-fix) flipped
-                                // focus back to `active_tabs[0]`, the
-                                // previous chat. fix-new-chat-4.
-                                if !self.active_tabs.contains(&cid) {
-                                    self.active_tabs.push(cid);
-                                }
-                                self.closed_tabs.remove(&cid);
-                                self.switch_coordinator(cid);
-                                self.right_panel_tab = RightPanelTab::Chat;
-                                self.push_toast(
-                                    format!("Chat {} created", cid),
-                                    ToastSeverity::Info,
-                                );
-                            }
+                        if let Some(cid) = Self::parse_created_coordinator_id(&result.output) {
+                            self.force_refresh();
+                            self.focus_newly_created_chat(cid);
+                            self.push_toast(format!("Chat {} created", cid), ToastSeverity::Info);
                         } else {
                             self.push_toast("New chat created".to_string(), ToastSeverity::Info);
                         }
@@ -12841,11 +12850,7 @@ impl VizApp {
             );
         }
         // Save TUI focus state.
-        let open_tabs: Vec<String> = self
-            .list_coordinator_ids_and_labels()
-            .into_iter()
-            .map(|(_, label)| label)
-            .collect();
+        let open_tabs = self.open_tab_labels_for_persistence();
         save_tui_state(
             &self.workgraph_dir,
             self.active_coordinator_id,
@@ -12857,17 +12862,33 @@ impl VizApp {
     /// Persist the current tab list and active tab to tui-state.json.
     /// Best-effort: failure logs a warning but doesn't block operation.
     pub fn persist_tab_state(&self) {
-        let open_tabs: Vec<String> = self
-            .list_coordinator_ids_and_labels()
-            .into_iter()
-            .map(|(_, label)| label)
-            .collect();
+        let open_tabs = self.open_tab_labels_for_persistence();
         save_tui_state(
             &self.workgraph_dir,
             self.active_coordinator_id,
             &self.right_panel_tab,
             &open_tabs,
         );
+    }
+
+    fn open_tab_labels_for_persistence(&self) -> Vec<String> {
+        if self.active_tabs.is_empty() {
+            return self
+                .list_coordinator_ids_and_labels()
+                .into_iter()
+                .map(|(_, label)| label)
+                .collect();
+        }
+        self.active_tabs
+            .iter()
+            .filter(|&&id| !self.closed_tabs.contains(&id))
+            .map(|&id| {
+                self.cached_coordinator_id_set
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| workgraph::chat_id::format_chat_task_id(id))
+            })
+            .collect()
     }
 
     /// Load the next page of older chat messages for the active coordinator.
@@ -13612,9 +13633,36 @@ impl VizApp {
         }
     }
 
+    /// Focus a chat created by the TUI launcher immediately after the IPC
+    /// success result is observed. The graph and cached tab metadata can lag
+    /// this result by one or more refresh ticks, so this eagerly seeds every
+    /// focus surface that the chat tab renderer and key router consult.
+    fn focus_newly_created_chat(&mut self, cid: u32) {
+        self.pending_new_chat_focus = Some(cid);
+        self.closed_tabs.remove(&cid);
+        if !self.active_tabs.contains(&cid) {
+            self.active_tabs.push(cid);
+        }
+        self.cached_coordinator_id_set
+            .entry(cid)
+            .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
+        self.rebuild_active_tab_entries_from_cache();
+
+        self.right_panel_tab = RightPanelTab::Chat;
+        self.switch_coordinator(cid);
+        self.focused_panel = FocusedPanel::RightPanel;
+        self.rebuild_active_tab_entries_from_cache();
+    }
+
     /// Switch to a different coordinator session.
     /// Saves the current chat state to the coordinator_chats map and loads the target.
     pub fn switch_coordinator(&mut self, target_id: u32) {
+        if self
+            .pending_new_chat_focus
+            .is_some_and(|pending| pending != target_id)
+        {
+            self.pending_new_chat_focus = None;
+        }
         if target_id == self.active_coordinator_id {
             return;
         }
@@ -14581,7 +14629,11 @@ impl VizApp {
             return;
         }
 
-        let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
+        let mut args = vec![
+            "chat".to_string(),
+            "create".to_string(),
+            "--json".to_string(),
+        ];
 
         if !name.is_empty() {
             args.push("--name".to_string());
@@ -14637,7 +14689,11 @@ impl VizApp {
 
     /// Create a coordinator by name (used for auto-creation on first-use).
     pub fn create_coordinator(&mut self, name: Option<String>) {
-        let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
+        let mut args = vec![
+            "chat".to_string(),
+            "create".to_string(),
+            "--json".to_string(),
+        ];
         if let Some(n) = name {
             let name_trimmed = n.trim().to_string();
             if !name_trimmed.is_empty() {
@@ -15117,10 +15173,17 @@ impl VizApp {
     /// the 2 MB+ `graph.jsonl` on every frame (the original 55 % CPU bug).
     pub fn refresh_chat_tab_caches(&mut self, graph: &workgraph::graph::WorkGraph) {
         let coordinator_entries = Self::list_coordinator_ids_and_labels_from_graph(graph);
+        let pending_seen_in_graph = self
+            .pending_new_chat_focus
+            .is_some_and(|pending| coordinator_entries.iter().any(|(id, _)| *id == pending));
         self.cached_coordinator_id_set = coordinator_entries
             .iter()
             .map(|(id, label)| (*id, label.clone()))
             .collect();
+        self.protect_pending_new_chat_focus_in_cache();
+        if pending_seen_in_graph {
+            self.pending_new_chat_focus = None;
+        }
         self.rebuild_active_tab_entries_from_cache();
         self.cached_user_board_entries = Self::list_user_board_entries_from_graph(graph);
     }
@@ -15139,9 +15202,28 @@ impl VizApp {
             .filter_map(|&id| {
                 self.cached_coordinator_id_set
                     .get(&id)
-                    .map(|label| (id, label.clone()))
+                    .cloned()
+                    .or_else(|| {
+                        (self.pending_new_chat_focus == Some(id)
+                            && self.active_coordinator_id == id
+                            && !self.closed_tabs.contains(&id))
+                        .then(|| workgraph::chat_id::format_chat_task_id(id))
+                    })
+                    .map(|label| (id, label))
             })
             .collect();
+    }
+
+    fn protect_pending_new_chat_focus_in_cache(&mut self) {
+        let Some(cid) = self.pending_new_chat_focus else {
+            return;
+        };
+        if cid != self.active_coordinator_id || self.closed_tabs.contains(&cid) {
+            return;
+        }
+        self.cached_coordinator_id_set
+            .entry(cid)
+            .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
     }
 
     /// Count chats that occupy a slot toward `coordinator.max_coordinators`.
@@ -15242,10 +15324,24 @@ impl VizApp {
     ///   - Remove tabs for chats that no longer exist (abandoned/archived).
     pub fn sync_active_tabs_from_graph(&mut self) {
         let entries = self.list_coordinator_ids_and_labels(); // canonical labels, sorted
-        let current: std::collections::HashMap<u32, String> = entries
+        let pending_seen_in_graph = self
+            .pending_new_chat_focus
+            .is_some_and(|pending| entries.iter().any(|(id, _)| *id == pending));
+        let mut current: std::collections::HashMap<u32, String> = entries
             .iter()
             .map(|(id, label)| (*id, label.clone()))
             .collect();
+        if let Some(cid) = self.pending_new_chat_focus
+            && cid == self.active_coordinator_id
+            && !self.closed_tabs.contains(&cid)
+        {
+            current
+                .entry(cid)
+                .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
+        }
+        if pending_seen_in_graph {
+            self.pending_new_chat_focus = None;
+        }
         let sorted_ids: Vec<u32> = entries.iter().map(|(id, _)| *id).collect();
         // Add newly-appeared chats in sorted order so the tab bar is stable
         for &id in &sorted_ids {
@@ -15287,6 +15383,9 @@ impl VizApp {
     pub fn close_tab(&mut self, cid: u32) {
         self.active_tabs.retain(|&id| id != cid);
         self.closed_tabs.insert(cid);
+        if self.pending_new_chat_focus == Some(cid) {
+            self.pending_new_chat_focus = None;
+        }
         if self.active_coordinator_id == cid {
             if let Some(&next) = self.active_tabs.first() {
                 self.switch_coordinator(next);
@@ -23971,7 +24070,15 @@ mod tui_chat_tests {
         app.cmd_tx
             .send(CommandResult {
                 success: true,
-                output: r#"{"coordinator_id": 1}"#.to_string(),
+                output: concat!(
+                    "{\n",
+                    "  \"chat_id\": 1,\n",
+                    "  \"coordinator_id\": 1,\n",
+                    "  \"task_id\": \".chat-1\"\n",
+                    "}\n",
+                    "warning: 'wg service create-chat' is deprecated; use 'wg chat create' instead.\n",
+                )
+                .to_string(),
                 effect: CommandEffect::CreateCoordinator,
             })
             .expect("cmd channel should accept send");
@@ -24072,6 +24179,83 @@ mod tui_chat_tests {
         );
         assert!(app.launcher.is_none());
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    /// Regression for fix-tui-new-2: the active tab cache can be refreshed
+    /// from a stale graph after the create-chat result has already focused
+    /// the new cid. That stale cache must not hide the new active tab, move
+    /// focus back to the old chat, or persist an open-tab list that omits the
+    /// newly-created chat.
+    #[test]
+    fn drain_commands_create_coordinator_preserves_new_chat_focus_through_stale_cache_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.active_coordinator_id = 0;
+        app.active_tabs = vec![0];
+        app.launcher = Some(LauncherState {
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
+            name: String::new(),
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
+            creating: true,
+            last_error: None,
+        });
+        app.input_mode = InputMode::Launcher;
+
+        app.cmd_tx
+            .send(CommandResult {
+                success: true,
+                output: r#"{"coordinator_id": 1}"#.to_string(),
+                effect: CommandEffect::CreateCoordinator,
+            })
+            .expect("cmd channel should accept send");
+
+        app.drain_commands();
+
+        let stale_graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl"))
+            .expect("stale graph fixture should load");
+        app.refresh_chat_tab_caches(&stale_graph);
+        app.sync_active_tabs_from_graph();
+
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "stale graph/cache refreshes must not restore focus to the previous chat"
+        );
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Chat,
+            "new-chat focus must stay on the Chat pane"
+        );
+        assert_eq!(
+            app.focused_panel,
+            FocusedPanel::RightPanel,
+            "keyboard focus must move to the freshly-created chat pane"
+        );
+        assert!(
+            app.cached_chat_tab_entries
+                .iter()
+                .any(|(cid, label)| *cid == 1 && label == ".chat-1"),
+            "cached_chat_tab_entries must keep the freshly-created active tab visible while graph.jsonl lags: {:?}",
+            app.cached_chat_tab_entries
+        );
+
+        let saved = load_tui_state(&wg_dir).expect("create focus should persist TUI state");
+        assert_eq!(saved.active_coordinator_id, 1);
+        assert_eq!(saved.active, ".chat-1");
+        assert!(
+            saved.open_tabs.iter().any(|tab| tab == ".chat-1"),
+            "persisted open_tabs must include the new chat even when graph cache is stale: {:?}",
+            saved.open_tabs
+        );
     }
 
     /// Regression lock: when the IPC FAILS, the launcher must stay

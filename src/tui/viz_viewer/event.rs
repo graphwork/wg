@@ -1440,8 +1440,8 @@ pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u1
 fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection};
 
-    // While a previous Enter is still in-flight (waiting for `wg
-    // service create-coordinator` IPC to return), swallow keys so the
+    // While a previous Enter is still in-flight (waiting for `wg chat
+    // create --json` to return), swallow keys so the
     // user can't double-submit, Esc-cancel a half-created chat, or
     // mutate fields whose values were already shipped. The pane is
     // visible during this window — see fix-tui-new symptom 2.

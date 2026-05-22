@@ -1104,3 +1104,12 @@ owners = [
 ]
 description = "Pins fix-nex-agent: real `wg nex --eval-mode` CLI invocations against a local OAI-compatible endpoint must send current-data prompt guidance, expose web_fetch/web_search/bash in the default tool surface, accept a non-coder model spec, and make --minimal-tools explicitly fall back to bash without web_fetch/web_search."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_new_chat_focus_sticks"
+script = "scenarios/tui_new_chat_focus_sticks.sh"
+owners = [
+    "fix-tui-new-2",
+]
+description = "Pins fix-tui-new-2: the real `wg tui` new-chat launcher flow must focus the freshly-created chat immediately and keep `wg --json tui-dump`'s coordinator_id on that new chat across multiple refresh ticks. Uses a custom-command `cat` chat so the full tmux/PTY/UI path runs without live LLM credentials."
+timeout_seconds = 90
