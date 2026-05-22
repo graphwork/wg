@@ -10,6 +10,7 @@ pub mod deep_research;
 pub mod delegate;
 pub mod file;
 pub mod file_cache;
+pub mod helper_routing;
 pub mod map;
 pub mod progress;
 pub mod reader;
@@ -421,6 +422,22 @@ impl ToolRegistry {
         working_dir: &Path,
         config: &NativeExecutorConfig,
     ) -> Self {
+        Self::default_all_with_config_and_routing(
+            workgraph_dir,
+            working_dir,
+            config,
+            helper_routing::HelperRouting::default(),
+        )
+    }
+
+    /// Create the full default registry with all tools, using the given
+    /// config and active parent-session route for helper LLM calls.
+    pub fn default_all_with_config_and_routing(
+        workgraph_dir: &Path,
+        working_dir: &Path,
+        config: &NativeExecutorConfig,
+        routing: helper_routing::HelperRouting,
+    ) -> Self {
         let mut registry = Self {
             tools: HashMap::new(),
             permissions: config.permissions.clone(),
@@ -456,15 +473,17 @@ impl ToolRegistry {
             working_dir.to_path_buf(),
             config.delegate.delegate_max_turns,
             &config.delegate.delegate_model,
+            routing.clone(),
         );
 
         // Summarize tool (recursive map-reduce summarization). Uses the
-        // delegate model override if set, falling back to WG_MODEL env var
-        // at execute time.
-        summarize::register_summarize_tool(
+        // delegate model override if set, falling back to the active
+        // parent-session model/endpoint at execute time.
+        summarize::register_summarize_tool_with_routing(
             &mut registry,
             workgraph_dir.to_path_buf(),
             config.delegate.delegate_model.clone(),
+            routing,
         );
 
         // Research tool (high-level: search + fetch + summarize in one call)

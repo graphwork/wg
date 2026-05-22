@@ -20,6 +20,7 @@ use workgraph::executor::native::bundle::resolve_bundle;
 use workgraph::executor::native::journal;
 use workgraph::executor::native::provider::create_provider_ext;
 use workgraph::executor::native::tools::ToolRegistry;
+use workgraph::executor::native::tools::helper_routing::HelperRouting;
 use workgraph::models::ModelRegistry;
 
 /// Run the native executor agent loop.
@@ -60,9 +61,32 @@ pub fn run(
     // Load config for native executor settings
     let config = Config::load(workgraph_dir).unwrap_or_default();
 
+    // Resolve provider/endpoint/key once and thread the same route into
+    // helper tools, so summarize/delegate inherit the parent native session.
+    let effective_provider = provider
+        .map(String::from)
+        .or_else(|| std::env::var("WG_LLM_PROVIDER").ok());
+    let effective_endpoint = endpoint_name
+        .map(String::from)
+        .or_else(|| std::env::var("WG_ENDPOINT").ok())
+        .or_else(|| endpoint_url.map(String::from))
+        .or_else(|| std::env::var("WG_ENDPOINT_URL").ok());
+    let effective_api_key = api_key
+        .map(String::from)
+        .or_else(|| std::env::var("WG_API_KEY").ok());
+
     // Build the tool registry with config
-    let mut registry =
-        ToolRegistry::default_all_with_config(workgraph_dir, &working_dir, &config.native_executor);
+    let mut registry = ToolRegistry::default_all_with_config_and_routing(
+        workgraph_dir,
+        &working_dir,
+        &config.native_executor,
+        HelperRouting::new(
+            Some(&effective_model),
+            effective_provider.as_deref(),
+            effective_endpoint.as_deref(),
+            effective_api_key.as_deref(),
+        ),
+    );
 
     // Resolve bundle and filter tools
     let system_suffix = if let Some(bundle) = resolve_bundle(exec_mode, workgraph_dir) {
@@ -96,14 +120,8 @@ pub fn run(
     );
 
     // Create the LLM provider (auto-selects by model name).
-    // Provider resolution: CLI --provider > WG_LLM_PROVIDER env var > create_provider_ext fallback.
-    let effective_provider = provider
-        .map(String::from)
-        .or_else(|| std::env::var("WG_LLM_PROVIDER").ok());
-    let effective_endpoint = endpoint_name
-        .map(String::from)
-        .or_else(|| std::env::var("WG_ENDPOINT").ok());
-    // If endpoint_url was passed explicitly, set WG_ENDPOINT_URL so create_provider_ext picks it up.
+    // If endpoint_url was passed explicitly, keep it in the environment for
+    // any subprocesses the session might spawn.
     if let Some(url) = endpoint_url {
         // SAFETY: native-exec is single-threaded at this point (before tokio runtime creation).
         unsafe { std::env::set_var("WG_ENDPOINT_URL", url) };
@@ -113,7 +131,7 @@ pub fn run(
         &effective_model,
         effective_provider.as_deref(),
         effective_endpoint.as_deref(),
-        api_key,
+        effective_api_key.as_deref(),
     )?;
 
     // Check if the model supports tool use

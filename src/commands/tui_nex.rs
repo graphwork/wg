@@ -62,6 +62,7 @@ use workgraph::executor::native::client::{
 };
 use workgraph::executor::native::provider::{Provider, create_provider_ext};
 use workgraph::executor::native::tools::ToolRegistry;
+use workgraph::executor::native::tools::helper_routing::HelperRouting;
 use workgraph::models::ModelRegistry;
 
 /// Message from the UI to the agent task.
@@ -244,8 +245,12 @@ fn build_session(
 
     let working_dir = std::env::current_dir().unwrap_or_default();
 
-    let registry =
-        ToolRegistry::default_all_with_config(workgraph_dir, &working_dir, &config.native_executor);
+    let registry = ToolRegistry::default_all_with_config_and_routing(
+        workgraph_dir,
+        &working_dir,
+        &config.native_executor,
+        HelperRouting::new(Some(&effective_model), None, endpoint, None),
+    );
 
     let client = create_provider_ext(workgraph_dir, &effective_model, None, endpoint, None)?;
 

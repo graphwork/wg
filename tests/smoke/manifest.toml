@@ -461,6 +461,16 @@ description = "Pins the user contract: `wg init -m qwen3-coder -e <URL> --execut
 timeout_seconds = 30
 
 [[scenario]]
+name = "nex_helper_openrouter_route"
+script = "scenarios/nex_helper_openrouter_route.sh"
+owners = [
+    "fix-nex-helper",
+    "smoke-gate-is",
+]
+description = "Regression for fix-nex-helper: in an OpenRouter-backed `wg nex -m openrouter:<model>` session, helper LLM calls made by `summarize` and `delegate` must inherit the active OpenRouter route instead of silently falling back to Anthropic `sonnet`. Drives real `wg nex --eval-mode` through a local OpenRouter-shaped OAI-compatible endpoint, forces both helper tools, and asserts every helper request uses the stripped OpenRouter model (`minimax/minimax-m2.7`) with no Anthropic API error or `model=sonnet` log."
+timeout_seconds = 60
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [

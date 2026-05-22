@@ -520,6 +520,10 @@ impl super::provider::Provider for AnthropicClient {
         &self.model
     }
 
+    fn endpoint_name(&self) -> Option<&str> {
+        self.endpoint_name.as_deref()
+    }
+
     fn max_tokens(&self) -> u32 {
         self.max_tokens
     }

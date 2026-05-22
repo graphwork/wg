@@ -25,6 +25,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use serde_json::json;
 
+use super::helper_routing::{HelperRouting, provider_route_label};
 use super::{Tool, ToolOutput, truncate_tool_output};
 use crate::executor::native::client::{
     ContentBlock, Message, MessagesRequest, Role, ToolDefinition,
@@ -62,9 +63,10 @@ commentary, no meta-discussion.";
 /// The summarize tool.
 pub struct SummarizeTool {
     workgraph_dir: PathBuf,
-    /// Model override for summarization calls. Empty = use `WG_MODEL` env
-    /// var (set by the coordinator at spawn time).
+    /// Model override for summarization calls. Empty = inherit the parent
+    /// native/nex session route.
     model: String,
+    routing: HelperRouting,
 }
 
 impl SummarizeTool {
@@ -72,7 +74,21 @@ impl SummarizeTool {
         Self {
             workgraph_dir,
             model,
+            routing: HelperRouting::default(),
         }
+    }
+
+    pub fn new_with_routing(workgraph_dir: PathBuf, model: String, routing: HelperRouting) -> Self {
+        Self {
+            workgraph_dir,
+            model,
+            routing,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_model_for_testing(&self) -> String {
+        self.routing.resolve(&self.workgraph_dir, &self.model).model
     }
 }
 
@@ -173,29 +189,22 @@ impl Tool for SummarizeTool {
         }
 
         // 3. Create provider
-        let model = if !self.model.is_empty() {
-            self.model.clone()
-        } else {
-            std::env::var("WG_MODEL")
-                .ok()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "sonnet".to_string())
+        let route = self.routing.resolve(&self.workgraph_dir, &self.model);
+        let provider = match route.create_provider(&self.workgraph_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolOutput::error(format!(
+                    "Failed to create provider for summarize ({}): {}",
+                    route.label(),
+                    e
+                ));
+            }
         };
-
-        let provider =
-            match crate::executor::native::provider::create_provider(&self.workgraph_dir, &model) {
-                Ok(p) => p,
-                Err(e) => {
-                    return ToolOutput::error(format!(
-                        "Failed to create provider for summarize: {}",
-                        e
-                    ));
-                }
-            };
+        let route_label = provider_route_label(provider.as_ref());
 
         crate::tool_progress!(
-            "\x1b[2m[summarize] starting: model={}, input_bytes={}\x1b[0m",
-            model,
+            "\x1b[2m[summarize] starting: {}, input_bytes={}\x1b[0m",
+            route_label,
             content.len(),
         );
 
@@ -205,7 +214,7 @@ impl Tool for SummarizeTool {
                 let truncated = truncate_tool_output(&summary, MAX_SUMMARIZE_OUTPUT_CHARS);
                 ToolOutput::success(truncated)
             }
-            Err(e) => ToolOutput::error(format!("Summarize failed: {}", e)),
+            Err(e) => ToolOutput::error(format!("Summarize failed ({}): {}", route_label, e)),
         }
     }
 }
@@ -516,6 +525,20 @@ pub fn register_summarize_tool(
     model: String,
 ) {
     registry.register(Box::new(SummarizeTool::new(workgraph_dir, model)));
+}
+
+/// Register the summarize tool with inherited parent-session routing.
+pub fn register_summarize_tool_with_routing(
+    registry: &mut super::ToolRegistry,
+    workgraph_dir: PathBuf,
+    model: String,
+    routing: HelperRouting,
+) {
+    registry.register(Box::new(SummarizeTool::new_with_routing(
+        workgraph_dir,
+        model,
+        routing,
+    )));
 }
 
 // ───────────────────────────────────────────────────────────────────────

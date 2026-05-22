@@ -869,7 +869,10 @@ impl OpenAiClient {
                     let is_client_error = e.downcast_ref::<ApiError>().is_some_and(|ae| {
                         ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
                     });
-                    if !is_client_error && retry_count < max_retries {
+                    if is_client_error {
+                        return Err(e);
+                    }
+                    if retry_count < max_retries {
                         retry_count += 1;
                         let wait = jittered_backoff(backoff_ms);
                         eprintln!(
@@ -1282,7 +1285,10 @@ impl OpenAiClient {
                     let is_client_error = e.downcast_ref::<ApiError>().is_some_and(|ae| {
                         ae.status >= 400 && ae.status < 500 && !is_retryable(ae.status)
                     });
-                    if !is_client_error && retry_count < max_retries {
+                    if is_client_error {
+                        return Err(e);
+                    }
+                    if retry_count < max_retries {
                         retry_count += 1;
                         let wait = jittered_backoff(backoff_ms);
                         eprintln!(
@@ -1450,6 +1456,10 @@ impl super::provider::Provider for OpenAiClient {
 
     fn model(&self) -> &str {
         &self.model
+    }
+
+    fn endpoint_name(&self) -> Option<&str> {
+        self.endpoint_name.as_deref()
     }
 
     fn max_tokens(&self) -> u32 {

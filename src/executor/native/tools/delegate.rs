@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde_json::json;
 
+use super::helper_routing::{HelperRouting, provider_route_label};
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool, truncate_tool_output};
 #[cfg(test)]
 use crate::executor::native::client::Usage;
@@ -43,6 +44,7 @@ pub struct DelegateTool {
     config_max_turns: usize,
     /// Configured delegate model override. Empty = use parent model.
     config_model: String,
+    routing: HelperRouting,
 }
 
 impl DelegateTool {
@@ -52,6 +54,7 @@ impl DelegateTool {
             working_dir,
             config_max_turns: DEFAULT_MAX_TURNS,
             config_model: String::new(),
+            routing: HelperRouting::default(),
         }
     }
 
@@ -66,7 +69,31 @@ impl DelegateTool {
             working_dir,
             config_max_turns: max_turns.clamp(1, MAX_ALLOWED_TURNS),
             config_model: model.to_string(),
+            routing: HelperRouting::default(),
         }
+    }
+
+    pub fn with_config_and_routing(
+        workgraph_dir: PathBuf,
+        working_dir: PathBuf,
+        max_turns: usize,
+        model: &str,
+        routing: HelperRouting,
+    ) -> Self {
+        Self {
+            workgraph_dir,
+            working_dir,
+            config_max_turns: max_turns.clamp(1, MAX_ALLOWED_TURNS),
+            config_model: model.to_string(),
+            routing,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_model_for_testing(&self) -> String {
+        self.routing
+            .resolve(&self.workgraph_dir, &self.config_model)
+            .model
     }
 }
 
@@ -136,36 +163,28 @@ impl Tool for DelegateTool {
             .map(|n| (n as usize).clamp(1, MAX_ALLOWED_TURNS))
             .unwrap_or(self.config_max_turns);
 
-        // Resolve model: config delegate_model > WG_MODEL env var > default
-        let model = if !self.config_model.is_empty() {
-            self.config_model.clone()
-        } else {
-            std::env::var("WG_MODEL")
-                .ok()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "sonnet".to_string())
-        };
-
         // Create provider for the child conversation
-        let provider =
-            match crate::executor::native::provider::create_provider(&self.workgraph_dir, &model) {
-                Ok(p) => p,
-                Err(e) => {
-                    return ToolOutput::error(format!(
-                        "Failed to create provider for delegate: {}",
-                        e
-                    ));
-                }
-            };
+        let route = self
+            .routing
+            .resolve(&self.workgraph_dir, &self.config_model);
+        let provider = match route.create_provider(&self.workgraph_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                return ToolOutput::error(format!(
+                    "Failed to create provider for delegate ({}): {}",
+                    route.label(),
+                    e
+                ));
+            }
+        };
+        let route_label = provider_route_label(provider.as_ref());
 
         // Build child registry without delegate (prevents recursion)
         let registry = build_child_registry(&self.workgraph_dir, &self.working_dir, exec_mode);
 
         eprintln!(
-            "[delegate] Starting sub-agent: exec_mode={}, max_turns={}, model={}",
-            exec_mode,
-            max_turns,
-            provider.model()
+            "[delegate] Starting sub-agent: exec_mode={}, max_turns={}, {}",
+            exec_mode, max_turns, route_label
         );
 
         // Run the mini agent loop
@@ -220,6 +239,7 @@ async fn run_mini_loop(
     prompt: &str,
     max_turns: usize,
 ) -> Result<String, String> {
+    let route_label = provider_route_label(provider.as_ref());
     let mut messages = vec![Message {
         role: Role::User,
         content: vec![ContentBlock::Text {
@@ -242,7 +262,7 @@ async fn run_mini_loop(
         let response = provider
             .send(&request)
             .await
-            .map_err(|e| format!("API error on turn {}: {}", turn + 1, e))?;
+            .map_err(|e| format!("API error on turn {} ({}): {}", turn + 1, route_label, e))?;
 
         // Add assistant response to conversation
         messages.push(Message {
@@ -360,12 +380,14 @@ pub fn register_delegate_tool_with_config(
     working_dir: PathBuf,
     max_turns: usize,
     model: &str,
+    routing: HelperRouting,
 ) {
-    registry.register(Box::new(DelegateTool::with_config(
+    registry.register(Box::new(DelegateTool::with_config_and_routing(
         workgraph_dir,
         working_dir,
         max_turns,
         model,
+        routing,
     )));
 }
 

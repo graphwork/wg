@@ -18,7 +18,10 @@ use tempfile::TempDir;
 
 use workgraph::config::NativeExecutorConfig;
 use workgraph::executor::native::bundle::{Bundle, resolve_bundle};
-use workgraph::executor::native::tools::ToolRegistry;
+use workgraph::executor::native::tools::delegate::DelegateTool;
+use workgraph::executor::native::tools::helper_routing::HelperRouting;
+use workgraph::executor::native::tools::summarize::SummarizeTool;
+use workgraph::executor::native::tools::{Tool, ToolRegistry};
 use workgraph::graph::{Node, Status, Task, WaitCondition, WaitSpec, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
@@ -520,6 +523,241 @@ async fn delegate_tool_with_custom_config() {
         defs.iter().any(|d| d.name == "delegate"),
         "delegate should be registered with custom config"
     );
+}
+
+#[test]
+fn summarize_inherits_active_openrouter_model_without_sonnet_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let active_model = "openrouter:minimax/minimax-m2.7";
+    let tool = SummarizeTool::new_with_routing(
+        tmp.path().to_path_buf(),
+        String::new(),
+        HelperRouting::from_active_model(active_model),
+    );
+
+    assert_eq!(tool.resolved_model_for_testing(), active_model);
+    assert_ne!(tool.resolved_model_for_testing(), "sonnet");
+}
+
+#[test]
+fn delegate_inherits_active_openrouter_model_without_sonnet_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let active_model = "openrouter:minimax/minimax-m2.7";
+    let tool = DelegateTool::with_config_and_routing(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        5,
+        "",
+        HelperRouting::from_active_model(active_model),
+    );
+
+    assert_eq!(tool.resolved_model_for_testing(), active_model);
+    assert_ne!(tool.resolved_model_for_testing(), "sonnet");
+}
+
+#[test]
+fn helper_route_creates_openrouter_provider_from_active_session_model() {
+    let tmp = TempDir::new().unwrap();
+    let active_model = "openrouter:minimax/minimax-m2.7";
+    let route = HelperRouting::from_active_model(active_model).resolve(tmp.path(), "");
+    let provider = route
+        .create_provider(tmp.path())
+        .expect("openrouter-prefixed helper route should create oai-compatible provider");
+
+    assert_eq!(provider.name(), "openrouter");
+    assert_eq!(provider.model(), "minimax/minimax-m2.7");
+}
+
+#[test]
+fn delegate_model_override_still_wins_over_active_session_model() {
+    let tmp = TempDir::new().unwrap();
+    let tool = DelegateTool::with_config_and_routing(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        5,
+        "claude:sonnet",
+        HelperRouting::from_active_model("openrouter:minimax/minimax-m2.7"),
+    );
+
+    assert_eq!(tool.resolved_model_for_testing(), "claude:sonnet");
+}
+
+#[tokio::test]
+async fn summarize_auth_failure_names_resolved_helper_route() {
+    let tmp = TempDir::new().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let body = r#"{"error":{"message":"invalid test key"}}"#;
+        let response = format!(
+            concat!(
+                "HTTP/1.1 401 Unauthorized\r\n",
+                "Content-Type: application/json\r\n",
+                "Content-Length: {}\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+                "{}"
+            ),
+            body.len(),
+            body
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+            .await
+            .unwrap();
+    });
+
+    fs::write(
+        tmp.path().join("config.toml"),
+        format!(
+            r#"
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "http://{}"
+api_key = "bad-test-key"
+is_default = true
+"#,
+            addr
+        ),
+    )
+    .unwrap();
+
+    let tool = SummarizeTool::new_with_routing(
+        tmp.path().to_path_buf(),
+        String::new(),
+        HelperRouting::new(
+            Some("openrouter:minimax/minimax-m2.7"),
+            None,
+            Some("openrouter"),
+            None,
+        ),
+    );
+
+    let output = tool
+        .execute(&json!({
+            "source": "short text for summarize route diagnostics",
+            "instruction": "summarize"
+        }))
+        .await;
+
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("provider=openrouter"),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains("model=minimax/minimax-m2.7"),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains("endpoint=openrouter"),
+        "{}",
+        output.content
+    );
+    assert!(output.content.contains("HTTP 401"), "{}", output.content);
+    assert!(
+        !output.content.contains("bad-test-key"),
+        "auth diagnostics must not expose API key values: {}",
+        output.content
+    );
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn delegate_auth_failure_names_resolved_helper_route() {
+    let tmp = TempDir::new().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let body = r#"{"error":{"message":"invalid test key"}}"#;
+        let response = format!(
+            concat!(
+                "HTTP/1.1 401 Unauthorized\r\n",
+                "Content-Type: application/json\r\n",
+                "Content-Length: {}\r\n",
+                "Connection: close\r\n",
+                "\r\n",
+                "{}"
+            ),
+            body.len(),
+            body
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+            .await
+            .unwrap();
+    });
+
+    fs::write(
+        tmp.path().join("config.toml"),
+        format!(
+            r#"
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "http://{}"
+api_key = "bad-test-key"
+is_default = true
+"#,
+            addr
+        ),
+    )
+    .unwrap();
+
+    let tool = DelegateTool::with_config_and_routing(
+        tmp.path().to_path_buf(),
+        tmp.path().to_path_buf(),
+        1,
+        "",
+        HelperRouting::new(
+            Some("openrouter:minimax/minimax-m2.7"),
+            None,
+            Some("openrouter"),
+            None,
+        ),
+    );
+
+    let output = tool
+        .execute(&json!({
+            "prompt": "try one delegated turn",
+            "max_turns": 1
+        }))
+        .await;
+
+    assert!(output.is_error);
+    assert!(
+        output.content.contains("provider=openrouter"),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains("model=minimax/minimax-m2.7"),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains("endpoint=openrouter"),
+        "{}",
+        output.content
+    );
+    assert!(output.content.contains("HTTP 401"), "{}", output.content);
+    assert!(
+        !output.content.contains("bad-test-key"),
+        "auth diagnostics must not expose API key values: {}",
+        output.content
+    );
+
+    server.await.unwrap();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

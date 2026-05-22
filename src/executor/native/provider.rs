@@ -28,6 +28,11 @@ pub trait Provider: Send + Sync {
     /// The model this provider is configured with.
     fn model(&self) -> &str;
 
+    /// Endpoint name or label when known. Used for diagnostics only.
+    fn endpoint_name(&self) -> Option<&str> {
+        None
+    }
+
     /// Maximum tokens per response.
     fn max_tokens(&self) -> u32;
 
@@ -100,6 +105,7 @@ fn build_inline_url_client(
     let client = OpenAiClient::new(key, model, None)
         .context("initialize oai-compat client for inline URL")?
         .with_provider_hint("oai-compat")
+        .with_endpoint_name(url)
         .with_base_url(&base);
     Ok(client)
 }

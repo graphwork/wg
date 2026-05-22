@@ -27,6 +27,7 @@ use workgraph::config::{Config, DispatchRole};
 use workgraph::executor::native::agent::AgentLoop;
 use workgraph::executor::native::provider::create_provider_ext;
 use workgraph::executor::native::tools::ToolRegistry;
+use workgraph::executor::native::tools::helper_routing::HelperRouting;
 use workgraph::models::ModelRegistry;
 
 #[allow(clippy::too_many_arguments)]
@@ -95,10 +96,11 @@ pub fn run(
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     let mut registry = {
-        let mut reg = ToolRegistry::default_all_with_config(
+        let mut reg = ToolRegistry::default_all_with_config_and_routing(
             workgraph_dir,
             &working_dir,
             &config.native_executor,
+            HelperRouting::new(Some(&effective_model), None, endpoint, None),
         );
         if minimal_tools {
             // Minimal tool surface: keep only the canonical local-dev set.
