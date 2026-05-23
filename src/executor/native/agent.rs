@@ -365,7 +365,7 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
 }
 
 enum LiveReadlineEvent {
-    Line(String),
+    Line { line: String, queued: bool },
     Eof,
     Error(String),
 }
@@ -440,7 +440,11 @@ struct LiveTerminalInput {
 }
 
 impl LiveTerminalInput {
-    fn start(history_path: PathBuf, cancel: super::cancel::CancelToken) -> Option<Self> {
+    fn start(
+        history_path: PathBuf,
+        cancel: super::cancel::CancelToken,
+        initially_waiting_for_input: bool,
+    ) -> Option<Self> {
         if std::env::var("WG_NEX_LIVE_INPUT")
             .ok()
             .is_some_and(|v| matches!(v.as_str(), "0" | "false" | "off"))
@@ -473,19 +477,34 @@ impl LiveTerminalInput {
             printer: Arc::new(Mutex::new(printer)),
         };
         let output_for_thread = output.clone();
-        let waiting_for_input = Arc::new(AtomicBool::new(false));
+        let waiting_for_input = Arc::new(AtomicBool::new(initially_waiting_for_input));
         let waiting_for_thread = waiting_for_input.clone();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         std::thread::spawn(move || {
             let mut last_tap: Option<std::time::Instant> = None;
+            let mut submitted_any_line = !initially_waiting_for_input;
             loop {
-                match editor.readline("\x1b[1;36m>\x1b[0m ") {
+                let prompt = if submitted_any_line {
+                    "\x1b[1;33mnext>\x1b[0m "
+                } else {
+                    "\x1b[1;36m>\x1b[0m "
+                };
+                match editor.readline(prompt) {
                     Ok(line) => {
-                        if !line.trim().is_empty() {
+                        let trimmed = line.trim();
+                        let queued = !waiting_for_thread.load(Ordering::SeqCst);
+                        if !trimmed.is_empty() {
                             let _ = editor.add_history_entry(line.as_str());
+                            submitted_any_line = true;
+                            waiting_for_thread.store(false, Ordering::SeqCst);
+                            if queued {
+                                output_for_thread.print("\x1b[2m[queued for next turn]\x1b[0m");
+                            }
+                        } else if queued {
+                            output_for_thread.print("\x1b[2m[blank queued input ignored]\x1b[0m");
                         }
-                        if tx.send(LiveReadlineEvent::Line(line)).is_err() {
+                        if tx.send(LiveReadlineEvent::Line { line, queued }).is_err() {
                             break;
                         }
                     }
@@ -540,7 +559,12 @@ impl LiveTerminalInput {
         self.waiting_for_input.store(true, Ordering::SeqCst);
         let result = loop {
             match self.rx.recv().await? {
-                LiveReadlineEvent::Line(line) => break Some(line),
+                LiveReadlineEvent::Line { line, queued } => {
+                    if !line.trim().is_empty() || queued {
+                        self.waiting_for_input.store(false, Ordering::SeqCst);
+                    }
+                    break Some(line);
+                }
                 LiveReadlineEvent::Eof => break None,
                 LiveReadlineEvent::Error(e) => {
                     self.output
@@ -557,7 +581,7 @@ impl LiveTerminalInput {
         let mut lines = Vec::new();
         loop {
             match self.rx.try_recv() {
-                Ok(LiveReadlineEvent::Line(line)) => lines.push(line),
+                Ok(LiveReadlineEvent::Line { line, .. }) => lines.push(line),
                 Ok(LiveReadlineEvent::Eof) => break,
                 Ok(LiveReadlineEvent::Error(e)) => {
                     self.output
@@ -1454,8 +1478,22 @@ impl AgentLoop {
         // so subsequent calls (if any) see it.
         let mut surface: Option<Box<dyn super::surface::ConversationSurface>> = self.surface.take();
 
+        // If resume already populated messages (session summary or journal
+        // replay), skip the first-input readline unless the restored history
+        // ended on an assistant turn and needs a fresh user message.
+        let resumed = session_summary.is_some() || resume_data.is_some();
+        let initially_waiting_for_input = initial_message.is_none()
+            && (!resumed
+                || messages
+                    .last()
+                    .map(|message| message.role != Role::User)
+                    .unwrap_or(true));
         let mut live_terminal = if !self.autonomous && surface.is_none() {
-            LiveTerminalInput::start(history_path.clone(), cancel.clone())
+            LiveTerminalInput::start(
+                history_path.clone(),
+                cancel.clone(),
+                initially_waiting_for_input,
+            )
         } else {
             None
         };
@@ -1469,10 +1507,6 @@ impl AgentLoop {
         // `read_next_user_turn` at module level so we can branch on
         // the surface presence before deciding to block on terminal input.)
 
-        // If resume already populated messages (session summary or journal
-        // replay), skip the first-input readline — we go straight to the
-        // main loop.
-        let resumed = session_summary.is_some() || resume_data.is_some();
         if !resumed {
             // Fresh start — get the first user message
             let first_input = if let Some(msg) = initial_message {
@@ -1883,6 +1917,16 @@ impl AgentLoop {
                 },
                 stream: false,
             };
+
+            if !self.autonomous
+                && surface.is_none()
+                && let Some(label) = assistant_turn_label(messages.last())
+            {
+                terminal_line(
+                    live_output.as_ref(),
+                    format!("\x1b[2m[assistant for: {}]\x1b[0m", label),
+                );
+            }
 
             // Build the streaming text callback. In interactive mode,
             // tokens stream to stderr for the human. In autonomous mode,
@@ -3309,6 +3353,38 @@ fn drain_barrier_user_input(
         inputs.extend(terminal.drain_submitted_lines());
     }
     inputs
+}
+
+fn assistant_turn_label(message: Option<&Message>) -> Option<String> {
+    let message = message?;
+    if message.role != Role::User {
+        return None;
+    }
+
+    let text = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text
+        .strip_prefix("Queued user input submitted while tools were running:\n")
+        .unwrap_or(&text);
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+
+    const MAX_LABEL_CHARS: usize = 96;
+    let mut label = collapsed;
+    if label.chars().count() > MAX_LABEL_CHARS {
+        label = label.chars().take(MAX_LABEL_CHARS).collect::<String>();
+        label.push_str("...");
+    }
+    Some(label)
 }
 
 fn truncate_for_display(s: &str, max: usize) -> &str {

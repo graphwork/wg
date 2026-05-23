@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Scenario: nex_live_input_pty
 #
-# Drives standalone `nex` through a real PTY while WG_FAKE_LLM streams
-# a deliberately long first response. The PTY has kernel echo disabled;
-# this makes the assertion meaningful:
+# Drives standalone `nex` and `wg nex` through a real PTY while
+# WG_FAKE_LLM streams a deliberately long first response. The PTY has
+# kernel echo disabled; this makes the assertion meaningful:
 #   * old boundary-only input cannot visibly echo typed text during the
 #     stream because no readline prompt owns the terminal at that point
-#   * live input renders the queued line through rustyline while the
+#   * live input renders the follow-up line through rustyline while the
 #     stream continues
 #
-# The second submitted line must then be consumed as the next turn after
-# the first response reaches a safe end-of-turn boundary.
+# The second submitted line must be clearly marked as queued, then
+# consumed as the next turn after the first response reaches a safe
+# end-of-turn boundary. Blank submitted input while streaming must not
+# create an extra turn.
 
 set -euo pipefail
 
@@ -26,14 +28,17 @@ if ! command -v python3 >/dev/null 2>&1; then
     loud_skip "MISSING PYTHON" "python3 is required for the PTY harness"
 fi
 
-scratch="$(make_scratch)"
-cd "$scratch"
-wg init --no-agency >/dev/null
+run_case() {
+    local label="$1"
+    shift
+    local scratch fake_llm transcript
+    scratch="$(make_scratch)"
+    fake_llm="$scratch/fake_llm.txt"
+    transcript="$scratch/pty-transcript-${label// /-}.txt"
 
-fake_llm="$scratch/fake_llm.txt"
-transcript="$scratch/pty-transcript.txt"
+    (cd "$scratch" && wg init --no-agency >/dev/null)
 
-python3 - "$fake_llm" <<'PY'
+    python3 - "$fake_llm" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -49,7 +54,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write("SECOND_RESPONSE_MARKER queued turn received\n")
 PY
 
-if ! python3 - "$scratch" "$fake_llm" "$transcript" <<'PY'; then
+    if ! python3 - "$scratch" "$fake_llm" "$transcript" "$label" "$@" <<'PY'; then
 import errno
 import fcntl
 import os
@@ -63,9 +68,12 @@ import termios
 import time
 import select
 
-scratch, fake_llm, transcript_path = sys.argv[1:4]
+scratch, fake_llm, transcript_path, label = sys.argv[1:5]
+cmd = sys.argv[5:]
 first_turn = "first live input smoke"
 queued_turn = "SECOND_QUEUED_SMOKE while stream active"
+first_header = f"[assistant for: {first_turn}]"
+second_header = f"[assistant for: {queued_turn}]"
 
 ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -76,8 +84,12 @@ def clean(text):
     return "".join(ch if ch == "\n" or ch == "\t" or ord(ch) >= 32 else "" for ch in text)
 
 
+def marker_text(text):
+    return clean(text).replace("next>", "").replace(">", "")
+
+
 def compact_marker(text):
-    return "".join(ch for ch in clean(text) if ch.isalnum() or ch == "_")
+    return "".join(ch for ch in marker_text(text) if ch.isalnum() or ch == "_")
 
 
 def contains_marker(haystack, needle):
@@ -90,7 +102,7 @@ def contains_marker(haystack, needle):
 def fail(message, transcript=""):
     with open(transcript_path, "w", encoding="utf-8", errors="replace") as f:
         f.write(transcript)
-    print(message, file=sys.stderr)
+    print(f"{label}: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -119,7 +131,7 @@ def child_setup():
 
 
 proc = subprocess.Popen(
-    ["nex", "--no-mcp", "--max-turns", "5", "-m", "fake-live-input-model"],
+    cmd,
     cwd=scratch,
     env=env,
     stdin=slave,
@@ -203,6 +215,7 @@ try:
     send_line(first_turn)
 
     wait_for("FIRST_RESPONSE_MARKER", 20)
+    send_line("")
     send_line(queued_turn)
 
     before_first_done = wait_for("FIRST_DONE_MARKER", 35)
@@ -211,10 +224,22 @@ try:
             "queued input was not visibly preserved in the PTY while the first response streamed",
             before_first_done,
         )
+    if "[queued for next turn]" not in before_first_done:
+        fail("queued input did not receive an explicit queued affordance", before_first_done)
+    if "[blank queued input ignored]" not in before_first_done:
+        fail("blank input during streaming was not explicitly ignored", before_first_done)
 
     full = wait_for("SECOND_RESPONSE_MARKER", 35)
     if compact_marker(queued_turn) not in compact_marker(full):
         fail("queued input disappeared from the PTY transcript", full)
+    if "next>" not in full:
+        fail("follow-up input area was not labeled distinctly from the blocking prompt", full)
+    if first_header not in full:
+        fail("first assistant turn did not name its triggering user input", full)
+    if second_header not in full:
+        fail("second assistant turn did not name its triggering queued input", full)
+    if full.find("SECOND_RESPONSE_MARKER") < full.find(second_header):
+        fail("second assistant response was not separated after its turn header", full)
 
     send_line("/quit")
     deadline = time.monotonic() + 15
@@ -235,12 +260,21 @@ finally:
     except OSError:
         pass
 PY
-    loud_fail "PTY live-input harness failed. Transcript tail:\n$(tail -80 "$transcript" 2>/dev/null || true)"
-fi
+        loud_fail "$label PTY live-input harness failed. Transcript tail:\n$(tail -100 "$transcript" 2>/dev/null || true)"
+    fi
 
-journal="$(find "$scratch/.wg/chat" -name conversation.jsonl -print -quit 2>/dev/null || true)"
-[[ -n "$journal" ]] || loud_fail "nex did not create a conversation journal"
-grep -q "SECOND_QUEUED_SMOKE" "$journal" || loud_fail "queued user turn was not journaled. Journal tail:\n$(tail -20 "$journal")"
-grep -q "SECOND_RESPONSE_MARKER" "$journal" || loud_fail "second fake response was not journaled. Journal tail:\n$(tail -20 "$journal")"
+    journal="$(find "$scratch/.wg/chat" -name conversation.jsonl -print -quit 2>/dev/null || true)"
+    [[ -n "$journal" ]] || loud_fail "$label did not create a conversation journal"
+    grep -q "SECOND_QUEUED_SMOKE" "$journal" || loud_fail "$label queued user turn was not journaled. Journal tail:\n$(tail -20 "$journal")"
+    grep -q "SECOND_RESPONSE_MARKER" "$journal" || loud_fail "$label second fake response was not journaled. Journal tail:\n$(tail -20 "$journal")"
+    local queued_count
+    queued_count="$(grep -c "SECOND_QUEUED_SMOKE" "$journal" || true)"
+    [[ "$queued_count" == "1" ]] || loud_fail "$label queued user turn was journaled $queued_count times; expected exactly once. Journal:\n$(cat "$journal")"
 
-echo "PASS: nex PTY accepted visible queued input during streaming and delivered it at the next safe turn"
+    echo "PASS: $label PTY queued input was labeled, preserved, delivered once, and separated by assistant turn headers"
+}
+
+run_case "standalone nex" nex --no-mcp --max-turns 5 -m fake-live-input-model
+run_case "wg nex" wg nex --no-mcp --max-turns 5 -m fake-live-input-model
+
+echo "PASS: nex and wg nex PTY live-input transcript UX is polished"

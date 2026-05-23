@@ -942,6 +942,121 @@ async fn test_nex_queued_input_during_streaming_becomes_next_turn() {
 }
 
 #[tokio::test]
+async fn test_nex_blank_queued_input_during_streaming_is_ignored() {
+    let tmp = TempDir::new().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let first_chunk_seen = Arc::new(Notify::new());
+    let allow_first_response_to_finish = Arc::new(Notify::new());
+    let seen_user_texts = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct BlankQueuedProvider {
+        call_count: Arc<AtomicUsize>,
+        first_chunk_seen: Arc<Notify>,
+        allow_first_response_to_finish: Arc<Notify>,
+        seen_user_texts: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for BlankQueuedProvider {
+        fn name(&self) -> &str {
+            "blank-queued"
+        }
+        fn model(&self) -> &str {
+            "blank-queued-model"
+        }
+        fn max_tokens(&self) -> u32 {
+            1024
+        }
+        async fn send(&self, _req: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
+            unreachable!("agent loop should use send_streaming")
+        }
+        async fn send_streaming(
+            &self,
+            req: &MessagesRequest,
+            on_text: &(dyn Fn(String) + Send + Sync),
+        ) -> anyhow::Result<MessagesResponse> {
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.seen_user_texts
+                .lock()
+                .unwrap()
+                .push(last_user_text(req));
+            match count {
+                0 => {
+                    on_text("FIRST_STREAM_MARKER ".to_string());
+                    self.first_chunk_seen.notify_waiters();
+                    self.allow_first_response_to_finish.notified().await;
+                    on_text("FIRST_STREAM_DONE".to_string());
+                    Ok(text_response("blank-0", "first response complete"))
+                }
+                1 => {
+                    on_text("SECOND_AFTER_BLANK_MARKER".to_string());
+                    Ok(text_response("blank-1", "second response complete"))
+                }
+                _ => Ok(text_response("blank-extra", "unexpected extra turn")),
+            }
+        }
+    }
+
+    let provider = Box::new(BlankQueuedProvider {
+        call_count: call_count.clone(),
+        first_chunk_seen: first_chunk_seen.clone(),
+        allow_first_response_to_finish: allow_first_response_to_finish.clone(),
+        seen_user_texts: seen_user_texts.clone(),
+    });
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let surface = AsyncQueueSurface::new(rx);
+    let turns_completed = surface.turns_completed.clone();
+
+    let mut agent = AgentLoop::new(
+        provider,
+        ToolRegistry::new(),
+        "You are a test assistant.".to_string(),
+        10,
+        tmp.path().join("test.ndjson"),
+    )
+    .with_surface(Box::new(surface));
+
+    let driver = async move {
+        tx.send("first user turn".to_string()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), first_chunk_seen.notified())
+            .await
+            .expect("first stream chunk should arrive");
+        tx.send("   ".to_string()).unwrap();
+        tx.send("second after blank queued input".to_string())
+            .unwrap();
+        allow_first_response_to_finish.notify_waiters();
+        drop(tx);
+    };
+    let run = async {
+        let (result, _) = tokio::join!(agent.run_interactive(None), driver);
+        result.unwrap()
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("agent should finish");
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "blank queued input must not trigger an LLM turn"
+    );
+    assert_eq!(
+        turns_completed.load(Ordering::SeqCst),
+        2,
+        "only the two non-blank user turns should complete"
+    );
+    assert_eq!(
+        seen_user_texts.lock().unwrap().as_slice(),
+        &[
+            "first user turn".to_string(),
+            "second after blank queued input".to_string()
+        ]
+    );
+    assert!(result.final_text.contains("second response complete"));
+}
+
+#[tokio::test]
 async fn test_nex_queued_input_during_tool_wait_is_added_at_tool_result_barrier() {
     let tmp = TempDir::new().unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
