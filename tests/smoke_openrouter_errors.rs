@@ -437,11 +437,113 @@ fn http_error_produces_clean_error_message() {
         "Error should mention status or message: {}",
         err_msg
     );
+    assert!(
+        err_msg.contains("Authentication failed") && err_msg.contains("API key"),
+        "Authentication failures should retain credential-focused guidance: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("provider-side"),
+        "Local authentication failures should not be classified as provider-side: {}",
+        err_msg
+    );
     eprintln!("HTTP 401 error (expected): {}", err_msg);
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: 429 Rate limit produces clean error
+// Test 10: OpenRouter provider-side 402 metadata is actionable
+// ---------------------------------------------------------------------------
+
+/// Verifies that OpenRouter's structured provider metadata is rendered instead
+/// of collapsing to the ambiguous top-level "Provider returned error" message.
+#[test]
+fn provider_side_402_metadata_is_actionable() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let body = serde_json::json!({
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 402,
+                    "metadata": {
+                        "provider_name": "Crucible",
+                        "raw": r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota","message":"Out of credits. Top up at /dashboard/billing to continue."}}"#
+                    }
+                }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let url = format!("http://127.0.0.1:{}", port);
+    let client = OpenAiClient::new(
+        "sk-or-test-secret-not-for-display".into(),
+        "deepseek/deepseek-v4-flash:free",
+        Some(&url),
+    )
+    .unwrap()
+    .with_provider_hint("openrouter")
+    .with_streaming(false);
+
+    let request = make_request("deepseek/deepseek-v4-flash:free");
+    let result = block_on(client.send(&request));
+
+    handle.join().unwrap();
+
+    assert!(result.is_err(), "402 should produce an error");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("API error 402: Provider returned error"),
+        "{}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("OpenRouter provider Crucible"),
+        "{}",
+        err_msg
+    );
+    assert!(err_msg.contains("insufficient_quota"), "{}", err_msg);
+    assert!(err_msg.contains("Out of credits"), "{}", err_msg);
+    assert!(
+        err_msg.contains("openrouter:deepseek/deepseek-v4-flash"),
+        "{}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("provider-side, not a local API-key/config failure"),
+        "{}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("Check your API key") && !err_msg.contains("api_key ="),
+        "Provider-side failures should not point users at credentials: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("sk-or-test-secret-not-for-display"),
+        "Error output must not leak API key values: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.len() < 800,
+        "Error message should stay concise: {}",
+        err_msg
+    );
+    eprintln!("HTTP 402 provider error (expected): {}", err_msg);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: 429 Rate limit produces clean error
 // ---------------------------------------------------------------------------
 
 /// Verifies that 429 rate limit produces a clean error via mock server.

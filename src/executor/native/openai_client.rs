@@ -178,8 +178,13 @@ struct OaiErrorResponse {
 struct OaiErrorDetail {
     message: String,
     #[serde(default)]
+    #[serde(rename = "type")]
+    error_type: Option<String>,
+    #[serde(default)]
     #[allow(dead_code)]
     code: Option<serde_json::Value>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 // ── OpenAI streaming chunk types ─────────────────────────────────────────
@@ -920,6 +925,8 @@ impl OpenAiClient {
                 status_code,
                 &body,
                 &self.auth_config_hint(),
+                self.provider_hint.as_deref(),
+                Some(&self.model),
             ));
         }
 
@@ -1096,6 +1103,8 @@ impl OpenAiClient {
                 status_code,
                 &body,
                 &self.auth_config_hint(),
+                self.provider_hint.as_deref(),
+                Some(&self.model),
             ));
         }
 
@@ -1359,6 +1368,8 @@ impl OpenAiClient {
                         status_code,
                         &body,
                         &self.auth_config_hint(),
+                        self.provider_hint.as_deref(),
+                        Some(&self.model),
                     ));
                 }
                 Err(e) => {
@@ -1554,10 +1565,71 @@ pub fn max_retries_for_status(status: u16) -> usize {
 pub struct ApiError {
     pub status: u16,
     pub message: String,
+    pub openrouter_provider_error: Option<OpenRouterProviderError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenRouterProviderError {
+    pub provider_name: Option<String>,
+    pub upstream_type: Option<String>,
+    pub upstream_code: Option<String>,
+    pub upstream_message: Option<String>,
+    pub free_route_suggestion: Option<String>,
+}
+
+impl OpenRouterProviderError {
+    fn rendered_reason(&self) -> String {
+        let mut reason_parts = Vec::new();
+        match (&self.upstream_type, &self.upstream_code) {
+            (Some(kind), Some(code)) if kind == code => reason_parts.push(kind.clone()),
+            (Some(kind), Some(code)) => reason_parts.push(format!("{}/{}", kind, code)),
+            (Some(kind), None) => reason_parts.push(kind.clone()),
+            (None, Some(code)) => reason_parts.push(code.clone()),
+            (None, None) => {}
+        }
+        if let Some(message) = &self.upstream_message {
+            reason_parts.push(message.clone());
+        }
+        if reason_parts.is_empty() {
+            "provider returned an unspecified upstream error".to_string()
+        } else {
+            reason_parts.join(": ")
+        }
+    }
+}
+
+impl ApiError {
+    pub fn is_openrouter_provider_side_failure(&self) -> bool {
+        self.openrouter_provider_error.is_some()
+    }
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(provider_error) = &self.openrouter_provider_error {
+            write!(f, "API error {}: {}", self.status, self.message)?;
+            let reason = provider_error.rendered_reason();
+            match &provider_error.provider_name {
+                Some(provider) => {
+                    write!(f, ". OpenRouter provider {} returned {}", provider, reason)?
+                }
+                None => write!(f, ". OpenRouter provider returned {}", reason)?,
+            }
+            let boundary = if reason.ends_with(['.', '!', '?']) {
+                " "
+            } else {
+                ". "
+            };
+            write!(
+                f,
+                "{}This is provider-side, not a local API-key/config failure.",
+                boundary
+            )?;
+            if let Some(suggestion) = &provider_error.free_route_suggestion {
+                write!(f, " {}", suggestion)?;
+            }
+            return Ok(());
+        }
         match self.status {
             401 => write!(
                 f,
@@ -1577,27 +1649,183 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 fn oai_api_error(status: u16, body: &str) -> anyhow::Error {
-    let message = if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
-        err.error.message
-    } else {
-        truncate(body, 500).to_string()
+    let (message, openrouter_provider_error) =
+        if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
+            (err.error.message, None)
+        } else {
+            (truncate(body, 500).to_string(), None)
+        };
+    ApiError {
+        status,
+        message,
+        openrouter_provider_error,
+    }
+    .into()
+}
+
+fn oai_api_error_for_provider(
+    status: u16,
+    body: &str,
+    provider_hint: Option<&str>,
+    model: Option<&str>,
+) -> anyhow::Error {
+    let (message, openrouter_provider_error) =
+        if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
+            let provider_error = if provider_hint == Some("openrouter") {
+                parse_openrouter_provider_error(&err.error, model)
+            } else {
+                None
+            };
+            (err.error.message, provider_error)
+        } else {
+            (truncate(body, 500).to_string(), None)
+        };
+    ApiError {
+        status,
+        message,
+        openrouter_provider_error,
+    }
+    .into()
+}
+
+fn parse_openrouter_provider_error(
+    detail: &OaiErrorDetail,
+    model: Option<&str>,
+) -> Option<OpenRouterProviderError> {
+    let metadata = detail.metadata.as_ref()?;
+    let raw = metadata.get("raw")?;
+    let raw_value = match raw {
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+            .unwrap_or_else(|_| {
+                serde_json::json!({
+                    "error": {
+                        "message": s
+                    }
+                })
+            }),
+        other => other.clone(),
     };
-    ApiError { status, message }.into()
+    let raw_error = raw_value.get("error").unwrap_or(&raw_value);
+
+    let provider_name = metadata
+        .get("provider_name")
+        .or_else(|| metadata.get("provider"))
+        .and_then(string_value)
+        .map(str::to_string);
+    let upstream_type = raw_error
+        .get("type")
+        .and_then(string_value)
+        .or(detail.error_type.as_deref())
+        .map(str::to_string);
+    let upstream_code = raw_error
+        .get("code")
+        .and_then(compact_json_value)
+        .or_else(|| detail.code.as_ref().and_then(compact_json_value));
+    let upstream_message = raw_error
+        .get("message")
+        .and_then(string_value)
+        .map(str::to_string);
+    let free_route_suggestion = build_openrouter_free_route_suggestion(
+        model,
+        &upstream_type,
+        &upstream_code,
+        &upstream_message,
+    );
+
+    if provider_name.is_none()
+        && upstream_type.is_none()
+        && upstream_code.is_none()
+        && upstream_message.is_none()
+    {
+        None
+    } else {
+        Some(OpenRouterProviderError {
+            provider_name,
+            upstream_type,
+            upstream_code,
+            upstream_message,
+            free_route_suggestion,
+        })
+    }
+}
+
+fn build_openrouter_free_route_suggestion(
+    model: Option<&str>,
+    upstream_type: &Option<String>,
+    upstream_code: &Option<String>,
+    upstream_message: &Option<String>,
+) -> Option<String> {
+    let model = model?;
+    let non_free_model = model.strip_suffix(":free")?;
+    let combined = [
+        upstream_type.as_deref(),
+        upstream_code.as_deref(),
+        upstream_message.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase();
+    let looks_like_route_issue = [
+        "quota",
+        "credit",
+        "capacity",
+        "unavailable",
+        "overloaded",
+        "no provider",
+        "provider",
+        "route",
+        "rate_limit",
+        "rate limit",
+    ]
+    .iter()
+    .any(|needle| combined.contains(needle));
+
+    if looks_like_route_issue {
+        Some(format!(
+            "For this free OpenRouter route, try `openrouter:{}` or another provider/model route.",
+            non_free_model
+        ))
+    } else {
+        None
+    }
+}
+
+fn string_value(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim()),
+        _ => None,
+    }
+}
+
+fn compact_json_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 /// Same as `oai_api_error`, but appends a WG-config-pointing hint
 /// when the status is auth-related (401/403). The hint names the
 /// `[[llm_endpoints.endpoints]]` block — never an env var.
-fn oai_api_error_with_hint(status: u16, body: &str, config_hint: &str) -> anyhow::Error {
-    let mut message = if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
-        err.error.message
-    } else {
-        truncate(body, 500).to_string()
+fn oai_api_error_with_hint(
+    status: u16,
+    body: &str,
+    config_hint: &str,
+    provider_hint: Option<&str>,
+    model: Option<&str>,
+) -> anyhow::Error {
+    let mut err = oai_api_error_for_provider(status, body, provider_hint, model);
+    let Some(api_err) = err.downcast_mut::<ApiError>() else {
+        return err;
     };
     if matches!(status, 401 | 403) && !config_hint.is_empty() {
-        message.push_str(config_hint);
+        api_err.message.push_str(config_hint);
     }
-    ApiError { status, message }.into()
+    err
 }
 
 fn parse_retry_after_oai(body: &str) -> Option<u64> {
@@ -4647,6 +4875,76 @@ Done."#;
         let api403 = err403.downcast_ref::<ApiError>().expect("ApiError");
         let d403 = format!("{}", api403);
         assert!(d403.contains("Access denied"), "{}", d403);
+    }
+
+    #[test]
+    fn test_openrouter_provider_error_metadata_raw_is_rendered() {
+        let body = serde_json::json!({
+            "error": {
+                "message": "Provider returned error",
+                "code": 402,
+                "metadata": {
+                    "provider_name": "Crucible",
+                    "raw": r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota","message":"Out of credits. Top up at /dashboard/billing to continue."}}"#
+                }
+            }
+        })
+        .to_string();
+        let err = oai_api_error_with_hint(
+            402,
+            &body,
+            " To configure: set `api_key = \"...\"` under [[llm_endpoints.endpoints]].",
+            Some("openrouter"),
+            Some("deepseek/deepseek-v4-flash:free"),
+        );
+        let api_err = err.downcast_ref::<ApiError>().expect("ApiError");
+        assert_eq!(api_err.status, 402);
+        assert!(api_err.is_openrouter_provider_side_failure());
+        let display = format!("{}", api_err);
+        assert!(
+            display.contains("API error 402: Provider returned error"),
+            "{display}"
+        );
+        assert!(
+            display.contains("OpenRouter provider Crucible"),
+            "{display}"
+        );
+        assert!(display.contains("insufficient_quota"), "{display}");
+        assert!(display.contains("Out of credits"), "{display}");
+        assert!(
+            display.contains("provider-side, not a local API-key/config failure"),
+            "{display}"
+        );
+        assert!(
+            display.contains("openrouter:deepseek/deepseek-v4-flash"),
+            "{display}"
+        );
+        assert!(
+            !display.contains("Check your API key") && !display.contains("api_key ="),
+            "{display}"
+        );
+        assert!(!display.contains("sk-or"), "{display}");
+    }
+
+    #[test]
+    fn test_openrouter_auth_failure_keeps_credential_guidance() {
+        let err = oai_api_error_with_hint(
+            401,
+            r#"{"error":{"message":"Invalid API key"}}"#,
+            " To configure: set `api_key = \"...\"` under [[llm_endpoints.endpoints]] block named 'openrouter' in .wg/config.toml.",
+            Some("openrouter"),
+            Some("deepseek/deepseek-v4-flash:free"),
+        );
+        let api_err = err.downcast_ref::<ApiError>().expect("ApiError");
+        assert!(!api_err.is_openrouter_provider_side_failure());
+        let display = format!("{}", api_err);
+        assert!(display.contains("Authentication failed"), "{display}");
+        assert!(
+            display.contains("Check your API key configuration"),
+            "{display}"
+        );
+        assert!(display.contains("[[llm_endpoints.endpoints]]"), "{display}");
+        assert!(!display.contains("provider-side"), "{display}");
     }
 
     // ── JSON recovery tests ─────────────────────────────────────────────

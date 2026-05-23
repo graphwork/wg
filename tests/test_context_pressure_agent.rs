@@ -128,6 +128,7 @@ impl Provider for ContextTooLongProvider {
             Err(ApiError {
                 status: 413,
                 message: "Request too large".to_string(),
+                openrouter_provider_error: None,
             }
             .into())
         } else {
@@ -174,6 +175,7 @@ impl Provider for AlwaysContextTooLongProvider {
         Err(ApiError {
             status: 413,
             message: "Request too large".to_string(),
+            openrouter_provider_error: None,
         }
         .into())
     }
@@ -213,6 +215,7 @@ impl Provider for Context400Provider {
             Err(ApiError {
                 status: 400,
                 message: "This model's maximum context length is 32768 tokens".to_string(),
+                openrouter_provider_error: None,
             }
             .into())
         } else {
@@ -939,6 +942,7 @@ fn test_is_context_too_long_413() {
     let err: anyhow::Error = ApiError {
         status: 413,
         message: "Request too large".to_string(),
+        openrouter_provider_error: None,
     }
     .into();
     assert!(is_context_too_long(&err));
@@ -951,6 +955,7 @@ fn test_is_context_too_long_400_with_context_message() {
     let err: anyhow::Error = ApiError {
         status: 400,
         message: "This model's maximum context length is 32768 tokens".to_string(),
+        openrouter_provider_error: None,
     }
     .into();
     assert!(is_context_too_long(&err));
@@ -963,6 +968,7 @@ fn test_is_context_too_long_400_with_prompt_too_long() {
     let err: anyhow::Error = ApiError {
         status: 400,
         message: "Prompt is too long".to_string(),
+        openrouter_provider_error: None,
     }
     .into();
     assert!(is_context_too_long(&err));
@@ -975,6 +981,7 @@ fn test_is_context_too_long_400_unrelated() {
     let err: anyhow::Error = ApiError {
         status: 400,
         message: "Invalid request: missing 'model' field".to_string(),
+        openrouter_provider_error: None,
     }
     .into();
     assert!(!is_context_too_long(&err));
@@ -987,6 +994,7 @@ fn test_is_context_too_long_401() {
     let err: anyhow::Error = ApiError {
         status: 401,
         message: "Invalid API key".to_string(),
+        openrouter_provider_error: None,
     }
     .into();
     assert!(!is_context_too_long(&err));

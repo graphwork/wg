@@ -481,6 +481,16 @@ description = "Pins add-standalone-nex: installing WG exposes a standalone `nex`
 timeout_seconds = 45
 
 [[scenario]]
+name = "openrouter_provider_error_402"
+script = "scenarios/openrouter_provider_error_402.sh"
+owners = [
+    "improve-nex-openrouter",
+    "smoke-gate-is",
+]
+description = "Pins improve-nex-openrouter: standalone `nex` against a local OpenRouter-shaped endpoint must render provider-side 402 metadata (`metadata.provider_name` + upstream `metadata.raw` type/code/message), avoid credential-focused guidance and API-key leaks for that provider failure, suggest the non-free model id for `:free` routes, and still succeed on the equivalent paid route."
+timeout_seconds = 45
+
+[[scenario]]
 name = "nex_live_input_pty"
 script = "scenarios/nex_live_input_pty.sh"
 owners = [

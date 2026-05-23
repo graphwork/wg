@@ -2044,6 +2044,14 @@ impl AgentLoop {
                         } else if let Some(api_err) =
                             e.downcast_ref::<super::openai_client::ApiError>()
                         {
+                            if api_err.is_openrouter_provider_side_failure() {
+                                let err_text = format!("OpenRouter provider-side failure: {:#}", e);
+                                eprintln!("[native-agent] {}", err_text);
+                                if let Some(ref mut s) = surface {
+                                    s.on_error(&err_text);
+                                }
+                                return Err(e).context("OpenRouter provider-side failure");
+                            }
                             match api_err.status {
                                 401 | 403 => {
                                     let err_text = format!("Fatal authentication error: {:#}", e);
@@ -2280,6 +2288,16 @@ impl AgentLoop {
                                 consecutive_context_too_long = 0;
                             }
                             if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
+                                if api_err.is_openrouter_provider_side_failure() {
+                                    let err_text = format!(
+                                        "OpenRouter provider-side failure: {:#}", e
+                                    );
+                                    eprintln!("[native-agent] {}", err_text);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
+                                    return Err(e).context("OpenRouter provider-side failure");
+                                }
                                 if api_err.status == 401 || api_err.status == 403 {
                                     let err_text = format!(
                                         "Fatal authentication error: {:#}", e

@@ -142,6 +142,7 @@ async fn test_server_error_500_recovered_gracefully() {
             ApiError {
                 status: 500,
                 message: "Internal Server Error".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -208,6 +209,7 @@ async fn test_rate_limit_429_recovered_gracefully() {
             ApiError {
                 status: 429,
                 message: "Rate limit exceeded".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -269,6 +271,7 @@ async fn test_auth_error_401_fails_immediately() {
         ApiError {
             status: 401,
             message: "Invalid API key".to_string(),
+            openrouter_provider_error: None,
         }
         .into()
     }))]);
@@ -310,6 +313,7 @@ async fn test_consecutive_server_errors_eventually_fail() {
             ApiError {
                 status: 500,
                 message: "err".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -317,6 +321,7 @@ async fn test_consecutive_server_errors_eventually_fail() {
             ApiError {
                 status: 500,
                 message: "err".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -324,6 +329,7 @@ async fn test_consecutive_server_errors_eventually_fail() {
             ApiError {
                 status: 500,
                 message: "err".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -331,6 +337,7 @@ async fn test_consecutive_server_errors_eventually_fail() {
             ApiError {
                 status: 500,
                 message: "err".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -370,6 +377,7 @@ async fn test_server_error_counter_resets_on_success() {
             ApiError {
                 status: 500,
                 message: "err1".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -382,6 +390,7 @@ async fn test_server_error_counter_resets_on_success() {
             ApiError {
                 status: 502,
                 message: "err2".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -474,6 +483,7 @@ async fn test_model_conversation_never_contains_raw_errors() {
             ApiError {
                 status: 500,
                 message: "Internal Server Error\nstack trace: ...".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
@@ -481,6 +491,7 @@ async fn test_model_conversation_never_contains_raw_errors() {
             ApiError {
                 status: 429,
                 message: "Rate limit exceeded. Please retry after 2s".to_string(),
+                openrouter_provider_error: None,
             }
             .into()
         })),
