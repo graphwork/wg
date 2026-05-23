@@ -1154,3 +1154,12 @@ owners = [
 ]
 description = "Pins fix-tui-new-2: the real `wg tui` new-chat launcher flow must focus the freshly-created chat immediately and keep `wg --json tui-dump`'s coordinator_id on that new chat across multiple refresh ticks. Uses a custom-command `cat` chat so the full tmux/PTY/UI path runs without live LLM credentials."
 timeout_seconds = 90
+
+[[scenario]]
+name = "standalone_nex_config_split"
+script = "scenarios/standalone_nex_config_split.sh"
+owners = [
+    "verify-standalone-nex",
+]
+description = "Pins verify-standalone-nex: installed standalone `nex` uses isolated .nex state/config, starts a fresh project session for each bare invocation, honors CLI/NEX_* precedence over project config, and `wg nex --autonomous` ignores human ~/.nex routing state. Uses WG_FAKE_LLM so the actual command-line flow is deterministic and does not require network credentials."
+timeout_seconds = 60
