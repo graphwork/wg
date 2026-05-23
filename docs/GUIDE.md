@@ -69,6 +69,13 @@ wg migrate config --dry-run    # preview changes
 wg migrate config --all        # rewrite global + local; backs up to .pre-migrate.<timestamp>
 ```
 
+Standalone `nex` is a separate human REPL surface. Use `nex` when you want
+`.nex/` or `~/.nex/` sessions that are not owned by a WG task graph. Use
+`wg nex` when the session belongs to a WG project and should live in
+`.wg/chat/`. See [Standalone nex Setup and Migration](guides/standalone-nex.md)
+for the setup, precedence, and migration rules. Autonomous WG agents do not
+read human `~/.nex` model or endpoint state.
+
 ### Initialize a project
 
 ```bash
