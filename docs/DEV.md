@@ -18,7 +18,7 @@ See `docs/KEY_DOCS.md` for the canonical list of documentation files to keep in 
 ## Build & Test
 
 ```
-cargo install --path .          # rebuild global wg binary
+cargo install --path . --locked # rebuild global wg and nex binaries
 wg service stop                 # stop before rebuilding
 cargo test                      # run tests
 typst compile docs/manual/wg-manual.typ   # rebuild manual PDF
@@ -133,7 +133,7 @@ To update when Agency releases new primitives:
 
 ```bash
 cp ~/agency/primitives/starter.csv agency/starter.csv
-cargo install --path .   # rebuild with new pool embedded
+cargo install --path . --locked # rebuild wg/nex with new pool embedded
 git add agency/starter.csv
 git commit -m "primitives: sync from Agency vX.Y.Z (637→N)"
 ```
@@ -200,7 +200,7 @@ See `docs/MODEL_REGISTRY.md` for the full registry design (multi-provider suppor
 
 ## Common Pitfalls
 
-- Forgot `cargo install --path .` after code changes — old binary runs
+- Forgot `cargo install --path . --locked` after code changes — old binaries run
 - `wg evaluate` requires `run` subcommand: `wg evaluate run <task-id>`
 - `wg retry` must clear `assigned` field or coordinator skips the task
 - `--output-format stream-json` requires `--verbose` with `--print` in Claude CLI

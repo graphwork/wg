@@ -50,6 +50,9 @@ pub mod messages;
 pub mod metrics;
 pub mod model_benchmarks;
 pub mod models;
+#[path = "commands/nex.rs"]
+pub mod nex;
+pub mod nex_cli;
 pub mod notify;
 pub mod parser;
 pub mod plan_validator;
@@ -72,6 +75,7 @@ pub mod telegram_commands;
 pub mod usage;
 pub mod vendor_history;
 pub mod verify_lint;
+pub mod workgraph_dir;
 
 pub use config::MatrixConfig;
 pub use graph::WorkGraph;

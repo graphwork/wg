@@ -518,10 +518,13 @@ The dispatcher evaluates waiting conditions each tick and automatically resumes 
 When you modify source code in a Rust project that uses `cargo install`:
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
-This updates the global `wg` binary. Forgetting this step is a common source of "why isn't this working" bugs. Do it after every code change.
+This updates the global `wg` and `nex` binaries through the local
+`cargo install --path .` target while using the checked-in lockfile.
+Forgetting this step is a common source of "why isn't this working" bugs. Do it
+after every code change.
 
 ### 4.3 Worktree Isolation
 

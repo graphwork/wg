@@ -718,7 +718,7 @@ fn main() -> Result<()> {
     // `~/.config/gh` on first use without requiring `gh init`.
     let is_repl_style = matches!(
         cli.command,
-        Some(Commands::Nex { .. }) | Some(Commands::TuiNex { .. }) | Some(Commands::TuiPty { .. })
+        Some(Commands::Nex(_)) | Some(Commands::TuiNex { .. }) | Some(Commands::TuiPty { .. })
     );
     if is_repl_style
         && !workgraph_dir.exists()
@@ -3495,44 +3495,7 @@ fn main() -> Result<()> {
                 global,
             ),
         },
-        Commands::Nex {
-            model,
-            endpoint,
-            system_prompt,
-            message,
-            max_turns,
-            chatty,
-            verbose,
-            read_only,
-            resume,
-            role,
-            chat_id,
-            chat_ref,
-            autonomous,
-            no_mcp,
-            eval_mode,
-            idle_timeout_secs,
-            minimal_tools,
-        } => commands::nex::run(
-            &workgraph_dir,
-            model.as_deref(),
-            endpoint.as_deref(),
-            system_prompt.as_deref(),
-            message.as_deref(),
-            max_turns,
-            chatty,
-            verbose,
-            read_only,
-            resume.as_deref(),
-            role.as_deref(),
-            chat_id,
-            chat_ref.as_deref(),
-            autonomous,
-            no_mcp,
-            eval_mode,
-            idle_timeout_secs,
-            minimal_tools,
-        ),
+        Commands::Nex(args) => commands::nex::run_args(&workgraph_dir, &args, "wg nex"),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())
         }
