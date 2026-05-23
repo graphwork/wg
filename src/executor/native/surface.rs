@@ -63,6 +63,16 @@ pub trait ConversationSurface: Send {
     /// loop can handle them at the next turn boundary.
     async fn next_user_input(&mut self) -> Option<UserTurn>;
 
+    /// Non-blocking drain of user turns that were explicitly submitted
+    /// while the assistant was busy streaming or running tools.
+    ///
+    /// Most surfaces should keep the default empty drain. Surfaces with an
+    /// always-on input reader can override this so the agent loop can accept
+    /// queued direction at safe barriers without blocking or dropping it.
+    fn drain_submitted_user_input(&mut self) -> Vec<UserTurn> {
+        Vec::new()
+    }
+
     /// Called immediately after the loop receives a fresh user turn
     /// and before the first LLM call. The surface can reset its
     /// per-turn buffer, clear the streaming dotfile, etc. Default

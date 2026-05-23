@@ -481,6 +481,16 @@ description = "Pins add-standalone-nex: installing WG exposes a standalone `nex`
 timeout_seconds = 45
 
 [[scenario]]
+name = "nex_live_input_pty"
+script = "scenarios/nex_live_input_pty.sh"
+owners = [
+    "improve-nex-live",
+    "smoke-gate-is",
+]
+description = "Drives standalone `nex` through a real PTY with terminal echo disabled while WG_FAKE_LLM streams a long response. Asserts a second user line typed during streaming is visibly preserved by the live input area before the first response completes, then is delivered as the next user turn and journaled without corrupting assistant output."
+timeout_seconds = 75
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [

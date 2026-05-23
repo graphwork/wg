@@ -5,19 +5,22 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tempfile::TempDir;
+use tokio::sync::{Notify, mpsc};
 
 use workgraph::executor::native::agent::AgentLoop;
 use workgraph::executor::native::client::{
-    ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
+    ContentBlock, MessagesRequest, MessagesResponse, Role, StopReason, ToolDefinition, Usage,
 };
 use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::tools::ToolRegistry;
+use workgraph::executor::native::surface::{ConversationSurface, UserTurn};
+use workgraph::executor::native::tools::{Tool, ToolOutput, ToolRegistry};
 
 struct EchoProvider {
     call_count: Arc<AtomicUsize>,
@@ -488,6 +491,48 @@ impl workgraph::executor::native::surface::ConversationSurface for QueueSurface 
     }
 }
 
+struct AsyncQueueSurface {
+    rx: mpsc::UnboundedReceiver<String>,
+    turns_completed: Arc<AtomicUsize>,
+    stream_text: Arc<Mutex<String>>,
+}
+
+impl AsyncQueueSurface {
+    fn new(rx: mpsc::UnboundedReceiver<String>) -> Self {
+        Self {
+            rx,
+            turns_completed: Arc::new(AtomicUsize::new(0)),
+            stream_text: Arc::new(Mutex::new(String::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl ConversationSurface for AsyncQueueSurface {
+    async fn next_user_input(&mut self) -> Option<UserTurn> {
+        self.rx.recv().await.map(UserTurn::plain)
+    }
+
+    fn drain_submitted_user_input(&mut self) -> Vec<UserTurn> {
+        let mut turns = Vec::new();
+        while let Ok(msg) = self.rx.try_recv() {
+            turns.push(UserTurn::plain(msg));
+        }
+        turns
+    }
+
+    fn on_turn_end(&mut self) {
+        self.turns_completed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn stream_sink(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        let stream_text = self.stream_text.clone();
+        Arc::new(move |chunk| {
+            stream_text.lock().unwrap().push_str(chunk);
+        })
+    }
+}
+
 /// Regression test: two messages back-to-back against a mock OAI-compat
 /// endpoint (simulated by a Provider that echoes). The second message
 /// must produce a response — the bug was that the agent loop broke after
@@ -789,6 +834,284 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
         "Final text should reference second message, got: {}",
         result.final_text
     );
+}
+
+#[tokio::test]
+async fn test_nex_queued_input_during_streaming_becomes_next_turn() {
+    let tmp = TempDir::new().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let first_chunk_seen = Arc::new(Notify::new());
+    let allow_first_response_to_finish = Arc::new(Notify::new());
+    let seen_user_texts = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct GatedStreamingProvider {
+        call_count: Arc<AtomicUsize>,
+        first_chunk_seen: Arc<Notify>,
+        allow_first_response_to_finish: Arc<Notify>,
+        seen_user_texts: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for GatedStreamingProvider {
+        fn name(&self) -> &str {
+            "gated-streaming"
+        }
+        fn model(&self) -> &str {
+            "stream-model"
+        }
+        fn max_tokens(&self) -> u32 {
+            1024
+        }
+        async fn send(&self, _req: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
+            unreachable!("agent loop should use send_streaming")
+        }
+        async fn send_streaming(
+            &self,
+            req: &MessagesRequest,
+            on_text: &(dyn Fn(String) + Send + Sync),
+        ) -> anyhow::Result<MessagesResponse> {
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let user_text = last_user_text(req);
+            self.seen_user_texts.lock().unwrap().push(user_text);
+            if count == 0 {
+                on_text("ASSISTANT_STREAM_MARKER ".to_string());
+                self.first_chunk_seen.notify_waiters();
+                self.allow_first_response_to_finish.notified().await;
+                on_text("stream-finished".to_string());
+                Ok(text_response("stream-0", "first response complete"))
+            } else {
+                on_text("SECOND_TURN_MARKER".to_string());
+                Ok(text_response("stream-1", "second response complete"))
+            }
+        }
+    }
+
+    let provider = Box::new(GatedStreamingProvider {
+        call_count: call_count.clone(),
+        first_chunk_seen: first_chunk_seen.clone(),
+        allow_first_response_to_finish: allow_first_response_to_finish.clone(),
+        seen_user_texts: seen_user_texts.clone(),
+    });
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let surface = AsyncQueueSurface::new(rx);
+    let stream_text = surface.stream_text.clone();
+
+    let mut agent = AgentLoop::new(
+        provider,
+        ToolRegistry::new(),
+        "You are a test assistant.".to_string(),
+        10,
+        tmp.path().join("test.ndjson"),
+    )
+    .with_surface(Box::new(surface));
+
+    let driver = async move {
+        tx.send("first user turn".to_string()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), first_chunk_seen.notified())
+            .await
+            .expect("first stream chunk should arrive");
+        tx.send("second turn typed while first response streams".to_string())
+            .unwrap();
+        allow_first_response_to_finish.notify_waiters();
+        drop(tx);
+    };
+    let run = async {
+        let (result, _) = tokio::join!(agent.run_interactive(None), driver);
+        result.unwrap()
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("agent should finish");
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        seen_user_texts.lock().unwrap().as_slice(),
+        &[
+            "first user turn".to_string(),
+            "second turn typed while first response streams".to_string()
+        ]
+    );
+    assert!(result.final_text.contains("second response complete"));
+    let rendered = stream_text.lock().unwrap().clone();
+    assert!(rendered.contains("ASSISTANT_STREAM_MARKER"));
+    assert!(
+        !rendered.contains("second turn typed while first response streams"),
+        "queued user input must not be mixed into streamed assistant output: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn test_nex_queued_input_during_tool_wait_is_added_at_tool_result_barrier() {
+    let tmp = TempDir::new().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let tool_started = Arc::new(Notify::new());
+    let release_tool = Arc::new(Notify::new());
+    let saw_queued_at_barrier = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    struct ToolBarrierProvider {
+        call_count: Arc<AtomicUsize>,
+        saw_queued_at_barrier: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Provider for ToolBarrierProvider {
+        fn name(&self) -> &str {
+            "tool-barrier"
+        }
+        fn model(&self) -> &str {
+            "tool-barrier-model"
+        }
+        fn max_tokens(&self) -> u32 {
+            1024
+        }
+        async fn send(&self, _req: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
+            unreachable!("agent loop should use send_streaming")
+        }
+        async fn send_streaming(
+            &self,
+            req: &MessagesRequest,
+            on_text: &(dyn Fn(String) + Send + Sync),
+        ) -> anyhow::Result<MessagesResponse> {
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+            match count {
+                0 => {
+                    on_text("starting tool".to_string());
+                    Ok(MessagesResponse {
+                        id: "tool-0".to_string(),
+                        content: vec![
+                            ContentBlock::Text {
+                                text: "I will run a slow tool.".to_string(),
+                            },
+                            ContentBlock::ToolUse {
+                                id: "slow-call".to_string(),
+                                name: "slow_tool".to_string(),
+                                input: serde_json::json!({}),
+                            },
+                        ],
+                        stop_reason: Some(StopReason::ToolUse),
+                        usage: Usage::default(),
+                    })
+                }
+                1 => {
+                    let last = req.messages.last().expect("tool result message");
+                    let has_tool_result = last
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "slow-call"));
+                    let has_queued_text = last.content.iter().any(|b| {
+                        matches!(b, ContentBlock::Text { text } if text.contains("queued while tool was running"))
+                    });
+                    self.saw_queued_at_barrier
+                        .store(has_tool_result && has_queued_text, Ordering::SeqCst);
+                    on_text("tool barrier response".to_string());
+                    Ok(text_response("tool-1", "tool barrier response"))
+                }
+                _ => Ok(text_response("tool-extra", "unexpected")),
+            }
+        }
+    }
+
+    struct SlowTool {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Tool for SlowTool {
+        fn name(&self) -> &str {
+            "slow_tool"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "slow_tool".to_string(),
+                description: "Test slow tool".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        async fn execute(&self, _input: &serde_json::Value) -> ToolOutput {
+            self.started.notify_waiters();
+            self.release.notified().await;
+            ToolOutput::success("slow tool finished".to_string())
+        }
+    }
+
+    let provider = Box::new(ToolBarrierProvider {
+        call_count: call_count.clone(),
+        saw_queued_at_barrier: saw_queued_at_barrier.clone(),
+    });
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(SlowTool {
+        started: tool_started.clone(),
+        release: release_tool.clone(),
+    }));
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let surface = AsyncQueueSurface::new(rx);
+    let mut agent = AgentLoop::new(
+        provider,
+        tools,
+        "You are a test assistant.".to_string(),
+        10,
+        tmp.path().join("test.ndjson"),
+    )
+    .with_surface(Box::new(surface));
+
+    let driver = async move {
+        tx.send("run the slow tool".to_string()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), tool_started.notified())
+            .await
+            .expect("tool should start");
+        tx.send("queued while tool was running".to_string())
+            .unwrap();
+        release_tool.notify_waiters();
+        drop(tx);
+    };
+    let run = async {
+        let (result, _) = tokio::join!(agent.run_interactive(None), driver);
+        result.unwrap()
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("agent should finish");
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    assert!(
+        saw_queued_at_barrier.load(Ordering::SeqCst),
+        "second request should include tool_result plus queued user text"
+    );
+    assert!(result.final_text.contains("tool barrier response"));
+}
+
+fn last_user_text(req: &MessagesRequest) -> String {
+    req.messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn text_response(id: &str, text: &str) -> MessagesResponse {
+    MessagesResponse {
+        id: id.to_string(),
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        stop_reason: Some(StopReason::EndTurn),
+        usage: Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Default::default()
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------

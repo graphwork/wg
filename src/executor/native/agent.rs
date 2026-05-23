@@ -4,8 +4,9 @@
 //! tool calls, and loops until the agent produces a final text response or
 //! hits the max-turns limit.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -361,6 +362,232 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
             eprintln!("[agent-loop] chat error append failed: {} — continuing", e);
         }
     }
+}
+
+enum LiveReadlineEvent {
+    Line(String),
+    Eof,
+    Error(String),
+}
+
+#[derive(Clone)]
+struct LiveTerminalOutput {
+    printer: Arc<Mutex<Box<dyn rustyline::ExternalPrinter + Send>>>,
+}
+
+impl LiveTerminalOutput {
+    fn print(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        if msg.is_empty() {
+            return;
+        }
+        match self.printer.lock() {
+            Ok(mut printer) => {
+                let _ = printer.print(msg);
+            }
+            Err(_) => {
+                eprint!("{}", msg);
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LiveStreamPrinter {
+    output: LiveTerminalOutput,
+    buffer: Arc<Mutex<String>>,
+}
+
+impl LiveStreamPrinter {
+    fn new(output: LiveTerminalOutput) -> Self {
+        Self {
+            output,
+            buffer: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    fn push(&self, text: &str) {
+        let mut flush = None;
+        if let Ok(mut buffer) = self.buffer.lock() {
+            buffer.push_str(text);
+            if buffer.contains('\n') || buffer.len() >= 120 {
+                flush = Some(std::mem::take(&mut *buffer));
+            }
+        }
+        if let Some(msg) = flush {
+            self.output.print(msg);
+        }
+    }
+
+    fn flush(&self) {
+        let msg = self
+            .buffer
+            .lock()
+            .ok()
+            .map(|mut buffer| std::mem::take(&mut *buffer))
+            .unwrap_or_default();
+        if !msg.is_empty() {
+            self.output.print(msg);
+        }
+    }
+}
+
+struct LiveTerminalInput {
+    rx: tokio::sync::mpsc::UnboundedReceiver<LiveReadlineEvent>,
+    output: LiveTerminalOutput,
+    waiting_for_input: Arc<AtomicBool>,
+}
+
+impl LiveTerminalInput {
+    fn start(history_path: PathBuf, cancel: super::cancel::CancelToken) -> Option<Self> {
+        if std::env::var("WG_NEX_LIVE_INPUT")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "0" | "false" | "off"))
+        {
+            return None;
+        }
+        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return None;
+        }
+
+        let mut editor = match rustyline::DefaultEditor::new() {
+            Ok(editor) => editor,
+            Err(e) => {
+                eprintln!("\x1b[33m[nex] live input unavailable: {}\x1b[0m", e);
+                return None;
+            }
+        };
+        let _ = editor.load_history(&history_path);
+
+        let printer: Box<dyn rustyline::ExternalPrinter + Send> =
+            match editor.create_external_printer() {
+                Ok(printer) => Box::new(printer),
+                Err(e) => {
+                    eprintln!("\x1b[33m[nex] live input printer unavailable: {}\x1b[0m", e);
+                    return None;
+                }
+            };
+
+        let output = LiveTerminalOutput {
+            printer: Arc::new(Mutex::new(printer)),
+        };
+        let output_for_thread = output.clone();
+        let waiting_for_input = Arc::new(AtomicBool::new(false));
+        let waiting_for_thread = waiting_for_input.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        std::thread::spawn(move || {
+            let mut last_tap: Option<std::time::Instant> = None;
+            loop {
+                match editor.readline("\x1b[1;36m>\x1b[0m ") {
+                    Ok(line) => {
+                        if !line.trim().is_empty() {
+                            let _ = editor.add_history_entry(line.as_str());
+                        }
+                        if tx.send(LiveReadlineEvent::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(rustyline::error::ReadlineError::Interrupted) => {
+                        if waiting_for_thread.load(Ordering::SeqCst) {
+                            output_for_thread.print(
+                                "\x1b[2m(Ctrl-C at prompt: use /quit or Ctrl-D to exit)\x1b[0m",
+                            );
+                            continue;
+                        }
+                        let now = std::time::Instant::now();
+                        let is_double_tap = last_tap
+                            .map(|tap| now.duration_since(tap) <= super::cancel::DOUBLE_TAP_WINDOW)
+                            .unwrap_or(false);
+                        if is_double_tap && !cancel.is_hard() {
+                            cancel.request_hard();
+                            last_tap = None;
+                            output_for_thread.print("\x1b[31m[nex] Hard cancel requested\x1b[0m");
+                        } else {
+                            cancel.request_cooperative();
+                            last_tap = Some(now);
+                            output_for_thread.print(
+                                "\x1b[33m[nex] Interrupt requested; submitted input remains queued\x1b[0m",
+                            );
+                        }
+                    }
+                    Err(rustyline::error::ReadlineError::Eof) => {
+                        let _ = tx.send(LiveReadlineEvent::Eof);
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(LiveReadlineEvent::Error(e.to_string()));
+                        break;
+                    }
+                }
+            }
+            let _ = editor.save_history(&history_path);
+        });
+
+        Some(Self {
+            rx,
+            output,
+            waiting_for_input,
+        })
+    }
+
+    fn output(&self) -> LiveTerminalOutput {
+        self.output.clone()
+    }
+
+    async fn next_line(&mut self) -> Option<String> {
+        self.waiting_for_input.store(true, Ordering::SeqCst);
+        let result = loop {
+            match self.rx.recv().await? {
+                LiveReadlineEvent::Line(line) => break Some(line),
+                LiveReadlineEvent::Eof => break None,
+                LiveReadlineEvent::Error(e) => {
+                    self.output
+                        .print(format!("\x1b[31m[nex] readline error: {}\x1b[0m", e));
+                    break None;
+                }
+            }
+        };
+        self.waiting_for_input.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn drain_submitted_lines(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        loop {
+            match self.rx.try_recv() {
+                Ok(LiveReadlineEvent::Line(line)) => lines.push(line),
+                Ok(LiveReadlineEvent::Eof) => break,
+                Ok(LiveReadlineEvent::Error(e)) => {
+                    self.output
+                        .print(format!("\x1b[31m[nex] readline error: {}\x1b[0m", e));
+                    break;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+        lines
+    }
+}
+
+fn terminal_print(output: Option<&LiveTerminalOutput>, msg: impl Into<String>) {
+    let msg = msg.into();
+    if let Some(output) = output {
+        output.print(msg);
+    } else {
+        eprint!("{}", msg);
+        let _ = std::io::stderr().flush();
+    }
+}
+
+fn terminal_line(output: Option<&LiveTerminalOutput>, msg: impl Into<String>) {
+    let mut msg = msg.into();
+    if !msg.ends_with('\n') {
+        msg.push('\n');
+    }
+    terminal_print(output, msg);
 }
 
 /// NDJSON log entry types for the output file.
@@ -1210,10 +1437,10 @@ impl AgentLoop {
             }
         }
 
-        // Rustyline editor for line editing + history.
-        // In autonomous mode we never prompt, but we still create the
-        // editor so the rest of the code doesn't need Option<Editor>
-        // everywhere.
+        // Rustyline editor for the legacy boundary-only prompt. In a
+        // real TTY we prefer LiveTerminalInput below, which owns its own
+        // rustyline editor on a background thread so typing continues
+        // while the model or tools are busy.
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
         // Persistent history file — survives sessions.
         let history_path = if let Some(home) = std::env::var_os("HOME") {
@@ -1221,15 +1448,22 @@ impl AgentLoop {
         } else {
             std::path::PathBuf::from(".wg-nex-history")
         };
-        if !self.autonomous {
-            let _ = editor.load_history(&history_path);
-        }
-
         // Take the surface out of self into a local so it can be
         // mutated across awaits without fighting other &mut self
         // borrows inside this long method. Put it back at the end
         // so subsequent calls (if any) see it.
         let mut surface: Option<Box<dyn super::surface::ConversationSurface>> = self.surface.take();
+
+        let mut live_terminal = if !self.autonomous && surface.is_none() {
+            LiveTerminalInput::start(history_path.clone(), cancel.clone())
+        } else {
+            None
+        };
+        let live_output = live_terminal.as_ref().map(|terminal| terminal.output());
+
+        if !self.autonomous && live_terminal.is_none() {
+            let _ = editor.load_history(&history_path);
+        }
 
         // (The rustyline read helper is now inlined into
         // `read_next_user_turn` at module level so we can branch on
@@ -1244,11 +1478,13 @@ impl AgentLoop {
             let first_input = if let Some(msg) = initial_message {
                 msg.to_string()
             } else {
-                match read_next_user_turn(&mut surface, &mut editor).await {
+                match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
-                            let _ = editor.save_history(&history_path);
+                            if live_terminal.is_none() {
+                                let _ = editor.save_history(&history_path);
+                            }
                             self.log_session_end(0, "empty_first_input", &total_usage);
                             return Ok(AgentResult {
                                 final_text: String::new(),
@@ -1258,12 +1494,16 @@ impl AgentLoop {
                                 exit_reason: "empty_first_input".to_string(),
                             });
                         }
-                        let _ = editor.add_history_entry(&trimmed);
+                        if live_terminal.is_none() {
+                            let _ = editor.add_history_entry(&trimmed);
+                        }
                         self.log_user_input(&trimmed);
                         trimmed
                     }
                     None => {
-                        let _ = editor.save_history(&history_path);
+                        if live_terminal.is_none() {
+                            let _ = editor.save_history(&history_path);
+                        }
                         self.log_session_end(0, "eof", &total_usage);
                         return Ok(AgentResult {
                             final_text: String::new(),
@@ -1291,7 +1531,9 @@ impl AgentLoop {
                     .await
                 {
                     NexSlashResult::Quit => {
-                        let _ = editor.save_history(&history_path);
+                        if live_terminal.is_none() {
+                            let _ = editor.save_history(&history_path);
+                        }
                         return Ok(AgentResult {
                             final_text: String::new(),
                             turns: 0,
@@ -1526,13 +1768,15 @@ impl AgentLoop {
                     .unwrap_or(true);
             if needs_user_input {
                 force_fresh_input = false;
-                match read_next_user_turn(&mut surface, &mut editor).await {
+                match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
                             continue;
                         }
-                        let _ = editor.add_history_entry(&trimmed);
+                        if live_terminal.is_none() {
+                            let _ = editor.add_history_entry(&trimmed);
+                        }
                         self.log_user_input(&trimmed);
                         if trimmed.starts_with('/') {
                             match self
@@ -1667,7 +1911,7 @@ impl AgentLoop {
             // logs and the "Interrupted" message.
             let spinner_first_chunk = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let spinner_first_chunk_sink = spinner_first_chunk.clone();
-            let _spinner_guard = if !is_autonomous && stderr_is_tty() {
+            let _spinner_guard = if !is_autonomous && live_output.is_none() && stderr_is_tty() {
                 Some(SpinnerGuard::spawn(spinner_first_chunk.clone()))
             } else {
                 None
@@ -1678,6 +1922,8 @@ impl AgentLoop {
             // accumulated transcript written to the chat-streaming
             // dotfile the TUI tails.
             let chat_text_sink = surface.as_ref().map(|s| s.stream_sink());
+            let live_stream_printer = live_output.clone().map(LiveStreamPrinter::new);
+            let live_stream_for_sink = live_stream_printer.clone();
             let on_text = move |text: String| {
                 if is_autonomous {
                     if let Some(ref sw) = stream_writer_clone {
@@ -1704,8 +1950,12 @@ impl AgentLoop {
                     if let Ok(mut b) = turn_buf_for_sink.lock() {
                         b.push_str(&text);
                     }
-                    eprint!("{}", text);
-                    let _ = std::io::stderr().flush();
+                    if let Some(ref printer) = live_stream_for_sink {
+                        printer.push(&text);
+                    } else {
+                        eprint!("{}", text);
+                        let _ = std::io::stderr().flush();
+                    }
                 }
                 if let Some(ref sink) = chat_text_sink {
                     sink(&text);
@@ -2094,6 +2344,10 @@ impl AgentLoop {
                 }
             };
 
+            if let Some(ref printer) = live_stream_printer {
+                printer.flush();
+            }
+
             // Successful response — reset consecutive error counters
             consecutive_server_errors = 0;
             consecutive_context_too_long = 0;
@@ -2217,7 +2471,7 @@ impl AgentLoop {
                             .iter()
                             .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
                         if has_text {
-                            eprintln!();
+                            terminal_line(live_output.as_ref(), "");
                             // Rewrite the just-streamed plain text as
                             // rendered markdown, only when stderr is a
                             // live TTY. Pipes, redirected files, and
@@ -2228,7 +2482,8 @@ impl AgentLoop {
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner()),
                             );
-                            if !buffer.trim().is_empty() && stderr_is_tty() {
+                            if live_output.is_none() && !buffer.trim().is_empty() && stderr_is_tty()
+                            {
                                 rerender_markdown_on_stderr(&buffer);
                             }
                         }
@@ -2270,14 +2525,16 @@ impl AgentLoop {
                     // Add a blank line between the assistant's response
                     // and our next prompt. The readline call handles
                     // rustyline's own display.
-                    eprintln!();
-                    match read_next_user_turn(&mut surface, &mut editor).await {
+                    terminal_line(live_output.as_ref(), "");
+                    match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
                         Some(line) => {
                             let trimmed = line.trim().to_string();
                             if trimmed.is_empty() {
                                 continue;
                             }
-                            let _ = editor.add_history_entry(&trimmed);
+                            if live_terminal.is_none() {
+                                let _ = editor.add_history_entry(&trimmed);
+                            }
                             self.log_user_input(&trimmed);
                             if trimmed.starts_with('/') {
                                 match self
@@ -2352,7 +2609,10 @@ impl AgentLoop {
                                 let s = input.to_string();
                                 truncate_for_display(&s, 120).to_string()
                             };
-                            eprintln!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary);
+                            terminal_line(
+                                live_output.as_ref(),
+                                format!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary),
+                            );
                             // Mirror tool activity into the chat
                             // transcript using the TUI's expected
                             // box-drawing format
@@ -2616,24 +2876,43 @@ impl AgentLoop {
                         // Interactive-mode display
                         if !self.autonomous {
                             if output.is_error {
-                                eprintln!(
-                                    "\x1b[31m× {} error: {}\x1b[0m",
-                                    name,
-                                    summarize_tool_output(&output.content)
+                                terminal_line(
+                                    live_output.as_ref(),
+                                    format!(
+                                        "\x1b[31m× {} error: {}\x1b[0m",
+                                        name,
+                                        summarize_tool_output(&output.content)
+                                    ),
                                 );
                                 if self.nex_chatty {
-                                    print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
+                                    print_indented_output(
+                                        live_output.as_ref(),
+                                        &output.content,
+                                        "\x1b[31m  ",
+                                        "\x1b[0m",
+                                    );
                                 }
                             } else if self.nex_chatty {
-                                eprintln!(
-                                    "\x1b[2m  → {}\x1b[0m",
-                                    summarize_tool_output(&output.content)
+                                terminal_line(
+                                    live_output.as_ref(),
+                                    format!(
+                                        "\x1b[2m  → {}\x1b[0m",
+                                        summarize_tool_output(&output.content)
+                                    ),
                                 );
-                                print_indented_output(&output.content, "\x1b[2m  ", "\x1b[0m");
+                                print_indented_output(
+                                    live_output.as_ref(),
+                                    &output.content,
+                                    "\x1b[2m  ",
+                                    "\x1b[0m",
+                                );
                             } else {
-                                eprintln!(
-                                    "\x1b[2m  → {}\x1b[0m",
-                                    summarize_tool_output(&output.content)
+                                terminal_line(
+                                    live_output.as_ref(),
+                                    format!(
+                                        "\x1b[2m  → {}\x1b[0m",
+                                        summarize_tool_output(&output.content)
+                                    ),
                                 );
                             }
                             // Mirror the result into the chat
@@ -2666,6 +2945,20 @@ impl AgentLoop {
                             tool_use_id: id.clone(),
                             content: channeled_content,
                             is_error: output.is_error,
+                        });
+                    }
+
+                    for queued in drain_barrier_user_input(&mut surface, &mut live_terminal) {
+                        let trimmed = queued.trim().to_string();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        self.log_user_input(&trimmed);
+                        results.push(ContentBlock::Text {
+                            text: format!(
+                                "Queued user input submitted while tools were running:\n{}",
+                                trimmed
+                            ),
                         });
                     }
 
@@ -2858,7 +3151,7 @@ impl AgentLoop {
         self.store_final_summary(&messages);
 
         // Persist readline history to disk on exit (best-effort).
-        if !self.autonomous {
+        if !self.autonomous && live_terminal.is_none() {
             let _ = editor.save_history(&history_path);
         }
 
@@ -2935,6 +3228,7 @@ impl AgentLoop {
 /// ChatSurfaceState; no-op for TerminalSurface).
 async fn read_next_user_turn(
     surface: &mut Option<Box<dyn super::surface::ConversationSurface>>,
+    live_terminal: &mut Option<LiveTerminalInput>,
     editor: &mut rustyline::DefaultEditor,
 ) -> Option<String> {
     use rustyline::error::ReadlineError;
@@ -2943,6 +3237,9 @@ async fn read_next_user_turn(
         let turn = s.next_user_input().await?;
         s.on_turn_start(turn.request_id.as_deref());
         return Some(turn.text);
+    }
+    if let Some(terminal) = live_terminal.as_mut() {
+        return terminal.next_line().await;
     }
     loop {
         match editor.readline("\x1b[1;36m>\x1b[0m ") {
@@ -2975,6 +3272,25 @@ async fn read_next_user_turn(
             }
         }
     }
+}
+
+fn drain_barrier_user_input(
+    surface: &mut Option<Box<dyn super::surface::ConversationSurface>>,
+    live_terminal: &mut Option<LiveTerminalInput>,
+) -> Vec<String> {
+    let mut inputs = Vec::new();
+    if let Some(surface) = surface.as_mut() {
+        inputs.extend(
+            surface
+                .drain_submitted_user_input()
+                .into_iter()
+                .map(|turn| turn.text),
+        );
+    }
+    if let Some(terminal) = live_terminal.as_mut() {
+        inputs.extend(terminal.drain_submitted_lines());
+    }
+    inputs
 }
 
 fn truncate_for_display(s: &str, max: usize) -> &str {
@@ -3047,7 +3363,12 @@ fn summarize_tool_output(content: &str) -> String {
 /// a line-count limit so a multi-megabyte file read doesn't saturate
 /// the terminal. `prefix` is printed before every output line (use for
 /// indent + ANSI color), `suffix` after (use to close the color span).
-fn print_indented_output(content: &str, prefix: &str, suffix: &str) {
+fn print_indented_output(
+    output: Option<&LiveTerminalOutput>,
+    content: &str,
+    prefix: &str,
+    suffix: &str,
+) {
     const MAX_LINES: usize = 20;
     const MAX_BYTES: usize = 1600;
 
@@ -3057,7 +3378,7 @@ fn print_indented_output(content: &str, prefix: &str, suffix: &str) {
         if line_count >= MAX_LINES {
             break;
         }
-        eprintln!("{}{}{}", prefix, line, suffix);
+        terminal_line(output, format!("{}{}{}", prefix, line, suffix));
         line_count += 1;
     }
 
@@ -3070,9 +3391,12 @@ fn print_indented_output(content: &str, prefix: &str, suffix: &str) {
     if line_overflow || byte_overflow {
         let extra_lines = total_lines.saturating_sub(shown_lines);
         let extra_bytes = total_bytes.saturating_sub(shown_bytes);
-        eprintln!(
-            "{}… (+{} lines, +{} bytes truncated){}",
-            prefix, extra_lines, extra_bytes, suffix
+        terminal_line(
+            output,
+            format!(
+                "{}… (+{} lines, +{} bytes truncated){}",
+                prefix, extra_lines, extra_bytes, suffix
+            ),
         );
     }
 }
