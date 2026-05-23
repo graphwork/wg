@@ -190,6 +190,32 @@ pub fn create_provider_ext(
     endpoint_name: Option<&str>,
     api_key_override: Option<&str>,
 ) -> Result<Box<dyn Provider>> {
+    let config = crate::config::Config::load_or_default(workgraph_dir);
+    let config_val = crate::config::Config::load_merged_toml_value(workgraph_dir).ok();
+    create_provider_ext_with_config(
+        workgraph_dir,
+        &config,
+        config_val.as_ref(),
+        model,
+        provider_override,
+        endpoint_name,
+        api_key_override,
+    )
+}
+
+/// Create a provider against an already-resolved config.
+///
+/// Standalone `nex` uses this to avoid re-loading WG global/project
+/// configuration after its `.nex` runtime config has already been merged.
+pub fn create_provider_ext_with_config(
+    config_root: &Path,
+    config: &crate::config::Config,
+    config_val: Option<&toml::Value>,
+    model: &str,
+    provider_override: Option<&str>,
+    endpoint_name: Option<&str>,
+    api_key_override: Option<&str>,
+) -> Result<Box<dyn Provider>> {
     // Test hook: `WG_FAKE_LLM=<path>` swaps in a pre-canned-response
     // provider. Great for smoking the rendering path (streaming,
     // wrapping, markdown rewrite) without burning tokens or waiting
@@ -235,11 +261,9 @@ pub fn create_provider_ext(
         )?));
     }
 
-    let config = crate::config::Config::load_or_default(workgraph_dir);
-
     // Endpoint-in-model shorthand — see `parse_endpoint_model_shorthand`.
     let (endpoint_name_owned, effective_model_str) =
-        parse_endpoint_model_shorthand(&config, model, endpoint_name);
+        parse_endpoint_model_shorthand(config, model, endpoint_name);
     let endpoint_name = endpoint_name_owned.as_deref();
     let model = effective_model_str.as_str();
 
@@ -261,11 +285,7 @@ pub fn create_provider_ext(
         .and_then(|name| config.llm_endpoints.find_by_name(name))
         .map(|ep| crate::config::provider_to_native_provider(&ep.provider).to_string());
 
-    // Load merged TOML value (global + local) for legacy [native_executor] access
-    let config_val: Option<toml::Value> =
-        crate::config::Config::load_merged_toml_value(workgraph_dir).ok();
-
-    let native_cfg = config_val.as_ref().and_then(|v| v.get("native_executor"));
+    let native_cfg = config_val.and_then(|v| v.get("native_executor"));
 
     // Parse unified provider:model spec (e.g. "openrouter:deepseek/deepseek-v3.2").
     // When a known provider prefix is present, it takes priority over all other
@@ -351,11 +371,8 @@ pub fn create_provider_ext(
     // from the matched endpoint's config — NEVER fall back to implicit
     // provider env vars (ANTHROPIC_API_KEY etc). See create_provider_ext
     // doc comment for the WG credential contract.
-    let endpoint_key = endpoint.and_then(|ep| {
-        ep.resolve_api_key_strict(Some(workgraph_dir))
-            .ok()
-            .flatten()
-    });
+    let endpoint_key =
+        endpoint.and_then(|ep| ep.resolve_api_key_strict(Some(config_root)).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
     let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);
     let endpoint_name_owned: Option<String> = endpoint.map(|ep| ep.name.clone());
@@ -445,7 +462,7 @@ pub fn create_provider_ext(
             // Validate model against cached OpenRouter model list (openrouter only)
             if provider_name == "openrouter" {
                 let validation =
-                    super::openai_client::validate_openrouter_model(&client.model, workgraph_dir);
+                    super::openai_client::validate_openrouter_model(&client.model, config_root);
                 if let Some(ref warning) = validation.warning {
                     eprintln!("[native-exec] WARNING: {}", warning);
                 }

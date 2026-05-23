@@ -53,6 +53,7 @@ pub mod models;
 #[path = "commands/nex.rs"]
 pub mod nex;
 pub mod nex_cli;
+pub mod nex_runtime;
 pub mod notify;
 pub mod parser;
 pub mod plan_validator;

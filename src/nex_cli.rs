@@ -1,8 +1,18 @@
 use clap::Args;
+use std::path::PathBuf;
 
 /// Shared command-line options for both `wg nex` and the standalone `nex` binary.
 #[derive(Args, Clone, Debug)]
 pub struct NexArgs {
+    /// Standalone nex state directory. Only used by the standalone `nex`
+    /// binary and eval/compatibility modes; `wg nex` remains WG-scoped.
+    #[arg(long = "nex-dir")]
+    pub nex_dir: Option<PathBuf>,
+
+    /// Extra standalone nex config file to load at highest precedence.
+    #[arg(long = "config")]
+    pub config: Option<PathBuf>,
+
     /// Model to use (e.g., openrouter:qwen/qwen3-coder, ollama:llama3.2, sonnet)
     #[arg(long, short = 'm')]
     pub model: Option<String>,

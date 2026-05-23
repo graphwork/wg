@@ -8,9 +8,14 @@ use workgraph::nex_cli::NexArgs;
 #[command(about = "Interactive agentic REPL powered by WG's native executor")]
 #[command(version)]
 struct NexCli {
-    /// Path to the WG directory (default: .wg in current dir; legacy .workgraph accepted)
+    /// Path to a WG directory. Legacy compatibility mode; prefer `wg nex`
+    /// for WG sessions or `--nex-dir` for standalone sessions.
     #[arg(long, global = true)]
     dir: Option<PathBuf>,
+
+    /// Force WG compatibility mode, resolving a WG directory from cwd/WG_DIR.
+    #[arg(long, global = true)]
+    wg: bool,
 
     #[command(flatten)]
     args: NexArgs,
@@ -20,34 +25,41 @@ fn main() -> Result<()> {
     init_logging();
 
     let cli = NexCli::parse();
-    let workgraph_dir = workgraph::workgraph_dir::resolve_workgraph_dir(
-        cli.dir.clone(),
-        std::env::var_os("WG_DIR").map(PathBuf::from),
-        std::env::current_dir().ok(),
-        dirs::home_dir(),
-    );
+    let runtime = if cli.args.eval_mode {
+        workgraph::nex_runtime::resolve_eval(&standalone_input(&cli.args))
+    } else if cli.dir.is_some() || cli.wg {
+        let workgraph_dir = workgraph::workgraph_dir::resolve_workgraph_dir(
+            cli.dir.clone(),
+            std::env::var_os("WG_DIR").map(PathBuf::from),
+            std::env::current_dir().ok(),
+            dirs::home_dir(),
+        );
+        workgraph::nex_runtime::resolve_legacy_wg_compat(
+            workgraph_dir.canonicalize().unwrap_or(workgraph_dir),
+            dirs::home_dir(),
+        )
+    } else {
+        workgraph::nex_runtime::resolve_standalone(&standalone_input(&cli.args))
+    };
 
-    if !workgraph_dir.exists()
-        && let Some(home) = dirs::home_dir()
-        && workgraph_dir == home.join(".wg")
-    {
-        if let Err(e) = std::fs::create_dir_all(&workgraph_dir) {
-            eprintln!(
-                "warning: failed to create global WG dir {}: {}",
-                workgraph_dir.display(),
-                e
-            );
-        } else {
-            eprintln!(
-                "\x1b[2m[nex] created global WG directory: {}\x1b[0m",
-                workgraph_dir.display()
-            );
-        }
+    if runtime.state_root.exists() {
+        workgraph::usage::append_usage_log(&runtime.state_root, "nex");
     }
+    workgraph::nex::run_args_with_runtime(&runtime, &cli.args, "nex")
+}
 
-    let workgraph_dir = workgraph_dir.canonicalize().unwrap_or(workgraph_dir);
-    workgraph::usage::append_usage_log(&workgraph_dir, "nex");
-    workgraph::nex::run_args(&workgraph_dir, &cli.args, "nex")
+fn standalone_input(args: &NexArgs) -> workgraph::nex_runtime::NexRuntimeResolveInput {
+    workgraph::nex_runtime::NexRuntimeResolveInput {
+        cwd: std::env::current_dir().ok(),
+        home_dir: dirs::home_dir(),
+        cli_nex_dir: args.nex_dir.clone(),
+        env_nex_dir: std::env::var_os("NEX_DIR").map(PathBuf::from),
+        env_nex_home: std::env::var_os("NEX_HOME").map(PathBuf::from),
+        explicit_config: args
+            .config
+            .clone()
+            .or_else(|| std::env::var_os("NEX_CONFIG").map(PathBuf::from)),
+    }
 }
 
 fn init_logging() {

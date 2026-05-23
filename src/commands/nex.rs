@@ -25,15 +25,43 @@ use anyhow::{Context, Result};
 
 use crate::config::{Config, DispatchRole};
 use crate::executor::native::agent::AgentLoop;
-use crate::executor::native::provider::create_provider_ext;
+use crate::executor::native::provider::create_provider_ext_with_config;
 use crate::executor::native::tools::ToolRegistry;
 use crate::executor::native::tools::helper_routing::HelperRouting;
-use crate::models::ModelRegistry;
 use crate::nex_cli::NexArgs;
+use crate::nex_runtime::{NexRuntime, NexRuntimeMode, NexSessionLayout};
 
 pub fn run_args(workgraph_dir: &Path, args: &NexArgs, display_name: &str) -> Result<()> {
+    let runtime = if args.eval_mode {
+        crate::nex_runtime::resolve_eval(&crate::nex_runtime::NexRuntimeResolveInput {
+            cwd: std::env::current_dir().ok(),
+            home_dir: dirs::home_dir(),
+            cli_nex_dir: args.nex_dir.clone(),
+            env_nex_dir: std::env::var_os("NEX_DIR").map(std::path::PathBuf::from),
+            env_nex_home: std::env::var_os("NEX_HOME").map(std::path::PathBuf::from),
+            explicit_config: args
+                .config
+                .clone()
+                .or_else(|| std::env::var_os("NEX_CONFIG").map(std::path::PathBuf::from)),
+        })
+    } else if args.autonomous
+        || std::env::var_os("WG_TASK_ID").is_some()
+        || std::env::var_os("WG_AGENT_ID").is_some()
+    {
+        crate::nex_runtime::resolve_wg_autonomous(workgraph_dir, dirs::home_dir())
+    } else {
+        crate::nex_runtime::resolve_wg_integrated(workgraph_dir)
+    };
+    run_args_with_runtime(&runtime, args, display_name)
+}
+
+pub fn run_args_with_runtime(
+    runtime: &NexRuntime,
+    args: &NexArgs,
+    display_name: &str,
+) -> Result<()> {
     run_inner(
-        workgraph_dir,
+        runtime,
         display_name,
         args.model.as_deref(),
         args.endpoint.as_deref(),
@@ -76,8 +104,9 @@ pub fn run(
     idle_timeout_secs: Option<u64>,
     minimal_tools: bool,
 ) -> Result<()> {
+    let runtime = crate::nex_runtime::resolve_wg_integrated(workgraph_dir);
     run_inner(
-        workgraph_dir,
+        &runtime,
         "wg nex",
         model,
         endpoint,
@@ -101,7 +130,7 @@ pub fn run(
 
 #[allow(clippy::too_many_arguments)]
 fn run_inner(
-    workgraph_dir: &Path,
+    runtime: &NexRuntime,
     display_name: &str,
     model: Option<&str>,
     endpoint: Option<&str>,
@@ -122,6 +151,7 @@ fn run_inner(
     minimal_tools: bool,
 ) -> Result<()> {
     let diagnostic_prefix = format!("[{}]", display_name);
+    let state_dir = runtime.state_root.as_path();
 
     // --eval-mode is a preset for benchmark-harness invocation:
     //   * implies --autonomous  (one-shot, EndTurn exits the loop)
@@ -147,16 +177,51 @@ fn run_inner(
         unsafe {
             std::env::set_var("WG_STREAM_IDLE_TIMEOUT_SECS", timeout.to_string());
         }
+    } else if matches!(
+        runtime.mode,
+        NexRuntimeMode::Standalone | NexRuntimeMode::LegacyWgCompat
+    ) && let Ok(timeout) = std::env::var("NEX_STREAM_IDLE_TIMEOUT_SECS")
+        && !timeout.trim().is_empty()
+    {
+        unsafe {
+            std::env::set_var("WG_STREAM_IDLE_TIMEOUT_SECS", timeout);
+        }
     }
 
-    let config = Config::load_or_default(workgraph_dir);
+    let config = match crate::nex_runtime::load_config(runtime) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Warning: {}, using defaults", e);
+            Config::default()
+        }
+    };
+    let config_val = crate::nex_runtime::load_toml_value(runtime).ok();
+
+    let env_model = if matches!(runtime.mode, NexRuntimeMode::Standalone) {
+        std::env::var("NEX_MODEL")
+            .ok()
+            .or_else(|| std::env::var("WG_MODEL").ok())
+    } else {
+        std::env::var("WG_MODEL").ok()
+    };
 
     let effective_model = model
         .map(String::from)
-        .or_else(|| std::env::var("WG_MODEL").ok())
+        .or(env_model)
         .unwrap_or_else(|| config.resolve_model_for_role(DispatchRole::TaskAgent).model);
 
-    record_nex_invocation(&effective_model, endpoint, eval_mode);
+    let endpoint_env = if matches!(runtime.mode, NexRuntimeMode::Standalone) {
+        std::env::var("NEX_ENDPOINT").ok()
+    } else {
+        std::env::var("WG_ENDPOINT")
+            .ok()
+            .or_else(|| std::env::var("WG_ENDPOINT_NAME").ok())
+            .or_else(|| std::env::var("WG_ENDPOINT_URL").ok())
+    };
+    let endpoint_owned = endpoint.map(String::from).or(endpoint_env);
+    let endpoint = endpoint_owned.as_deref();
+
+    record_nex_invocation(&effective_model, endpoint, eval_mode, runtime.mode);
 
     let working_dir = std::env::current_dir().unwrap_or_default();
 
@@ -169,7 +234,7 @@ fn run_inner(
 
     let mut registry = {
         let mut reg = ToolRegistry::default_all_with_config_and_routing(
-            workgraph_dir,
+            state_dir,
             &working_dir,
             &config.native_executor,
             HelperRouting::new(Some(&effective_model), None, endpoint, None),
@@ -250,25 +315,34 @@ fn run_inner(
             // service-spawned claude_handler injects via --system-prompt.
             // Falls back to a hardcoded prompt if the agency/
             // coordinator-prompt/ dir is missing.
-            Some(crate::service::coordinator_prompt::build_system_prompt(
-                workgraph_dir,
-            ))
+            runtime
+                .wg_dir
+                .as_deref()
+                .map(crate::service::coordinator_prompt::build_system_prompt)
         } else {
-            match load_agency_role(workgraph_dir, role_name) {
-                Some(content) => {
-                    eprintln!(
-                        "\x1b[2m{} loaded role: {}\x1b[0m",
-                        diagnostic_prefix, role_name
-                    );
-                    Some(content)
+            if let Some(wg_dir) = runtime.wg_dir.as_deref() {
+                match load_agency_role(wg_dir, role_name) {
+                    Some(content) => {
+                        eprintln!(
+                            "\x1b[2m{} loaded role: {}\x1b[0m",
+                            diagnostic_prefix, role_name
+                        );
+                        Some(content)
+                    }
+                    None => {
+                        eprintln!(
+                            "\x1b[33m{} role '{}' not found in agency primitives\x1b[0m",
+                            diagnostic_prefix, role_name
+                        );
+                        None
+                    }
                 }
-                None => {
-                    eprintln!(
-                        "\x1b[33m{} role '{}' not found in agency primitives\x1b[0m",
-                        diagnostic_prefix, role_name
-                    );
-                    None
-                }
+            } else {
+                eprintln!(
+                    "\x1b[33m{} role '{}' requires a WG project; ignoring in standalone mode\x1b[0m",
+                    diagnostic_prefix, role_name
+                );
+                None
             }
         }
     } else {
@@ -302,26 +376,28 @@ fn run_inner(
     let session_ref: String = if let Some(r) = chat_ref {
         r.to_string()
     } else if let Some(n) = chat_id {
-        let _ = crate::chat_sessions::register_coordinator_session(workgraph_dir, n);
+        if runtime.session_layout == NexSessionLayout::WgChat {
+            let _ = crate::chat_sessions::register_coordinator_session(state_dir, n);
+        }
         n.to_string()
     } else if let Some(pattern) = resume {
         // `--resume` with optional pattern. Empty pattern → picker.
         // Non-empty → substring match on alias/uuid/kind, pick the
         // most-recent matching session.
-        match pick_resume_session(workgraph_dir, pattern) {
+        match crate::nex_runtime::pick_resume_session(runtime, pattern) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("\x1b[33m{} --resume: {}\x1b[0m", diagnostic_prefix, e);
                 eprintln!(
-                    "\x1b[2m  Starting a fresh session instead. Use `wg session list` to see what's available.\x1b[0m"
+                    "\x1b[2m  Starting a fresh session instead. Use the session list command for this runtime to see what's available.\x1b[0m"
                 );
-                fresh_session(workgraph_dir, &stamp)?
+                crate::nex_runtime::create_fresh_session(runtime)?
             }
         }
     } else {
         // Fresh session. Every bare `wg nex` invocation gets a new
         // UUID and a new journal.
-        fresh_session(workgraph_dir, &stamp)?
+        crate::nex_runtime::create_fresh_session(runtime)?
     };
 
     // Resolve chat_dir through the session registry so aliases
@@ -330,7 +406,7 @@ fn run_inner(
     // the literal join, which created a split-brain when the alias
     // was registered — nex wrote to `chat/coordinator-N/` while the
     // TUI looked at `chat/<uuid>/` and couldn't see nex's lock file.
-    let chat_dir = crate::chat::chat_dir_for_ref(workgraph_dir, &session_ref);
+    let chat_dir = crate::nex_runtime::session_dir_for_ref(runtime, &session_ref);
     let _ = std::fs::create_dir_all(&chat_dir);
     let journal_path = chat_dir.join("conversation.jsonl");
     let output_log = chat_dir.join("trace.ndjson");
@@ -407,9 +483,17 @@ fn run_inner(
         );
     }
 
-    let client = create_provider_ext(workgraph_dir, &effective_model, None, endpoint, None)?;
+    let client = create_provider_ext_with_config(
+        state_dir,
+        &config,
+        config_val.as_ref(),
+        &effective_model,
+        None,
+        endpoint,
+        None,
+    )?;
 
-    let model_registry = ModelRegistry::load(workgraph_dir).unwrap_or_default();
+    let model_registry = crate::nex_runtime::load_model_registry(runtime);
     let supports_tools = model_registry.supports_tool_use(&effective_model);
 
     let mut agent = AgentLoop::with_tool_support(
@@ -425,7 +509,7 @@ fn run_inner(
     .with_nex_repl_mode(true)
     .with_journal(journal_path, format!("nex-{}", stamp))
     .with_working_dir(working_dir.clone())
-    .with_workgraph_dir(workgraph_dir.to_path_buf())
+    .with_workgraph_dir(state_dir.to_path_buf())
     .with_resume(resume_enabled);
 
     // Chat-file I/O surface. Enabled whenever the caller said "I'm
@@ -443,13 +527,10 @@ fn run_inner(
     // .streaming files written into its `.wg/chat/<alias>/`
     // directory (no attacher will ever read them, and some graders
     // diff the working tree). Explicit chat bindings still win.
-    let mount_chat_surface = chat_ref.is_some() || chat_id.is_some() || (autonomous && !eval_mode);
+    let mount_chat_surface = runtime.session_layout == NexSessionLayout::WgChat
+        && (chat_ref.is_some() || chat_id.is_some() || (autonomous && !eval_mode));
     if mount_chat_surface {
-        agent = agent.with_chat_ref(
-            workgraph_dir.to_path_buf(),
-            session_ref.clone(),
-            resume_enabled,
-        );
+        agent = agent.with_chat_ref(state_dir.to_path_buf(), session_ref.clone(), resume_enabled);
     }
     if autonomous {
         agent = agent.with_autonomous(true);
@@ -550,159 +631,18 @@ fn run_inner(
     Ok(())
 }
 
-/// Create a fresh interactive session and return its alias. The
-/// alias combines the controlling tty (if any) with the timestamp,
-/// so running `wg nex` twice in the same terminal produces two
-/// DISTINCT sessions instead of one that silently accumulates. To
-/// resume either, use `wg nex --resume`.
-fn fresh_session(workgraph_dir: &Path, stamp: &str) -> Result<String> {
-    let alias = default_interactive_alias(stamp);
-    crate::chat_sessions::ensure_session(
-        workgraph_dir,
-        &alias,
-        crate::chat_sessions::SessionKind::Interactive,
-        Some(format!("interactive {}", alias)),
-    )
-    .map_err(|e| anyhow::anyhow!("failed to register fresh session: {}", e))?;
-    Ok(alias)
-}
-
-/// Resolve `--resume [PATTERN]` to a concrete session alias.
-///
-/// - empty pattern: show an interactive picker over all sessions,
-///   most-recent-journal first. Returns the picked session's
-///   alias (or first UUID if no aliases).
-/// - non-empty pattern: substring-match against session aliases,
-///   UUID prefixes, and kinds (interactive / coordinator /
-///   task-agent / other). Pick the most-recent matching session.
-///
-/// Errors if nothing matches, or if stdin isn't a tty for the
-/// picker path.
-fn pick_resume_session(workgraph_dir: &Path, pattern: &str) -> Result<String> {
-    let sessions = crate::chat_sessions::list(workgraph_dir).context("failed to list sessions")?;
-    if sessions.is_empty() {
-        anyhow::bail!("no sessions to resume — `wg session list` is empty");
-    }
-
-    // Sort most-recent-first by journal mtime, falling back to the
-    // `created` string on meta when the journal is missing.
-    let mut ranked: Vec<_> = sessions
-        .into_iter()
-        .map(|(uuid, meta)| {
-            let journal = workgraph_dir
-                .join("chat")
-                .join(&uuid)
-                .join("conversation.jsonl");
-            let mtime = std::fs::metadata(&journal).and_then(|m| m.modified()).ok();
-            (uuid, meta, mtime)
-        })
-        .collect();
-    ranked.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| b.1.created.cmp(&a.1.created)));
-
-    let pat = pattern.trim();
-    if !pat.is_empty() {
-        // Pattern match: return the first (most-recent) session
-        // whose alias, UUID prefix, or kind contains the pattern
-        // (case-insensitive).
-        let needle = pat.to_lowercase();
-        for (uuid, meta, _) in &ranked {
-            let kind_str = format!("{:?}", meta.kind).to_lowercase();
-            if uuid.to_lowercase().starts_with(&needle)
-                || meta
-                    .aliases
-                    .iter()
-                    .any(|a| a.to_lowercase().contains(&needle))
-                || kind_str.contains(&needle)
-            {
-                return Ok(pick_best_ref(uuid, meta));
-            }
-        }
-        anyhow::bail!("no session matches pattern {:?}", pattern);
-    }
-
-    // Empty pattern: interactive picker. Require a tty so
-    // non-interactive callers (scripts, the daemon) get a clear
-    // error instead of a hang.
-    use dialoguer::{Select, theme::ColorfulTheme};
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        anyhow::bail!(
-            "--resume requires a terminal for the picker; pass a pattern or an explicit `--chat <ref>`"
-        );
-    }
-    let options: Vec<String> = ranked
-        .iter()
-        .take(30)
-        .map(|(uuid, meta, _)| {
-            let short = &uuid[..std::cmp::min(uuid.len(), 8)];
-            let aliases = if meta.aliases.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", meta.aliases.join(", "))
-            };
-            let kind = format!("{:?}", meta.kind).to_lowercase();
-            let label = meta.label.as_deref().unwrap_or("");
-            format!("{} {} {}{}", short, kind, aliases, label)
-        })
-        .collect();
-    if options.is_empty() {
-        anyhow::bail!("no sessions to resume");
-    }
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Resume which session?")
-        .default(0)
-        .items(&options)
-        .interact()
-        .context("picker cancelled")?;
-    let (uuid, meta, _) = &ranked[selection];
-    Ok(pick_best_ref(uuid, meta))
-}
-
-/// Choose the most user-friendly reference for a session: the first
-/// alias if present, otherwise the full UUID. Aliases are preferred
-/// because they're shorter, readable, and stable across re-registrations.
-fn pick_best_ref(uuid: &str, meta: &crate::chat_sessions::SessionMeta) -> String {
-    meta.aliases
-        .first()
-        .cloned()
-        .unwrap_or_else(|| uuid.to_string())
-}
-
-/// Derive a tty-stamp alias for a fresh interactive session. Used
-/// only at session CREATION — resume goes through the picker.
-///
-/// Format: `tty-<pts-slug>-<stamp>`. The stamp keeps separate
-/// invocations distinct even in the same terminal; `wg nex`
-/// followed by `wg nex` produces two different sessions rather
-/// than silently merging.
-fn default_interactive_alias(stamp: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::ffi::CStr;
-        unsafe {
-            // STDIN fd = 0
-            let name = libc::ttyname(0);
-            if !name.is_null() {
-                let s = CStr::from_ptr(name).to_string_lossy();
-                let slug = s
-                    .trim_start_matches("/dev/")
-                    .replace('/', "-")
-                    .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
-                if !slug.is_empty() {
-                    return format!("tty-{}-{}", slug, stamp);
-                }
-            }
-        }
-    }
-    format!("session-{}", stamp)
-}
-
 /// Record a `wg nex` invocation in launcher history. Done early in
 /// `run()` (before the long-running agent loop) so even a Ctrl-C'd
 /// session leaves a recallable entry for the TUI new-coordinator
 /// dialog. Eval mode skips recording — benchmark harnesses don't
 /// want to pollute the history with one-shot grader invocations.
-fn record_nex_invocation(effective_model: &str, endpoint: Option<&str>, eval_mode: bool) {
-    if eval_mode {
+fn record_nex_invocation(
+    effective_model: &str,
+    endpoint: Option<&str>,
+    eval_mode: bool,
+    mode: NexRuntimeMode,
+) {
+    if eval_mode || matches!(mode, NexRuntimeMode::Standalone | NexRuntimeMode::Eval) {
         return;
     }
     let _ = crate::launcher_history::record_use(&crate::launcher_history::HistoryEntry::new(
@@ -813,6 +753,7 @@ mod tests {
                 "qwen3-coder",
                 Some("https://lambda01.tail334fe6.ts.net:30000"),
                 false,
+                NexRuntimeMode::WgIntegrated,
             );
             let contents = fs::read_to_string(history_path).expect("history file should exist");
             assert!(
@@ -842,7 +783,7 @@ mod tests {
     #[serial_test::serial(launcher_history_env)]
     fn test_cli_nex_eval_mode_skips_recording() {
         with_history_env(|history_path| {
-            record_nex_invocation("qwen3-coder", None, true);
+            record_nex_invocation("qwen3-coder", None, true, NexRuntimeMode::Eval);
             assert!(
                 !history_path.exists() || fs::read_to_string(history_path).unwrap().is_empty(),
                 "eval mode should not write to history"
