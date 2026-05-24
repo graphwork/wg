@@ -370,6 +370,11 @@ enum LiveReadlineEvent {
     Error(String),
 }
 
+struct ReplUserInput {
+    text: String,
+    queued: bool,
+}
+
 #[derive(Clone)]
 struct LiveTerminalOutput {
     printer: Arc<Mutex<Box<dyn rustyline::ExternalPrinter + Send>>>,
@@ -483,20 +488,17 @@ impl LiveTerminalInput {
 
         std::thread::spawn(move || {
             let mut last_tap: Option<std::time::Instant> = None;
-            let mut submitted_any_line = !initially_waiting_for_input;
             loop {
-                let prompt = if submitted_any_line {
-                    "\x1b[1;33mnext>\x1b[0m "
-                } else {
-                    "\x1b[1;36m>\x1b[0m "
-                };
+                // Stable boundaries should feel like a normal REPL.
+                // Queued state is acknowledged after Enter, while output
+                // is active, instead of changing every follow-up prompt.
+                let prompt = "\x1b[1;36m>\x1b[0m ";
                 match editor.readline(prompt) {
                     Ok(line) => {
                         let trimmed = line.trim();
                         let queued = !waiting_for_thread.load(Ordering::SeqCst);
                         if !trimmed.is_empty() {
                             let _ = editor.add_history_entry(line.as_str());
-                            submitted_any_line = true;
                             waiting_for_thread.store(false, Ordering::SeqCst);
                             if queued {
                                 output_for_thread.print("\x1b[2m[queued for next turn]\x1b[0m");
@@ -555,7 +557,7 @@ impl LiveTerminalInput {
         self.output.clone()
     }
 
-    async fn next_line(&mut self) -> Option<String> {
+    async fn next_input(&mut self) -> Option<ReplUserInput> {
         self.waiting_for_input.store(true, Ordering::SeqCst);
         let result = loop {
             match self.rx.recv().await? {
@@ -563,7 +565,7 @@ impl LiveTerminalInput {
                     if !line.trim().is_empty() || queued {
                         self.waiting_for_input.store(false, Ordering::SeqCst);
                     }
-                    break Some(line);
+                    break Some(ReplUserInput { text: line, queued });
                 }
                 LiveReadlineEvent::Eof => break None,
                 LiveReadlineEvent::Error(e) => {
@@ -1513,8 +1515,8 @@ impl AgentLoop {
                 msg.to_string()
             } else {
                 match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
-                    Some(line) => {
-                        let trimmed = line.trim().to_string();
+                    Some(input) => {
+                        let trimmed = input.text.trim().to_string();
                         if trimmed.is_empty() {
                             if live_terminal.is_none() {
                                 let _ = editor.save_history(&history_path);
@@ -1621,6 +1623,8 @@ impl AgentLoop {
             }
         }
 
+        let mut last_user_input_was_queued = false;
+
         loop {
             // ── Turn boundary ──────────────────────────────────────
             // Every iteration starts here. The single synchronization
@@ -1723,6 +1727,7 @@ impl AgentLoop {
                     role: Role::User,
                     content,
                 });
+                last_user_input_was_queued = false;
             }
 
             // 4. Microcompact if above the soft threshold. This is the
@@ -1803,11 +1808,12 @@ impl AgentLoop {
             if needs_user_input {
                 force_fresh_input = false;
                 match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
-                    Some(line) => {
-                        let trimmed = line.trim().to_string();
+                    Some(input) => {
+                        let trimmed = input.text.trim().to_string();
                         if trimmed.is_empty() {
                             continue;
                         }
+                        last_user_input_was_queued = input.queued;
                         if live_terminal.is_none() {
                             let _ = editor.add_history_entry(&trimmed);
                         }
@@ -1920,13 +1926,15 @@ impl AgentLoop {
 
             if !self.autonomous
                 && surface.is_none()
-                && let Some(label) = assistant_turn_label(messages.last())
+                && let Some(label) =
+                    assistant_turn_label(messages.last(), last_user_input_was_queued)
             {
                 terminal_line(
                     live_output.as_ref(),
                     format!("\x1b[2m[assistant for: {}]\x1b[0m", label),
                 );
             }
+            last_user_input_was_queued = false;
 
             // Build the streaming text callback. In interactive mode,
             // tokens stream to stderr for the human. In autonomous mode,
@@ -2589,11 +2597,12 @@ impl AgentLoop {
                     // rustyline's own display.
                     terminal_line(live_output.as_ref(), "");
                     match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
-                        Some(line) => {
-                            let trimmed = line.trim().to_string();
+                        Some(input) => {
+                            let trimmed = input.text.trim().to_string();
                             if trimmed.is_empty() {
                                 continue;
                             }
+                            last_user_input_was_queued = input.queued;
                             if live_terminal.is_none() {
                                 let _ = editor.add_history_entry(&trimmed);
                             }
@@ -3292,16 +3301,19 @@ async fn read_next_user_turn(
     surface: &mut Option<Box<dyn super::surface::ConversationSurface>>,
     live_terminal: &mut Option<LiveTerminalInput>,
     editor: &mut rustyline::DefaultEditor,
-) -> Option<String> {
+) -> Option<ReplUserInput> {
     use rustyline::error::ReadlineError;
 
     if let Some(s) = surface.as_mut() {
         let turn = s.next_user_input().await?;
         s.on_turn_start(turn.request_id.as_deref());
-        return Some(turn.text);
+        return Some(ReplUserInput {
+            text: turn.text,
+            queued: false,
+        });
     }
     if let Some(terminal) = live_terminal.as_mut() {
-        return terminal.next_line().await;
+        return terminal.next_input().await;
     }
     loop {
         match editor.readline("\x1b[1;36m>\x1b[0m ") {
@@ -3319,7 +3331,10 @@ async fn read_next_user_turn(
                 // no cursor math); until that refactor lands, drop
                 // the post-hoc repaint and keep the separator only.
                 eprintln!();
-                return Some(line);
+                return Some(ReplUserInput {
+                    text: line,
+                    queued: false,
+                });
             }
             Err(ReadlineError::Interrupted) => {
                 eprintln!(
@@ -3355,24 +3370,39 @@ fn drain_barrier_user_input(
     inputs
 }
 
-fn assistant_turn_label(message: Option<&Message>) -> Option<String> {
+fn assistant_turn_label(
+    message: Option<&Message>,
+    include_plain_user_text: bool,
+) -> Option<String> {
     let message = message?;
     if message.role != Role::User {
         return None;
     }
 
+    let mut saw_queued_tool_input = false;
     let text = message
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text } => {
+                if let Some(text) =
+                    text.strip_prefix("Queued user input submitted while tools were running:\n")
+                {
+                    saw_queued_tool_input = true;
+                    Some(text)
+                } else {
+                    Some(text.as_str())
+                }
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
         .join(" ");
-    let text = text
-        .strip_prefix("Queued user input submitted while tools were running:\n")
-        .unwrap_or(&text);
+
+    if !include_plain_user_text && !saw_queued_tool_input {
+        return None;
+    }
+
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
         return None;

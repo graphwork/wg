@@ -496,9 +496,10 @@ script = "scenarios/nex_live_input_pty.sh"
 owners = [
     "improve-nex-live",
     "polish-nex-queued",
+    "tune-nex-follow",
     "smoke-gate-is",
 ]
-description = "Drives standalone `nex` through a real PTY with terminal echo disabled while WG_FAKE_LLM streams a long response. Asserts a second user line typed during streaming is visibly preserved by the live input area before the first response completes, then is delivered as the next user turn and journaled without corrupting assistant output."
+description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts normal follow-up prompts stay plain `>`, a bash tool call does not get preceded by misleading `next>`, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
 timeout_seconds = 75
 
 [[scenario]]
