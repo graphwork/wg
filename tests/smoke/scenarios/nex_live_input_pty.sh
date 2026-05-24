@@ -5,8 +5,12 @@
 # OpenAI-compatible test server. The transcript covers:
 #   * a first user turn that triggers a real bash tool call
 #   * a normal stable-boundary follow-up prompt, rendered as plain `>`
+#   * a compact single-cell working indicator in the live prompt while
+#     the assistant is busy, removed again at idle boundaries
 #   * a third line typed while the assistant is streaming, visibly marked
 #     as queued and delivered once as the next turn
+#   * no-color fallback to an ASCII working indicator
+#   * dumb-terminal fallback that suppresses live prompt animation cleanly
 #
 # The PTY has kernel echo disabled. Live rustyline must therefore own the
 # editable input area; otherwise text typed while output is active would be
@@ -28,14 +32,15 @@ fi
 
 run_case() {
     local label="$1"
-    shift
+    local terminal_mode="$2"
+    shift 2
     local scratch transcript
     scratch="$(make_scratch)"
     transcript="$scratch/pty-transcript-${label// /-}.txt"
 
     (cd "$scratch" && wg init --no-agency >/dev/null)
 
-    if ! python3 - "$scratch" "$transcript" "$label" "$@" <<'PY'; then
+    if ! python3 - "$scratch" "$transcript" "$label" "$terminal_mode" "$@" <<'PY'; then
 import errno
 import fcntl
 import json
@@ -52,14 +57,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-scratch, transcript_path, label = sys.argv[1:4]
-cmd = sys.argv[4:]
+scratch, transcript_path, label, terminal_mode = sys.argv[1:5]
+cmd = sys.argv[5:]
 first_turn = "first tool prompt smoke"
 stable_followup = "stable follow-up after tool"
 queued_turn = "SECOND_QUEUED_SMOKE while stream active"
 first_header = f"[assistant for: {first_turn}]"
 stable_header = f"[assistant for: {stable_followup}]"
 queued_header = f"[assistant for: {queued_turn}]"
+working_prompt_markers = ("↯>", "*>")
 
 ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -261,7 +267,15 @@ env = os.environ.copy()
 env.pop("WG_FAKE_LLM", None)
 env["NEX_DIR"] = os.path.join(scratch, ".nex")
 env["WG_NEX_LIVE_INPUT"] = "1"
-env.setdefault("TERM", "xterm-256color")
+env.pop("NO_COLOR", None)
+if terminal_mode == "no_color":
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "xterm-256color"
+elif terminal_mode == "dumb":
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+else:
+    env["TERM"] = "xterm-256color"
 
 
 def child_setup():
@@ -330,9 +344,70 @@ def wait_for(needle, timeout):
     fail(f"timed out waiting for {needle!r}", text())
 
 
+def wait_for_predicate(label_text, predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        cleaned = clean(text())
+        if predicate(cleaned):
+            return cleaned
+        read_some(0.2)
+    fail(f"timed out waiting for {label_text}", text())
+
+
 def assert_no_next_prompt(transcript):
     if "next>" in clean(transcript):
         fail("transcript should not render the old next> prompt", transcript)
+
+
+def has_working_prompt(transcript):
+    return any(marker in transcript for marker in working_prompt_markers)
+
+
+def assert_working_prompt_visible(transcript):
+    if not has_working_prompt(transcript):
+        fail("compact working prompt indicator never appeared while assistant was active", transcript)
+    if terminal_mode == "no_color":
+        if "↯>" in transcript:
+            fail("no-color terminal should use the ASCII working prompt fallback", transcript)
+        if "*>" not in transcript:
+            fail("no-color terminal did not show the ASCII working prompt fallback", transcript)
+
+
+def assert_dumb_prompt_animation_suppressed(transcript):
+    cleaned = clean(transcript)
+    if "↯>" in cleaned or "*>" in cleaned:
+        fail("dumb terminal should suppress live working prompt animation cleanly", transcript)
+    if "live input printer unavailable" not in cleaned:
+        fail("dumb terminal did not explain live prompt suppression", transcript)
+    assert_no_next_prompt(transcript)
+
+
+def assert_working_prompt_gone_after(marker, transcript):
+    tail = clean(transcript).rsplit(marker, 1)[-1]
+    last_working = max((tail.rfind(prompt) for prompt in working_prompt_markers), default=-1)
+    idle_prompt_matches = list(re.finditer(r"(?m)^[ \t]*>[ \t]*$", tail))
+    last_idle = idle_prompt_matches[-1].start() if idle_prompt_matches else -1
+    if last_idle == -1:
+        fail(f"idle prompt was not visible after {marker}", transcript)
+    if last_working > last_idle:
+        fail(f"working prompt indicator should disappear after idle marker {marker}", transcript)
+
+
+def assert_payload_lines_not_prompt_prefixed(transcript):
+    payload_markers = (
+        "TOOL_RESULT_MARKER",
+        "FIRST_DONE_MARKER",
+        "SECOND_RESPONSE_MARKER",
+        "SECOND_DONE_MARKER",
+        "QUEUED_RESPONSE_MARKER",
+        "bash(",
+    )
+    for line in clean(transcript).splitlines():
+        if not any(marker in line for marker in payload_markers):
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith(("↯>", "*>", ">")):
+            fail("assistant/tool output line was prefixed with prompt indicator text", transcript)
 
 
 def write_all(payload):
@@ -360,6 +435,34 @@ def send_line(line):
 try:
     wait_for(">", 15)
     send_line(first_turn)
+    if terminal_mode == "dumb":
+        tool_seen = wait_for("TOOL_RESULT_MARKER", 25)
+        assert_dumb_prompt_animation_suppressed(tool_seen)
+        if "bash(" not in tool_seen:
+            fail("tool call preview was not visible in the PTY transcript", tool_seen)
+        first_done = wait_for("FIRST_DONE_MARKER", 25)
+        assert_dumb_prompt_animation_suppressed(first_done)
+        time.sleep(0.8)
+        read_some(0.5)
+        assert_dumb_prompt_animation_suppressed(text())
+        send_line("/quit")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and proc.poll() is None:
+            read_some(0.2)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            fail("nex did not exit after /quit", text())
+        read_some(1)
+        final = clean(text())
+        write_transcript(final)
+        if proc.returncode != 0:
+            fail(f"nex exited with {proc.returncode}", final)
+        if len(request_bodies) < 2:
+            fail(f"expected at least two model requests, saw {len(request_bodies)}", final)
+        raise SystemExit(0)
+
+    working_seen = wait_for_predicate("compact working prompt indicator", has_working_prompt, 10)
+    assert_working_prompt_visible(working_seen)
 
     tool_seen = wait_for("TOOL_RESULT_MARKER", 25)
     assert_no_next_prompt(tool_seen)
@@ -370,6 +473,7 @@ try:
     assert_no_next_prompt(first_done)
     time.sleep(0.8)
     read_some(0.5)
+    assert_working_prompt_gone_after("FIRST_DONE_MARKER", text())
     send_line(stable_followup)
 
     wait_for("SECOND_RESPONSE_MARKER", 25)
@@ -387,9 +491,11 @@ try:
         fail("queued input did not receive an explicit queued affordance", before_second_done)
     if "[blank queued input ignored]" not in before_second_done:
         fail("blank input during streaming was not explicitly ignored", before_second_done)
+    assert_payload_lines_not_prompt_prefixed(before_second_done)
 
     full = wait_for("QUEUED_RESPONSE_MARKER", 35)
     assert_no_next_prompt(full)
+    assert_payload_lines_not_prompt_prefixed(full)
     if first_header in full:
         fail("normal first turn should not print a noisy assistant-for label", full)
     if stable_header in full:
@@ -435,17 +541,27 @@ PY
         loud_fail "$label did not create a conversation journal. Scratch tree:
 $scratch_tree"
     fi
-    grep -q "stable follow-up after tool" "$journal" || loud_fail "$label stable follow-up was not journaled. Journal tail:\n$(tail -20 "$journal")"
-    grep -q "SECOND_QUEUED_SMOKE" "$journal" || loud_fail "$label queued user turn was not journaled. Journal tail:\n$(tail -20 "$journal")"
     grep -q "TOOL_RESULT_MARKER" "$journal" || loud_fail "$label bash tool result was not journaled. Journal tail:\n$(tail -20 "$journal")"
-    local queued_count
-    queued_count="$(grep -c "SECOND_QUEUED_SMOKE" "$journal" || true)"
-    [[ "$queued_count" == "1" ]] || loud_fail "$label queued user turn was journaled $queued_count times; expected exactly once. Journal:\n$(cat "$journal")"
+    if [[ "$terminal_mode" != "dumb" ]]; then
+        grep -q "stable follow-up after tool" "$journal" || loud_fail "$label stable follow-up was not journaled. Journal tail:\n$(tail -20 "$journal")"
+        grep -q "SECOND_QUEUED_SMOKE" "$journal" || loud_fail "$label queued user turn was not journaled. Journal tail:\n$(tail -20 "$journal")"
+        local queued_count
+        queued_count="$(grep -c "SECOND_QUEUED_SMOKE" "$journal" || true)"
+        [[ "$queued_count" == "1" ]] || loud_fail "$label queued user turn was journaled $queued_count times; expected exactly once. Journal:\n$(cat "$journal")"
+    fi
 
-    echo "PASS: $label PTY prompt labels are plain at stable boundaries, queued input is explicit, and tool/follow-up turns are preserved"
+    if [[ "$terminal_mode" == "dumb" ]]; then
+        echo "PASS: $label PTY prompt labels are plain and dumb-terminal prompt animation suppresses cleanly"
+    else
+        echo "PASS: $label PTY prompt labels are plain at stable boundaries, compact working indicator is safe, queued input is explicit, and tool/follow-up turns are preserved"
+    fi
 }
 
-run_case "standalone nex" nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
-run_case "wg nex" wg nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "standalone nex" color nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "wg nex" color wg nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "standalone nex no-color" no_color nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "wg nex no-color" no_color wg nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "standalone nex dumb" dumb nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
+run_case "wg nex dumb" dumb wg nex --no-mcp --max-turns 8 -m nex-live-input-smoke-model -e __NEX_ENDPOINT__
 
 echo "PASS: nex and wg nex PTY live-input transcript UX is polished"

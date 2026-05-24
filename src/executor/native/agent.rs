@@ -6,13 +6,14 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
+use unicode_width::UnicodeWidthStr;
 
 use super::client::{
     ContentBlock, Message, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
@@ -370,6 +371,131 @@ enum LiveReadlineEvent {
     Error(String),
 }
 
+const NEX_IDLE_PROMPT: &str = "> ";
+const NEX_WORKING_PROMPT_RAW: &str = "*>"; // Same display width as `> `.
+const NEX_WORKING_GLYPH: &str = "↯";
+const NEX_WORKING_FALLBACK: &str = "*";
+
+#[derive(Clone)]
+struct NexPromptState {
+    waiting_for_input: Arc<AtomicBool>,
+    color_enabled: bool,
+    working_indicator: &'static str,
+    color_tick: Arc<AtomicUsize>,
+}
+
+impl NexPromptState {
+    fn new(waiting_for_input: Arc<AtomicBool>) -> Self {
+        let color_enabled = nex_prompt_color_enabled();
+        let working_indicator = nex_working_prompt_indicator(color_enabled);
+        Self {
+            waiting_for_input,
+            color_enabled,
+            working_indicator,
+            color_tick: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn render(&self) -> String {
+        render_nex_prompt(
+            self.waiting_for_input.load(Ordering::SeqCst),
+            self.color_enabled,
+            self.working_indicator,
+            self.color_tick.fetch_add(1, Ordering::Relaxed),
+        )
+    }
+}
+
+#[derive(Clone)]
+struct NexReadlineHelper {
+    prompt: NexPromptState,
+}
+
+impl rustyline::Helper for NexReadlineHelper {}
+
+impl rustyline::completion::Completer for NexReadlineHelper {
+    type Candidate = rustyline::completion::Pair;
+
+    fn complete(
+        &self,
+        _line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        Ok((pos, Vec::new()))
+    }
+}
+
+impl rustyline::hint::Hinter for NexReadlineHelper {
+    type Hint = String;
+}
+
+impl rustyline::validate::Validator for NexReadlineHelper {}
+
+impl rustyline::highlight::Highlighter for NexReadlineHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        default: bool,
+    ) -> std::borrow::Cow<'b, str> {
+        if default {
+            std::borrow::Cow::Owned(self.prompt.render())
+        } else {
+            std::borrow::Cow::Borrowed(prompt)
+        }
+    }
+}
+
+fn render_nex_prompt(
+    waiting_for_input: bool,
+    color_enabled: bool,
+    working_indicator: &str,
+    tick: usize,
+) -> String {
+    if waiting_for_input {
+        if color_enabled {
+            format!("\x1b[1;36m>\x1b[0m ")
+        } else {
+            NEX_IDLE_PROMPT.to_string()
+        }
+    } else if color_enabled {
+        const COLORS: [u8; 5] = [196, 214, 46, 33, 129];
+        let color = COLORS[tick % COLORS.len()];
+        format!(
+            "\x1b[1;38;5;{}m{}\x1b[0m\x1b[1;36m>\x1b[0m",
+            color, working_indicator
+        )
+    } else {
+        format!("{}>", working_indicator)
+    }
+}
+
+fn nex_working_prompt_indicator(color_enabled: bool) -> &'static str {
+    if color_enabled && UnicodeWidthStr::width(NEX_WORKING_GLYPH) == 1 {
+        NEX_WORKING_GLYPH
+    } else {
+        NEX_WORKING_FALLBACK
+    }
+}
+
+fn nex_prompt_color_enabled() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if std::env::var("CLICOLOR_FORCE")
+        .ok()
+        .is_some_and(|v| v != "0")
+    {
+        return true;
+    }
+    if std::env::var("CLICOLOR").ok().as_deref() == Some("0") {
+        return false;
+    }
+    !std::env::var("TERM")
+        .ok()
+        .is_some_and(|term| term.eq_ignore_ascii_case("dumb"))
+}
+
 struct ReplUserInput {
     text: String,
     queued: bool,
@@ -460,13 +586,20 @@ impl LiveTerminalInput {
             return None;
         }
 
-        let mut editor = match rustyline::DefaultEditor::new() {
-            Ok(editor) => editor,
-            Err(e) => {
-                eprintln!("\x1b[33m[nex] live input unavailable: {}\x1b[0m", e);
-                return None;
-            }
-        };
+        let waiting_for_input = Arc::new(AtomicBool::new(initially_waiting_for_input));
+        let prompt_state = NexPromptState::new(waiting_for_input.clone());
+        let mut editor =
+            match rustyline::Editor::<NexReadlineHelper, rustyline::history::DefaultHistory>::new()
+            {
+                Ok(editor) => editor,
+                Err(e) => {
+                    eprintln!("\x1b[33m[nex] live input unavailable: {}\x1b[0m", e);
+                    return None;
+                }
+            };
+        editor.set_helper(Some(NexReadlineHelper {
+            prompt: prompt_state,
+        }));
         let _ = editor.load_history(&history_path);
 
         let printer: Box<dyn rustyline::ExternalPrinter + Send> =
@@ -482,7 +615,6 @@ impl LiveTerminalInput {
             printer: Arc::new(Mutex::new(printer)),
         };
         let output_for_thread = output.clone();
-        let waiting_for_input = Arc::new(AtomicBool::new(initially_waiting_for_input));
         let waiting_for_thread = waiting_for_input.clone();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -492,8 +624,7 @@ impl LiveTerminalInput {
                 // Stable boundaries should feel like a normal REPL.
                 // Queued state is acknowledged after Enter, while output
                 // is active, instead of changing every follow-up prompt.
-                let prompt = "\x1b[1;36m>\x1b[0m ";
-                match editor.readline(prompt) {
+                match editor.readline(NEX_WORKING_PROMPT_RAW) {
                     Ok(line) => {
                         let trimmed = line.trim();
                         let queued = !waiting_for_thread.load(Ordering::SeqCst);
@@ -557,13 +688,17 @@ impl LiveTerminalInput {
         self.output.clone()
     }
 
+    fn set_waiting_for_input(&self, waiting: bool) {
+        self.waiting_for_input.store(waiting, Ordering::SeqCst);
+    }
+
     async fn next_input(&mut self) -> Option<ReplUserInput> {
-        self.waiting_for_input.store(true, Ordering::SeqCst);
+        self.set_waiting_for_input(true);
         let result = loop {
             match self.rx.recv().await? {
                 LiveReadlineEvent::Line { line, queued } => {
                     if !line.trim().is_empty() || queued {
-                        self.waiting_for_input.store(false, Ordering::SeqCst);
+                        self.set_waiting_for_input(false);
                     }
                     break Some(ReplUserInput { text: line, queued });
                 }
@@ -575,7 +710,7 @@ impl LiveTerminalInput {
                 }
             }
         };
-        self.waiting_for_input.store(false, Ordering::SeqCst);
+        self.set_waiting_for_input(false);
         result
     }
 
@@ -1950,24 +2085,12 @@ impl AgentLoop {
             // per-turn so buffers never leak across turns.
             let interactive_turn_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
             let turn_buf_for_sink = interactive_turn_buffer.clone();
-            // Lightning-bolt spinner: shows rainbow `↯` bolts + an
-            // elapsed-time counter while we wait for the first
-            // streamed token. Cleared when either (a) text starts
-            // arriving (first-chunk handoff below), (b) the turn
-            // ends for any reason, or (c) we unwind out of the loop
-            // via an error / cancel — the RAII guard ensures the
-            // spinner stops in ALL paths, not just the happy one.
-            // The old implementation left the spinner running when
-            // the user hit Ctrl-C during a streaming error retry
-            // storm, so the bolts kept interleaving with the retry
-            // logs and the "Interrupted" message.
-            let spinner_first_chunk = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            // The live rustyline prompt carries the compact working
+            // indicator. Do not start the older whole-row spinner for
+            // terminal REPL turns; in non-live fallback mode we suppress
+            // the row animation cleanly rather than corrupting output.
+            let spinner_first_chunk = Arc::new(std::sync::atomic::AtomicBool::new(true));
             let spinner_first_chunk_sink = spinner_first_chunk.clone();
-            let _spinner_guard = if !is_autonomous && live_output.is_none() && stderr_is_tty() {
-                Some(SpinnerGuard::spawn(spinner_first_chunk.clone()))
-            } else {
-                None
-            };
             // Chat-transcript mirror goes through the surface's
             // stream sink — captures transcript buffer + streaming
             // file paths internally; each chunk is appended and the
@@ -1987,16 +2110,13 @@ impl AgentLoop {
                         let _ = std::fs::write(path, &accumulated);
                     }
                 } else {
-                    // First-chunk handoff: the spinner thread sees
-                    // this atomic flip and clears its own row before
-                    // we print any text.
+                    // First-chunk handoff retained for the legacy
+                    // spinner guard tests. The live prompt indicator
+                    // initializes this flag to true, so this branch
+                    // does not delay normal streaming.
                     if !spinner_first_chunk_sink.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        // Give the spinner a moment to clear; it polls
-                        // the flag every 80ms. Skipping this briefly
-                        // causes the first chunk to overlay the last
-                        // bolt row, which gets erased anyway — harmless
-                        // but visually noisier. The sleep is negligible
-                        // relative to network latency to the LLM.
+                        // Give the legacy spinner a moment to clear if
+                        // a future caller opts it back in.
                         std::thread::sleep(std::time::Duration::from_millis(90));
                     }
                     if let Ok(mut b) = turn_buf_for_sink.lock() {
@@ -2593,8 +2713,13 @@ impl AgentLoop {
                     }
 
                     // Add a blank line between the assistant's response
-                    // and our next prompt. The readline call handles
-                    // rustyline's own display.
+                    // and our next prompt. Flip the live prompt back
+                    // to idle before the external-print refresh so the
+                    // compact working indicator disappears as soon as
+                    // the turn returns to the user.
+                    if let Some(ref terminal) = live_terminal {
+                        terminal.set_waiting_for_input(true);
+                    }
                     terminal_line(live_output.as_ref(), "");
                     match read_next_user_turn(&mut surface, &mut live_terminal, &mut editor).await {
                         Some(input) => {
@@ -2682,7 +2807,7 @@ impl AgentLoop {
                             };
                             terminal_line(
                                 live_output.as_ref(),
-                                format!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary),
+                                format!("\x1b[2;36m  {}({})\x1b[0m", name, input_summary),
                             );
                             // Mirror tool activity into the chat
                             // transcript using the TUI's expected
@@ -3985,17 +4110,16 @@ impl AgentLoop {
     }
 }
 
-/// Check whether an error is a request timeout.
-///
-/// RAII wrapper around a spinner thread. On drop, flips the stop
-/// flag so the spinner erases its row and exits — guarantees the
-/// spinner never outlives the LLM call, regardless of which path
-/// the call unwinds through (success, retry storm, cancel, panic).
+#[cfg(test)]
+/// RAII wrapper around the legacy whole-row spinner. It is retained
+/// only for regression tests; live terminal REPLs now use the compact
+/// prompt indicator instead.
 struct SpinnerGuard {
     stop: Arc<std::sync::atomic::AtomicBool>,
     _handle: std::thread::JoinHandle<()>,
 }
 
+#[cfg(test)]
 impl SpinnerGuard {
     fn spawn(stop: Arc<std::sync::atomic::AtomicBool>) -> Self {
         let handle = start_spinner(stop.clone());
@@ -4006,6 +4130,7 @@ impl SpinnerGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for SpinnerGuard {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -4025,6 +4150,7 @@ impl Drop for SpinnerGuard {
 /// (↯ bolts, Red/Orange/Green/Cyan/Violet palette, bright→dim
 /// traveling peak) plus a dim elapsed-seconds counter so the user
 /// can see whether the call is hanging vs just slow.
+#[cfg(test)]
 fn start_spinner(stop: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         use std::io::Write;
@@ -4105,6 +4231,61 @@ fn stderr_cols() -> usize {
         }
     }
     80
+}
+
+#[cfg(test)]
+mod prompt_indicator_tests {
+    use super::{NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, render_nex_prompt};
+    use unicode_width::UnicodeWidthStr;
+
+    fn strip_ansi(input: &str) -> String {
+        let mut out = String::new();
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                if chars.next_if_eq(&'[').is_some() {
+                    while let Some(next) = chars.next() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            out.push(ch);
+        }
+        out
+    }
+
+    #[test]
+    fn compact_prompt_keeps_input_column_stable() {
+        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK, 0);
+        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 0);
+
+        assert_eq!(idle, "> ");
+        assert_eq!(working, "*>");
+        assert_eq!(UnicodeWidthStr::width(idle.as_str()), 2);
+        assert_eq!(UnicodeWidthStr::width(working.as_str()), 2);
+    }
+
+    #[test]
+    fn colored_working_prompt_is_single_cell_indicator_plus_prompt() {
+        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 2);
+        let plain = strip_ansi(&rendered);
+
+        assert_eq!(plain, format!("{}>", NEX_WORKING_GLYPH));
+        assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
+        assert!(rendered.contains("\x1b[1;38;5;"));
+    }
+
+    #[test]
+    fn colored_idle_prompt_renders_plain_prompt_text() {
+        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH, 0);
+        let plain = strip_ansi(&rendered);
+
+        assert_eq!(plain, "> ");
+        assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
+    }
 }
 
 /// Erase the just-streamed plain text on stderr and re-emit it as
