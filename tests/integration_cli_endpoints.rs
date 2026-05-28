@@ -4,7 +4,7 @@
 //! binary, verifying output format, error messages, and config persistence.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -84,6 +84,119 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
     wg_dir
+}
+
+#[derive(Clone)]
+struct EndpointMockRoute {
+    method: &'static str,
+    path: &'static str,
+    status: u16,
+    body: &'static str,
+}
+
+fn request_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn endpoint_request_complete(buf: &[u8]) -> bool {
+    let Some(header_end) = request_header_end(buf) else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&buf[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("content-length:")
+                .or_else(|| line.strip_prefix("Content-Length:"))
+        })
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    buf.len() >= header_end + 4 + content_length
+}
+
+fn endpoint_mock_server(
+    routes: Vec<EndpointMockRoute>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{}", port);
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let request_log = std::sync::Arc::clone(&requests);
+    let expected_requests = routes.len();
+
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut served = 0usize;
+        while served < expected_requests && Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(stream) => stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(_) => break,
+            };
+            served += 1;
+
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if endpoint_request_complete(&buf) {
+                            break;
+                        }
+                    }
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let request = String::from_utf8_lossy(&buf).to_string();
+            request_log.lock().unwrap().push(request.clone());
+            let request_line = request.lines().next().unwrap_or_default();
+            let mut request_parts = request_line.split_whitespace();
+            let method = request_parts.next().unwrap_or_default();
+            let path = request_parts.next().unwrap_or_default();
+            let (status, body) = routes
+                .iter()
+                .find(|route| route.method == method && route.path == path)
+                .map(|route| (route.status, route.body))
+                .unwrap_or((404, r#"{"error":"not found"}"#));
+            let reason = if status >= 400 { "ERR" } else { "OK" };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                reason,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (base_url, requests, handle)
 }
 
 // ===========================================================================
@@ -459,7 +572,330 @@ fn cli_endpoints_set_default_nonexistent_errors() {
 }
 
 // ===========================================================================
-// 5. Duplicate endpoint name → error
+// 5. wg endpoints test — models plus generation probe
+// ===========================================================================
+
+#[test]
+fn cli_endpoints_test_generation_failure_after_models_success() {
+    let (base_url, _requests, handle) = endpoint_mock_server(vec![
+        EndpointMockRoute {
+            method: "GET",
+            path: "/models",
+            status: 200,
+            body: r#"{"data":[{"id":"test-model"}]}"#,
+        },
+        EndpointMockRoute {
+            method: "POST",
+            path: "/chat/completions",
+            status: 500,
+            body: r#"{"error":"upstream failed"}"#,
+        },
+    ]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "mock-or",
+            "--provider",
+            "openrouter",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-or-test",
+            "--model",
+            "test-model",
+        ],
+    );
+
+    let (stdout, stderr) = wg_fail(&wg_dir, &["endpoints", "test", "mock-or"]);
+    handle.join().unwrap();
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        stdout.contains("Models: OK"),
+        "models success should be visible before generation failure: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Generation: FAILED (HTTP 500)"),
+        "expected generation failure in stdout, got: {}",
+        stdout
+    );
+    assert!(
+        combined.contains("Generation failed"),
+        "expected generation failure error, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn cli_endpoints_test_generation_success_sends_bearer_auth() {
+    let (base_url, requests, handle) = endpoint_mock_server(vec![
+        EndpointMockRoute {
+            method: "GET",
+            path: "/models",
+            status: 200,
+            body: r#"{"data":[{"id":"test-model"}]}"#,
+        },
+        EndpointMockRoute {
+            method: "POST",
+            path: "/chat/completions",
+            status: 200,
+            body: r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        },
+    ]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "mock-or-ok",
+            "--provider",
+            "openrouter",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-or-generation",
+            "--model",
+            "test-model",
+        ],
+    );
+
+    let output = wg_ok(&wg_dir, &["endpoints", "test", "mock-or-ok"]);
+    handle.join().unwrap();
+    assert!(
+        output.contains("Generation: OK"),
+        "expected concise generation OK output, got: {}",
+        output
+    );
+
+    let captured = requests.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        2,
+        "expected /models and /chat/completions requests, got: {:?}",
+        captured
+    );
+    let chat_request = captured
+        .iter()
+        .find(|request| request.starts_with("POST /chat/completions "))
+        .expect("chat completion request should be captured");
+    assert!(
+        chat_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-or-generation"),
+        "chat request must include bearer auth when configured:\n{}",
+        chat_request
+    );
+    assert!(
+        chat_request.contains(r#""model":"test-model""#),
+        "chat request must route the configured model:\n{}",
+        chat_request
+    );
+}
+
+#[test]
+fn cli_endpoints_test_generation_model_not_found_is_distinct() {
+    let (base_url, _requests, handle) = endpoint_mock_server(vec![
+        EndpointMockRoute {
+            method: "GET",
+            path: "/models",
+            status: 200,
+            body: r#"{"data":[{"id":"other-model"}]}"#,
+        },
+        EndpointMockRoute {
+            method: "POST",
+            path: "/chat/completions",
+            status: 404,
+            body: r#"{"error":{"message":"model not found"}}"#,
+        },
+    ]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "missing-model",
+            "--provider",
+            "openai",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-test",
+            "--model",
+            "missing-model",
+        ],
+    );
+
+    let (stdout, stderr) = wg_fail(&wg_dir, &["endpoints", "test", "missing-model"]);
+    handle.join().unwrap();
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        stdout.contains("Generation: FAILED (model not found)"),
+        "expected distinct model-not-found output, got: {}",
+        stdout
+    );
+    assert!(
+        combined.contains("Model not found"),
+        "expected model-not-found error, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn cli_endpoints_test_generation_body_shape_is_distinct() {
+    let (base_url, _requests, handle) = endpoint_mock_server(vec![
+        EndpointMockRoute {
+            method: "GET",
+            path: "/models",
+            status: 200,
+            body: r#"{"data":[{"id":"test-model"}]}"#,
+        },
+        EndpointMockRoute {
+            method: "POST",
+            path: "/chat/completions",
+            status: 200,
+            body: r#"{"choices":[{"message":{"role":"assistant"}}]}"#,
+        },
+    ]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "bad-shape",
+            "--provider",
+            "openai",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-test",
+            "--model",
+            "test-model",
+        ],
+    );
+
+    let (stdout, stderr) = wg_fail(&wg_dir, &["endpoints", "test", "bad-shape"]);
+    handle.join().unwrap();
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        stdout.contains("Generation: FAILED (unexpected response body)"),
+        "expected body-shape output, got: {}",
+        stdout
+    );
+    assert!(
+        combined.contains("body-shape"),
+        "expected body-shape error, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn cli_endpoints_test_authentication_failure_is_distinct() {
+    let (base_url, _requests, handle) = endpoint_mock_server(vec![EndpointMockRoute {
+        method: "GET",
+        path: "/models",
+        status: 401,
+        body: r#"{"error":"unauthorized"}"#,
+    }]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "bad-auth",
+            "--provider",
+            "openai",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-bad",
+            "--model",
+            "test-model",
+        ],
+    );
+
+    let (stdout, stderr) = wg_fail(&wg_dir, &["endpoints", "test", "bad-auth"]);
+    handle.join().unwrap();
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(
+        stdout.contains("Authentication: FAILED (models request)"),
+        "expected authentication failure output, got: {}",
+        stdout
+    );
+    assert!(
+        combined.contains("Authentication failed"),
+        "expected authentication error, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn cli_endpoints_test_models_only_for_generation_unavailable_provider() {
+    let (base_url, requests, handle) = endpoint_mock_server(vec![EndpointMockRoute {
+        method: "GET",
+        path: "/v1/models",
+        status: 200,
+        body: r#"{"data":[]}"#,
+    }]);
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoints",
+            "add",
+            "anthropic-mock",
+            "--provider",
+            "anthropic",
+            "--url",
+            &base_url,
+            "--api-key",
+            "sk-ant",
+            "--model",
+            "claude-test",
+        ],
+    );
+
+    let output = wg_ok(&wg_dir, &["endpoints", "test", "anthropic-mock"]);
+    handle.join().unwrap();
+    assert!(
+        output.contains("Models: OK"),
+        "expected models connectivity to remain available, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Generation: SKIPPED (not available for provider 'anthropic')"),
+        "expected generation skip for non-OAI provider, got: {}",
+        output
+    );
+    let captured = requests.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1, "only /models should be requested");
+    assert!(
+        captured[0].starts_with("GET /v1/models "),
+        "anthropic endpoint should still use /v1/models: {}",
+        captured[0]
+    );
+}
+
+// ===========================================================================
+// 6. Duplicate endpoint name -> error
 // ===========================================================================
 
 #[test]
@@ -501,7 +937,7 @@ fn cli_endpoints_add_duplicate_errors() {
 }
 
 // ===========================================================================
-// 6. Full CRUD lifecycle
+// 7. Full CRUD lifecycle
 // ===========================================================================
 
 #[test]
@@ -566,7 +1002,7 @@ fn cli_endpoints_full_lifecycle() {
 }
 
 // ===========================================================================
-// 7. wg endpoints update — patches existing endpoint in place
+// 8. wg endpoints update — patches existing endpoint in place
 // ===========================================================================
 
 #[test]

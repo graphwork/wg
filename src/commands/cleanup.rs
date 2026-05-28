@@ -542,6 +542,7 @@ fn attempt_manual_worktree_cleanup(
 }
 
 /// Fix permissions on a file and retry removal
+#[cfg(unix)]
 fn fix_permissions_and_retry_removal(file_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -561,7 +562,25 @@ fn fix_permissions_and_retry_removal(file_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fix permissions on a file and retry removal
+#[cfg(not(unix))]
+fn fix_permissions_and_retry_removal(file_path: &Path) -> Result<()> {
+    if let Ok(metadata) = fs::metadata(file_path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            fs::set_permissions(file_path, perms)
+                .context("Failed to clear readonly file attribute")?;
+        }
+
+        fs::remove_file(file_path).context("Failed to remove file after permission fix")?;
+    }
+
+    Ok(())
+}
+
 /// Fix permissions on a directory and its contents, then retry removal
+#[cfg(unix)]
 fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -599,6 +618,38 @@ fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
     fix_permissions_recursive(dir_path).context("Failed to fix directory permissions")?;
 
     // Retry removal
+    fs::remove_dir_all(dir_path).context("Failed to remove directory after permission fix")?;
+
+    Ok(())
+}
+
+/// Fix permissions on a directory and its contents, then retry removal
+#[cfg(not(unix))]
+fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
+    if !dir_path.exists() {
+        return Ok(());
+    }
+
+    fn clear_readonly_recursive(path: &Path) -> Result<()> {
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut perms = metadata.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                let _ = fs::set_permissions(path, perms);
+            }
+        }
+
+        if path.is_dir()
+            && let Ok(entries) = fs::read_dir(path)
+        {
+            for entry in entries.flatten() {
+                clear_readonly_recursive(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    clear_readonly_recursive(dir_path).context("Failed to fix directory permissions")?;
     fs::remove_dir_all(dir_path).context("Failed to remove directory after permission fix")?;
 
     Ok(())

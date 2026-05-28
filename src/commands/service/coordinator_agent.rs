@@ -580,10 +580,17 @@ impl CoordinatorAgent {
             return false;
         }
         // Send SIGINT (not SIGKILL) — Claude CLI treats this as "stop generating"
-        unsafe {
-            libc::kill(pid as i32, libc::SIGINT);
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGINT);
+            }
+            true
         }
-        true
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 
     /// Shut down the coordinator agent.
@@ -597,6 +604,7 @@ impl CoordinatorAgent {
     pub fn shutdown(self) {
         let pid = *self.pid.lock().unwrap_or_else(|e| e.into_inner());
         if pid > 0 {
+            #[cfg(unix)]
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);
             }

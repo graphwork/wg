@@ -733,6 +733,7 @@ fn format_tool_input(name: &str, raw: &str) -> String {
 /// that case rather than crashing.
 static CLAUDE_CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
+#[cfg(unix)]
 extern "C" fn sigint_forwarder(_sig: libc::c_int) {
     // Async-signal-safe: just read the atomic + issue kill.
     let pid = CLAUDE_CHILD_PID.load(Ordering::SeqCst);
@@ -746,6 +747,7 @@ extern "C" fn sigint_forwarder(_sig: libc::c_int) {
     // inbox messages after the interrupted turn flushes.
 }
 
+#[cfg(unix)]
 fn install_sigint_forwarder() {
     unsafe {
         libc::signal(
@@ -754,6 +756,9 @@ fn install_sigint_forwarder() {
         );
     }
 }
+
+#[cfg(not(unix))]
+fn install_sigint_forwarder() {}
 
 // --- Handler-local logger ----------------------------------------------------
 

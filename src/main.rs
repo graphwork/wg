@@ -3188,23 +3188,31 @@ fn main() -> Result<()> {
             )
         }
         Commands::TuiDump {} => {
-            let snap = tui::viz_viewer::screen_dump::client_dump(&workgraph_dir)?;
-            if cli.json {
-                let j = serde_json::json!({
-                    "width": snap.width,
-                    "height": snap.height,
-                    "active_tab": snap.active_tab,
-                    "focused_panel": snap.focused_panel,
-                    "selected_task": snap.selected_task,
-                    "input_mode": snap.input_mode,
-                    "coordinator_id": snap.coordinator_id,
-                    "text": snap.text,
-                });
-                println!("{}", serde_json::to_string_pretty(&j)?);
-            } else {
-                println!("{}", snap.text);
+            #[cfg(unix)]
+            {
+                let snap = tui::viz_viewer::screen_dump::client_dump(&workgraph_dir)?;
+                if cli.json {
+                    let j = serde_json::json!({
+                        "width": snap.width,
+                        "height": snap.height,
+                        "active_tab": snap.active_tab,
+                        "focused_panel": snap.focused_panel,
+                        "selected_task": snap.selected_task,
+                        "input_mode": snap.input_mode,
+                        "coordinator_id": snap.coordinator_id,
+                        "text": snap.text,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&j)?);
+                } else {
+                    println!("{}", snap.text);
+                }
+                Ok(())
             }
-            Ok(())
+
+            #[cfg(not(unix))]
+            {
+                anyhow::bail!("wg tui-dump is only supported on Unix platforms")
+            }
         }
         Commands::Screencast { command } => match command {
             ScreencastCommands::Render {
