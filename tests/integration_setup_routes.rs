@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::config::Config;
+use workgraph::config::{Config, DispatchRole};
 use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 // ---------------------------------------------------------------------------
@@ -74,6 +74,14 @@ fn test_route_openrouter_complete_config() {
     assert!(cfg.tiers.fast.is_some());
     assert!(cfg.tiers.standard.is_some());
     assert!(cfg.tiers.premium.is_some());
+    assert_eq!(
+        cfg.tiers.standard.as_deref(),
+        Some("openrouter:anthropic/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
+        "anthropic/claude-opus-4-7"
+    );
     assert_eq!(cfg.llm_endpoints.endpoints.len(), 1);
     assert_eq!(cfg.llm_endpoints.endpoints[0].provider, "openrouter");
     // Round-trip
@@ -89,6 +97,11 @@ fn test_route_claude_cli_complete_config() {
     assert!(cfg.tiers.fast.is_some());
     assert!(cfg.tiers.standard.is_some());
     assert!(cfg.tiers.premium.is_some());
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
+    assert_eq!(
+        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
+        "opus"
+    );
     // Claude CLI doesn't need an endpoint.
     assert!(cfg.llm_endpoints.endpoints.is_empty());
     let toml_str = toml::to_string_pretty(&cfg).unwrap();
@@ -179,6 +192,44 @@ fn test_setup_non_interactive_route_writes_config() {
     assert!(
         cfg.tiers.premium.is_some(),
         "tiers.premium must be populated"
+    );
+    assert_eq!(cfg.agent.model, "claude:opus");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("claude:opus"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
+    assert_eq!(
+        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
+        "opus"
+    );
+}
+
+#[test]
+fn test_setup_route_codex_writes_top_standard_and_task_agent() {
+    let tmp = TempDir::new().unwrap();
+    let fake_home = tmp.path().join("home");
+    fs::create_dir_all(&fake_home).unwrap();
+
+    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "codex-cli", "--yes"]);
+    assert!(
+        output.status.success(),
+        "wg setup --route codex-cli --yes failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let cfg = load_global_config(&fake_home);
+    assert_eq!(cfg.agent.model, "codex:gpt-5.5");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        cfg.models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(
+        cfg.resolve_model_for_role(DispatchRole::TaskAgent).model,
+        "gpt-5.5"
     );
 }
 

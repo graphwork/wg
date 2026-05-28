@@ -276,6 +276,265 @@ fn config_models_displays_codex_provider_for_codex_profile_roles() {
     }
 }
 
+#[test]
+fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+
+    let codex_profile = fs::read_to_string(home.join(".wg/profiles/codex.toml")).unwrap();
+    let codex_cfg: Config = toml::from_str(&codex_profile).unwrap();
+    assert_eq!(codex_cfg.agent.model, "codex:gpt-5.5");
+    assert_eq!(
+        codex_cfg.coordinator.model.as_deref(),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(codex_cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        codex_cfg
+            .models
+            .default
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(
+        codex_cfg
+            .models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
+    assert_eq!(
+        codex_cfg
+            .models
+            .evaluator
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("codex:gpt-5.4-mini"),
+        "agency-specific codex pins stay intentionally cheap"
+    );
+    assert_ne!(codex_cfg.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
+    let models_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--models"]);
+    let models: serde_json::Value = serde_json::from_str(&models_json).unwrap();
+    assert_eq!(models["default"]["model"], "gpt-5.5");
+    assert_eq!(models["default"]["provider"], "codex");
+    assert_eq!(models["task_agent"]["model"], "gpt-5.5");
+    assert_eq!(models["task_agent"]["provider"], "codex");
+    let tiers_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--tiers"]);
+    let tiers: serde_json::Value = serde_json::from_str(&tiers_json).unwrap();
+    assert_eq!(tiers["standard"]["model_id"], "codex:gpt-5.5");
+
+    let claude_profile = fs::read_to_string(home.join(".wg/profiles/claude.toml")).unwrap();
+    let claude_cfg: Config = toml::from_str(&claude_profile).unwrap();
+    assert_eq!(claude_cfg.agent.model, "claude:opus");
+    assert_eq!(claude_cfg.coordinator.model.as_deref(), Some("claude:opus"));
+    assert_eq!(claude_cfg.tiers.standard.as_deref(), Some("claude:opus"));
+    assert_eq!(
+        claude_cfg
+            .models
+            .default
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:opus")
+    );
+    assert_eq!(
+        claude_cfg
+            .models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:opus")
+    );
+    assert_eq!(
+        claude_cfg
+            .models
+            .evaluator
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:haiku"),
+        "agency-specific claude pins stay intentionally cheap"
+    );
+    assert_ne!(claude_cfg.tiers.standard.as_deref(), Some("claude:sonnet"));
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "claude", "--no-reload"]);
+    let models_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--models"]);
+    let models: serde_json::Value = serde_json::from_str(&models_json).unwrap();
+    assert_eq!(models["default"]["model"], "opus");
+    assert_eq!(models["default"]["provider"], "anthropic");
+    assert_eq!(models["task_agent"]["model"], "opus");
+    assert_eq!(models["task_agent"]["provider"], "anthropic");
+    let tiers_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--tiers"]);
+    let tiers: serde_json::Value = serde_json::from_str(&tiers_json).unwrap();
+    assert_eq!(tiers["standard"]["model_id"], "claude:opus");
+}
+
+#[test]
+fn direct_global_model_edit_clears_active_profile_and_pins_default_route() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
+
+    let out = wg_ok_with_home(
+        &wg_dir,
+        &home,
+        &[
+            "config",
+            "--global",
+            "--model",
+            "claude:opus",
+            "--no-reload",
+        ],
+    );
+    assert!(
+        out.contains("Active profile cleared"),
+        "direct global routing edits should clear the active named profile:\n{}",
+        out
+    );
+    assert!(
+        !home.join(".wg/active-profile").exists(),
+        "active-profile pointer should be removed after direct global routing edit"
+    );
+
+    let global_body = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
+    let cfg: Config = toml::from_str(&global_body).unwrap();
+    assert_eq!(cfg.agent.model, "claude:opus");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("claude:opus"));
+    assert_eq!(cfg.tiers.fast.as_deref(), Some("claude:haiku"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
+    assert_eq!(
+        cfg.models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:opus")
+    );
+    assert_eq!(
+        cfg.models
+            .evaluator
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:haiku")
+    );
+}
+
+#[test]
+fn model_qualified_profile_use_pins_exact_default_route_and_clear_show_output() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+
+    let codex_path = home.join(".wg/profiles/codex.toml");
+    let codex_stale = fs::read_to_string(&codex_path).unwrap().replace(
+        "standard = \"codex:gpt-5.5\"",
+        "standard = \"codex:gpt-5.4\"",
+    );
+    fs::write(&codex_path, codex_stale).unwrap();
+
+    let use_out = wg_ok_with_home(
+        &wg_dir,
+        &home,
+        &["profile", "use", "codex:gpt-5.5", "--no-reload"],
+    );
+    assert!(
+        use_out.contains("Default/task-agent route pinned to codex:gpt-5.5"),
+        "qualified profile activation should report the exact pin:\n{}",
+        use_out
+    );
+    let show = wg_ok_with_home(&wg_dir, &home, &["profile", "show"]);
+    assert!(show.contains("Active named profile: codex"));
+    assert!(show.contains("models.default   = codex:gpt-5.5"));
+    assert!(show.contains("models.task_agent= codex:gpt-5.5"));
+    assert!(show.contains("standard = codex:gpt-5.5"));
+    assert!(
+        !show.contains("standard = codex:gpt-5.4"),
+        "profile show must not present stale profile tiers as authoritative after exact pin:\n{}",
+        show
+    );
+
+    let models_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--models"]);
+    let models: serde_json::Value = serde_json::from_str(&models_json).unwrap();
+    assert_eq!(models["default"]["model"], "gpt-5.5");
+    assert_eq!(models["default"]["provider"], "codex");
+    assert_eq!(models["task_agent"]["model"], "gpt-5.5");
+    assert_eq!(models["task_agent"]["provider"], "codex");
+
+    let claude_path = home.join(".wg/profiles/claude.toml");
+    let claude_stale = fs::read_to_string(&claude_path)
+        .unwrap()
+        .replace("standard = \"claude:opus\"", "standard = \"claude:sonnet\"");
+    fs::write(&claude_path, claude_stale).unwrap();
+
+    wg_ok_with_home(
+        &wg_dir,
+        &home,
+        &["profile", "use", "claude:opus", "--no-reload"],
+    );
+    let show = wg_ok_with_home(&wg_dir, &home, &["profile", "show"]);
+    assert!(show.contains("Active named profile: claude"));
+    assert!(show.contains("models.default   = claude:opus"));
+    assert!(show.contains("models.task_agent= claude:opus"));
+    assert!(show.contains("standard = claude:opus"));
+    assert!(
+        !show.contains("standard = claude:sonnet"),
+        "profile show must not present stale claude tiers as authoritative after exact pin:\n{}",
+        show
+    );
+}
+
+#[test]
+fn project_local_model_override_still_wins_after_profile_activation() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join(".wg")).unwrap();
+    let wg_dir = setup_workgraph_under(&tmp, "project");
+
+    wg_ok_with_home(&wg_dir, &home, &["profile", "init-starters"]);
+    wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        r#"
+[agent]
+model = "openrouter:custom/project-model"
+
+[dispatcher]
+model = "openrouter:custom/project-model"
+
+[tiers]
+standard = "openrouter:custom/project-model"
+premium = "openrouter:custom/project-model"
+
+[models.default]
+model = "openrouter:custom/project-model"
+
+[models.task_agent]
+model = "openrouter:custom/project-model"
+"#,
+    )
+    .unwrap();
+
+    let models_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--models"]);
+    let models: serde_json::Value = serde_json::from_str(&models_json).unwrap();
+    assert_eq!(models["default"]["model"], "custom/project-model");
+    assert_eq!(models["default"]["provider"], "openrouter");
+    assert_eq!(models["task_agent"]["model"], "custom/project-model");
+    assert_eq!(models["task_agent"]["provider"], "openrouter");
+}
+
 // ===========================================================================
 // parse_model_spec_strict
 // ===========================================================================

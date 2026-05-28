@@ -630,7 +630,7 @@ owners = [
     "fix-codex-cli",
     "bump-codex-defaults",
 ]
-description = "Pins the codex-cli route defaults regression: `wg init --route codex-cli` must write gpt-5.5 (newest frontier; user-preferred default per bump-codex-defaults) as the agent/dispatcher model, full tier set (gpt-5.4-mini/gpt-5.4/gpt-5.5), [models.evaluator]/[models.assigner]/[models.flip_inference]/[models.flip_comparison] all pointing to gpt-5.4-mini — so agency meta-tasks AND FLIP scoring run on codex, not fall back to claude:haiku. Also verifies `wg config lint` flags the old codex:o1-pro string. No LLM endpoint needed."
+description = "Pins the codex-cli route defaults regression: `wg init --route codex-cli` must write gpt-5.5 (newest frontier; user-preferred default per bump-codex-defaults) as the agent/dispatcher/default/task-agent model, full tier set (gpt-5.4-mini/gpt-5.5/gpt-5.5), [models.evaluator]/[models.assigner]/[models.flip_inference]/[models.flip_comparison] all pointing to gpt-5.4-mini — so agency meta-tasks AND FLIP scoring run on codex, not fall back to claude:haiku. Also verifies `wg config lint` flags the old codex:o1-pro string. No LLM endpoint needed."
 timeout_seconds = 30
 
 [[scenario]]
@@ -799,6 +799,15 @@ owners = [
 ]
 description = "Named profiles: wg profile use <name> writes active-pointer, wg config --merged reflects the profile's models, wg profile use --clear removes the pointer."
 timeout_seconds = 30
+
+[[scenario]]
+name = "profile_default_model_pins"
+script = "scenarios/profile_default_model_pins.sh"
+owners = [
+    "fix-profile-switching",
+]
+description = "Regression for fix-profile-switching: in a fresh HOME, `wg profile init-starters` plus `wg profile use codex/claude` and model-qualified `wg profile use codex:gpt-5.5` / `wg profile use claude:opus` must resolve default/task-agent/standard routing to codex:gpt-5.5 and claude:opus, not stale gpt-5.4 or sonnet. Also pins `wg setup --route`, `wg config init --route`, direct global model edits clearing active-profile, profile-show clarity, and explicit project-local override precedence."
+timeout_seconds = 60
 
 [[scenario]]
 name = "profile_codex_service_start"

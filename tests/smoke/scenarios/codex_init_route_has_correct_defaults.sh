@@ -16,8 +16,10 @@
 #   [agent].model            = codex:gpt-5.5       (newest frontier, premium tier)
 #   [dispatcher].model       = codex:gpt-5.5
 #   [tiers].fast             = codex:gpt-5.4-mini  (haiku-equivalent)
-#   [tiers].standard         = codex:gpt-5.4       (sonnet-equivalent, kept)
+#   [tiers].standard         = codex:gpt-5.5       (task-agent/default worker)
 #   [tiers].premium          = codex:gpt-5.5       (opus-equivalent)
+#   [models.default].model        = codex:gpt-5.5
+#   [models.task_agent].model     = codex:gpt-5.5
 #   [models.evaluator].model      = codex:gpt-5.4-mini
 #   [models.assigner].model       = codex:gpt-5.4-mini
 #   [models.flip_inference].model = codex:gpt-5.4-mini
@@ -60,11 +62,17 @@ fi
 if ! grep -q 'fast = "codex:gpt-5.4-mini"' <<<"$dry_out"; then
     loud_fail "dry-run output missing fast tier codex:gpt-5.4-mini. Got:\n$dry_out"
 fi
-if ! grep -q 'standard = "codex:gpt-5.4"' <<<"$dry_out"; then
-    loud_fail "dry-run output missing standard tier codex:gpt-5.4. Got:\n$dry_out"
+if ! grep -q 'standard = "codex:gpt-5.5"' <<<"$dry_out"; then
+    loud_fail "dry-run output missing standard tier codex:gpt-5.5. Got:\n$dry_out"
 fi
 if ! grep -q 'premium = "codex:gpt-5.5"' <<<"$dry_out"; then
     loud_fail "dry-run output missing premium tier codex:gpt-5.5. Got:\n$dry_out"
+fi
+if ! grep -q '\[models.default\]' <<<"$dry_out"; then
+    loud_fail "dry-run output missing [models.default] section. Got:\n$dry_out"
+fi
+if ! grep -q '\[models.task_agent\]' <<<"$dry_out"; then
+    loud_fail "dry-run output missing [models.task_agent] section. Got:\n$dry_out"
 fi
 
 # Agency role-split models must be present (the regression: these were missing).
@@ -83,9 +91,9 @@ if ! grep -q '\[models.flip_comparison\]' <<<"$dry_out"; then
     loud_fail "dry-run output missing [models.flip_comparison] section. Got:\n$dry_out"
 fi
 
-# Agent/dispatcher must NOT regress to gpt-5.4 (pre-bump default).
-if grep -qE '^model = "codex:gpt-5\.4"$' <<<"$dry_out"; then
-    loud_fail "dry-run output has pre-bump 'model = \"codex:gpt-5.4\"' for agent/dispatcher. Got:\n$dry_out"
+# Default/task-agent routing must NOT regress to gpt-5.4 (pre-bump default).
+if grep -qE '^(model|standard) = "codex:gpt-5\.4"$' <<<"$dry_out"; then
+    loud_fail "dry-run output has pre-bump codex:gpt-5.4 for default/task-agent routing. Got:\n$dry_out"
 fi
 
 # No deprecated model strings.
@@ -112,12 +120,15 @@ fi
 config_out=$(run_wg config --show 2>&1) || \
     loud_fail "wg config --show failed after init: $config_out"
 
-# All four model strings must be codex-prefixed.
-for model_str in "codex:gpt-5.4" "codex:gpt-5.4-mini" "codex:gpt-5.5"; do
+# All generated model strings must be codex-prefixed.
+for model_str in "codex:gpt-5.4-mini" "codex:gpt-5.5"; do
     if ! grep -q "$model_str" <<<"$config_out"; then
         loud_fail "wg config show missing $model_str after codex-cli init. Got:\n$config_out"
     fi
 done
+if grep -qE '^(model|standard) = "codex:gpt-5\.4"$' <<<"$config_out"; then
+    loud_fail "wg config show has stale codex:gpt-5.4 for default/task-agent routing. Got:\n$config_out"
+fi
 
 # No claude: strings should appear from the codex route.
 if grep -q 'claude:' <<<"$config_out"; then

@@ -120,18 +120,25 @@ For per-role models (`[models.evaluator].model` etc.), the existing cascade rule
 #### `~/.wg/profiles/claude.toml`
 
 ```toml
-description = "Claude CLI: opus worker, haiku for agency meta-tasks"
+description = "Claude CLI: opus standard/default worker, haiku for agency meta-tasks"
 
 [agent]
 model = "claude:opus"
 
 [dispatcher]
 model = "claude:opus"
+max_agents = 8
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
+
+[models.default]
+model = "claude:opus"
+
+[models.task_agent]
+model = "claude:opus"
 
 [models.evaluator]
 model = "claude:haiku"
@@ -139,7 +146,10 @@ model = "claude:haiku"
 [models.assigner]
 model = "claude:haiku"
 
-[models.flip]
+[models.flip_inference]
+model = "claude:haiku"
+
+[models.flip_comparison]
 model = "claude:haiku"
 ```
 
@@ -148,18 +158,25 @@ model = "claude:haiku"
 #### `~/.wg/profiles/codex.toml`
 
 ```toml
-description = "OpenAI Codex CLI: gpt-5.5 worker, gpt-5.4-mini for agency"
+description = "OpenAI Codex CLI: gpt-5.5 standard/default worker, gpt-5.4-mini for agency"
 
 [agent]
 model = "codex:gpt-5.5"
 
 [dispatcher]
 model = "codex:gpt-5.5"
+max_agents = 8
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
-standard = "codex:gpt-5.4"
+standard = "codex:gpt-5.5"
 premium = "codex:gpt-5.5"
+
+[models.default]
+model = "codex:gpt-5.5"
+
+[models.task_agent]
+model = "codex:gpt-5.5"
 
 [models.evaluator]
 model = "codex:gpt-5.4-mini"
@@ -167,7 +184,10 @@ model = "codex:gpt-5.4-mini"
 [models.assigner]
 model = "codex:gpt-5.4-mini"
 
-[models.flip]
+[models.flip_inference]
+model = "codex:gpt-5.4-mini"
+
+[models.flip_comparison]
 model = "codex:gpt-5.4-mini"
 ```
 
@@ -217,6 +237,18 @@ The full verb list. All commands operate on `~/.wg/profiles/` and `~/.wg/active-
 - Write `<name>` to `~/.wg/active-profile`.
 - If a daemon is running (`~/.wg/service/state.json` shows pid alive), send `IpcRequest::Reconfigure` with the resolved (model, endpoint, etc.) — same path `wg config -m` uses today (`src/commands/config_cmd.rs:434` reference).
 - Print: `"Active profile: codex (was: claude). Daemon reloaded — next worker will use codex models."` (or `"Daemon not running — change applies on next start."`)
+
+Model-qualified activation is also supported for the starter providers:
+
+```bash
+wg profile use codex:gpt-5.5
+wg profile use claude:opus
+```
+
+This selects the matching profile (`codex` or `claude`) and pins the
+default/task-agent route to the exact model in the written global config. It is
+the non-ambiguous way to say "use this provider profile, but force this exact
+worker model" without manually editing `~/.wg/profiles/*.toml`.
 
 Flag: `--no-reload` (skip the IPC; just write the active pointer). Mirrors `wg config -m --no-reload`.
 Flag: `--clear` (remove active pointer, revert to base config). `wg profile use --clear` unsets without picking another profile.
@@ -421,8 +453,8 @@ See §2.5 example. Mirrors `wg init --route claude-cli` output minus the daemon-
 
 ### 7.2 `codex.toml`
 See §2.5 example. Model strings cross-checked against `docs/config-ux-design.md` §3.2b (codex CLI v0.124.0 mapping):
-- worker: `codex:gpt-5.5` (premium tier — newest frontier, per bump-codex-defaults 2026-04-28)
-- standard: `codex:gpt-5.4` (sonnet-equivalent)
+- worker/default/task-agent/standard: `codex:gpt-5.5` (newest frontier, per bump-codex-defaults 2026-04-28)
+- standard: `codex:gpt-5.5` (intentionally matches worker default so tier resolution cannot downgrade tasks)
 - premium: `codex:gpt-5.5`
 - agency / fast / FLIP: `codex:gpt-5.4-mini`
 

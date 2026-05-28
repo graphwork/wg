@@ -133,8 +133,10 @@ fn config_init_global_writes_minimal_canonical() {
     );
     assert!(body.contains("[tiers]"));
     assert!(body.contains("fast = \"claude:haiku\""));
-    assert!(body.contains("standard = \"claude:sonnet\""));
+    assert!(body.contains("standard = \"claude:opus\""));
     assert!(body.contains("premium = \"claude:opus\""));
+    assert!(body.contains("[models.default]"));
+    assert!(body.contains("[models.task_agent]"));
     assert!(body.contains("[models.evaluator]"));
     assert!(body.contains("[models.assigner]"));
 
@@ -153,12 +155,15 @@ fn config_init_global_writes_minimal_canonical() {
 
     // The file must parse cleanly as a `Config` — that's the round-trip
     // guarantee the profile-as-snapshot model rests on.
-    let parsed: Result<workgraph::config::Config, _> = toml::from_str(&body);
-    assert!(
-        parsed.is_ok(),
-        "global config must round-trip through Config; got: {:?}\n{}",
-        parsed.err(),
-        body,
+    let cfg: workgraph::config::Config = toml::from_str(&body)
+        .unwrap_or_else(|e| panic!("global config must round-trip through Config: {e}\n{body}"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
+    assert_eq!(
+        cfg.models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("claude:opus")
     );
 }
 
@@ -215,6 +220,14 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     let cfg = parsed.unwrap();
     assert_eq!(cfg.agent.model, "codex:gpt-5.5");
     assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        cfg.models
+            .task_agent
+            .as_ref()
+            .and_then(|m| m.model.as_deref()),
+        Some("codex:gpt-5.5")
+    );
 }
 
 #[test]

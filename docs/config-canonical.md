@@ -279,7 +279,7 @@ Stored at `~/.config/wg/matrix.toml`, NOT in main config (`src/config.rs:3340-34
 |-----|-----|---------------|-----|
 | 136 | `[models.default].model` | `"openrouter:anthropic/claude-sonnet-4"` | Either drop the section entirely (let tier cascade pick), or set to `"claude:opus"` or `"openrouter:anthropic/claude-sonnet-4-6"` (the actually-shipping model). Combined with the rest of the openrouter setup absent, this pins the global eval/assign cascade to a model not reachable by any configured endpoint. |
 | 122-127 | `[[llm_endpoints.endpoints]]` openrouter | `is_default = true` | OK if user wants OpenRouter as default; but combined with `[tiers]` set to `claude:*` and `[models.default]` set to `openrouter:anthropic/claude-sonnet-4`, the wiring is internally inconsistent. Either (a) commit to OpenRouter (set tiers to `openrouter:anthropic/claude-haiku-4`/`sonnet-4`/`opus-4`), or (b) commit to `claude` CLI and remove the openrouter endpoint. |
-| 144-147 | `[tiers]` | `fast = "claude:haiku"`, `standard = "claude:sonnet"`, `premium = "claude:opus"` | Match `~/.wg/config.toml` and the project setup: keep `claude:opus`/`claude:sonnet`/`claude:haiku`. **Current values are fine.** Keep these. |
+| 144-147 | `[tiers]` | `fast = "claude:haiku"`, `standard = "claude:sonnet"`, `premium = "claude:opus"` | Stale after the profile/default pin fix: standard should now be `claude:opus` so task-agent/default tier resolution cannot downgrade to sonnet. |
 | 149-162 | `[[model_registry]]` qwen3-coder-30b | `endpoint = "lambda01"` | Stale endpoint name (no `[[llm_endpoints.endpoints]]` named `lambda01` in the same file). Either add the endpoint or drop the registry entry. |
 | 191 | `[mcp]` | empty | OK — empty section is harmless but produces a non-default output on `wg config show`. Drop the line. |
 
@@ -322,8 +322,14 @@ model = "claude:opus"
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
+
+[models.default]
+model = "claude:opus"
+
+[models.task_agent]
+model = "claude:opus"
 
 [models.evaluator]
 model = "claude:haiku"
@@ -332,7 +338,7 @@ model = "claude:haiku"
 model = "claude:haiku"
 ```
 
-That's six lines of meaningful config. Everything else falls through to built-in defaults.
+That's the complete default/task-agent route plus cheap agency pins. Everything else falls through to built-in defaults.
 
 If you also use OpenRouter, add:
 
@@ -374,10 +380,13 @@ model = "claude:opus"
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
 
 [models.default]
+model = "claude:opus"
+
+[models.task_agent]
 model = "claude:opus"
 
 [models.evaluator]

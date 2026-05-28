@@ -87,7 +87,7 @@ fn test_tier_pins_override_profile_defaults_in_effective() {
     // Pin overrides anthropic's default fast=claude:haiku
     assert_eq!(effective.fast.as_deref(), Some("openrouter:custom/fast"));
     // Others fall through to anthropic profile defaults
-    assert_eq!(effective.standard.as_deref(), Some("claude:sonnet"));
+    assert_eq!(effective.standard.as_deref(), Some("claude:opus"));
     assert_eq!(effective.premium.as_deref(), Some("claude:opus"));
 }
 
@@ -106,7 +106,7 @@ fn test_no_pins_uses_profile_defaults() {
 
     let effective = config.effective_tiers_public();
     assert_eq!(effective.fast.as_deref(), Some("claude:haiku"));
-    assert_eq!(effective.standard.as_deref(), Some("claude:sonnet"));
+    assert_eq!(effective.standard.as_deref(), Some("claude:opus"));
     assert_eq!(effective.premium.as_deref(), Some("claude:opus"));
 }
 

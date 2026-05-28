@@ -21,19 +21,19 @@ The `Config` struct contains three tier/model-related sections:
 
 Three quality tiers defined as `enum Tier`:
 - **`fast`** — lightweight/cheap models (haiku-class)
-- **`standard`** — balanced capability (sonnet-class)
+- **`standard`** — default task-agent capability (currently opus-class for claude/codex starters)
 - **`premium`** — highest capability (opus-class)
 
 The `TierConfig` struct (`src/config.rs:919-929`) maps each tier to a model ID:
 ```toml
 [tiers]
 fast = "claude:haiku"         # Optional<String>
-standard = "claude:sonnet"    # Optional<String>
+standard = "claude:opus"      # Optional<String>
 premium = "claude:opus"       # Optional<String>
 ```
 Defaults (when unconfigured) are set in `effective_tiers()` (`src/config.rs:1472-1490`):
 - fast → `"claude:haiku"`
-- standard → `"claude:sonnet"`
+- standard → `"claude:opus"`
 - premium → `"claude:opus"`
 
 ### Dispatch Roles (`src/config.rs:636-752`)
@@ -298,7 +298,7 @@ wg profile auto cheapest           # Generate from benchmark data
 ```toml
 [profiles.claude-only]
 description = "All Anthropic models via Claude CLI"
-tiers = { fast = "claude:haiku", standard = "claude:sonnet", premium = "claude:opus" }
+tiers = { fast = "claude:haiku", standard = "claude:opus", premium = "claude:opus" }
 agent_model = "claude:opus"
 coordinator_model = "claude:opus"
 executor = "claude"

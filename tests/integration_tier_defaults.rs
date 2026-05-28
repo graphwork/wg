@@ -1,7 +1,7 @@
 //! Integration tests for tier-first dispatch contract.
 //!
 //! Validates that:
-//! - task_agent resolves to standard tier (sonnet), not premium (opus)
+//! - task_agent resolves through the standard tier, which defaults to the top worker model
 //! - `wg config --tiers` shows correct defaults
 //! - Tier escalation on retry bumps fast→standard→premium
 //! - `wg config --tier` remapping works
@@ -68,12 +68,12 @@ fn test_task_agent_resolves_to_standard_tier() {
     assert_eq!(
         DispatchRole::TaskAgent.default_tier(),
         Tier::Standard,
-        "task_agent should default to standard tier (sonnet), not premium (opus)"
+        "task_agent should default to the standard tier"
     );
     let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
     assert!(
-        resolved.model.contains("sonnet"),
-        "task_agent should resolve to a sonnet model, got: {}",
+        resolved.model.contains("opus"),
+        "task_agent should resolve to the top worker model, got: {}",
         resolved.model
     );
 }
@@ -136,8 +136,8 @@ fn test_config_tiers_effective_defaults() {
     );
     assert_eq!(
         tiers.standard.as_deref(),
-        Some("claude:sonnet"),
-        "standard tier should default to claude:sonnet"
+        Some("claude:opus"),
+        "standard tier should default to claude:opus"
     );
     assert_eq!(
         tiers.premium.as_deref(),
@@ -183,7 +183,7 @@ fn test_config_repeated_tier_flags_in_one_invocation() {
             "--tier",
             "fast=codex:gpt-5.4-mini",
             "--tier",
-            "standard=codex:gpt-5.4",
+            "standard=codex:gpt-5.5",
             "--tier",
             "premium=codex:gpt-5.5",
         ],
@@ -191,7 +191,7 @@ fn test_config_repeated_tier_flags_in_one_invocation() {
 
     let config = Config::load(&wg_dir).unwrap();
     assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
     assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
 }
 
@@ -212,7 +212,7 @@ fn test_config_codex_one_liner_sets_all_local_values() {
             "--tier",
             "fast=codex:gpt-5.4-mini",
             "--tier",
-            "standard=codex:gpt-5.4",
+            "standard=codex:gpt-5.5",
             "--tier",
             "premium=codex:gpt-5.5",
             "--set-model",
@@ -242,7 +242,7 @@ fn test_config_codex_one_liner_sets_all_local_values() {
     assert!(config.coordinator.provider.is_none());
 
     assert_eq!(config.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+    assert_eq!(config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
     assert_eq!(config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
 
     assert_eq!(
@@ -366,6 +366,6 @@ fn test_tier_display_roundtrip() {
 #[test]
 fn test_tier_default_alias() {
     assert_eq!(Tier::Fast.default_alias(), "haiku");
-    assert_eq!(Tier::Standard.default_alias(), "sonnet");
+    assert_eq!(Tier::Standard.default_alias(), "opus");
     assert_eq!(Tier::Premium.default_alias(), "opus");
 }

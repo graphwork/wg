@@ -72,8 +72,14 @@ model = "claude:opus"
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
+
+[models.default]
+model = "claude:opus"
+
+[models.task_agent]
+model = "claude:opus"
 
 [models.evaluator]
 model = "claude:haiku"
@@ -82,7 +88,7 @@ model = "claude:haiku"
 model = "claude:haiku"
 ```
 
-That's it. Six meaningful lines. Everything else falls through to built-ins (audit §4 "What you should NOT keep in global"). No `[dispatcher]`, no `[checkpoint]`, no `[chat]`, no `[help]`, no `[guardrails]`, no `[viz]`, no `[log]`, no `[replay]` — those defaults are already correct.
+That's it: a complete default/task-agent route plus cheap agency pins. Everything else falls through to built-ins (audit §4 "What you should NOT keep in global"). No `[checkpoint]`, no `[chat]`, no `[help]`, no `[guardrails]`, no `[viz]`, no `[log]`, no `[replay]` — those defaults are already correct.
 
 **Validation:** paste this into a fresh `~/.wg/config.toml`, run `wg service start --max-agents 4`. The daemon must start without warnings. The audit §4 already certifies these values are valid.
 
@@ -118,7 +124,7 @@ For users running the OpenAI Codex CLI. Model tier mapping as of codex CLI v0.12
 | Tier | Model | Notes |
 |------|-------|-------|
 | fast (haiku-equiv) | `codex:gpt-5.4-mini` | OpenAI's recommended subagent model; ~3x cheaper than gpt-5.4 |
-| standard (sonnet-equiv) | `codex:gpt-5.4` | Codex CLI default as of v0.124.0; 1M context |
+| standard (task-agent/default worker) | `codex:gpt-5.5` | Intentionally matches the worker default so tier resolution does not downgrade tasks |
 | premium (opus-equiv) | `codex:gpt-5.5` | Released 2026-04-23; OpenAI's current frontier model |
 
 Worker default = premium (`codex:gpt-5.5`). User preference: prefer newest
@@ -126,11 +132,13 @@ capability for workers; the 2x cost vs gpt-5.4 is acceptable since gpt-5.5 is
 still ~3x cheaper than `claude:opus` per MTok. Meta-tasks (eval / FLIP /
 assign) stay on `gpt-5.4-mini` — there is no `gpt-5.5-mini`.
 
-**Deprecated model strings** (migrate with `wg migrate config`):
-- `codex:o1-pro` → `codex:gpt-5.4` (shutdown 2026-10-23)
-- `codex:gpt-5-codex` → `codex:gpt-5.4` (shutdown 2026-07-23)
+**Deprecated model strings** (migrate with `wg migrate config`): default-route
+pins (`agent.model`, `dispatcher.model`, `[models.default]`,
+`[models.task_agent]`, `tiers.standard`, `tiers.premium`) rewrite to the
+current top worker model. Lower-cost role/catalog references remain explicit.
+
+- default-route `codex:o1-pro` / `codex:gpt-5-codex` / `codex:gpt-5.4` / `codex:gpt-5` → `codex:gpt-5.5`
 - `codex:gpt-5-mini` → `codex:gpt-5.4-mini`
-- `codex:gpt-5` → `codex:gpt-5.4`
 - `codex:gpt-5.4-pro` → `codex:gpt-5.5`
 
 ```toml
@@ -141,8 +149,14 @@ model = "codex:gpt-5.5"
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
-standard = "codex:gpt-5.4"
+standard = "codex:gpt-5.5"
 premium = "codex:gpt-5.5"
+
+[models.default]
+model = "codex:gpt-5.5"
+
+[models.task_agent]
+model = "codex:gpt-5.5"
 
 [models.evaluator]
 model = "codex:gpt-5.4-mini"
@@ -231,11 +245,13 @@ Implementation: `src/commands/setup.rs` already calls `record_use` (line 709). T
 Scope:  global (~/.wg/config.toml)
 Route:  claude-cli
 
-Will write 5 keys:
+Will write 8 keys:
   agent.model              = "claude:opus"
   tiers.fast               = "claude:haiku"
-  tiers.standard           = "claude:sonnet"
+  tiers.standard           = "claude:opus"
   tiers.premium            = "claude:opus"
+  models.default.model     = "claude:opus"
+  models.task_agent.model  = "claude:opus"
   models.evaluator.model   = "claude:haiku"
   models.assigner.model    = "claude:haiku"
 
@@ -288,10 +304,10 @@ Welcome to wg. Let's get you configured.
 ?  Default model?  (anything from `claude:*`)
    [Recent]
    ❯ claude:opus    (last used 5 min ago, from `wg add`)
-     claude:sonnet  (1 hr ago, from `wg config -m`)
+     claude:sonnet  (1 hr ago, explicit lower-cost override)
    [Defaults]
      claude:opus   ← workhorse, high quality, slow
-     claude:sonnet ← typical, balanced
+     claude:sonnet ← optional lower-cost override
      claude:haiku  ← fast, cheap, simple tasks
      [Type custom...]
 
@@ -376,9 +392,8 @@ For each scope, runs:
    - any key whose serialized value equals the built-in default
 4. **Fix known stale model strings** (audit §3 "Confirmed staleness", line 280):
    - `openrouter:anthropic/claude-sonnet-4` → `openrouter:anthropic/claude-sonnet-4-6`
-   - `codex:o1-pro` → `codex:gpt-5.4` (o1-pro deprecated, shutdown 2026-10-23)
-   - `codex:gpt-5-codex` → `codex:gpt-5.4` (sunset 2026-07-23)
-   - `codex:gpt-5-mini` → `codex:gpt-5.4-mini`, `codex:gpt-5` → `codex:gpt-5.4`
+   - default-route `codex:o1-pro` / `codex:gpt-5-codex` / `codex:gpt-5.4` / `codex:gpt-5` → `codex:gpt-5.5`
+   - `codex:gpt-5-mini` → `codex:gpt-5.4-mini`
    - `codex:gpt-5.4-pro` → `codex:gpt-5.5`
 5. **Resolve `[models.default]` mismatch** (audit §3 line 280): if `[models.default].model` is non-default AND the user's `[tiers]` and `[[llm_endpoints.endpoints]]` all use a different provider, leave it alone but emit a one-line warning that says "this looks unintentional" — do NOT silently change a model choice (audit §3 line 281 "internally inconsistent").
 

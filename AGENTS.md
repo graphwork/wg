@@ -79,7 +79,9 @@ See `docs/config-ux-design.md` for full details.
 
 Three starter profiles ship in the binary: `claude` (opus worker), `codex`
 (gpt-5.5), `nex` (in-process endpoint). Activate one with `wg profile use
-<name>`; this writes `~/.wg/active-profile` and hot-reloads the daemon.
+<name>`; use `wg profile use codex:gpt-5.5` or `wg profile use claude:opus`
+to select a profile and pin the exact default/task-agent route in one step.
+This writes `~/.wg/active-profile` and hot-reloads the daemon.
 `wg profile show` / `list` / `create` / `edit` / `diff` / `init-starters`
 cover the rest of the management surface. Profiles overlay onto the
 global+local merge but never clobber project-local config.

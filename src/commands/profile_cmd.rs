@@ -7,6 +7,51 @@ use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use workgraph::profile;
 use workgraph::profile::named as named_profile;
 
+struct ProfileUseTarget {
+    profile_name: String,
+    pinned_model: Option<String>,
+}
+
+fn parse_profile_use_target(name: &str) -> Result<ProfileUseTarget> {
+    if !name.contains(':') {
+        return Ok(ProfileUseTarget {
+            profile_name: name.to_string(),
+            pinned_model: None,
+        });
+    }
+
+    let spec = workgraph::config::parse_model_spec_strict(name).map_err(|e| {
+        anyhow::anyhow!(
+            "Profile '{}' was parsed as a model-qualified profile activation, but the model spec is invalid: {}",
+            name,
+            e
+        )
+    })?;
+    let provider = spec.provider.as_deref().unwrap_or_default();
+    let profile_name = match provider {
+        "claude" | "anthropic" => "claude",
+        "codex" => "codex",
+        "nex" | "local" | "oai-compat" => "nex",
+        _ => {
+            anyhow::bail!(
+                "Model-qualified profile activation supports claude:<model>, codex:<model>, or nex:<model>; got '{}'.",
+                name
+            );
+        }
+    };
+
+    let pinned_model = if provider == "anthropic" {
+        format!("claude:{}", spec.model_id)
+    } else {
+        name.to_string()
+    };
+
+    Ok(ProfileUseTarget {
+        profile_name: profile_name.to_string(),
+        pinned_model: Some(pinned_model),
+    })
+}
+
 /// Extract the top-level `description` key from a profile TOML string.
 /// Returns None if the file has no description or fails to parse.
 fn parse_top_level_description(content: &str) -> Option<String> {
@@ -329,6 +374,8 @@ pub fn show(
             "profile": config.profile,
             "agent_model": config.agent.model,
             "dispatcher_model": config.coordinator.model,
+            "default_model": config.models.default.as_ref().and_then(|m| m.model.clone()),
+            "task_agent_model": config.models.task_agent.as_ref().and_then(|m| m.model.clone()),
             "effective_tiers": {
                 "fast": effective_tiers.fast,
                 "standard": effective_tiers.standard,
@@ -371,12 +418,32 @@ pub fn show(
     }
 
     println!();
-    println!("  Active config (named profile is authoritative for routing):");
+    if active.is_some() {
+        println!(
+            "  Active config (active named profile/global config is authoritative for routing):"
+        );
+    } else {
+        println!("  Active config (global/local config is authoritative for routing):");
+    }
     println!("    agent.model      = {}", config.agent.model);
     println!(
         "    dispatcher.model = {}",
         config.coordinator.model.as_deref().unwrap_or("(unset)")
     );
+    let default_route = config
+        .models
+        .default
+        .as_ref()
+        .and_then(|m| m.model.as_deref())
+        .unwrap_or(&config.agent.model);
+    let task_agent_route = config
+        .models
+        .task_agent
+        .as_ref()
+        .and_then(|m| m.model.as_deref())
+        .unwrap_or(default_route);
+    println!("    models.default   = {}", default_route);
+    println!("    models.task_agent= {}", task_agent_route);
     println!();
     println!("  Tier Mappings:");
     println!(
@@ -646,7 +713,8 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
         return Ok(());
     }
 
-    let profile_name = name.unwrap();
+    let target = parse_profile_use_target(name.unwrap())?;
+    let profile_name = target.profile_name.as_str();
     let prof = named_profile::load(profile_name)?;
 
     // Pre-flight: check that any api_key_ref in the profile's endpoints are reachable.
@@ -680,6 +748,11 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
 
     let prev = named_profile::active().unwrap_or(None);
     let written = named_profile::apply_profile_as_global_config(profile_name)?;
+    if let Some(ref pinned_model) = target.pinned_model {
+        let mut config = Config::load_global()?.unwrap_or_else(|| prof.config.clone());
+        config.pin_default_route_model(pinned_model);
+        config.save_global()?;
+    }
     let local_cleanup = named_profile::clear_local_profile_routing_overrides(dir)?;
     named_profile::set_active(Some(profile_name))?;
 
@@ -702,6 +775,12 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
             written.display(),
             profile_name
         ),
+    }
+    if let Some(ref pinned_model) = target.pinned_model {
+        println!(
+            "  Default/task-agent route pinned to {} via model-qualified profile activation.",
+            pinned_model
+        );
     }
 
     if let Some(cleanup) = local_cleanup {

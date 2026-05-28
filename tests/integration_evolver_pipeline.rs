@@ -858,8 +858,8 @@ fn test_evolver_e2e_analyzer_model_tiers() {
     if let Some(mutation) = analyzers.iter().find(|a| a.id.contains("mutation-")) {
         assert_eq!(
             mutation.model.as_deref(),
-            Some("claude:sonnet"),
-            "Mutation (standard tier) should resolve to claude:sonnet under default tiers"
+            Some("claude:opus"),
+            "Mutation (standard tier) should resolve to claude:opus under default tiers"
         );
     }
 }
@@ -1020,7 +1020,7 @@ model = "codex:gpt-5.5"
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
-standard = "codex:gpt-5.4"
+standard = "codex:gpt-5.5"
 premium = "codex:gpt-5.5"
 
 [models.evolver]
@@ -1088,7 +1088,7 @@ fn test_evolver_fanout_codex_route_emits_codex_models() {
 
     // Per-tier resolution: analyzer strategies map onto the [tiers] config.
     // gap-analysis and bizarre-ideation are premium tier → codex:gpt-5.5
-    // mutation/crossover/etc are standard tier → codex:gpt-5.4
+    // mutation/crossover/etc are standard tier → codex:gpt-5.5
     // retirement and randomisation are fast tier → codex:gpt-5.4-mini
     if let Some(gap) = analyzers.iter().find(|a| a.id.contains("gap-analysis")) {
         assert_eq!(gap.model.as_deref(), Some("codex:gpt-5.5"));
@@ -1097,7 +1097,7 @@ fn test_evolver_fanout_codex_route_emits_codex_models() {
         assert_eq!(retirement.model.as_deref(), Some("codex:gpt-5.4-mini"));
     }
     if let Some(mutation) = analyzers.iter().find(|a| a.id.contains("mutation-")) {
-        assert_eq!(mutation.model.as_deref(), Some("codex:gpt-5.4"));
+        assert_eq!(mutation.model.as_deref(), Some("codex:gpt-5.5"));
     }
 
     // Synthesize/apply/evaluate use [models.evolver].model override directly.

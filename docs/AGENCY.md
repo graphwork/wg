@@ -338,7 +338,7 @@ FLIP uses different models for each phase, configured via the model routing syst
 
 | Role | Default model | Rationale |
 |------|---------------|-----------|
-| `flip_inference` | sonnet | Creative reconstruction requires mid-tier capability |
+| `flip_inference` | opus | Creative reconstruction uses the current standard tier |
 | `flip_comparison` | haiku | Comparison/scoring is simpler, cost-effective |
 | `verification` | opus | Independent verification needs highest capability |
 
@@ -346,7 +346,7 @@ Configure via `[models]` in config.toml:
 
 ```toml
 [models.flip_inference]
-model = "sonnet"
+model = "opus"
 
 [models.flip_comparison]
 model = "haiku"

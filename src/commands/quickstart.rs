@@ -486,6 +486,7 @@ EXECUTORS & MODELS
 
   wg profile use claude         # Starter profile: claude:opus worker
   wg profile use codex          # Starter profile: codex:gpt-5.5
+  wg profile use codex:gpt-5.5  # Codex profile with exact default/task-agent route
   wg profile use nex            # Starter profile: in-process nex endpoint
   wg profile show               # Inspect active profile
   wg profile init-starters      # Re-write the three starter profiles
@@ -572,8 +573,8 @@ CONFIGURATION
   wg config init --local --bare       # Write minimal canonical .wg/config.toml
   wg config init --route openrouter --global   # Write openrouter-route config
                                                 # Routes: claude-cli, codex-cli, openrouter, local, nex-custom
-  wg config --global --model opus     # Update key in global ~/.wg/config.toml (auto-reloads daemon)
-  wg config --local --model sonnet    # Update key in local .wg/config.toml (auto-reloads daemon)
+  wg config --global --model claude:opus    # Update global default/task-agent route (auto-reloads daemon)
+  wg config --local --model codex:gpt-5.5   # Update local default/task-agent route (auto-reloads daemon)
   wg config -m opus --no-reload       # Skip the auto-reload IPC; just write the file
   wg config lint                      # Read-only audit: report deprecated keys, stale model strings
   wg config --creator-agent <hash>    # Set agent used for task creation

@@ -3882,7 +3882,7 @@ wg config --list
 wg config --executor claude --model opus
 
 # Set a global default (applies to all projects)
-wg config --global --model sonnet
+wg config --global --model claude:opus
 
 # Enable the full agency automation loop
 wg config --auto-evaluate true --auto-assign true

@@ -632,8 +632,24 @@ is_default = true
             prof.config.tiers.fast.as_deref(),
             Some("codex:gpt-5.4-mini")
         );
-        assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+        assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
         assert_eq!(prof.config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+        assert_eq!(
+            prof.config
+                .models
+                .default
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("codex:gpt-5.5")
+        );
+        assert_eq!(
+            prof.config
+                .models
+                .task_agent
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("codex:gpt-5.5")
+        );
         // Per-role overrides for agency meta-tasks should also be codex models.
         let eval = prof
             .config
@@ -644,6 +660,43 @@ is_default = true
         assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.4-mini"));
         let assigner = prof.config.models.assigner.as_ref().expect("assigner set");
         assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn test_claude_starter_has_opus_default_worker_models() {
+        let prof = parse_profile(STARTER_CLAUDE, Path::new("claude.toml"), "claude").unwrap();
+        assert_eq!(prof.config.agent.model, "claude:opus");
+        assert_eq!(
+            prof.config.coordinator.model.as_deref(),
+            Some("claude:opus")
+        );
+        assert_eq!(prof.config.tiers.fast.as_deref(), Some("claude:haiku"));
+        assert_eq!(prof.config.tiers.standard.as_deref(), Some("claude:opus"));
+        assert_eq!(prof.config.tiers.premium.as_deref(), Some("claude:opus"));
+        assert_eq!(
+            prof.config
+                .models
+                .default
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("claude:opus")
+        );
+        assert_eq!(
+            prof.config
+                .models
+                .task_agent
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("claude:opus")
+        );
+        assert_eq!(
+            prof.config
+                .models
+                .evaluator
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("claude:haiku")
+        );
     }
 
     #[test]

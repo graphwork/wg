@@ -1794,7 +1794,7 @@ pub enum Commands {
         #[arg(long = "tiers")]
         show_tiers: bool,
 
-        /// Set which model a tier uses; repeat for multiple tiers (e.g., --tier fast=claude:haiku --tier standard=claude:sonnet)
+        /// Set which model a tier uses; repeat for multiple tiers (e.g., --tier fast=claude:haiku --tier standard=claude:opus)
         #[arg(long = "tier", value_name = "TIER=MODEL_ID", action = ArgAction::Append)]
         set_tier: Vec<String>,
 
@@ -3200,7 +3200,7 @@ pub enum ProfileCommands {
     },
     /// Activate a named profile (clears local routing pins, hot-reloads daemon)
     Use {
-        /// Profile name to activate, or omit with --clear to deactivate
+        /// Profile name to activate, or provider:model to activate that profile with an exact default route
         name: Option<String>,
 
         /// Skip sending IPC reload to daemon (still writes profile config and clears local routing pins)

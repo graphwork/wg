@@ -76,9 +76,9 @@ No API key needed for local models.
 │                     Model Routing                           │
 │  "Per-role model selection"                                 │
 │                                                             │
-│  default  → sonnet    (most tasks)                          │
+│  default  → opus      (most tasks)                          │
 │  triage   → haiku     (cheap, fast classification)          │
-│  evaluator→ sonnet    (balanced quality)                    │
+│  evaluator→ opus      (current standard tier)               │
 │  ...                                                        │
 └─────────────┬───────────────────────────────────────────────┘
               │ "where to send the request?"
@@ -139,14 +139,14 @@ Example output:
 MODEL                               TIER          IN/1M      OUT/1M        CTX CAPABILITIES
 ----------------------------------------------------------------------------------------------------
 anthropic/claude-haiku-4-5          budget        0.80       4.00       200k coding, analysis
-anthropic/claude-opus-4-6           frontier      5.00      25.00         1M coding, analysis, creative, reasoning
-anthropic/claude-sonnet-4-6 *       mid           3.00      15.00         1M coding, analysis, creative
+anthropic/claude-opus-4-6 *         frontier      5.00      25.00         1M coding, analysis, creative, reasoning
+anthropic/claude-sonnet-4-6         mid           3.00      15.00         1M coding, analysis, creative
 openai/gpt-4o                       mid           2.50      10.00       128k coding, analysis, creative
 google/gemini-2.5-pro               mid           1.25      10.00         1M coding, analysis, creative, reasoning
 deepseek/deepseek-chat-v3           budget        0.30       0.88       164k coding, analysis
 ...
 
-  * = default model (anthropic/claude-sonnet-4-6)
+  * = default model (anthropic/claude-opus-4-6)
 ```
 
 **Tiers:**
@@ -390,14 +390,14 @@ wg config --model sonnet
 **Dispatch roles:**
 | Role | Purpose | Typical Model |
 |------|---------|---------------|
-| `default` | Fallback for unset roles | sonnet |
-| `task_agent` | Main implementation agents | sonnet |
-| `evaluator` | Post-task evaluation scoring | sonnet |
+| `default` | Fallback for unset roles | opus |
+| `task_agent` | Main implementation agents | opus |
+| `evaluator` | Post-task evaluation scoring | opus |
 | `triage` | Dead-agent summarization | haiku |
 | `assigner` | Agent identity assignment | haiku |
-| `evolver` | Agency evolution | sonnet |
+| `evolver` | Agency evolution | opus |
 | `creator` | Novel agent composition | opus |
-| `flip_inference` | FLIP prompt reconstruction | sonnet |
+| `flip_inference` | FLIP prompt reconstruction | opus |
 | `flip_comparison` | FLIP similarity scoring | haiku |
 | `verification` | FLIP-triggered verification | opus |
 

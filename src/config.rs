@@ -1201,8 +1201,9 @@ impl DispatchRole {
     ///
     /// Metacognition/routing roles (assigner, compactor, triage, evaluator, etc.) default
     /// to Fast so they use haiku and don't burn budget on every dispatch. TaskAgent runs
-    /// at Standard (sonnet) — typical implementation work. Evolver, Creator, and
-    /// Verification get Premium (opus) because they require strong reasoning:
+    /// at Standard; starter/default profiles intentionally map Standard to the
+    /// top worker model so ordinary task dispatch does not silently downgrade.
+    /// Evolver, Creator, and Verification get Premium because they require strong reasoning:
     /// evolver redesigns the agency, creator decomposes work into new tasks, and
     /// verification is the correctness gate.
     pub fn default_tier(&self) -> Tier {
@@ -1347,7 +1348,7 @@ impl Tier {
     pub fn default_alias(&self) -> &'static str {
         match self {
             Self::Fast => "haiku",
-            Self::Standard => "sonnet",
+            Self::Standard => "opus",
             Self::Premium => "opus",
         }
     }
@@ -1802,7 +1803,7 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
                 "amplifier executor was removed; use claude:/codex:/nex: instead \
                  (got '{}'). The previous `amplifier` handler delegated to a CLI that \
                  was never tested in this codebase and silently failed at spawn time. \
-                 Migrate to `claude:opus`, `codex:gpt-5.4`, or `nex:<model>` with a \
+                 Migrate to `claude:opus`, `codex:gpt-5.5`, or `nex:<model>` with a \
                  matching `-e <ENDPOINT>`.",
                 spec,
             ),
@@ -4352,12 +4353,96 @@ impl Config {
         }
 
         if let Some(m) = effective_model {
-            self.coordinator.model = Some(m.clone());
-            self.agent.model = m.clone();
+            self.pin_default_route_model(&m);
             summary.push(format!("model → {}", m));
         }
 
         Ok(summary)
+    }
+
+    /// Pin the user-visible default worker route to one exact model spec.
+    ///
+    /// This updates every default/task-agent surface that can otherwise fall
+    /// through to a lower tier: agent/dispatcher model, `[models.default]`,
+    /// `[models.task_agent]`, and the standard/premium tier aliases. For known
+    /// CLI profiles (claude/codex), starter agency pins are moved to the
+    /// matching cheap model too; custom role overrides are preserved.
+    pub fn pin_default_route_model(&mut self, model: &str) {
+        self.agent.model = model.to_string();
+        self.coordinator.model = Some(model.to_string());
+        let role = RoleModelConfig {
+            provider: None,
+            model: Some(model.to_string()),
+            tier: None,
+            endpoint: None,
+        };
+        self.models.default = Some(role.clone());
+        self.models.task_agent = Some(role);
+        self.tiers.standard = Some(model.to_string());
+        self.tiers.premium = Some(model.to_string());
+        self.pin_provider_companion_defaults(model);
+    }
+
+    fn pin_provider_companion_defaults(&mut self, model: &str) {
+        let spec = parse_model_spec(model);
+        let Some(provider) = spec.provider.as_deref() else {
+            return;
+        };
+        let (fast, agency) = match provider {
+            "claude" | "anthropic" => ("claude:haiku", "claude:haiku"),
+            "codex" => ("codex:gpt-5.4-mini", "codex:gpt-5.4-mini"),
+            _ => return,
+        };
+
+        if self.tier_model_is_absent_or_starter(self.tiers.fast.as_deref()) {
+            self.tiers.fast = Some(fast.to_string());
+        }
+        for role in [
+            DispatchRole::Evaluator,
+            DispatchRole::Assigner,
+            DispatchRole::FlipInference,
+            DispatchRole::FlipComparison,
+        ] {
+            self.set_role_model_if_absent_or_starter(role, agency);
+        }
+    }
+
+    fn tier_model_is_absent_or_starter(&self, model: Option<&str>) -> bool {
+        match model {
+            None => true,
+            Some(model) => Self::is_starter_agency_model(model),
+        }
+    }
+
+    fn set_role_model_if_absent_or_starter(&mut self, role: DispatchRole, model: &str) {
+        let slot = self.models.get_role_mut(role);
+        let replace = match slot.as_ref() {
+            None => true,
+            Some(cfg) => {
+                cfg.provider.is_none()
+                    && cfg.tier.is_none()
+                    && cfg.endpoint.is_none()
+                    && match cfg.model.as_deref() {
+                        None => true,
+                        Some(existing) => Self::is_starter_agency_model(existing),
+                    }
+            }
+        };
+        if replace {
+            *slot = Some(RoleModelConfig {
+                provider: None,
+                model: Some(model.to_string()),
+                tier: None,
+                endpoint: None,
+            });
+        }
+    }
+
+    fn is_starter_agency_model(model: &str) -> bool {
+        matches!(
+            model,
+            "haiku" | "claude:haiku" | "gpt-5.4-mini" | "codex:gpt-5.4-mini"
+        )
     }
 
     /// Save configuration to the global path (~/.wg/config.toml).
@@ -7379,7 +7464,7 @@ model = "local:qwen3-coder"
         let config = Config::default();
         let tiers = config.effective_tiers();
         assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
-        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:opus"));
         assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
     }
 
@@ -7389,7 +7474,7 @@ model = "local:qwen3-coder"
         config.profile = Some("anthropic".into());
         let tiers = config.effective_tiers();
         assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
-        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:opus"));
         assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
     }
 
@@ -7423,7 +7508,7 @@ model = "local:qwen3-coder"
         let tiers = config.effective_tiers();
         // Unknown profile produces no tiers, so hardcoded defaults are used
         assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
-        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:opus"));
         assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
     }
 
@@ -7434,7 +7519,7 @@ model = "local:qwen3-coder"
         // Dynamic profiles return None from resolve_tiers(), so defaults are used
         let tiers = config.effective_tiers();
         assert_eq!(tiers.fast.as_deref(), Some("claude:haiku"));
-        assert_eq!(tiers.standard.as_deref(), Some("claude:sonnet"));
+        assert_eq!(tiers.standard.as_deref(), Some("claude:opus"));
         assert_eq!(tiers.premium.as_deref(), Some("claude:opus"));
     }
 
@@ -8399,9 +8484,15 @@ fetch_max_chars = 16000
     }
 
     #[test]
-    fn test_alias_claude_sonnet_resolves_to_bare_sonnet() {
-        let config = Config::default();
-        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+    fn test_alias_claude_sonnet_resolves_to_bare_sonnet_when_explicit() {
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            model: Some("claude:sonnet".to_string()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(
             resolved.model, "sonnet",
             "claude:sonnet must resolve to bare 'sonnet', not a dated model ID"

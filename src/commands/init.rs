@@ -277,7 +277,7 @@ fn emit_executor_deprecation_warning(executor: &str) {
 fn suggested_model_for_executor(executor: &str) -> &'static str {
     match executor {
         "claude" => "claude:opus",
-        "codex" => "codex:gpt-5",
+        "codex" => "codex:gpt-5.5",
         "nex" | "native" => "nex:qwen3-coder -e <ENDPOINT>",
         "shell" => "shell  # exec_mode, not a model — keep the route",
         _ => "<provider>:<model>",
@@ -357,7 +357,7 @@ pub fn run(
                 endpoint URL when the model is local):\n\
                 \n\
                   wg init -m claude:opus                                 # Anthropic Claude Code\n\
-                  wg init -m codex:gpt-5                                 # OpenAI Codex CLI\n\
+                  wg init -m codex:gpt-5.5                               # OpenAI Codex CLI\n\
                   wg init -m nex:qwen3-coder -e http://127.0.0.1:8088    # local OAI-compat server (via nex)\n\
                   wg init -m openrouter:anthropic/claude-opus-4-6        # OpenRouter via nex\n\
                 \n\

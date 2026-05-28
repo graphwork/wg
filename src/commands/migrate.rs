@@ -830,7 +830,7 @@ const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
     ("anthropic/claude-haiku-4", "anthropic/claude-haiku-4-5"),
     ("anthropic/claude-opus-4", "anthropic/claude-opus-4-7"),
     // Codex / OpenAI model rewrites (2026-04-28):
-    // o1-pro deprecated 2026-10-23; gpt-5.4 is the new balanced default.
+    // o1-pro deprecated 2026-10-23; gpt-5.4 remains the balanced catalog entry.
     ("codex:o1-pro", "codex:gpt-5.4"),
     // Old tier names predating the gpt-5.4 generation.
     ("codex:gpt-5-mini", "codex:gpt-5.4-mini"),
@@ -843,6 +843,10 @@ const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
 
 fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, String, String)>) {
     walk_strings(doc, "", &mut |path, s| {
+        if let Some(new_str) = rewrite_stale_default_route_pin(path, s) {
+            rewritten.push((path.to_string(), s.clone(), new_str.clone()));
+            return Some(new_str);
+        }
         for (old, new) in STALE_MODEL_REWRITES {
             // Match exact full string only (not substring) so e.g.
             // `claude-sonnet-4` doesn't fire when the value is already
@@ -868,6 +872,33 @@ fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, S
         }
         None
     });
+}
+
+/// Upgrade stale default/task-agent pins to the current top worker defaults.
+///
+/// This is intentionally path-scoped: lower-cost models can still appear in
+/// fast tiers, registries, or explicit role overrides. The regression was stale
+/// default worker routing, not the existence of cheaper catalog entries.
+fn rewrite_stale_default_route_pin(path: &str, value: &str) -> Option<String> {
+    const DEFAULT_ROUTE_PATHS: &[&str] = &[
+        "agent.model",
+        "dispatcher.model",
+        "coordinator.model",
+        "models.default.model",
+        "models.task_agent.model",
+        "tiers.standard",
+        "tiers.premium",
+    ];
+    if !DEFAULT_ROUTE_PATHS.contains(&path) {
+        return None;
+    }
+
+    match value {
+        "codex:gpt-5.4" | "gpt-5.4" | "codex:gpt-5" | "gpt-5" | "codex:o1-pro" | "o1-pro"
+        | "codex:gpt-5-codex" | "gpt-5-codex" => Some("codex:gpt-5.5".to_string()),
+        "claude:sonnet" | "sonnet" => Some("claude:opus".to_string()),
+        _ => None,
+    }
 }
 
 /// Walk every string value in a TOML doc, calling `f(path, &value)`.
@@ -1023,7 +1054,7 @@ model = "claude:opus"
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
 "#,
         );
@@ -1036,7 +1067,7 @@ premium = "claude:opus"
     }
 
     #[test]
-    fn fixes_stale_codex_o1_pro_to_gpt54() {
+    fn fixes_stale_codex_default_pins_to_gpt55() {
         let tmp = TempDir::new().unwrap();
         let path = write_config(
             tmp.path(),
@@ -1054,14 +1085,16 @@ premium = "codex:o1-pro"
         assert!(
             r.rewritten_values
                 .iter()
-                .any(|(_, old, new)| old == "codex:o1-pro" && new == "codex:gpt-5.4"),
-            "should rewrite codex:o1-pro to codex:gpt-5.4; got {:?}",
+                .any(|(path, old, new)| path == "agent.model"
+                    && old == "codex:o1-pro"
+                    && new == "codex:gpt-5.5"),
+            "should rewrite default agent codex:o1-pro to codex:gpt-5.5; got {:?}",
             r.rewritten_values,
         );
         let migrated = std::fs::read_to_string(&path).unwrap();
         assert!(
-            migrated.contains("codex:gpt-5.4"),
-            "migrated should contain codex:gpt-5.4"
+            migrated.contains("codex:gpt-5.5"),
+            "migrated should contain codex:gpt-5.5"
         );
         assert!(
             !migrated.contains("\"codex:o1-pro\""),
@@ -1078,7 +1111,7 @@ premium = "codex:o1-pro"
     }
 
     #[test]
-    fn fixes_stale_codex_gpt5_codex_to_gpt54() {
+    fn fixes_stale_codex_tier_defaults_to_gpt55() {
         let tmp = TempDir::new().unwrap();
         let path = write_config(
             tmp.path(),
@@ -1092,8 +1125,10 @@ premium = "codex:gpt-5.4-pro"
         assert!(
             r.rewritten_values
                 .iter()
-                .any(|(_, old, new)| old == "codex:gpt-5-codex" && new == "codex:gpt-5.4"),
-            "should rewrite codex:gpt-5-codex to codex:gpt-5.4; got {:?}",
+                .any(|(path, old, new)| path == "tiers.standard"
+                    && old == "codex:gpt-5-codex"
+                    && new == "codex:gpt-5.5"),
+            "should rewrite standard codex:gpt-5-codex to codex:gpt-5.5; got {:?}",
             r.rewritten_values,
         );
         assert!(
@@ -1103,6 +1138,43 @@ premium = "codex:gpt-5.4-pro"
             "should rewrite codex:gpt-5.4-pro to codex:gpt-5.5; got {:?}",
             r.rewritten_values,
         );
+    }
+
+    #[test]
+    fn fixes_stale_claude_default_pins_to_opus() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "sonnet"
+
+[dispatcher]
+model = "claude:sonnet"
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+
+[models.task_agent]
+model = "sonnet"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(path, old, new)| path == "agent.model"
+                    && old == "sonnet"
+                    && new == "claude:opus"),
+            "should rewrite bare sonnet default pin to claude:opus; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("model = \"claude:opus\""));
+        assert!(!migrated.contains("model = \"sonnet\""));
+        assert!(!migrated.contains("standard = \"claude:sonnet\""));
     }
 
     #[test]

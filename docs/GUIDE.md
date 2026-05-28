@@ -31,7 +31,7 @@ complete, working config (model + tiers + endpoint when applicable):
 | Route | Default model spec | Use case |
 |-------|--------------------|----------|
 | `claude-cli` | `claude:opus` | Local `claude` CLI login (no API key in config) |
-| `codex-cli` | `codex:gpt-5` | Local `codex` CLI login |
+| `codex-cli` | `codex:gpt-5.5` | Local `codex` CLI login |
 | `openrouter` | `openrouter:<model>` | One API key, every major provider |
 | `local` | `nex:<model>` | Ollama / vLLM / llama.cpp on `localhost` (via nex) |
 | `nex-custom` | `nex:<model>` | Bring your own OAI-compatible URL + key + model |
@@ -230,7 +230,7 @@ Set values with:
 
 ```bash
 wg config --max-agents 8
-wg config --model claude:sonnet
+wg config --model claude:opus
 wg config --poll-interval 120
 
 # Agency
@@ -376,14 +376,15 @@ wg config --triage-max-log-bytes 50000
 ```bash
 wg add "Simple fix" --model claude:haiku
 wg add "Complex design" --model claude:opus
-wg edit my-task --model claude:sonnet
+wg edit my-task --model claude:opus
 wg spawn my-task --model claude:haiku
-wg config --model claude:sonnet
+wg config --model claude:opus
 wg service reload
 ```
 
-**Cost tips.** Use **haiku** for simple formatting/linting, **sonnet** for
-typical coding, **opus** for complex reasoning and architecture.
+**Cost tips.** Use **haiku** for simple formatting/linting and **opus** for the
+default worker route. Configure **sonnet** only when you intentionally want a
+lower-cost override for a specific task or project.
 
 **Alternative providers.** wg supports
 [OpenRouter](https://openrouter.ai/) and any OpenAI-compatible API. Configure

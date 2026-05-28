@@ -151,7 +151,7 @@ The CSV is a vendored dependency — no auto-sync. Update it on your schedule.
 FLIP (Fidelity via Latent Intent Probing) validates task output by reconstructing the prompt from the output and comparing it to the original. It runs as part of the evaluation pipeline.
 
 FLIP uses two model roles:
-- **FlipInference** (standard tier, default: sonnet) — reconstructs the prompt
+- **FlipInference** (standard tier, default: opus) — reconstructs the prompt
 - **FlipComparison** (fast tier, default: haiku) — scores similarity
 
 Low FLIP scores can trigger **Verification** tasks (premium tier, default: opus) for deeper review.
@@ -177,7 +177,7 @@ Models are routed per-role via the `DispatchRole` enum (`src/config.rs`). Each r
 | Tier | Default Model | Roles |
 |------|---------------|-------|
 | **fast** | haiku | Triage, FlipComparison, Assigner |
-| **standard** | sonnet | TaskAgent, Evaluator, FlipInference, Evolver, Default |
+| **standard** | opus | TaskAgent, Evaluator, FlipInference, Evolver, Default |
 | **premium** | opus | Creator, Verification |
 
 Resolution hierarchy (highest priority first):
@@ -190,7 +190,7 @@ Resolution hierarchy (highest priority first):
 
 ```bash
 # Set tier defaults
-wg config --tier fast=haiku --tier standard=sonnet --tier premium=opus
+wg config --tier fast=haiku --tier standard=opus --tier premium=opus
 
 # Override a role's tier
 wg config --model-role task_agent --tier premium

@@ -168,10 +168,10 @@ fn fresh_setup_default_anthropic() {
         Some("claude".to_string()),
         "Anthropic provider should default to claude executor"
     );
-    // Default model for anthropic is "sonnet"
+    // Default model for anthropic is the top worker route, "opus"
     assert!(
-        config.agent.model.contains("sonnet"),
-        "default model should be sonnet, got: {}",
+        config.agent.model.contains("opus"),
+        "default model should be opus, got: {}",
         config.agent.model
     );
 }

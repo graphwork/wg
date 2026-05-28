@@ -1,4 +1,4 @@
-description = "Claude CLI: opus worker, haiku for agency meta-tasks"
+description = "Claude CLI: opus standard/default worker, haiku for agency meta-tasks"
 
 [agent]
 model = "claude:opus"
@@ -9,7 +9,7 @@ max_agents = 8
 
 [tiers]
 fast = "claude:haiku"
-standard = "claude:sonnet"
+standard = "claude:opus"
 premium = "claude:opus"
 
 [models.default]

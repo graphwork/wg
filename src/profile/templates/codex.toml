@@ -1,4 +1,4 @@
-description = "OpenAI Codex CLI: gpt-5.5 worker, gpt-5.4-mini for agency"
+description = "OpenAI Codex CLI: gpt-5.5 standard/default worker, gpt-5.4-mini for agency"
 
 [agent]
 model = "codex:gpt-5.5"
@@ -9,7 +9,7 @@ max_agents = 8
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
-standard = "codex:gpt-5.4"
+standard = "codex:gpt-5.5"
 premium = "codex:gpt-5.5"
 
 [models.default]

@@ -67,7 +67,7 @@ if ! run_wg --dir "$wg_dir" config --local \
     --model codex:gpt-5.5 \
     --coordinator-model codex:gpt-5.5 \
     --tier fast=codex:gpt-5.4-mini \
-    --tier standard=codex:gpt-5.4 \
+    --tier standard=codex:gpt-5.5 \
     --tier premium=codex:gpt-5.5 \
     --set-model default codex:gpt-5.5 \
     --set-model task_agent codex:gpt-5.5 \
@@ -97,7 +97,7 @@ fi
 
 for expected in \
     'fast = "codex:gpt-5.4-mini"' \
-    'standard = "codex:gpt-5.4"' \
+    'standard = "codex:gpt-5.5"' \
     'premium = "codex:gpt-5.5"' \
     'auto_assign = true' \
     'auto_evaluate = true'; do

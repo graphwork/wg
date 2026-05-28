@@ -17,9 +17,9 @@ Draft — produced by `research-design-model` task.
 
 1. **`[models.<role>]`** — role-specific override in `config.toml`
 2. **Legacy `[agency.*_model]`** — backward-compat fields (deprecated)
-3. **Tier defaults** — hardcoded per-role: `triage→haiku`, `flip_comparison→haiku`, `flip_inference→sonnet`, `verification→opus`
+3. **Tier defaults** — hardcoded per-role: `triage→haiku`, `flip_comparison→haiku`, `flip_inference→opus`, `verification→opus`
 4. **`[models.default]`** — project-wide default
-5. **`agent.model`** — global fallback (`"sonnet"` by default)
+5. **`agent.model`** — global fallback (`"opus"` by default)
 
 Provider is resolved from `[models.<role>.provider]` or `[models.default.provider]`.
 
@@ -36,7 +36,7 @@ Provider is resolved from `[models.<role>.provider]` or `[models.default.provide
 | `Evolver` | (inherits default) | Agency evolution |
 | `Creator` | (inherits default) | Agent composition creation |
 | `Triage` | haiku | Dead-agent summarization |
-| `FlipInference` | sonnet | FLIP prompt reconstruction |
+| `FlipInference` | opus | FLIP prompt reconstruction |
 | `FlipComparison` | haiku | FLIP similarity scoring |
 | `Verification` | opus | FLIP-triggered verification |
 
@@ -60,7 +60,7 @@ but is **not connected** to model routing. It's a separate concept (endpoint man
 | Tier | Intent | Default Model | Typical Cost | Use Cases |
 |------|--------|---------------|-------------|-----------|
 | **fast** | Cheap, low-latency | `haiku` | ~$0.25/$1.25 per MTok | Triage, FLIP comparison, simple classification, cache-hit assignment |
-| **standard** | Balanced cost/quality | `sonnet` | ~$3/$15 per MTok | Implementation, evaluation, FLIP inference, most task work |
+| **standard** | Default task-agent capability | `opus` | ~$15/$75 per MTok | Implementation, evaluation, FLIP inference, most task work |
 | **premium** | Highest capability | `opus` | ~$15/$75 per MTok | Verification, novel agent composition, complex architecture, design |
 
 ### Role-to-Tier Mapping (Defaults)
@@ -675,12 +675,12 @@ Behavior: Identical to today. No registry, no tiers. Direct model names.
 ```toml
 [tiers]
 fast = "haiku"
-standard = "sonnet"
+standard = "opus"
 premium = "opus"
 ```
 
 Behavior: All roles use their default tier. Triage → fast → haiku.
-TaskAgent → standard → sonnet. Verification → premium → opus.
+TaskAgent → standard → opus. Verification → premium → opus.
 
 ### Mixed Providers
 

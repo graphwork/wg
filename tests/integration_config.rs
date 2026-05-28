@@ -108,7 +108,7 @@ fn codex_one_line_config_args() -> Vec<&'static str> {
         "--tier",
         "fast=codex:gpt-5.4-mini",
         "--tier",
-        "standard=codex:gpt-5.4",
+        "standard=codex:gpt-5.5",
         "--tier",
         "premium=codex:gpt-5.5",
         "--set-model",

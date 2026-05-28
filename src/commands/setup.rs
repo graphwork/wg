@@ -164,7 +164,7 @@ pub struct EndpointChoices {
 
 /// Build a Config from wizard choices, optionally layered on top of an existing config.
 pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
-    use workgraph::config::{EndpointConfig, EndpointsConfig, RoleModelConfig};
+    use workgraph::config::{EndpointConfig, EndpointsConfig};
 
     let mut config = base.cloned().unwrap_or_default();
 
@@ -183,20 +183,9 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
         format!("{}:{}", prefix, choices.model)
     };
 
-    config.agent.model = model_spec.clone();
-    config.coordinator.model = Some(model_spec.clone());
+    config.pin_default_route_model(&model_spec);
 
     config.coordinator.max_agents = choices.max_agents;
-
-    // Set models.default with provider:model format
-    if choices.provider != "anthropic" {
-        config.models.default = Some(RoleModelConfig {
-            provider: None,
-            model: Some(model_spec.clone()),
-            tier: None,
-            endpoint: None,
-        });
-    }
 
     // Configure endpoint
     if let Some(ref ep) = choices.endpoint {
@@ -352,11 +341,12 @@ pub fn format_summary(choices: &SetupChoices) -> String {
     lines.push("[agent]".to_string());
     lines.push(format!("  executor = \"{}\"", choices.executor));
     lines.push(format!("  model = \"{}\"", model_spec));
-    if choices.provider != "anthropic" {
-        lines.push(String::new());
-        lines.push("[models.default]".to_string());
-        lines.push(format!("  model = \"{}\"", model_spec));
-    }
+    lines.push(String::new());
+    lines.push("[models.default]".to_string());
+    lines.push(format!("  model = \"{}\"", model_spec));
+    lines.push(String::new());
+    lines.push("[models.task_agent]".to_string());
+    lines.push(format!("  model = \"{}\"", model_spec));
     if let Some(ref ep) = choices.endpoint {
         lines.push(String::new());
         lines.push("[[llm_endpoints.endpoints]]".to_string());
@@ -784,8 +774,8 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
 
     // Determine default model
     let model = args.model.as_deref().unwrap_or(match provider {
-        "anthropic" => "sonnet",
-        "openrouter" => "anthropic/claude-sonnet-4",
+        "anthropic" => "opus",
+        "openrouter" => "anthropic/claude-opus-4-7",
         "openai" => "gpt-4o",
         _ => "default",
     });
@@ -1679,9 +1669,9 @@ fn configure_openrouter(
             .coordinator
             .model
             .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4");
+            .unwrap_or("anthropic/claude-opus-4-7");
         let model_id: String = Input::new()
-            .with_prompt("Default model ID (OpenRouter format, e.g., anthropic/claude-sonnet-4)")
+            .with_prompt("Default model ID (OpenRouter format, e.g., anthropic/claude-opus-4-7)")
             .default(current_model.to_string())
             .interact_text()?;
 
@@ -1702,7 +1692,7 @@ fn configure_openrouter(
             .map(|e| format!("{} — {}", e.id, e.model))
             .collect();
 
-        let default_idx = entries.iter().position(|e| e.id == "sonnet").unwrap_or(0);
+        let default_idx = entries.iter().position(|e| e.id == "opus").unwrap_or(0);
 
         let idx = Select::new()
             .with_prompt("Default model?")
@@ -1925,7 +1915,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "opus".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-opus-4".to_string(),
+            model: "anthropic/claude-opus-4-7".to_string(),
             tier: workgraph::config::Tier::Premium,
             context_window: 200_000,
             max_output_tokens: 32_000,
@@ -1934,7 +1924,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "sonnet".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-sonnet-4".to_string(),
+            model: "anthropic/claude-sonnet-4-6".to_string(),
             tier: workgraph::config::Tier::Standard,
             context_window: 200_000,
             max_output_tokens: 64_000,
@@ -1943,7 +1933,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
         ModelRegistryEntry {
             id: "haiku".to_string(),
             provider: "openrouter".to_string(),
-            model: "anthropic/claude-haiku-4".to_string(),
+            model: "anthropic/claude-haiku-4-5".to_string(),
             tier: workgraph::config::Tier::Fast,
             context_window: 200_000,
             max_output_tokens: 8_192,
@@ -2606,7 +2596,7 @@ mod tests {
             .find(|e| e.id == "sonnet")
             .unwrap();
         assert_eq!(sonnet.provider, "openrouter");
-        assert_eq!(sonnet.model, "anthropic/claude-sonnet-4");
+        assert_eq!(sonnet.model, "anthropic/claude-sonnet-4-6");
     }
 
     #[test]
@@ -2671,7 +2661,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_summary_anthropic_no_extra_sections() {
+    fn test_format_summary_anthropic_pins_default_worker_route() {
         let choices = SetupChoices {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
@@ -2683,8 +2673,9 @@ mod tests {
         };
 
         let summary = format_summary(&choices);
-        // Anthropic provider should NOT include extra sections
-        assert!(!summary.contains("[models.default]"));
+        assert!(summary.contains("[models.default]"));
+        assert!(summary.contains("[models.task_agent]"));
+        assert!(summary.contains("model = \"claude:opus\""));
         assert!(!summary.contains("[[llm_endpoints.endpoints]]"));
         assert!(!summary.contains("[[model_registry]]"));
         assert!(!summary.contains("provider = "));
@@ -2699,6 +2690,10 @@ mod tests {
         assert!(ids.contains(&"opus"));
         assert!(ids.contains(&"sonnet"));
         assert!(ids.contains(&"haiku"));
+        assert_eq!(entries[0].id, "opus");
+        assert_eq!(entries[0].model, "anthropic/claude-opus-4-7");
+        assert_eq!(entries[1].model, "anthropic/claude-sonnet-4-6");
+        assert_eq!(entries[2].model, "anthropic/claude-haiku-4-5");
 
         for entry in &entries {
             assert_eq!(entry.provider, "openrouter");
@@ -3183,21 +3178,21 @@ mod tests {
             ModelRegistryEntry {
                 id: "haiku".to_string(),
                 provider: "openrouter".to_string(),
-                model: "anthropic/claude-haiku-4".to_string(),
+                model: "anthropic/claude-haiku-4-5".to_string(),
                 tier: Tier::Fast,
                 ..Default::default()
             },
             ModelRegistryEntry {
                 id: "sonnet".to_string(),
                 provider: "openrouter".to_string(),
-                model: "anthropic/claude-sonnet-4".to_string(),
+                model: "anthropic/claude-sonnet-4-6".to_string(),
                 tier: Tier::Standard,
                 ..Default::default()
             },
             ModelRegistryEntry {
                 id: "opus".to_string(),
                 provider: "openrouter".to_string(),
-                model: "anthropic/claude-opus-4".to_string(),
+                model: "anthropic/claude-opus-4-7".to_string(),
                 tier: Tier::Premium,
                 ..Default::default()
             },

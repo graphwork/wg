@@ -115,9 +115,9 @@ fn registry_no_config_returns_6_builtins() {
         "Expected 6 built-in entries (3 legacy + 3 claude:* format)"
     );
     let ids: Vec<&str> = registry.iter().map(|e| e.id.as_str()).collect();
-    assert!(ids.contains(&"haiku"));
-    assert!(ids.contains(&"sonnet"));
-    assert!(ids.contains(&"opus"));
+    assert!(ids.contains(&CLAUDE_HAIKU_MODEL_ID));
+    assert!(ids.contains(&CLAUDE_SONNET_MODEL_ID));
+    assert!(ids.contains(&CLAUDE_OPUS_MODEL_ID));
     assert!(ids.contains(&"claude:haiku"));
     assert!(ids.contains(&"claude:sonnet"));
     assert!(ids.contains(&"claude:opus"));
@@ -187,7 +187,7 @@ fn all_roles_resolve_via_default_tier() {
         let tier = role.default_tier();
         let expected_model = match tier {
             Tier::Fast => CLAUDE_HAIKU_MODEL_ID,
-            Tier::Standard => CLAUDE_SONNET_MODEL_ID,
+            Tier::Standard => CLAUDE_OPUS_MODEL_ID,
             Tier::Premium => CLAUDE_OPUS_MODEL_ID,
         };
         assert_eq!(
@@ -198,7 +198,7 @@ fn all_roles_resolve_via_default_tier() {
     }
     // Also test the Default role
     let resolved = config.resolve_model_for_role(DispatchRole::Default);
-    assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID); // Standard tier
+    assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID); // Standard tier defaults to top worker model
 }
 
 #[test]

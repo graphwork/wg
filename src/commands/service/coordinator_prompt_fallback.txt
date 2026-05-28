@@ -202,7 +202,7 @@ and model selection using evaluation history.
    | Signal | Model |
    |--------|-------|
    | Simple, mechanical, well-defined (e.g., 'add a flag', 'rename X') | haiku |
-   | Standard implementation, testing, research | sonnet |
+   | Standard implementation, testing, research | opus |
    | Complex design, multi-system reasoning, novel architecture | opus |
    | Task has failed before (check status history) | escalate one tier |
 
