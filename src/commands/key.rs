@@ -3,7 +3,6 @@
 use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use workgraph::config::{Config, EndpointConfig};
 
@@ -51,15 +50,16 @@ pub fn run_set(
                 .join(".wg")
                 .join("keys");
             fs::create_dir_all(&keys_dir)?;
-            // Set directory permissions to 700
-            fs::set_permissions(&keys_dir, fs::Permissions::from_mode(0o700))?;
+            set_private_dir_permissions(&keys_dir)?;
 
             let key_path = keys_dir.join(format!("{}.key", provider));
             fs::write(&key_path, key_value)?;
-            // Set file permissions to 600
-            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
+            set_private_file_permissions(&key_path)?;
 
+            #[cfg(unix)]
             println!("Stored key securely in {} (mode 600)", key_path.display());
+            #[cfg(not(unix))]
+            println!("Stored key in {}", key_path.display());
             (None, Some(key_path.to_string_lossy().to_string()))
         } else {
             unreachable!()
@@ -113,6 +113,30 @@ pub fn run_set(
     };
 
     println!("Set API key for '{}': {}", provider, source_desc);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_dir_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 

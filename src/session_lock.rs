@@ -29,6 +29,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -135,11 +136,13 @@ impl SessionLock {
 
         // O_EXCL create. Two racing processes: one wins, the other
         // gets EEXIST and falls into the stale-check branch.
-        let create_result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o644)
-            .open(&path);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o644);
+        }
+        let create_result = options.open(&path);
 
         match create_result {
             Ok(mut f) => {

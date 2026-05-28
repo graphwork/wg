@@ -12,6 +12,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
+#[cfg(unix)]
 use crate::tui::viz_viewer::screen_dump;
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -260,17 +261,26 @@ pub struct ScreenState {
 impl ScreenState {
     /// Try to read screen state from the TUI dump socket.
     fn read(workgraph_dir: &Path) -> Option<Self> {
-        let snap = screen_dump::client_dump(workgraph_dir).ok()?;
-        Some(Self {
-            text: snap.text,
-            width: snap.width,
-            height: snap.height,
-            active_tab: snap.active_tab,
-            focused_panel: snap.focused_panel,
-            selected_task: snap.selected_task,
-            input_mode: snap.input_mode,
-            coordinator_id: snap.coordinator_id,
-        })
+        #[cfg(unix)]
+        {
+            let snap = screen_dump::client_dump(workgraph_dir).ok()?;
+            Some(Self {
+                text: snap.text,
+                width: snap.width,
+                height: snap.height,
+                active_tab: snap.active_tab,
+                focused_panel: snap.focused_panel,
+                selected_task: snap.selected_task,
+                input_mode: snap.input_mode,
+                coordinator_id: snap.coordinator_id,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = workgraph_dir;
+            None
+        }
     }
 
     /// Count how many task-like lines appear in the screen text.

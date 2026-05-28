@@ -7,12 +7,15 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+#[cfg(not(unix))]
+use std::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use tokio::process::Command as TokioCommand;
 
 /// Maximum concurrent background jobs.
@@ -561,6 +564,7 @@ fn process_exists(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
+        let _ = pid;
         // On non-Unix, assume process exists (conservative)
         true
     }
@@ -613,6 +617,7 @@ fn get_exit_code(pid: u32) -> Option<i32> {
     }
     #[cfg(not(unix))]
     {
+        let _ = pid;
         None
     }
 }
@@ -641,9 +646,8 @@ fn spawn_detached(command: &str, working_dir: &Path, log_path: &Path) -> Result<
     }
     #[cfg(not(unix))]
     {
-        use std::process::Command;
         // On Windows, use start /B to run in background
-        let output = Command::new("cmd")
+        let _output = Command::new("cmd")
             .args(&["/C", "start", "/B", command])
             .current_dir(working_dir)
             .stdin(Stdio::null())

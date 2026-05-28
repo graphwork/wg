@@ -52,10 +52,8 @@ fn env_or_u64(name: &str, default: u64) -> u64 {
 /// retry: `EIO` (MooseFS quirk), `EWOULDBLOCK` (contention on the
 /// happy-path errno), and `EINTR` (signal during the syscall).
 pub fn is_transient_blocking(err: &io::Error) -> bool {
-    matches!(
-        err.raw_os_error(),
-        Some(libc::EIO) | Some(libc::EWOULDBLOCK) | Some(libc::EINTR)
-    ) || err.kind() == io::ErrorKind::WouldBlock
+    raw_transient_blocking_errno(err)
+        || err.kind() == io::ErrorKind::WouldBlock
         || err.kind() == io::ErrorKind::Interrupted
 }
 
@@ -66,8 +64,30 @@ pub fn is_transient_blocking(err: &io::Error) -> bool {
 /// taking the shared lock". Retrying `EWOULDBLOCK` there would defeat
 /// the non-blocking contract.
 pub fn is_transient_nonblocking(err: &io::Error) -> bool {
+    raw_transient_nonblocking_errno(err) || err.kind() == io::ErrorKind::Interrupted
+}
+
+#[cfg(unix)]
+fn raw_transient_blocking_errno(err: &io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::EIO) | Some(libc::EWOULDBLOCK) | Some(libc::EINTR)
+    )
+}
+
+#[cfg(not(unix))]
+fn raw_transient_blocking_errno(_err: &io::Error) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn raw_transient_nonblocking_errno(err: &io::Error) -> bool {
     matches!(err.raw_os_error(), Some(libc::EIO) | Some(libc::EINTR))
-        || err.kind() == io::ErrorKind::Interrupted
+}
+
+#[cfg(not(unix))]
+fn raw_transient_nonblocking_errno(_err: &io::Error) -> bool {
+    false
 }
 
 /// Run `acquire` until it returns `Ok(())` or the policy gives up.
@@ -162,6 +182,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_succeeds_after_n_eio_failures() {
         let policy = fast_policy();
@@ -179,6 +200,7 @@ mod tests {
         assert_eq!(attempts.get(), 4, "expected 4 attempts (3 EIO + 1 ok)");
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_succeeds_after_ewouldblock_failures() {
         let policy = fast_policy();
@@ -196,6 +218,7 @@ mod tests {
         assert_eq!(attempts.get(), 3);
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_succeeds_after_eintr_failures() {
         let policy = fast_policy();
@@ -213,6 +236,7 @@ mod tests {
         assert_eq!(attempts.get(), 2);
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_gives_up_after_budget_exhausted() {
         let policy = RetryPolicy {
@@ -251,6 +275,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_propagates_eacces_immediately() {
         let policy = fast_policy();
@@ -267,6 +292,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_propagates_enoent_immediately() {
         let policy = fast_policy();
@@ -279,6 +305,7 @@ mod tests {
         assert_eq!(attempts.get(), 1, "ENOENT must not be retried");
     }
 
+    #[cfg(unix)]
     #[test]
     fn retry_propagates_enospc_immediately() {
         let policy = fast_policy();
@@ -291,6 +318,7 @@ mod tests {
         assert_eq!(attempts.get(), 1, "ENOSPC must not be retried");
     }
 
+    #[cfg(unix)]
     #[test]
     fn nonblocking_predicate_excludes_ewouldblock() {
         let ewb = io::Error::from_raw_os_error(libc::EWOULDBLOCK);
@@ -303,6 +331,7 @@ mod tests {
         assert!(!is_transient_nonblocking(&eacc));
     }
 
+    #[cfg(unix)]
     #[test]
     fn blocking_predicate_includes_all_three() {
         let ewb = io::Error::from_raw_os_error(libc::EWOULDBLOCK);
@@ -313,6 +342,22 @@ mod tests {
         assert!(is_transient_blocking(&eio));
         assert!(is_transient_blocking(&eintr));
         assert!(!is_transient_blocking(&eacc));
+    }
+
+    #[test]
+    fn blocking_predicate_includes_portable_error_kinds() {
+        let would_block = io::Error::from(io::ErrorKind::WouldBlock);
+        let interrupted = io::Error::from(io::ErrorKind::Interrupted);
+        assert!(is_transient_blocking(&would_block));
+        assert!(is_transient_blocking(&interrupted));
+    }
+
+    #[test]
+    fn nonblocking_predicate_includes_portable_interrupted_kind_only() {
+        let would_block = io::Error::from(io::ErrorKind::WouldBlock);
+        let interrupted = io::Error::from(io::ErrorKind::Interrupted);
+        assert!(!is_transient_nonblocking(&would_block));
+        assert!(is_transient_nonblocking(&interrupted));
     }
 
     #[test]

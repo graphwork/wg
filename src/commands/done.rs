@@ -120,6 +120,70 @@ enum WorktreeMergeResult {
     },
 }
 
+struct MergeLockGuard {
+    file: Option<std::fs::File>,
+    #[cfg(not(unix))]
+    path: std::path::PathBuf,
+}
+
+impl MergeLockGuard {
+    fn acquire(path: &Path) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(path)
+                .context("Failed to open merge lock file")?;
+            let fd = file.as_raw_fd();
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+            if ret != 0 {
+                anyhow::bail!(
+                    "Failed to acquire merge lock: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            Ok(Self { file: Some(file) })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .context("Failed to create merge lock file")?;
+            Ok(Self {
+                file: Some(file),
+                path: path.to_path_buf(),
+            })
+        }
+    }
+}
+
+impl Drop for MergeLockGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            if let Some(file) = &self.file {
+                unsafe {
+                    libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = self.file.take();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Best-effort: push local `main` to `origin/main` (FF-only, with a single
 /// fetch+ff-merge+retry on non-FF), then delete the agent branch on origin.
 ///
@@ -360,22 +424,7 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         std::fs::create_dir_all(parent)?;
     }
 
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&merge_lock_path)
-        .context("Failed to open merge lock file")?;
-
-    use std::os::unix::io::AsRawFd;
-    let fd = lock_file.as_raw_fd();
-    let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
-    if ret != 0 {
-        anyhow::bail!(
-            "Failed to acquire merge lock: {}",
-            std::io::Error::last_os_error()
-        );
-    }
+    let _merge_lock = MergeLockGuard::acquire(&merge_lock_path)?;
 
     let merge_result = Command::new("git")
         .args(["merge", "--squash", &wt.branch])
@@ -458,9 +507,6 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
             push_outcome,
         }
     };
-
-    unsafe { libc::flock(fd, libc::LOCK_UN) };
-    drop(lock_file);
 
     Ok(result)
 }
