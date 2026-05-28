@@ -1,0 +1,483 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "release-test-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build. Use vX.Y.Z for publishable releases or leave empty for a dry run."
+        required: false
+        type: string
+      dry_run:
+        description: "Build and attest artifacts without creating a GitHub Release."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RELEASE_TARGETS: '["x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","x86_64-apple-darwin","aarch64-apple-darwin","x86_64-pc-windows-msvc"]'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan release
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      cargo_version: ${{ steps.plan.outputs.cargo_version }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+      publish: ${{ steps.plan.outputs.publish }}
+      channel: ${{ steps.plan.outputs.channel }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      agency_compat_version: ${{ steps.plan.outputs.agency_compat_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release inputs
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          agency_compat_version="$(sed -n 's/^pub const WG_AGENCY_COMPAT_VERSION: &str = "\(.*\)";/\1/p' src/agency/mod.rs | head -n 1)"
+
+          tag="${REF_NAME}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            tag="dry-run-${GITHUB_SHA::7}"
+          fi
+
+          dry_run="false"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${INPUT_DRY_RUN}" == "true" ]]; then
+            dry_run="true"
+          fi
+          if [[ "${tag}" == release-test-* || "${tag}" == dry-run-* ]]; then
+            dry_run="true"
+          fi
+
+          if [[ "${tag}" == v* ]]; then
+            version="${tag#v}"
+            channel="stable"
+          else
+            version="${cargo_version}-${tag}"
+            channel="test"
+          fi
+
+          publish="false"
+          if [[ "${dry_run}" != "true" && "${tag}" == v* ]]; then
+            publish="true"
+          fi
+
+          if [[ "${publish}" == "true" && "${version}" != "${cargo_version}" ]]; then
+            echo "Stable release tag ${tag} does not match Cargo.toml version ${cargo_version}" >&2
+            exit 1
+          fi
+
+          prerelease="false"
+          if [[ "${version}" == *-* ]]; then
+            prerelease="true"
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "cargo_version=${cargo_version}"
+            echo "dry_run=${dry_run}"
+            echo "publish=${publish}"
+            echo "channel=${channel}"
+            echo "prerelease=${prerelease}"
+            echo "agency_compat_version=${agency_compat_version}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "tag=${tag}"
+          echo "version=${version}"
+          echo "dry_run=${dry_run}"
+          echo "publish=${publish}"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            archive_ext: .tar.gz
+            exe_ext: ""
+            rustflags: ""
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            archive_ext: .tar.gz
+            exe_ext: ""
+            rustflags: ""
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive_ext: .tar.gz
+            exe_ext: ""
+            rustflags: ""
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            archive_ext: .tar.gz
+            exe_ext: ""
+            rustflags: ""
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            archive_ext: .zip
+            exe_ext: .exe
+            rustflags: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-release-
+
+      - name: Install NASM for BoringSSL
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build release binaries
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release --locked --bins --target ${{ matrix.target }}
+
+      - name: Package binaries
+        id: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+          EXE_EXT: ${{ matrix.exe_ext }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+          REPOSITORY: ${{ github.repository }}
+          STAGE_DIR: dist/wg-v${{ needs.plan.outputs.version }}-${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          archive_root="wg-v${VERSION}-${TARGET}"
+          archive_name="${archive_root}${ARCHIVE_EXT}"
+          stage_dir="dist/${archive_root}"
+
+          mkdir -p "${stage_dir}"
+          cp "target/${TARGET}/release/wg${EXE_EXT}" "${stage_dir}/wg${EXE_EXT}"
+          cp "target/${TARGET}/release/nex${EXE_EXT}" "${stage_dir}/nex${EXE_EXT}"
+          cp LICENSE "${stage_dir}/LICENSE"
+
+          cat > "${stage_dir}/README-install.txt" <<EOF
+          WG native release artifact
+
+          Version: ${VERSION}
+          Tag: ${TAG}
+          Target: ${TARGET}
+          Channel: ${CHANNEL}
+
+          This archive contains both distributed binaries:
+            wg${EXE_EXT}
+            nex${EXE_EXT}
+
+          Verify the archive before installing:
+            gh attestation verify ${archive_name} --repo ${REPOSITORY}
+            sha256sum -c ${archive_name}.sha256
+
+          The release-manifest.json asset in the same release records all
+          supported targets, hashes, and verification commands.
+          EOF
+
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const stageDir = process.env.STAGE_DIR;
+          const metadata = {
+            schema_version: 1,
+            package: "workgraph",
+            release_name: "wg",
+            version: process.env.VERSION,
+            tag: process.env.TAG,
+            target: process.env.TARGET,
+            channel: process.env.CHANNEL,
+            dry_run: process.env.DRY_RUN === "true",
+            binaries: ["wg", "nex"],
+          };
+
+          fs.writeFileSync(
+            path.join(stageDir, "release-target.json"),
+            JSON.stringify(metadata, null, 2) + "\n",
+          );
+          NODE
+
+      - name: Create archive
+        id: archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+        run: |
+          set -euo pipefail
+
+          archive_root="wg-v${VERSION}-${TARGET}"
+          archive_name="${archive_root}${ARCHIVE_EXT}"
+          archive_path="dist/${archive_name}"
+
+          if [[ "${ARCHIVE_EXT}" == ".zip" ]]; then
+            (cd dist && 7z a "${archive_name}" "${archive_root}")
+          else
+            tar -C dist -czf "${archive_path}" "${archive_root}"
+          fi
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum "${archive_path}" | awk '{print $1}')"
+          else
+            digest="$(shasum -a 256 "${archive_path}" | awk '{print $1}')"
+          fi
+
+          printf "%s  %s\n" "${digest}" "${archive_name}" > "${archive_path}.sha256"
+
+          {
+            echo "archive_name=${archive_name}"
+            echo "archive_path=${archive_path}"
+            echo "checksum_path=${archive_path}.sha256"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate artifact attestations
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            ${{ steps.archive.outputs.archive_path }}
+            ${{ steps.archive.outputs.checksum_path }}
+
+      - name: Preserve attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          DEST_PATH: ${{ steps.archive.outputs.archive_path }}.intoto.jsonl
+        run: node -e "require('fs').copyFileSync(process.env.BUNDLE_PATH, process.env.DEST_PATH)"
+
+      - name: Upload per-target release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.archive.outputs.archive_path }}
+            ${{ steps.archive.outputs.checksum_path }}
+            ${{ steps.archive.outputs.archive_path }}.intoto.jsonl
+
+  assemble:
+    name: Assemble release
+    needs:
+      - plan
+      - build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download target artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums and release manifest
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          CARGO_VERSION: ${{ needs.plan.outputs.cargo_version }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          DRY_RUN: ${{ needs.plan.outputs.dry_run }}
+          PUBLISH: ${{ needs.plan.outputs.publish }}
+          AGENCY_COMPAT_VERSION: ${{ needs.plan.outputs.agency_compat_version }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          RELEASE_TARGETS: ${{ env.RELEASE_TARGETS }}
+        run: |
+          set -euo pipefail
+
+          (cd dist && sort -k 2 *.sha256 > SHA256SUMS)
+
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const dist = "dist";
+          const version = process.env.VERSION;
+          const tag = process.env.TAG;
+          const repo = process.env.REPOSITORY;
+          const dryRun = process.env.DRY_RUN === "true";
+          const targets = JSON.parse(process.env.RELEASE_TARGETS);
+
+          const assets = targets.map((target) => {
+            const ext = target === "x86_64-pc-windows-msvc" ? ".zip" : ".tar.gz";
+            const archive = `wg-v${version}-${target}${ext}`;
+            const checksumPath = path.join(dist, `${archive}.sha256`);
+            const checksumLine = fs.readFileSync(checksumPath, "utf8").trim();
+            const sha256 = checksumLine.split(/\s+/)[0];
+            const releaseUrl = `https://github.com/${repo}/releases/download/${tag}/${archive}`;
+
+            return {
+              target,
+              archive,
+              format: ext.slice(1),
+              sha256,
+              size_bytes: fs.statSync(path.join(dist, archive)).size,
+              url: dryRun ? null : releaseUrl,
+              github_release_url_template: releaseUrl,
+              checksum: `${archive}.sha256`,
+              attestation_bundle: `${archive}.intoto.jsonl`,
+              gh_attestation_verify: `gh attestation verify ${archive} --repo ${repo}`,
+              offline_attestation_verify: `gh attestation verify ${archive} --repo ${repo} --bundle ${archive}.intoto.jsonl`,
+            };
+          });
+
+          const manifest = {
+            schema_version: 1,
+            package: "workgraph",
+            release_name: "wg",
+            version,
+            cargo_version: process.env.CARGO_VERSION,
+            tag,
+            channel: process.env.CHANNEL,
+            dry_run: dryRun,
+            publish: process.env.PUBLISH === "true",
+            repository: repo,
+            commit: process.env.COMMIT_SHA,
+            generated_at: new Date().toISOString(),
+            minimum_compatible_wg_schema: "graph-jsonl-v1",
+            minimum_migration_version: "none",
+            agency_compat_version: process.env.AGENCY_COMPAT_VERSION,
+            binaries: ["wg", "nex"],
+            checksums: {
+              algorithm: "sha256",
+              file: "SHA256SUMS",
+            },
+            assets,
+          };
+
+          fs.writeFileSync(
+            path.join(dist, "release-manifest.json"),
+            JSON.stringify(manifest, null, 2) + "\n",
+          );
+          NODE
+
+      - name: Generate release metadata attestation
+        id: attest_metadata
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/SHA256SUMS
+            dist/release-manifest.json
+
+      - name: Preserve release metadata attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest_metadata.outputs.bundle-path }}
+          DEST_PATH: dist/release-metadata.intoto.jsonl
+        run: node -e "require('fs').copyFileSync(process.env.BUNDLE_PATH, process.env.DEST_PATH)"
+
+      - name: Upload dry-run release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ needs.plan.outputs.tag }}
+          if-no-files-found: error
+          path: dist/*
+
+      - name: Write GitHub Release notes
+        run: |
+          set -euo pipefail
+          cat > "${RUNNER_TEMP}/release-notes.md" <<'EOF'
+          Native WG release artifacts for `${{ needs.plan.outputs.tag }}`.
+
+          This release ships both `wg` and `nex` in every platform archive.
+
+          Supported targets:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+
+          Verification:
+
+          ```bash
+          gh release download ${{ needs.plan.outputs.tag }} --repo ${{ github.repository }}
+          sha256sum -c SHA256SUMS
+          gh attestation verify wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz --repo ${{ github.repository }}
+          gh attestation verify wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz --repo ${{ github.repository }} --bundle wg-v${{ needs.plan.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.intoto.jsonl
+          ```
+
+          `release-manifest.json` records the complete target list, asset names,
+          SHA256 hashes, release URLs, and verification commands.
+          EOF
+
+      - name: Publish GitHub Release
+        if: ${{ needs.plan.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            release create "${TAG}"
+            dist/*
+            --repo "${GITHUB_REPOSITORY}"
+            --verify-tag
+            --title "WG ${VERSION}"
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
+          )
+
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease --latest=false)
+          fi
+
+          gh "${args[@]}"
+
+      - name: Report dry run
+        if: ${{ needs.plan.outputs.publish != 'true' }}
+        run: |
+          echo "Dry run complete. Release assets were uploaded as workflow artifacts only."
