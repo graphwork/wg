@@ -1,0 +1,45 @@
+# Release artifact contract for WG.
+#
+# The checked-in GitHub Actions workflow is intentionally custom because this
+# project needs release-test tags that exercise the full matrix without
+# publishing a stable GitHub Release. Keep this file in sync with
+# `.github/workflows/release.yml`; it records the cargo-dist-compatible release
+# shape and cargo-binstall archive names.
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.30.4"
+allow-dirty = ["ci"]
+ci = ["github"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+installers = []
+include = ["README.md", "LICENSE"]
+checksum = "sha256"
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+source-tarball = false
+recursive-tarball = false
+fail-fast = false
+pr-run-mode = "plan"
+github-attestations = true
+github-attestations-phase = "host"
+github-attestations-filters = [
+  "*.tar.gz",
+  "*.zip",
+  "*.sha256",
+  "SHA256SUMS",
+  "release-manifest.json",
+]
+
+[dist.min-glibc-version]
+x86_64-unknown-linux-gnu = "2.35"
+aarch64-unknown-linux-gnu = "2.35"
+

@@ -6,6 +6,19 @@ description = "A lightweight wg coordination graph for humans and AI agents"
 license = "MIT"
 repository = "https://github.com/graphwork/wg"
 homepage = "https://github.com/graphwork/wg"
+readme = "README.md"
+rust-version = "1.85"
+keywords = ["agents", "coordination", "graph", "workflow"]
+categories = ["command-line-utilities", "development-tools"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/wg-v{ version }-{ target }.tar.gz"
+bin-dir = "wg-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/wg-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
 
 [[bin]]
 name = "wg"
