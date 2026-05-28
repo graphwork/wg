@@ -5,6 +5,11 @@
 # publishing a stable GitHub Release. Keep this file in sync with
 # `.github/workflows/release.yml`; it records the cargo-dist-compatible release
 # shape and cargo-binstall archive names.
+#
+# The cargo-binstall contract lives in `Cargo.toml` under
+# `[package.metadata.binstall]`: archives are named `wg-v{version}-{target}` as
+# `.tar.gz` for Unix targets and `.zip` for Windows, with both distributed
+# binaries at `wg-v{version}-{target}/{bin}{binary-ext}`.
 
 [workspace]
 members = ["cargo:."]
