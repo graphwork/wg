@@ -167,6 +167,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-release-
 
+      - name: Install NASM for BoringSSL
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Build release binaries
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
