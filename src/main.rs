@@ -760,8 +760,12 @@ fn main() -> Result<()> {
         );
     }
 
-    // Track command usage (fire-and-forget, ignores errors)
-    workgraph::usage::append_usage_log(&workgraph_dir, command_name(&command));
+    // Track command usage (fire-and-forget, ignores errors). `wg upgrade --dry-run`
+    // is intentionally write-free, including command telemetry in the target WG dir.
+    let skip_usage_log = matches!(&command, Commands::Upgrade { dry_run: true, .. });
+    if !skip_usage_log {
+        workgraph::usage::append_usage_log(&workgraph_dir, command_name(&command));
+    }
 
     match command {
         Commands::Executors { all } => {
@@ -2963,6 +2967,29 @@ fn main() -> Result<()> {
                 no_copy,
             ),
         },
+        Commands::Upgrade {
+            dry_run,
+            yes,
+            source,
+            target_ref,
+            source_dir,
+            clean,
+            rollback,
+            migrate_secrets,
+        } => commands::upgrade::run(
+            &workgraph_dir,
+            commands::upgrade::UpgradeArgs {
+                dry_run,
+                yes,
+                source,
+                target_ref,
+                source_dir,
+                clean,
+                rollback,
+                migrate_secrets,
+            },
+            cli.json,
+        ),
         Commands::Agents {
             command,
             alive,

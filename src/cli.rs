@@ -1992,6 +1992,44 @@ pub enum Commands {
         cmd: MigrateCommands,
     },
 
+    /// Upgrade WG from a managed source checkout, or roll back the last upgrade
+    Upgrade {
+        /// Show install source, source checkout, daemon state, and migrations without writing files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompts.
+        #[arg(long)]
+        yes: bool,
+
+        /// Git upstream to clone into the managed source checkout.
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Git ref to install (default: origin/main).
+        #[arg(long = "ref")]
+        target_ref: Option<String>,
+
+        /// Managed source checkout path (default: ~/.wg/source/wg).
+        #[arg(long = "source-dir")]
+        source_dir: Option<PathBuf>,
+
+        /// Run cargo clean in the managed source checkout before cargo install.
+        #[arg(long, alias = "cargo-clean")]
+        clean: bool,
+
+        /// Restore the previous binary backup recorded by the last upgrade.
+        #[arg(
+            long,
+            conflicts_with_all = ["source", "target_ref", "source_dir", "clean", "migrate_secrets"]
+        )]
+        rollback: bool,
+
+        /// After replacement, run `wg migrate secrets` instead of only reporting its dry-run.
+        #[arg(long = "migrate-secrets")]
+        migrate_secrets: bool,
+    },
+
     /// List or manage running agent processes (service workers)
     #[command(
         after_help = "Without a subcommand, lists all agent processes spawned by the service\ncoordinator. These are runtime workers, not agent identity definitions.\n\nSubcommands:\n  wg agents kill <agent-id>   # SIGTERM the agent process (no-op if dead)\n\nSee also: 'wg agent' to manage agent definitions (role + tradeoff pairings)."
@@ -5116,6 +5154,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Html { .. } => "html",
         Commands::Sweep { .. } => "sweep",
         Commands::Migrate { .. } => "migrate",
+        Commands::Upgrade { .. } => "upgrade",
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
         Commands::Reap { .. } => "reap",
