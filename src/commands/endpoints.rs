@@ -30,6 +30,218 @@ fn infer_provider_from_name(name: &str) -> &'static str {
     "anthropic"
 }
 
+fn provider_supports_generation_probe(provider: &str) -> bool {
+    matches!(
+        provider,
+        "openai" | "openrouter" | "local" | "nex" | "ollama" | "llamacpp" | "vllm" | "oai-compat"
+    )
+}
+
+fn request_headers(ep: &EndpointConfig, api_key: Option<&str>) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    if let Some(key) = api_key {
+        match ep.provider.as_str() {
+            "anthropic" => {
+                headers.insert("x-api-key", HeaderValue::from_str(key)?);
+                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            }
+            _ => {
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {}", key))?,
+                );
+            }
+        }
+    }
+    Ok(headers)
+}
+
+fn truncated_response(body: &str) -> String {
+    if body.len() > 200 {
+        format!("{}...", &body[..body.floor_char_boundary(200)])
+    } else {
+        body.to_string()
+    }
+}
+
+fn print_response_body(body: &str) {
+    if !body.is_empty() {
+        println!("  Response: {}", truncated_response(body));
+    }
+}
+
+fn validate_models_response(
+    endpoint_name: &str,
+    response: reqwest::blocking::Response,
+) -> Result<()> {
+    let status = response.status();
+    if status.is_success() {
+        println!(
+            "  Status: {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("OK")
+        );
+        println!("  Connectivity: OK");
+        println!("  Models: OK");
+        return Ok(());
+    }
+
+    let body = response.text().unwrap_or_default();
+    println!("  Status: {}", status.as_u16());
+    println!("  Connectivity: OK (server responded)");
+    match status.as_u16() {
+        401 | 403 => {
+            println!("  Authentication: FAILED (models request)");
+            print_response_body(&body);
+            bail!(
+                "Authentication failed for endpoint '{}': models request returned HTTP {}",
+                endpoint_name,
+                status.as_u16()
+            );
+        }
+        404 => {
+            println!("  Models: FAILED (endpoint not found)");
+            print_response_body(&body);
+            bail!(
+                "Models endpoint not found for endpoint '{}': HTTP 404",
+                endpoint_name
+            );
+        }
+        _ => {
+            println!("  Models: FAILED (HTTP {})", status.as_u16());
+            print_response_body(&body);
+            bail!(
+                "Models request failed for endpoint '{}': HTTP {}",
+                endpoint_name,
+                status.as_u16()
+            );
+        }
+    }
+}
+
+fn chat_completion_has_assistant_body(value: &serde_json::Value) -> bool {
+    value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .is_some_and(|content| match content {
+            serde_json::Value::String(s) => !s.trim().is_empty(),
+            serde_json::Value::Array(parts) => !parts.is_empty(),
+            _ => false,
+        })
+}
+
+fn run_generation_probe(
+    endpoint_name: &str,
+    ep: &EndpointConfig,
+    client: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<()> {
+    if !provider_supports_generation_probe(&ep.provider) {
+        println!(
+            "  Generation: SKIPPED (not available for provider '{}')",
+            ep.provider
+        );
+        return Ok(());
+    }
+
+    let Some(model) = ep.model.as_deref().filter(|model| !model.trim().is_empty()) else {
+        println!("  Generation: SKIPPED (no model configured)");
+        return Ok(());
+    };
+
+    let chat_url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": "Reply with a short endpoint health check acknowledgement."
+            }
+        ],
+        "max_tokens": 8,
+        "temperature": 0,
+        "stream": false,
+    });
+
+    let response = match client
+        .post(&chat_url)
+        .headers(request_headers(ep, api_key)?)
+        .json(&body)
+        .send()
+    {
+        Ok(response) => response,
+        Err(e) => {
+            println!("  Generation: FAILED (DNS/connectivity): {}", e);
+            bail!(
+                "DNS/connectivity failure during generation for endpoint '{}': {}",
+                endpoint_name,
+                e
+            );
+        }
+    };
+
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if status.is_success() {
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            println!("  Generation: FAILED (unexpected response body)");
+            print_response_body(&body);
+            anyhow::anyhow!(
+                "Generation body-shape failure for endpoint '{}': response was not valid JSON: {}",
+                endpoint_name,
+                e
+            )
+        })?;
+
+        if chat_completion_has_assistant_body(&parsed) {
+            println!("  Generation: OK");
+            return Ok(());
+        }
+
+        println!("  Generation: FAILED (unexpected response body)");
+        print_response_body(&body);
+        bail!(
+            "Generation body-shape failure for endpoint '{}': response did not include choices[0].message.content",
+            endpoint_name
+        );
+    }
+
+    match status.as_u16() {
+        401 | 403 => {
+            println!("  Generation: FAILED (authentication)");
+            println!("  Authentication: FAILED (generation request)");
+            print_response_body(&body);
+            bail!(
+                "Authentication failed during generation for endpoint '{}': HTTP {}",
+                endpoint_name,
+                status.as_u16()
+            );
+        }
+        404 => {
+            println!("  Generation: FAILED (model not found)");
+            print_response_body(&body);
+            bail!(
+                "Model not found during generation for endpoint '{}': model '{}'",
+                endpoint_name,
+                model
+            );
+        }
+        _ => {
+            println!("  Generation: FAILED (HTTP {})", status.as_u16());
+            print_response_body(&body);
+            bail!(
+                "Generation failed for endpoint '{}': HTTP {}",
+                endpoint_name,
+                status.as_u16()
+            );
+        }
+    }
+}
+
 /// List all configured endpoints.
 pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     let config = Config::load_merged(workgraph_dir)?;
@@ -325,7 +537,8 @@ pub fn run_set_default(workgraph_dir: &Path, name: &str, global: bool) -> Result
     Ok(())
 }
 
-/// Test endpoint connectivity by hitting the /models API.
+/// Test endpoint connectivity by hitting /models and, for OpenAI-compatible
+/// endpoints with a configured model, a low-token /chat/completions probe.
 pub fn run_test(workgraph_dir: &Path, name: &str) -> Result<()> {
     let config = Config::load_merged(workgraph_dir)?;
     let ep = config
@@ -363,69 +576,26 @@ pub fn run_test(workgraph_dir: &Path, name: &str) -> Result<()> {
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
-    let mut headers = HeaderMap::new();
-    if let Some(ref key) = api_key {
-        match ep.provider.as_str() {
-            "anthropic" => {
-                headers.insert("x-api-key", HeaderValue::from_str(key)?);
-                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-            }
-            _ => {
-                headers.insert(
-                    AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Bearer {}", key))?,
-                );
-            }
-        }
-    }
-
-    match client.get(&models_url).headers(headers).send() {
+    match client
+        .get(&models_url)
+        .headers(request_headers(ep, api_key.as_deref())?)
+        .send()
+    {
         Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                println!(
-                    "  Status: {} {}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("OK")
-                );
-                println!("  Connectivity: OK");
-                if api_key.is_some() {
-                    println!("  Authentication: OK");
-                } else {
-                    println!("  Authentication: (no key configured, may be required)");
-                }
-            } else if status.as_u16() == 401 || status.as_u16() == 403 {
-                let body = response.text().unwrap_or_default();
-                println!("  Status: {}", status.as_u16());
-                println!("  Connectivity: OK");
-                println!("  Authentication: FAILED — check your API key");
-                if !body.is_empty() {
-                    let truncated = if body.len() > 200 {
-                        format!("{}...", &body[..body.floor_char_boundary(200)])
-                    } else {
-                        body
-                    };
-                    println!("  Response: {}", truncated);
-                }
+            validate_models_response(name, response)?;
+            if api_key.is_some() {
+                println!("  Authentication: OK");
             } else {
-                let body = response.text().unwrap_or_default();
-                println!("  Status: {}", status.as_u16());
-                println!("  Connectivity: OK (server responded)");
-                if !body.is_empty() {
-                    let truncated = if body.len() > 200 {
-                        format!("{}...", &body[..body.floor_char_boundary(200)])
-                    } else {
-                        body
-                    };
-                    println!("  Response: {}", truncated);
-                }
+                println!("  Authentication: (no key configured, may be required)");
             }
         }
         Err(e) => {
-            println!("  Connection FAILED: {}", e);
-            bail!("Could not connect to endpoint '{}': {}", name, e);
+            println!("  Connectivity: FAILED (DNS/connectivity): {}", e);
+            bail!("DNS/connectivity failure for endpoint '{}': {}", name, e);
         }
     }
+
+    run_generation_probe(name, ep, &client, base_url, api_key.as_deref())?;
 
     Ok(())
 }
@@ -1193,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_endpoint_test_auth_failure_does_not_bail() {
+    fn cli_endpoint_test_auth_failure_errors() {
         let mock_url = mock_server(401, r#"{"error":"unauthorized"}"#);
         let tmp = setup_dir();
         let mut config = Config::default();
@@ -1211,7 +1381,8 @@ mod tests {
         });
         config.save(tmp.path()).unwrap();
 
-        run_test(tmp.path(), "bad-ep").unwrap();
+        let err = run_test(tmp.path(), "bad-ep").unwrap_err();
+        assert!(err.to_string().contains("Authentication failed"));
     }
 
     #[test]
@@ -1262,7 +1433,7 @@ mod tests {
         config.save(tmp.path()).unwrap();
 
         let err = run_test(tmp.path(), "dead").unwrap_err();
-        assert!(err.to_string().contains("Could not connect"));
+        assert!(err.to_string().contains("DNS/connectivity failure"));
     }
 
     // ── full lifecycle ─────────────────────────────────────────────────
