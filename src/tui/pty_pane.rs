@@ -444,7 +444,11 @@ impl PtyPane {
         // clients first — single-attach semantics, even if a prior TUI
         // (or a stray `tmux attach` from a shell) is still glued on.
         let attach_args = ["attach", "-d", "-t", session_name];
-        let mut pane = Self::spawn_in("tmux", &attach_args, &[], cwd, rows, cols)?;
+        let attach_env = vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("COLORTERM".to_string(), "truecolor".to_string()),
+        ];
+        let mut pane = Self::spawn_in("tmux", &attach_args, &attach_env, cwd, rows, cols)?;
         pane.tmux_session = Some(session_name.to_string());
         Ok(pane)
     }

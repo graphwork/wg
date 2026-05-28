@@ -403,9 +403,15 @@ fn test_accidental_cycle_cli_ready() {
     // Create unconfigured cycle via CLI: A → B → C → A
     let wg_dir = setup_workgraph(&temp_dir, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
-    wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
-    wg_ok(&wg_dir, &["add", "Task C", "--id", "c", "--after", "b"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--no-place"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Task B", "--id", "b", "--after", "a", "--no-place"],
+    );
+    wg_ok(
+        &wg_dir,
+        &["add", "Task C", "--id", "c", "--after", "b", "--no-place"],
+    );
 
     // Create the cycle with --allow-cycle
     wg_ok(&wg_dir, &["edit", "a", "--add-after", "c", "--allow-cycle"]);
