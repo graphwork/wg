@@ -4902,19 +4902,23 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let lines: Vec<Line> = wrap_line_spans(&raw_lines, body_width);
     app.log_pane.total_wrapped_lines = lines.len();
 
-    // Auto-tail: pin scroll to the bottom when enabled and there's overflow.
-    let viewport = body_area.height as usize;
-    if app.log_pane.auto_tail {
-        app.log_pane.scroll = lines.len().saturating_sub(viewport);
-    }
+    // Auto-tail: pin scroll to the bottom when enabled; otherwise clamp
+    // stale offsets to the current rendered visual-line bounds.
+    app.log_pane.follow_tail_or_clamp();
 
-    let scroll_y = app.log_pane.scroll.min(lines.len().saturating_sub(1)) as u16;
+    let max_scroll = app.log_pane.max_scroll();
+    let scroll_y = app.log_pane.scroll.min(max_scroll) as u16;
     // No `.wrap()` here: lines are already pre-wrapped to body_width above.
     // Adding wrap on top would re-wrap visually-identical lines that happen
     // to be exactly body_width wide (boundary cases) and re-introduce the
     // logical-vs-visual scroll mismatch.
     let para = Paragraph::new(lines).scroll((scroll_y, 0));
     frame.render_widget(para, body_area);
+
+    if max_scroll > 0 && body_area.height > 0 {
+        let scroll_position = app.log_pane.scroll;
+        draw_panel_scrollbar(frame, app, body_area, max_scroll, scroll_position);
+    }
 }
 
 /// Draw the Messages tab — wg msg traffic for the currently selected task.
@@ -15970,6 +15974,49 @@ mod tests {
              scrolled off below the viewport because scroll math mistakes \
              logical-line count for visual-line count after wrap. Rendered:\n{}",
             rendered
+        );
+    }
+
+    #[test]
+    fn test_log_view_registers_scrollbar_when_content_overflows() {
+        use crate::tui::viz_viewer::state::{LogPaneState, RightPanelTab, VizApp};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let response = (0..80)
+            .map(|i| format!("LOG_SCROLLBAR_MARKER_{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.right_panel_tab = RightPanelTab::Log;
+        app.log_pane = LogPaneState::default();
+        app.log_pane.task_id = Some("my-task".to_string());
+        app.log_pane.agent_id = Some("agent-99".to_string());
+        app.log_pane.auto_tail = true;
+        app.log_pane.agent_output.full_text = response;
+
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_log_tab(frame, &mut app, area);
+            })
+            .unwrap();
+
+        assert!(
+            app.log_pane.total_wrapped_lines > app.log_pane.viewport_height,
+            "test fixture must overflow the log viewport"
+        );
+        assert!(
+            app.last_panel_scrollbar_area.height > 0,
+            "overflowing Log tab must render and register a panel scrollbar hit area"
+        );
+        assert_eq!(
+            app.last_panel_scrollbar_area.x, 79,
+            "Log scrollbar should occupy the rightmost content column"
         );
     }
 

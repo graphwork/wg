@@ -2483,9 +2483,13 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 if d == '4' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log
                 {
                     app.cycle_log_view();
+                    app.focused_panel = FocusedPanel::RightPanel;
                 } else {
                     app.right_panel_visible = true;
                     app.right_panel_tab = tab;
+                    if tab == RightPanelTab::Log {
+                        app.focused_panel = FocusedPanel::RightPanel;
+                    }
                 }
             }
         }
@@ -2920,10 +2924,12 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
         // PgUp/PgDn fast scroll
         KeyCode::PageUp => {
-            right_panel_scroll_up(app, 10);
+            let amount = right_panel_page_amount(app);
+            right_panel_scroll_up(app, amount);
         }
         KeyCode::PageDown => {
-            right_panel_scroll_down(app, 10);
+            let amount = right_panel_page_amount(app);
+            right_panel_scroll_down(app, amount);
         }
 
         // Home/End: jump to top/bottom of content
@@ -3412,6 +3418,13 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
     app.task_panes.remove(&task_id);
     app.chat_pty_mode = false;
     app.maybe_auto_enable_chat_pty();
+}
+
+fn right_panel_page_amount(app: &VizApp) -> usize {
+    match app.right_panel_tab {
+        RightPanelTab::Log => app.log_pane.viewport_height.max(1),
+        _ => 10,
+    }
 }
 
 fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
@@ -4936,14 +4949,7 @@ fn vscrollbar_jump_panel(app: &mut VizApp, row: u16) {
             if max_scroll == 0 {
                 return;
             }
-            app.log_pane.scroll = jump(max_scroll);
-            // Update auto-tail based on whether the user dragged to the bottom.
-            if app.log_pane.scroll >= max_scroll {
-                app.log_pane.auto_tail = true;
-                app.log_pane.has_new_content = false;
-            } else {
-                app.log_pane.auto_tail = false;
-            }
+            app.log_pane.jump_to_scroll(jump(max_scroll));
         }
         RightPanelTab::Messages => {
             let total = app.messages_panel.total_wrapped_lines;
@@ -6215,6 +6221,115 @@ mod scrollbar_tests {
         handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 19, 119);
         assert!(app.scrollbar_drag.is_none());
         assert_eq!(app.hud_scroll, 80); // preserved
+    }
+
+    #[test]
+    fn graph_four_focuses_log_then_keys_scroll_log_viewport() {
+        let (mut app, _tmp) = build_test_app();
+        app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_visible = false;
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.log_pane.total_wrapped_lines = 120;
+        app.log_pane.viewport_height = 17;
+        app.log_pane.scroll = usize::MAX;
+        app.log_pane.auto_tail = true;
+
+        handle_key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
+
+        assert_eq!(app.right_panel_tab, RightPanelTab::Log);
+        assert!(app.right_panel_visible);
+        assert_eq!(
+            app.focused_panel,
+            FocusedPanel::RightPanel,
+            "Opening the Log tab from graph focus should focus it so arrows/PageUp work"
+        );
+
+        handle_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(
+            app.log_pane.scroll, 86,
+            "PageUp should move by the log viewport height, not the legacy fixed 10 lines"
+        );
+        assert!(!app.log_pane.auto_tail);
+
+        handle_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.log_pane.scroll, 85);
+
+        handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.log_pane.scroll, 86);
+
+        handle_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(app.log_pane.scroll, 0);
+        assert!(!app.log_pane.auto_tail);
+
+        handle_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(app.log_pane.scroll, 103);
+        assert!(app.log_pane.auto_tail);
+    }
+
+    #[test]
+    fn mouse_wheel_over_log_pane_routes_to_log_scroll() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Log;
+        app.focused_panel = FocusedPanel::Graph;
+        app.log_pane.total_wrapped_lines = 100;
+        app.log_pane.viewport_height = 20;
+        app.log_pane.scroll = usize::MAX;
+        app.log_pane.auto_tail = true;
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 1,
+            width: 40,
+            height: 20,
+        };
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 1,
+            width: 60,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 80);
+        assert_eq!(app.log_pane.scroll, 77);
+        assert!(!app.log_pane.auto_tail);
+
+        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 80);
+        assert_eq!(app.log_pane.scroll, 80);
+        assert!(app.log_pane.auto_tail);
+    }
+
+    #[test]
+    fn log_scrollbar_click_drag_updates_log_scroll_and_tail_state() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Log;
+        app.log_pane.total_wrapped_lines = 100;
+        app.log_pane.viewport_height = 20;
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 119);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Panel));
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert!(
+            app.log_pane.scroll > 0 && app.log_pane.scroll < 80,
+            "mid-track click should jump into the middle of the log"
+        );
+        assert!(!app.log_pane.auto_tail);
+
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 19, 119);
+        assert_eq!(app.log_pane.scroll, 80);
+        assert!(app.log_pane.auto_tail);
+
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 19, 119);
+        assert!(app.scrollbar_drag.is_none());
     }
 
     #[test]

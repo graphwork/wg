@@ -4005,6 +4005,67 @@ impl Default for LogPaneState {
     }
 }
 
+impl LogPaneState {
+    pub(crate) fn max_scroll(&self) -> usize {
+        self.total_wrapped_lines
+            .saturating_sub(self.viewport_height)
+    }
+
+    fn normalized_scroll(&self) -> usize {
+        let max_scroll = self.max_scroll();
+        if self.auto_tail || self.scroll > max_scroll {
+            max_scroll
+        } else {
+            self.scroll
+        }
+    }
+
+    pub(crate) fn follow_tail_or_clamp(&mut self) {
+        self.scroll = self.normalized_scroll();
+    }
+
+    pub(crate) fn scroll_up(&mut self, amount: usize) {
+        let max_scroll = self.max_scroll();
+        let current = self.normalized_scroll();
+        self.scroll = current.saturating_sub(amount);
+        if max_scroll > 0 && amount > 0 {
+            self.auto_tail = false;
+        }
+    }
+
+    pub(crate) fn scroll_down(&mut self, amount: usize) {
+        let max_scroll = self.max_scroll();
+        let current = self.normalized_scroll();
+        self.scroll = current.saturating_add(amount).min(max_scroll);
+        if self.scroll >= max_scroll {
+            self.auto_tail = true;
+            self.has_new_content = false;
+        }
+    }
+
+    pub(crate) fn scroll_to_top(&mut self) {
+        self.scroll = 0;
+        self.auto_tail = false;
+    }
+
+    pub(crate) fn scroll_to_bottom(&mut self) {
+        self.scroll = self.max_scroll();
+        self.auto_tail = true;
+        self.has_new_content = false;
+    }
+
+    pub(crate) fn jump_to_scroll(&mut self, position: usize) {
+        let max_scroll = self.max_scroll();
+        self.scroll = position.min(max_scroll);
+        if self.scroll >= max_scroll {
+            self.auto_tail = true;
+            self.has_new_content = false;
+        } else {
+            self.auto_tail = false;
+        }
+    }
+}
+
 /// State for the Coordinator Log panel (panel 7) — shows daemon activity log.
 pub struct CoordLogState {
     pub scroll: usize,
@@ -9991,40 +10052,22 @@ impl VizApp {
 
     /// Scroll log pane up.
     pub fn log_scroll_up(&mut self, amount: usize) {
-        self.log_pane.scroll = self.log_pane.scroll.saturating_sub(amount);
-        // User scrolled up — disable auto-tail.
-        self.log_pane.auto_tail = false;
+        self.log_pane.scroll_up(amount);
     }
 
     /// Scroll log pane down.
     pub fn log_scroll_down(&mut self, amount: usize) {
-        let max_scroll = self
-            .log_pane
-            .total_wrapped_lines
-            .saturating_sub(self.log_pane.viewport_height);
-        self.log_pane.scroll = (self.log_pane.scroll + amount).min(max_scroll);
-        // If we reached the bottom, resume auto-tail and clear "new output" indicator.
-        if self.log_pane.scroll >= max_scroll {
-            self.log_pane.auto_tail = true;
-            self.log_pane.has_new_content = false;
-        }
+        self.log_pane.scroll_down(amount);
     }
 
     /// Scroll log pane to the very top.
     pub fn log_scroll_to_top(&mut self) {
-        self.log_pane.scroll = 0;
-        self.log_pane.auto_tail = false;
+        self.log_pane.scroll_to_top();
     }
 
     /// Scroll log pane to the very bottom.
     pub fn log_scroll_to_bottom(&mut self) {
-        let max_scroll = self
-            .log_pane
-            .total_wrapped_lines
-            .saturating_sub(self.log_pane.viewport_height);
-        self.log_pane.scroll = max_scroll;
-        self.log_pane.auto_tail = true;
-        self.log_pane.has_new_content = false;
+        self.log_pane.scroll_to_bottom();
     }
 
     /// Toggle log pane JSON mode.
@@ -26490,6 +26533,86 @@ mod agent_stream_tests {
         assert_eq!(LogViewMode::HighLevel.label(), "high-level");
         assert_eq!(LogViewMode::RawPretty.label(), "raw");
         assert_eq!(LogViewMode::WgLog.label(), "wg-log");
+    }
+
+    #[test]
+    fn test_log_scroll_state_line_increments_and_bounds() {
+        let mut state = LogPaneState {
+            total_wrapped_lines: 100,
+            viewport_height: 20,
+            ..LogPaneState::default()
+        };
+
+        state.scroll_to_bottom();
+        assert_eq!(state.scroll, 80);
+        assert!(state.auto_tail);
+
+        state.scroll_up(1);
+        assert_eq!(state.scroll, 79);
+        assert!(!state.auto_tail);
+
+        state.scroll_down(1);
+        assert_eq!(state.scroll, 80);
+        assert!(state.auto_tail);
+
+        state.scroll_up(500);
+        assert_eq!(state.scroll, 0);
+        assert!(!state.auto_tail);
+
+        state.scroll_down(500);
+        assert_eq!(state.scroll, 80);
+        assert!(state.auto_tail);
+    }
+
+    #[test]
+    fn test_log_scroll_state_page_increments_from_live_tail_sentinel() {
+        let mut state = LogPaneState {
+            scroll: usize::MAX,
+            auto_tail: true,
+            total_wrapped_lines: 120,
+            viewport_height: 17,
+            ..LogPaneState::default()
+        };
+
+        state.scroll_up(17);
+        assert_eq!(
+            state.scroll, 86,
+            "PageUp from live-tail must normalize to the real bottom before subtracting"
+        );
+        assert!(!state.auto_tail);
+
+        state.scroll_down(17);
+        assert_eq!(state.scroll, 103);
+        assert!(state.auto_tail);
+    }
+
+    #[test]
+    fn test_log_scroll_preserves_position_while_new_events_arrive() {
+        let mut state = LogPaneState {
+            scroll: 45,
+            auto_tail: false,
+            total_wrapped_lines: 100,
+            viewport_height: 20,
+            ..LogPaneState::default()
+        };
+
+        state.total_wrapped_lines = 130;
+        state.follow_tail_or_clamp();
+        assert_eq!(
+            state.scroll, 45,
+            "Scrolled-up log view must preserve the same top visual line as content grows"
+        );
+        assert!(!state.auto_tail);
+
+        state.scroll_to_bottom();
+        assert_eq!(state.scroll, 110);
+        state.total_wrapped_lines = 150;
+        state.follow_tail_or_clamp();
+        assert_eq!(
+            state.scroll, 130,
+            "Live-tail mode must follow newly appended log content"
+        );
+        assert!(state.auto_tail);
     }
 }
 

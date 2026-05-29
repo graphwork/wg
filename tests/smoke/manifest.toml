@@ -312,6 +312,15 @@ description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-
 timeout_seconds = 60
 
 [[scenario]]
+name = "tui_log_scroll_controls"
+script = "scenarios/tui_log_scroll_controls.sh"
+owners = [
+    "fix-tui-event",
+]
+description = "Live tmux-driven wg tui regression for the per-task Log/Events pane: overflowing raw_stream events expose a draggable scrollbar, PageUp/Up/End keyboard navigation changes visible content, SGR mouse wheel and scrollbar drag move through the log, live-tail follows only at bottom, and appended events do not yank a scrolled-up viewport."
+timeout_seconds = 90
+
+[[scenario]]
 name = "evaluate_record_flag_args"
 script = "scenarios/evaluate_record_flag_args.sh"
 owners = [
