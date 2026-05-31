@@ -472,6 +472,12 @@ pub(crate) fn spawn_agent_inner(
     let effective_api_key: Option<String> =
         endpoint_config.and_then(|ep| ep.resolve_api_key(Some(dir)).ok().flatten());
 
+    let effective_working_dir = worktree_info
+        .as_ref()
+        .map(|wt| wt.path.as_path())
+        .or_else(|| settings.working_dir.as_deref().map(Path::new));
+    preflight_executor_command(&settings, executor_name, effective_working_dir)?;
+
     // Validate endpoint resolution for registry-resolved models — but only
     // when the plan actually selected an endpoint. If plan.endpoint is None
     // (e.g. executor=claude), the model registry's endpoint hint is irrelevant
@@ -919,6 +925,7 @@ fn executor_uses_auto_prompt(executor_type: &str) -> bool {
             | "qwen_code"
             | "cline"
             | "crush"
+            | "amplifier"
     )
 }
 
@@ -1127,6 +1134,10 @@ fn external_prompt_command(
                 &command,
             ))
         }
+        ExternalPromptDelivery::Argument => Ok(prompt_file_as_last_argument_command(
+            &prompt_file.to_string_lossy(),
+            &cmd_parts,
+        )),
     }
 }
 
@@ -1136,6 +1147,117 @@ enum ExternalPromptDelivery {
     AiderMessageFile,
     GooseInputFile,
     Stdin,
+    Argument,
+}
+
+fn prompt_file_as_last_argument_command(prompt_file: &str, cmd_parts: &[String]) -> String {
+    let mut parts = vec![
+        "bash".to_string(),
+        "-c".to_string(),
+        shell_escape(r#"PROMPT=$(cat "$1"); shift; exec "$@" "$PROMPT""#),
+        "--".to_string(),
+        shell_escape(prompt_file),
+    ];
+    parts.extend(cmd_parts.iter().cloned());
+    parts.join(" ")
+}
+
+fn preflight_executor_command(
+    settings: &workgraph::service::executor::ExecutorSettings,
+    executor_name: &str,
+    working_dir: Option<&Path>,
+) -> Result<()> {
+    let command = settings.command.trim();
+    if command.is_empty() {
+        anyhow::bail!(
+            "Executor '{}' has an empty command in .wg/executors/{}.toml. \
+             Set [executor].command to an installed binary and put flags in [executor].args.",
+            executor_name,
+            executor_name,
+        );
+    }
+
+    if command_contains_path_separator(command) {
+        let command_path = Path::new(command);
+        let candidate = if command_path.is_absolute() {
+            command_path.to_path_buf()
+        } else if let Some(wd) = working_dir {
+            wd.join(command_path)
+        } else {
+            command_path.to_path_buf()
+        };
+        if is_executable_file(&candidate) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Executor '{}' command '{}' is not an executable file at '{}'. \
+             Check .wg/executors/{}.toml, install the binary, or set an absolute command path.{}",
+            executor_name,
+            command,
+            candidate.display(),
+            executor_name,
+            executor_setup_hint(executor_name),
+        );
+    }
+
+    if which_on_path(command).is_some() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Executor '{}' command '{}' was not found on PATH. \
+         Install the '{}' binary, put it on PATH, or set [executor].command in .wg/executors/{}.toml.{}",
+        executor_name,
+        command,
+        command,
+        executor_name,
+        executor_setup_hint(executor_name),
+    );
+}
+
+fn executor_setup_hint(executor_name: &str) -> &'static str {
+    match executor_name {
+        "amplifier" => {
+            " Expected default command: amplifier run --mode single --output-format json --bundle wg <prompt>."
+        }
+        "crush" => {
+            " The built-in Crush surface is experimental; verify `crush run --help` for your installed version or override the template."
+        }
+        _ => "",
+    }
+}
+
+fn command_contains_path_separator(command: &str) -> bool {
+    command.contains('/') || command.contains('\\')
+}
+
+fn which_on_path(command: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(command);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(md) => md.is_file() && (md.permissions().mode() & 0o111 != 0),
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 fn inject_api_key_env(
@@ -1412,6 +1534,13 @@ fn build_inner_command(
             effective_model,
             effective_provider,
             ExternalPromptDelivery::Stdin,
+        )?,
+        "amplifier" => external_prompt_command(
+            settings,
+            output_dir,
+            effective_model,
+            effective_provider,
+            ExternalPromptDelivery::Argument,
         )?,
         "shell" => {
             format!(
@@ -2206,6 +2335,7 @@ mod tests {
             "qwen_code",
             "cline",
             "crush",
+            "amplifier",
         ] {
             assert!(
                 executor_uses_auto_prompt(kind),
@@ -2310,8 +2440,8 @@ mod tests {
     }
 
     #[test]
-    fn test_external_cli_model_args_do_not_change_claude_codex_native() {
-        for executor_type in ["claude", "codex", "native"] {
+    fn test_external_cli_model_args_do_not_change_builtin_or_amplifier_defaults() {
+        for executor_type in ["claude", "codex", "native", "amplifier"] {
             assert!(
                 external_cli_model_args(
                     executor_type,
@@ -3287,6 +3417,112 @@ mod tests {
             "External CLI argv must not contain API keys or key file paths: {}",
             command
         );
+    }
+
+    #[test]
+    fn test_build_inner_command_amplifier_uses_prompt_argument_bridge() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = external_test_settings(
+            "amplifier",
+            "amplifier",
+            &[
+                "run",
+                "--mode",
+                "single",
+                "--output-format",
+                "json",
+                "--bundle",
+                "wg",
+            ],
+        );
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("openrouter:deepseek/deepseek-v3.2".to_string()),
+            &Some("openrouter".to_string()),
+            &None,
+            &None,
+            &Some("sk-or-secret".to_string()),
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.contains("PROMPT=$(cat \"$1\"); shift; exec \"$@\" \"$PROMPT\""),
+            "Amplifier should bridge prompt.txt into a positional argument: {}",
+            command
+        );
+        assert!(
+            command.contains(
+                "'amplifier' 'run' '--mode' 'single' '--output-format' 'json' '--bundle' 'wg'"
+            ),
+            "Amplifier default command shape should be preserved: {}",
+            command
+        );
+        assert!(
+            !command.contains("--model"),
+            "Amplifier defaults should not treat amplifier as a native model provider: {}",
+            command
+        );
+        assert!(
+            !command.contains("sk-or-secret"),
+            "External CLI argv must not contain API keys: {}",
+            command
+        );
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("prompt.txt")).unwrap(),
+            "Investigate task"
+        );
+    }
+
+    #[test]
+    fn test_preflight_executor_command_missing_binary_actionable() {
+        let settings =
+            external_test_settings("amplifier", "wg-missing-amplifier-test-binary", &["run"]);
+        let err = preflight_executor_command(&settings, "amplifier", None)
+            .expect_err("missing binary should fail preflight")
+            .to_string();
+
+        assert!(
+            err.contains("amplifier") && err.contains("not found on PATH"),
+            "error should name the missing executor and PATH failure: {}",
+            err
+        );
+        assert!(
+            err.contains(".wg/executors/amplifier.toml") && err.contains("Install"),
+            "error should tell the user how to fix the executor command: {}",
+            err
+        );
+        assert!(
+            err.contains("amplifier run --mode single --output-format json --bundle wg"),
+            "Amplifier-specific setup hint should include the expected command: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_preflight_executor_command_relative_path_uses_working_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let runner = temp_dir.path().join("runner");
+        std::fs::write(&runner, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&runner).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&runner, perms).unwrap();
+        }
+
+        let settings = external_test_settings("custom", "./runner", &[]);
+        preflight_executor_command(&settings, "custom", Some(temp_dir.path()))
+            .expect("relative command should resolve from working_dir");
     }
 
     #[test]

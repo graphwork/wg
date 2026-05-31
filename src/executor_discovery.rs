@@ -6,8 +6,8 @@
 //! missing from PATH, it shouldn't be offered as an option.
 //!
 //! `native` is always available (it's this binary itself). The CLI
-//! adapters (`claude`, `codex`, `gemini`) are probed by looking for
-//! the binary on PATH.
+//! adapters (`claude`, `codex`, `gemini`, and experimental worker CLIs)
+//! are probed by looking for the binary on PATH.
 
 use std::path::PathBuf;
 
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorInfo {
     /// Short name matching `coordinator.executor` config values:
-    /// "native", "claude", "codex", "gemini".
+    /// "native", "claude", "codex", "gemini", "crush", "amplifier".
     pub name: &'static str,
     /// Human-readable description.
     pub description: &'static str,
@@ -87,6 +87,16 @@ const EXECUTORS: &[ExecutorSpec] = &[
         description: "Google Gemini CLI",
         binary_candidates: &["gemini"],
     },
+    ExecutorSpec {
+        name: "crush",
+        description: "Experimental Crush CLI worker (`crush run`; verify flags against your installed version)",
+        binary_candidates: &["crush"],
+    },
+    ExecutorSpec {
+        name: "amplifier",
+        description: "Experimental Amplifier CLI worker (`amplifier run --mode single --output-format json --bundle wg`)",
+        binary_candidates: &["amplifier"],
+    },
 ];
 
 /// Look up each candidate on PATH via `which`-style lookup. Returns
@@ -153,7 +163,8 @@ mod tests {
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"gemini"));
-        assert!(!names.contains(&"amplifier"));
+        assert!(names.contains(&"crush"));
+        assert!(names.contains(&"amplifier"));
     }
 
     #[test]

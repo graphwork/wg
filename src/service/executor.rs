@@ -1590,6 +1590,51 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "crush" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "crush".to_string(),
+                    command: "crush".to_string(),
+                    args: vec!["run".to_string(), "--quiet".to_string()],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    // Experimental: Crush accepts one-shot prompts, but the
+                    // exact non-interactive flags should be verified against
+                    // the installed CLI before making this a stable profile.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "amplifier" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "amplifier".to_string(),
+                    command: "amplifier".to_string(),
+                    args: vec![
+                        "run".to_string(),
+                        "--mode".to_string(),
+                        "single".to_string(),
+                        "--output-format".to_string(),
+                        "json".to_string(),
+                        "--bundle".to_string(),
+                        "wg".to_string(),
+                    ],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    // Amplifier expects the task prompt as a positional
+                    // argument; the spawn adapter bridges prompt.txt to argv.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "shell" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "shell".to_string(),
@@ -1637,7 +1682,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, codex, native, shell, default",
+                "Unknown executor '{}'. Available: claude, codex, native, shell, crush, amplifier, default",
                 name,
             )),
         }
@@ -1656,7 +1701,7 @@ impl ExecutorRegistry {
         }
 
         // Create default executor configs if they don't exist
-        for name in ["claude", "codex", "shell"] {
+        for name in ["claude", "codex", "shell", "crush", "amplifier"] {
             let config_path = self.config_dir.join(format!("{}.toml", name));
             if !config_path.exists() {
                 let config = self.default_config(name)?;
@@ -1866,6 +1911,26 @@ template = "Work on {{task_id}}"
         let shell_config = registry.load_config("shell").unwrap();
         assert_eq!(shell_config.executor.executor_type, "shell");
         assert_eq!(shell_config.executor.command, "bash");
+
+        let crush_config = registry.load_config("crush").unwrap();
+        assert_eq!(crush_config.executor.executor_type, "crush");
+        assert_eq!(crush_config.executor.command, "crush");
+
+        let amplifier_config = registry.load_config("amplifier").unwrap();
+        assert_eq!(amplifier_config.executor.executor_type, "amplifier");
+        assert_eq!(amplifier_config.executor.command, "amplifier");
+        assert_eq!(
+            amplifier_config.executor.args,
+            vec![
+                "run",
+                "--mode",
+                "single",
+                "--output-format",
+                "json",
+                "--bundle",
+                "wg",
+            ]
+        );
     }
 
     #[test]
@@ -1881,6 +1946,8 @@ template = "Work on {{task_id}}"
         assert!(workgraph_dir.join("executors/claude.toml").exists());
         assert!(workgraph_dir.join("executors/codex.toml").exists());
         assert!(workgraph_dir.join("executors/shell.toml").exists());
+        assert!(workgraph_dir.join("executors/crush.toml").exists());
+        assert!(workgraph_dir.join("executors/amplifier.toml").exists());
     }
 
     #[test]
@@ -2315,6 +2382,49 @@ args = ["--custom-flag"]
             config.executor.env.get("TASK_TITLE"),
             Some(&"{{task_title}}".to_string())
         );
+    }
+
+    #[test]
+    fn test_registry_default_config_amplifier_shape() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+        let config = registry.load_config("amplifier").unwrap();
+
+        assert_eq!(config.executor.executor_type, "amplifier");
+        assert_eq!(config.executor.command, "amplifier");
+        assert_eq!(
+            config.executor.args,
+            vec![
+                "run",
+                "--mode",
+                "single",
+                "--output-format",
+                "json",
+                "--bundle",
+                "wg",
+            ]
+        );
+        assert_eq!(
+            config.executor.working_dir,
+            Some("{{working_dir}}".to_string())
+        );
+        assert!(config.executor.prompt_template.is_none());
+    }
+
+    #[test]
+    fn test_registry_default_config_crush_is_experimental_shape() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+        let config = registry.load_config("crush").unwrap();
+
+        assert_eq!(config.executor.executor_type, "crush");
+        assert_eq!(config.executor.command, "crush");
+        assert_eq!(config.executor.args, vec!["run", "--quiet"]);
+        assert_eq!(
+            config.executor.working_dir,
+            Some("{{working_dir}}".to_string())
+        );
+        assert!(config.executor.prompt_template.is_none());
     }
 
     #[test]

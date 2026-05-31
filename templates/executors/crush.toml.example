@@ -1,0 +1,25 @@
+# Crush CLI executor — experimental one-shot worker surface.
+#
+# Drop this in at `.wg/executors/crush.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG pipes prompt.txt to stdin for this adapter. The Crush non-interactive
+# CLI has changed across versions, so verify `crush run --help` for your
+# installed binary before relying on this as a stable production route.
+#
+# Usage:
+#   wg config --coordinator-executor crush
+#   wg spawn <task-id> --executor crush
+
+[executor]
+type = "crush"
+command = "crush"
+args = [
+    "run",
+    "--quiet",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

@@ -1800,11 +1800,11 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
         return Err(ModelSpecError {
             input: spec.to_string(),
             message: format!(
-                "amplifier executor was removed; use claude:/codex:/nex: instead \
-                 (got '{}'). The previous `amplifier` handler delegated to a CLI that \
-                 was never tested in this codebase and silently failed at spawn time. \
-                 Migrate to `claude:opus`, `codex:gpt-5.5`, or `nex:<model>` with a \
-                 matching `-e <ENDPOINT>`.",
+                "`amplifier` is an executor name, not a model provider prefix \
+                 (got '{}'). Use `--executor amplifier` or `[dispatcher].executor = \
+                 \"amplifier\"`, and keep model specs on provider prefixes such as \
+                 `claude:opus`, `codex:gpt-5.5`, `openrouter:<model>`, or \
+                 `nex:<model>` with a matching `-e <ENDPOINT>`.",
                 spec,
             ),
         });
@@ -7134,33 +7134,31 @@ provider = "openrouter"
     }
 
     #[test]
-    fn test_parse_model_spec_strict_rejects_amplifier_with_migration_message() {
-        // amplifier was a CLI handler that was never tested; removed entirely.
-        // Strict parsing must reject `amplifier:foo` with a clear migration
-        // message so users coming back to old configs get pointed at
-        // claude:/codex:/nex: instead of getting a generic "unknown provider"
-        // error.
+    fn test_parse_model_spec_strict_rejects_amplifier_as_provider() {
+        // amplifier is a CLI executor, not a model provider. Strict parsing
+        // must reject `amplifier:foo` without implying that the executor
+        // surface itself is unavailable.
         let err = parse_model_spec_strict("amplifier:claude-3-haiku")
             .expect_err("amplifier: prefix must be rejected");
         assert!(
-            err.message.contains("amplifier executor was removed"),
-            "error must call out the removal explicitly, got: {}",
+            err.message.contains("executor name") && err.message.contains("not a model provider"),
+            "error must distinguish executor name from provider prefix, got: {}",
             err.message,
         );
         assert!(
             err.message.contains("claude:")
                 && err.message.contains("codex:")
+                && err.message.contains("openrouter:")
                 && err.message.contains("nex:"),
-            "error must list the three valid handler prefixes, got: {}",
+            "error must list valid provider/model prefixes, got: {}",
             err.message,
         );
     }
 
     #[test]
     fn test_amplifier_not_in_known_providers() {
-        // Belt-and-suspenders: KNOWN_PROVIDERS should never contain "amplifier"
-        // — the strict parser branches on the prefix before this check, but
-        // pinning this guards against a future re-introduction.
+        // Belt-and-suspenders: `amplifier` is restored as an executor name,
+        // but it must not silently become a model provider prefix.
         assert!(!KNOWN_PROVIDERS.contains(&"amplifier"));
     }
 

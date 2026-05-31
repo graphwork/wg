@@ -1,0 +1,32 @@
+# Amplifier CLI executor — experimental one-shot worker surface.
+#
+# Drop this in at `.wg/executors/amplifier.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# Amplifier's `run --mode single` command expects the prompt as the final
+# positional argument. WG's spawn adapter writes prompt.txt and bridges it
+# into that argument, so the default command below is intentionally the
+# Amplifier command itself, not a shell wrapper.
+#
+# Usage:
+#   wg config --coordinator-executor amplifier
+#   wg spawn <task-id> --executor amplifier
+#
+# Prerequisites:
+#   - `amplifier` is installed and on PATH
+#   - the `wg` bundle is installed/configured for your Amplifier environment
+
+[executor]
+type = "amplifier"
+command = "amplifier"
+args = [
+    "run",
+    "--mode", "single",
+    "--output-format", "json",
+    "--bundle", "wg",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

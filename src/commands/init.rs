@@ -333,6 +333,14 @@ fn write_executor_templates(dir: &Path) -> Result<()> {
             "codex.toml.example",
             include_str!("../../templates/executors/codex.toml.example"),
         ),
+        (
+            "crush.toml.example",
+            include_str!("../../templates/executors/crush.toml.example"),
+        ),
+        (
+            "amplifier.toml.example",
+            include_str!("../../templates/executors/amplifier.toml.example"),
+        ),
     ] {
         fs::write(executors_dir.join(name), contents)
             .with_context(|| format!("Failed to write executor template {}", name))?;
@@ -458,6 +466,14 @@ pub fn run(
         (
             "codex.toml.example",
             include_str!("../../templates/executors/codex.toml.example"),
+        ),
+        (
+            "crush.toml.example",
+            include_str!("../../templates/executors/crush.toml.example"),
+        ),
+        (
+            "amplifier.toml.example",
+            include_str!("../../templates/executors/amplifier.toml.example"),
         ),
     ] {
         fs::write(executors_dir.join(name), contents)
@@ -647,6 +663,25 @@ mod tests {
         assert!(contents.contains("service/"));
         assert!(contents.contains("*.secret"));
         assert!(contents.contains("*.credentials"));
+    }
+
+    #[test]
+    fn test_writes_experimental_executor_templates() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+
+        run(&wg_dir, false, Some("shell"), None, None).unwrap();
+
+        let amplifier =
+            fs::read_to_string(wg_dir.join("executors/amplifier.toml.example")).unwrap();
+        assert!(amplifier.contains("type = \"amplifier\""));
+        assert!(amplifier.contains("\"--mode\", \"single\""));
+        assert!(amplifier.contains("\"--output-format\", \"json\""));
+        assert!(amplifier.contains("\"--bundle\", \"wg\""));
+
+        let crush = fs::read_to_string(wg_dir.join("executors/crush.toml.example")).unwrap();
+        assert!(crush.contains("type = \"crush\""));
+        assert!(crush.contains("experimental one-shot worker surface"));
     }
 
     #[test]
