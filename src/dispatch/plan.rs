@@ -24,7 +24,9 @@
 //!   pass `--endpoint`.
 //! - `executor=shell`   →  endpoint is always `None`.
 //! - `executor=codex`   →  endpoint is always `None` (codex CLI handles its own).
-//! - `executor=native`  →  endpoint is required; resolved via merged config
+//! - external worker CLIs (`opencode`, `aider`, etc.) → endpoint is always
+//!   `None` (their adapters handle provider/auth policy).
+//! - `executor=native` / `nex` → endpoint is required; resolved via merged config
 //!   (per-task → role → default).
 //!
 //! ## Provenance
@@ -53,24 +55,62 @@ pub enum ExecutorKind {
     Shell,
     /// Codex CLI (`codex exec …`). Handles its own auth.
     Codex,
+    /// OpenCode CLI worker. One-shot task executor only, not a live chat handler.
+    OpenCode,
+    /// Aider CLI worker. One-shot task executor only, not a live chat handler.
+    Aider,
+    /// Goose CLI worker. One-shot task executor only, not a live chat handler.
+    Goose,
+    /// Qwen Code CLI worker. One-shot task executor only, not a live chat handler.
+    Qwen,
+    /// Cline CLI worker. One-shot task executor only, not a live chat handler.
+    Cline,
+    /// Crush CLI worker. One-shot task executor only, not a live chat handler.
+    Crush,
+    /// Amplifier CLI worker. Experimental one-shot task executor only.
+    Amplifier,
 }
 
 impl ExecutorKind {
+    pub const WORKER_ONLY_EXTERNALS: &'static [ExecutorKind] = &[
+        ExecutorKind::OpenCode,
+        ExecutorKind::Aider,
+        ExecutorKind::Goose,
+        ExecutorKind::Qwen,
+        ExecutorKind::Cline,
+        ExecutorKind::Crush,
+        ExecutorKind::Amplifier,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             ExecutorKind::Claude => "claude",
             ExecutorKind::Native => "native",
             ExecutorKind::Shell => "shell",
             ExecutorKind::Codex => "codex",
+            ExecutorKind::OpenCode => "opencode",
+            ExecutorKind::Aider => "aider",
+            ExecutorKind::Goose => "goose",
+            ExecutorKind::Qwen => "qwen",
+            ExecutorKind::Cline => "cline",
+            ExecutorKind::Crush => "crush",
+            ExecutorKind::Amplifier => "amplifier",
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
-        match s {
+        match s.trim().to_ascii_lowercase().as_str() {
             "claude" => Some(ExecutorKind::Claude),
-            "native" => Some(ExecutorKind::Native),
+            "native" | "nex" => Some(ExecutorKind::Native),
             "shell" => Some(ExecutorKind::Shell),
             "codex" => Some(ExecutorKind::Codex),
+            "opencode" => Some(ExecutorKind::OpenCode),
+            "aider" => Some(ExecutorKind::Aider),
+            "goose" => Some(ExecutorKind::Goose),
+            "qwen" => Some(ExecutorKind::Qwen),
+            "cline" => Some(ExecutorKind::Cline),
+            "crush" => Some(ExecutorKind::Crush),
+            "amplifier" => Some(ExecutorKind::Amplifier),
             _ => None,
         }
     }
@@ -78,6 +118,14 @@ impl ExecutorKind {
     /// Whether this executor needs an `EndpointConfig` resolved.
     pub fn needs_endpoint(self) -> bool {
         matches!(self, ExecutorKind::Native)
+    }
+
+    /// Whether this executor is a worker-only external CLI adapter.
+    ///
+    /// These executors are valid for task-agent spawns through the worker
+    /// path, but they do not implement WG's live chat/session protocol.
+    pub fn is_worker_only_external(self) -> bool {
+        Self::WORKER_ONLY_EXTERNALS.contains(&self)
     }
 }
 
@@ -147,7 +195,7 @@ pub struct SpawnPlan {
     pub executor: ExecutorKind,
     pub model: ResolvedModelSpec,
     /// `None` for executors that handle their own endpoint (claude/codex/
-    /// shell). `Some(_)` only for `executor=native`.
+    /// shell/external workers). `Some(_)` only for `executor=native`.
     pub endpoint: Option<EndpointConfig>,
     /// Environment variables to set on the spawned process. Plan-level only;
     /// the spawn-execution layer is free to add wrapper-internal vars
@@ -431,6 +479,146 @@ mod tests {
             is_default: true,
             context_window: None,
         }
+    }
+
+    fn external_worker_cases() -> Vec<(&'static str, ExecutorKind)> {
+        vec![
+            ("opencode", ExecutorKind::OpenCode),
+            ("aider", ExecutorKind::Aider),
+            ("goose", ExecutorKind::Goose),
+            ("qwen", ExecutorKind::Qwen),
+            ("cline", ExecutorKind::Cline),
+            ("crush", ExecutorKind::Crush),
+            ("amplifier", ExecutorKind::Amplifier),
+        ]
+    }
+
+    #[test]
+    fn test_executor_kind_recognizes_external_workers() {
+        for (name, kind) in external_worker_cases() {
+            assert_eq!(
+                ExecutorKind::from_str(name),
+                Some(kind),
+                "ExecutorKind must parse first-class external executor '{}'",
+                name
+            );
+            assert_eq!(kind.as_str(), name);
+            assert!(
+                kind.is_worker_only_external(),
+                "{} must be classified as worker-only external",
+                name
+            );
+            assert!(
+                !kind.needs_endpoint(),
+                "{} must not inherit native endpoint requirements",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_only_native_nex_needs_endpoint() {
+        assert!(ExecutorKind::Native.needs_endpoint());
+        assert_eq!(ExecutorKind::from_str("nex"), Some(ExecutorKind::Native));
+        assert!(ExecutorKind::from_str("nex").unwrap().needs_endpoint());
+
+        for kind in [
+            ExecutorKind::Claude,
+            ExecutorKind::Codex,
+            ExecutorKind::Shell,
+            ExecutorKind::OpenCode,
+            ExecutorKind::Aider,
+            ExecutorKind::Goose,
+            ExecutorKind::Qwen,
+            ExecutorKind::Cline,
+            ExecutorKind::Crush,
+            ExecutorKind::Amplifier,
+        ] {
+            assert!(
+                !kind.needs_endpoint(),
+                "{} must not require EndpointConfig",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn test_dispatcher_external_executor_survives_plan_spawn() {
+        for (name, kind) in external_worker_cases() {
+            let mut config = Config::default();
+            config.coordinator.executor = Some(name.to_string());
+            config
+                .llm_endpoints
+                .endpoints
+                .push(openrouter_default_endpoint());
+
+            let mut task = base_task("t1");
+            task.endpoint = Some("openrouter".to_string());
+
+            let plan = plan_spawn(
+                &task,
+                &config,
+                None,
+                Some("openrouter:deepseek/deepseek-v3.2"),
+            )
+            .unwrap();
+
+            assert_eq!(
+                plan.executor, kind,
+                "dispatcher.executor={} must survive plan_spawn; provenance={:?}",
+                name, plan.provenance
+            );
+            assert_eq!(
+                plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+                Some(name),
+                "SpawnPlan env must preserve the external executor name"
+            );
+            assert!(
+                plan.endpoint.is_none(),
+                "{} must not receive EndpointConfig even when task/default endpoints exist",
+                name
+            );
+            assert!(
+                plan.provenance.endpoint_source.contains(name),
+                "endpoint provenance should explain the external executor policy, got {:?}",
+                plan.provenance.endpoint_source
+            );
+        }
+    }
+
+    #[test]
+    fn test_agency_external_executor_survives_plan_spawn() {
+        for (name, kind) in external_worker_cases() {
+            let mut config = Config::default();
+            config.coordinator.executor = Some("claude".to_string());
+
+            let task = base_task("t1");
+            let plan = plan_spawn(&task, &config, Some(name), Some("claude:opus")).unwrap();
+
+            assert_eq!(
+                plan.executor, kind,
+                "agency executor {} must beat dispatcher default and survive plan_spawn",
+                name
+            );
+            assert_eq!(plan.provenance.executor_source, "agency.effective_executor");
+            assert_eq!(
+                plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+                Some(name)
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell_still_beats_external_dispatcher_executor() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("opencode".to_string());
+
+        let mut task = base_task("t1");
+        task.exec = Some("echo hello".to_string());
+
+        let plan = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
+        assert_eq!(plan.executor, ExecutorKind::Shell);
+        assert!(plan.provenance.executor_source.contains("task.exec"));
     }
 
     /// THE regression test. Reproduces the exact scenario that bit the user:

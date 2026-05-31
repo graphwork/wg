@@ -138,6 +138,15 @@ description = "Pins implement-generalize-chat: `--exec claude`, `--exec codex`, 
 timeout_seconds = 30
 
 [[scenario]]
+name = "external_worker_live_chat_rejected"
+script = "scenarios/external_worker_live_chat_rejected.sh"
+owners = [
+    "exec-core-routing",
+]
+description = "Pins exec-core-routing: first-class external worker executors such as opencode must be valid worker names without becoming live chat presets. `wg chat new --exec opencode` and `WG_EXECUTOR_TYPE=opencode wg spawn-task --dry-run .coordinator-0` must fail clearly as worker-only live-chat/spawn-task errors instead of silently routing to Claude."
+timeout_seconds = 30
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [

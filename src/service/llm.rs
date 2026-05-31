@@ -175,9 +175,17 @@ pub fn run_lightweight_llm_call(
                 // local, oai-compat, etc. are real HTTP providers that the
                 // cascade-based dispatch handles correctly.
             }
-            ExecutorKind::Shell => {
-                // Shell doesn't make sense for a one-shot LLM call; degrade to
-                // the safe default (claude CLI on haiku).
+            ExecutorKind::Shell
+            | ExecutorKind::OpenCode
+            | ExecutorKind::Aider
+            | ExecutorKind::Goose
+            | ExecutorKind::Qwen
+            | ExecutorKind::Cline
+            | ExecutorKind::Crush
+            | ExecutorKind::Amplifier => {
+                // Shell and worker-only external task executors do not make
+                // sense for a lightweight one-shot LLM call; degrade to the
+                // safe default (claude CLI on haiku).
                 return call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs);
             }
         }

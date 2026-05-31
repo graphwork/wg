@@ -424,6 +424,64 @@ mod tests {
     }
 
     #[test]
+    fn test_spawn_external_worker_executor_with_custom_config_preserves_executor_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let unique_id = get_unique_id();
+        let task_id = format!("external{}", unique_id);
+        let task = make_task(&task_id, "External worker task");
+        setup_graph(temp_dir.path(), vec![task]);
+
+        let workgraph_dir = temp_dir.path().join(".wg");
+        fs::write(
+            workgraph_dir.join("config.toml"),
+            b"[coordinator]\nworktree_isolation = false\n",
+        )
+        .unwrap();
+        let executors_dir = workgraph_dir.join("executors");
+        fs::create_dir_all(&executors_dir).unwrap();
+        fs::write(
+            executors_dir.join("opencode.toml"),
+            r#"[executor]
+type = "opencode"
+command = "bash"
+args = ["-lc", "true"]
+"#,
+        )
+        .unwrap();
+
+        let result = execution::spawn_agent_inner(
+            &workgraph_dir,
+            &task_id,
+            "opencode",
+            Some("5s"),
+            Some("claude:opus"),
+            "test",
+        )
+        .unwrap();
+
+        assert_eq!(result.executor, "opencode");
+        assert_eq!(result.executor_type, "opencode");
+
+        let registry = AgentRegistry::load(&workgraph_dir).unwrap();
+        let agent = registry
+            .agents
+            .values()
+            .next()
+            .expect("spawn should register one agent");
+        assert_eq!(agent.executor, "opencode");
+
+        let metadata = fs::read_to_string(
+            agent_output_dir(&workgraph_dir, &result.agent_id).join("metadata.json"),
+        )
+        .unwrap();
+        assert!(
+            metadata.contains(r#""executor": "opencode""#),
+            "metadata should preserve external executor name: {}",
+            metadata
+        );
+    }
+
+    #[test]
     fn test_spawn_creates_output_directory() {
         let temp_dir = TempDir::new().unwrap();
         // Use a unique task ID to avoid branch collisions with parallel tests

@@ -11,11 +11,12 @@
 //!      the PTY embedding in `wg tui` just spawns `wg spawn-task`
 //!      and gets the handler's output as its own.
 //!
-//! Adapters live inline here (one match arm per executor). Native
-//! execs into `wg nex`; Claude execs into `wg claude-handler`
-//! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Codex / Gemini
-//! are still stubs — they error cleanly with a "not yet implemented"
-//! message when selected.
+//! Adapters live inline here (one match arm per live-session executor).
+//! Native execs into `wg nex`; Claude execs into `wg claude-handler`
+//! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Worker-only
+//! external executors such as OpenCode, Aider, Goose, Qwen, Cline,
+//! Crush, and Amplifier are rejected here with a clear error because
+//! they belong on the task-agent worker path, not the live chat path.
 //!
 //! ## Stdout-is-protocol contract
 //!
@@ -32,6 +33,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 
+use workgraph::dispatch::ExecutorKind;
 use workgraph::graph::Task;
 
 /// Dispatch table for what handler to run for a task. Parsed from
@@ -236,16 +238,25 @@ pub fn resolve_handler(
     let endpoint = plan.endpoint.as_ref().map(|e| e.name.clone());
 
     Ok(match plan.executor {
-        workgraph::dispatch::ExecutorKind::Native => HandlerSpec::Native {
+        ExecutorKind::Native => HandlerSpec::Native {
             chat_ref,
             role,
             resume: journal_exists,
             model,
             endpoint,
         },
-        workgraph::dispatch::ExecutorKind::Claude => HandlerSpec::Claude { chat_ref, model },
-        workgraph::dispatch::ExecutorKind::Codex => HandlerSpec::Codex { chat_ref, model },
-        workgraph::dispatch::ExecutorKind::Shell => {
+        ExecutorKind::Claude => HandlerSpec::Claude { chat_ref, model },
+        ExecutorKind::Codex => HandlerSpec::Codex { chat_ref, model },
+        ExecutorKind::OpenCode
+        | ExecutorKind::Aider
+        | ExecutorKind::Goose
+        | ExecutorKind::Qwen
+        | ExecutorKind::Cline
+        | ExecutorKind::Crush
+        | ExecutorKind::Amplifier => {
+            return Err(worker_only_executor_error(plan.executor));
+        }
+        ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \
                  task.exec runs through the dispatcher's shell-spawn path, \
@@ -253,6 +264,15 @@ pub fn resolve_handler(
             ));
         }
     })
+}
+
+fn worker_only_executor_error(executor: ExecutorKind) -> anyhow::Error {
+    anyhow!(
+        "executor '{}' is worker-only and cannot run through spawn-task/live chat; \
+         use it for task-agent workers via the dispatcher or `wg spawn`, or choose \
+         a live chat executor such as claude, codex, or native/nex",
+        executor.as_str()
+    )
 }
 
 fn is_coordinator_id(task_id: &str) -> bool {
@@ -828,5 +848,45 @@ mod tests {
                 preview
             );
         });
+    }
+
+    #[test]
+    #[serial]
+    fn external_worker_executors_get_worker_only_spawn_task_error() {
+        for executor in [
+            "opencode",
+            "aider",
+            "goose",
+            "qwen",
+            "cline",
+            "crush",
+            "amplifier",
+        ] {
+            with_env(Some(executor), Some("claude:opus"), || {
+                let dir = tempfile::tempdir().unwrap();
+                let task = mktask(".chat-0");
+
+                let err = resolve_handler(dir.path(), &task, None)
+                    .expect_err("external worker executor must not map to a live handler")
+                    .to_string();
+
+                assert!(
+                    err.contains(executor),
+                    "error should name executor '{}': {}",
+                    executor,
+                    err
+                );
+                assert!(
+                    err.contains("worker-only"),
+                    "error should explain worker-only boundary: {}",
+                    err
+                );
+                assert!(
+                    err.contains("spawn-task/live chat"),
+                    "error should name the rejected live path: {}",
+                    err
+                );
+            });
+        }
     }
 }
