@@ -11,6 +11,13 @@ Run discovery before choosing a worker:
 wg executors --all
 ```
 
+The same choice groups are also shown in `wg config --show` and
+`wg config --list` under `[executor choices]`, so users can confirm available
+executor names while reviewing effective routing. The groups are core
+(`native`, `claude`, `codex`, `shell`), stable external
+(`opencode`, `aider`, `goose`, `qwen`, `cline`), provider-specific (`gemini`),
+and experimental external (`crush`, `amplifier`).
+
 `wg init` seeds `.wg/executors/*.toml.example` for every supported external
 worker. Copy the example you want to customize, then edit the copied file:
 

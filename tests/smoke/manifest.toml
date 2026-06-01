@@ -147,6 +147,15 @@ description = "Pins exec-core-routing: first-class external worker executors suc
 timeout_seconds = 30
 
 [[scenario]]
+name = "executor_arena_surfaces"
+script = "scenarios/executor_arena_surfaces.sh"
+owners = [
+    "exec-final-integration",
+]
+description = "Pins exec-final-integration: `wg executors --all`, `wg config --show`, and `wg config --list` must expose the full executor-arena choice set (core, stable external, provider-specific, experimental external) without writing or printing API keys."
+timeout_seconds = 30
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [

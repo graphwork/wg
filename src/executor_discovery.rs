@@ -11,6 +11,11 @@
 
 use std::path::PathBuf;
 
+pub const CORE_EXECUTORS: &[&str] = &["native", "claude", "codex", "shell"];
+pub const STABLE_EXTERNAL_EXECUTORS: &[&str] = &["opencode", "aider", "goose", "qwen", "cline"];
+pub const PROVIDER_SPECIFIC_EXECUTORS: &[&str] = &["gemini"];
+pub const EXPERIMENTAL_EXTERNAL_EXECUTORS: &[&str] = &["crush", "amplifier"];
+
 /// One executor, whether it's usable here, and where the backing
 /// binary lives (if applicable).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +86,11 @@ const EXECUTORS: &[ExecutorSpec] = &[
         name: "codex",
         description: "OpenAI Codex CLI (`codex exec --json`)",
         binary_candidates: &["codex"],
+    },
+    ExecutorSpec {
+        name: "shell",
+        description: "Shell command executor (`bash -c`; no LLM)",
+        binary_candidates: &["bash"],
     },
     ExecutorSpec {
         name: "gemini",
@@ -187,6 +197,7 @@ mod tests {
         assert!(names.contains(&"native"));
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
+        assert!(names.contains(&"shell"));
         assert!(names.contains(&"gemini"));
         assert!(names.contains(&"opencode"));
         assert!(names.contains(&"aider"));
@@ -195,6 +206,24 @@ mod tests {
         assert!(names.contains(&"cline"));
         assert!(names.contains(&"crush"));
         assert!(names.contains(&"amplifier"));
+    }
+
+    #[test]
+    fn executor_choice_groups_match_discovery_names() {
+        let names: Vec<_> = discover().into_iter().map(|e| e.name).collect();
+        for group in [
+            CORE_EXECUTORS,
+            STABLE_EXTERNAL_EXECUTORS,
+            PROVIDER_SPECIFIC_EXECUTORS,
+            EXPERIMENTAL_EXTERNAL_EXECUTORS,
+        ] {
+            for name in group {
+                assert!(
+                    names.contains(name),
+                    "choice group includes {name}, but discovery omitted it"
+                );
+            }
+        }
     }
 
     #[test]

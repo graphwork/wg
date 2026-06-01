@@ -1592,7 +1592,10 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
-        /// Set executor (claude, codex, native, shell, or custom config name)
+        /// Set executor (core: native/claude/codex/shell; stable external:
+        /// opencode/aider/goose/qwen/cline; provider-specific: gemini;
+        /// experimental: crush/amplifier; or a custom
+        /// .wg/executors/<name>.toml config)
         #[arg(long)]
         executor: Option<String>,
 

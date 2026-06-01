@@ -17,6 +17,28 @@ fn clear_dispatcher_executor_for_model(config: &mut Config, model: &str) -> Opti
     ))
 }
 
+fn print_executor_choices_section() {
+    println!("[executor choices]");
+    println!(
+        "  core = {}",
+        workgraph::executor_discovery::CORE_EXECUTORS.join(", ")
+    );
+    println!(
+        "  stable_external = {}",
+        workgraph::executor_discovery::STABLE_EXTERNAL_EXECUTORS.join(", ")
+    );
+    println!(
+        "  provider_specific = {}",
+        workgraph::executor_discovery::PROVIDER_SPECIFIC_EXECUTORS.join(", ")
+    );
+    println!(
+        "  experimental_external = {}",
+        workgraph::executor_discovery::EXPERIMENTAL_EXTERNAL_EXECUTORS.join(", ")
+    );
+    println!("  discovery = \"wg executors --all\" (shows installed/usable status)");
+    println!();
+}
+
 /// When model/endpoint changes land, a soft reload (`Reconfigure` IPC)
 /// isn't enough — already-spawned coordinator subprocesses keep their
 /// old env. We restart the daemon instead so the coordinator respawns
@@ -142,6 +164,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             config.coordinator.escalate_on_retry
         );
         println!();
+        print_executor_choices_section();
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);
         println!("  auto_assign = {}", config.agency.auto_assign);
@@ -1143,6 +1166,8 @@ pub fn list(dir: &Path, json: bool) -> Result<()> {
                 source
             );
         }
+        println!();
+        print_executor_choices_section();
     }
 
     Ok(())
