@@ -25,9 +25,7 @@ fn main() -> Result<()> {
     init_logging();
 
     let cli = NexCli::parse();
-    let runtime = if cli.args.eval_mode {
-        workgraph::nex_runtime::resolve_eval(&standalone_input(&cli.args))
-    } else if cli.dir.is_some() || cli.wg {
+    let runtime = if cli.dir.is_some() || cli.wg {
         let workgraph_dir = workgraph::workgraph_dir::resolve_workgraph_dir(
             cli.dir.clone(),
             std::env::var_os("WG_DIR").map(PathBuf::from),
@@ -38,6 +36,8 @@ fn main() -> Result<()> {
             workgraph_dir.canonicalize().unwrap_or(workgraph_dir),
             dirs::home_dir(),
         )
+    } else if cli.args.eval_mode {
+        workgraph::nex_runtime::resolve_eval(&standalone_input(&cli.args))
     } else {
         workgraph::nex_runtime::resolve_standalone(&standalone_input(&cli.args))
     };

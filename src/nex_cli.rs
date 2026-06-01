@@ -24,6 +24,12 @@ pub struct NexArgs {
     #[arg(long, short = 'e')]
     pub endpoint: Option<String>,
 
+    /// API key override for direct endpoint testing. Prefer configured
+    /// endpoint credentials (`api_key_ref`, `api_key_file`, or `api_key_env`);
+    /// command-line keys may be visible to local process inspection.
+    #[arg(long = "api-key", short = 'k', value_name = "KEY")]
+    pub api_key: Option<String>,
+
     /// Custom system prompt
     #[arg(long)]
     pub system_prompt: Option<String>,

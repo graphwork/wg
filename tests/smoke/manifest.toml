@@ -489,6 +489,16 @@ description = "Regression for fix-nex-helper: in an OpenRouter-backed `wg nex -m
 timeout_seconds = 60
 
 [[scenario]]
+name = "nex_wg_openrouter_endpoint_auth"
+script = "scenarios/nex_wg_openrouter_endpoint_auth.sh"
+owners = [
+    "fix-wg-nex",
+    "smoke-gate-is",
+]
+description = "Pins fix-wg-nex: WG-scoped Nex eval entrypoints (`wg nex --eval-mode` and `nex --wg --eval-mode`) must use the configured OpenRouter endpoint credentials from .wg/config.toml instead of falling into standalone .nex-eval config with no Bearer auth."
+timeout_seconds = 90
+
+[[scenario]]
 name = "standalone_nex_entrypoint"
 script = "scenarios/standalone_nex_entrypoint.sh"
 owners = [

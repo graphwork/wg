@@ -32,19 +32,8 @@ use crate::nex_cli::NexArgs;
 use crate::nex_runtime::{NexRuntime, NexRuntimeMode, NexSessionLayout};
 
 pub fn run_args(workgraph_dir: &Path, args: &NexArgs, display_name: &str) -> Result<()> {
-    let runtime = if args.eval_mode {
-        crate::nex_runtime::resolve_eval(&crate::nex_runtime::NexRuntimeResolveInput {
-            cwd: std::env::current_dir().ok(),
-            home_dir: dirs::home_dir(),
-            cli_nex_dir: args.nex_dir.clone(),
-            env_nex_dir: std::env::var_os("NEX_DIR").map(std::path::PathBuf::from),
-            env_nex_home: std::env::var_os("NEX_HOME").map(std::path::PathBuf::from),
-            explicit_config: args
-                .config
-                .clone()
-                .or_else(|| std::env::var_os("NEX_CONFIG").map(std::path::PathBuf::from)),
-        })
-    } else if args.autonomous
+    let runtime = if args.eval_mode
+        || args.autonomous
         || std::env::var_os("WG_TASK_ID").is_some()
         || std::env::var_os("WG_AGENT_ID").is_some()
     {
@@ -65,6 +54,7 @@ pub fn run_args_with_runtime(
         display_name,
         args.model.as_deref(),
         args.endpoint.as_deref(),
+        args.api_key.as_deref(),
         args.system_prompt.as_deref(),
         args.message.as_deref(),
         args.max_turns,
@@ -88,6 +78,7 @@ pub fn run(
     workgraph_dir: &Path,
     model: Option<&str>,
     endpoint: Option<&str>,
+    api_key: Option<&str>,
     system_prompt: Option<&str>,
     message: Option<&str>,
     max_turns: usize,
@@ -110,6 +101,7 @@ pub fn run(
         "wg nex",
         model,
         endpoint,
+        api_key,
         system_prompt,
         message,
         max_turns,
@@ -134,6 +126,7 @@ fn run_inner(
     display_name: &str,
     model: Option<&str>,
     endpoint: Option<&str>,
+    api_key: Option<&str>,
     system_prompt: Option<&str>,
     message: Option<&str>,
     max_turns: usize,
@@ -237,7 +230,7 @@ fn run_inner(
             state_dir,
             &working_dir,
             &config.native_executor,
-            HelperRouting::new(Some(&effective_model), None, endpoint, None),
+            HelperRouting::new(Some(&effective_model), None, endpoint, api_key),
         );
         if minimal_tools {
             // Minimal tool surface: keep only the canonical local-dev set.
@@ -490,7 +483,7 @@ fn run_inner(
         &effective_model,
         None,
         endpoint,
-        None,
+        api_key,
     )?;
 
     let model_registry = crate::nex_runtime::load_model_registry(runtime);
