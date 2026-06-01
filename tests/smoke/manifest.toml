@@ -492,10 +492,11 @@ timeout_seconds = 60
 name = "nex_wg_openrouter_endpoint_auth"
 script = "scenarios/nex_wg_openrouter_endpoint_auth.sh"
 owners = [
+    "fix-nex-openrouter",
     "fix-wg-nex",
     "smoke-gate-is",
 ]
-description = "Pins fix-wg-nex: WG-scoped Nex eval entrypoints (`wg nex --eval-mode` and `nex --wg --eval-mode`) must use the configured OpenRouter endpoint credentials from .wg/config.toml instead of falling into standalone .nex-eval config with no Bearer auth."
+description = "Pins fix-wg-nex/fix-nex-openrouter: WG-scoped Nex eval entrypoints (`wg nex --eval-mode` and `nex --wg --eval-mode`) must use configured OpenRouter endpoint credentials from .wg/config.toml, including both api_key_file and api_key_env, instead of falling into standalone .nex-eval config with no Bearer auth."
 timeout_seconds = 90
 
 [[scenario]]

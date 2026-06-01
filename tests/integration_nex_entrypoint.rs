@@ -39,6 +39,21 @@ fn output_text(output: &Output) -> String {
     )
 }
 
+fn assert_eval_success_without_key(label: &str, output: &Output, expected_key: &str) -> String {
+    let text = output_text(output);
+    assert!(
+        !text.contains(expected_key),
+        "{label} output leaked configured API key"
+    );
+    let redacted = text.replace(expected_key, "<redacted>");
+    assert!(output.status.success(), "{label} failed:\n{redacted}");
+    assert!(
+        text.contains("\"status\":\"ok\""),
+        "{label} should emit ok JSON:\n{redacted}"
+    );
+    text
+}
+
 fn write(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().expect("path has parent")).expect("create parent dir");
     fs::write(path, body).expect("write fixture");
@@ -486,6 +501,130 @@ is_default = true
         !project.join(".nex-eval").exists(),
         "WG-scoped eval mode must not divert state/config resolution into .nex-eval"
     );
+}
+
+#[test]
+fn eval_mode_uses_configured_openrouter_endpoint_env_credentials() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("project");
+    let wg_dir = project.join(".wg");
+    fs::create_dir_all(&wg_dir).unwrap();
+    fs::create_dir_all(&home).unwrap();
+
+    let expected_key = "wg-configured-openrouter-env-key";
+    let (base_url, captured) = start_auth_required_oai_stub(3, expected_key);
+    let endpoint = format!("{base_url}/v1");
+    let model = "openrouter:minimax/minimax-m2.7";
+
+    write(
+        &wg_dir.join("config.toml"),
+        &format!(
+            r#"
+[agent]
+model = "{model}"
+
+[dispatcher]
+model = "{model}"
+
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "{endpoint}"
+api_key_env = "OPENROUTER_API_KEY"
+is_default = true
+"#
+        ),
+    );
+
+    let mut wg_cmd = isolated_command(wg_binary(), &home, &project);
+    wg_cmd.env("OPENROUTER_API_KEY", expected_key);
+    wg_cmd.args([
+        "nex",
+        "--eval-mode",
+        "--minimal-tools",
+        "--model",
+        model,
+        "--endpoint",
+        "openrouter",
+        "--max-turns",
+        "1",
+        "Reply with exactly: WG_ENV_AUTH_OK",
+    ]);
+    let wg_output = wg_cmd.output().expect("spawn wg nex env eval smoke");
+    assert_eval_success_without_key("wg nex env eval-mode", &wg_output, expected_key);
+
+    let mut nex_wg_cmd = isolated_command(nex_binary(), &home, &project);
+    nex_wg_cmd.env("OPENROUTER_API_KEY", expected_key);
+    nex_wg_cmd.args([
+        "--wg",
+        "--eval-mode",
+        "--minimal-tools",
+        "--model",
+        model,
+        "--endpoint",
+        "openrouter",
+        "--max-turns",
+        "1",
+        "Reply with exactly: NEX_WG_ENV_AUTH_OK",
+    ]);
+    let nex_wg_output = nex_wg_cmd.output().expect("spawn nex --wg env eval smoke");
+    assert_eval_success_without_key("nex --wg env eval-mode", &nex_wg_output, expected_key);
+
+    assert!(
+        !project.join(".nex-eval").exists(),
+        "WG-scoped eval mode must not divert state/config resolution into .nex-eval"
+    );
+
+    let mut standalone_cmd = isolated_command(nex_binary(), &home, &project);
+    standalone_cmd.env("OPENROUTER_API_KEY", expected_key);
+    standalone_cmd.args([
+        "--eval-mode",
+        "--minimal-tools",
+        "--model",
+        model,
+        "--endpoint",
+        "openrouter",
+        "--max-turns",
+        "1",
+        "Reply with exactly: STANDALONE_ENV_AUTH_OK",
+    ]);
+    let standalone_output = standalone_cmd
+        .output()
+        .expect("spawn standalone nex env eval smoke");
+    assert_eval_success_without_key(
+        "standalone nex env eval-mode",
+        &standalone_output,
+        expected_key,
+    );
+
+    let requests = captured.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        3,
+        "wg nex, nex --wg, and standalone nex should reach the configured endpoint; got {} requests",
+        requests.len()
+    );
+    let expected_auth = format!("Bearer {expected_key}");
+    for request in requests {
+        assert!(
+            request
+                .request_line
+                .starts_with("POST /v1/chat/completions"),
+            "request should target the configured OAI endpoint, got {:?}",
+            request.request_line
+        );
+        assert!(
+            request.authorization.as_deref() == Some(expected_auth.as_str()),
+            "configured api_key_env value must be attached as Bearer auth"
+        );
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("minimax/minimax-m2.7"),
+            "OpenRouter provider prefix should be stripped before the wire request"
+        );
+    }
 }
 
 #[test]

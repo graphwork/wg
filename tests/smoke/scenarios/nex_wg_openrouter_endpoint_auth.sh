@@ -26,8 +26,22 @@ server_py="$scratch/fake_openrouter_auth.py"
 port_file="$scratch/port"
 request_log="$scratch/requests.jsonl"
 key_file="$scratch/openrouter.key"
-printf '%s\n' "test-openrouter-key" >"$key_file"
+openrouter_key="test-openrouter-key"
+printf '%s\n' "$openrouter_key" >"$key_file"
 chmod 600 "$key_file"
+
+redact_file() {
+    sed "s/$openrouter_key/<redacted>/g" "$1"
+}
+
+assert_no_key_leaked() {
+    local file
+    for file in "$@"; do
+        if [[ -f "$file" ]] && grep -qF "$openrouter_key" "$file"; then
+            loud_fail "$file leaked the configured OpenRouter API key"
+        fi
+    done
+}
 
 cat >"$server_py" <<'PY'
 import json
@@ -122,18 +136,57 @@ TOML
 
 if ! env -u OPENROUTER_API_KEY -u OPENAI_API_KEY timeout 45s wg nex --eval-mode --minimal-tools \
         --model "$model" --endpoint openrouter --max-turns 1 \
-        "Reply with exactly: WG_NEX_AUTH_OK" >wg-nex.out 2>wg-nex.err; then
-    loud_fail "wg nex eval-mode did not use configured OpenRouter credentials. stderr:\n$(cat wg-nex.err)"
+        "Reply with exactly: WG_NEX_FILE_AUTH_OK" >wg-nex-file.out 2>wg-nex-file.err; then
+    assert_no_key_leaked wg-nex-file.out wg-nex-file.err
+    loud_fail "wg nex eval-mode did not use configured api_key_file credentials. stderr:\n$(redact_file wg-nex-file.err)"
 fi
 
 if ! env -u OPENROUTER_API_KEY -u OPENAI_API_KEY timeout 45s nex --wg --eval-mode --minimal-tools \
         --model "$model" --endpoint openrouter --max-turns 1 \
-        "Reply with exactly: NEX_WG_AUTH_OK" >nex-wg.out 2>nex-wg.err; then
-    loud_fail "nex --wg eval-mode did not use configured OpenRouter credentials. stderr:\n$(cat nex-wg.err)"
+        "Reply with exactly: NEX_WG_FILE_AUTH_OK" >nex-wg-file.out 2>nex-wg-file.err; then
+    assert_no_key_leaked nex-wg-file.out nex-wg-file.err
+    loud_fail "nex --wg eval-mode did not use configured api_key_file credentials. stderr:\n$(redact_file nex-wg-file.err)"
 fi
 
-grep -q '"status":"ok"' wg-nex.out || loud_fail "wg nex did not report ok: $(cat wg-nex.out)"
-grep -q '"status":"ok"' nex-wg.out || loud_fail "nex --wg did not report ok: $(cat nex-wg.out)"
+cat >"$scratch/.wg/config.toml" <<TOML
+[agent]
+model = "$model"
+
+[dispatcher]
+model = "$model"
+
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "$endpoint"
+api_key_env = "OPENROUTER_API_KEY"
+is_default = true
+TOML
+
+if ! env -u OPENAI_API_KEY OPENROUTER_API_KEY="$openrouter_key" timeout 45s wg nex --eval-mode --minimal-tools \
+        --model "$model" --endpoint openrouter --max-turns 1 \
+        "Reply with exactly: WG_NEX_ENV_AUTH_OK" >wg-nex-env.out 2>wg-nex-env.err; then
+    assert_no_key_leaked wg-nex-env.out wg-nex-env.err
+    loud_fail "wg nex eval-mode did not use configured api_key_env credentials. stderr:\n$(redact_file wg-nex-env.err)"
+fi
+
+if ! env -u OPENAI_API_KEY OPENROUTER_API_KEY="$openrouter_key" timeout 45s nex --wg --eval-mode --minimal-tools \
+        --model "$model" --endpoint openrouter --max-turns 1 \
+        "Reply with exactly: NEX_WG_ENV_AUTH_OK" >nex-wg-env.out 2>nex-wg-env.err; then
+    assert_no_key_leaked nex-wg-env.out nex-wg-env.err
+    loud_fail "nex --wg eval-mode did not use configured api_key_env credentials. stderr:\n$(redact_file nex-wg-env.err)"
+fi
+
+assert_no_key_leaked \
+    wg-nex-file.out wg-nex-file.err \
+    nex-wg-file.out nex-wg-file.err \
+    wg-nex-env.out wg-nex-env.err \
+    nex-wg-env.out nex-wg-env.err
+
+grep -q '"status":"ok"' wg-nex-file.out || loud_fail "wg nex api_key_file did not report ok: $(redact_file wg-nex-file.out)"
+grep -q '"status":"ok"' nex-wg-file.out || loud_fail "nex --wg api_key_file did not report ok: $(redact_file nex-wg-file.out)"
+grep -q '"status":"ok"' wg-nex-env.out || loud_fail "wg nex api_key_env did not report ok: $(redact_file wg-nex-env.out)"
+grep -q '"status":"ok"' nex-wg-env.out || loud_fail "nex --wg api_key_env did not report ok: $(redact_file nex-wg-env.out)"
 
 if [[ -e "$scratch/.nex-eval" ]]; then
     loud_fail "WG-scoped eval-mode unexpectedly wrote standalone .nex-eval state"
@@ -146,8 +199,8 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as f:
     requests = [json.loads(line) for line in f if line.strip()]
 
-if len(requests) != 2:
-    raise SystemExit(f"expected exactly two configured-endpoint requests, got {len(requests)}: {requests}")
+if len(requests) != 4:
+    raise SystemExit(f"expected exactly four configured-endpoint requests, got {len(requests)}: {requests}")
 
 for req in requests:
     if req.get("path") != "/v1/chat/completions":
@@ -158,4 +211,4 @@ for req in requests:
         raise SystemExit(f"configured Bearer auth was missing: {req}")
 PY
 
-echo "PASS: WG-scoped Nex eval entrypoints attach configured OpenRouter endpoint credentials"
+echo "PASS: WG-scoped Nex eval entrypoints attach configured OpenRouter api_key_file and api_key_env credentials"

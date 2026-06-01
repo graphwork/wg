@@ -1443,17 +1443,20 @@ impl OpenAiClient {
 
     /// Build the auth-config hint string injected into 401/403 error
     /// messages. Names the `[[llm_endpoints.endpoints]]` block to set
-    /// `api_key` in — NEVER an env var, per the WG credential
-    /// contract (credentials live in WG config exclusively).
+    /// credential config in. `api_key_env` is acceptable only when it is
+    /// explicitly named in WG config; this hint never recommends relying
+    /// on implicit provider env-var fallback.
     fn auth_config_hint(&self) -> String {
         match &self.endpoint_name {
             Some(name) => format!(
-                " To configure: set `api_key = \"...\"` (or `api_key_file`) under \
+                " To configure: set `api_key = \"...\"`, `api_key_file = \"...\"`, \
+                 or `api_key_env = \"...\"` under \
                  [[llm_endpoints.endpoints]] block named '{}' in .wg/config.toml.",
                 name
             ),
-            None => " To configure: add an `[[llm_endpoints.endpoints]]` entry with `api_key = \"...\"` \
-                     to .wg/config.toml (run `wg endpoints add` for a wizard)."
+            None => " To configure: add an `[[llm_endpoints.endpoints]]` entry with `api_key = \"...\"`, \
+                     `api_key_file = \"...\"`, or `api_key_env = \"...\"` to .wg/config.toml \
+                     (run `wg endpoints add` for a wizard)."
                 .to_string(),
         }
     }

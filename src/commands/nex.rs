@@ -170,10 +170,9 @@ fn run_inner(
         unsafe {
             std::env::set_var("WG_STREAM_IDLE_TIMEOUT_SECS", timeout.to_string());
         }
-    } else if matches!(
-        runtime.mode,
-        NexRuntimeMode::Standalone | NexRuntimeMode::LegacyWgCompat
-    ) && let Ok(timeout) = std::env::var("NEX_STREAM_IDLE_TIMEOUT_SECS")
+    } else if (uses_standalone_nex_env(runtime.mode)
+        || matches!(runtime.mode, NexRuntimeMode::LegacyWgCompat))
+        && let Ok(timeout) = std::env::var("NEX_STREAM_IDLE_TIMEOUT_SECS")
         && !timeout.trim().is_empty()
     {
         unsafe {
@@ -190,7 +189,7 @@ fn run_inner(
     };
     let config_val = crate::nex_runtime::load_toml_value(runtime).ok();
 
-    let env_model = if matches!(runtime.mode, NexRuntimeMode::Standalone) {
+    let env_model = if uses_standalone_nex_env(runtime.mode) {
         std::env::var("NEX_MODEL")
             .ok()
             .or_else(|| std::env::var("WG_MODEL").ok())
@@ -203,7 +202,7 @@ fn run_inner(
         .or(env_model)
         .unwrap_or_else(|| config.resolve_model_for_role(DispatchRole::TaskAgent).model);
 
-    let endpoint_env = if matches!(runtime.mode, NexRuntimeMode::Standalone) {
+    let endpoint_env = if uses_standalone_nex_env(runtime.mode) {
         std::env::var("NEX_ENDPOINT").ok()
     } else {
         std::env::var("WG_ENDPOINT")
@@ -644,6 +643,10 @@ fn record_nex_invocation(
         endpoint,
         "cli",
     ));
+}
+
+fn uses_standalone_nex_env(mode: NexRuntimeMode) -> bool {
+    matches!(mode, NexRuntimeMode::Standalone | NexRuntimeMode::Eval)
 }
 
 fn build_default_system_prompt(

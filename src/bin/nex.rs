@@ -37,7 +37,7 @@ fn main() -> Result<()> {
             dirs::home_dir(),
         )
     } else if cli.args.eval_mode {
-        workgraph::nex_runtime::resolve_eval(&standalone_input(&cli.args))
+        resolve_standalone_eval(&standalone_input(&cli.args))
     } else {
         workgraph::nex_runtime::resolve_standalone(&standalone_input(&cli.args))
     };
@@ -60,6 +60,30 @@ fn standalone_input(args: &NexArgs) -> workgraph::nex_runtime::NexRuntimeResolve
             .clone()
             .or_else(|| std::env::var_os("NEX_CONFIG").map(PathBuf::from)),
     }
+}
+
+fn resolve_standalone_eval(
+    input: &workgraph::nex_runtime::NexRuntimeResolveInput,
+) -> workgraph::nex_runtime::NexRuntime {
+    let mut runtime = workgraph::nex_runtime::resolve_eval(input);
+    let standalone = workgraph::nex_runtime::resolve_standalone(input);
+
+    runtime.config_paths = merge_unique_paths(standalone.config_paths, runtime.config_paths);
+    runtime.model_registry_paths = merge_unique_paths(
+        standalone.model_registry_paths,
+        runtime.model_registry_paths,
+    );
+    runtime.legacy_session_roots = standalone.legacy_session_roots;
+    runtime
+}
+
+fn merge_unique_paths(mut low: Vec<PathBuf>, high: Vec<PathBuf>) -> Vec<PathBuf> {
+    for path in high {
+        if !low.contains(&path) {
+            low.push(path);
+        }
+    }
+    low
 }
 
 fn init_logging() {
