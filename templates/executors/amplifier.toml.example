@@ -8,6 +8,10 @@
 # into that argument, so the default command below is intentionally the
 # Amplifier command itself, not a shell wrapper.
 #
+# Source links for the current upstream command family:
+#   https://github.com/microsoft/amplifier
+#   https://github.com/microsoft/amplifier-app-cli
+#
 # Usage:
 #   wg config --coordinator-executor amplifier
 #   wg spawn <task-id> --executor amplifier

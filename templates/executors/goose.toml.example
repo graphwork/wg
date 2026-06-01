@@ -1,0 +1,32 @@
+# Goose CLI executor - stable worker surface.
+#
+# Drop this in at `.wg/executors/goose.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG writes prompt.txt and appends `-i <prompt.txt>`. For OpenRouter models,
+# WG appends `--provider openrouter --model <provider>/<model>`.
+#
+# Source link for the command form:
+#   https://block.github.io/goose/docs/guides/goose-cli-commands/
+#
+# Usage:
+#   wg config --coordinator-executor goose
+#   wg spawn <task-id> --executor goose
+#
+# Prerequisites:
+#   - `goose` is installed and on PATH
+#   - the target provider is configured in Goose or through environment
+
+[executor]
+type = "goose"
+command = "goose"
+args = [
+    "run",
+    "--no-session",
+    "--output-format", "json",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

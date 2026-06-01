@@ -1,0 +1,34 @@
+# Qwen Code CLI executor - stable worker surface.
+#
+# Drop this in at `.wg/executors/qwen.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG writes prompt.txt, adds `--prompt "Complete the WG task prompt supplied
+# on stdin."`, and pipes prompt.txt to stdin. For OpenRouter models, WG
+# appends `--model <provider>/<model>`.
+#
+# Source links for the command form and OpenAI-compatible env setup:
+#   https://qwenlm.github.io/qwen-code-docs/en/users/configuration/settings/
+#   https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
+#
+# Usage:
+#   wg config --coordinator-executor qwen
+#   wg spawn <task-id> --executor qwen
+#
+# Prerequisites:
+#   - `qwen` (or `qwen-code`) is installed and on PATH
+#   - for OpenRouter, configure Qwen Code for an OpenAI-compatible provider or
+#     set OPENAI_API_KEY and OPENAI_BASE_URL=https://openrouter.ai/api/v1
+
+[executor]
+type = "qwen"
+command = "qwen"
+args = [
+    "--output-format", "json",
+    "--yolo",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

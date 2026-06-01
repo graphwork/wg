@@ -7,6 +7,9 @@
 # CLI has changed across versions, so verify `crush run --help` for your
 # installed binary before relying on this as a stable production route.
 #
+# Source links for the command form:
+#   https://www.mintlify.com/charmbracelet/crush/cli/run
+#
 # Usage:
 #   wg config --coordinator-executor crush
 #   wg spawn <task-id> --executor crush

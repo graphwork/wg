@@ -1,0 +1,34 @@
+# OpenCode CLI executor - stable worker surface.
+#
+# Drop this in at `.wg/executors/opencode.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG writes prompt.txt, attaches it with `--file`, and appends a short
+# positional instruction. The default command below is the non-interactive
+# OpenCode command itself, not a shell wrapper.
+#
+# Source links for the command form:
+#   https://opencode.ai/docs/cli/
+#   https://opencode.ai/docs/providers/
+#
+# Usage:
+#   wg config --coordinator-executor opencode
+#   wg spawn <task-id> --executor opencode
+#
+# Prerequisites:
+#   - `opencode` is installed and on PATH
+#   - the target provider is authenticated (`opencode auth login` or `/connect`)
+
+[executor]
+type = "opencode"
+command = "opencode"
+args = [
+    "run",
+    "--format", "json",
+    "--dangerously-skip-permissions",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

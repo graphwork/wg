@@ -29,6 +29,7 @@ Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone aud
 | `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management (companion: `wg secret`) | Operators, contributors |
 | `docs/agent-git-hygiene.md` | Git hygiene rules for multi-agent shared repos | Agents, operators |
 | `docs/guides/openrouter-setup.md` | OpenRouter provider setup guide | Users, operators |
+| `docs/guides/executor-arena.md` | External executor adapter matrix, OpenRouter env setup, init templates, and source links | Users, operators |
 | `docs/guides/server-setup.md` | Server setup guide | Users, operators |
 
 ## Embedded Documentation

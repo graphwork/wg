@@ -3484,11 +3484,14 @@ wg which
 
 ### `wg executors`
 
-List executors `wg` knows about, which are usable on this system, and where their backing binaries live. Useful for seeing what `--executor` values `wg service create-coordinator` and `wg edit --model` can target.
+List executors `wg` knows about, which are usable on this system, and where their backing binaries live. Useful for seeing what `--executor` values `wg spawn`, worker agent identities, and config overrides can target.
 
 ```bash
 wg executors
+wg executors --all
 ```
+
+The stable external worker adapters are `opencode`, `aider`, `goose`, `qwen`, and `cline`. `crush` and `amplifier` are experimental worker adapters; verify the installed CLI's `--help` output before using them for unattended production runs. See [Executor Arena](guides/executor-arena.md) for `wg init` template files, OpenRouter environment setup, and upstream source links for the current CLI command forms.
 
 ---
 

@@ -25,6 +25,20 @@ This stores the endpoint in `.wg/config.toml`. Alternatively, set the key via en
 export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
+For tools that expect the OpenAI-compatible environment convention, also point
+the OpenAI variables at OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+```
+
+Use this second form for external CLIs that read `OPENAI_API_KEY` /
+`OPENAI_BASE_URL` rather than a dedicated OpenRouter provider setting. Qwen
+Code is the most common case; OpenCode, Aider, Goose, Cline, Crush, and
+Amplifier also have their own provider/auth setup surfaces.
+
 ### 3. Create an agent with a model preference
 
 ```bash
@@ -110,12 +124,16 @@ Use `--global` on `add`, `remove`, or `set-default` to target the global config 
 |----------|---------|
 | `OPENROUTER_API_KEY` | API key (highest priority for OpenRouter provider) |
 | `OPENAI_API_KEY` | Fallback API key (checked if `OPENROUTER_API_KEY` is unset) |
+| `OPENAI_BASE_URL` | OpenAI-compatible base URL; set to `https://openrouter.ai/api/v1` for CLIs that need an OpenAI-style endpoint override |
 | `WG_LLM_PROVIDER` | Override provider detection (set to `"openrouter"`) |
 | `WG_ENDPOINT_URL` | Override the base URL for API requests |
 | `WG_ENDPOINT_NAME` | Select a named endpoint from config |
 | `OPENROUTER_BASE_URL` | Alternative base URL (fallback after `WG_ENDPOINT_URL`) |
 
-These are also exposed to spawned agents so they inherit the provider context.
+Environment variables present in the daemon environment are inherited by
+spawned agents. When WG resolves an OpenRouter key from endpoint config, it
+also exposes that key to the spawned process as both `OPENROUTER_API_KEY` and
+`OPENAI_API_KEY` so external CLIs can use their standard credential lookup.
 
 ### Model ID format
 
@@ -139,6 +157,30 @@ When the provider is `"openrouter"` (or any OpenAI-compatible provider), the API
 2. `OPENAI_API_KEY` environment variable (fallback)
 3. Matching endpoint entry in config (by name or provider)
 4. `[native_executor]` section in config (legacy fallback)
+
+### External executor arena
+
+WG can spawn worker agents through OpenCode, Aider, Goose, Qwen Code, Cline,
+Crush, and Amplifier. `opencode`, `aider`, `goose`, `qwen`, and `cline` are
+the stable external adapters. `crush` and `amplifier` are experimental surfaces:
+WG includes templates for them, but you should verify the installed CLI's
+`--help` output before using them for unattended runs.
+
+OpenRouter model arguments differ by tool:
+
+| Executor | Model/env shape |
+|----------|-----------------|
+| `opencode` | `--model openrouter/<provider>/<model>` after OpenCode OpenRouter auth |
+| `aider` | `--model openrouter/<provider>/<model>` with `OPENROUTER_API_KEY` |
+| `goose` | `--provider openrouter --model <provider>/<model>` |
+| `qwen` | `--model <provider>/<model>` plus `OPENAI_API_KEY` and `OPENAI_BASE_URL=https://openrouter.ai/api/v1` |
+| `cline` | `--provider openrouter --model <provider>/<model>` after `cline auth -p openrouter ...` |
+| `crush` | `--model openrouter/<provider>/<model>`; experimental |
+| `amplifier` | Provider/model comes from Amplifier config; experimental |
+
+See [Executor Arena](executor-arena.md) for the full stable/experimental
+matrix, the generated `.wg/executors/*.toml.example` files, and source links
+for the current CLI command forms.
 
 ---
 

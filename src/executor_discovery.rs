@@ -6,8 +6,8 @@
 //! missing from PATH, it shouldn't be offered as an option.
 //!
 //! `native` is always available (it's this binary itself). The CLI
-//! adapters (`claude`, `codex`, `gemini`, and experimental worker CLIs)
-//! are probed by looking for the binary on PATH.
+//! adapters (`claude`, `codex`, `gemini`, stable worker CLIs, and
+//! experimental worker CLIs) are probed by looking for the binary on PATH.
 
 use std::path::PathBuf;
 
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorInfo {
     /// Short name matching `coordinator.executor` config values:
-    /// "native", "claude", "codex", "gemini", "crush", "amplifier".
+    /// "native", "claude", "codex", "gemini", "opencode", etc.
     pub name: &'static str,
     /// Human-readable description.
     pub description: &'static str,
@@ -86,6 +86,31 @@ const EXECUTORS: &[ExecutorSpec] = &[
         name: "gemini",
         description: "Google Gemini CLI",
         binary_candidates: &["gemini"],
+    },
+    ExecutorSpec {
+        name: "opencode",
+        description: "Stable OpenCode CLI worker (`opencode run --format json`)",
+        binary_candidates: &["opencode"],
+    },
+    ExecutorSpec {
+        name: "aider",
+        description: "Stable Aider CLI worker (`aider --message-file ... --yes-always`)",
+        binary_candidates: &["aider"],
+    },
+    ExecutorSpec {
+        name: "goose",
+        description: "Stable Goose CLI worker (`goose run --no-session -i ...`)",
+        binary_candidates: &["goose"],
+    },
+    ExecutorSpec {
+        name: "qwen",
+        description: "Stable Qwen Code CLI worker (`qwen --output-format json --yolo`)",
+        binary_candidates: &["qwen", "qwen-code", "qwen_code"],
+    },
+    ExecutorSpec {
+        name: "cline",
+        description: "Stable Cline CLI worker (`cline --json --auto-approve true`)",
+        binary_candidates: &["cline"],
     },
     ExecutorSpec {
         name: "crush",
@@ -163,6 +188,11 @@ mod tests {
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"gemini"));
+        assert!(names.contains(&"opencode"));
+        assert!(names.contains(&"aider"));
+        assert!(names.contains(&"goose"));
+        assert!(names.contains(&"qwen"));
+        assert!(names.contains(&"cline"));
         assert!(names.contains(&"crush"));
         assert!(names.contains(&"amplifier"));
     }

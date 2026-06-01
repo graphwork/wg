@@ -321,27 +321,49 @@ fn write_repo_gitignore(dir: &Path) -> Result<()> {
 }
 
 /// Write `.wg/executors/*.example` template files.
+const EXECUTOR_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "claude.toml.example",
+        include_str!("../../templates/executors/claude.toml.example"),
+    ),
+    (
+        "codex.toml.example",
+        include_str!("../../templates/executors/codex.toml.example"),
+    ),
+    (
+        "opencode.toml.example",
+        include_str!("../../templates/executors/opencode.toml.example"),
+    ),
+    (
+        "aider.toml.example",
+        include_str!("../../templates/executors/aider.toml.example"),
+    ),
+    (
+        "goose.toml.example",
+        include_str!("../../templates/executors/goose.toml.example"),
+    ),
+    (
+        "qwen.toml.example",
+        include_str!("../../templates/executors/qwen.toml.example"),
+    ),
+    (
+        "cline.toml.example",
+        include_str!("../../templates/executors/cline.toml.example"),
+    ),
+    (
+        "crush.toml.example",
+        include_str!("../../templates/executors/crush.toml.example"),
+    ),
+    (
+        "amplifier.toml.example",
+        include_str!("../../templates/executors/amplifier.toml.example"),
+    ),
+];
+
 fn write_executor_templates(dir: &Path) -> Result<()> {
     let executors_dir = dir.join("executors");
     fs::create_dir_all(&executors_dir).context("Failed to create executors directory")?;
-    for (name, contents) in [
-        (
-            "claude.toml.example",
-            include_str!("../../templates/executors/claude.toml.example"),
-        ),
-        (
-            "codex.toml.example",
-            include_str!("../../templates/executors/codex.toml.example"),
-        ),
-        (
-            "crush.toml.example",
-            include_str!("../../templates/executors/crush.toml.example"),
-        ),
-        (
-            "amplifier.toml.example",
-            include_str!("../../templates/executors/amplifier.toml.example"),
-        ),
-    ] {
+    for (name, contents) in EXECUTOR_TEMPLATES {
         fs::write(executors_dir.join(name), contents)
             .with_context(|| format!("Failed to write executor template {}", name))?;
     }
@@ -446,39 +468,7 @@ pub fn run(
     let gitignore_path = dir.join(".gitignore");
     fs::write(&gitignore_path, GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
 
-    // Seed `<dir>/executors/` with example configs for the common
-    // external-executor backends. The TOMLs mirror the built-in
-    // defaults in `ExecutorRegistry::default_config`, so they act as
-    // documentation-by-example: users copy the `.example` off to
-    // override a specific flag, env var, or timeout without having
-    // to reconstruct the whole config from scratch.
-    //
-    // Templates are bundled into the binary via `include_str!` so
-    // `wg init` works regardless of where the binary is run from —
-    // no dependency on the source tree being present.
-    let executors_dir = dir.join("executors");
-    fs::create_dir_all(&executors_dir).context("Failed to create executors directory")?;
-    for (name, contents) in [
-        (
-            "claude.toml.example",
-            include_str!("../../templates/executors/claude.toml.example"),
-        ),
-        (
-            "codex.toml.example",
-            include_str!("../../templates/executors/codex.toml.example"),
-        ),
-        (
-            "crush.toml.example",
-            include_str!("../../templates/executors/crush.toml.example"),
-        ),
-        (
-            "amplifier.toml.example",
-            include_str!("../../templates/executors/amplifier.toml.example"),
-        ),
-    ] {
-        fs::write(executors_dir.join(name), contents)
-            .with_context(|| format!("Failed to write executor template {}", name))?;
-    }
+    write_executor_templates(dir)?;
 
     println!("Initialized WG at {}", dir.display());
 
@@ -666,21 +656,65 @@ mod tests {
     }
 
     #[test]
-    fn test_writes_experimental_executor_templates() {
+    fn test_writes_supported_external_executor_templates() {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
+        for name in [
+            "opencode",
+            "aider",
+            "goose",
+            "qwen",
+            "cline",
+            "crush",
+            "amplifier",
+        ] {
+            let path = wg_dir.join(format!("executors/{name}.toml.example"));
+            let contents = fs::read_to_string(&path).unwrap();
+            assert!(
+                contents.contains(&format!("type = \"{name}\"")),
+                "{} should set its executor type",
+                path.display()
+            );
+            assert!(
+                contents.contains("Source link"),
+                "{} should document the upstream command source",
+                path.display()
+            );
+        }
+
+        let opencode = fs::read_to_string(wg_dir.join("executors/opencode.toml.example")).unwrap();
+        assert!(opencode.contains("\"run\""));
+        assert!(opencode.contains("\"--format\", \"json\""));
+        assert!(opencode.contains("\"--dangerously-skip-permissions\""));
+
+        let aider = fs::read_to_string(wg_dir.join("executors/aider.toml.example")).unwrap();
+        assert!(aider.contains("\"--yes-always\""));
+        assert!(aider.contains("--message-file"));
+
+        let goose = fs::read_to_string(wg_dir.join("executors/goose.toml.example")).unwrap();
+        assert!(goose.contains("\"run\""));
+        assert!(goose.contains("\"--no-session\""));
+        assert!(goose.contains("\"--output-format\", \"json\""));
+
+        let qwen = fs::read_to_string(wg_dir.join("executors/qwen.toml.example")).unwrap();
+        assert!(qwen.contains("\"--output-format\", \"json\""));
+        assert!(qwen.contains("\"--yolo\""));
+        assert!(qwen.contains("OPENAI_BASE_URL=https://openrouter.ai/api/v1"));
+
+        let cline = fs::read_to_string(wg_dir.join("executors/cline.toml.example")).unwrap();
+        assert!(cline.contains("\"--json\""));
+        assert!(cline.contains("\"--auto-approve\", \"true\""));
+
         let amplifier =
             fs::read_to_string(wg_dir.join("executors/amplifier.toml.example")).unwrap();
-        assert!(amplifier.contains("type = \"amplifier\""));
         assert!(amplifier.contains("\"--mode\", \"single\""));
         assert!(amplifier.contains("\"--output-format\", \"json\""));
         assert!(amplifier.contains("\"--bundle\", \"wg\""));
 
         let crush = fs::read_to_string(wg_dir.join("executors/crush.toml.example")).unwrap();
-        assert!(crush.contains("type = \"crush\""));
         assert!(crush.contains("experimental one-shot worker surface"));
     }
 

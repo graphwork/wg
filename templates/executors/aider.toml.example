@@ -1,0 +1,33 @@
+# Aider CLI executor - stable worker surface.
+#
+# Drop this in at `.wg/executors/aider.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG writes prompt.txt and appends `--message-file <prompt.txt>`.
+# For OpenRouter models, WG appends `--model openrouter/<provider>/<model>`
+# when the resolved model spec uses the `openrouter:` provider prefix.
+#
+# Source links for the command form:
+#   https://aider.chat/docs/config/options.html
+#   https://aider.chat/docs/troubleshooting/models-and-keys.html
+#
+# Usage:
+#   wg config --coordinator-executor aider
+#   wg spawn <task-id> --executor aider
+#
+# Prerequisites:
+#   - `aider` is installed and on PATH
+#   - OPENROUTER_API_KEY is set for OpenRouter models, or the provider key is
+#     configured through Aider's normal CLI/config/env mechanisms
+
+[executor]
+type = "aider"
+command = "aider"
+args = [
+    "--yes-always",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"

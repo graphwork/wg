@@ -1,0 +1,33 @@
+# Cline CLI executor - stable worker surface.
+#
+# Drop this in at `.wg/executors/cline.toml` (strip `.example`)
+# to override the built-in defaults.
+#
+# WG writes prompt.txt, passes a positional prompt, and pipes prompt.txt to
+# stdin. For OpenRouter models, WG appends `--provider openrouter --model
+# <provider>/<model>`.
+#
+# Source links for the command form:
+#   https://docs.cline.bot/usage/cli-overview
+#   https://docs.cline.bot/cli/cli-reference
+#
+# Usage:
+#   wg config --coordinator-executor cline
+#   wg spawn <task-id> --executor cline
+#
+# Prerequisites:
+#   - `cline` is installed and on PATH
+#   - the target provider is authenticated (`cline auth -p openrouter ...`)
+
+[executor]
+type = "cline"
+command = "cline"
+args = [
+    "--json",
+    "--auto-approve", "true",
+]
+working_dir = "{{working_dir}}"
+timeout = 600
+
+[executor.env]
+WG_TASK_ID = "{{task_id}}"
