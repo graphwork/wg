@@ -482,15 +482,11 @@ mod tests {
     }
 
     fn external_worker_cases() -> Vec<(&'static str, ExecutorKind)> {
-        vec![
-            ("opencode", ExecutorKind::OpenCode),
-            ("aider", ExecutorKind::Aider),
-            ("goose", ExecutorKind::Goose),
-            ("qwen", ExecutorKind::Qwen),
-            ("cline", ExecutorKind::Cline),
-            ("crush", ExecutorKind::Crush),
-            ("amplifier", ExecutorKind::Amplifier),
-        ]
+        ExecutorKind::WORKER_ONLY_EXTERNALS
+            .iter()
+            .copied()
+            .map(|kind| (kind.as_str(), kind))
+            .collect()
     }
 
     #[test]

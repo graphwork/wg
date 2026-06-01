@@ -2370,17 +2370,11 @@ mod tests {
 
     #[test]
     fn test_executor_uses_auto_prompt_includes_external_cli_adapters() {
-        for kind in [
-            "opencode",
-            "aider",
-            "goose",
-            "qwen",
-            "qwen-code",
-            "qwen_code",
-            "cline",
-            "crush",
-            "amplifier",
-        ] {
+        for kind in workgraph::dispatch::ExecutorKind::WORKER_ONLY_EXTERNALS
+            .iter()
+            .map(|kind| kind.as_str())
+            .chain(["qwen-code", "qwen_code"])
+        {
             assert!(
                 executor_uses_auto_prompt(kind),
                 "{} must auto-build prompt",
@@ -3760,6 +3754,53 @@ mod tests {
         assert!(
             !command.contains("sk-or-secret") && !command.contains(".openrouter.key"),
             "External CLI argv must not contain API keys or key file paths: {}",
+            command
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_generic_experimental_fallback_is_raw_argv_only() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = external_test_settings(
+            "experimental-runner",
+            "experimental-runner",
+            &["run", "--json", "--flag=value"],
+        );
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("openrouter:deepseek/deepseek-v3.2".to_string()),
+            &Some("openrouter".to_string()),
+            &None,
+            &None,
+            &Some("sk-or-secret".to_string()),
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert_eq!(
+            command, "'experimental-runner' 'run' '--json' '--flag=value'",
+            "Unknown experimental executor types should stay on the raw configured argv fallback"
+        );
+        assert!(
+            !output_dir.join("prompt.txt").exists(),
+            "The generic fallback must not imply prompt delivery; first-class adapters need explicit branches"
+        );
+        assert!(
+            !command.contains("--model") && !command.contains("--provider"),
+            "Generic fallback should not guess model/provider flags: {}",
+            command
+        );
+        assert!(
+            !command.contains("sk-or-secret") && !command.contains(".openrouter.key"),
+            "Generic fallback argv must not leak API credentials: {}",
             command
         );
     }

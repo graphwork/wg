@@ -2063,6 +2063,37 @@ template = "Work on {{task_id}}"
     }
 
     #[test]
+    fn test_registry_loads_defaults_for_all_worker_only_externals() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+
+        for kind in crate::dispatch::ExecutorKind::WORKER_ONLY_EXTERNALS {
+            let name = kind.as_str();
+            let config = registry
+                .load_config(name)
+                .unwrap_or_else(|err| panic!("default config for {name} should load: {err}"));
+
+            assert_eq!(
+                config.executor.executor_type, name,
+                "default config type should match executor name for {name}"
+            );
+            assert!(
+                !config.executor.command.is_empty(),
+                "default config should define a command for {name}"
+            );
+            assert_eq!(
+                config.executor.working_dir.as_deref(),
+                Some("{{working_dir}}"),
+                "worker-only executor {name} should run inside the task worktree"
+            );
+            assert!(
+                config.executor.prompt_template.is_none(),
+                "worker-only executor {name} should use spawn-time prompt assembly"
+            );
+        }
+    }
+
+    #[test]
     fn test_executor_registry_init() {
         let temp_dir = TempDir::new().unwrap();
         let workgraph_dir = temp_dir.path().join(".wg");
