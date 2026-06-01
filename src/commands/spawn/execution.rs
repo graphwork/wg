@@ -978,7 +978,12 @@ fn openrouter_model_id(model: &str, effective_provider: Option<&str>) -> Option<
         .map(workgraph::config::provider_to_native_provider);
     let provider = effective_provider.or(provider_from_model);
     if provider == Some("openrouter") {
-        Some(spec.model_id)
+        Some(
+            spec.model_id
+                .strip_prefix("openrouter/")
+                .unwrap_or(&spec.model_id)
+                .to_string(),
+        )
     } else {
         None
     }
@@ -2479,6 +2484,26 @@ mod tests {
     }
 
     #[test]
+    fn test_external_cli_model_args_do_not_duplicate_openrouter_prefix() {
+        for executor_type in ["opencode", "aider"] {
+            assert_eq!(
+                external_cli_model_args(
+                    executor_type,
+                    Some("openrouter/deepseek/deepseek-v3.2"),
+                    Some("openrouter"),
+                )
+                .to_vec(),
+                vec![
+                    "--model".to_string(),
+                    "openrouter/deepseek/deepseek-v3.2".to_string()
+                ],
+                "{} should accept already-normalized OpenRouter model syntax",
+                executor_type
+            );
+        }
+    }
+
+    #[test]
     fn test_external_cli_model_args_do_not_change_builtin_or_amplifier_defaults() {
         for executor_type in ["claude", "codex", "native", "amplifier"] {
             assert!(
@@ -3360,11 +3385,23 @@ mod tests {
         }
     }
 
+    fn default_external_settings(
+        workgraph_dir: &Path,
+        executor_type: &str,
+    ) -> workgraph::service::executor::ExecutorSettings {
+        let registry = ExecutorRegistry::new(workgraph_dir);
+        let mut settings = registry.load_config(executor_type).unwrap().executor;
+        settings.prompt_template = Some(PromptTemplate {
+            template: "Investigate task".to_string(),
+        });
+        settings
+    }
+
     #[test]
-    fn test_build_inner_command_opencode_normalizes_openrouter_model_without_key_leak() {
+    fn test_build_inner_command_opencode_default_uses_run_json_prompt_file_and_openrouter_model() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
-        let settings = external_test_settings("opencode", "opencode", &["run", "--format", "json"]);
+        let settings = default_external_settings(output_dir, "opencode");
         let vars = test_template_vars();
 
         let (command, fallback) = build_inner_command(
@@ -3384,6 +3421,16 @@ mod tests {
 
         assert!(fallback.is_none());
         assert!(
+            command.contains("'opencode' 'run'"),
+            "OpenCode must use documented non-interactive `opencode run`: {}",
+            command
+        );
+        assert!(
+            command.contains("'--format' 'json'"),
+            "OpenCode should request JSON-capable output: {}",
+            command
+        );
+        assert!(
             command.contains("--model 'openrouter/deepseek/deepseek-v3.2'"),
             "OpenCode should receive provider/model slash syntax: {}",
             command
@@ -3396,6 +3443,70 @@ mod tests {
         assert!(
             !command.contains("openrouter:deepseek"),
             "WG provider:model syntax must not leak into OpenCode argv: {}",
+            command
+        );
+        assert!(
+            !command.contains("sk-or-secret") && !command.contains(".openrouter.key"),
+            "External CLI argv must not contain API keys or key file paths: {}",
+            command
+        );
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("prompt.txt")).unwrap(),
+            "Investigate task"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_aider_default_uses_message_file_and_openrouter_model() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = default_external_settings(output_dir, "aider");
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("openrouter:deepseek/deepseek-v3.2".to_string()),
+            &Some("openrouter".to_string()),
+            &None,
+            &None,
+            &Some("sk-or-secret".to_string()),
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.contains("'aider'"),
+            "Aider command should invoke the aider CLI: {}",
+            command
+        );
+        assert!(
+            command.contains("'--yes-always'"),
+            "Aider should avoid confirmation prompts in batch mode: {}",
+            command
+        );
+        assert!(
+            command.contains("--model 'openrouter/deepseek/deepseek-v3.2'"),
+            "Aider should receive provider/model slash syntax: {}",
+            command
+        );
+        assert!(
+            command.contains("--message-file "),
+            "Aider should receive the WG prompt through --message-file: {}",
+            command
+        );
+        assert!(
+            !command.contains(" --message '"),
+            "Aider must avoid interactive chat and inline --message prompts: {}",
+            command
+        );
+        assert!(
+            !command.contains("openrouter:deepseek"),
+            "WG provider:model syntax must not leak into Aider argv: {}",
             command
         );
         assert!(

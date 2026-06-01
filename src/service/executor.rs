@@ -1583,7 +1583,7 @@ impl ExecutorRegistry {
                         r#"developer_instructions="You are a non-interactive batch worker. You MUST complete the task by writing files to disk and creating at least one git commit before declaring done. A prose summary without file writes or commits is a task failure. Use shell tools (Read, Write, Edit, Bash) to do real work; do not describe work in the response.""#.to_string(),
                     ],
                     env: HashMap::new(),
-                    // No default template — uses scope-based build_prompt() assembly.
+                    // No default template: uses scope-based build_prompt() assembly.
                     prompt_template: None,
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: None,
@@ -1662,7 +1662,38 @@ impl ExecutorRegistry {
                         env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
                         env
                     },
-                    // No default template — uses scope-based build_prompt() assembly.
+                    // No default template: uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "opencode" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "opencode".to_string(),
+                    command: "opencode".to_string(),
+                    args: vec![
+                        "run".to_string(),
+                        "--format".to_string(),
+                        "json".to_string(),
+                        "--dangerously-skip-permissions".to_string(),
+                    ],
+                    env: HashMap::new(),
+                    // No default template: uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "aider" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "aider".to_string(),
+                    command: "aider".to_string(),
+                    args: vec!["--yes-always".to_string()],
+                    env: HashMap::new(),
+                    // No default template: uses scope-based build_prompt() assembly.
                     prompt_template: None,
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: None,
@@ -1734,7 +1765,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, codex, native, shell, crush, amplifier, goose, qwen, cline, default",
+                "Unknown executor '{}'. Available: claude, codex, native, shell, opencode, aider, crush, amplifier, goose, qwen, cline, default",
                 name,
             )),
         }
@@ -1757,6 +1788,8 @@ impl ExecutorRegistry {
             "claude",
             "codex",
             "shell",
+            "opencode",
+            "aider",
             "crush",
             "amplifier",
             "goose",
@@ -1969,6 +2002,14 @@ template = "Work on {{task_id}}"
         assert_eq!(codex_config.executor.executor_type, "codex");
         assert_eq!(codex_config.executor.command, "codex");
 
+        let opencode_config = registry.load_config("opencode").unwrap();
+        assert_eq!(opencode_config.executor.executor_type, "opencode");
+        assert_eq!(opencode_config.executor.command, "opencode");
+
+        let aider_config = registry.load_config("aider").unwrap();
+        assert_eq!(aider_config.executor.executor_type, "aider");
+        assert_eq!(aider_config.executor.command, "aider");
+
         let shell_config = registry.load_config("shell").unwrap();
         assert_eq!(shell_config.executor.executor_type, "shell");
         assert_eq!(shell_config.executor.command, "bash");
@@ -2033,6 +2074,8 @@ template = "Work on {{task_id}}"
         // Should create executor configs
         assert!(workgraph_dir.join("executors/claude.toml").exists());
         assert!(workgraph_dir.join("executors/codex.toml").exists());
+        assert!(workgraph_dir.join("executors/opencode.toml").exists());
+        assert!(workgraph_dir.join("executors/aider.toml").exists());
         assert!(workgraph_dir.join("executors/shell.toml").exists());
         assert!(workgraph_dir.join("executors/crush.toml").exists());
         assert!(workgraph_dir.join("executors/amplifier.toml").exists());
@@ -2452,6 +2495,46 @@ args = ["--custom-flag"]
             args_str.contains("developer_instructions"),
             "should include developer_instructions override"
         );
+        assert_eq!(
+            config.executor.working_dir,
+            Some("{{working_dir}}".to_string())
+        );
+        assert!(config.executor.prompt_template.is_none());
+    }
+
+    #[test]
+    fn test_registry_default_config_opencode_shape() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+        let config = registry.load_config("opencode").unwrap();
+
+        assert_eq!(config.executor.executor_type, "opencode");
+        assert_eq!(config.executor.command, "opencode");
+        assert_eq!(
+            config.executor.args,
+            vec![
+                "run".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ]
+        );
+        assert_eq!(
+            config.executor.working_dir,
+            Some("{{working_dir}}".to_string())
+        );
+        assert!(config.executor.prompt_template.is_none());
+    }
+
+    #[test]
+    fn test_registry_default_config_aider_shape() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+        let config = registry.load_config("aider").unwrap();
+
+        assert_eq!(config.executor.executor_type, "aider");
+        assert_eq!(config.executor.command, "aider");
+        assert_eq!(config.executor.args, vec!["--yes-always".to_string()]);
         assert_eq!(
             config.executor.working_dir,
             Some("{{working_dir}}".to_string())
