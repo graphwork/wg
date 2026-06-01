@@ -1669,6 +1669,58 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "goose" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "goose".to_string(),
+                    command: "goose".to_string(),
+                    args: vec![
+                        "run".to_string(),
+                        "--no-session".to_string(),
+                        "--output-format".to_string(),
+                        "json".to_string(),
+                    ],
+                    env: HashMap::new(),
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "qwen" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "qwen".to_string(),
+                    command: "qwen".to_string(),
+                    args: vec![
+                        "--output-format".to_string(),
+                        "json".to_string(),
+                        "--yolo".to_string(),
+                    ],
+                    env: HashMap::new(),
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "cline" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "cline".to_string(),
+                    command: "cline".to_string(),
+                    args: vec![
+                        "--json".to_string(),
+                        "--auto-approve".to_string(),
+                        "true".to_string(),
+                    ],
+                    env: HashMap::new(),
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "default" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "default".to_string(),
@@ -1682,7 +1734,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, codex, native, shell, crush, amplifier, default",
+                "Unknown executor '{}'. Available: claude, codex, native, shell, crush, amplifier, goose, qwen, cline, default",
                 name,
             )),
         }
@@ -1701,7 +1753,16 @@ impl ExecutorRegistry {
         }
 
         // Create default executor configs if they don't exist
-        for name in ["claude", "codex", "shell", "crush", "amplifier"] {
+        for name in [
+            "claude",
+            "codex",
+            "shell",
+            "crush",
+            "amplifier",
+            "goose",
+            "qwen",
+            "cline",
+        ] {
             let config_path = self.config_dir.join(format!("{}.toml", name));
             if !config_path.exists() {
                 let config = self.default_config(name)?;
@@ -1912,6 +1973,33 @@ template = "Work on {{task_id}}"
         assert_eq!(shell_config.executor.executor_type, "shell");
         assert_eq!(shell_config.executor.command, "bash");
 
+        let goose_config = registry.load_config("goose").unwrap();
+        assert_eq!(goose_config.executor.executor_type, "goose");
+        assert_eq!(goose_config.executor.command, "goose");
+        assert_eq!(
+            goose_config.executor.args,
+            vec!["run", "--no-session", "--output-format", "json"]
+        );
+        assert!(goose_config.executor.prompt_template.is_none());
+
+        let qwen_config = registry.load_config("qwen").unwrap();
+        assert_eq!(qwen_config.executor.executor_type, "qwen");
+        assert_eq!(qwen_config.executor.command, "qwen");
+        assert_eq!(
+            qwen_config.executor.args,
+            vec!["--output-format", "json", "--yolo"]
+        );
+        assert!(qwen_config.executor.prompt_template.is_none());
+
+        let cline_config = registry.load_config("cline").unwrap();
+        assert_eq!(cline_config.executor.executor_type, "cline");
+        assert_eq!(cline_config.executor.command, "cline");
+        assert_eq!(
+            cline_config.executor.args,
+            vec!["--json", "--auto-approve", "true"]
+        );
+        assert!(cline_config.executor.prompt_template.is_none());
+
         let crush_config = registry.load_config("crush").unwrap();
         assert_eq!(crush_config.executor.executor_type, "crush");
         assert_eq!(crush_config.executor.command, "crush");
@@ -1948,6 +2036,9 @@ template = "Work on {{task_id}}"
         assert!(workgraph_dir.join("executors/shell.toml").exists());
         assert!(workgraph_dir.join("executors/crush.toml").exists());
         assert!(workgraph_dir.join("executors/amplifier.toml").exists());
+        assert!(workgraph_dir.join("executors/goose.toml").exists());
+        assert!(workgraph_dir.join("executors/qwen.toml").exists());
+        assert!(workgraph_dir.join("executors/cline.toml").exists());
     }
 
     #[test]

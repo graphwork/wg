@@ -1127,6 +1127,29 @@ fn external_prompt_command(
             }
             Ok(cmd_parts.join(" "))
         }
+        ExternalPromptDelivery::QwenPromptAndStdin => {
+            if !args_have_flag(&settings.args, &["--prompt", "-p"]) {
+                cmd_parts.push("--prompt".to_string());
+                cmd_parts.push(shell_escape(
+                    "Complete the WG task prompt supplied on stdin.",
+                ));
+            }
+            let command = cmd_parts.join(" ");
+            Ok(prompt_file_command(
+                &prompt_file.to_string_lossy(),
+                &command,
+            ))
+        }
+        ExternalPromptDelivery::ClinePositionalPromptAndStdin => {
+            cmd_parts.push(shell_escape(
+                "Complete the WG task prompt supplied on stdin.",
+            ));
+            let command = cmd_parts.join(" ");
+            Ok(prompt_file_command(
+                &prompt_file.to_string_lossy(),
+                &command,
+            ))
+        }
         ExternalPromptDelivery::Stdin => {
             let command = cmd_parts.join(" ");
             Ok(prompt_file_command(
@@ -1146,6 +1169,8 @@ enum ExternalPromptDelivery {
     OpenCodeFile,
     AiderMessageFile,
     GooseInputFile,
+    QwenPromptAndStdin,
+    ClinePositionalPromptAndStdin,
     Stdin,
     Argument,
 }
@@ -1528,7 +1553,21 @@ fn build_inner_command(
             effective_provider,
             ExternalPromptDelivery::GooseInputFile,
         )?,
-        "qwen" | "qwen-code" | "qwen_code" | "cline" | "crush" => external_prompt_command(
+        "qwen" | "qwen-code" | "qwen_code" => external_prompt_command(
+            settings,
+            output_dir,
+            effective_model,
+            effective_provider,
+            ExternalPromptDelivery::QwenPromptAndStdin,
+        )?,
+        "cline" => external_prompt_command(
+            settings,
+            output_dir,
+            effective_model,
+            effective_provider,
+            ExternalPromptDelivery::ClinePositionalPromptAndStdin,
+        )?,
+        "crush" => external_prompt_command(
             settings,
             output_dir,
             effective_model,
@@ -3420,6 +3459,72 @@ mod tests {
     }
 
     #[test]
+    fn test_build_inner_command_qwen_uses_prompt_headless_model_and_output() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings =
+            external_test_settings("qwen", "qwen", &["--output-format", "json", "--yolo"]);
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("openrouter:deepseek/deepseek-v3.2".to_string()),
+            &Some("openrouter".to_string()),
+            &None,
+            &None,
+            &Some("sk-or-secret".to_string()),
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.starts_with("cat "),
+            "Qwen should receive WG's assembled prompt through stdin: {}",
+            command
+        );
+        assert!(
+            command.contains("--prompt 'Complete the WG task prompt supplied on stdin.'"),
+            "Qwen should run in documented --prompt headless mode: {}",
+            command
+        );
+        assert!(
+            command.contains("'--output-format' 'json'"),
+            "Qwen should request machine-readable output where supported: {}",
+            command
+        );
+        assert!(
+            command.contains("'--yolo'"),
+            "Qwen Code's unattended approval flag is deliberately experimental and covered here so future changes are explicit: {}",
+            command
+        );
+        assert!(
+            command.contains("--model 'deepseek/deepseek-v3.2'"),
+            "Qwen should receive the bare OpenRouter model ID: {}",
+            command
+        );
+        assert!(
+            !command.contains("--provider"),
+            "Qwen's OpenRouter path relies on configured provider/auth, not a provider argv flag: {}",
+            command
+        );
+        assert!(
+            !command.contains("openrouter:deepseek"),
+            "WG provider:model syntax must not leak into Qwen argv: {}",
+            command
+        );
+        assert!(
+            !command.contains("sk-or-secret") && !command.contains(".openrouter.key"),
+            "External CLI argv must not contain API keys or key file paths: {}",
+            command
+        );
+    }
+
+    #[test]
     fn test_build_inner_command_amplifier_uses_prompt_argument_bridge() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
@@ -3479,6 +3584,72 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(output_dir.join("prompt.txt")).unwrap(),
             "Investigate task"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_cline_uses_headless_auto_approve_provider_model() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings =
+            external_test_settings("cline", "cline", &["--json", "--auto-approve", "true"]);
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("openrouter:deepseek/deepseek-v3.2".to_string()),
+            &Some("openrouter".to_string()),
+            &None,
+            &None,
+            &Some("sk-or-secret".to_string()),
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.starts_with("cat "),
+            "Cline should receive WG's assembled prompt through stdin: {}",
+            command
+        );
+        assert!(
+            command.contains("--json"),
+            "Cline should run in JSON-capable headless mode: {}",
+            command
+        );
+        assert!(
+            command.contains("'--auto-approve' 'true'"),
+            "Cline's unattended auto-approval flag is deliberately experimental and covered here so future changes are explicit: {}",
+            command
+        );
+        assert!(
+            command.contains("--provider 'openrouter'"),
+            "Cline should receive a provider flag where supported: {}",
+            command
+        );
+        assert!(
+            command.contains("--model 'deepseek/deepseek-v3.2'"),
+            "Cline should receive the bare OpenRouter model ID: {}",
+            command
+        );
+        assert!(
+            command.ends_with("'Complete the WG task prompt supplied on stdin.'"),
+            "Cline should get a positional headless task prompt: {}",
+            command
+        );
+        assert!(
+            !command.contains("openrouter:deepseek"),
+            "WG provider:model syntax must not leak into Cline argv: {}",
+            command
+        );
+        assert!(
+            !command.contains("sk-or-secret") && !command.contains(".openrouter.key"),
+            "External CLI argv must not contain API keys or key file paths: {}",
+            command
         );
     }
 
