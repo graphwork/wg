@@ -429,7 +429,7 @@ fn test_evaluate_run_accepts_pending_eval_source() {
     let a = make_task("a", Status::PendingEval);
     let wg_dir = setup_workgraph(&tmp, vec![a]);
 
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a"]);
+    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--dry-run"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -453,7 +453,7 @@ fn test_evaluate_run_flip_accepts_pending_eval_source() {
     let a = make_task("a", Status::PendingEval);
     let wg_dir = setup_workgraph(&tmp, vec![a]);
 
-    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--flip"]);
+    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--flip", "--dry-run"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -465,6 +465,57 @@ fn test_evaluate_run_flip_accepts_pending_eval_source() {
     assert!(
         !stderr.contains("must be done or failed to evaluate"),
         "wg evaluate run --flip must accept PendingEval.\nstderr: {}\nstdout: {}",
+        stderr,
+        stdout
+    );
+}
+
+#[test]
+fn test_evaluate_run_accepts_failed_pending_eval_source() {
+    // FailedPendingEval is the rescue-eval counterpart to PendingEval. The
+    // dispatcher fires `.evaluate-X` while the parent is still in this state,
+    // so the evaluate precondition must accept it too.
+    let tmp = TempDir::new().unwrap();
+    let a = make_task("a", Status::FailedPendingEval);
+    let wg_dir = setup_workgraph(&tmp, vec![a]);
+
+    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--dry-run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stderr.contains("has status FailedPendingEval")
+            && !stderr.contains("has status failed-pending-eval"),
+        "wg evaluate run must not reject FailedPendingEval as a precondition error.\nstderr: {}\nstdout: {}",
+        stderr,
+        stdout
+    );
+    assert!(
+        !stderr.contains("must be done, failed, or pending-eval to evaluate"),
+        "wg evaluate run must accept FailedPendingEval and stop emitting the stale allowed-status list.\nstderr: {}\nstdout: {}",
+        stderr,
+        stdout
+    );
+}
+
+#[test]
+fn test_evaluate_run_flip_accepts_failed_pending_eval_source() {
+    let tmp = TempDir::new().unwrap();
+    let a = make_task("a", Status::FailedPendingEval);
+    let wg_dir = setup_workgraph(&tmp, vec![a]);
+
+    let out = wg_cmd(&wg_dir, &["evaluate", "run", "a", "--flip", "--dry-run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stderr.contains("has status FailedPendingEval")
+            && !stderr.contains("has status failed-pending-eval"),
+        "wg evaluate run --flip must not reject FailedPendingEval as a precondition error.\nstderr: {}\nstdout: {}",
+        stderr,
+        stdout
+    );
+    assert!(
+        !stderr.contains("must be done, failed, or pending-eval to evaluate"),
+        "wg evaluate run --flip must accept FailedPendingEval and stop emitting the stale allowed-status list.\nstderr: {}\nstdout: {}",
         stderr,
         stdout
     );

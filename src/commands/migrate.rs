@@ -807,6 +807,23 @@ fn rename_legacy_fields(doc: &mut toml::Value, renamed: &mut Vec<(String, String
             }
         }
     }
+
+    // `poll_interval` remains accepted by config deserialization for one
+    // release, but `safety_interval` is the canonical key. Keep migration and
+    // lint in sync with the daemon's startup deprecation scan.
+    for section in ["dispatcher", "coordinator"] {
+        if let Some(toml::Value::Table(sec)) = table.get_mut(section)
+            && let Some(v) = sec.remove("poll_interval")
+        {
+            if !sec.contains_key("safety_interval") {
+                sec.insert("safety_interval".to_string(), v);
+            }
+            renamed.push((
+                format!("{}.poll_interval", section),
+                format!("{}.safety_interval", section),
+            ));
+        }
+    }
 }
 
 /// Stale model string rewrites: maps `<old>` → `<new>` substrings inside
@@ -1023,6 +1040,67 @@ max_chats = 4
         assert!(migrated.contains("max_coordinators"));
         assert!(!migrated.contains("chat_agent"));
         assert!(!migrated.contains("max_chats"));
+    }
+
+    #[test]
+    fn renames_poll_interval_to_safety_interval() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[dispatcher]
+poll_interval = 5
+
+[coordinator]
+poll_interval = 9
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.renamed_keys
+                .iter()
+                .any(|(old, new)| old == "dispatcher.poll_interval"
+                    && new == "dispatcher.safety_interval"),
+            "should rename dispatcher.poll_interval; got {:?}",
+            r.renamed_keys,
+        );
+        assert!(
+            r.renamed_keys
+                .iter()
+                .any(|(old, new)| old == "coordinator.poll_interval"
+                    && new == "coordinator.safety_interval"),
+            "should rename coordinator.poll_interval; got {:?}",
+            r.renamed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("safety_interval = 5"));
+        assert!(migrated.contains("safety_interval = 9"));
+        assert!(!migrated.contains("poll_interval"));
+    }
+
+    #[test]
+    fn poll_interval_duplicate_is_removed_when_safety_interval_exists() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[dispatcher]
+poll_interval = 5
+safety_interval = 7
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.renamed_keys
+                .iter()
+                .any(|(old, _)| old == "dispatcher.poll_interval"),
+            "duplicate legacy key should still be reported; got {:?}",
+            r.renamed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("safety_interval = 7"));
+        assert!(!migrated.contains("poll_interval"));
+        assert!(!migrated.contains("safety_interval = 5"));
     }
 
     #[test]

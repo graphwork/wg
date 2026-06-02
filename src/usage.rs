@@ -15,6 +15,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+use crate::atomic_file::{quarantine_corrupt_file, write_atomic};
+
 /// Aggregated usage statistics stored in stats.json
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UsageStats {
@@ -80,10 +82,7 @@ pub fn aggregate_usage_stats(dir: &Path) -> anyhow::Result<usize> {
         match serde_json::from_str(&content) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!(
-                    "Warning: corrupt usage stats at {:?}, resetting: {}",
-                    stats, e
-                );
+                warn_and_quarantine_stats(&stats, &e);
                 UsageStats::default()
             }
         }
@@ -109,7 +108,7 @@ pub fn aggregate_usage_stats(dir: &Path) -> anyhow::Result<usize> {
 
     // Write updated stats
     let content = serde_json::to_string_pretty(&usage)?;
-    fs::write(&stats, content)?;
+    write_atomic(&stats, content.as_bytes())?;
 
     // Truncate the log file (entries are now aggregated)
     if entries_processed > 0
@@ -138,7 +137,7 @@ pub fn load_command_order(dir: &Path) -> Option<Vec<(String, u64)>> {
     let stats: UsageStats = match serde_json::from_str(&content) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Warning: corrupt stats.json at {}: {}", path.display(), e);
+            warn_and_quarantine_stats(&path, &e);
             return None;
         }
     };
@@ -154,6 +153,28 @@ pub fn load_command_order(dir: &Path) -> Option<Vec<(String, u64)>> {
     commands.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     Some(commands)
+}
+
+fn warn_and_quarantine_stats(path: &Path, err: &serde_json::Error) {
+    match quarantine_corrupt_file(path) {
+        Ok(Some(quarantine)) => eprintln!(
+            "Warning: corrupt stats.json at {}: {}; moved aside to {}",
+            path.display(),
+            err,
+            quarantine.display()
+        ),
+        Ok(None) => eprintln!(
+            "Warning: corrupt stats.json at {}: {}; file already absent",
+            path.display(),
+            err
+        ),
+        Err(move_err) => eprintln!(
+            "Warning: corrupt stats.json at {}: {}; failed to move aside: {}",
+            path.display(),
+            err,
+            move_err
+        ),
+    }
 }
 
 /// Command tier for help display grouping
@@ -363,6 +384,56 @@ mod tests {
         assert_eq!(order[0].0, "list");
         assert_eq!(order[1].0, "done");
         assert_eq!(order[2].0, "add");
+    }
+
+    #[test]
+    fn test_corrupt_stats_are_quarantined_on_read() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let stats = stats_path(dir);
+        fs::write(&stats, "").unwrap();
+
+        assert!(load_command_order(dir).is_none());
+        assert!(
+            !stats.exists(),
+            "corrupt stats.json should be moved aside after read"
+        );
+        let quarantined = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("stats.json.corrupt-")
+            })
+            .count();
+        assert_eq!(quarantined, 1);
+    }
+
+    #[test]
+    fn test_corrupt_stats_are_quarantined_before_aggregate_reset() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let stats = stats_path(dir);
+        fs::write(&stats, "").unwrap();
+        append_usage_log(dir, "list");
+
+        let processed = aggregate_usage_stats(dir).unwrap();
+        assert_eq!(processed, 1);
+        let replacement: UsageStats =
+            serde_json::from_str(&fs::read_to_string(&stats).unwrap()).unwrap();
+        assert_eq!(replacement.counts.get("list"), Some(&1));
+
+        let quarantined = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("stats.json.corrupt-")
+            })
+            .count();
+        assert_eq!(quarantined, 1);
     }
 
     #[test]

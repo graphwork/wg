@@ -18,6 +18,7 @@
 extern crate self as workgraph;
 
 pub mod agency;
+pub mod atomic_file;
 pub mod chat;
 pub mod chat_command;
 pub mod chat_id;

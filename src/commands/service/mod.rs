@@ -43,6 +43,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use chrono::{DateTime, Utc};
 
 use workgraph::agency;
+use workgraph::atomic_file::{quarantine_corrupt_file, write_atomic};
 use workgraph::config::Config;
 use workgraph::parser::load_graph;
 use workgraph::service::registry::AgentRegistry;
@@ -278,12 +279,8 @@ impl DaemonLogger {
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
         let line = format!("{} [{}] {}\n", ts, level, msg);
         if let Ok(mut inner) = self.inner.lock() {
-            if let Err(e) = inner.file.write_all(line.as_bytes()) {
-                eprintln!("Warning: daemon log write failed: {}", e);
-            }
-            if let Err(e) = inner.file.flush() {
-                eprintln!("Warning: daemon log flush failed: {}", e);
-            }
+            let _ = inner.file.write_all(line.as_bytes());
+            let _ = inner.file.flush();
             inner.written += line.len() as u64;
             if inner.written >= LOG_MAX_BYTES {
                 Self::rotate(&mut inner);
@@ -323,11 +320,9 @@ impl DaemonLogger {
     /// the process aborts.
     pub fn install_panic_hook(&self) {
         let logger = self.clone();
-        let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let msg = format!("PANIC: {}", info);
             logger.log("FATAL", &msg);
-            default_hook(info);
         }));
     }
 }
@@ -336,6 +331,19 @@ impl DaemonLogger {
 /// (or all lines if `level_filter` is `None`).  Returns up to `n` lines,
 /// most recent last.
 pub fn tail_log(dir: &Path, n: usize, level_filter: Option<&str>) -> Vec<String> {
+    tail_log_since(dir, n, level_filter, None)
+}
+
+/// Read the last `n` lines from the current daemon's log. When `since` is
+/// provided, older lines from previous daemon lifetimes are filtered out so
+/// `wg service status` does not surface stale disk-full errors as current
+/// daemon health.
+pub fn tail_log_since(
+    dir: &Path,
+    n: usize,
+    level_filter: Option<&str>,
+    since: Option<DateTime<Utc>>,
+) -> Vec<String> {
     let path = log_file_path(dir);
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
@@ -347,10 +355,15 @@ pub fn tail_log(dir: &Path, n: usize, level_filter: Option<&str>) -> Vec<String>
         lines
             .iter()
             .filter(|l| l.contains(&tag))
+            .filter(|l| log_line_is_since(l, since))
             .map(std::string::ToString::to_string)
             .collect()
     } else {
-        lines.iter().map(std::string::ToString::to_string).collect()
+        lines
+            .iter()
+            .filter(|l| log_line_is_since(l, since))
+            .map(std::string::ToString::to_string)
+            .collect()
     };
     filtered
         .into_iter()
@@ -360,6 +373,18 @@ pub fn tail_log(dir: &Path, n: usize, level_filter: Option<&str>) -> Vec<String>
         .into_iter()
         .rev()
         .collect()
+}
+
+fn log_line_is_since(line: &str, since: Option<DateTime<Utc>>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    let Some((ts, _)) = line.split_once(' ') else {
+        return true;
+    };
+    DateTime::parse_from_rfc3339(ts)
+        .map(|dt| dt.with_timezone(&Utc) >= since)
+        .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -443,9 +468,13 @@ impl ServiceState {
         }
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read service state from {:?}", path))?;
-        let state: ServiceState = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse service state from {:?}", path))?;
-        Ok(Some(state))
+        match serde_json::from_str(&content) {
+            Ok(state) => Ok(Some(state)),
+            Err(e) => {
+                warn_and_quarantine_runtime_json(&path, "service state", &e);
+                Ok(None)
+            }
+        }
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -458,7 +487,7 @@ impl ServiceState {
         let path = state_file_path(dir);
         let content =
             serde_json::to_string_pretty(self).context("Failed to serialize service state")?;
-        fs::write(&path, content)
+        write_atomic(&path, content.as_bytes())
             .with_context(|| format!("Failed to write service state to {:?}", path))?;
         Ok(())
     }
@@ -470,6 +499,63 @@ impl ServiceState {
                 .with_context(|| format!("Failed to remove service state at {:?}", path))?;
         }
         Ok(())
+    }
+}
+
+fn load_runtime_json_or_quarantine<T>(path: &Path, label: &str) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to read {} at {}: {}",
+                label,
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_str(&content) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            warn_and_quarantine_runtime_json(path, label, &e);
+            None
+        }
+    }
+}
+
+fn warn_and_quarantine_runtime_json(path: &Path, label: &str, err: &serde_json::Error) {
+    match quarantine_corrupt_file(path) {
+        Ok(Some(quarantine)) => {
+            eprintln!(
+                "Warning: corrupt {} at {}: {}; moved aside to {}",
+                label,
+                path.display(),
+                err,
+                quarantine.display()
+            );
+        }
+        Ok(None) => {
+            eprintln!(
+                "Warning: corrupt {} at {}: {}; file already absent",
+                label,
+                path.display(),
+                err
+            );
+        }
+        Err(move_err) => {
+            eprintln!(
+                "Warning: corrupt {} at {}: {}; failed to move aside: {}",
+                label,
+                path.display(),
+                err,
+                move_err
+            );
+        }
     }
 }
 
@@ -593,34 +679,19 @@ impl CoordinatorState {
     /// for coordinator 0.
     pub fn load_for(dir: &Path, coordinator_id: u32) -> Option<Self> {
         let path = coordinator_state_path(dir, coordinator_id);
-        if let Ok(content) = fs::read_to_string(&path) {
-            return match serde_json::from_str(&content) {
-                Ok(state) => Some(state),
-                Err(e) => {
-                    eprintln!(
-                        "Warning: corrupt coordinator state at {}: {}",
-                        path.display(),
-                        e
-                    );
-                    None
-                }
-            };
+        if path.exists()
+            && let Some(state) = load_runtime_json_or_quarantine(&path, "coordinator state")
+        {
+            return Some(state);
         }
+
         // Backward compat: fall back to legacy shared file for coordinator 0
         if coordinator_id == 0 {
             let legacy = coordinator_state_path_legacy(dir);
-            if let Ok(content) = fs::read_to_string(&legacy) {
-                return match serde_json::from_str(&content) {
-                    Ok(state) => Some(state),
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: corrupt coordinator state at {}: {}",
-                            legacy.display(),
-                            e
-                        );
-                        None
-                    }
-                };
+            if legacy.exists()
+                && let Some(state) = load_runtime_json_or_quarantine(&legacy, "coordinator state")
+            {
+                return Some(state);
             }
         }
         None
@@ -646,7 +717,7 @@ impl CoordinatorState {
         }
         match serde_json::to_string_pretty(self) {
             Ok(content) => {
-                if let Err(e) = fs::write(&path, content) {
+                if let Err(e) = write_atomic(&path, content.as_bytes()) {
                     eprintln!(
                         "Warning: failed to save coordinator state to {}: {}",
                         path.display(),
@@ -713,28 +784,10 @@ impl CoordinatorState {
     /// memory accounting.
     #[allow(dead_code)]
     pub fn total_accumulated_tokens(dir: &Path) -> u64 {
-        let service_dir = dir.join("service");
-        let entries = match fs::read_dir(&service_dir) {
-            Ok(e) => e,
-            Err(_) => return Self::load(dir).map(|s| s.accumulated_tokens).unwrap_or(0),
-        };
-        let mut total: u64 = 0;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with("coordinator-state-")
-                && name_str.ends_with(".json")
-                && let Ok(content) = fs::read_to_string(entry.path())
-                && let Ok(state) = serde_json::from_str::<Self>(&content)
-            {
-                total += state.accumulated_tokens;
-            }
-        }
-        // Fall back to legacy file if no per-ID files found
-        if total == 0 {
-            total = Self::load(dir).map(|s| s.accumulated_tokens).unwrap_or(0);
-        }
-        total
+        Self::load_all(dir)
+            .into_iter()
+            .map(|(_, state)| state.accumulated_tokens)
+            .sum()
     }
 
     /// Remove the per-ID state file for a specific coordinator.
@@ -783,8 +836,8 @@ impl CoordinatorState {
         let per_id_path = coordinator_state_path(dir, 0);
         if legacy_path.exists()
             && !per_id_path.exists()
-            && let Ok(content) = fs::read_to_string(&legacy_path)
-            && let Ok(state) = serde_json::from_str::<Self>(&content)
+            && let Some(state) =
+                load_runtime_json_or_quarantine::<Self>(&legacy_path, "coordinator state")
         {
             state.save_for(dir, 0);
             let _ = fs::remove_file(&legacy_path);
@@ -1141,6 +1194,7 @@ pub fn run_start(
 
     let child = process::Command::new(&current_exe)
         .args(&args)
+        .env("WG_DIR", dir)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
         .stderr(stderr_file)
@@ -3120,6 +3174,27 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {
+            let orphans = find_orphan_daemon_pids(dir, None);
+            if !orphans.is_empty() {
+                if json {
+                    let output = serde_json::json!({
+                        "status": "running_orphaned",
+                        "orphan_pids": orphans,
+                        "note": "Daemon process exists but service/state.json is missing or corrupt. Run `wg service start --force` to recover state."
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else {
+                    let pids: Vec<String> = orphans.iter().map(|p| p.to_string()).collect();
+                    println!(
+                        "Service: running without state (orphan PID {})",
+                        pids.join(", ")
+                    );
+                    println!(
+                        "  Run `wg service start --force` to recreate service state after killing the orphan daemon."
+                    );
+                }
+                return Ok(());
+            }
             if json {
                 let output = serde_json::json!({
                     "status": "not_running",
@@ -3159,13 +3234,16 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let agency_agents_defined = !agency::load_all_agents_or_warn(&agency_agents_dir).is_empty();
 
     // Calculate uptime
-    let uptime = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+    let started_at = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .ok();
+    let uptime = started_at
         .map(|started| {
             let now = chrono::Utc::now();
             let duration = now.signed_duration_since(started);
             workgraph::format_duration(duration.num_seconds(), false)
         })
-        .unwrap_or_else(|_| "unknown".to_string());
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
@@ -3174,8 +3252,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     let log_path = log_file_path(dir);
     let log_path_str = log_path.to_string_lossy().to_string();
     let log_exists = log_path.exists();
-    let recent_errors = tail_log(dir, 5, Some("ERROR"));
-    let recent_fatals = tail_log(dir, 5, Some("FATAL"));
+    let recent_errors = tail_log_since(dir, 5, Some("ERROR"), started_at);
+    let recent_fatals = tail_log_since(dir, 5, Some("FATAL"), started_at);
 
     if json {
         let mut output = serde_json::json!({
@@ -4281,6 +4359,31 @@ mod tests {
     }
 
     #[test]
+    fn test_corrupt_service_state_is_quarantined() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let path = state_file_path(dir);
+        fs::write(&path, "").unwrap();
+
+        assert!(ServiceState::load(dir).unwrap().is_none());
+        assert!(
+            !path.exists(),
+            "corrupt service state should be moved aside"
+        );
+        let quarantined = fs::read_dir(dir.join("service"))
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("state.json.corrupt-")
+            })
+            .count();
+        assert_eq!(quarantined, 1, "expected one quarantined state file");
+    }
+
+    #[test]
     fn test_is_process_alive() {
         // Current process should be running
         #[cfg(unix)]
@@ -4780,6 +4883,64 @@ mod tests {
 
         // Non-zero coordinator should NOT fall back to legacy
         assert!(CoordinatorState::load_for(dir, 1).is_none());
+    }
+
+    #[test]
+    fn test_corrupt_coord_state_is_quarantined_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let path = coordinator_state_path(dir, 0);
+        fs::write(&path, "").unwrap();
+
+        assert!(CoordinatorState::load_for(dir, 0).is_none());
+        assert!(
+            !path.exists(),
+            "corrupt coordinator state should be moved aside"
+        );
+        assert!(CoordinatorState::load_for(dir, 0).is_none());
+
+        let quarantined = fs::read_dir(dir.join("service"))
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("coordinator-state-0.json.corrupt-")
+            })
+            .count();
+        assert_eq!(
+            quarantined, 1,
+            "second load should not re-warn/re-quarantine the same corrupt file"
+        );
+    }
+
+    #[test]
+    fn test_corrupt_per_id_coord_state_falls_back_to_legacy() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        fs::write(coordinator_state_path(dir, 0), "").unwrap();
+        let legacy_state = CoordinatorState {
+            enabled: true,
+            max_agents: 6,
+            accumulated_tokens: 123,
+            ..Default::default()
+        };
+        fs::write(
+            coordinator_state_path_legacy(dir),
+            serde_json::to_string_pretty(&legacy_state).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded.max_agents, 6);
+        assert_eq!(loaded.accumulated_tokens, 123);
+        assert!(
+            !coordinator_state_path(dir, 0).exists(),
+            "corrupt per-ID state should not remain in the active filename"
+        );
     }
 
     #[test]

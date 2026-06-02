@@ -202,6 +202,63 @@ impl std::fmt::Display for Status {
     }
 }
 
+impl Status {
+    /// Parse user/runtime status spellings into the canonical enum.
+    ///
+    /// Serialized graph output stays kebab-case via `Display`/`Serialize`, but
+    /// recovery paths may encounter Rust debug spellings such as
+    /// `FailedPendingEval` in older generated JSON or operator edits.
+    pub fn parse_label(label: &str) -> Option<Self> {
+        match normalize_status_label(label).as_str() {
+            "open" => Some(Status::Open),
+            "in-progress" | "inprogress" => Some(Status::InProgress),
+            "waiting" => Some(Status::Waiting),
+            "done" => Some(Status::Done),
+            "blocked" => Some(Status::Blocked),
+            "failed" => Some(Status::Failed),
+            "abandoned" => Some(Status::Abandoned),
+            "pending-validation" | "pendingvalidation" => Some(Status::PendingValidation),
+            "pending-eval" | "pendingeval" => Some(Status::PendingEval),
+            "failed-pending-eval" | "failedpendingeval" => Some(Status::FailedPendingEval),
+            "incomplete" => Some(Status::Incomplete),
+            // Migration: pending-review is treated as done.
+            "pending-review" | "pendingreview" => Some(Status::Done),
+            _ => None,
+        }
+    }
+}
+
+fn normalize_status_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() + 4);
+    let mut prev_was_sep = false;
+    let mut prev_was_lower_or_digit = false;
+
+    for ch in label.trim().chars() {
+        if ch == '_' || ch == '-' || ch.is_whitespace() {
+            if !out.is_empty() && !prev_was_sep {
+                out.push('-');
+                prev_was_sep = true;
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && prev_was_lower_or_digit && !prev_was_sep {
+            out.push('-');
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+        }
+        prev_was_sep = false;
+        prev_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    }
+
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
 /// Custom deserializer that maps legacy "pending-review" status to Done.
 impl<'de> serde::Deserialize<'de> for Status {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -209,22 +266,10 @@ impl<'de> serde::Deserialize<'de> for Status {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        match s.as_str() {
-            "open" => Ok(Status::Open),
-            "in-progress" => Ok(Status::InProgress),
-            "waiting" => Ok(Status::Waiting),
-            "done" => Ok(Status::Done),
-            "blocked" => Ok(Status::Blocked),
-            "failed" => Ok(Status::Failed),
-            "abandoned" => Ok(Status::Abandoned),
-            "pending-validation" => Ok(Status::PendingValidation),
-            "pending-eval" => Ok(Status::PendingEval),
-            "failed-pending-eval" => Ok(Status::FailedPendingEval),
-            "incomplete" => Ok(Status::Incomplete),
-            // Migration: pending-review is treated as done
-            "pending-review" => Ok(Status::Done),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
+        match Status::parse_label(&s) {
+            Some(status) => Ok(status),
+            None => Err(serde::de::Error::unknown_variant(
+                s.as_str(),
                 &[
                     "open",
                     "in-progress",
@@ -2834,6 +2879,21 @@ mod tests {
         assert_eq!(json, "\"pending-eval\"");
         let parsed: Status = serde_json::from_str("\"pending-eval\"").unwrap();
         assert_eq!(parsed, Status::PendingEval);
+    }
+
+    #[test]
+    fn test_eval_status_deserialize_accepts_debug_and_alias_spellings() {
+        for (raw, expected) in [
+            ("\"PendingEval\"", Status::PendingEval),
+            ("\"pending_eval\"", Status::PendingEval),
+            ("\"pending-eval\"", Status::PendingEval),
+            ("\"FailedPendingEval\"", Status::FailedPendingEval),
+            ("\"failed_pending_eval\"", Status::FailedPendingEval),
+            ("\"failed-pending-eval\"", Status::FailedPendingEval),
+        ] {
+            let parsed: Status = serde_json::from_str(raw).unwrap();
+            assert_eq!(parsed, expected, "status spelling should normalize: {raw}");
+        }
     }
 
     #[test]

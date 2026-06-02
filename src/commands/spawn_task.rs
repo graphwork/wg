@@ -284,7 +284,7 @@ fn is_coordinator_id(task_id: &str) -> bool {
 /// Exec into the handler process. This REPLACES the current process
 /// (via `execvp`) on Unix so stdio passes through cleanly — the PTY
 /// parent sees the handler's bytes directly.
-fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
+fn dispatch(spec: &HandlerSpec, workgraph_dir: &Path) -> Result<()> {
     match spec {
         HandlerSpec::Native {
             chat_ref,
@@ -298,16 +298,21 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             *resume,
             model.as_deref(),
             endpoint.as_deref(),
+            workgraph_dir,
         ),
-        HandlerSpec::Claude { chat_ref, model } => dispatch_claude(chat_ref, model.as_deref()),
-        HandlerSpec::Codex { chat_ref, model } => dispatch_codex(chat_ref, model.as_deref()),
+        HandlerSpec::Claude { chat_ref, model } => {
+            dispatch_claude(chat_ref, model.as_deref(), workgraph_dir)
+        }
+        HandlerSpec::Codex { chat_ref, model } => {
+            dispatch_codex(chat_ref, model.as_deref(), workgraph_dir)
+        }
         HandlerSpec::Gemini { .. } => Err(anyhow!(
             "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
     }
 }
 
-fn dispatch_codex(chat_ref: &str, model: Option<&str>) -> Result<()> {
+fn dispatch_codex(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -315,6 +320,7 @@ fn dispatch_codex(chat_ref: &str, model: Option<&str>) -> Result<()> {
             std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("codex-handler").arg("--chat").arg(chat_ref);
+        cmd.env("WG_DIR", workgraph_dir);
         if let Some(m) = model {
             cmd.arg("-m").arg(m);
         }
@@ -323,14 +329,14 @@ fn dispatch_codex(chat_ref: &str, model: Option<&str>) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let _ = (chat_ref, model);
+        let _ = (chat_ref, model, workgraph_dir);
         Err(anyhow!(
             "spawn-task dispatch not yet supported on this platform"
         ))
     }
 }
 
-fn dispatch_claude(chat_ref: &str, model: Option<&str>) -> Result<()> {
+fn dispatch_claude(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -338,6 +344,7 @@ fn dispatch_claude(chat_ref: &str, model: Option<&str>) -> Result<()> {
             std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("claude-handler").arg("--chat").arg(chat_ref);
+        cmd.env("WG_DIR", workgraph_dir);
         // Coordinator role is implicit for `coordinator-*` refs; pass
         // explicit role if the caller set one via role_override.
         if let Some(m) = model {
@@ -348,7 +355,7 @@ fn dispatch_claude(chat_ref: &str, model: Option<&str>) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let _ = (chat_ref, model);
+        let _ = (chat_ref, model, workgraph_dir);
         Err(anyhow!(
             "spawn-task dispatch not yet supported on this platform"
         ))
@@ -361,6 +368,7 @@ fn dispatch_native(
     resume: bool,
     model: Option<&str>,
     endpoint: Option<&str>,
+    workgraph_dir: &Path,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -370,6 +378,7 @@ fn dispatch_native(
             std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("nex").arg("--chat").arg(chat_ref);
+        cmd.env("WG_DIR", workgraph_dir);
         if resume {
             cmd.arg("--resume");
         }
@@ -390,7 +399,7 @@ fn dispatch_native(
     #[cfg(not(unix))]
     {
         // Fallback on non-Unix: spawn + wait + propagate exit code.
-        let _ = (chat_ref, role, resume, model, endpoint);
+        let _ = (chat_ref, role, resume, model, endpoint, workgraph_dir);
         Err(anyhow!(
             "spawn-task dispatch not yet supported on this platform"
         ))

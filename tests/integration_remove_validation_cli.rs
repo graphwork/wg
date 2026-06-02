@@ -18,6 +18,17 @@ fn wg_bin() -> std::path::PathBuf {
     p
 }
 
+fn wg_cmd(bin: &std::path::Path) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
+        .env_remove("WG_EXECUTOR_TYPE")
+        .env_remove("WG_MODEL")
+        .env_remove("WG_TIER");
+    cmd
+}
+
 /// `wg add --help` must not advertise `--validation` (or `--validator-*`).
 #[test]
 fn test_cli_add_no_validation_flag() {
@@ -26,7 +37,7 @@ fn test_cli_add_no_validation_flag() {
         eprintln!("wg binary not built; skipping test");
         return;
     }
-    let out = Command::new(&bin)
+    let out = wg_cmd(&bin)
         .args(["add", "--help"])
         .output()
         .expect("run wg add --help");
@@ -56,7 +67,7 @@ fn test_cli_edit_no_validation_flag() {
         eprintln!("wg binary not built; skipping test");
         return;
     }
-    let out = Command::new(&bin)
+    let out = wg_cmd(&bin)
         .args(["edit", "--help"])
         .output()
         .expect("run wg edit --help");
@@ -78,7 +89,7 @@ fn test_quickstart_no_validation_flag() {
         eprintln!("wg binary not built; skipping test");
         return;
     }
-    let out = Command::new(&bin)
+    let out = wg_cmd(&bin)
         .arg("quickstart")
         .output()
         .expect("run wg quickstart");
@@ -136,7 +147,7 @@ fn test_cli_add_validation_flag_is_noop_or_unknown() {
     let tmp = tempfile::TempDir::new().unwrap();
     // Initialize WG so flag-acceptance path can succeed without
     // hitting the "WG not initialized" gate.
-    let init = Command::new(&bin)
+    let init = wg_cmd(&bin)
         .current_dir(tmp.path())
         .args(["init", "--executor", "shell"])
         .output()
@@ -147,7 +158,7 @@ fn test_cli_add_validation_flag_is_noop_or_unknown() {
         String::from_utf8_lossy(&init.stderr)
     );
 
-    let out = Command::new(&bin)
+    let out = wg_cmd(&bin)
         .current_dir(tmp.path())
         .args(["add", "smoke-test", "--validation=llm"])
         .output()

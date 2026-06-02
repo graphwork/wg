@@ -184,16 +184,16 @@ pub fn run(
     let graph = load_graph(&path)?;
     let task = graph.get_task_or_err(task_id)?;
 
-    // Step 1: Verify task is done, failed, or pending-eval.
+    // Step 1: Verify task is done, failed, pending-eval, or failed-pending-eval.
     // Failed tasks are also evaluated — there is useful signal in what kinds
     // of tasks cause which agents to fail (see §4.3 of agency design).
     // PendingEval is the eval-gated state — it means "done but eval pending",
     // so evaluation must accept it (otherwise every .evaluate-X auto-fails).
     match task.status {
-        Status::Done | Status::Failed | Status::PendingEval => {}
+        Status::Done | Status::Failed | Status::PendingEval | Status::FailedPendingEval => {}
         ref other => {
             bail!(
-                "Task '{}' has status {:?} — must be done, failed, or pending-eval to evaluate",
+                "Task '{}' has status {} — must be done, failed, pending-eval, or failed-pending-eval to evaluate",
                 task_id,
                 other
             );
@@ -781,14 +781,14 @@ pub fn run_flip(
     let graph = load_graph(&path)?;
     let task = graph.get_task_or_err(task_id)?;
 
-    // Verify task is done, failed, or pending-eval.
+    // Verify task is done, failed, pending-eval, or failed-pending-eval.
     // PendingEval is the eval-gated state — accept it so .flip-X tasks can
     // run while the parent waits for eval scoring.
     match task.status {
-        Status::Done | Status::Failed | Status::PendingEval => {}
+        Status::Done | Status::Failed | Status::PendingEval | Status::FailedPendingEval => {}
         ref other => {
             bail!(
-                "Task '{}' has status {:?} — must be done, failed, or pending-eval to evaluate",
+                "Task '{}' has status {} — must be done, failed, pending-eval, or failed-pending-eval to evaluate",
                 task_id,
                 other
             );
