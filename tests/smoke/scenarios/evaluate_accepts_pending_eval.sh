@@ -12,11 +12,11 @@
 # must accept PendingEval as a valid input state — it means "done but eval
 # pending", which is the entire point of the eval-gate.
 #
-# This scenario materialises a graph with a single PendingEval task, runs
-# `wg evaluate run a` and `wg evaluate run a --flip`, and asserts the
-# precondition error string is NOT present in stderr. The commands may still
-# exit non-zero for other reasons (no agent / no role / FLIP disabled), but
-# they MUST get past the status check.
+# This scenario materialises graph tasks in PendingEval and FailedPendingEval
+# states, runs representative `wg evaluate run` / `--flip` commands, and asserts
+# the status precondition error string is NOT present in stderr. The commands
+# may still exit non-zero or time out for other reasons (no agent / no role /
+# FLIP disabled / no LLM endpoint), but they MUST get past the status check.
 #
 # Fast (no daemon, no LLM, no network).
 
@@ -46,30 +46,41 @@ if [[ -z "$graph_dir" ]]; then
     loud_fail "could not locate graph.jsonl under .wg/ or .wg/ after init"
 fi
 
-# Synthetic PendingEval task.
+# Synthetic eval-pending tasks. Task `c` intentionally uses Rust debug spelling
+# to pin status normalization during disk/state recovery.
 cat >>"$graph_dir/graph.jsonl" <<'EOF'
 {"kind":"task","id":"a","title":"PendingEval parent","status":"pending-eval","created_at":"2026-04-27T17:00:00+00:00"}
+{"kind":"task","id":"b","title":"FailedPendingEval parent","status":"failed-pending-eval","created_at":"2026-04-27T17:00:00+00:00"}
+{"kind":"task","id":"c","title":"FailedPendingEval debug spelling","status":"FailedPendingEval","created_at":"2026-04-27T17:00:00+00:00"}
 EOF
 
-# Bare `wg evaluate run a` — must not bail with the precondition error.
-wg evaluate run a >eval.out 2>eval.err
-ec=$?
-if grep -q "has status PendingEval" eval.err; then
-    loud_fail "wg evaluate run rejects PendingEval (precondition still fires):\n$(cat eval.err)"
-fi
-if grep -q "must be done or failed to evaluate" eval.err; then
-    loud_fail "wg evaluate run still emits stale error message:\n$(cat eval.err)"
-fi
+run_case() {
+    local label="$1"
+    shift
+    local err="$label.err"
+    local out="$label.out"
 
-# `wg evaluate run a --flip` — same contract.
-wg evaluate run a --flip >flip.out 2>flip.err
-fc=$?
-if grep -q "has status PendingEval" flip.err; then
-    loud_fail "wg evaluate run --flip rejects PendingEval:\n$(cat flip.err)"
-fi
-if grep -q "must be done or failed to evaluate" flip.err; then
-    loud_fail "wg evaluate run --flip still emits stale error message:\n$(cat flip.err)"
-fi
+    # Timeout is acceptable here: the status check happens before any slow LLM
+    # path. A timeout means the command got past the precondition under test.
+    timeout 8 wg evaluate run "$@" >"$out" 2>"$err"
+    rc=$?
+    if grep -Eq "has status (PendingEval|FailedPendingEval|pending-eval|failed-pending-eval)" "$err"; then
+        loud_fail "wg evaluate run rejects eval-pending status for $label (precondition still fires):\n$(cat "$err")"
+    fi
+    if grep -q "unknown variant.*FailedPendingEval" "$err"; then
+        loud_fail "wg evaluate run failed to normalize FailedPendingEval status spelling for $label:\n$(cat "$err")"
+    fi
+    if grep -q "must be done, failed, or pending-eval to evaluate" "$err"; then
+        loud_fail "wg evaluate run still emits stale allowed-status list for $label:\n$(cat "$err")"
+    fi
+    if grep -q "must be done or failed to evaluate" "$err"; then
+        loud_fail "wg evaluate run still emits old pre-PendingEval message for $label:\n$(cat "$err")"
+    fi
+}
 
-echo "PASS: wg evaluate run accepts PendingEval as a valid input state (run ec=$ec, flip ec=$fc)"
+run_case pending-eval a
+run_case failed-pending-eval b
+run_case failed-pending-eval-debug-flip c --flip
+
+echo "PASS: wg evaluate run accepts PendingEval and FailedPendingEval input states (last rc=$rc)"
 exit 0

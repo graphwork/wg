@@ -941,8 +941,9 @@ fn subprocess_coordinator_loop(
 
         let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
         let mut cmd = Command::new(&wg_bin);
-        cmd.arg("spawn-task").arg(&task_id);
+        cmd.arg("--dir").arg(dir).arg("spawn-task").arg(&task_id);
         cmd.current_dir(dir.parent().unwrap_or(dir));
+        cmd.env("WG_DIR", dir);
         cmd.env("WG_EXECUTOR_TYPE", &effective_exec);
         if let Some(p) = provider {
             cmd.env("WG_PROVIDER", p);
@@ -979,8 +980,9 @@ fn subprocess_coordinator_loop(
             .map(|e| e.name.as_str())
             .unwrap_or("none");
         logger.info(&format!(
-            "Coordinator-{}: spawning via `wg spawn-task {}` (executor={}, model={:?}, endpoint={}, stderr_log={:?})",
+            "Coordinator-{}: spawning via `wg --dir {} spawn-task {}` (executor={}, model={:?}, endpoint={}, stderr_log={:?})",
             coordinator_id,
+            dir.display(),
             task_id,
             effective_exec,
             effective_model_override,

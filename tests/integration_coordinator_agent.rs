@@ -408,6 +408,30 @@ fn coordinator_agent_basic_conversation() {
     );
 }
 
+#[test]
+fn coordinator_agent_spawn_uses_daemon_workgraph_dir_not_ambient_env() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = init_workgraph(&tmp);
+    let ambient_tmp = TempDir::new().unwrap();
+    let ambient_wg_dir = ambient_tmp.path().join(".wg");
+    fs::create_dir_all(&ambient_wg_dir).unwrap();
+
+    let mock = MockClaude::new();
+    let ambient_wg_dir_str = ambient_wg_dir.to_string_lossy().to_string();
+    let guard =
+        CoordinatorDaemonGuard::start_with_env(&wg_dir, &mock, &[("WG_DIR", &ambient_wg_dir_str)]);
+
+    let stdout = guard.chat_ok("Hello from the isolated graph", 15);
+
+    assert!(
+        stdout.contains("Mock coordinator response"),
+        "Expected mock coordinator response despite ambient WG_DIR={}, got:\n{}\nDaemon log:\n{}",
+        ambient_wg_dir.display(),
+        stdout,
+        read_daemon_log(&wg_dir),
+    );
+}
+
 /// Multi-turn conversation: send multiple messages in sequence, all get responses.
 #[test]
 fn coordinator_agent_multi_turn() {

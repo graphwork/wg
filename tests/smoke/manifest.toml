@@ -418,6 +418,7 @@ name = "evaluate_accepts_pending_eval"
 script = "scenarios/evaluate_accepts_pending_eval.sh"
 owners = [
     "bug-flip-and",
+    "fix-service-recovery",
     "smoke-gate-is",
 ]
 description = "wg evaluate run (and --flip) MUST accept Status::PendingEval as a valid input state. Regression for the 2026-04-27 mass-fail: ~30 .flip-* / .evaluate-* tasks auto-failed with 'has status PendingEval — must be done or failed to evaluate' because the dispatcher correctly fires those tasks while parent is still PendingEval (per the eval-gated unblock contract) but evaluate.rs's precondition rejected it."
