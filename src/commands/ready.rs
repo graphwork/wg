@@ -2,12 +2,13 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::graph::{PRIORITY_DEFAULT, Status};
-use workgraph::query::ready_tasks_cycle_aware;
+use workgraph::query::{blocked_open_cycle_diagnostics, ready_tasks_cycle_aware};
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
     let cycle_analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
+    let diagnostics = blocked_open_cycle_diagnostics(&graph, &cycle_analysis);
 
     // Find tasks that would be ready except they're waiting on ready_after
     let waiting: Vec<_> = graph
@@ -61,8 +62,12 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             }));
         }
         println!("{}", serde_json::to_string_pretty(&output)?);
+        for diagnostic in &diagnostics {
+            eprintln!("Warning: {}", diagnostic.message());
+        }
     } else if ready.is_empty() && waiting.is_empty() {
         println!("No tasks ready");
+        print_readiness_diagnostics(&diagnostics);
     } else {
         if !ready.is_empty() {
             println!("Ready tasks:");
@@ -90,9 +95,21 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 println!("  {} - {} {}", task.id, task.title, countdown);
             }
         }
+        print_readiness_diagnostics(&diagnostics);
     }
 
     Ok(())
+}
+
+fn print_readiness_diagnostics(diagnostics: &[workgraph::query::BlockedOpenCycleDiagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    println!();
+    println!("Readiness diagnostics:");
+    for diagnostic in diagnostics {
+        println!("  Warning: {}", diagnostic.message());
+    }
 }
 
 /// Format a timestamp as a countdown string.

@@ -139,6 +139,10 @@ pub enum FailureClass {
     /// Generic non-zero exit with no recognised api_error pattern.
     /// Equivalent to the pre-classification "Agent exited with code N".
     AgentExitNonzero,
+    /// Executor/tool configuration prevented the worker from starting usefully
+    /// (for example, Codex optional tool config references an unavailable
+    /// image model). Action: fix executor config; do not spend cycle restarts.
+    ExecutorConfig,
     /// Wrapper-side issue (e.g., missing raw_stream.jsonl). Inspect wrapper log.
     WrapperInternal,
 }
@@ -151,9 +155,16 @@ impl std::fmt::Display for FailureClass {
             FailureClass::ApiError5xxTransient => "api-error-5xx-transient",
             FailureClass::AgentHardTimeout => "agent-hard-timeout",
             FailureClass::AgentExitNonzero => "agent-exit-nonzero",
+            FailureClass::ExecutorConfig => "executor-config",
             FailureClass::WrapperInternal => "wrapper-internal",
         };
         write!(f, "{}", s)
+    }
+}
+
+impl FailureClass {
+    pub fn suppresses_cycle_failure_restart(self) -> bool {
+        matches!(self, FailureClass::ExecutorConfig)
     }
 }
 
@@ -2663,6 +2674,25 @@ fn reactivate_cycle_on_failure(
             return vec![];
         }
     } else {
+        return vec![];
+    }
+
+    if let Some(class) = graph
+        .get_task(failed_task_id)
+        .and_then(|task| task.failure_class)
+        && class.suppresses_cycle_failure_restart()
+    {
+        if let Some(task) = graph.get_task_mut(config_owner_id) {
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: None,
+                user: Some(crate::current_user()),
+                message: format!(
+                    "Cycle failure restart skipped for task '{}' because failure_class={} indicates executor/tool configuration failed before useful work began. Fix the executor configuration, then retry deliberately.",
+                    failed_task_id, class
+                ),
+            });
+        }
         return vec![];
     }
 

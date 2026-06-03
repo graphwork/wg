@@ -1570,6 +1570,7 @@ impl ExecutorRegistry {
                     command: "codex".to_string(),
                     args: vec![
                         "exec".to_string(),
+                        "--ignore-user-config".to_string(),
                         "--json".to_string(),
                         "--skip-git-repo-check".to_string(),
                         "--dangerously-bypass-approvals-and-sandbox".to_string(),
@@ -2504,9 +2505,10 @@ args = ["--custom-flag"]
         assert_eq!(config.executor.command, "codex");
         // Base invocation flags
         assert_eq!(
-            &config.executor.args[0..4],
+            &config.executor.args[0..5],
             &[
                 "exec".to_string(),
+                "--ignore-user-config".to_string(),
                 "--json".to_string(),
                 "--skip-git-repo-check".to_string(),
                 "--dangerously-bypass-approvals-and-sandbox".to_string(),

@@ -55,6 +55,22 @@ pub struct FitResult<'a> {
     pub remaining: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BlockedOpenCycleDiagnostic {
+    pub cycle_members: Vec<String>,
+    pub failed_blockers: Vec<String>,
+}
+
+impl BlockedOpenCycleDiagnostic {
+    pub fn message(&self) -> String {
+        format!(
+            "blocked-open dependency cycle: open tasks [{}] are mutually waiting while failed blocker(s) [{}] prevent any useful break-in. Retry/fix the failed blocker, remove the failed dependency, or rewire this work as a sequential supervisor with explicit subtasks.",
+            self.cycle_members.join(", "),
+            self.failed_blockers.join(", ")
+        )
+    }
+}
+
 /// Information about a task and whether it fits the constraint
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskFitInfo<'a> {
@@ -547,6 +563,10 @@ pub fn ready_tasks_cycle_aware<'a>(
             continue;
         }
 
+        if cycle_has_unsatisfied_external_blocker(graph, &cycle.members) {
+            continue;
+        }
+
         // Check if all cycle members are open and time-ready
         let viable_members: Vec<&Task> = cycle
             .members
@@ -579,6 +599,92 @@ pub fn ready_tasks_cycle_aware<'a>(
     }
 
     ready_tasks
+}
+
+pub fn blocked_open_cycle_diagnostics(
+    graph: &WorkGraph,
+    cycle_analysis: &CycleAnalysis,
+) -> Vec<BlockedOpenCycleDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for cycle in &cycle_analysis.cycles {
+        let member_set: HashSet<&str> = cycle.members.iter().map(String::as_str).collect();
+        let Some(member_tasks) = collect_cycle_member_tasks(graph, &cycle.members) else {
+            continue;
+        };
+
+        if member_tasks.is_empty()
+            || member_tasks.iter().any(|task| {
+                !matches!(task.status, Status::Open | Status::Incomplete)
+                    || task.paused
+                    || !is_time_ready(task)
+            })
+        {
+            continue;
+        }
+
+        let every_member_waits_on_open_peer = member_tasks.iter().all(|task| {
+            task.after.iter().any(|dep_id| {
+                member_set.contains(dep_id.as_str())
+                    && graph
+                        .get_task(dep_id)
+                        .map(|dep| matches!(dep.status, Status::Open | Status::Incomplete))
+                        .unwrap_or(false)
+            })
+        });
+        if !every_member_waits_on_open_peer {
+            continue;
+        }
+
+        let mut failed_blockers: Vec<String> = member_tasks
+            .iter()
+            .flat_map(|task| task.after.iter())
+            .filter(|dep_id| !member_set.contains(dep_id.as_str()))
+            .filter_map(|dep_id| {
+                graph
+                    .get_task(dep_id)
+                    .filter(|dep| dep.status == Status::Failed)
+                    .map(|dep| dep.id.clone())
+            })
+            .collect();
+        failed_blockers.sort();
+        failed_blockers.dedup();
+        if failed_blockers.is_empty() {
+            continue;
+        }
+
+        let mut cycle_members = cycle.members.clone();
+        cycle_members.sort();
+        diagnostics.push(BlockedOpenCycleDiagnostic {
+            cycle_members,
+            failed_blockers,
+        });
+    }
+
+    diagnostics.sort_by(|a, b| a.cycle_members.cmp(&b.cycle_members));
+    diagnostics
+}
+
+fn collect_cycle_member_tasks<'a>(
+    graph: &'a WorkGraph,
+    members: &[String],
+) -> Option<Vec<&'a Task>> {
+    members.iter().map(|id| graph.get_task(id)).collect()
+}
+
+fn cycle_has_unsatisfied_external_blocker(graph: &WorkGraph, members: &[String]) -> bool {
+    let member_set: HashSet<&str> = members.iter().map(String::as_str).collect();
+    members
+        .iter()
+        .filter_map(|member_id| graph.get_task(member_id))
+        .flat_map(|task| task.after.iter())
+        .filter(|dep_id| !member_set.contains(dep_id.as_str()))
+        .any(|dep_id| {
+            graph
+                .get_task(dep_id)
+                .map(|dep| !dep.status.is_dep_satisfied())
+                .unwrap_or(true)
+        })
 }
 
 /// Find all tasks that are ready to work on, resolving cross-repo dependencies,

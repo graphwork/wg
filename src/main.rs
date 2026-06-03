@@ -3686,6 +3686,7 @@ fn parse_failure_class(s: &str) -> Option<workgraph::graph::FailureClass> {
         "api-error-5xx-transient" => Some(FailureClass::ApiError5xxTransient),
         "agent-hard-timeout" => Some(FailureClass::AgentHardTimeout),
         "agent-exit-nonzero" => Some(FailureClass::AgentExitNonzero),
+        "executor-config" => Some(FailureClass::ExecutorConfig),
         "wrapper-internal" => Some(FailureClass::WrapperInternal),
         _ => None,
     }

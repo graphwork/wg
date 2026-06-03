@@ -13,11 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{
-    CycleConfig, LoopGuard, Node, Status, Task, WorkGraph, evaluate_all_cycle_failure_restarts,
-    evaluate_all_cycle_iterations, evaluate_cycle_iteration, evaluate_cycle_on_failure,
+    CycleConfig, FailureClass, LoopGuard, Node, Status, Task, WorkGraph,
+    evaluate_all_cycle_failure_restarts, evaluate_all_cycle_iterations, evaluate_cycle_iteration,
+    evaluate_cycle_on_failure,
 };
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::{ready_tasks, ready_tasks_cycle_aware};
+use workgraph::query::{blocked_open_cycle_diagnostics, ready_tasks, ready_tasks_cycle_aware};
 
 // ===========================================================================
 // Helpers
@@ -5258,6 +5259,46 @@ fn test_failure_restart_disabled() {
 }
 
 #[test]
+fn test_executor_config_failure_does_not_consume_cycle_restart_budget() {
+    let mut a = make_task("a", "A");
+    a.after = vec!["b".to_string()];
+    a.status = Status::Done;
+    let mut b = make_task("b", "B");
+    b.after = vec!["a".to_string()];
+    b.status = Status::Failed;
+    b.failure_class = Some(FailureClass::ExecutorConfig);
+    b.failure_reason = Some("The model 'gpt-image-2' does not exist; param: tools".to_string());
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: Some(3),
+    });
+
+    let mut graph = build_graph(vec![a, b]);
+    let ca = graph.compute_cycle_analysis();
+    let reactivated = evaluate_cycle_on_failure(&mut graph, "b", &ca);
+
+    assert!(
+        reactivated.is_empty(),
+        "executor-config failures must not restart structural cycles"
+    );
+    let b = graph.get_task("b").unwrap();
+    assert_eq!(b.status, Status::Failed);
+    assert_eq!(b.cycle_failure_restarts, 0);
+    assert!(
+        b.log.iter().any(|entry| {
+            entry.message.contains("Cycle failure restart skipped")
+                && entry.message.contains("executor-config")
+        }),
+        "expected an actionable skip log on the cycle config owner, got: {:?}",
+        b.log
+    );
+}
+
+#[test]
 fn test_failure_restart_max_exceeded() {
     let mut a = make_task("a", "A");
     a.after = vec!["b".to_string()];
@@ -5284,6 +5325,93 @@ fn test_failure_restart_max_exceeded() {
         "Cycle should NOT restart when max_failure_restarts exceeded"
     );
     assert_eq!(graph.get_task("b").unwrap().status, Status::Failed);
+}
+
+#[test]
+fn test_failed_root_blocked_open_cycle_gets_readiness_diagnostic() {
+    let mut root = make_task("autopoietic-c4-compression", "Root loop");
+    root.status = Status::Failed;
+    root.failure_reason = Some("executor config failed before useful work".to_string());
+
+    let mut c1 = make_task("c4-loop-01-poasta-scale", "Poasta scale");
+    c1.after = vec![
+        "autopoietic-c4-compression".to_string(),
+        "c4-loop-02-compound-scale".to_string(),
+    ];
+    let mut c2 = make_task("c4-loop-02-compound-scale", "Compound scale");
+    c2.after = vec![
+        "c4-loop-01-poasta-scale".to_string(),
+        "c4-loop-03-seqwish-induction".to_string(),
+    ];
+    let mut c3 = make_task("c4-loop-03-seqwish-induction", "Seqwish induction");
+    c3.after = vec![
+        "c4-loop-02-compound-scale".to_string(),
+        "c4-loop-04-repeat-glue".to_string(),
+    ];
+    let mut c4 = make_task("c4-loop-04-repeat-glue", "Repeat glue");
+    c4.after = vec![
+        "c4-loop-03-seqwish-induction".to_string(),
+        "c4-loop-01-poasta-scale".to_string(),
+    ];
+
+    let graph = build_graph(vec![root, c1, c2, c3, c4]);
+    let ca = graph.compute_cycle_analysis();
+    let ready = ready_tasks_cycle_aware(&graph, &ca);
+    let diagnostics = blocked_open_cycle_diagnostics(&graph, &ca);
+
+    assert!(
+        ready.is_empty(),
+        "failed external root must prevent auto-break-in from selecting a useful child"
+    );
+    assert_eq!(diagnostics.len(), 1);
+    let diagnostic = &diagnostics[0];
+    assert!(
+        diagnostic
+            .cycle_members
+            .contains(&"c4-loop-01-poasta-scale".to_string())
+    );
+    assert_eq!(
+        diagnostic.failed_blockers,
+        vec!["autopoietic-c4-compression".to_string()]
+    );
+    assert!(
+        diagnostic
+            .message()
+            .contains("blocked-open dependency cycle")
+            && diagnostic.message().contains("autopoietic-c4-compression"),
+        "diagnostic should be actionable, got: {}",
+        diagnostic.message()
+    );
+}
+
+#[test]
+fn test_wg_ready_surfaces_failed_root_blocked_open_cycle_diagnostic() {
+    let tmp = TempDir::new().unwrap();
+
+    let mut root = make_task("autopoietic-c4-compression", "Root loop");
+    root.status = Status::Failed;
+    let mut c1 = make_task("c4-loop-01-poasta-scale", "Poasta scale");
+    c1.after = vec![
+        "autopoietic-c4-compression".to_string(),
+        "c4-loop-02-compound-scale".to_string(),
+    ];
+    let mut c2 = make_task("c4-loop-02-compound-scale", "Compound scale");
+    c2.after = vec!["c4-loop-01-poasta-scale".to_string()];
+
+    let wg_dir = setup_workgraph(&tmp, vec![root, c1, c2]);
+    let stdout = wg_ok(&wg_dir, &["ready"]);
+
+    assert!(
+        stdout.contains("No tasks ready"),
+        "wg ready should not auto-break into a cycle blocked by a failed root. Output:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("blocked-open dependency cycle")
+            && stdout.contains("autopoietic-c4-compression"),
+        "wg ready should print the failed-root cycle diagnostic. Output:\n{}",
+        stdout
+    );
 }
 
 #[test]

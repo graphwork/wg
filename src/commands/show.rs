@@ -736,6 +736,9 @@ fn print_human_readable(details: &TaskDetails) {
             ApiError5xxTransient => "transient upstream error — retry is safe",
             AgentHardTimeout => "agent exceeded hard timeout — split task or raise timeout",
             AgentExitNonzero => "generic non-zero exit — inspect agent output for details",
+            ExecutorConfig => {
+                "executor/tool configuration failed before useful work began — fix executor config, then retry deliberately"
+            }
             WrapperInternal => "wrapper-side issue — inspect the wrapper log (output.log)",
         };
         println!("  hint: {}", hint);

@@ -51,6 +51,7 @@ fn test_failure_class_display() {
     assert_eq!(ApiError5xxTransient.to_string(), "api-error-5xx-transient");
     assert_eq!(AgentHardTimeout.to_string(), "agent-hard-timeout");
     assert_eq!(AgentExitNonzero.to_string(), "agent-exit-nonzero");
+    assert_eq!(ExecutorConfig.to_string(), "executor-config");
     assert_eq!(WrapperInternal.to_string(), "wrapper-internal");
 }
 
@@ -81,6 +82,7 @@ fn test_failure_class_serde_round_trip() {
         ApiError5xxTransient,
         AgentHardTimeout,
         AgentExitNonzero,
+        ExecutorConfig,
         WrapperInternal,
     ];
 
@@ -211,6 +213,33 @@ fn test_classify_failure_subcommand_pdf_400() {
     assert_eq!(
         stdout, "api-error-400-document",
         "classify-failure should output the class. Got: {stdout}"
+    );
+}
+
+/// Verify Codex optional-tool startup failures are classified as executor config,
+/// not opaque agent nonzero exits that are eligible for cycle failure restarts.
+#[test]
+fn test_classify_failure_subcommand_codex_unavailable_optional_tool_model() {
+    let tmp = TempDir::new().unwrap();
+    let raw_stream = tmp.path().join("raw_stream.jsonl");
+    let mut f = fs::File::create(&raw_stream).unwrap();
+    writeln!(f, "The model 'gpt-image-2' does not exist.\nparam: tools").unwrap();
+    drop(f);
+
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
+    cmd.current_dir(tmp.path()).args([
+        "classify-failure",
+        "--raw-stream",
+        &raw_stream.to_string_lossy(),
+        "--exit-code",
+        "1",
+    ]);
+    cmd.env_remove("WG_DIR");
+    let output = cmd.output().expect("Failed to run wg binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert_eq!(
+        stdout, "executor-config",
+        "codex unavailable optional image/tool model must be a clear executor-config diagnostic, got: {stdout}"
     );
 }
 

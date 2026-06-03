@@ -12,6 +12,7 @@ type = "codex"
 command = "codex"
 args = [
     "exec",
+    "--ignore-user-config",
     "--json",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",

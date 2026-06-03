@@ -380,6 +380,15 @@ description = "Dispatcher MUST write a non-empty prompt.txt and a run.sh that pi
 timeout_seconds = 60
 
 [[scenario]]
+name = "codex_optional_tool_config_ignored"
+script = "scenarios/codex_optional_tool_config_ignored.sh"
+owners = [
+    "fix-autopoietic-loop-failure",
+]
+description = "Pins fix-autopoietic-loop-failure: the real dispatcher spawning a Codex worker must pass `--ignore-user-config` so unavailable optional user-configured tool/image models such as gpt-image-2 cannot abort worker startup before useful work begins. Uses a fake codex binary and no external credentials."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_new_chat_creates_fresh_ids"
 script = "scenarios/tui_new_chat_creates_fresh_ids.sh"
 owners = [

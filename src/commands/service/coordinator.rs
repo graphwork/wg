@@ -23,7 +23,7 @@ use workgraph::graph::{
 };
 use workgraph::messages;
 use workgraph::parser::{load_graph, modify_graph};
-use workgraph::query::ready_tasks_with_peers_cycle_aware;
+use workgraph::query::{blocked_open_cycle_diagnostics, ready_tasks_with_peers_cycle_aware};
 use workgraph::service::registry::AgentRegistry;
 
 use super::triage;
@@ -178,6 +178,9 @@ fn check_ready_or_return(
                 "[dispatcher] No ready tasks (terminal: {}/{})",
                 terminal, total
             );
+            for diagnostic in blocked_open_cycle_diagnostics(graph, &cycle_analysis) {
+                eprintln!("[dispatcher] Warning: {}", diagnostic.message());
+            }
         }
         return Some(TickResult {
             agents_alive: alive_count,

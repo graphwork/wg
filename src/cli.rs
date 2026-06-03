@@ -537,7 +537,7 @@ pub enum Commands {
         /// Machine-readable failure class (set by wrapper; pairs with --reason).
         /// One of: api-error-400-document, api-error-429-rate-limit,
         ///         api-error-5xx-transient, agent-hard-timeout,
-        ///         agent-exit-nonzero, wrapper-internal.
+        ///         agent-exit-nonzero, executor-config, wrapper-internal.
         #[arg(long, value_name = "CLASS")]
         class: Option<String>,
 

@@ -55,6 +55,10 @@ pub fn classify_from_raw_stream(raw_stream: &Path, exit_code: i32) -> FailureCla
         }
     }
 
+    if looks_like_executor_tool_model_config_failure(&tail) {
+        return FailureClass::ExecutorConfig;
+    }
+
     FailureClass::AgentExitNonzero
 }
 
@@ -94,6 +98,15 @@ fn extract_api_error_status(text: &str) -> Option<u32> {
     // read digits
     let digits: String = chars.take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
+}
+
+fn looks_like_executor_tool_model_config_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("param: tools")
+        && lower.contains("model")
+        && (lower.contains("does not exist")
+            || lower.contains("not found")
+            || lower.contains("unavailable"))
 }
 
 #[cfg(test)]
@@ -179,6 +192,15 @@ mod tests {
         assert_eq!(
             classify_from_raw_stream(f.path(), 1),
             FailureClass::AgentExitNonzero
+        );
+    }
+
+    #[test]
+    fn test_classifier_codex_unavailable_optional_tool_model() {
+        let f = write_stream("The model 'gpt-image-2' does not exist.\nparam: tools\n");
+        assert_eq!(
+            classify_from_raw_stream(f.path(), 1),
+            FailureClass::ExecutorConfig
         );
     }
 
