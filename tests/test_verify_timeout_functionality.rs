@@ -4,11 +4,13 @@ use tempfile::TempDir;
 
 use workgraph::config::CoordinatorConfig;
 use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph, parse_delay};
-use workgraph::parser::load_graph;
+use workgraph::parser::{load_graph, save_graph};
 
 fn wg_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     cmd
 }
 
@@ -242,6 +244,64 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
         Some("## Validation\n- [ ] echo test")
     );
     assert_eq!(task.verify, None);
+
+    Ok(())
+}
+
+#[test]
+fn test_cli_done_uses_task_verify_timeout() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let project_root = temp_dir.path();
+
+    std::fs::create_dir(project_root.join(".wg"))?;
+    let graph_path = project_root.join(".wg").join("graph.jsonl");
+    let mut graph = WorkGraph::new();
+    let mut task = create_task_with_timeout("timeout-task", Some("1s".to_string()));
+    task.title = "CLI done verify timeout".to_string();
+    task.status = Status::InProgress;
+    task.verify = Some("exec python3 -c 'import time; time.sleep(5)'".to_string());
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, &graph_path)?;
+
+    let started = std::time::Instant::now();
+    let output = wg_command()
+        .args(&["done", "timeout-task", "--skip-smoke"])
+        .current_dir(project_root)
+        .output()?;
+    let elapsed = started.elapsed();
+
+    assert!(
+        !output.status.success(),
+        "wg done should fail when verify times out.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "task-specific verify timeout was not applied; elapsed {:?}",
+        elapsed,
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Verify command timed out after 1s"),
+        "stderr should report the task-specific timeout, got: {}",
+        stderr,
+    );
+
+    let (graph, _) = load_workgraph(project_root)?;
+    let task = graph
+        .get_task("timeout-task")
+        .ok_or_else(|| anyhow::anyhow!("timeout-task not found"))?;
+    assert_eq!(task.status, Status::InProgress);
+    assert_eq!(task.verify_failures, 1);
+    assert!(
+        task.log
+            .iter()
+            .any(|entry| entry.message.contains("Verify FAILED (exit code timeout")),
+        "verify timeout failure should be logged, got: {:?}",
+        task.log,
+    );
 
     Ok(())
 }
