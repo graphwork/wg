@@ -2427,6 +2427,58 @@ tier = "standard"
         let graph = load_graph(&graph_path).unwrap();
         let task = graph.get_task("timed-task").unwrap();
         assert_eq!(task.timeout.as_deref(), Some("4h"));
+
+        let result = run(
+            &wg_dir,
+            "Day-long timed task",
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None, // verify
+            None, // verify_timeout
+            None, // validation
+            None, // validator_agent
+            None, // validator_model
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            Some("python3 long.py"), // exec
+            Some("1d"),              // timeout
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false, // no_tier_escalation
+            None,
+            None,  // priority
+            None,  // cron
+            false, // subtask
+        );
+        assert!(result.is_ok());
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("day-long-timed").unwrap();
+        assert_eq!(task.timeout.as_deref(), Some("1d"));
     }
 
     #[test]
