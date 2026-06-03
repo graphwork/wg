@@ -454,6 +454,21 @@ fn test_add_with_dependencies() {
     assert!(task.after.contains(&"dep1".to_string()));
 }
 
+#[test]
+fn test_add_preserves_two_hour_task_timeout() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    wg_ok(
+        &wg_dir,
+        &["add", "Two hour timeout", "--id", "timeout-2h", "--timeout", "2h"],
+    );
+
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("timeout-2h").unwrap();
+    assert_eq!(task.timeout.as_deref(), Some("2h"));
+}
+
 // ===========================================================================
 // wg archive via CLI
 // ===========================================================================
