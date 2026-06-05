@@ -4096,7 +4096,7 @@ fn spawn_agents_for_ready_tasks(
             Some(
                 config
                     .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
-                    .model,
+                    .spawn_model_spec(),
             )
         } else {
             default_model.map(String::from)
@@ -4655,7 +4655,7 @@ pub fn coordinator_tick(
     let effective_model = model.map(String::from).unwrap_or_else(|| {
         config
             .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
-            .model
+            .spawn_model_spec()
     });
     let spawned = spawn_agents_for_ready_tasks(
         dir,

@@ -1666,6 +1666,24 @@ pub struct ResolvedModel {
     pub endpoint: Option<String>,
 }
 
+impl ResolvedModel {
+    /// Return the model spec that should be handed to spawn planning.
+    ///
+    /// `resolve_model_for_role` keeps API identity split into `model` and
+    /// `provider` so lightweight HTTP callers can pick clients cleanly. Spawn
+    /// planning, however, derives the executor from a single provider:model
+    /// route. Reattach the provider here so CLI-backed routes such as
+    /// `codex:gpt-5.5` cannot collapse to bare `gpt-5.5` and accidentally
+    /// stay paired with the default Claude executor.
+    pub fn spawn_model_spec(&self) -> String {
+        let Some(provider) = self.provider.as_deref() else {
+            return self.model.clone();
+        };
+        let prefix = native_provider_to_prefix(provider);
+        format!("{prefix}:{}", self.model)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unified provider:model naming
 // ---------------------------------------------------------------------------
@@ -7370,6 +7388,27 @@ model = "local:qwen3-coder"
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "gpt-5.4-mini");
         assert_eq!(resolved.provider, Some("codex".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_model_for_role_codex_spawn_spec_is_atomic() {
+        let mut config = Config::default();
+        config.models.task_agent = Some(RoleModelConfig {
+            model: Some("codex:gpt-5.5".into()),
+            provider: None,
+            tier: None,
+            endpoint: None,
+        });
+
+        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+
+        assert_eq!(resolved.model, "gpt-5.5");
+        assert_eq!(resolved.provider, Some("codex".to_string()));
+        assert_eq!(
+            resolved.spawn_model_spec(),
+            "codex:gpt-5.5",
+            "dispatch must pass a provider-qualified model into plan_spawn so codex-class routing cannot be paired with executor=claude"
+        );
     }
 
     #[test]
