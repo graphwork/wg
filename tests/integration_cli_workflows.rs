@@ -461,7 +461,14 @@ fn test_add_preserves_two_hour_task_timeout() {
 
     wg_ok(
         &wg_dir,
-        &["add", "Two hour timeout", "--id", "timeout-2h", "--timeout", "2h"],
+        &[
+            "add",
+            "Two hour timeout",
+            "--id",
+            "timeout-2h",
+            "--timeout",
+            "2h",
+        ],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
