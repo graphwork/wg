@@ -694,20 +694,13 @@ impl LiveTerminalInput {
 
     async fn next_input(&mut self) -> Option<ReplUserInput> {
         self.set_waiting_for_input(true);
-        let result = loop {
-            match self.rx.recv().await? {
-                LiveReadlineEvent::Line { line, queued } => {
-                    if !line.trim().is_empty() || queued {
-                        self.set_waiting_for_input(false);
-                    }
-                    break Some(ReplUserInput { text: line, queued });
-                }
-                LiveReadlineEvent::Eof => break None,
-                LiveReadlineEvent::Error(e) => {
-                    self.output
-                        .print(format!("\x1b[31m[nex] readline error: {}\x1b[0m", e));
-                    break None;
-                }
+        let result = match self.rx.recv().await? {
+            LiveReadlineEvent::Line { line, queued } => Some(ReplUserInput { text: line, queued }),
+            LiveReadlineEvent::Eof => None,
+            LiveReadlineEvent::Error(e) => {
+                self.output
+                    .print(format!("\x1b[31m[nex] readline error: {}\x1b[0m", e));
+                None
             }
         };
         self.set_waiting_for_input(false);
