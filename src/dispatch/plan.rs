@@ -38,7 +38,7 @@
 
 use crate::config::{Config, EndpointConfig, parse_model_spec, provider_to_executor};
 use crate::graph::Task;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
 /// The executor kind that will run a spawned agent. This is the canonical
@@ -257,6 +257,7 @@ pub fn plan_spawn(
     // rewritten to native because the agency-level override sat in
     // resolve_executor's precedence step 3 and shadowed step 4).
     let (executor, executor_source) = enforce_model_compat(executor, executor_source, &model);
+    validate_cli_backend_match(executor, &model)?;
 
     // ----- 3. Endpoint (executor-scoped) -----
     //
@@ -398,6 +399,34 @@ fn enforce_model_compat(
         executor_source, model.raw, provider, required,
     );
     (kind, new_source)
+}
+
+/// Reject explicit CLI-backend mismatches before anything launches.
+///
+/// Native/OAI-compatible providers intentionally stay flexible because native
+/// and external executors can speak more than one backend. CLI-backed
+/// providers are different: the Claude CLI cannot run `codex:` models, and the
+/// Codex CLI cannot run `claude:` models. Letting those pairs through produces
+/// doomed agent exits with generic non-zero failure reasons.
+fn validate_cli_backend_match(executor: ExecutorKind, model: &ResolvedModelSpec) -> Result<()> {
+    let Some(provider) = model.provider.as_deref() else {
+        return Ok(());
+    };
+    match (executor, provider) {
+        (ExecutorKind::Claude, "codex") => Err(anyhow!(
+            "backend-mismatch: executor={} cannot run model={} (provider prefix '{}' requires executor=codex)",
+            executor.as_str(),
+            model.raw,
+            provider
+        )),
+        (ExecutorKind::Codex, "claude") => Err(anyhow!(
+            "backend-mismatch: executor={} cannot run model={} (provider prefix '{}' requires executor=claude)",
+            executor.as_str(),
+            model.raw,
+            provider
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Resolve which executor kind to use for a task spawn, with provenance.
@@ -883,6 +912,46 @@ mod tests {
             !plan.provenance.executor_source.contains("model-compat"),
             "codex must not be rewritten by model-compat. provenance: {:?}",
             plan.provenance
+        );
+    }
+
+    #[test]
+    fn test_codex_model_routes_to_codex_atomically() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("codex:gpt-5.5")).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::Codex,
+            "codex-class model must not remain paired with executor=claude. provenance: {:?}",
+            plan.provenance
+        );
+        assert_eq!(plan.model.raw, "codex:gpt-5.5");
+        assert_eq!(
+            plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(
+            plan.env.get("WG_MODEL").map(String::as_str),
+            Some("codex:gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn test_explicit_backend_mismatch_rejected_before_spawn() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("codex".to_string());
+
+        let task = base_task("t1");
+        let err = plan_spawn(&task, &config, None, Some("claude:opus"))
+            .expect_err("codex executor with claude model must be rejected before launch");
+
+        assert!(
+            err.to_string().contains("backend-mismatch"),
+            "error should carry specific backend-mismatch reason, got: {err}"
         );
     }
 
