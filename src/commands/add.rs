@@ -18,6 +18,18 @@ use super::graph_path;
 /// 3. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
 /// 4. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
 fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
+    // Worker-executor-qualified route. This is not a provider:model spec:
+    // `opencode` names the executor, and the rest names the model as the
+    // executor expects it. Keep it intact so dispatch can atomically select
+    // executor=opencode and normalize the inner model.
+    if let Some((executor, inner)) = model.split_once(':')
+        && workgraph::dispatch::ExecutorKind::from_str(executor)
+            .is_some_and(|kind| kind.is_worker_only_external())
+        && !inner.trim().is_empty()
+    {
+        return Ok(model.to_string());
+    }
+
     // If it already passes strict validation, it's fine
     if workgraph::config::parse_model_spec_strict(model).is_ok() {
         return Ok(model.to_string());
@@ -2135,6 +2147,17 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = resolve_model_input("openrouter:minimax/minimax-m2.7", dir.path()).unwrap();
         assert_eq!(result, "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn resolve_model_input_preserves_opencode_executor_route() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let input = "opencode:openrouter/stepfun/step-3.7-flash";
+        let result = resolve_model_input(input, dir.path()).unwrap();
+        assert_eq!(
+            result, input,
+            "executor-qualified OpenCode route must not be wrapped as openrouter:opencode:..."
+        );
     }
 
     #[test]

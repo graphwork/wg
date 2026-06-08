@@ -76,13 +76,29 @@ pub(crate) fn spawn_agent_inner(
     // The plan-derived endpoint is the only source consulted when assembling
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_or_default(dir);
-    let plan = plan_spawn(task, &config, Some(executor_name), model)?;
+    // Get task model preference. When unset, consult tag_routing rules and
+    // task-level tier overrides so these existing spawn-time model fallbacks
+    // also flow through the authoritative SpawnPlan.
+    let task_model = task.model.clone().or_else(|| {
+        if let Some(ref tier_str) = task.tier
+            && let Ok(tier) = tier_str.parse::<workgraph::config::Tier>()
+            && let Some(resolved) = config.resolve_tier(tier)
+        {
+            return Some(resolved.model);
+        }
+        workgraph::config::resolve_tag_routing(&config.tag_routing, &task.tags)
+            .map(|rule| rule.model.clone())
+    });
+    let plan_default_model = task_model.as_deref().or(model);
+    let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
     eprintln!(
         "[{}] {}: {}",
         spawned_by,
         task_id,
         plan.provenance.log_line(&plan)
     );
+    let resolved_executor_name = plan.executor.as_str();
+    let resolved_model_for_spawn = Some(plan.model.raw.clone());
 
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
@@ -145,10 +161,12 @@ pub(crate) fn spawn_agent_inner(
     // Resolve context scope (config was loaded earlier for plan_spawn)
 
     // Check OpenRouter cost caps before proceeding with expensive operations
-    if let Some(provider) = model.and_then(|m| workgraph::config::parse_model_spec(m).provider)
+    if let Some(provider) = resolved_model_for_spawn
+        .as_deref()
+        .and_then(|m| workgraph::config::parse_model_spec(m).provider)
         && provider == "openrouter"
     {
-        check_openrouter_cost_caps(&config, dir, task_id, model)?;
+        check_openrouter_cost_caps(&config, dir, task_id, resolved_model_for_spawn.as_deref())?;
     }
 
     let scope = resolve_task_scope(task, &config, dir);
@@ -214,30 +232,13 @@ pub(crate) fn spawn_agent_inner(
     let task_timeout = task.timeout.clone();
     // Capture the task's quality tier (may be set by tier escalation on retry)
     let task_tier = task.tier.clone();
-    // Get task model preference. When unset, consult tag_routing
-    // rules so a whole subgraph tagged `frontend` (etc.) can pick
-    // up a specific model without editing each task. Explicit
-    // per-task models always win — tag routing is only the fallback
-    // when nothing else is set on the task.
-    let task_model = task.model.clone().or_else(|| {
-        // Task-level tier override (set by tier escalation on retry)
-        if let Some(ref tier_str) = task.tier {
-            if let Ok(tier) = tier_str.parse::<workgraph::config::Tier>() {
-                if let Some(resolved) = config.resolve_tier(tier) {
-                    return Some(resolved.model);
-                }
-            }
-        }
-        workgraph::config::resolve_tag_routing(&config.tag_routing, &task.tags)
-            .map(|rule| rule.model.clone())
-    });
     // Get session_id for resume (from previous wg wait)
     let resume_session_id = task.session_id.clone();
     // Resolve exec_mode: task.exec_mode > role.default_exec_mode > "full"
     let resolved_exec_mode = resolve_task_exec_mode(task, dir);
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
-    let executor_config = executor_registry.load_config(executor_name)?;
+    let executor_config = executor_registry.load_config(resolved_executor_name)?;
 
     // For shell executor, we need an exec command
     if executor_config.executor.executor_type == "shell" && task_exec.is_none() {
@@ -252,14 +253,14 @@ pub(crate) fn spawn_agent_inner(
     let resolved_task_agent =
         config.resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent);
     let resolved = resolve_model_and_provider(
-        task_model.clone(),
+        resolved_model_for_spawn.clone(),
         task_provider.clone(),
         agent_preferred_model,
         agent_preferred_provider.clone(),
         executor_config.executor.model.clone(),
         Some(resolved_task_agent.model.clone()),
         resolved_task_agent.provider.clone(),
-        model,
+        resolved_model_for_spawn.as_deref(),
         config.coordinator.provider.clone(),
     );
 
@@ -268,8 +269,12 @@ pub(crate) fn spawn_agent_inner(
     // actual API model ID, provider, and endpoint. Built-in tier aliases
     // (haiku/sonnet/opus) are kept as-is for backward compatibility with the
     // Claude CLI, which understands them natively.
-    let (effective_model, registry_provider, registry_endpoint) =
-        resolve_model_via_registry(resolved.model, task_model.as_ref(), &config, dir)?;
+    let (effective_model, registry_provider, registry_endpoint) = resolve_model_via_registry(
+        resolved.model,
+        resolved_model_for_spawn.as_ref(),
+        &config,
+        dir,
+    )?;
 
     // --- Pre-flight model validation ---
     // Validate OpenRouter-style models against the cached model list before spawning.
@@ -443,7 +448,7 @@ pub(crate) fn spawn_agent_inner(
                     Agent Identity: {}\n\
                     === End of Spawn Metadata ===\n\n",
                 task_id,
-                executor_name,
+                resolved_executor_name,
                 vars.model,
                 scope,
                 resolved_exec_mode.as_str(),
@@ -476,7 +481,7 @@ pub(crate) fn spawn_agent_inner(
         .as_ref()
         .map(|wt| wt.path.as_path())
         .or_else(|| settings.working_dir.as_deref().map(Path::new));
-    preflight_executor_command(&settings, executor_name, effective_working_dir)?;
+    preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
 
     // Validate endpoint resolution for registry-resolved models — but only
     // when the plan actually selected an endpoint. If plan.endpoint is None
@@ -667,7 +672,7 @@ pub(crate) fn spawn_agent_inner(
     // where two concurrent spawns both pass the status check.
     // Use modify_graph for atomic claim under flock.
     let spawned_by_clone = spawned_by.to_string();
-    let executor_name_clone = executor_name;
+    let executor_name_clone = resolved_executor_name.to_string();
     let effective_model_clone = effective_model.clone();
     let task_title_for_audit_clone = task_title_for_audit.clone();
     let task_agent_for_audit_clone = task_agent_for_audit.clone();
@@ -794,7 +799,7 @@ pub(crate) fn spawn_agent_inner(
             }
             return Err(anyhow::anyhow!(
                 "Failed to spawn executor '{}' (command: {}): {}",
-                executor_name,
+                resolved_executor_name,
                 settings.command,
                 e
             ));
@@ -807,7 +812,7 @@ pub(crate) fn spawn_agent_inner(
     let agent_id = locked_registry.register_agent_with_model(
         pid,
         task_id,
-        executor_name,
+        resolved_executor_name,
         &output_file_str,
         effective_model.as_deref(),
     );
@@ -848,7 +853,7 @@ pub(crate) fn spawn_agent_inner(
         "agent_id": agent_id,
         "pid": pid,
         "task_id": task_id,
-        "executor": executor_name,
+        "executor": resolved_executor_name,
         "model": &effective_model,
         "started_at": Utc::now().to_rfc3339(),
         "timeout_secs": effective_timeout_secs,
@@ -863,7 +868,7 @@ pub(crate) fn spawn_agent_inner(
         agent_id,
         pid,
         task_id: task_id.to_string(),
-        executor: executor_name.to_string(),
+        executor: resolved_executor_name.to_string(),
         executor_type: settings.executor_type.clone(),
         output_file: output_file_str,
         model: effective_model,
@@ -1108,11 +1113,11 @@ fn external_prompt_command(
 
     match delivery {
         ExternalPromptDelivery::OpenCodeFile => {
+            cmd_parts.push(shell_escape("Complete the attached WG task prompt."));
             if !args_have_flag(&settings.args, &["--file", "-f", "--attach"]) {
                 cmd_parts.push("--file".to_string());
                 cmd_parts.push(shell_escape(&prompt_file.to_string_lossy()));
             }
-            cmd_parts.push(shell_escape("Complete the attached WG task prompt."));
             Ok(cmd_parts.join(" "))
         }
         ExternalPromptDelivery::AiderMessageFile => {
@@ -3432,6 +3437,17 @@ mod tests {
         assert!(
             command.contains("--file "),
             "OpenCode should receive the WG prompt as an attached file: {}",
+            command
+        );
+        let message_pos = command
+            .find("'Complete the attached WG task prompt.'")
+            .expect("OpenCode command should include an explicit message");
+        let file_pos = command
+            .find("--file ")
+            .expect("OpenCode command should attach prompt file");
+        assert!(
+            message_pos < file_pos,
+            "OpenCode --file is an array option; message must come before --file so it is not parsed as a second file: {}",
             command
         );
         assert!(

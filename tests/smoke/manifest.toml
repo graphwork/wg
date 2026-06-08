@@ -147,6 +147,15 @@ description = "Pins exec-core-routing: first-class external worker executors suc
 timeout_seconds = 30
 
 [[scenario]]
+name = "opencode_per_task_model_route"
+script = "scenarios/opencode_per_task_model_route.sh"
+owners = [
+    "fix-opencode-per-task-routing",
+]
+description = "Regression for fix-opencode-per-task-routing: `wg add --model opencode:openrouter/stepfun/step-3.7-flash` must preserve the executor-qualified route, and worker spawn must resolve executor=opencode with inner model=openrouter:stepfun/step-3.7-flash, never native with malformed openrouter:opencode:openrouter/.... No secrets or live LLM endpoint required."
+timeout_seconds = 30
+
+[[scenario]]
 name = "executor_arena_surfaces"
 script = "scenarios/executor_arena_surfaces.sh"
 owners = [

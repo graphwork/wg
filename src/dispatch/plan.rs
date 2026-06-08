@@ -154,6 +154,37 @@ impl ResolvedModelSpec {
     }
 }
 
+/// Executor-qualified model route split from a per-task model string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExecutorModelRoute {
+    executor: ExecutorKind,
+    model: String,
+}
+
+/// Parse worker-executor-qualified model routes such as
+/// `opencode:openrouter/stepfun/step-3.7-flash`.
+///
+/// This is intentionally narrower than `parse_model_spec`: `opencode` is an
+/// executor, not a model provider, so it must not be added to
+/// `KNOWN_PROVIDERS`. The only accepted nested provider shorthand today is
+/// OpenRouter's CLI spelling (`openrouter/<provider>/<model>`), which we
+/// normalize to WG's internal `openrouter:<provider>/<model>` model spec.
+fn parse_executor_model_route(raw: &str) -> Option<ExecutorModelRoute> {
+    let (prefix, rest) = raw.split_once(':')?;
+    let executor = ExecutorKind::from_str(prefix)?;
+    if !executor.is_worker_only_external() || rest.trim().is_empty() {
+        return None;
+    }
+
+    let model = if let Some(openrouter_model) = rest.strip_prefix("openrouter/") {
+        format!("openrouter:{}", openrouter_model)
+    } else {
+        rest.to_string()
+    };
+
+    Some(ExecutorModelRoute { executor, model })
+}
+
 /// Records *where* each field of a `SpawnPlan` came from. Logged on every
 /// spawn so silent routing is impossible.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -241,6 +272,15 @@ pub fn plan_spawn(
             "[agent].model (fallback)".to_string(),
         )
     };
+    let executor_route = parse_executor_model_route(&model_raw);
+    let (model_raw, model_source) = if let Some(route) = executor_route.as_ref() {
+        (
+            route.model.clone(),
+            format!("{} (executor-qualified route {})", model_source, model_raw),
+        )
+    } else {
+        (model_raw, model_source)
+    };
     let model = ResolvedModelSpec::from_raw(&model_raw);
 
     // ----- 2b. Model-compat override -----
@@ -257,6 +297,18 @@ pub fn plan_spawn(
     // rewritten to native because the agency-level override sat in
     // resolve_executor's precedence step 3 and shadowed step 4).
     let (executor, executor_source) = enforce_model_compat(executor, executor_source, &model);
+    let (executor, executor_source) = if let Some(route) = executor_route {
+        (
+            route.executor,
+            format!(
+                "model-route override: task.model requested executor={} with inner model={}",
+                route.executor.as_str(),
+                model.raw
+            ),
+        )
+    } else {
+        (executor, executor_source)
+    };
     validate_cli_backend_match(executor, &model)?;
 
     // ----- 3. Endpoint (executor-scoped) -----
@@ -938,6 +990,74 @@ mod tests {
             plan.env.get("WG_MODEL").map(String::as_str),
             Some("codex:gpt-5.5")
         );
+    }
+
+    #[test]
+    fn test_opencode_openrouter_model_route_is_atomic() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.coordinator.model = Some("openrouter:default/model".to_string());
+
+        let mut task = base_task("t1");
+        task.model = Some("opencode:openrouter/stepfun/step-3.7-flash".to_string());
+
+        let plan = plan_spawn(
+            &task,
+            &config,
+            Some("native"),
+            Some("openrouter:default/model"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::OpenCode,
+            "opencode:openrouter/... must select the OpenCode executor atomically. provenance: {:?}",
+            plan.provenance
+        );
+        assert_eq!(
+            plan.model.raw, "openrouter:stepfun/step-3.7-flash",
+            "inner OpenRouter model must be normalized for existing model/provider resolution"
+        );
+        assert_eq!(
+            plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+            Some("opencode")
+        );
+        assert_eq!(
+            plan.env.get("WG_MODEL").map(String::as_str),
+            Some("openrouter:stepfun/step-3.7-flash")
+        );
+        assert!(plan.endpoint.is_none());
+        assert!(
+            plan.provenance
+                .executor_source
+                .contains("model-route override"),
+            "provenance should explain executor-qualified route, got {:?}",
+            plan.provenance.executor_source
+        );
+    }
+
+    #[test]
+    fn test_model_route_preserves_known_good_provider_routing() {
+        let config = Config::default();
+        let task = base_task("t1");
+
+        let cases = [
+            ("codex:gpt-5.5", ExecutorKind::Codex),
+            ("claude:opus", ExecutorKind::Claude),
+            ("nex:qwen3-coder", ExecutorKind::Native),
+            ("openrouter:stepfun/step-3.7-flash", ExecutorKind::Native),
+        ];
+
+        for (model, expected_executor) in cases {
+            let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
+            assert_eq!(
+                plan.executor, expected_executor,
+                "model {} should route to {:?}; provenance={:?}",
+                model, expected_executor, plan.provenance
+            );
+            assert_eq!(plan.model.raw, model);
+        }
     }
 
     #[test]
