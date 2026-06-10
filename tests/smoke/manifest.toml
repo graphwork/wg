@@ -157,6 +157,15 @@ description = "Regression for fix-opencode-per-task-routing: `wg add --model ope
 timeout_seconds = 30
 
 [[scenario]]
+name = "opencode_live_chat_reply"
+script = "scenarios/opencode_live_chat_reply.sh"
+owners = [
+    "verify-opencode-chat",
+]
+description = "Live human-flow guard for verify-opencode-chat: `wg opencode-handler --chat` must produce a genuine model reply in the outbox, NOT the 'encountered an error running opencode' fallback. Catches the two opencode>=1.16 live-path bugs that shipped green from routing-only tests: (1) `--file` is variadic and swallowed the trailing positional message ('File not found', exit 1) — the message must precede `--file`; (2) `run --format json` does not stream assistant text on stdout (only step_start) — the reply is recovered via `opencode export <sessionID>`. SKIPs (exit 77) without the opencode binary or OpenRouter creds."
+timeout_seconds = 120
+
+[[scenario]]
 name = "executor_arena_surfaces"
 script = "scenarios/executor_arena_surfaces.sh"
 owners = [

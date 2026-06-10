@@ -320,14 +320,123 @@ fn opencode_run_args(model: Option<&str>, prompt_file: &Path) -> Result<Vec<Stri
     })?;
     Ok(vec![
         "run".to_string(),
+        // The positional message MUST come BEFORE `--file`. opencode's `--file`
+        // is a *variadic* (array) option: any positional token that follows it
+        // is greedily consumed as another file path. With the message trailing
+        // `--file`, opencode (>=1.16) treats the message as a missing file and
+        // exits 1 with `Error: File not found: <message>`. Keeping the message
+        // first leaves `--file` to consume only the real prompt-file path.
+        "Respond to the attached WG conversation prompt.".to_string(),
         "--format".to_string(),
         "json".to_string(),
         "--model".to_string(),
         model_arg,
         "--file".to_string(),
         prompt_file.to_string_lossy().to_string(),
-        "Respond to the attached WG conversation prompt.".to_string(),
     ])
+}
+
+/// Extract the opencode session id from a `run --format json` event stream.
+/// Every emitted event (`step_start`, …) carries `sessionID`; we return the
+/// first non-empty one. Needed because opencode persists the assistant reply
+/// to its session store rather than streaming it on `run` stdout — we recover
+/// the reply via `opencode export <sessionID>` (see [`fetch_reply_via_export`]).
+fn parse_session_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(s) = val.get("sessionID").and_then(|v| v.as_str())
+            && !s.trim().is_empty()
+        {
+            return Some(s.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Parse `opencode export <session>` JSON and return the assistant's reply:
+/// the concatenated NON-synthetic `text` parts of the LAST assistant message.
+///
+/// opencode (>=1.16) does NOT stream assistant text on `run --format json`
+/// stdout — that stream carries only `step_start` events. The actual reply is
+/// persisted to opencode's session store and surfaced by `opencode export`,
+/// whose shape is `{ "messages": [ { "info": {"role": ...}, "parts": [ {
+/// "type": "text", "synthetic": <bool>, "text": ... } ] } ] }`. Synthetic text
+/// parts (tool-call echoes, file-attachment dumps, the user-message echo) are
+/// skipped so only the model's own prose is returned.
+fn extract_export_reply(export_json: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(export_json).ok()?;
+    let messages = val.get("messages")?.as_array()?;
+    let mut reply: Option<String> = None;
+    for msg in messages {
+        let role = msg
+            .get("info")
+            .and_then(|i| i.get("role"))
+            .and_then(|r| r.as_str());
+        if role != Some("assistant") {
+            continue;
+        }
+        let mut texts: Vec<String> = Vec::new();
+        if let Some(parts) = msg.get("parts").and_then(|p| p.as_array()) {
+            for part in parts {
+                if part.get("type").and_then(|t| t.as_str()) != Some("text") {
+                    continue;
+                }
+                if part
+                    .get("synthetic")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(t) = part.get("text").and_then(|t| t.as_str())
+                    && !t.trim().is_empty()
+                {
+                    texts.push(t.trim().to_string());
+                }
+            }
+        }
+        // Keep the LAST assistant message that produced prose.
+        if !texts.is_empty() {
+            reply = Some(texts.join("\n"));
+        }
+    }
+    reply
+}
+
+/// Run `opencode export <session_id>` and extract the assistant reply.
+/// Returns `None` (with a logged warning) on any failure so the caller can
+/// fall back to parsing the run stdout directly.
+fn fetch_reply_via_export(
+    session_id: &str,
+    cwd: &Path,
+    logger: &HandlerLogger,
+) -> Option<String> {
+    let mut cmd = Command::new("opencode");
+    cmd.args(["export", session_id]);
+    cmd.current_dir(cwd);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            logger.warn(&format!("opencode export spawn failed: {}", e));
+            return None;
+        }
+    };
+    if !output.status.success() {
+        logger.warn(&format!(
+            "opencode export exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+        return None;
+    }
+    extract_export_reply(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Extract the assistant's reply text from opencode's output. Tries JSON
@@ -439,6 +548,25 @@ fn run_opencode_turn(
         }
     }
 
+    // opencode (>=1.16) does NOT stream the assistant text on `run` stdout — it
+    // emits only `step_start` events there and persists the reply to its
+    // session store. Recover the reply by capturing the session id from the
+    // event stream and running `opencode export <sessionID>`. Fall back to
+    // parsing the run stdout directly for older/other builds that DO stream the
+    // assistant text inline.
+    if let Some(session_id) = parse_session_id(&stdout_buf) {
+        logger.info(&format!(
+            "opencode-handler: retrieving reply via `opencode export {}`",
+            session_id
+        ));
+        if let Some(reply) = fetch_reply_via_export(&session_id, cwd, logger)
+            && !reply.trim().is_empty()
+        {
+            return Ok(reply);
+        }
+        logger.warn("opencode export yielded no assistant text; falling back to stdout parse");
+    }
+
     let reply = extract_reply(&stdout_buf);
     if reply.trim().is_empty() {
         anyhow::bail!("opencode produced no reply text on stdout");
@@ -508,6 +636,68 @@ mod tests {
         let idx = args.iter().position(|a| a == "--model").expect("--model present");
         assert_eq!(args[idx + 1], "openrouter/stepfun/step-3.7-flash");
         assert!(args.contains(&"run".to_string()));
+    }
+
+    // Regression: opencode's `--file` is a variadic option that swallows any
+    // trailing positional as a second file path (exit 1, "File not found:
+    // <message>"). The positional message MUST precede `--file`.
+    #[test]
+    fn test_opencode_run_args_message_precedes_file() {
+        let pf = PathBuf::from("/tmp/p.txt");
+        let args = opencode_run_args(Some("openrouter:stepfun/step-3.7-flash"), &pf).unwrap();
+        let msg_idx = args
+            .iter()
+            .position(|a| a.starts_with("Respond to the attached"))
+            .expect("positional message present");
+        let file_idx = args.iter().position(|a| a == "--file").expect("--file present");
+        assert!(
+            msg_idx < file_idx,
+            "positional message must come before --file (else --file swallows it): {:?}",
+            args
+        );
+        // The very last argv token must be the prompt-file path, not the message.
+        assert_eq!(args.last().map(String::as_str), Some("/tmp/p.txt"));
+    }
+
+    #[test]
+    fn test_parse_session_id_from_step_start() {
+        let stdout = r#"{"type":"step_start","timestamp":1,"sessionID":"ses_abc123","part":{"type":"step-start"}}
+"#;
+        assert_eq!(parse_session_id(stdout).as_deref(), Some("ses_abc123"));
+        assert_eq!(parse_session_id(""), None);
+        assert_eq!(parse_session_id("not json\n"), None);
+    }
+
+    #[test]
+    fn test_extract_export_reply_skips_synthetic_and_user_parts() {
+        // Mirrors opencode 1.16 `export` output: synthetic tool/file echoes
+        // under user/assistant, then the real assistant reply.
+        let export = r#"{
+          "info": {"id": "ses_x"},
+          "messages": [
+            {"info": {"role": "user"}, "parts": [
+              {"type": "text", "synthetic": true, "text": "Called the Read tool ..."},
+              {"type": "text", "synthetic": false, "text": "\"Respond to the attached prompt.\""}
+            ]},
+            {"info": {"role": "assistant"}, "parts": [
+              {"type": "step-start"},
+              {"type": "text", "synthetic": false, "text": "OK"}
+            ]}
+          ]
+        }"#;
+        assert_eq!(extract_export_reply(export).as_deref(), Some("OK"));
+    }
+
+    #[test]
+    fn test_extract_export_reply_last_assistant_message_wins() {
+        let export = r#"{"messages": [
+            {"info": {"role": "assistant"}, "parts": [{"type":"text","text":"first"}]},
+            {"info": {"role": "user"}, "parts": [{"type":"text","text":"middle"}]},
+            {"info": {"role": "assistant"}, "parts": [{"type":"text","text":"final answer"}]}
+        ]}"#;
+        assert_eq!(extract_export_reply(export).as_deref(), Some("final answer"));
+        assert_eq!(extract_export_reply("garbage"), None);
+        assert_eq!(extract_export_reply(r#"{"messages":[]}"#), None);
     }
 
     #[test]
