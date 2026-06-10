@@ -55,6 +55,10 @@ pub enum HandlerSpec {
         chat_ref: String,
         model: Option<String>,
     },
+    OpenCode {
+        chat_ref: String,
+        model: Option<String>,
+    },
     Gemini {
         chat_ref: String,
     },
@@ -95,6 +99,13 @@ impl HandlerSpec {
             }
             Self::Codex { chat_ref, model } => {
                 let mut s = format!("wg codex-handler --chat {}", chat_ref);
+                if let Some(m) = model {
+                    s.push_str(&format!(" -m {}", m));
+                }
+                s
+            }
+            Self::OpenCode { chat_ref, model } => {
+                let mut s = format!("wg opencode-handler --chat {}", chat_ref);
                 if let Some(m) = model {
                     s.push_str(&format!(" -m {}", m));
                 }
@@ -247,8 +258,8 @@ pub fn resolve_handler(
         },
         ExecutorKind::Claude => HandlerSpec::Claude { chat_ref, model },
         ExecutorKind::Codex => HandlerSpec::Codex { chat_ref, model },
-        ExecutorKind::OpenCode
-        | ExecutorKind::Aider
+        ExecutorKind::OpenCode => HandlerSpec::OpenCode { chat_ref, model },
+        ExecutorKind::Aider
         | ExecutorKind::Goose
         | ExecutorKind::Qwen
         | ExecutorKind::Cline
@@ -306,6 +317,9 @@ fn dispatch(spec: &HandlerSpec, workgraph_dir: &Path) -> Result<()> {
         HandlerSpec::Codex { chat_ref, model } => {
             dispatch_codex(chat_ref, model.as_deref(), workgraph_dir)
         }
+        HandlerSpec::OpenCode { chat_ref, model } => {
+            dispatch_opencode(chat_ref, model.as_deref(), workgraph_dir)
+        }
         HandlerSpec::Gemini { .. } => Err(anyhow!(
             "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
@@ -326,6 +340,30 @@ fn dispatch_codex(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> 
         }
         let err = cmd.exec();
         Err(anyhow!("exec wg codex-handler failed: {}", err))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (chat_ref, model, workgraph_dir);
+        Err(anyhow!(
+            "spawn-task dispatch not yet supported on this platform"
+        ))
+    }
+}
+
+fn dispatch_opencode(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let self_exe =
+            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("opencode-handler").arg("--chat").arg(chat_ref);
+        cmd.env("WG_DIR", workgraph_dir);
+        if let Some(m) = model {
+            cmd.arg("-m").arg(m);
+        }
+        let err = cmd.exec();
+        Err(anyhow!("exec wg opencode-handler failed: {}", err))
     }
     #[cfg(not(unix))]
     {
@@ -650,6 +688,7 @@ mod tests {
             let (actual_executor, actual_model) = match spec {
                 HandlerSpec::Claude { model, .. } => ("claude", model),
                 HandlerSpec::Codex { model, .. } => ("codex", model),
+                HandlerSpec::OpenCode { model, .. } => ("opencode", model),
                 HandlerSpec::Native { model, .. } => ("native", model),
                 HandlerSpec::Gemini { .. } => ("gemini", None),
             };
@@ -800,6 +839,9 @@ mod tests {
                     HandlerSpec::Claude { model, .. } => format!("Claude {{ model: {:?} }}", model),
                     HandlerSpec::Native { model, .. } => format!("Native {{ model: {:?} }}", model),
                     HandlerSpec::Codex { model, .. } => format!("Codex {{ model: {:?} }}", model),
+                    HandlerSpec::OpenCode { model, .. } => {
+                        format!("OpenCode {{ model: {:?} }}", model)
+                    }
                     HandlerSpec::Gemini { .. } => "Gemini".to_string(),
                 }
             ),
@@ -862,15 +904,12 @@ mod tests {
     #[test]
     #[serial]
     fn external_worker_executors_get_worker_only_spawn_task_error() {
-        for executor in [
-            "opencode",
-            "aider",
-            "goose",
-            "qwen",
-            "cline",
-            "crush",
-            "amplifier",
-        ] {
+        // OpenCode is intentionally excluded: it now ships a live chat handler
+        // (`wg opencode-handler --chat`), so it maps to a HandlerSpec rather
+        // than the worker-only error (see
+        // `opencode_executor_maps_to_opencode_handler`). The remaining
+        // external CLIs stay worker-only.
+        for executor in ["aider", "goose", "qwen", "cline", "crush", "amplifier"] {
             with_env(Some(executor), Some("claude:opus"), || {
                 let dir = tempfile::tempdir().unwrap();
                 let task = mktask(".chat-0");
@@ -897,5 +936,45 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// Goal #5 (fix-opencode-build): opencode is chat-capable. With
+    /// `WG_EXECUTOR_TYPE=opencode` and an opencode model, a `.chat-*` task must
+    /// resolve to the OpenCode handler whose preview names `wg opencode-handler
+    /// --chat` and carries the model explicitly — NOT the worker-only error.
+    #[test]
+    #[serial]
+    fn opencode_executor_maps_to_opencode_handler() {
+        with_env(
+            Some("opencode"),
+            Some("opencode:openrouter/stepfun/step-3.7-flash"),
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let task = mktask(".chat-0");
+
+                let spec = resolve_handler(dir.path(), &task, None)
+                    .expect("opencode must map to a live handler, not the worker-only error");
+
+                match &spec {
+                    HandlerSpec::OpenCode { model, .. } => {
+                        // The inner model is normalized to the openrouter spec.
+                        assert_eq!(model.as_deref(), Some("openrouter:stepfun/step-3.7-flash"));
+                    }
+                    other => panic!("expected OpenCode handler, got: {}", other.command_preview()),
+                }
+
+                let preview = spec.command_preview();
+                assert!(
+                    preview.contains("wg opencode-handler --chat"),
+                    "preview must dispatch to the opencode handler: {}",
+                    preview
+                );
+                assert!(
+                    preview.contains("openrouter:stepfun/step-3.7-flash"),
+                    "preview must pass the resolved model explicitly: {}",
+                    preview
+                );
+            },
+        );
     }
 }

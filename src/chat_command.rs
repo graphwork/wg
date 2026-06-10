@@ -60,6 +60,35 @@ pub fn argv_for_preset(
             }
             argv
         }
+        "opencode" => {
+            // OpenCode launches its own TUI for an interactive PTY chat.
+            // Pass the resolved model in opencode's `openrouter/<vendor>/<model>`
+            // spelling (the same form the worker path and `opencode-handler`
+            // use) so the interactive session is not left on opencode's
+            // internal default.
+            let mut argv = vec!["opencode".to_string()];
+            if let Some(m) = model.filter(|m| !m.is_empty()) {
+                let spec = parse_model_spec(m);
+                let provider = spec
+                    .provider
+                    .as_deref()
+                    .map(crate::config::provider_to_native_provider);
+                let model_arg = if provider == Some("openrouter") {
+                    let id = spec
+                        .model_id
+                        .strip_prefix("openrouter/")
+                        .unwrap_or(&spec.model_id);
+                    format!("openrouter/{}", id)
+                } else {
+                    spec.model_id.clone()
+                };
+                if !model_arg.is_empty() {
+                    argv.push("--model".to_string());
+                    argv.push(model_arg);
+                }
+            }
+            argv
+        }
         _ => {
             let mut argv = vec![
                 "claude".to_string(),

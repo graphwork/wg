@@ -2068,7 +2068,7 @@ template = "Work on {{task_id}}"
         let temp_dir = TempDir::new().unwrap();
         let registry = ExecutorRegistry::new(temp_dir.path());
 
-        for kind in crate::dispatch::ExecutorKind::WORKER_ONLY_EXTERNALS {
+        for kind in crate::dispatch::ExecutorKind::EXTERNAL_CLIS {
             let name = kind.as_str();
             let config = registry
                 .load_config(name)

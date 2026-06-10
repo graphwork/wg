@@ -81,6 +81,7 @@ pub mod msg;
 pub mod native_exec;
 pub use workgraph::nex;
 pub mod next;
+pub mod opencode_handler;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
 pub mod openrouter;

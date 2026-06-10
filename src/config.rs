@@ -1828,6 +1828,25 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
         });
     }
 
+    // Executor-qualified routes (e.g. `opencode:openrouter/stepfun/step-3.7-flash`):
+    // external CLI executors are addressed by an *executor* name prefix, not a
+    // model-provider prefix, so they are intentionally NOT in `KNOWN_PROVIDERS`.
+    // `parse_executor_model_route` makes these first-class model strings on the
+    // spawn path, and the opencode starter profile ships them, so the strict
+    // validator must accept them too (otherwise `wg profile show` / `wg config
+    // lint` flags a valid profile). `amplifier` is excluded above on purpose
+    // (it keeps its dedicated "executor name, not a provider" error).
+    if let Some((prefix, rest)) = spec.split_once(':')
+        && !rest.trim().is_empty()
+        && crate::dispatch::ExecutorKind::from_str(prefix)
+            .is_some_and(|kind| kind.is_external_cli())
+    {
+        return Ok(ModelSpec {
+            provider: Some(prefix.to_string()),
+            model_id: rest.to_string(),
+        });
+    }
+
     if let Some((prefix, rest)) = spec.split_once(':') {
         if KNOWN_PROVIDERS.contains(&prefix) {
             if rest.is_empty() {
@@ -7178,6 +7197,29 @@ provider = "openrouter"
         // Belt-and-suspenders: `amplifier` is restored as an executor name,
         // but it must not silently become a model provider prefix.
         assert!(!KNOWN_PROVIDERS.contains(&"amplifier"));
+    }
+
+    #[test]
+    fn test_parse_model_spec_strict_accepts_opencode_executor_route() {
+        // `opencode:openrouter/<vendor>/<model>` is a first-class
+        // executor-qualified route (see parse_executor_model_route) and the
+        // opencode starter profile ships it, so strict validation must accept
+        // it — otherwise `wg profile show` / `wg config lint` falsely flag a
+        // valid opencode profile as "Unknown provider 'opencode'".
+        let spec = parse_model_spec_strict("opencode:openrouter/stepfun/step-3.7-flash")
+            .expect("opencode executor route must validate");
+        assert_eq!(spec.provider.as_deref(), Some("opencode"));
+        assert_eq!(spec.model_id, "openrouter/stepfun/step-3.7-flash");
+
+        // The premium route too.
+        assert!(parse_model_spec_strict("opencode:openrouter/minimax/minimax-m2.7").is_ok());
+
+        // Other worker-only external CLIs compose the same way.
+        assert!(parse_model_spec_strict("aider:openrouter/x/y").is_ok());
+
+        // But an empty route and a genuinely unknown provider still fail.
+        assert!(parse_model_spec_strict("opencode:").is_err());
+        assert!(parse_model_spec_strict("foobar:gpt-4").is_err());
     }
 
     #[test]

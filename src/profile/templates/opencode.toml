@@ -1,0 +1,46 @@
+description = "OpenCode CLI: stepfun/step-3.7-flash lightweight workers, minimax-m2.7 premium tier, claude:haiku for agency meta-tasks"
+
+# Two research-picked OpenRouter routes (see research-opencode-default-models):
+#   lightweight = openrouter:stepfun/step-3.7-flash  (the route proven live via
+#                 opencode-live-route-3 — cheap, 256k ctx; haiku analog for
+#                 chat / triage / short turns)
+#   premium     = openrouter:minimax/minimax-m2.7    (cleanest, most
+#                 turn-efficient terminal-bench run, 0.93 eval; opus analog for
+#                 impl / research / verification)
+# The lightweight route is the default worker + coordinator model (lowest
+# integration risk); the `premium` tier escalates to minimax-m2.7 for
+# complex-reasoning / verification spawns (WG_TIER=premium).
+
+[agent]
+model = "opencode:openrouter/stepfun/step-3.7-flash"
+
+[dispatcher]
+model = "opencode:openrouter/stepfun/step-3.7-flash"
+max_agents = 8
+
+[tiers]
+fast = "opencode:openrouter/stepfun/step-3.7-flash"
+standard = "opencode:openrouter/stepfun/step-3.7-flash"
+premium = "opencode:openrouter/minimax/minimax-m2.7"
+
+[models.default]
+model = "opencode:openrouter/stepfun/step-3.7-flash"
+
+[models.task_agent]
+model = "opencode:openrouter/stepfun/step-3.7-flash"
+
+# NOTE: agency tasks (.evaluate-*, .flip-*, .assign-*) are short one-shot LLM
+# calls pinned to claude:haiku by design (see CLAUDE.md "Agency tasks run on
+# claude CLI"). OpenCode is a worker-only external CLI and does not serve the
+# agency one-shot path, so these roles stay on the claude CLI handler.
+[models.evaluator]
+model = "claude:haiku"
+
+[models.assigner]
+model = "claude:haiku"
+
+[models.flip_inference]
+model = "claude:haiku"
+
+[models.flip_comparison]
+model = "claude:haiku"

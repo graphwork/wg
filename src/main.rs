@@ -3575,6 +3575,18 @@ fn main() -> Result<()> {
             role.as_deref(),
             model.as_deref(),
         ),
+        Commands::OpenCodeHandler {
+            chat,
+            resume,
+            role,
+            model,
+        } => commands::opencode_handler::run(
+            &workgraph_dir,
+            &chat,
+            resume,
+            role.as_deref(),
+            model.as_deref(),
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

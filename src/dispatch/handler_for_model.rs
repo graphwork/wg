@@ -69,6 +69,24 @@ use crate::dispatch::ExecutorKind;
 /// is handled by the caller via `ExecutorKind::needs_endpoint()` — this
 /// function answers the handler question only.
 pub fn handler_for_model(model: &str) -> ExecutorKind {
+    // External CLIs (`opencode`, `aider`, `goose`, …) are addressed by
+    // *executor* name, not a model provider prefix:
+    // `opencode:openrouter/<provider>/<model>`. Those names are intentionally
+    // NOT in `KNOWN_PROVIDERS` (an executor is not a provider), so the lenient
+    // `parse_model_spec` below would treat the whole string as a bare alias and
+    // mis-route it to the claude handler. Intercept the executor prefix here so
+    // this function stays the single source of truth even for those routes —
+    // matching what `parse_executor_model_route` does on the spawn path.
+    if let Some((prefix, rest)) = model.split_once(':') {
+        if !rest.trim().is_empty() {
+            if let Some(kind) = ExecutorKind::from_str(prefix) {
+                if kind.is_external_cli() {
+                    return kind;
+                }
+            }
+        }
+    }
+
     let spec = parse_model_spec(model);
     match spec.provider.as_deref() {
         Some(prefix) => {
@@ -135,6 +153,31 @@ mod tests {
     #[test]
     fn test_codex_prefix_routes_to_codex() {
         assert_eq!(handler_for_model("codex:gpt-5"), ExecutorKind::Codex);
+    }
+
+    #[test]
+    fn test_opencode_prefix_routes_to_opencode_handler() {
+        // `opencode` is a worker-only external CLI, not a model provider. The
+        // executor prefix must route to the OpenCode handler here (single
+        // source of truth), matching the spawn-path `parse_executor_model_route`
+        // — NOT fall through to the claude default like an unknown provider.
+        assert_eq!(
+            handler_for_model("opencode:openrouter/stepfun/step-3.7-flash"),
+            ExecutorKind::OpenCode
+        );
+        assert_eq!(
+            handler_for_model("opencode:openrouter/x"),
+            ExecutorKind::OpenCode
+        );
+    }
+
+    #[test]
+    fn test_other_worker_only_externals_route_to_their_kind() {
+        // The interception is generic over worker-only externals, so aider /
+        // goose / qwen / cline / crush / amplifier compose without new arms.
+        assert_eq!(handler_for_model("aider:openrouter/x"), ExecutorKind::Aider);
+        assert_eq!(handler_for_model("goose:openrouter/x"), ExecutorKind::Goose);
+        assert_eq!(handler_for_model("qwen:openrouter/x"), ExecutorKind::Qwen);
     }
 
     #[test]

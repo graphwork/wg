@@ -72,8 +72,31 @@ pub enum ExecutorKind {
 }
 
 impl ExecutorKind {
-    pub const WORKER_ONLY_EXTERNALS: &'static [ExecutorKind] = &[
+    /// External CLI adapters addressed by an *executor* name prefix
+    /// (`opencode:…`, `aider:…`, …) rather than a model-provider prefix.
+    /// These are intentionally NOT model providers — an executor is not a
+    /// provider — so prefix-routing code (`parse_executor_model_route`,
+    /// `handler_for_model`, profile activation, `wg add` model resolution)
+    /// keys off this set, not `KNOWN_PROVIDERS`.
+    ///
+    /// Membership here says nothing about chat-capability; see
+    /// [`WORKER_ONLY_EXTERNALS`](Self::WORKER_ONLY_EXTERNALS) for that.
+    pub const EXTERNAL_CLIS: &'static [ExecutorKind] = &[
         ExecutorKind::OpenCode,
+        ExecutorKind::Aider,
+        ExecutorKind::Goose,
+        ExecutorKind::Qwen,
+        ExecutorKind::Cline,
+        ExecutorKind::Crush,
+        ExecutorKind::Amplifier,
+    ];
+
+    /// The subset of [`EXTERNAL_CLIS`](Self::EXTERNAL_CLIS) that can ONLY run
+    /// as one-shot task-agent workers and do NOT implement WG's live
+    /// chat/session protocol. `OpenCode` is deliberately absent: it ships a
+    /// live chat handler (`wg opencode-handler --chat`), so it is an external
+    /// CLI that is *also* chat-capable.
+    pub const WORKER_ONLY_EXTERNALS: &'static [ExecutorKind] = &[
         ExecutorKind::Aider,
         ExecutorKind::Goose,
         ExecutorKind::Qwen,
@@ -120,10 +143,21 @@ impl ExecutorKind {
         matches!(self, ExecutorKind::Native)
     }
 
+    /// Whether this executor is an external CLI adapter addressed by an
+    /// executor-name prefix (`opencode:…`, `aider:…`, …). Used by all the
+    /// prefix-routing call sites (spawn-path route parsing, `handler_for_model`,
+    /// profile activation, `wg add` model resolution).
+    pub fn is_external_cli(self) -> bool {
+        Self::EXTERNAL_CLIS.contains(&self)
+    }
+
     /// Whether this executor is a worker-only external CLI adapter.
     ///
     /// These executors are valid for task-agent spawns through the worker
-    /// path, but they do not implement WG's live chat/session protocol.
+    /// path, but they do not implement WG's live chat/session protocol. Used
+    /// to reject them from the live-chat path. `OpenCode` is NOT worker-only
+    /// (it has `wg opencode-handler --chat`), so this returns `false` for it
+    /// even though [`is_external_cli`](Self::is_external_cli) returns `true`.
     pub fn is_worker_only_external(self) -> bool {
         Self::WORKER_ONLY_EXTERNALS.contains(&self)
     }
@@ -172,7 +206,7 @@ struct ExecutorModelRoute {
 fn parse_executor_model_route(raw: &str) -> Option<ExecutorModelRoute> {
     let (prefix, rest) = raw.split_once(':')?;
     let executor = ExecutorKind::from_str(prefix)?;
-    if !executor.is_worker_only_external() || rest.trim().is_empty() {
+    if !executor.is_external_cli() || rest.trim().is_empty() {
         return None;
     }
 
@@ -563,7 +597,7 @@ mod tests {
     }
 
     fn external_worker_cases() -> Vec<(&'static str, ExecutorKind)> {
-        ExecutorKind::WORKER_ONLY_EXTERNALS
+        ExecutorKind::EXTERNAL_CLIS
             .iter()
             .copied()
             .map(|kind| (kind.as_str(), kind))
@@ -581,14 +615,40 @@ mod tests {
             );
             assert_eq!(kind.as_str(), name);
             assert!(
-                kind.is_worker_only_external(),
-                "{} must be classified as worker-only external",
+                kind.is_external_cli(),
+                "{} must be classified as an external CLI",
                 name
             );
             assert!(
                 !kind.needs_endpoint(),
                 "{} must not inherit native endpoint requirements",
                 name
+            );
+        }
+    }
+
+    #[test]
+    fn test_opencode_is_external_cli_but_not_worker_only() {
+        // OpenCode ships a live chat handler (`wg opencode-handler --chat`),
+        // so it is an external CLI (prefix-addressed, `opencode:…`) that is
+        // ALSO chat-capable — it must NOT be classified worker-only.
+        assert!(ExecutorKind::OpenCode.is_external_cli());
+        assert!(!ExecutorKind::OpenCode.is_worker_only_external());
+
+        // The remaining external CLIs are still worker-only (no chat handler).
+        for kind in [
+            ExecutorKind::Aider,
+            ExecutorKind::Goose,
+            ExecutorKind::Qwen,
+            ExecutorKind::Cline,
+            ExecutorKind::Crush,
+            ExecutorKind::Amplifier,
+        ] {
+            assert!(kind.is_external_cli(), "{} is an external CLI", kind.as_str());
+            assert!(
+                kind.is_worker_only_external(),
+                "{} is still worker-only (no live chat handler)",
+                kind.as_str()
             );
         }
     }
@@ -1034,6 +1094,57 @@ mod tests {
                 .contains("model-route override"),
             "provenance should explain executor-qualified route, got {:?}",
             plan.provenance.executor_source
+        );
+    }
+
+    /// Test C (fix-opencode-build): under the opencode profile, a `.chat-*`
+    /// task resolves to the OpenCode handler. The profile sets
+    /// `[dispatcher].model` (== `coordinator.model`) to the opencode route, so
+    /// a chat/coordinator task with no per-task model override cascades to it
+    /// and `parse_executor_model_route` flips the executor to OpenCode. This
+    /// is the same config-driven path `wg profile use opencode` activates.
+    #[test]
+    fn test_chat_task_resolves_to_opencode_handler_under_opencode_profile() {
+        let mut config = Config::default();
+        // Emulate the active opencode profile's default chat/coordinator model.
+        config.coordinator.model = Some("opencode:openrouter/stepfun/step-3.7-flash".to_string());
+
+        // A chat task carries no per-task model and no agency executor — it
+        // must inherit the profile's opencode route.
+        let task = base_task(".chat-foo");
+        let plan = plan_spawn(&task, &config, None, None).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::OpenCode,
+            "a .chat-* task under the opencode profile must dispatch via the \
+             opencode handler; provenance={:?}",
+            plan.provenance
+        );
+
+        // Goal #5 proper: opencode REPLACES claude as the default chat handler.
+        // The daemon's CoordinatorAgent::start passes `executor=claude` by
+        // default (`executor.unwrap_or("claude")`); the opencode route on
+        // `coordinator.model` must still override that to OpenCode, otherwise a
+        // default chat would stay on claude under the opencode profile.
+        let plan_default_claude = plan_spawn(&task, &config, Some("claude"), None).unwrap();
+        assert_eq!(
+            plan_default_claude.executor,
+            ExecutorKind::OpenCode,
+            "the opencode coordinator.model route must override the daemon's \
+             default executor=claude; provenance={:?}",
+            plan_default_claude.provenance
+        );
+        // The inner model is normalized to the WG openrouter spec, and the
+        // explicit-model contract means it is never empty.
+        assert_eq!(plan.model.raw, "openrouter:stepfun/step-3.7-flash");
+        assert!(!plan.model.raw.is_empty());
+
+        // And handler_for_model agrees on the opencode route (single source of
+        // truth), so any direct caller routes identically.
+        assert_eq!(
+            crate::dispatch::handler_for_model("opencode:openrouter/stepfun/step-3.7-flash"),
+            ExecutorKind::OpenCode
         );
     }
 

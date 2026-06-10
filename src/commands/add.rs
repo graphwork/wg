@@ -18,13 +18,13 @@ use super::graph_path;
 /// 3. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
 /// 4. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
 fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
-    // Worker-executor-qualified route. This is not a provider:model spec:
-    // `opencode` names the executor, and the rest names the model as the
+    // External-CLI-executor-qualified route. This is not a provider:model
+    // spec: `opencode` names the executor, and the rest names the model as the
     // executor expects it. Keep it intact so dispatch can atomically select
     // executor=opencode and normalize the inner model.
     if let Some((executor, inner)) = model.split_once(':')
         && workgraph::dispatch::ExecutorKind::from_str(executor)
-            .is_some_and(|kind| kind.is_worker_only_external())
+            .is_some_and(|kind| kind.is_external_cli())
         && !inner.trim().is_empty()
     {
         return Ok(model.to_string());

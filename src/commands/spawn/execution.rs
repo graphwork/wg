@@ -1096,6 +1096,26 @@ fn external_prompt_command(
     effective_provider: &Option<String>,
     delivery: ExternalPromptDelivery,
 ) -> Result<String> {
+    // Explicit-model contract: external CLIs that take a `--model` flag MUST
+    // receive an explicitly resolved model. Running them with no model means
+    // silently inheriting the CLI's own internal default — exactly the
+    // "ran on the wrong model" class of bug WG forbids. If model resolution
+    // yielded nothing AND the user hasn't hard-coded a model in
+    // `[executor].args`, fail loudly instead of falling back. (Amplifier has
+    // no model style and is exempt — it manages its own model.)
+    if external_cli_model_style(&settings.executor_type).is_some()
+        && effective_model.is_none()
+        && !args_have_flag(&settings.args, &["--model", "-m"])
+    {
+        anyhow::bail!(
+            "executor '{}' requires an explicitly resolved model, but model resolution \
+             produced none. Set a model on the task (`-m {}:openrouter/<vendor>/<model>`), \
+             the active profile, or `[agent].model` — WG will not fall back to the CLI's \
+             internal default.",
+            settings.executor_type,
+            settings.executor_type,
+        );
+    }
     let prompt_file = write_executor_prompt_file(output_dir, settings)?;
     let mut cmd_parts = vec![shell_escape(&settings.command)];
     for arg in &settings.args {
@@ -2375,7 +2395,7 @@ mod tests {
 
     #[test]
     fn test_executor_uses_auto_prompt_includes_external_cli_adapters() {
-        for kind in workgraph::dispatch::ExecutorKind::WORKER_ONLY_EXTERNALS
+        for kind in workgraph::dispatch::ExecutorKind::EXTERNAL_CLIS
             .iter()
             .map(|kind| kind.as_str())
             .chain(["qwen-code", "qwen_code"])
@@ -3463,6 +3483,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(output_dir.join("prompt.txt")).unwrap(),
             "Investigate task"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_opencode_errors_when_model_unresolved() {
+        // Explicit-model contract (fix-opencode-build req #3): the opencode
+        // worker path must FAIL when model resolution produced nothing, never
+        // silently omit `--model` and inherit opencode's internal default.
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = default_external_settings(output_dir, "opencode");
+        let vars = test_template_vars();
+
+        let result = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &None, // <- no resolved model
+            &None,
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None,
+        );
+
+        let err = result.expect_err("opencode with no resolved model must be a hard error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("requires an explicitly resolved model"),
+            "error must explain the explicit-model contract, got: {msg}"
         );
     }
 

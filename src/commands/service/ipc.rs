@@ -3515,22 +3515,21 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
+        // `aider` is still worker-only (no live chat handler), so it is
+        // rejected here. (OpenCode is NO LONGER rejected — see
+        // `test_create_chat_accepts_opencode_chat_capable_executor`.)
         let err = create_chat_in_graph(
             dir,
-            Some("OpenCode"),
+            Some("Aider"),
             Some("claude:opus"),
-            Some("opencode"),
+            Some("aider"),
             None,
             None,
         )
         .expect_err("worker-only external executors must not create live chats")
         .to_string();
 
-        assert!(
-            err.contains("opencode"),
-            "error should name executor: {}",
-            err
-        );
+        assert!(err.contains("aider"), "error should name executor: {}", err);
         assert!(
             err.contains("worker-only"),
             "error should explain worker-only boundary: {}",
@@ -3547,6 +3546,42 @@ poll_interval = 120
             graph.tasks().count(),
             0,
             "failed live-chat create must not write a graph task"
+        );
+    }
+
+    /// Goal #5 (fix-opencode-build): opencode is chat-capable, so creating a
+    /// live chat with `--executor opencode` succeeds and writes a chat task.
+    #[test]
+    fn test_create_chat_accepts_opencode_chat_capable_executor() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let id = create_chat_in_graph(
+            dir,
+            Some("OpenCode"),
+            Some("opencode:openrouter/stepfun/step-3.7-flash"),
+            Some("opencode"),
+            None,
+            None,
+        )
+        .expect("opencode is chat-capable and must create a live chat");
+
+        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.tasks().count(),
+            1,
+            "a successful opencode chat create must write exactly one chat task"
+        );
+        let task_id = workgraph::chat_id::format_chat_task_id(id);
+        let task = graph.get_task(&task_id).expect("chat task present");
+        assert_eq!(
+            task.model.as_deref(),
+            Some("opencode:openrouter/stepfun/step-3.7-flash"),
+            "chat task must carry the opencode route so plan_spawn dispatches via opencode"
         );
     }
 

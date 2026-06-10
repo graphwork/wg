@@ -2429,6 +2429,28 @@ pub enum Commands {
         model: Option<String>,
     },
 
+    /// Bridge OpenCode CLI output ↔ chat/<ref>/*.jsonl.
+    ///
+    /// Peer of `wg codex-handler` / `wg claude-handler` for the OpenCode
+    /// executor. `opencode run` is single-shot, so this handler re-runs
+    /// opencode per inbox message with the full conversation history
+    /// replayed into the prompt. ALWAYS passes the resolved model
+    /// explicitly via `--model`; refuses to start without one.
+    #[command(name = "opencode-handler")]
+    OpenCodeHandler {
+        #[arg(long = "chat")]
+        chat: String,
+
+        #[arg(long)]
+        resume: bool,
+
+        #[arg(long)]
+        role: Option<String>,
+
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
     /// Print the WG directory that `wg` would use from here,
     /// and show which resolver step won (CLI flag / env / walk-up /
     /// home / default). Useful when you're confused about which graph
@@ -5190,6 +5212,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::SpawnTask { .. } => "spawn-task",
         Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::CodexHandler { .. } => "codex-handler",
+        Commands::OpenCodeHandler { .. } => "opencode-handler",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",

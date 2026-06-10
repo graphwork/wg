@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::config::Config;
+use workgraph::dispatch::ExecutorKind;
 use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use workgraph::profile;
 use workgraph::profile::named as named_profile;
@@ -18,6 +19,26 @@ fn parse_profile_use_target(name: &str) -> Result<ProfileUseTarget> {
             profile_name: name.to_string(),
             pinned_model: None,
         });
+    }
+
+    // External CLI executors (`opencode`, `aider`, `goose`, …) are addressed
+    // by *executor* name, not a model provider prefix, so they are
+    // intentionally absent from `KNOWN_PROVIDERS` and would be rejected by the
+    // strict model-spec parser below. Map an `opencode:<route>` activation to
+    // the matching starter profile and pin the literal route so the spawn
+    // path's `parse_executor_model_route` fires unchanged. Guarded on
+    // `is_external_cli` so aider/goose/… compose without new arms.
+    if let Some((prefix, rest)) = name.split_once(':') {
+        if !rest.trim().is_empty() {
+            if let Some(kind) = ExecutorKind::from_str(prefix) {
+                if kind.is_external_cli() {
+                    return Ok(ProfileUseTarget {
+                        profile_name: kind.as_str().to_string(),
+                        pinned_model: Some(name.to_string()),
+                    });
+                }
+            }
+        }
     }
 
     let spec = workgraph::config::parse_model_spec_strict(name).map_err(|e| {
@@ -1157,8 +1178,63 @@ pub fn init_starters(force: bool) -> Result<()> {
         }
     );
     if written > 0 {
-        println!("Activate one with: wg profile use claude|codex|nex");
+        println!("Activate one with: wg profile use claude|codex|nex|opencode");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_profile_use_target_bare_name() {
+        let t = parse_profile_use_target("opencode").unwrap();
+        assert_eq!(t.profile_name, "opencode");
+        assert_eq!(t.pinned_model, None);
+    }
+
+    #[test]
+    fn test_parse_profile_use_target_opencode_model_qualified() {
+        // `wg profile use opencode:openrouter/stepfun/step-3.7-flash` selects
+        // the opencode starter and pins the literal route verbatim so the
+        // spawn path's parse_executor_model_route still fires.
+        let route = "opencode:openrouter/stepfun/step-3.7-flash";
+        let t = parse_profile_use_target(route).unwrap();
+        assert_eq!(t.profile_name, "opencode");
+        assert_eq!(t.pinned_model.as_deref(), Some(route));
+    }
+
+    #[test]
+    fn test_parse_profile_use_target_worker_only_externals_compose() {
+        // Generic over worker-only externals — aider/goose resolve to their
+        // own profile name without bespoke arms.
+        let t = parse_profile_use_target("aider:openrouter/x").unwrap();
+        assert_eq!(t.profile_name, "aider");
+        assert_eq!(t.pinned_model.as_deref(), Some("aider:openrouter/x"));
+    }
+
+    #[test]
+    fn test_parse_profile_use_target_known_providers_still_work() {
+        // Regression guard: existing claude/codex/nex activation is unchanged.
+        let c = parse_profile_use_target("claude:opus").unwrap();
+        assert_eq!(c.profile_name, "claude");
+        assert_eq!(c.pinned_model.as_deref(), Some("claude:opus"));
+
+        let x = parse_profile_use_target("codex:gpt-5.5").unwrap();
+        assert_eq!(x.profile_name, "codex");
+        assert_eq!(x.pinned_model.as_deref(), Some("codex:gpt-5.5"));
+
+        let n = parse_profile_use_target("nex:qwen3-coder").unwrap();
+        assert_eq!(n.profile_name, "nex");
+        assert_eq!(n.pinned_model.as_deref(), Some("nex:qwen3-coder"));
+    }
+
+    #[test]
+    fn test_parse_profile_use_target_unknown_prefix_still_rejected() {
+        // A colon-qualified name that is neither a known provider nor a
+        // worker-only external must still be rejected, not silently accepted.
+        assert!(parse_profile_use_target("foobar:baz").is_err());
+    }
 }

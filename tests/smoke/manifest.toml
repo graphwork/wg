@@ -142,8 +142,9 @@ name = "external_worker_live_chat_rejected"
 script = "scenarios/external_worker_live_chat_rejected.sh"
 owners = [
     "exec-core-routing",
+    "fix-opencode-build",
 ]
-description = "Pins exec-core-routing: first-class external worker executors such as opencode must be valid worker names without becoming live chat presets. `wg chat new --exec opencode` and `WG_EXECUTOR_TYPE=opencode wg spawn-task --dry-run .coordinator-0` must fail clearly as worker-only live-chat/spawn-task errors instead of silently routing to Claude."
+description = "Pins exec-core-routing + fix-opencode-build goal #5: external worker CLIs WITHOUT a live chat handler (aider/goose/…) must fail clearly as worker-only live-chat/spawn-task errors instead of silently routing to Claude, while opencode — which now ships `wg opencode-handler --chat` — must instead create a live chat and dispatch via `wg opencode-handler --chat` with the resolved model passed EXPLICITLY (never claude, never opencode's internal default). No secrets or live LLM endpoint required (uses --dry-run)."
 timeout_seconds = 30
 
 [[scenario]]
