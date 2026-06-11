@@ -1381,7 +1381,7 @@ mod tui_editor_tests {
         {
             let l = app.launcher.as_mut().unwrap();
             l.enter_add_new();
-            l.add_executor_idx = 2; // nex
+            l.add_executor_idx = 3; // nex (now at index 3 after opencode insertion)
             l.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
         }
 
@@ -1390,6 +1390,33 @@ mod tui_editor_tests {
         assert!(
             buffer_contains(&rendered, "Endpoint:"),
             "Add-new with nex MUST render an Endpoint field\n{}",
+            rendered
+        );
+    }
+
+    /// Render-level lock: Add-new + executor=opencode does NOT surface
+    /// the Endpoint field (opencode has no endpoint concept).
+    #[test]
+    fn launcher_add_new_mode_skips_endpoint_field_for_opencode() {
+        use super::super::state::{AddNewField, LauncherSection};
+
+        let mut app = make_editor_test_app();
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        {
+            let l = app.launcher.as_mut().unwrap();
+            l.enter_add_new();
+            l.add_executor_idx = 2; // opencode
+            l.active_section = LauncherSection::AddNew(AddNewField::Model);
+        }
+
+        let rendered = render_to_string(&mut app, 100, 30);
+
+        assert!(
+            !buffer_contains(&rendered, "Endpoint:"),
+            "Add-new with opencode must NOT render an Endpoint field\n{}",
             rendered
         );
     }

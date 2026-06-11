@@ -4096,11 +4096,16 @@ pub enum ChatCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Preset executor shortcut (e.g. "claude", "codex", "nex").
+        /// Live chat executor shortcut: "claude", "codex", "opencode",
+        /// or "nex"/"native". `opencode` runs an OpenRouter (or other
+        /// OpenCode-supported) model route and needs no `--endpoint`;
+        /// `nex`/`native` is the only executor that takes one.
         #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,
 
-        /// Per-chat model override (e.g. "claude:opus", "openai:qwen3-coder-30b").
+        /// Per-chat model override (e.g. "claude:opus",
+        /// "opencode:openrouter/stepfun/step-3.7-flash",
+        /// "openai:qwen3-coder-30b").
         #[arg(long, short = 'm')]
         model: Option<String>,
 
@@ -4881,10 +4886,13 @@ pub enum ServiceCommands {
         /// Model for this chat agent (e.g., "openai:qwen3-coder-30b")
         #[arg(long)]
         model: Option<String>,
-        /// Executor for this chat agent (e.g., "native", "claude")
+        /// Executor for this chat agent: "claude", "codex", "opencode",
+        /// or "native"/"nex". `opencode` runs an OpenRouter model route
+        /// with no endpoint; only "native"/"nex" uses `--endpoint`.
         #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,
         /// LLM endpoint URL for this chat (mirrors `wg nex -e <URL>`).
+        /// Only used by the "native"/"nex" executor.
         #[arg(long, short = 'e')]
         endpoint: Option<String>,
         /// Arbitrary command line to run in a persistent chat pane.

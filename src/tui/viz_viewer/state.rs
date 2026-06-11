@@ -1158,7 +1158,7 @@ pub struct AddNewExecutorChoice {
     pub internal_executor: &'static str,
 }
 
-/// The three executor options offered in Add-new mode.
+/// The executor options offered in Add-new mode.
 pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     AddNewExecutorChoice {
         label: "claude",
@@ -1167,6 +1167,10 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     AddNewExecutorChoice {
         label: "codex",
         internal_executor: "codex",
+    },
+    AddNewExecutorChoice {
+        label: "opencode",
+        internal_executor: "opencode",
     },
     AddNewExecutorChoice {
         label: "nex",
@@ -14195,6 +14199,22 @@ impl VizApp {
                     );
                     ("codex".to_string(), args, Some(project_root))
                 }
+                "opencode" => {
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
+                    let mut args: Vec<String> = Vec::new();
+                    if let Some(model_arg) = chat_model
+                        .as_deref()
+                        .and_then(workgraph::chat_command::opencode_model_arg)
+                    {
+                        args.push("--model".to_string());
+                        args.push(model_arg);
+                    }
+                    ("opencode".to_string(), args, Some(project_root))
+                }
                 _ => {
                     // Unknown executor — leave file-tailing path in charge.
                     return;
@@ -25953,12 +25973,24 @@ mod launcher_redesign_tests {
         state.mode = LauncherMode::AddNew;
         // claude (idx 0)
         state.add_executor_idx = 0;
-        assert!(!state.add_new_show_endpoint());
+        assert!(
+            !state.add_new_show_endpoint(),
+            "claude must never show an endpoint field"
+        );
         // codex (idx 1)
         state.add_executor_idx = 1;
-        assert!(!state.add_new_show_endpoint());
-        // nex (idx 2)
+        assert!(
+            !state.add_new_show_endpoint(),
+            "codex must never show an endpoint field"
+        );
+        // opencode (idx 2)
         state.add_executor_idx = 2;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "opencode must never show an endpoint field"
+        );
+        // nex (idx 3)
+        state.add_executor_idx = 3;
         assert!(state.add_new_show_endpoint());
     }
 
@@ -25966,7 +25998,7 @@ mod launcher_redesign_tests {
     fn add_new_with_nex_resolves_with_endpoint() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = 2; // nex
+        state.add_executor_idx = 3; // nex (now at index 3 after opencode)
         state.add_model = "qwen3-coder".into();
         state.add_endpoint = "https://lambda01.tail334fe6.ts.net:30000".into();
         let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
@@ -26011,7 +26043,7 @@ mod launcher_redesign_tests {
     fn add_new_custom_command_resolves_command_line() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = 3; // Custom Command
+        state.add_executor_idx = 4; // Custom Command (now at index 4)
         state.add_model = "tail -f /tmp/test.log".into();
         let (executor, command, endpoint) = state.resolved_launch_args().unwrap();
         assert_eq!(executor, "command");
@@ -26020,10 +26052,28 @@ mod launcher_redesign_tests {
     }
 
     #[test]
+    fn add_new_with_opencode_resolves_without_endpoint() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 2; // opencode
+        state.add_model = "opencode:openrouter/stepfun/step-3.7-flash".into();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "opencode");
+        assert_eq!(
+            model.as_deref(),
+            Some("opencode:openrouter/stepfun/step-3.7-flash")
+        );
+        assert!(endpoint.is_none(), "opencode must never carry an endpoint");
+    }
+
+    #[test]
     fn add_new_executor_choices_match_spec() {
         // The dialog offers built-in LLM presets plus a generic command pane.
         let labels: Vec<_> = ADD_NEW_EXECUTOR_CHOICES.iter().map(|c| c.label).collect();
-        assert_eq!(labels, vec!["claude", "codex", "nex", "Custom Command"]);
+        assert_eq!(
+            labels,
+            vec!["claude", "codex", "opencode", "nex", "Custom Command"]
+        );
         // nex must lower to internal "native" — that's the executor
         // handler name the dispatch layer uses.
         let nex = ADD_NEW_EXECUTOR_CHOICES
@@ -26031,6 +26081,11 @@ mod launcher_redesign_tests {
             .find(|c| c.label == "nex")
             .unwrap();
         assert_eq!(nex.internal_executor, "native");
+        let opencode = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .find(|c| c.label == "opencode")
+            .unwrap();
+        assert_eq!(opencode.internal_executor, "opencode");
         let command = ADD_NEW_EXECUTOR_CHOICES
             .iter()
             .find(|c| c.label == "Custom Command")
@@ -26066,7 +26121,7 @@ mod launcher_redesign_tests {
     fn next_section_add_new_includes_endpoint_for_nex() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = 2; // nex
+        state.add_executor_idx = 3; // nex (now at index 3 after opencode insertion)
         state.active_section = LauncherSection::AddNew(AddNewField::Model);
         state.next_section();
         assert_eq!(

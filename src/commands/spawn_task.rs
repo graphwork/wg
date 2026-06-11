@@ -281,7 +281,7 @@ fn worker_only_executor_error(executor: ExecutorKind) -> anyhow::Error {
     anyhow!(
         "executor '{}' is worker-only and cannot run through spawn-task/live chat; \
          use it for task-agent workers via the dispatcher or `wg spawn`, or choose \
-         a live chat executor such as claude, codex, or native/nex",
+         a live chat executor such as claude, codex, opencode, or native/nex",
         executor.as_str()
     )
 }

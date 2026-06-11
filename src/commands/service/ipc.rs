@@ -1941,7 +1941,7 @@ fn worker_only_live_chat_executor_error(executor: Option<&str>) -> Option<String
         format!(
             "executor '{}' is worker-only and cannot run as a live chat executor; \
              use it for task-agent workers via the dispatcher or `wg spawn`, or choose \
-             a live chat executor such as claude, codex, or native/nex",
+             a live chat executor such as claude, codex, opencode, or native/nex",
             kind.as_str()
         )
     })
@@ -3582,6 +3582,30 @@ poll_interval = 120
             task.model.as_deref(),
             Some("opencode:openrouter/stepfun/step-3.7-flash"),
             "chat task must carry the opencode route so plan_spawn dispatches via opencode"
+        );
+        assert_eq!(
+            task.executor_preset_name.as_deref(),
+            Some("opencode"),
+            "chat task must record the opencode executor override"
+        );
+        assert!(
+            task.endpoint.is_none(),
+            "opencode chat needs no endpoint override (OpenRouter route is implicit): {:?}",
+            task.endpoint
+        );
+        // The launch argv carries the OpenRouter model in opencode's
+        // `openrouter/<vendor>/<model>` spelling — and no endpoint flag.
+        assert!(
+            task.command_argv
+                .windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "openrouter/stepfun/step-3.7-flash"),
+            "opencode argv must pass the OpenRouter model explicitly: {:?}",
+            task.command_argv
+        );
+        assert!(
+            !task.command_argv.iter().any(|a| a == "-e" || a == "--endpoint"),
+            "opencode argv must not carry an endpoint flag: {:?}",
+            task.command_argv
         );
     }
 

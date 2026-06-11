@@ -20,6 +20,45 @@ pub fn argv_for_command_line(command: &str) -> Vec<String> {
     vec!["bash".to_string(), "-lc".to_string(), command.to_string()]
 }
 
+/// Normalize a per-chat model string into the `--model` value the OpenCode
+/// CLI expects (its `openrouter/<vendor>/<model>` spelling).
+///
+/// Accepts all three user-facing spellings:
+/// - executor-qualified `opencode:openrouter/<vendor>/<model>` (the chat
+///   route a user pins; `opencode` is an executor, not a model provider, so
+///   it is deliberately absent from `KNOWN_PROVIDERS` and must be stripped
+///   here rather than via `parse_model_spec`),
+/// - provider-qualified `openrouter:<vendor>/<model>`,
+/// - bare CLI form `openrouter/<vendor>/<model>`.
+///
+/// Returns `None` when no usable model id remains.
+pub fn opencode_model_arg(model: &str) -> Option<String> {
+    // Strip the executor prefix when present; what follows is the real model
+    // route (an `openrouter/…` CLI spelling or a `provider:model` spec).
+    let model = model.strip_prefix("opencode:").unwrap_or(model);
+    let spec = parse_model_spec(model);
+    let provider = spec
+        .provider
+        .as_deref()
+        .map(crate::config::provider_to_native_provider);
+    let model_arg = if provider == Some("openrouter") {
+        let id = spec
+            .model_id
+            .strip_prefix("openrouter/")
+            .unwrap_or(&spec.model_id);
+        format!("openrouter/{}", id)
+    } else if !spec.model_id.is_empty() {
+        spec.model_id.clone()
+    } else {
+        model.to_string()
+    };
+    if model_arg.is_empty() {
+        None
+    } else {
+        Some(model_arg)
+    }
+}
+
 /// Build the stable command metadata for a built-in chat preset.
 pub fn argv_for_preset(
     preset: &str,
@@ -67,25 +106,9 @@ pub fn argv_for_preset(
             // use) so the interactive session is not left on opencode's
             // internal default.
             let mut argv = vec!["opencode".to_string()];
-            if let Some(m) = model.filter(|m| !m.is_empty()) {
-                let spec = parse_model_spec(m);
-                let provider = spec
-                    .provider
-                    .as_deref()
-                    .map(crate::config::provider_to_native_provider);
-                let model_arg = if provider == Some("openrouter") {
-                    let id = spec
-                        .model_id
-                        .strip_prefix("openrouter/")
-                        .unwrap_or(&spec.model_id);
-                    format!("openrouter/{}", id)
-                } else {
-                    spec.model_id.clone()
-                };
-                if !model_arg.is_empty() {
-                    argv.push("--model".to_string());
-                    argv.push(model_arg);
-                }
+            if let Some(model_arg) = model.filter(|m| !m.is_empty()).and_then(opencode_model_arg) {
+                argv.push("--model".to_string());
+                argv.push(model_arg);
             }
             argv
         }
@@ -148,5 +171,56 @@ pub fn default_model_for_preset(config: &Config, preset: &str) -> Option<String>
             .clone()
             .or_else(|| Some(config.agent.model.clone())),
         _ => config.coordinator.model.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_model_arg_strips_executor_prefix() {
+        // Executor-qualified spelling — the route a user pins on a chat.
+        assert_eq!(
+            opencode_model_arg("opencode:openrouter/stepfun/step-3.7-flash"),
+            Some("openrouter/stepfun/step-3.7-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_arg_accepts_provider_qualified_spelling() {
+        assert_eq!(
+            opencode_model_arg("openrouter:stepfun/step-3.7-flash"),
+            Some("openrouter/stepfun/step-3.7-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_arg_accepts_bare_cli_spelling() {
+        assert_eq!(
+            opencode_model_arg("openrouter/stepfun/step-3.7-flash"),
+            Some("openrouter/stepfun/step-3.7-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn argv_for_opencode_preset_passes_openrouter_model_without_endpoint() {
+        let argv = argv_for_preset(
+            "opencode",
+            Some("opencode:openrouter/stepfun/step-3.7-flash"),
+            // An endpoint must never leak into the opencode argv — OpenRouter
+            // is the implicit route, opencode takes no `-e`/`--endpoint`.
+            Some("https://example.invalid:30000"),
+            "wg",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "opencode".to_string(),
+                "--model".to_string(),
+                "openrouter/stepfun/step-3.7-flash".to_string(),
+            ]
+        );
+        assert!(!argv.iter().any(|a| a == "-e" || a == "--endpoint"));
     }
 }
