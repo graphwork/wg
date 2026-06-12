@@ -3945,6 +3945,14 @@ impl Config {
     /// Return the global WG directory.
     ///
     /// Resolution order matches `main.rs::resolve_workgraph_dir`:
+    /// 0. `$WG_GLOBAL_DIR` if set — an explicit override used to point WG's
+    ///    global config + active-profile lookup at a specific directory.
+    ///    This is the single chokepoint both `global_config_path()` and
+    ///    `profile::named::active_pointer_path()` flow through, so setting it
+    ///    isolates *all* machine-global state (config.toml, active-profile,
+    ///    profiles/) in one shot. Tests use it to stay independent of the
+    ///    developer machine's `~/.wg` (e.g. an active `opencode` profile),
+    ///    without perturbing `HOME` for sibling tests that shell out to git.
     /// 1. `~/.wg` if it exists (modern, written by `wg init`).
     /// 2. `~/.workgraph` if it exists (legacy).
     /// 3. `~/.wg` (default — new installs get the modern name).
@@ -3953,6 +3961,12 @@ impl Config {
     /// but `Config::load_global()` reads `~/.workgraph/config.toml`, silently
     /// dropping every global key.
     pub fn global_dir() -> anyhow::Result<PathBuf> {
+        if let Some(dir) = std::env::var_os("WG_GLOBAL_DIR") {
+            let dir = PathBuf::from(dir);
+            if !dir.as_os_str().is_empty() {
+                return Ok(dir);
+            }
+        }
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         let modern = home.join(".wg");

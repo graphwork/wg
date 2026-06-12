@@ -457,14 +457,29 @@ mod tests {
         }
     }
 
-    /// Save and restore WG_EXECUTOR_TYPE + WG_MODEL across a test body.
-    /// `set_exec` / `set_model` configure the env for the duration of `f`.
-    /// Env restoration runs even on panic via Drop, so failed assertions
-    /// don't leak into other tests.
+    /// Save and restore WG_EXECUTOR_TYPE + WG_MODEL + WG_GLOBAL_DIR across a
+    /// test body. `set_exec` / `set_model` configure the env for the duration
+    /// of `f`. Env restoration runs even on panic via Drop, so failed
+    /// assertions don't leak into other tests.
+    ///
+    /// `WG_GLOBAL_DIR` is repointed at a fresh empty tempdir for the duration
+    /// of `f`. `resolve_handler` calls `Config::load_or_default`, which merges
+    /// the machine-global `~/.wg/config.toml` and consults `~/.wg/active-profile`;
+    /// on a developer machine that has, say, an active `opencode` profile, the
+    /// global `[dispatcher].model = "opencode:openrouter/…"` executor-qualified
+    /// route leaks in and overrides the `WG_EXECUTOR_TYPE=native` hint these
+    /// tests pin — routing to OpenCode and failing the `expected Native handler`
+    /// assertions. Pointing `WG_GLOBAL_DIR` at an empty dir makes
+    /// `Config::global_dir()` (the single chokepoint for global config +
+    /// active-profile) resolve to nothing, so these tests depend only on the
+    /// per-test tempdir + env, never the global profile. We override
+    /// `WG_GLOBAL_DIR` rather than `HOME` so sibling tests that shell out to
+    /// `git` are unaffected.
     fn with_env<R>(set_exec: Option<&str>, set_model: Option<&str>, f: impl FnOnce() -> R) -> R {
         struct EnvGuard {
             saved_exec: Option<String>,
             saved_model: Option<String>,
+            saved_global_dir: Option<String>,
         }
         impl Drop for EnvGuard {
             fn drop(&mut self) {
@@ -477,14 +492,23 @@ mod tests {
                         Some(v) => std::env::set_var("WG_MODEL", v),
                         None => std::env::remove_var("WG_MODEL"),
                     }
+                    match self.saved_global_dir.take() {
+                        Some(v) => std::env::set_var("WG_GLOBAL_DIR", v),
+                        None => std::env::remove_var("WG_GLOBAL_DIR"),
+                    }
                 }
             }
         }
+        // Keep the tempdir alive for the whole body; dropped after `_guard`
+        // restores the env (drop order is reverse of declaration).
+        let global = tempfile::tempdir().unwrap();
         let _guard = EnvGuard {
             saved_exec: std::env::var("WG_EXECUTOR_TYPE").ok(),
             saved_model: std::env::var("WG_MODEL").ok(),
+            saved_global_dir: std::env::var("WG_GLOBAL_DIR").ok(),
         };
         unsafe {
+            std::env::set_var("WG_GLOBAL_DIR", global.path());
             match set_exec {
                 Some(v) => std::env::set_var("WG_EXECUTOR_TYPE", v),
                 None => std::env::remove_var("WG_EXECUTOR_TYPE"),

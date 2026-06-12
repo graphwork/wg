@@ -164,6 +164,38 @@ mod tests {
     use workgraph::parser::save_graph;
     use workgraph::service::registry::AgentRegistry;
 
+    /// Isolate WG's machine-global config + active-profile from this test by
+    /// pointing `WG_GLOBAL_DIR` at a fresh empty tempdir. `spawn_agent_inner`
+    /// calls `Config::load_or_default`, which merges `~/.wg/config.toml`; on a
+    /// developer machine with an active `opencode` profile, the global
+    /// `[dispatcher].model = "opencode:openrouter/…"` executor-qualified route
+    /// overrides the explicit `"shell"` executor floor and the spawn succeeds
+    /// instead of failing with "no exec command for shell executor". Overriding
+    /// `WG_GLOBAL_DIR` (not `HOME`) keeps sibling tests that shell out to `git`
+    /// unaffected. The returned guard restores the prior value (and drops the
+    /// tempdir) on scope exit, even on panic.
+    #[must_use]
+    fn isolate_global_config() -> impl Drop {
+        struct Guard {
+            saved: Option<std::ffi::OsString>,
+            _tmp: TempDir,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.saved.take() {
+                        Some(v) => std::env::set_var("WG_GLOBAL_DIR", v),
+                        None => std::env::remove_var("WG_GLOBAL_DIR"),
+                    }
+                }
+            }
+        }
+        let tmp = TempDir::new().unwrap();
+        let saved = std::env::var_os("WG_GLOBAL_DIR");
+        unsafe { std::env::set_var("WG_GLOBAL_DIR", tmp.path()) };
+        Guard { saved, _tmp: tmp }
+    }
+
     fn make_task(id: &str, title: &str) -> Task {
         Task {
             id: id.to_string(),
@@ -386,6 +418,10 @@ mod tests {
 
     #[test]
     fn test_spawn_shell_without_exec_fails() {
+        // Don't let a machine-global executor-qualified route (e.g. an active
+        // `opencode` profile) override the explicit `shell` floor — that would
+        // make the spawn succeed instead of failing as this test asserts.
+        let _global = isolate_global_config();
         let temp_dir = TempDir::new().unwrap();
         let task = make_task("t1", "Test Task");
         // Task has no exec command
