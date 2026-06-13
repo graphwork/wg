@@ -607,16 +607,22 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             .chat_agent_death
             .contains_key(&app.active_coordinator_id);
     if vendor_pty_active {
-        // Modal contract (implement-tui-modal): when chat PTY has focus, the
-        // ONLY key allowed to break out is Ctrl+T. Every other keystroke —
-        // letters, digits, Enter, Ctrl+N, Ctrl+W, Ctrl+anything — flows to
-        // the embedded REPL. Earlier versions intercepted Ctrl+N and Ctrl+W
-        // as global "escape hatches" so users could break in to the launcher
-        // / retire-chat dialog from inside a PTY; that contradicts the modal
-        // model. Use Ctrl+T to enter command mode, then `n`/`w` (see
-        // implement-tui-command).
+        // Modal contract (implement-tui-modal): when chat PTY has focus, most
+        // keystrokes flow to the embedded REPL. Two host-TUI escapes remain:
+        // Ctrl+T toggles command mode, and `+` opens the new-chat launcher
+        // because the visible Chat tab advertises `[+]` as the add-chat path.
+        // Other letters, digits, Enter, Ctrl+N, Ctrl+W, Ctrl+anything still
+        // go to the embedded REPL. Use Ctrl+T to enter command mode, then
+        // `n`/`w` for the command-mode aliases (see implement-tui-command).
         let is_toggle =
             matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        let is_plus_launcher = matches!(code, KeyCode::Char('+'))
+            && !modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META);
+        if is_plus_launcher {
+            app.open_launcher();
+            return;
+        }
         let is_scroll_toggle =
             matches!(code, KeyCode::Char(']')) && modifiers.contains(KeyModifiers::CONTROL);
         if is_scroll_toggle {
@@ -9164,6 +9170,25 @@ mod chat_tab_navigation_tests {
             app.launcher.is_none(),
             "'n' in PTY mode must NOT open the launcher"
         );
+    }
+
+    /// The visible Chat tab advertises `[+]` as the add-chat affordance.
+    /// It must work even when the embedded chat PTY currently owns focus.
+    #[test]
+    fn pty_mode_plus_opens_launcher() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+
+        super::handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::NONE);
+
+        assert!(
+            app.launcher.is_some(),
+            "'+' in PTY mode must open the new-chat launcher"
+        );
+        assert_eq!(app.input_mode, super::super::state::InputMode::Launcher);
     }
 
     /// fix-new-chat-2 regression lock: while the new-chat launcher (or

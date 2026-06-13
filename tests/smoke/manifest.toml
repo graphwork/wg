@@ -306,6 +306,15 @@ description = "redesign-new-chat 2026-04-30: the TUI new-chat dialog opens in a 
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_plus_opencode_chat"
+script = "scenarios/tui_plus_opencode_chat.sh"
+owners = [
+    "fix-real-tui",
+]
+description = "fix-real-tui 2026-06-13: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, verifies opencode is visible/selectable in Add-new executor choices, launches opencode:openrouter/stepfun/step-3.7-flash, and asserts the resulting .chat-N graph row plus coordinator state carry executor=opencode, the requested model, normalized OpenCode argv, and no endpoint override."
+timeout_seconds = 120
+
+[[scenario]]
 name = "launcher_focus_new_chat_on_launch"
 script = "scenarios/launcher_focus_new_chat_on_launch.sh"
 owners = [
