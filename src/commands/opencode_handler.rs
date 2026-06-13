@@ -284,30 +284,13 @@ fn opencode_model_arg(model: Option<&str>) -> Option<String> {
         }
         _ => raw,
     };
-    // WG openrouter spec (`openrouter:vendor/model`) → opencode's slash form.
-    if let Some(or) = m.strip_prefix("openrouter:") {
-        return Some(format!("openrouter/{}", or));
-    }
-    // Already in opencode's `openrouter/...` slash spelling.
-    if m.starts_with("openrouter/") {
-        return Some(m.to_string());
-    }
-    let spec = workgraph::config::parse_model_spec(m);
-    let provider = spec
-        .provider
-        .as_deref()
-        .map(workgraph::config::provider_to_native_provider);
-    if provider == Some("openrouter") {
-        let id = spec
-            .model_id
-            .strip_prefix("openrouter/")
-            .unwrap_or(&spec.model_id);
-        Some(format!("openrouter/{}", id))
-    } else if spec.model_id.is_empty() {
-        Some(m.to_string())
-    } else {
-        Some(spec.model_id)
-    }
+    // Delegate to the canonical normalizer so the worker handler path and the
+    // TUI/interactive PTY path (chat_command::opencode_model_arg) agree on every
+    // spelling — including a bare `vendor/model` route such as
+    // `minimax/minimax-m3`, which must become `openrouter/minimax/minimax-m3`
+    // rather than being passed through (OpenCode can't resolve provider
+    // `minimax` and silently falls back to its default model).
+    workgraph::chat_command::opencode_model_arg(m)
 }
 
 /// Build the argv (excluding the `opencode` binary itself) for one
@@ -731,6 +714,36 @@ mod tests {
         );
         assert_eq!(opencode_model_arg(None), None);
         assert_eq!(opencode_model_arg(Some("")), None);
+    }
+
+    #[test]
+    fn test_opencode_model_arg_minimax_all_spellings() {
+        // The worker handler path must agree with the TUI/interactive path on
+        // every minimax spelling — all three resolve to the OpenRouter route,
+        // never a bare `minimax/minimax-m3` (→ opencode default fallback).
+        for spelling in [
+            "opencode:openrouter/minimax/minimax-m3",
+            "openrouter:minimax/minimax-m3",
+            "openrouter/minimax/minimax-m3",
+            "minimax/minimax-m3",
+        ] {
+            assert_eq!(
+                opencode_model_arg(Some(spelling)).as_deref(),
+                Some("openrouter/minimax/minimax-m3"),
+                "spelling {spelling:?} must normalize to the openrouter route"
+            );
+        }
+    }
+
+    #[test]
+    fn test_opencode_run_args_bare_minimax_route_gets_openrouter_prefix() {
+        let pf = PathBuf::from("/tmp/p.txt");
+        let args = opencode_run_args(Some("minimax/minimax-m3"), &pf).unwrap();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("--model openrouter/minimax/minimax-m3"),
+            "bare vendor/model route must be normalized to the openrouter route: {joined}"
+        );
     }
 
     #[test]

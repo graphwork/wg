@@ -315,6 +315,15 @@ description = "fix-real-tui 2026-06-13: drives the real wg tui '+' new-chat menu
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_plus_opencode_minimax"
+script = "scenarios/tui_plus_opencode_minimax.sh"
+owners = [
+    "fix-tui-opencode",
+]
+description = "fix-tui-opencode 2026-06-13: drives the real wg tui '+' new-chat menu in tmux, selects opencode, and types the bare OpenRouter route a user naturally types — `minimax/minimax-m3`. Pins the user-reported regression where the launched OpenCode chat opened a DIFFERENT model (the user saw 'nano banana', opencode's internal default) because the bare vendor/model route was passed to OpenCode without the `openrouter/` prefix, so provider `minimax` could not resolve and opencode silently fell back to its default. Asserts the persisted .chat-1 graph row + CoordinatorState preserve the requested minimax route with executor=opencode and NO endpoint override, and that command_argv is the normalized [\"opencode\",\"--model\",\"openrouter/minimax/minimax-m3\"] — never a default/recent/nano-banana fallback. Credential-free (no real OpenRouter/opencode call)."
+timeout_seconds = 120
+
+[[scenario]]
 name = "launcher_focus_new_chat_on_launch"
 script = "scenarios/launcher_focus_new_chat_on_launch.sh"
 owners = [

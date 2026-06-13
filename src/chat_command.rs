@@ -20,16 +20,46 @@ pub fn argv_for_command_line(command: &str) -> Vec<String> {
     vec!["bash".to_string(), "-lc".to_string(), command.to_string()]
 }
 
+/// Normalize a bare (provider-less) OpenCode model route into the spelling the
+/// OpenCode CLI expects.
+///
+/// The WG `opencode` executor is OpenRouter-first (see `wg chat create --exec`
+/// help: "opencode runs an OpenRouter (or other OpenCode-supported) model
+/// route"). OpenCode itself wants a fully-qualified `provider/model` route, so a
+/// bare `vendor/model` such as `minimax/minimax-m3` is an OpenRouter route that
+/// is simply missing its `openrouter/` prefix. Without the prefix OpenCode
+/// cannot resolve provider `minimax` and silently falls back to its own
+/// internal default model — the exact `nano-banana`-instead-of-minimax bug the
+/// user reported.
+///
+/// Rules (applied to a route that already had any `opencode:` / `provider:`
+/// prefix stripped):
+/// - already `openrouter/…` → unchanged (don't double-prefix),
+/// - contains a `/` (i.e. `vendor/model` shape) → prefix `openrouter/`,
+/// - single token with no `/` (e.g. a locally-configured OpenCode model id) →
+///   unchanged.
+fn normalize_opencode_bare_route(id: &str) -> String {
+    if id.starts_with("openrouter/") || !id.contains('/') {
+        id.to_string()
+    } else {
+        format!("openrouter/{}", id)
+    }
+}
+
 /// Normalize a per-chat model string into the `--model` value the OpenCode
 /// CLI expects (its `openrouter/<vendor>/<model>` spelling).
 ///
-/// Accepts all three user-facing spellings:
+/// Accepts every reasonable user-facing spelling typed into the TUI launcher's
+/// free-text model field:
 /// - executor-qualified `opencode:openrouter/<vendor>/<model>` (the chat
 ///   route a user pins; `opencode` is an executor, not a model provider, so
 ///   it is deliberately absent from `KNOWN_PROVIDERS` and must be stripped
 ///   here rather than via `parse_model_spec`),
 /// - provider-qualified `openrouter:<vendor>/<model>`,
-/// - bare CLI form `openrouter/<vendor>/<model>`.
+/// - CLI form `openrouter/<vendor>/<model>`,
+/// - bare `vendor/model` (e.g. `minimax/minimax-m3`) — normalized to the
+///   OpenRouter route `openrouter/<vendor>/<model>` (see
+///   [`normalize_opencode_bare_route`]).
 ///
 /// Returns `None` when no usable model id remains.
 pub fn opencode_model_arg(model: &str) -> Option<String> {
@@ -48,9 +78,9 @@ pub fn opencode_model_arg(model: &str) -> Option<String> {
             .unwrap_or(&spec.model_id);
         format!("openrouter/{}", id)
     } else if !spec.model_id.is_empty() {
-        spec.model_id.clone()
+        normalize_opencode_bare_route(&spec.model_id)
     } else {
-        model.to_string()
+        normalize_opencode_bare_route(model)
     };
     if model_arg.is_empty() {
         None
@@ -200,6 +230,62 @@ mod tests {
         assert_eq!(
             opencode_model_arg("openrouter/stepfun/step-3.7-flash"),
             Some("openrouter/stepfun/step-3.7-flash".to_string())
+        );
+    }
+
+    // --- minimax/minimax-m3 (fix-tui-opencode) -------------------------------
+    // All three spellings a user can type into the TUI launcher model field
+    // must normalize to OpenCode's `openrouter/minimax/minimax-m3` route, never
+    // a bare `minimax/minimax-m3` (which OpenCode can't resolve → silent
+    // fallback to its default `nano-banana` model).
+
+    #[test]
+    fn opencode_model_arg_minimax_executor_qualified() {
+        assert_eq!(
+            opencode_model_arg("opencode:openrouter/minimax/minimax-m3"),
+            Some("openrouter/minimax/minimax-m3".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_arg_minimax_provider_qualified() {
+        assert_eq!(
+            opencode_model_arg("openrouter:minimax/minimax-m3"),
+            Some("openrouter/minimax/minimax-m3".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_arg_minimax_bare_vendor_model_gets_openrouter_prefix() {
+        // The realistic regression: a user types the bare OpenRouter vendor/model
+        // route. Pre-fix this passed through as `minimax/minimax-m3` and OpenCode
+        // fell back to its default. It MUST become `openrouter/minimax/minimax-m3`.
+        assert_eq!(
+            opencode_model_arg("minimax/minimax-m3"),
+            Some("openrouter/minimax/minimax-m3".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_model_arg_single_token_model_passes_through() {
+        // A provider-less single-token model id (no `/`) is left alone — only
+        // `vendor/model` shapes are treated as OpenRouter routes.
+        assert_eq!(
+            opencode_model_arg("some-local-model"),
+            Some("some-local-model".to_string())
+        );
+    }
+
+    #[test]
+    fn argv_for_opencode_preset_normalizes_bare_minimax_route() {
+        let argv = argv_for_preset("opencode", Some("minimax/minimax-m3"), None, "wg");
+        assert_eq!(
+            argv,
+            vec![
+                "opencode".to_string(),
+                "--model".to_string(),
+                "openrouter/minimax/minimax-m3".to_string(),
+            ]
         );
     }
 
