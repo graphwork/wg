@@ -342,6 +342,24 @@ description = "add-nex-endpoint 2026-06-14: drives the real wg tui '+' new-chat 
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_plus_opencode_model_fuzzy"
+script = "scenarios/tui_plus_opencode_model_fuzzy.sh"
+owners = [
+    "add-model-fuzzy",
+]
+description = "add-model-fuzzy 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects opencode, and exercises the Model field's fuzzy autocomplete (NOT exact typing). Tabs to the Model field and types the search fragment `minimax m3` (two space-separated terms, no `/`), confirms the dropdown surfaces the curated `minimax/minimax-m3` route, then Enter ACCEPTS the highlighted suggestion + launches in one key. Asserts the launched .chat-1 graph row + CoordinatorState carry the fuzzy-selected minimax route (executor_preset_name=opencode / executor_override=opencode, NO endpoint override) and command_argv is the normalized [\"opencode\",\"--model\",\"openrouter/minimax/minimax-m3\"] — never a recent-history decoy or a default fallback. Seeds a decoy recent launcher-history combo so a recall regression would be caught. Credential-free (asserts persisted metadata only; no live opencode/OpenRouter call). The autocomplete sibling of tui_plus_opencode_minimax.sh, which pins the raw free-text route path."
+timeout_seconds = 120
+
+[[scenario]]
+name = "tui_plus_nex_model_fuzzy"
+script = "scenarios/tui_plus_nex_model_fuzzy.sh"
+owners = [
+    "add-model-fuzzy",
+]
+description = "add-model-fuzzy 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex, and proves the Model fuzzy autocomplete COMPOSES with the nex Endpoint NAME autocomplete (add-nex-endpoint). Tabs to the Model field, fuzzy-types `minimax m3` (space-separated fragment, no `/`), confirms the dropdown surfaces `minimax/minimax-m3`, then Tab ACCEPTS the model (nex-normalized to `openrouter:minimax/minimax-m3`) AND advances to the Endpoint field; on the Endpoint field it filters by name (`qwen`) and Enter accepts the named endpoint + launches. Configures a target endpoint `qwen-local` plus a default-marked `fallback-decoy`, and seeds a decoy recent combo. Asserts the launched .chat-1 graph row + CoordinatorState carry model `openrouter:minimax/minimax-m3` exactly and endpoint `qwen-local` (executor_preset_name=nex / executor_override=native), with command_argv [\"wg\",\"nex\",\"-m\",\"minimax/minimax-m3\",\"-e\",\"qwen-local\"] — never a default/recent decoy. Credential-free (asserts persisted metadata only; no live nex reply)."
+timeout_seconds = 120
+
+[[scenario]]
 name = "launcher_focus_new_chat_on_launch"
 script = "scenarios/launcher_focus_new_chat_on_launch.sh"
 owners = [

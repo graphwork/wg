@@ -1223,6 +1223,255 @@ pub fn build_endpoint_suggestions(config: &Config) -> Vec<EndpointSuggestion> {
         .collect()
 }
 
+/// One model suggestion offered by the Add-new Model field's fuzzy
+/// autocomplete (add-model-fuzzy). Built at launcher-open time from the
+/// model registry, a curated network-free list of popular OpenRouter
+/// routes, recent launcher history, and configured endpoint default
+/// models.
+///
+/// Unlike [`EndpointSuggestion`], a model suggestion is executor-AGNOSTIC
+/// at build time: it stores the canonical bare model id plus its native
+/// provider. The executor-specific launch spec is computed only when the
+/// suggestion is ACCEPTED (see [`LauncherState::accept_model_suggestion`]),
+/// because the same model normalizes differently per executor — e.g.
+/// `minimax/minimax-m3` becomes `openrouter/minimax/minimax-m3` for
+/// `opencode` but `openrouter:minimax/minimax-m3` for `nex`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelSuggestion {
+    /// Canonical model id WITHOUT any executor/provider prefix
+    /// (e.g. `minimax/minimax-m3`, `anthropic/claude-opus-4-6`,
+    /// `qwen3-coder`). Matching runs against this and the per-executor
+    /// normalizer turns it into a launch spec.
+    pub id: String,
+    /// Native provider for this model (`openrouter`, `anthropic`,
+    /// `openai`, `google`, `local`, or empty when unknown). Drives
+    /// executor-aware normalization and is shown as secondary detail.
+    pub provider: String,
+    /// Short source/tier label shown as secondary detail
+    /// ("frontier", "mid", "budget", "recent", "endpoint", "curated").
+    pub source: String,
+}
+
+/// A curated, network-free set of popular OpenRouter model routes used to
+/// seed the launcher's model autocomplete (add-model-fuzzy). These are
+/// intentionally NOT in the pricing-bearing model registry (which drives
+/// cost estimation): they exist only so common routes a user is likely to
+/// type — `minimax/minimax-m3`, `qwen/qwen3-coder`, `deepseek/deepseek-v3.2`,
+/// … — are findable by fuzzy search without a credentialed OpenRouter API
+/// call. Remote search stays available via `wg models search`; this list
+/// keeps the hot TUI path local and cache-free.
+pub const CURATED_OPENROUTER_MODELS: &[&str] = &[
+    "minimax/minimax-m3",
+    "qwen/qwen3-coder",
+    "qwen/qwen3-max",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-r1",
+    "moonshotai/kimi-k2",
+    "x-ai/grok-4",
+    "z-ai/glm-4.6",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-5.5",
+    "google/gemini-2.5-pro",
+];
+
+/// Map a user-facing provider/executor prefix (as parsed by
+/// [`parse_model_spec`]) to the registry-style "home" provider used by
+/// [`ModelSuggestion::provider`]. Routing-only prefixes that don't name a
+/// model home (`nex`, `local`, `native`, …) collapse to an empty string so
+/// the nex normalizer treats their bare ids as `nex:<model>`.
+fn registry_provider_from_prefix(prefix: &str) -> String {
+    match prefix {
+        "openrouter" => "openrouter",
+        "claude" => "anthropic",
+        "openai" | "codex" => "openai",
+        "gemini" => "google",
+        _ => "",
+    }
+    .to_string()
+}
+
+/// Short model name: the last `/`-separated segment of an id.
+fn model_short_name(id: &str) -> &str {
+    id.rsplit('/').next().unwrap_or(id)
+}
+
+/// Normalize a selected [`ModelSuggestion`] into the launch spec to persist
+/// for the given `executor` (add-model-fuzzy). This is the single place that
+/// encodes per-executor route conventions:
+/// - `opencode` → OpenCode's `openrouter/<vendor>/<model>` route (reusing
+///   [`workgraph::chat_command::opencode_model_arg`] so the persisted spec and
+///   the launched argv always agree),
+/// - `nex`/`native` → a WG model spec: `openrouter:<vendor>/<model>` for an
+///   OpenRouter/vendor-route model, else `nex:<model>` for a bare id,
+/// - `claude` → `claude:<short>`, `codex` → `codex:<short>`,
+/// - anything else (e.g. `command`) → the id unchanged.
+pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) -> String {
+    let id = id.trim();
+    match executor {
+        "opencode" => {
+            workgraph::chat_command::opencode_model_arg(id).unwrap_or_else(|| id.to_string())
+        }
+        "native" | "nex" => {
+            if provider == "openrouter" || id.contains('/') {
+                format!(
+                    "openrouter:{}",
+                    id.strip_prefix("openrouter/").unwrap_or(id)
+                )
+            } else {
+                format!("nex:{}", id)
+            }
+        }
+        "claude" => format!("claude:{}", model_short_name(id)),
+        "codex" => format!("codex:{}", model_short_name(id)),
+        _ => id.to_string(),
+    }
+}
+
+/// fzf-style fuzzy score of `query` against `haystack` (case-insensitive).
+/// The query is split on whitespace into terms; EVERY term must match the
+/// haystack (as a contiguous substring or, failing that, an in-order
+/// subsequence) or `None` is returned. Higher score = better: substring
+/// matches and earlier/adjacent positions rank above scattered
+/// subsequences, and shorter haystacks edge out longer ones on ties. An
+/// empty query matches everything with score 0 (full-list view).
+pub fn fuzzy_match_score(haystack: &str, query: &str) -> Option<i64> {
+    let hay = haystack.to_lowercase();
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Some(0);
+    }
+    let mut total = 0i64;
+    for term in q.split_whitespace() {
+        total += fuzzy_term_score(&hay, term)?;
+    }
+    Some(total)
+}
+
+/// Score a single (already-lowercased) term against an already-lowercased
+/// haystack. Substring match is strongly preferred; otherwise fall back to
+/// an in-order subsequence match.
+fn fuzzy_term_score(hay: &str, term: &str) -> Option<i64> {
+    if term.is_empty() {
+        return Some(0);
+    }
+    if let Some(pos) = hay.find(term) {
+        // Contiguous substring: big base, earlier is better, longer
+        // matched runs are better.
+        return Some(1000 - pos as i64 + (term.chars().count() as i64) * 4);
+    }
+    // Subsequence fallback: every term char must appear in order.
+    let hay_chars: Vec<char> = hay.chars().collect();
+    let mut hi = 0usize;
+    let mut last_pos: Option<usize> = None;
+    let mut score = 0i64;
+    for tc in term.chars() {
+        let mut found = false;
+        while hi < hay_chars.len() {
+            if hay_chars[hi] == tc {
+                if let Some(lp) = last_pos {
+                    if hi == lp + 1 {
+                        score += 5; // reward adjacency
+                    }
+                }
+                last_pos = Some(hi);
+                hi += 1;
+                found = true;
+                break;
+            }
+            hi += 1;
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(score + 100 - hay_chars.len() as i64)
+}
+
+/// Build the model-autocomplete suggestion list (add-model-fuzzy) from all
+/// local, network-free sources, de-duplicated by id (first occurrence
+/// wins). Order: recent launcher history first (most relevant for the
+/// empty-field view), then the registry (tier-ordered by the caller's
+/// BTreeMap iteration), the curated OpenRouter routes, and finally
+/// configured endpoint default models.
+pub fn build_model_suggestions(
+    config: &Config,
+    registry: &workgraph::models::ModelRegistry,
+    recent_models: &[String],
+) -> Vec<ModelSuggestion> {
+    let mut out: Vec<ModelSuggestion> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    fn push(
+        out: &mut Vec<ModelSuggestion>,
+        seen: &mut std::collections::HashSet<String>,
+        id: String,
+        provider: String,
+        source: &str,
+    ) {
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            return;
+        }
+        if !seen.insert(id.to_lowercase()) {
+            return;
+        }
+        out.push(ModelSuggestion {
+            id,
+            provider,
+            source: source.to_string(),
+        });
+    }
+
+    // 1. Recent launcher-history models (parse off any routing prefix).
+    for m in recent_models {
+        let spec = workgraph::config::parse_model_spec(m);
+        let provider = spec
+            .provider
+            .as_deref()
+            .map(registry_provider_from_prefix)
+            .unwrap_or_default();
+        push(&mut out, &mut seen, spec.model_id, provider, "recent");
+    }
+
+    // 2. Model registry (richest: id + provider + tier).
+    for entry in registry.models.values() {
+        push(
+            &mut out,
+            &mut seen,
+            entry.id.clone(),
+            entry.provider.clone(),
+            &entry.tier.to_string(),
+        );
+    }
+
+    // 3. Curated OpenRouter routes (network-free hot-path seeds).
+    for id in CURATED_OPENROUTER_MODELS {
+        push(
+            &mut out,
+            &mut seen,
+            (*id).to_string(),
+            "openrouter".to_string(),
+            "curated",
+        );
+    }
+
+    // 4. Configured endpoint default models.
+    for ep in &config.llm_endpoints.endpoints {
+        if let Some(m) = ep.model.as_deref().filter(|m| !m.is_empty()) {
+            let spec = workgraph::config::parse_model_spec(m);
+            let provider = spec
+                .provider
+                .as_deref()
+                .map(registry_provider_from_prefix)
+                .unwrap_or_else(|| registry_provider_from_prefix(&ep.provider));
+            push(&mut out, &mut seen, spec.model_id, provider, "endpoint");
+        }
+    }
+
+    out
+}
+
 /// State for the full-pane coordinator launcher.
 ///
 /// Two-mode design (redesign-new-chat 2026-04-30):
@@ -1247,8 +1496,19 @@ pub struct LauncherState {
     // ── Add-new-mode state ──
     /// Index into `ADD_NEW_EXECUTOR_CHOICES`.
     pub add_executor_idx: usize,
-    /// User-typed model spec (free text).
+    /// User-typed model spec (free text). Also doubles as the live fuzzy
+    /// query that filters [`LauncherState::model_suggestions`] while the
+    /// Model field is focused (add-model-fuzzy).
     pub add_model: String,
+    /// Model fuzzy-autocomplete suggestions, built from the model registry,
+    /// curated OpenRouter routes, recent launcher history, and configured
+    /// endpoint default models at launcher-open time. Executor-agnostic;
+    /// normalization happens on accept. Empty when no source produced any.
+    pub model_suggestions: Vec<ModelSuggestion>,
+    /// Highlighted row within the *filtered* model suggestion list
+    /// (see [`LauncherState::filtered_model_suggestions`]). Indexes the
+    /// filtered view, not `model_suggestions`; clamped on read.
+    pub model_suggestion_selected: usize,
     /// User-typed endpoint value (free text). Only relevant when the
     /// selected Add-new executor is `nex`. Holds either a configured
     /// endpoint *name* (when accepted from autocomplete) or a raw
@@ -1442,6 +1702,26 @@ pub fn filter_models_for_executor(
     compatible
 }
 
+/// Ranking boost added to a model suggestion's fuzzy score so models whose
+/// native provider naturally fits the selected executor float to the top of
+/// the dropdown (add-model-fuzzy). Never excludes anything — a non-matching
+/// provider just gets no boost, so any model is still selectable for any
+/// executor (the same permissive stance as [`filter_models_for_executor`]).
+fn executor_model_boost(provider: &str, executor: &str) -> i64 {
+    let fits = match executor {
+        "claude" => provider == "anthropic",
+        "codex" => provider == "openai",
+        // opencode/nex/native are OpenRouter-first.
+        "opencode" | "nex" | "native" => provider == "openrouter",
+        _ => false,
+    };
+    if fits {
+        10
+    } else {
+        0
+    }
+}
+
 impl LauncherState {
     /// Built-in default presets shown in Default mode. Two combos:
     /// codex:gpt-5.5 and claude:opus. Order is significant — the
@@ -1586,12 +1866,121 @@ impl LauncherState {
         self.endpoint_suggestion_selected = default_idx;
     }
 
+    /// In Add-new mode: whether the Model field shows fuzzy suggestions.
+    /// Shown for every executor EXCEPT `command` (whose Model field is a raw
+    /// command line), and suppressed while the typed text already looks like
+    /// a deliberate fully-qualified spec (see
+    /// [`model_input_is_explicit_spec`]). (add-model-fuzzy)
+    pub fn add_new_show_model_suggestions(&self) -> bool {
+        if !matches!(self.mode, LauncherMode::AddNew) {
+            return false;
+        }
+        if self.add_executor_choice().internal_executor == "command" {
+            return false;
+        }
+        !self.model_input_is_explicit_spec()
+    }
+
+    /// True when the typed model text already looks like a deliberate,
+    /// fully-qualified spec rather than a search fragment — it carries a
+    /// vendor-route separator (`/`) or a recognized provider/executor prefix
+    /// (`nex:`, `claude:`, `openrouter:`, …). In that state model
+    /// autocomplete steps aside entirely (no dropdown; accept is a no-op) so
+    /// an exact spec the user typed is never overwritten by a fuzzy match —
+    /// the mirror of [`endpoint_input_is_raw_url`]. The spec is explicit:
+    /// "autocomplete must not block unknown/custom models."
+    pub fn model_input_is_explicit_spec(&self) -> bool {
+        let t = self.add_model.trim();
+        if t.is_empty() {
+            return false;
+        }
+        if t.contains('/') {
+            return true;
+        }
+        t.split_once(':')
+            .is_some_and(|(p, _)| workgraph::config::KNOWN_PROVIDERS.contains(&p))
+    }
+
+    /// The model suggestions matching the current Model text, fuzzy-ranked
+    /// (fzf-style) and reordered so models compatible with the selected
+    /// executor float up. Returns the full list when the field is empty (so
+    /// suggestions are reachable on first focus) and an empty list when the
+    /// field is hidden or the user is typing an explicit spec. (add-model-fuzzy)
+    pub fn filtered_model_suggestions(&self) -> Vec<ModelSuggestion> {
+        if !self.add_new_show_model_suggestions() {
+            return Vec::new();
+        }
+        let q = self.add_model.trim();
+        let executor = self.add_executor_choice().internal_executor;
+        let mut scored: Vec<(i64, usize, ModelSuggestion)> = self
+            .model_suggestions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let hay = format!("{} {} {}", s.id, s.provider, s.source);
+                let base = fuzzy_match_score(&hay, q)?;
+                Some((base + executor_model_boost(&s.provider, executor), i, s.clone()))
+            })
+            .collect();
+        // Higher score first; original order breaks ties (keeps recent /
+        // registry priority stable for the empty-query view).
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, s)| s).collect()
+    }
+
+    /// The currently-highlighted model suggestion, clamping the stored index
+    /// into the live filtered view. `None` when there are no matches.
+    pub fn highlighted_model_suggestion(&self) -> Option<ModelSuggestion> {
+        let filtered = self.filtered_model_suggestions();
+        if filtered.is_empty() {
+            return None;
+        }
+        let idx = self
+            .model_suggestion_selected
+            .min(filtered.len().saturating_sub(1));
+        filtered.get(idx).cloned()
+    }
+
+    /// Move the model-suggestion highlight by `delta` rows within the
+    /// filtered view, clamped to its bounds. No-op when there is nothing to
+    /// navigate.
+    pub fn move_model_suggestion(&mut self, delta: isize) {
+        let len = self.filtered_model_suggestions().len();
+        if len == 0 {
+            self.model_suggestion_selected = 0;
+            return;
+        }
+        let cur = self
+            .model_suggestion_selected
+            .min(len.saturating_sub(1)) as isize;
+        let next = (cur + delta).clamp(0, len as isize - 1);
+        self.model_suggestion_selected = next as usize;
+    }
+
+    /// Accept the highlighted model suggestion: normalize it for the current
+    /// executor (see [`normalize_model_for_executor`]) and write the result
+    /// into the Model field. Returns `true` when a suggestion was accepted,
+    /// `false` when there was nothing to accept (explicit-spec text or no
+    /// matching suggestion) — the caller then treats the keypress as a plain
+    /// submit/advance, preserving arbitrary free-text model entry.
+    pub fn accept_model_suggestion(&mut self) -> bool {
+        match self.highlighted_model_suggestion() {
+            Some(sug) => {
+                let executor = self.add_executor_choice().internal_executor;
+                self.add_model = normalize_model_for_executor(&sug.id, &sug.provider, executor);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Switch the launcher into Add-new mode. Resets the form fields so
     /// stale state from a previous open doesn't bleed through.
     pub fn enter_add_new(&mut self) {
         self.mode = LauncherMode::AddNew;
         self.add_executor_idx = 0;
         self.add_model.clear();
+        self.model_suggestion_selected = 0;
         self.add_endpoint.clear();
         self.preselect_default_endpoint();
         self.active_section = LauncherSection::AddNew(AddNewField::Executor);
@@ -14774,6 +15163,13 @@ impl VizApp {
             .position(|s| s.is_default)
             .unwrap_or(0);
 
+        // Build the model fuzzy-autocomplete suggestions from local,
+        // network-free sources (add-model-fuzzy): registry + curated
+        // OpenRouter routes + recent launcher history + endpoint defaults.
+        let registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+        let recent_models = workgraph::launcher_history::recent_models(20).unwrap_or_default();
+        let model_suggestions = build_model_suggestions(&config, &registry, &recent_models);
+
         self.launcher = Some(LauncherState {
             mode: LauncherMode::Default,
             active_section: LauncherSection::Defaults,
@@ -14782,6 +15178,8 @@ impl VizApp {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions,
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions,
             endpoint_suggestion_selected,
@@ -24284,6 +24682,8 @@ mod tui_chat_tests {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: Vec::new(),
             endpoint_suggestion_selected: 0,
@@ -24373,6 +24773,8 @@ mod tui_chat_tests {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: Vec::new(),
             endpoint_suggestion_selected: 0,
@@ -24433,6 +24835,8 @@ mod tui_chat_tests {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: Vec::new(),
             endpoint_suggestion_selected: 0,
@@ -24511,6 +24915,8 @@ mod tui_chat_tests {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: Vec::new(),
             endpoint_suggestion_selected: 0,
@@ -26077,6 +26483,8 @@ mod launcher_redesign_tests {
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: Vec::new(),
             endpoint_suggestion_selected: 0,
@@ -26351,6 +26759,8 @@ mod launcher_endpoint_autocomplete_tests {
             default_selected: 0,
             add_executor_idx: 3, // nex
             add_model: "qwen3-coder".into(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: suggestions,
             endpoint_suggestion_selected: 0,
@@ -26522,6 +26932,356 @@ mod launcher_endpoint_autocomplete_tests {
         state.add_endpoint = "local".into();
         let hi = state.highlighted_endpoint_suggestion().unwrap();
         assert_eq!(hi.name, "local");
+    }
+}
+
+#[cfg(test)]
+mod launcher_model_autocomplete_tests {
+    use super::{
+        AddNewField, LauncherMode, LauncherSection, LauncherState, ModelSuggestion,
+        build_model_suggestions, fuzzy_match_score, normalize_model_for_executor,
+    };
+    use workgraph::config::{Config, EndpointConfig};
+    use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
+
+    fn sug(id: &str, provider: &str, source: &str) -> ModelSuggestion {
+        ModelSuggestion {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    /// An Add-new launcher state on the Model field with the given executor
+    /// index and a preloaded suggestion list.
+    fn model_state(executor_idx: usize, suggestions: Vec<ModelSuggestion>) -> LauncherState {
+        LauncherState {
+            mode: LauncherMode::AddNew,
+            active_section: LauncherSection::AddNew(AddNewField::Model),
+            name: String::new(),
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: executor_idx,
+            add_model: String::new(),
+            model_suggestions: suggestions,
+            model_suggestion_selected: 0,
+            add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
+            creating: false,
+            last_error: None,
+        }
+    }
+
+    // Executor indices: 0=claude, 1=codex, 2=opencode, 3=nex.
+    const OPENCODE: usize = 2;
+    const NEX: usize = 3;
+
+    // ── fuzzy matcher ──────────────────────────────────────────────────
+
+    #[test]
+    fn fuzzy_matches_multiword_substrings() {
+        // "minimax m3" finds minimax/minimax-m3 (both terms as substrings).
+        assert!(fuzzy_match_score("minimax/minimax-m3 openrouter curated", "minimax m3").is_some());
+        // "qwen coder" finds qwen/qwen3-coder.
+        assert!(fuzzy_match_score("qwen/qwen3-coder openrouter curated", "qwen coder").is_some());
+        // single-word substrings
+        assert!(fuzzy_match_score("deepseek/deepseek-r1 openrouter mid", "deepseek").is_some());
+        assert!(fuzzy_match_score("anthropic/claude-sonnet-4-6 anthropic mid", "sonnet").is_some());
+    }
+
+    #[test]
+    fn fuzzy_rejects_absent_terms() {
+        // "m3" present but "qwen" absent → no match (every term must match).
+        assert!(fuzzy_match_score("minimax/minimax-m3 openrouter curated", "qwen m3").is_none());
+        assert!(fuzzy_match_score("deepseek/deepseek-r1 openrouter mid", "gpt").is_none());
+    }
+
+    #[test]
+    fn fuzzy_empty_query_matches_everything() {
+        assert_eq!(fuzzy_match_score("anything here", ""), Some(0));
+        assert_eq!(fuzzy_match_score("anything here", "   "), Some(0));
+    }
+
+    #[test]
+    fn fuzzy_substring_outranks_scattered_subsequence() {
+        // Contiguous "opus" beats a scattered o..p..u..s subsequence.
+        let contiguous = fuzzy_match_score("claude-opus-4-6", "opus").unwrap();
+        let scattered = fuzzy_match_score("o-p-u-s-cattered-xyz", "opus").unwrap();
+        assert!(
+            contiguous > scattered,
+            "substring ({contiguous}) must outrank subsequence ({scattered})"
+        );
+    }
+
+    // ── build_model_suggestions: sources + dedup ───────────────────────
+
+    fn registry_with(ids: &[(&str, &str, ModelTier)]) -> ModelRegistry {
+        let mut reg = ModelRegistry {
+            default_model: None,
+            models: Default::default(),
+        };
+        for (id, provider, tier) in ids {
+            reg.models.insert(
+                (*id).to_string(),
+                ModelEntry {
+                    id: (*id).to_string(),
+                    provider: (*provider).to_string(),
+                    cost_per_1m_input: 1.0,
+                    cost_per_1m_output: 2.0,
+                    context_window: 0,
+                    capabilities: vec![],
+                    tier: tier.clone(),
+                },
+            );
+        }
+        reg
+    }
+
+    #[test]
+    fn build_includes_registry_curated_recent_and_endpoint_sources() {
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints = vec![EndpointConfig {
+            name: "ep".into(),
+            provider: "openrouter".into(),
+            url: Some("http://x".into()),
+            model: Some("openrouter:special/endpoint-model".into()),
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default: false,
+            context_window: None,
+        }];
+        let registry = registry_with(&[("deepseek/deepseek-chat", "openrouter", ModelTier::Budget)]);
+        let recent = vec!["nex:my-recent-model".to_string()];
+
+        let out = build_model_suggestions(&config, &registry, &recent);
+        let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+
+        // registry
+        assert!(ids.contains(&"deepseek/deepseek-chat"), "registry model present: {ids:?}");
+        // curated (network-free seed) — the task's headline routes
+        assert!(ids.contains(&"minimax/minimax-m3"), "curated minimax present: {ids:?}");
+        assert!(ids.contains(&"qwen/qwen3-coder"), "curated qwen coder present: {ids:?}");
+        // recent (routing prefix stripped to bare id)
+        assert!(ids.contains(&"my-recent-model"), "recent model present: {ids:?}");
+        // endpoint default model (provider prefix stripped)
+        assert!(ids.contains(&"special/endpoint-model"), "endpoint model present: {ids:?}");
+    }
+
+    #[test]
+    fn build_dedups_by_id_first_source_wins() {
+        let config = Config::default();
+        // minimax is curated; also surface it via recent so we can assert
+        // dedup keeps a single entry (recent wins, ordered first).
+        let registry = ModelRegistry {
+            default_model: None,
+            models: Default::default(),
+        };
+        let recent = vec!["openrouter:minimax/minimax-m3".to_string()];
+        let out = build_model_suggestions(&config, &registry, &recent);
+        let minimax: Vec<&ModelSuggestion> =
+            out.iter().filter(|s| s.id == "minimax/minimax-m3").collect();
+        assert_eq!(minimax.len(), 1, "minimax must be de-duplicated across sources");
+        assert_eq!(minimax[0].source, "recent", "recent source wins (listed first)");
+    }
+
+    // ── executor-aware normalization (the heart of the feature) ────────
+
+    #[test]
+    fn normalize_opencode_minimax_to_openrouter_route() {
+        // The OpenCode/OpenRouter path from the task description.
+        assert_eq!(
+            normalize_model_for_executor("minimax/minimax-m3", "openrouter", "opencode"),
+            "openrouter/minimax/minimax-m3"
+        );
+        // Already-prefixed stays single-prefixed.
+        assert_eq!(
+            normalize_model_for_executor("openrouter/minimax/minimax-m3", "openrouter", "opencode"),
+            "openrouter/minimax/minimax-m3"
+        );
+    }
+
+    #[test]
+    fn normalize_nex_openrouter_and_bare() {
+        // OpenRouter/vendor-route model → openrouter:<vendor/model> spec.
+        assert_eq!(
+            normalize_model_for_executor("minimax/minimax-m3", "openrouter", "nex"),
+            "openrouter:minimax/minimax-m3"
+        );
+        // Bare id with no vendor route → nex:<model>.
+        assert_eq!(
+            normalize_model_for_executor("qwen3-coder", "", "nex"),
+            "nex:qwen3-coder"
+        );
+        // native is an alias of nex.
+        assert_eq!(
+            normalize_model_for_executor("deepseek/deepseek-r1", "openrouter", "native"),
+            "openrouter:deepseek/deepseek-r1"
+        );
+    }
+
+    #[test]
+    fn normalize_claude_and_codex_use_short_name() {
+        assert_eq!(
+            normalize_model_for_executor("anthropic/claude-opus-4-6", "anthropic", "claude"),
+            "claude:claude-opus-4-6"
+        );
+        assert_eq!(
+            normalize_model_for_executor("openai/gpt-4o", "openai", "codex"),
+            "codex:gpt-4o"
+        );
+    }
+
+    #[test]
+    fn same_model_normalizes_differently_per_executor() {
+        // The render/accept scoping requirement: one selected model, two
+        // executor-correct specs.
+        let id = "minimax/minimax-m3";
+        let oc = normalize_model_for_executor(id, "openrouter", "opencode");
+        let nex = normalize_model_for_executor(id, "openrouter", "nex");
+        assert_eq!(oc, "openrouter/minimax/minimax-m3");
+        assert_eq!(nex, "openrouter:minimax/minimax-m3");
+        assert_ne!(oc, nex);
+    }
+
+    // ── filtering / explicit-spec suppression / accept ─────────────────
+
+    #[test]
+    fn filtered_returns_all_for_empty_query() {
+        let state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated"), sug("qwen3-coder", "", "recent")],
+        );
+        assert_eq!(state.filtered_model_suggestions().len(), 2);
+    }
+
+    #[test]
+    fn filtered_fuzzy_narrows_to_match() {
+        let mut state = model_state(
+            OPENCODE,
+            vec![
+                sug("minimax/minimax-m3", "openrouter", "curated"),
+                sug("deepseek/deepseek-r1", "openrouter", "mid"),
+                sug("qwen/qwen3-coder", "openrouter", "curated"),
+            ],
+        );
+        state.add_model = "minimax m3".into();
+        let f = state.filtered_model_suggestions();
+        assert_eq!(f.len(), 1, "fuzzy 'minimax m3' narrows to one: {f:?}");
+        assert_eq!(f[0].id, "minimax/minimax-m3");
+    }
+
+    #[test]
+    fn suggestions_suppressed_for_explicit_spec_text() {
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
+        // A vendor route the user typed deliberately — never overwrite it.
+        state.add_model = "minimax/minimax-m3".into();
+        assert!(state.model_input_is_explicit_spec());
+        assert!(state.filtered_model_suggestions().is_empty());
+        // A provider-prefixed spec.
+        state.add_model = "nex:qwen3-coder".into();
+        assert!(state.model_input_is_explicit_spec());
+        assert!(state.filtered_model_suggestions().is_empty());
+        // A bare fragment is NOT an explicit spec → suggestions return.
+        state.add_model = "minimax".into();
+        assert!(!state.model_input_is_explicit_spec());
+        assert!(!state.filtered_model_suggestions().is_empty());
+    }
+
+    #[test]
+    fn suggestions_suppressed_for_command_executor() {
+        // Custom-command executor is the last choice; its Model field is a
+        // raw command line, never a model picker.
+        let last = super::ADD_NEW_EXECUTOR_CHOICES.len() - 1;
+        assert_eq!(super::ADD_NEW_EXECUTOR_CHOICES[last].internal_executor, "command");
+        let state = model_state(last, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        assert!(!state.add_new_show_model_suggestions());
+        assert!(state.filtered_model_suggestions().is_empty());
+    }
+
+    #[test]
+    fn accept_opencode_writes_openrouter_route() {
+        let mut state = model_state(
+            OPENCODE,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
+        state.add_model = "minimax m3".into();
+        assert!(state.accept_model_suggestion());
+        assert_eq!(state.add_model, "openrouter/minimax/minimax-m3");
+        // The launch args carry that exact spec.
+        let (executor, model, _ep) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "opencode");
+        assert_eq!(model.as_deref(), Some("openrouter/minimax/minimax-m3"));
+    }
+
+    #[test]
+    fn accept_nex_writes_openrouter_spec() {
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
+        state.add_model = "minimax".into();
+        assert!(state.accept_model_suggestion());
+        assert_eq!(state.add_model, "openrouter:minimax/minimax-m3");
+        let (executor, model, _ep) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "native");
+        assert_eq!(model.as_deref(), Some("openrouter:minimax/minimax-m3"));
+    }
+
+    #[test]
+    fn accept_is_noop_for_free_text_with_no_match() {
+        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        // Arbitrary custom model that matches nothing → free text preserved.
+        state.add_model = "my-totally-custom-thing".into();
+        assert!(!state.accept_model_suggestion());
+        assert_eq!(state.add_model, "my-totally-custom-thing");
+    }
+
+    #[test]
+    fn accept_is_noop_for_explicit_spec_even_if_it_would_match() {
+        // User typed a full route that fuzzy-matches a suggestion; the
+        // explicit spec must NOT be overwritten.
+        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        state.add_model = "openrouter:minimax/minimax-m3".into();
+        assert!(!state.accept_model_suggestion());
+        assert_eq!(state.add_model, "openrouter:minimax/minimax-m3");
+    }
+
+    #[test]
+    fn move_clamps_within_filtered_bounds() {
+        let mut state = model_state(
+            NEX,
+            vec![sug("a/one", "openrouter", "c"), sug("b/two", "openrouter", "c")],
+        );
+        state.move_model_suggestion(-1);
+        assert_eq!(state.model_suggestion_selected, 0, "clamps at top");
+        state.move_model_suggestion(1);
+        assert_eq!(state.model_suggestion_selected, 1);
+        state.move_model_suggestion(1);
+        assert_eq!(state.model_suggestion_selected, 1, "clamps at bottom");
+    }
+
+    #[test]
+    fn executor_compatible_models_rank_first() {
+        // claude executor should float the anthropic model above an
+        // openrouter one on an empty query (boost on tie).
+        let state = model_state(
+            0, // claude
+            vec![
+                sug("minimax/minimax-m3", "openrouter", "curated"),
+                sug("anthropic/claude-opus-4-6", "anthropic", "frontier"),
+            ],
+        );
+        let f = state.filtered_model_suggestions();
+        assert_eq!(
+            f[0].id, "anthropic/claude-opus-4-6",
+            "claude-compatible model ranks first: {f:?}"
+        );
     }
 }
 

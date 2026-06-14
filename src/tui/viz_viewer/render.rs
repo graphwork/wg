@@ -6923,6 +6923,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         show_endpoint,
         endpoint_suggestions,
         endpoint_suggestion_selected,
+        model_suggestions,
+        model_suggestion_selected,
         creating,
         last_error,
     ) = match app.launcher.as_ref() {
@@ -6938,6 +6940,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.add_new_show_endpoint(),
             l.filtered_endpoint_suggestions(),
             l.endpoint_suggestion_selected,
+            l.filtered_model_suggestions(),
+            l.model_suggestion_selected,
             l.creating,
             l.last_error.clone(),
         ),
@@ -7146,6 +7150,14 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                         Style::default().fg(Color::DarkGray)
                     },
                 ));
+                // Hint that fuzzy autocomplete is available when focused and
+                // suggestions exist (mirror of the Endpoint field hint).
+                if model_active && !add_new_is_command && !model_suggestions.is_empty() {
+                    model_spans.push(Span::styled(
+                        "  (type to search — \u{2191}\u{2193} pick, Tab accept)".to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
             } else {
                 model_spans.push(Span::raw(add_model.clone()));
                 if model_active {
@@ -7165,6 +7177,54 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 width: area.width.saturating_sub(13),
                 height: 1,
             };
+
+            // Model fuzzy-autocomplete dropdown (add-model-fuzzy): only
+            // while the Model field is focused and there are matching
+            // suggestions (suppressed for command executor and while the
+            // user types an explicit spec — both produce an empty list).
+            if model_active && !model_suggestions.is_empty() {
+                const MAX_ROWS: usize = 6;
+                let sel = model_suggestion_selected.min(model_suggestions.len().saturating_sub(1));
+                let start = if sel >= MAX_ROWS { sel + 1 - MAX_ROWS } else { 0 };
+                let end = (start + MAX_ROWS).min(model_suggestions.len());
+                for (i, sug) in model_suggestions[start..end].iter().enumerate() {
+                    let idx = start + i;
+                    let is_sel = idx == sel;
+                    let bullet = if is_sel { "\u{25c9}" } else { "\u{25cb}" };
+                    let name_style = if is_sel {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(text_primary(is_light))
+                    };
+                    let mut row: Vec<Span> = vec![
+                        Span::styled(format!("        {} ", bullet), name_style),
+                        Span::styled(sug.id.clone(), name_style),
+                    ];
+                    // Secondary detail: provider then source/tier.
+                    let mut detail = String::new();
+                    if !sug.provider.is_empty() {
+                        detail.push_str(&format!("  ({})", sug.provider));
+                    }
+                    if !sug.source.is_empty() {
+                        detail.push_str(&format!("  [{}]", sug.source));
+                    }
+                    if !detail.is_empty() {
+                        row.push(Span::styled(detail, Style::default().fg(Color::DarkGray)));
+                    }
+                    lines.push(Line::from(row));
+                }
+                if model_suggestions.len() > MAX_ROWS {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "        … {} more (type to filter)",
+                            model_suggestions.len() - MAX_ROWS
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
             lines.push(Line::from(""));
 
             // Endpoint field (only when executor=nex).
@@ -15872,6 +15932,8 @@ mod tests {
             default_selected: 0,
             add_executor_idx: executor_idx,
             add_model: "qwen3-coder".into(),
+            model_suggestions: Vec::new(),
+            model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions: suggestions,
             endpoint_suggestion_selected: 0,
@@ -15968,6 +16030,101 @@ mod tests {
         assert!(
             !render.contains("local-gpu"),
             "suggestions must be suppressed while typing a raw URL.\n{render}"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Model fuzzy-autocomplete dropdown (add-model-fuzzy)
+    // ══════════════════════════════════════════════════════════════════════
+
+    use crate::tui::viz_viewer::state::ModelSuggestion;
+
+    fn model_sug(id: &str, provider: &str, source: &str) -> ModelSuggestion {
+        ModelSuggestion {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    /// A launcher in Add-new mode focused on the Model field with the given
+    /// executor index, empty model text, and the supplied model suggestions.
+    fn launcher_addnew_model(
+        executor_idx: usize,
+        suggestions: Vec<ModelSuggestion>,
+    ) -> EpLauncherState {
+        let mut l = launcher_addnew(executor_idx, EpAddNewField::Model, Vec::new());
+        l.add_model = String::new();
+        l.model_suggestions = suggestions;
+        l
+    }
+
+    #[test]
+    fn launcher_shows_model_suggestions_in_add_new_mode() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![
+            model_sug("minimax/minimax-m3", "openrouter", "curated"),
+            model_sug("deepseek/deepseek-r1", "openrouter", "mid"),
+        ];
+
+        // nex (idx 3), Model focused → dropdown lists the model ids.
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew_model(3, suggestions.clone()));
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("minimax/minimax-m3") && render.contains("deepseek/deepseek-r1"),
+            "Model dropdown must list suggestion ids in Add-new mode.\n{render}"
+        );
+
+        // opencode (idx 2), Model focused → dropdown shown too (at least
+        // nex + opencode per spec).
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew_model(2, suggestions.clone()));
+        let oc_render = render_launcher_to_string(&mut app);
+        assert!(
+            oc_render.contains("minimax/minimax-m3"),
+            "opencode Model dropdown must list model suggestions.\n{oc_render}"
+        );
+    }
+
+    #[test]
+    fn launcher_model_dropdown_hidden_for_explicit_spec_text() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![model_sug("minimax/minimax-m3", "openrouter", "curated")];
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let mut l = launcher_addnew_model(3, suggestions);
+        // A deliberate vendor route the user typed: the dropdown must step
+        // aside so it cannot shadow/overwrite the explicit free-text spec.
+        l.add_model = "minimax/minimax-m3".into();
+        app.launcher = Some(l);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("minimax/minimax-m3"),
+            "the typed explicit spec stays visible in the field.\n{render}"
+        );
+        // The dropdown row carries a bullet glyph; with the explicit spec
+        // there must be no dropdown row (only the field echo).
+        assert!(
+            !render.contains("\u{25c9} minimax") && !render.contains("\u{25cb} minimax"),
+            "model suggestions must be suppressed for explicit-spec text.\n{render}"
+        );
+    }
+
+    #[test]
+    fn launcher_model_dropdown_hidden_for_command_executor() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![model_sug("minimax/minimax-m3", "openrouter", "curated")];
+        let last = crate::tui::viz_viewer::state::ADD_NEW_EXECUTOR_CHOICES.len() - 1;
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew_model(last, suggestions));
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("Command:"),
+            "the custom-command executor shows a Command field.\n{render}"
+        );
+        assert!(
+            !render.contains("minimax/minimax-m3"),
+            "custom-command Model field must not show model suggestions.\n{render}"
         );
     }
 

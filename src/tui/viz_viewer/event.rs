@@ -1504,6 +1504,16 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             ) {
                 launcher.accept_endpoint_suggestion();
             }
+            // In the Model field, a forward Tab first accepts the highlighted
+            // model suggestion (filling its executor-normalized spec) — then
+            // advances. Explicit-spec / free-text entries have no suggestion
+            // to accept, so Tab just advances, preserving custom models.
+            if matches!(
+                launcher.active_section,
+                LauncherSection::AddNew(AddNewField::Model)
+            ) {
+                launcher.accept_model_suggestion();
+            }
             launcher.next_section();
         }
         return;
@@ -1578,16 +1588,34 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             _ => {}
         },
         LauncherSection::AddNew(AddNewField::Model) => match code {
+            // Up/Down navigate the model fuzzy-autocomplete dropdown. These
+            // are no-ops when there is nothing to navigate (explicit-spec
+            // entry or no matching suggestions), so they never interfere
+            // with typing a custom model spec.
+            KeyCode::Up => {
+                launcher.move_model_suggestion(-1);
+            }
+            KeyCode::Down => {
+                launcher.move_model_suggestion(1);
+            }
             KeyCode::Enter => {
+                // Accept the highlighted suggestion (filling its
+                // executor-normalized spec) before launching, so Enter is a
+                // one-key "pick & go". With no suggestion to accept the typed
+                // free-text model launches verbatim.
+                launcher.accept_model_suggestion();
                 app.launch_from_launcher();
             }
             KeyCode::Char(c)
                 if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
             {
                 launcher.add_model.push(c);
+                // Re-filtering changes the list; highlight the top match.
+                launcher.model_suggestion_selected = 0;
             }
             KeyCode::Backspace => {
                 launcher.add_model.pop();
+                launcher.model_suggestion_selected = 0;
             }
             _ => {}
         },
@@ -9981,6 +10009,164 @@ mod chat_tab_navigation_tests {
         let l = app.launcher.as_ref().unwrap();
         assert!(l.add_endpoint.is_empty());
         assert_eq!(l.filtered_endpoint_suggestions().len(), 2);
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Model fuzzy-autocomplete key handling (add-model-fuzzy)
+    // ──────────────────────────────────────────────────────────────────
+
+    use super::super::state::ModelSuggestion;
+
+    fn model_sug(id: &str, provider: &str, source: &str) -> ModelSuggestion {
+        ModelSuggestion {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    /// Open the launcher in Add-new mode focused on the Model field, with
+    /// the given executor index and a preloaded model-suggestion list.
+    fn launcher_on_model_field(executor_idx: usize) -> (VizApp, tempfile::TempDir) {
+        let (mut app, tmp) = build_app_with_chats(&[0]);
+        app.open_launcher();
+        assert!(app.launcher.is_some(), "launcher must open");
+        {
+            let l = app.launcher.as_mut().unwrap();
+            l.enter_add_new();
+            l.add_executor_idx = executor_idx;
+            l.add_model = String::new();
+            l.model_suggestions = vec![
+                model_sug("minimax/minimax-m3", "openrouter", "curated"),
+                model_sug("deepseek/deepseek-r1", "openrouter", "mid"),
+                model_sug("qwen/qwen3-coder", "openrouter", "curated"),
+            ];
+            l.model_suggestion_selected = 0;
+            l.active_section = LauncherSection::AddNew(AddNewField::Model);
+        }
+        (app, tmp)
+    }
+
+    #[test]
+    fn model_typing_filters_and_resets_highlight() {
+        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        // Move highlight off the top first so we can prove typing resets it.
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.launcher.as_ref().unwrap().model_suggestion_selected, 1);
+        for c in "minimax m3".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.add_model, "minimax m3");
+        let f = l.filtered_model_suggestions();
+        assert_eq!(f.len(), 1, "fuzzy narrows to one: {f:?}");
+        assert_eq!(f[0].id, "minimax/minimax-m3");
+        assert_eq!(l.model_suggestion_selected, 0, "typing resets highlight to top");
+    }
+
+    #[test]
+    fn model_tab_accepts_suggestion_normalized_for_opencode_and_advances() {
+        let (mut app, _tmp) = launcher_on_model_field(2); // opencode
+        for c in "minimax m3".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(
+            l.add_model, "openrouter/minimax/minimax-m3",
+            "Tab fills the opencode-normalized route"
+        );
+        // opencode has no Endpoint field → Tab from Model advances to Name.
+        assert_eq!(
+            l.active_section,
+            LauncherSection::AddNew(AddNewField::Name)
+        );
+    }
+
+    #[test]
+    fn model_tab_accepts_suggestion_normalized_for_nex_and_advances_to_endpoint() {
+        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        for c in "minimax m3".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(
+            l.add_model, "openrouter:minimax/minimax-m3",
+            "Tab fills the nex-normalized spec"
+        );
+        // nex DOES have an Endpoint field → Tab from Model lands there, so
+        // model autocomplete composes with endpoint autocomplete.
+        assert_eq!(
+            l.active_section,
+            LauncherSection::AddNew(AddNewField::Endpoint)
+        );
+    }
+
+    #[test]
+    fn model_down_navigates_then_enter_accepts_highlighted() {
+        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        // Down twice → highlight qwen/qwen3-coder (index 2) on the full list.
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        // Accept via the state API directly (Enter would also launch).
+        let accepted = app.launcher.as_mut().unwrap().accept_model_suggestion();
+        assert!(accepted);
+        assert_eq!(
+            app.launcher.as_ref().unwrap().add_model,
+            "openrouter:qwen/qwen3-coder"
+        );
+    }
+
+    #[test]
+    fn model_arbitrary_free_text_is_preserved_through_tab() {
+        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        // Type a custom spec that matches no suggestion AND is an explicit
+        // spec (contains ':'). Tab must NOT overwrite it.
+        let custom = "myvendor:my-custom-model-x";
+        for c in custom.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        {
+            let l = app.launcher.as_ref().unwrap();
+            assert_eq!(l.add_model, custom);
+            assert!(
+                l.filtered_model_suggestions().is_empty(),
+                "explicit-spec text suppresses suggestions"
+            );
+        }
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(
+            l.add_model, custom,
+            "Tab on free-text/explicit-spec only advances; never clobbers the typed model"
+        );
+    }
+
+    #[test]
+    fn model_backspace_reexposes_suggestions_after_explicit_spec() {
+        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let typed = "minimax/m"; // contains '/' → explicit spec, suggestions hidden
+        for c in typed.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert!(
+            app.launcher
+                .as_ref()
+                .unwrap()
+                .filtered_model_suggestions()
+                .is_empty(),
+            "while text carries a '/' route it is an explicit spec; suggestions hidden"
+        );
+        // Delete the '/m' so it is a bare fragment again → suggestions return.
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.add_model, "minimax");
+        assert!(
+            !l.filtered_model_suggestions().is_empty(),
+            "a bare fragment re-exposes fuzzy suggestions"
+        );
     }
 }
 
