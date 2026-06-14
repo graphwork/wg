@@ -1494,6 +1494,16 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         if modifiers.contains(KeyModifiers::SHIFT) {
             launcher.prev_section();
         } else {
+            // In the nex Endpoint field, a forward Tab first accepts the
+            // highlighted endpoint suggestion (filling its name) — then
+            // advances. A raw URL has no suggestions, so Tab just moves
+            // on, preserving custom-URL entry.
+            if matches!(
+                launcher.active_section,
+                LauncherSection::AddNew(AddNewField::Endpoint)
+            ) {
+                launcher.accept_endpoint_suggestion();
+            }
             launcher.next_section();
         }
         return;
@@ -1582,16 +1592,34 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             _ => {}
         },
         LauncherSection::AddNew(AddNewField::Endpoint) => match code {
+            // Up/Down navigate the endpoint autocomplete dropdown. These
+            // are no-ops when there is nothing to navigate (raw URL entry
+            // or no configured endpoints), so they never interfere with
+            // typing a custom URL.
+            KeyCode::Up => {
+                launcher.move_endpoint_suggestion(-1);
+            }
+            KeyCode::Down => {
+                launcher.move_endpoint_suggestion(1);
+            }
             KeyCode::Enter => {
+                // Accept the highlighted suggestion (filling its name)
+                // before launching, so Enter is a one-key "pick & go".
+                // For a raw URL there is no suggestion to accept, so the
+                // typed URL launches verbatim.
+                launcher.accept_endpoint_suggestion();
                 app.launch_from_launcher();
             }
             KeyCode::Char(c)
                 if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
             {
                 launcher.add_endpoint.push(c);
+                // Re-filtering changes the list; highlight the top match.
+                launcher.endpoint_suggestion_selected = 0;
             }
             KeyCode::Backspace => {
                 launcher.add_endpoint.pop();
+                launcher.endpoint_suggestion_selected = 0;
             }
             _ => {}
         },
@@ -9808,6 +9836,151 @@ mod chat_tab_navigation_tests {
             "Without death info, 'r' must reach the PTY child's stdin \
              (death-panel guard must not over-block)"
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Endpoint autocomplete key handling (add-nex-endpoint)
+    // ──────────────────────────────────────────────────────────────────
+
+    use super::super::state::{AddNewField, EndpointSuggestion, LauncherSection};
+
+    fn ep_sug(name: &str, url: &str, provider: &str, is_default: bool) -> EndpointSuggestion {
+        EndpointSuggestion {
+            name: name.to_string(),
+            url: Some(url.to_string()),
+            provider: provider.to_string(),
+            is_default,
+        }
+    }
+
+    /// Open the launcher in Add-new/nex mode focused on the Endpoint
+    /// field, preloaded with two endpoint suggestions (lambda is default).
+    fn launcher_on_endpoint_field() -> (VizApp, tempfile::TempDir) {
+        let (mut app, tmp) = build_app_with_chats(&[0]);
+        app.open_launcher();
+        assert!(app.launcher.is_some(), "launcher must open");
+        {
+            let l = app.launcher.as_mut().unwrap();
+            l.enter_add_new();
+            l.add_executor_idx = 3; // nex
+            l.add_model = "qwen3-coder".into();
+            l.endpoint_suggestions = vec![
+                ep_sug("local-gpu", "http://127.0.0.1:8088", "local", false),
+                ep_sug("lambda", "https://lambda01:30000", "openrouter", true),
+            ];
+            l.preselect_default_endpoint();
+            l.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
+        }
+        (app, tmp)
+    }
+
+    fn key(app: &mut VizApp, code: KeyCode) {
+        super::handle_launcher_input(app, code, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn endpoint_field_preselects_default_on_focus() {
+        let (app, _tmp) = launcher_on_endpoint_field();
+        let l = app.launcher.as_ref().unwrap();
+        let hi = l.highlighted_endpoint_suggestion().unwrap();
+        assert_eq!(hi.name, "lambda", "the default endpoint is preselected");
+        assert!(hi.is_default);
+    }
+
+    #[test]
+    fn endpoint_typing_filters_and_resets_highlight() {
+        let (mut app, _tmp) = launcher_on_endpoint_field();
+        // Highlight currently on the default (index 1). Typing "local"
+        // narrows to one match and resets the highlight to the top.
+        for c in "local".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.add_endpoint, "local");
+        let filtered = l.filtered_endpoint_suggestions();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "local-gpu");
+        assert_eq!(l.endpoint_suggestion_selected, 0);
+    }
+
+    #[test]
+    fn endpoint_down_then_tab_accepts_named_suggestion_and_advances() {
+        let (mut app, _tmp) = launcher_on_endpoint_field();
+        // Move highlight to index 0 (local-gpu): default is index 1, so Up.
+        key(&mut app, KeyCode::Up);
+        // Tab accepts the highlighted suggestion and advances to Name.
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(
+            l.add_endpoint, "local-gpu",
+            "Tab fills the endpoint NAME from the highlighted suggestion"
+        );
+        assert_eq!(
+            l.active_section,
+            LauncherSection::AddNew(AddNewField::Name),
+            "Tab advances past the Endpoint field after accepting"
+        );
+    }
+
+    #[test]
+    fn endpoint_tab_accepts_default_when_untouched() {
+        let (mut app, _tmp) = launcher_on_endpoint_field();
+        // Straight Tab with the preselected default accepts "lambda".
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(l.add_endpoint, "lambda");
+    }
+
+    #[test]
+    fn endpoint_raw_url_typed_char_by_char_is_preserved() {
+        let (mut app, _tmp) = launcher_on_endpoint_field();
+        let url = "http://my-custom:9000/v1";
+        for c in url.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        {
+            let l = app.launcher.as_ref().unwrap();
+            assert_eq!(l.add_endpoint, url);
+            assert!(
+                l.filtered_endpoint_suggestions().is_empty(),
+                "raw URL suppresses suggestions"
+            );
+        }
+        // Tab must NOT overwrite the custom URL (nothing to accept).
+        key(&mut app, KeyCode::Tab);
+        let l = app.launcher.as_ref().unwrap();
+        assert_eq!(
+            l.add_endpoint, url,
+            "Tab on a raw URL only advances; it must not clobber the URL"
+        );
+        assert_eq!(
+            l.active_section,
+            LauncherSection::AddNew(AddNewField::Name)
+        );
+    }
+
+    #[test]
+    fn endpoint_backspace_reexposes_suggestions_after_raw_url() {
+        let (mut app, _tmp) = launcher_on_endpoint_field();
+        let typed = "http://x";
+        for c in typed.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert!(
+            app.launcher
+                .as_ref()
+                .unwrap()
+                .filtered_endpoint_suggestions()
+                .is_empty(),
+            "while it is a raw URL, suggestions are hidden"
+        );
+        // Delete back to empty → suggestions return.
+        for _ in 0..typed.len() {
+            key(&mut app, KeyCode::Backspace);
+        }
+        let l = app.launcher.as_ref().unwrap();
+        assert!(l.add_endpoint.is_empty());
+        assert_eq!(l.filtered_endpoint_suggestions().len(), 2);
     }
 }
 

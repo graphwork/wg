@@ -333,6 +333,15 @@ description = "confirm-real-tui 2026-06-14: drives the real wg tui '+' new-chat 
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_plus_nex_endpoint_autocomplete"
+script = "scenarios/tui_plus_nex_endpoint_autocomplete.sh"
+owners = [
+    "add-nex-endpoint",
+]
+description = "add-nex-endpoint 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex, and exercises the nex-only Endpoint NAME autocomplete. Configures two named `[[llm_endpoints.endpoints]]` (target `qwen-local` plus a default-marked `fallback-decoy`), confirms the autocomplete dropdown lists endpoint NAMES with a [default] marker when the Endpoint field is focused, then filters by name (`qwen`) and accepts the highlighted named suggestion with Enter. Asserts the launched .chat-1 graph row + CoordinatorState carry the ACCEPTED NAME `qwen-local` exactly (executor_preset_name=nex / executor_override=native, model `nex:qwen3-coder`) and command_argv is [\"wg\",\"nex\",\"-m\",\"qwen3-coder\",\"-e\",\"qwen-local\"] — never the default decoy (name or URL), the recent-history decoy, or the target's raw URL. Seeds a decoy default endpoint AND a decoy recent launcher-history combo so a fallback regression would be caught. Credential-free (asserts persisted metadata only; no live nex reply). Complements tui_plus_nex_chat.sh which pins the raw-URL entry path."
+timeout_seconds = 120
+
+[[scenario]]
 name = "launcher_focus_new_chat_on_launch"
 script = "scenarios/launcher_focus_new_chat_on_launch.sh"
 owners = [

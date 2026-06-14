@@ -1182,6 +1182,47 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     },
 ];
 
+/// One endpoint suggestion offered by the Add-new endpoint field's
+/// autocomplete, built from configured `[[llm_endpoints.endpoints]]`.
+///
+/// Surfaced ONLY when the Add-new executor is `nex`/native — claude /
+/// codex / opencode / custom-command never show endpoint suggestions
+/// (claude & codex auth themselves; opencode selects its provider via
+/// the model route). The fields mirror the config entry so the dropdown
+/// can show name-first with URL/provider/default as secondary detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndpointSuggestion {
+    /// Endpoint display name (`name` in config). This is what gets
+    /// written into the endpoint field when the suggestion is accepted —
+    /// `wg nex -e <name>` resolves a configured name just as it resolves
+    /// a bare URL, so the launched argv stays consistent.
+    pub name: String,
+    /// Endpoint URL, if configured (shown as secondary detail).
+    pub url: Option<String>,
+    /// Provider type ("openrouter", "openai", "local", ...).
+    pub provider: String,
+    /// Whether this is the config's default endpoint (`is_default`).
+    pub is_default: bool,
+}
+
+/// Build the endpoint-autocomplete suggestion list from the effective WG
+/// config. Preserves config order; the default endpoint (if any) is
+/// surfaced via [`EndpointSuggestion::is_default`] so the launcher can
+/// preselect it. Returns an empty vec when no endpoints are configured.
+pub fn build_endpoint_suggestions(config: &Config) -> Vec<EndpointSuggestion> {
+    config
+        .llm_endpoints
+        .endpoints
+        .iter()
+        .map(|ep| EndpointSuggestion {
+            name: ep.name.clone(),
+            url: ep.url.clone(),
+            provider: ep.provider.clone(),
+            is_default: ep.is_default,
+        })
+        .collect()
+}
+
 /// State for the full-pane coordinator launcher.
 ///
 /// Two-mode design (redesign-new-chat 2026-04-30):
@@ -1208,9 +1249,20 @@ pub struct LauncherState {
     pub add_executor_idx: usize,
     /// User-typed model spec (free text).
     pub add_model: String,
-    /// User-typed endpoint URL (free text). Only relevant when the
-    /// selected Add-new executor is `nex`.
+    /// User-typed endpoint value (free text). Only relevant when the
+    /// selected Add-new executor is `nex`. Holds either a configured
+    /// endpoint *name* (when accepted from autocomplete) or a raw
+    /// `http(s)://` URL (typed directly). Whatever sits here is what
+    /// the launch persists and what `wg nex -e` receives verbatim.
     pub add_endpoint: String,
+    /// Endpoint autocomplete suggestions, built from configured
+    /// `[[llm_endpoints.endpoints]]` at launcher-open time. Only
+    /// surfaced when the Add-new executor is `nex`. Empty otherwise.
+    pub endpoint_suggestions: Vec<EndpointSuggestion>,
+    /// Highlighted row within the *filtered* endpoint suggestion list
+    /// (see [`LauncherState::filtered_endpoint_suggestions`]). Indexes
+    /// the filtered view, not `endpoint_suggestions`; clamped on read.
+    pub endpoint_suggestion_selected: usize,
 
     // ── Status / IPC flags ──
     /// True between Enter-to-launch and the IPC roundtrip completing.
@@ -1436,6 +1488,104 @@ impl LauncherState {
         self.add_executor_choice().label == "nex"
     }
 
+    /// True when the current endpoint text is a raw `http(s)://` URL the
+    /// user is typing directly. In that state autocomplete steps aside
+    /// entirely — no suggestions are shown and accept is a no-op — so a
+    /// custom URL is never overwritten by a named-endpoint match. The
+    /// spec is explicit: "autocomplete must not block custom URLs".
+    pub fn endpoint_input_is_raw_url(&self) -> bool {
+        let t = self.add_endpoint.trim();
+        t.starts_with("http://") || t.starts_with("https://")
+    }
+
+    /// The endpoint suggestions matching the current endpoint text,
+    /// case-insensitively, by name / URL / provider. Returns the full
+    /// list when the field is empty (so the default is reachable on first
+    /// focus) and an empty list when the user is typing a raw URL (so a
+    /// custom URL is never shadowed by suggestions). Only meaningful when
+    /// the Add-new executor is `nex`.
+    pub fn filtered_endpoint_suggestions(&self) -> Vec<EndpointSuggestion> {
+        if !self.add_new_show_endpoint() || self.endpoint_input_is_raw_url() {
+            return Vec::new();
+        }
+        let q = self.add_endpoint.trim().to_lowercase();
+        self.endpoint_suggestions
+            .iter()
+            .filter(|s| {
+                if q.is_empty() {
+                    return true;
+                }
+                s.name.to_lowercase().contains(&q)
+                    || s.url
+                        .as_deref()
+                        .is_some_and(|u| u.to_lowercase().contains(&q))
+                    || s.provider.to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The currently-highlighted endpoint suggestion, clamping the stored
+    /// index into the live filtered view. `None` when there are no
+    /// matching suggestions (e.g. raw-URL entry or no configured
+    /// endpoints).
+    pub fn highlighted_endpoint_suggestion(&self) -> Option<EndpointSuggestion> {
+        let filtered = self.filtered_endpoint_suggestions();
+        if filtered.is_empty() {
+            return None;
+        }
+        let idx = self
+            .endpoint_suggestion_selected
+            .min(filtered.len().saturating_sub(1));
+        filtered.get(idx).cloned()
+    }
+
+    /// Move the endpoint-suggestion highlight by `delta` rows within the
+    /// filtered view, clamped to its bounds. No-op when there are no
+    /// suggestions to navigate.
+    pub fn move_endpoint_suggestion(&mut self, delta: isize) {
+        let len = self.filtered_endpoint_suggestions().len();
+        if len == 0 {
+            self.endpoint_suggestion_selected = 0;
+            return;
+        }
+        let cur = self
+            .endpoint_suggestion_selected
+            .min(len.saturating_sub(1)) as isize;
+        let next = (cur + delta).clamp(0, len as isize - 1);
+        self.endpoint_suggestion_selected = next as usize;
+    }
+
+    /// Accept the highlighted endpoint suggestion: write its *name* into
+    /// the endpoint field. `wg nex -e <name>` resolves a configured name
+    /// just like a URL, so persisting the name keeps the `.chat-N` task,
+    /// CoordinatorState, and Nex argv consistent. Returns `true` when a
+    /// suggestion was accepted, `false` when there was nothing to accept
+    /// (raw-URL entry or empty suggestion list) — the caller then treats
+    /// the keypress as a plain submit/advance.
+    pub fn accept_endpoint_suggestion(&mut self) -> bool {
+        match self.highlighted_endpoint_suggestion() {
+            Some(sug) => {
+                self.add_endpoint = sug.name;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Preselect the default endpoint (or the first one) in the
+    /// suggestion list so it is highlighted the moment the Endpoint field
+    /// is first focused. Leaves the typed text untouched — preselection
+    /// is highlight-only; nothing is written until the user accepts.
+    pub fn preselect_default_endpoint(&mut self) {
+        let default_idx = self
+            .endpoint_suggestions
+            .iter()
+            .position(|s| s.is_default)
+            .unwrap_or(0);
+        self.endpoint_suggestion_selected = default_idx;
+    }
+
     /// Switch the launcher into Add-new mode. Resets the form fields so
     /// stale state from a previous open doesn't bleed through.
     pub fn enter_add_new(&mut self) {
@@ -1443,6 +1593,7 @@ impl LauncherState {
         self.add_executor_idx = 0;
         self.add_model.clear();
         self.add_endpoint.clear();
+        self.preselect_default_endpoint();
         self.active_section = LauncherSection::AddNew(AddNewField::Executor);
     }
 
@@ -14615,6 +14766,14 @@ impl VizApp {
             return;
         }
 
+        let endpoint_suggestions = build_endpoint_suggestions(&config);
+        // Preselect the default endpoint up front so it is already
+        // highlighted if/when the user reaches the nex Endpoint field.
+        let endpoint_suggestion_selected = endpoint_suggestions
+            .iter()
+            .position(|s| s.is_default)
+            .unwrap_or(0);
+
         self.launcher = Some(LauncherState {
             mode: LauncherMode::Default,
             active_section: LauncherSection::Defaults,
@@ -14624,6 +14783,8 @@ impl VizApp {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions,
+            endpoint_suggestion_selected,
             creating: false,
             last_error: None,
         });
@@ -24124,6 +24285,8 @@ mod tui_chat_tests {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
             creating: true,
             last_error: None,
         });
@@ -24211,6 +24374,8 @@ mod tui_chat_tests {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
             creating: true,
             last_error: None,
         });
@@ -24269,6 +24434,8 @@ mod tui_chat_tests {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
             creating: true,
             last_error: None,
         });
@@ -24345,6 +24512,8 @@ mod tui_chat_tests {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
             creating: true,
             last_error: None,
         });
@@ -25909,6 +26078,8 @@ mod launcher_redesign_tests {
             add_executor_idx: 0,
             add_model: String::new(),
             add_endpoint: String::new(),
+            endpoint_suggestions: Vec::new(),
+            endpoint_suggestion_selected: 0,
             creating: false,
             last_error: None,
         }
@@ -26129,6 +26300,228 @@ mod launcher_redesign_tests {
             LauncherSection::AddNew(AddNewField::Endpoint),
             "nex executor: Tab from Model goes through the Endpoint field"
         );
+    }
+}
+
+#[cfg(test)]
+mod launcher_endpoint_autocomplete_tests {
+    use super::{
+        AddNewField, EndpointSuggestion, LauncherMode, LauncherSection, LauncherState,
+        build_endpoint_suggestions,
+    };
+    use workgraph::config::{Config, EndpointConfig};
+
+    fn ep(name: &str, url: Option<&str>, provider: &str, is_default: bool) -> EndpointSuggestion {
+        EndpointSuggestion {
+            name: name.to_string(),
+            url: url.map(String::from),
+            provider: provider.to_string(),
+            is_default,
+        }
+    }
+
+    fn config_with_endpoints(eps: Vec<EndpointConfig>) -> Config {
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints = eps;
+        config
+    }
+
+    fn endpoint_cfg(name: &str, url: &str, provider: &str, is_default: bool) -> EndpointConfig {
+        EndpointConfig {
+            name: name.to_string(),
+            provider: provider.to_string(),
+            url: Some(url.to_string()),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default,
+            context_window: None,
+        }
+    }
+
+    /// A nex-mode launcher state preloaded with the given suggestions.
+    fn nex_state(suggestions: Vec<EndpointSuggestion>) -> LauncherState {
+        LauncherState {
+            mode: LauncherMode::AddNew,
+            active_section: LauncherSection::AddNew(AddNewField::Endpoint),
+            name: String::new(),
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 3, // nex
+            add_model: "qwen3-coder".into(),
+            add_endpoint: String::new(),
+            endpoint_suggestions: suggestions,
+            endpoint_suggestion_selected: 0,
+            creating: false,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn build_suggestions_maps_config_endpoints_in_order() {
+        let config = config_with_endpoints(vec![
+            endpoint_cfg("local", "http://127.0.0.1:8088", "local", false),
+            endpoint_cfg("lambda", "https://lambda01:30000", "openrouter", true),
+        ]);
+        let sug = build_endpoint_suggestions(&config);
+        assert_eq!(sug.len(), 2);
+        assert_eq!(sug[0], ep("local", Some("http://127.0.0.1:8088"), "local", false));
+        assert_eq!(
+            sug[1],
+            ep("lambda", Some("https://lambda01:30000"), "openrouter", true)
+        );
+    }
+
+    #[test]
+    fn build_suggestions_empty_when_no_endpoints() {
+        let config = Config::default();
+        assert!(build_endpoint_suggestions(&config).is_empty());
+    }
+
+    #[test]
+    fn filtered_returns_all_when_empty_query() {
+        let state = nex_state(vec![
+            ep("local", Some("http://a"), "local", false),
+            ep("lambda", Some("http://b"), "openrouter", true),
+        ]);
+        assert_eq!(state.filtered_endpoint_suggestions().len(), 2);
+    }
+
+    #[test]
+    fn filtered_matches_name_url_and_provider_case_insensitively() {
+        let mut state = nex_state(vec![
+            ep("local-gpu", Some("http://127.0.0.1:8088"), "local", false),
+            ep("lambda", Some("https://lambda01:30000"), "openrouter", true),
+        ]);
+        // by name
+        state.add_endpoint = "LAMB".into();
+        let f = state.filtered_endpoint_suggestions();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].name, "lambda");
+        // by provider
+        state.add_endpoint = "openrouter".into();
+        assert_eq!(state.filtered_endpoint_suggestions()[0].name, "lambda");
+        // by url fragment
+        state.add_endpoint = "8088".into();
+        assert_eq!(state.filtered_endpoint_suggestions()[0].name, "local-gpu");
+    }
+
+    #[test]
+    fn filtered_suppressed_for_raw_url_entry() {
+        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        state.add_endpoint = "http://my-custom:9000".into();
+        assert!(state.endpoint_input_is_raw_url());
+        assert!(
+            state.filtered_endpoint_suggestions().is_empty(),
+            "raw URL entry must not surface suggestions that could shadow it"
+        );
+        // https too
+        state.add_endpoint = "https://secure:443".into();
+        assert!(state.filtered_endpoint_suggestions().is_empty());
+    }
+
+    #[test]
+    fn filtered_empty_when_executor_not_nex() {
+        let mut state = nex_state(vec![ep("local", Some("http://a"), "local", true)]);
+        state.add_executor_idx = 0; // claude
+        assert!(
+            state.filtered_endpoint_suggestions().is_empty(),
+            "endpoint suggestions are nex-only"
+        );
+    }
+
+    #[test]
+    fn preselect_default_highlights_default_endpoint() {
+        let mut state = nex_state(vec![
+            ep("local", Some("http://a"), "local", false),
+            ep("lambda", Some("http://b"), "openrouter", true),
+            ep("other", Some("http://c"), "openai", false),
+        ]);
+        state.preselect_default_endpoint();
+        assert_eq!(state.endpoint_suggestion_selected, 1);
+        let hi = state.highlighted_endpoint_suggestion().unwrap();
+        assert_eq!(hi.name, "lambda");
+        assert!(hi.is_default);
+    }
+
+    #[test]
+    fn preselect_falls_back_to_first_when_no_default() {
+        let mut state = nex_state(vec![
+            ep("local", Some("http://a"), "local", false),
+            ep("lambda", Some("http://b"), "openrouter", false),
+        ]);
+        state.preselect_default_endpoint();
+        assert_eq!(state.endpoint_suggestion_selected, 0);
+    }
+
+    #[test]
+    fn move_suggestion_clamps_within_filtered_bounds() {
+        let mut state = nex_state(vec![
+            ep("a", Some("http://a"), "p", false),
+            ep("b", Some("http://b"), "p", false),
+        ]);
+        state.move_endpoint_suggestion(-1);
+        assert_eq!(state.endpoint_suggestion_selected, 0, "clamps at top");
+        state.move_endpoint_suggestion(1);
+        assert_eq!(state.endpoint_suggestion_selected, 1);
+        state.move_endpoint_suggestion(1);
+        assert_eq!(state.endpoint_suggestion_selected, 1, "clamps at bottom");
+    }
+
+    #[test]
+    fn accept_writes_endpoint_name_not_url() {
+        let mut state = nex_state(vec![
+            ep("local", Some("http://127.0.0.1:8088"), "local", false),
+            ep("lambda", Some("https://lambda01:30000"), "openrouter", true),
+        ]);
+        state.endpoint_suggestion_selected = 1;
+        assert!(state.accept_endpoint_suggestion());
+        assert_eq!(
+            state.add_endpoint, "lambda",
+            "accepting fills the endpoint NAME; wg nex -e resolves names"
+        );
+        // resolved launch args carry that name verbatim
+        let (executor, _model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "native");
+        assert_eq!(endpoint.as_deref(), Some("lambda"));
+    }
+
+    #[test]
+    fn accept_is_noop_for_raw_url() {
+        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        state.add_endpoint = "http://my-custom:9000".into();
+        assert!(
+            !state.accept_endpoint_suggestion(),
+            "raw URL entry: nothing to accept"
+        );
+        assert_eq!(
+            state.add_endpoint, "http://my-custom:9000",
+            "the custom URL must be preserved verbatim"
+        );
+        let (_e, _m, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(endpoint.as_deref(), Some("http://my-custom:9000"));
+    }
+
+    #[test]
+    fn accept_is_noop_when_no_endpoints_configured() {
+        let mut state = nex_state(vec![]);
+        assert!(!state.accept_endpoint_suggestion());
+        assert!(state.add_endpoint.is_empty());
+    }
+
+    #[test]
+    fn highlighted_clamps_stale_index_after_filtering() {
+        let mut state = nex_state(vec![
+            ep("local", Some("http://a"), "local", false),
+            ep("lambda", Some("http://b"), "openrouter", true),
+        ]);
+        state.endpoint_suggestion_selected = 1;
+        // Filter down to a single match; the stale index must clamp.
+        state.add_endpoint = "local".into();
+        let hi = state.highlighted_endpoint_suggestion().unwrap();
+        assert_eq!(hi.name, "local");
     }
 }
 

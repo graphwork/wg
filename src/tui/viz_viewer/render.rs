@@ -6921,6 +6921,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         add_model,
         add_endpoint,
         show_endpoint,
+        endpoint_suggestions,
+        endpoint_suggestion_selected,
         creating,
         last_error,
     ) = match app.launcher.as_ref() {
@@ -6934,6 +6936,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.add_model.clone(),
             l.add_endpoint.clone(),
             l.add_new_show_endpoint(),
+            l.filtered_endpoint_suggestions(),
+            l.endpoint_suggestion_selected,
             l.creating,
             l.last_error.clone(),
         ),
@@ -7180,12 +7184,19 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 };
                 let mut ep_spans: Vec<Span> =
                     vec![Span::styled(ep_prefix.to_string(), ep_label_style)];
+                // Placeholder hints at autocomplete when endpoints are
+                // configured, but always allows a raw URL.
+                let ep_placeholder = if endpoint_suggestions.is_empty() {
+                    "(URL — required for nex)"
+                } else {
+                    "(name or URL — \u{2191}\u{2193} pick, Tab accept)"
+                };
                 if add_endpoint.is_empty() {
                     ep_spans.push(Span::styled(
                         if ep_active {
                             "\u{2588}".to_string()
                         } else {
-                            "(URL — required for nex)".to_string()
+                            ep_placeholder.to_string()
                         },
                         if ep_active {
                             Style::default()
@@ -7195,6 +7206,14 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                             Style::default().fg(Color::DarkGray)
                         },
                     ));
+                    // Show the placeholder hint alongside the cursor when
+                    // active so the user knows autocomplete is available.
+                    if ep_active && !endpoint_suggestions.is_empty() {
+                        ep_spans.push(Span::styled(
+                            format!("  {}", ep_placeholder),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
                 } else {
                     ep_spans.push(Span::raw(add_endpoint.clone()));
                     if ep_active {
@@ -7214,6 +7233,74 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                     width: area.width.saturating_sub(13),
                     height: 1,
                 };
+
+                // Endpoint autocomplete dropdown: only while the Endpoint
+                // field is focused and there are matching suggestions
+                // (nex-only; never for opencode/claude/codex/command, and
+                // suppressed entirely while the user types a raw URL).
+                if ep_active && !endpoint_suggestions.is_empty() {
+                    const MAX_ROWS: usize = 6;
+                    let sel = endpoint_suggestion_selected
+                        .min(endpoint_suggestions.len().saturating_sub(1));
+                    // Scroll the window so the selected row stays visible.
+                    let start = if sel >= MAX_ROWS {
+                        sel + 1 - MAX_ROWS
+                    } else {
+                        0
+                    };
+                    let end = (start + MAX_ROWS).min(endpoint_suggestions.len());
+                    for (i, sug) in endpoint_suggestions[start..end].iter().enumerate() {
+                        let idx = start + i;
+                        let is_sel = idx == sel;
+                        let bullet = if is_sel { "\u{25c9}" } else { "\u{25cb}" };
+                        let name_style = if is_sel {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(text_primary(is_light))
+                        };
+                        let mut row: Vec<Span> = vec![
+                            Span::styled(format!("        {} ", bullet), name_style),
+                            Span::styled(sug.name.clone(), name_style),
+                        ];
+                        // Default marker comes first (right after the name)
+                        // so it stays visible even when a long URL would
+                        // otherwise push it past the modal's right edge.
+                        if sug.is_default {
+                            row.push(Span::styled(
+                                "  [default]".to_string(),
+                                Style::default().fg(Color::Cyan),
+                            ));
+                        }
+                        // Secondary detail: URL then provider.
+                        let mut detail = String::new();
+                        if let Some(ref url) = sug.url {
+                            detail.push_str("  ");
+                            detail.push_str(url);
+                        }
+                        if !sug.provider.is_empty() {
+                            detail.push_str(&format!("  ({})", sug.provider));
+                        }
+                        if !detail.is_empty() {
+                            row.push(Span::styled(
+                                detail,
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        lines.push(Line::from(row));
+                    }
+                    if endpoint_suggestions.len() > MAX_ROWS {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "        … {} more (type to filter)",
+                                endpoint_suggestions.len() - MAX_ROWS
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+
                 lines.push(Line::from(""));
             }
         }
@@ -15750,6 +15837,138 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Endpoint autocomplete dropdown (add-nex-endpoint)
+    // ══════════════════════════════════════════════════════════════════════
+
+    use crate::tui::viz_viewer::state::{
+        AddNewField as EpAddNewField, EndpointSuggestion, LauncherMode as EpLauncherMode,
+        LauncherSection as EpLauncherSection, LauncherState as EpLauncherState,
+    };
+
+    fn ep_suggestion(name: &str, url: &str, provider: &str, is_default: bool) -> EndpointSuggestion {
+        EndpointSuggestion {
+            name: name.to_string(),
+            url: Some(url.to_string()),
+            provider: provider.to_string(),
+            is_default,
+        }
+    }
+
+    /// Build a launcher in Add-new mode, focused on the given field, with
+    /// the supplied executor index and endpoint suggestions.
+    fn launcher_addnew(
+        executor_idx: usize,
+        focus: EpAddNewField,
+        suggestions: Vec<EndpointSuggestion>,
+    ) -> EpLauncherState {
+        EpLauncherState {
+            mode: EpLauncherMode::AddNew,
+            active_section: EpLauncherSection::AddNew(focus),
+            name: String::new(),
+            presets: EpLauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: executor_idx,
+            add_model: "qwen3-coder".into(),
+            add_endpoint: String::new(),
+            endpoint_suggestions: suggestions,
+            endpoint_suggestion_selected: 0,
+            creating: false,
+            last_error: None,
+        }
+    }
+
+    fn render_launcher_to_string(app: &mut VizApp) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, app, area);
+            })
+            .unwrap();
+        buffer_to_string(&terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn launcher_shows_endpoint_suggestions_only_for_nex() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![
+            ep_suggestion("local-gpu", "http://127.0.0.1:8088", "local", false),
+            ep_suggestion("lambda", "https://lambda01:30000", "openrouter", true),
+        ];
+
+        // nex (executor idx 3), Endpoint focused → dropdown is shown.
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew(
+            3,
+            EpAddNewField::Endpoint,
+            suggestions.clone(),
+        ));
+        let nex_render = render_launcher_to_string(&mut app);
+        assert!(
+            nex_render.contains("Endpoint"),
+            "nex must show the Endpoint field.\n{nex_render}"
+        );
+        assert!(
+            nex_render.contains("local-gpu") && nex_render.contains("lambda"),
+            "nex endpoint dropdown must list configured endpoint NAMES.\n{nex_render}"
+        );
+        assert!(
+            nex_render.contains("[default]"),
+            "the default endpoint must be marked.\n{nex_render}"
+        );
+
+        // opencode (executor idx 2) → no Endpoint field, no suggestions,
+        // even though suggestions are loaded in state.
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew(2, EpAddNewField::Model, suggestions.clone()));
+        let oc_render = render_launcher_to_string(&mut app);
+        assert!(
+            !oc_render.contains("local-gpu") && !oc_render.contains("lambda"),
+            "opencode must NOT show endpoint suggestions.\n{oc_render}"
+        );
+        assert!(
+            !oc_render.contains("Endpoint"),
+            "opencode must NOT show the Endpoint field.\n{oc_render}"
+        );
+
+        // claude (executor idx 0) → no endpoint UI either.
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.launcher = Some(launcher_addnew(0, EpAddNewField::Model, suggestions));
+        let claude_render = render_launcher_to_string(&mut app);
+        assert!(
+            !claude_render.contains("local-gpu") && !claude_render.contains("Endpoint"),
+            "claude must NOT show endpoint suggestions.\n{claude_render}"
+        );
+    }
+
+    #[test]
+    fn launcher_endpoint_dropdown_hidden_when_typing_raw_url() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![ep_suggestion(
+            "local-gpu",
+            "http://127.0.0.1:8088",
+            "local",
+            true,
+        )];
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, suggestions);
+        launcher.add_endpoint = "http://my-custom:9000".into();
+        app.launcher = Some(launcher);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("http://my-custom:9000"),
+            "the raw URL must be shown verbatim.\n{render}"
+        );
+        assert!(
+            !render.contains("local-gpu"),
+            "suggestions must be suppressed while typing a raw URL.\n{render}"
+        );
     }
 
     /// Regression test for tui-log-view: when an in-progress task has an
