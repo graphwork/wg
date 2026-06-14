@@ -1781,6 +1781,39 @@ pub fn parse_model_spec(spec: &str) -> ModelSpec {
     }
 }
 
+/// Normalize a bare `vendor/model` route into the canonical
+/// `openrouter:<vendor>/<model>` model spec.
+///
+/// A bare route — a slash and no recognized provider prefix, e.g.
+/// `minimax/minimax-m3` — launched on the Nex/native executor with no
+/// explicit endpoint is an OpenRouter route (nex-optional-openrouter-endpoint).
+/// Normalizing it up front means downstream provider resolution targets
+/// OpenRouter directly instead of falling through to the bare-name
+/// oai-compat/local default and silently hitting a local server.
+///
+/// Specs that already carry a provider prefix (`openrouter:...`,
+/// `claude:...`, `nex:...`, …) or have no slash (`qwen3-coder`, `opus`) are
+/// returned unchanged — only an unqualified `vendor/model` is rewritten.
+pub fn normalize_bare_openrouter_route(model: &str) -> String {
+    let spec = parse_model_spec(model);
+    if spec.provider.is_none() && spec.model_id.contains('/') {
+        format!("openrouter:{}", spec.model_id)
+    } else {
+        model.to_string()
+    }
+}
+
+/// Whether a model spec routes to OpenRouter — i.e. it carries the
+/// `openrouter:` provider prefix. Call after
+/// [`normalize_bare_openrouter_route`] so bare `vendor/model` routes are
+/// already canonicalized.
+pub fn model_is_openrouter(model: &str) -> bool {
+    matches!(
+        parse_model_spec(model).provider.as_deref(),
+        Some("openrouter")
+    )
+}
+
 /// Parse a model spec **strictly**: requires `provider:model` format.
 ///
 /// Returns an error with a helpful migration message for:
@@ -7139,6 +7172,66 @@ provider = "openrouter"
         let spec = parse_model_spec("deepseek/deepseek-v3.2");
         assert_eq!(spec.provider, None);
         assert_eq!(spec.model_id, "deepseek/deepseek-v3.2");
+    }
+
+    #[test]
+    fn test_normalize_bare_openrouter_route_bare_vendor_model() {
+        // The canonical case from the task: a bare `vendor/model` route
+        // becomes the OpenRouter spec.
+        assert_eq!(
+            normalize_bare_openrouter_route("minimax/minimax-m3"),
+            "openrouter:minimax/minimax-m3"
+        );
+        assert_eq!(
+            normalize_bare_openrouter_route("deepseek/deepseek-v3.2"),
+            "openrouter:deepseek/deepseek-v3.2"
+        );
+    }
+
+    #[test]
+    fn test_normalize_bare_openrouter_route_preserves_prefixed_specs() {
+        // Already-qualified specs are returned unchanged — including an
+        // explicit `openrouter:` prefix (idempotent) and non-openrouter
+        // providers.
+        assert_eq!(
+            normalize_bare_openrouter_route("openrouter:minimax/minimax-m3"),
+            "openrouter:minimax/minimax-m3"
+        );
+        assert_eq!(normalize_bare_openrouter_route("claude:opus"), "claude:opus");
+        assert_eq!(
+            normalize_bare_openrouter_route("nex:qwen3-coder"),
+            "nex:qwen3-coder"
+        );
+    }
+
+    #[test]
+    fn test_normalize_bare_openrouter_route_preserves_bare_names_without_slash() {
+        // A bare name with no slash is NOT a vendor/model route — left alone
+        // (resolves via the usual alias/local path, not OpenRouter).
+        assert_eq!(normalize_bare_openrouter_route("opus"), "opus");
+        assert_eq!(
+            normalize_bare_openrouter_route("qwen3-coder-30b"),
+            "qwen3-coder-30b"
+        );
+        // Ollama-style tag with a colon (unknown prefix) and no slash stays bare.
+        assert_eq!(
+            normalize_bare_openrouter_route("deepseek-coder-v2:16b"),
+            "deepseek-coder-v2:16b"
+        );
+    }
+
+    #[test]
+    fn test_model_is_openrouter() {
+        assert!(model_is_openrouter("openrouter:minimax/minimax-m3"));
+        // After normalization a bare route is openrouter:
+        assert!(model_is_openrouter(&normalize_bare_openrouter_route(
+            "minimax/minimax-m3"
+        )));
+        // A bare route is NOT openrouter until normalized.
+        assert!(!model_is_openrouter("minimax/minimax-m3"));
+        assert!(!model_is_openrouter("claude:opus"));
+        assert!(!model_is_openrouter("nex:qwen3-coder"));
+        assert!(!model_is_openrouter("opus"));
     }
 
     #[test]

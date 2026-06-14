@@ -224,16 +224,31 @@ pub fn argv_for_preset(
     match preset {
         "nex" | "native" => {
             let mut argv = vec![wg_bin.to_string(), "nex".to_string()];
+            let endpoint = endpoint.filter(|ep| !ep.is_empty());
             if let Some(m) = model.filter(|m| !m.is_empty()) {
-                let spec = parse_model_spec(m);
                 argv.push("-m".to_string());
-                argv.push(if spec.model_id.is_empty() {
-                    m.to_string()
+                // With NO endpoint, a bare `vendor/model` or `openrouter:`
+                // route is an OpenRouter route: keep the explicit
+                // `openrouter:` spec so `wg nex` targets OpenRouter, never the
+                // bare-name oai-compat/local default (nex-optional-openrouter-
+                // endpoint). With an explicit endpoint, strip the provider
+                // prefix — an oai-compat server reads a colon as a LoRA-adapter
+                // reference and 400s otherwise.
+                let normalized = crate::config::normalize_bare_openrouter_route(m);
+                let model_arg = if endpoint.is_none() && crate::config::model_is_openrouter(&normalized)
+                {
+                    normalized
                 } else {
-                    spec.model_id
-                });
+                    let spec = parse_model_spec(m);
+                    if spec.model_id.is_empty() {
+                        m.to_string()
+                    } else {
+                        spec.model_id
+                    }
+                };
+                argv.push(model_arg);
             }
-            if let Some(ep) = endpoint.filter(|ep| !ep.is_empty()) {
+            if let Some(ep) = endpoint {
                 argv.push("-e".to_string());
                 argv.push(ep.to_string());
             }
@@ -440,6 +455,51 @@ mod tests {
                 "openrouter/minimax/minimax-m3".to_string(),
             ]
         );
+    }
+
+    // --- Nex blank-endpoint → OpenRouter (nex-optional-openrouter-endpoint) ---
+
+    #[test]
+    fn argv_for_nex_preset_blank_endpoint_bare_route_targets_openrouter() {
+        // The canonical TUI [+] flow: nex + `minimax/minimax-m3` + blank
+        // endpoint. The persisted argv must carry an explicit `openrouter:`
+        // spec and NO `-e` flag, so the launched nex routes to OpenRouter and
+        // never a stale/default local endpoint.
+        let argv = argv_for_preset("nex", Some("minimax/minimax-m3"), None, "wg");
+        assert_eq!(
+            argv,
+            vec!["wg", "nex", "-m", "openrouter:minimax/minimax-m3"]
+        );
+        assert!(!argv.iter().any(|a| a == "-e"));
+    }
+
+    #[test]
+    fn argv_for_nex_preset_blank_endpoint_openrouter_prefixed_keeps_prefix() {
+        let argv = argv_for_preset("nex", Some("openrouter:minimax/minimax-m3"), Some(""), "wg");
+        assert_eq!(
+            argv,
+            vec!["wg", "nex", "-m", "openrouter:minimax/minimax-m3"]
+        );
+    }
+
+    #[test]
+    fn argv_for_nex_preset_named_endpoint_strips_prefix_and_keeps_endpoint() {
+        // Regression guard for the existing named-endpoint path: an explicit
+        // endpoint strips the provider prefix (oai-compat servers reject a
+        // colon) and the model is NOT rewritten to openrouter.
+        let argv = argv_for_preset("nex", Some("nex:qwen3-coder"), Some("qwen-local"), "wg");
+        assert_eq!(
+            argv,
+            vec!["wg", "nex", "-m", "qwen3-coder", "-e", "qwen-local"]
+        );
+    }
+
+    #[test]
+    fn argv_for_nex_preset_blank_endpoint_bare_alias_unchanged() {
+        // A slashless bare alias is NOT an OpenRouter route — it keeps the
+        // historical bare-id shape (resolves via local/default at the nex layer).
+        let argv = argv_for_preset("nex", Some("qwen3-coder-30b"), None, "wg");
+        assert_eq!(argv, vec!["wg", "nex", "-m", "qwen3-coder-30b"]);
     }
 
     // --- Octomind (prototype-octomind-dexto-chat) ---------------------------

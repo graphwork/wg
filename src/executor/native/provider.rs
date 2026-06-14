@@ -261,6 +261,20 @@ pub fn create_provider_ext_with_config(
         )?));
     }
 
+    // A bare `vendor/model` route with NO endpoint is an OpenRouter route
+    // (nex-optional-openrouter-endpoint): `wg nex -m minimax/minimax-m3`
+    // should reach OpenRouter, not the bare-name oai-compat/local default.
+    // Normalize to `openrouter:<route>` so provider resolution below targets
+    // OpenRouter directly. Skipped when an endpoint is given — that endpoint's
+    // provider dictates the route, so the model stays verbatim.
+    let openrouter_normalized: String;
+    let model = if endpoint_name.is_none() {
+        openrouter_normalized = crate::config::normalize_bare_openrouter_route(model);
+        openrouter_normalized.as_str()
+    } else {
+        model
+    };
+
     // Endpoint-in-model shorthand — see `parse_endpoint_model_shorthand`.
     let (endpoint_name_owned, effective_model_str) =
         parse_endpoint_model_shorthand(config, model, endpoint_name);
@@ -366,7 +380,19 @@ pub fn create_provider_ext_with_config(
     let endpoint = endpoint_name
         .and_then(|name| config.llm_endpoints.find_by_name(name))
         .or_else(|| config.llm_endpoints.find_for_provider(&provider_name))
-        .or_else(|| config.llm_endpoints.find_default());
+        .or_else(|| {
+            // Never let an OpenRouter-routed model fall back to a default
+            // endpoint of a DIFFERENT provider — that would send an OpenRouter
+            // model to a local server (nex-optional-openrouter-endpoint). With
+            // no matching OpenRouter endpoint, leave `endpoint` unresolved so
+            // the URL falls through to `default_url_for_provider("openrouter")`
+            // (openrouter.ai) below. Other providers keep the historical
+            // default-endpoint fallback.
+            config
+                .llm_endpoints
+                .find_default()
+                .filter(|ep| provider_name != "openrouter" || ep.provider == "openrouter")
+        });
     // STRICT key resolution: read api_key / api_key_file / api_key_env
     // from the matched endpoint's config — NEVER fall back to implicit
     // provider env vars (ANTHROPIC_API_KEY etc). See create_provider_ext
@@ -611,6 +637,152 @@ mod tests {
         assert!(looks_like_claude_model("SONNET"));
         assert!(looks_like_claude_model("Claude-Sonnet-4-6"));
         assert!(looks_like_claude_model("CLAUDE3"));
+    }
+
+    // ── nex-optional-openrouter-endpoint: provider-layer routing ──────────
+
+    fn config_with_local_default() -> Config {
+        let mut config = Config::default();
+        config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![EndpointConfig {
+                name: "local-gpu".to_string(),
+                provider: "local".to_string(),
+                url: Some("http://127.0.0.1:8088/v1".to_string()),
+                model: None,
+                api_key: None,
+                api_key_env: None,
+                api_key_ref: None,
+                api_key_file: None,
+                is_default: true,
+                context_window: None,
+            }],
+        };
+        config
+    }
+
+    #[test]
+    fn bare_vendor_model_no_endpoint_routes_to_openrouter_not_local_default() {
+        // `wg nex -m minimax/minimax-m3` with no `-e` and a local is_default
+        // endpoint configured must route to OpenRouter, NOT the local server.
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_local_default();
+        let client =
+            create_provider_ext_with_config(dir.path(), &config, None, "minimax/minimax-m3", None, None, None)
+                .unwrap();
+        assert_eq!(
+            client.name(),
+            "openrouter",
+            "bare vendor/model with no endpoint must resolve to the openrouter provider"
+        );
+        assert_ne!(
+            client.endpoint_name(),
+            Some("local-gpu"),
+            "must NOT adopt the local is_default endpoint for an openrouter route"
+        );
+    }
+
+    #[test]
+    fn openrouter_prefixed_model_no_endpoint_does_not_adopt_local_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_local_default();
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            None,
+            "openrouter:minimax/minimax-m3",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(client.name(), "openrouter");
+        assert_ne!(client.endpoint_name(), Some("local-gpu"));
+    }
+
+    #[test]
+    fn openrouter_model_prefers_configured_openrouter_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config_with_local_default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "my-openrouter".to_string(),
+            provider: "openrouter".to_string(),
+            url: Some("https://openrouter.ai/api/v1".to_string()),
+            model: None,
+            api_key: None,
+            api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+            api_key_ref: None,
+            api_key_file: None,
+            is_default: false,
+            context_window: None,
+        });
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            None,
+            "minimax/minimax-m3",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(client.name(), "openrouter");
+        assert_eq!(
+            client.endpoint_name(),
+            Some("my-openrouter"),
+            "configured openrouter endpoint should win over the local default"
+        );
+    }
+
+    #[test]
+    fn bare_alias_without_slash_still_uses_local_default() {
+        // Regression guard: a slashless bare model is NOT an openrouter route,
+        // so the historical local is_default fallback is preserved.
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_local_default();
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            None,
+            "qwen3-coder-30b",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            client.endpoint_name(),
+            Some("local-gpu"),
+            "slashless bare model keeps the local default endpoint"
+        );
+    }
+
+    #[test]
+    fn explicit_endpoint_keeps_bare_model_off_openrouter() {
+        // With an explicit `-e local-gpu`, the bare model is NOT rewritten to
+        // openrouter — the endpoint's provider dictates the route.
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_local_default();
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            None,
+            "minimax/minimax-m3",
+            None,
+            Some("local-gpu"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            client.endpoint_name(),
+            Some("local-gpu"),
+            "an explicit endpoint must still resolve to that endpoint"
+        );
+        assert_ne!(
+            client.name(),
+            "openrouter",
+            "explicit endpoint means no openrouter normalization"
+        );
     }
 
     #[test]

@@ -329,6 +329,34 @@ pub fn plan_spawn(
     } else {
         (model_raw, model_source)
     };
+
+    // ----- 2a. Bare-route → OpenRouter normalization (nex only) -----
+    // A bare `vendor/model` route on the Nex/native executor with NO explicit
+    // endpoint is an OpenRouter route (nex-optional-openrouter-endpoint).
+    // Normalize it to `openrouter:<route>` so endpoint resolution below and
+    // the downstream nex provider target OpenRouter directly instead of
+    // silently falling back to the local `is_default` endpoint. An explicit
+    // endpoint (named or URL) keeps the model verbatim — the user picked the
+    // route, so the endpoint's provider dictates it.
+    let has_explicit_endpoint = task
+        .endpoint
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let (model_raw, model_source) = if executor == ExecutorKind::Native && !has_explicit_endpoint {
+        let normalized = crate::config::normalize_bare_openrouter_route(&model_raw);
+        if normalized != model_raw {
+            (
+                normalized,
+                format!("{} (bare route → openrouter default)", model_source),
+            )
+        } else {
+            (model_raw, model_source)
+        }
+    } else {
+        (model_raw, model_source)
+    };
+
     let model = ResolvedModelSpec::from_raw(&model_raw);
 
     // ----- 2b. Model-compat override -----
@@ -414,6 +442,28 @@ pub fn plan_spawn(
                 (
                     None,
                     format!("none (task.endpoint={:?} not found and no default)", ep_str),
+                )
+            }
+        } else if crate::config::model_is_openrouter(&model.raw) {
+            // No explicit endpoint + an OpenRouter model → route to OpenRouter
+            // intentionally (nex-optional-openrouter-endpoint), NOT the local
+            // `is_default` endpoint. Prefer a configured OpenRouter endpoint —
+            // it carries the URL + API key, which the spawn path forwards by
+            // name. With none configured, pass no endpoint and let the nex
+            // provider resolve the openrouter.ai default from the model's
+            // `openrouter:` prefix (still OpenRouter, never local).
+            if let Some(or_ep) = config.llm_endpoints.find_for_provider("openrouter") {
+                (
+                    Some(or_ep.clone()),
+                    "[llm_endpoints] provider=openrouter (openrouter model, no endpoint specified)"
+                        .to_string(),
+                )
+            } else {
+                (
+                    None,
+                    "none (openrouter model, no openrouter endpoint configured — \
+                     nex uses the openrouter.ai default, not the local default)"
+                        .to_string(),
                 )
             }
         } else if let Some(default_ep) = config.llm_endpoints.find_default() {
@@ -868,6 +918,157 @@ mod tests {
         assert!(line.contains("executor=native"));
         assert!(line.contains("model=openrouter:deepseek/deepseek-v3.2"));
         assert!(line.contains("endpoint=openrouter"));
+    }
+
+    fn local_default_endpoint() -> EndpointConfig {
+        EndpointConfig {
+            name: "local-gpu".to_string(),
+            provider: "local".to_string(),
+            url: Some("http://127.0.0.1:8088/v1".to_string()),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default: true,
+            context_window: None,
+        }
+    }
+
+    fn nex_chat_task(model: &str) -> Task {
+        let mut task = base_task(".chat-1");
+        task.model = Some(model.to_string());
+        task
+    }
+
+    // ── nex-optional-openrouter-endpoint: blank endpoint defaults to OpenRouter ──
+
+    #[test]
+    fn bare_vendor_model_nex_no_endpoint_normalizes_to_openrouter() {
+        // The canonical TUI [+] flow: pick nex, type `minimax/minimax-m3`,
+        // leave endpoint blank. The bare route must normalize to the
+        // OpenRouter spec and MUST NOT carry the local is_default endpoint.
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(local_default_endpoint());
+
+        let task = nex_chat_task("minimax/minimax-m3");
+        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+
+        assert_eq!(plan.executor, ExecutorKind::Native);
+        assert_eq!(
+            plan.model.raw, "openrouter:minimax/minimax-m3",
+            "bare vendor/model on nex with no endpoint becomes an openrouter spec"
+        );
+        assert!(
+            plan.endpoint.is_none(),
+            "must NOT silently fall back to the local is_default endpoint; got {:?}",
+            plan.endpoint.as_ref().map(|e| &e.name)
+        );
+        assert!(
+            plan.provenance.endpoint_source.contains("openrouter"),
+            "endpoint provenance should name the openrouter route: {}",
+            plan.provenance.endpoint_source
+        );
+    }
+
+    #[test]
+    fn openrouter_model_nex_no_endpoint_does_not_fall_back_to_local_default() {
+        // Explicit `openrouter:` prefix + blank endpoint + only a local
+        // default configured → no local fallback.
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(local_default_endpoint());
+
+        let task = nex_chat_task("openrouter:minimax/minimax-m3");
+        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+
+        assert_eq!(plan.model.raw, "openrouter:minimax/minimax-m3");
+        assert!(
+            plan.endpoint.is_none(),
+            "openrouter model must not adopt the local default endpoint; got {:?}",
+            plan.endpoint.as_ref().map(|e| &e.name)
+        );
+    }
+
+    #[test]
+    fn openrouter_model_nex_no_endpoint_prefers_configured_openrouter_endpoint() {
+        // When an OpenRouter endpoint IS configured, a blank-endpoint
+        // openrouter model routes through it (carries URL + API key).
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(local_default_endpoint());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(openrouter_default_endpoint());
+
+        let task = nex_chat_task("minimax/minimax-m3");
+        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+
+        assert_eq!(plan.model.raw, "openrouter:minimax/minimax-m3");
+        assert_eq!(
+            plan.endpoint.as_ref().map(|e| e.name.as_str()),
+            Some("openrouter"),
+            "should select the configured openrouter endpoint, not the local default"
+        );
+        assert_eq!(
+            plan.endpoint.as_ref().and_then(|e| e.url.as_deref()),
+            Some("https://openrouter.ai/api/v1")
+        );
+    }
+
+    #[test]
+    fn explicit_named_endpoint_keeps_model_verbatim_and_endpoint() {
+        // Regression guard: the existing named-endpoint launch path must be
+        // untouched. Picking `lambda01` keeps the bare model verbatim (the
+        // endpoint dictates the route) and resolves that named endpoint.
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "lambda01".to_string(),
+            provider: "local".to_string(),
+            url: Some("https://lambda01.example:30000".to_string()),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default: false,
+            context_window: None,
+        });
+
+        let mut task = nex_chat_task("minimax/minimax-m3");
+        task.endpoint = Some("lambda01".to_string());
+        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+
+        assert_eq!(
+            plan.model.raw, "minimax/minimax-m3",
+            "an explicit endpoint means the user chose the route; model stays bare"
+        );
+        assert_eq!(
+            plan.endpoint.as_ref().map(|e| e.name.as_str()),
+            Some("lambda01")
+        );
+    }
+
+    #[test]
+    fn bare_alias_without_slash_keeps_local_default_fallback() {
+        // A bare alias WITHOUT a slash (e.g. a local model name) is not an
+        // OpenRouter route — the historical local is_default fallback stays.
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(local_default_endpoint());
+
+        let task = nex_chat_task("qwen3-coder-30b");
+        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+
+        assert_eq!(plan.model.raw, "qwen3-coder-30b", "no slash → not rewritten");
+        assert_eq!(
+            plan.endpoint.as_ref().map(|e| e.name.as_str()),
+            Some("local-gpu"),
+            "bare local model still uses the configured default endpoint"
+        );
     }
 
     #[test]

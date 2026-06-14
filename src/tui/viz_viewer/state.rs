@@ -1702,17 +1702,29 @@ pub fn build_codex_chat_pty_args(
 /// path or create a divergent session shape from the working CLI invocation.
 pub fn build_nex_chat_pty_args(chat_model: Option<&str>, endpoint: Option<&str>) -> Vec<String> {
     let mut args = vec!["nex".to_string()];
+    let endpoint = endpoint.filter(|ep| !ep.is_empty());
     if let Some(m) = chat_model.filter(|m| !m.is_empty()) {
-        let spec = workgraph::config::parse_model_spec(m);
-        let model = if spec.model_id.is_empty() {
-            m.to_string()
+        // With NO endpoint, a bare `vendor/model` or `openrouter:` route is an
+        // OpenRouter route: keep the explicit `openrouter:` spec so `wg nex`
+        // targets OpenRouter, never the bare-name oai-compat/local default
+        // (nex-optional-openrouter-endpoint). With an explicit endpoint, strip
+        // the provider prefix — an oai-compat server reads a colon as a
+        // LoRA-adapter reference and 400s otherwise.
+        let normalized = workgraph::config::normalize_bare_openrouter_route(m);
+        let model = if endpoint.is_none() && workgraph::config::model_is_openrouter(&normalized) {
+            normalized
         } else {
-            spec.model_id
+            let spec = workgraph::config::parse_model_spec(m);
+            if spec.model_id.is_empty() {
+                m.to_string()
+            } else {
+                spec.model_id
+            }
         };
         args.push("-m".to_string());
         args.push(model);
     }
-    if let Some(ep) = endpoint.filter(|ep| !ep.is_empty()) {
+    if let Some(ep) = endpoint {
         args.push("-e".to_string());
         args.push(ep.to_string());
     }
@@ -14674,12 +14686,27 @@ impl VizApp {
                             .unwrap_or_else(|| config.agent.model.clone())
                     });
                     let endpoint = chat_endpoint.clone().or_else(|| {
-                        config
-                            .llm_endpoints
-                            .endpoints
-                            .iter()
-                            .find(|e| e.is_default)
-                            .and_then(|e| e.url.clone())
+                        // Blank endpoint + an OpenRouter model → route to
+                        // OpenRouter intentionally (nex-optional-openrouter-
+                        // endpoint). Do NOT fall back to the local/default
+                        // endpoint URL — that silently sends an OpenRouter
+                        // model to a local server. The model is normalized to
+                        // an explicit `openrouter:` spec in
+                        // build_nex_chat_pty_args, so nex resolves OpenRouter
+                        // on its own.
+                        let or_route = workgraph::config::model_is_openrouter(
+                            &workgraph::config::normalize_bare_openrouter_route(&model),
+                        );
+                        if or_route {
+                            None
+                        } else {
+                            config
+                                .llm_endpoints
+                                .endpoints
+                                .iter()
+                                .find(|e| e.is_default)
+                                .and_then(|e| e.url.clone())
+                        }
                     });
                     let args = build_nex_chat_pty_args(Some(&model), endpoint.as_deref());
                     let project_root = self
@@ -26733,6 +26760,27 @@ mod launcher_redesign_tests {
     }
 
     #[test]
+    fn add_new_nex_blank_endpoint_openrouter_model_resolves_without_endpoint() {
+        // nex-optional-openrouter-endpoint: the endpoint is OPTIONAL for nex.
+        // Selecting/typing an OpenRouter model and leaving the endpoint blank
+        // resolves to (native, model, None) — no endpoint required, no stale
+        // default injected.
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 3; // nex
+        state.add_model = "minimax/minimax-m3".into();
+        state.add_endpoint = "".into(); // blank — first-class option
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "native");
+        assert_eq!(model.as_deref(), Some("minimax/minimax-m3"));
+        assert!(
+            endpoint.is_none(),
+            "blank endpoint for an OpenRouter nex model must resolve to no endpoint, got {:?}",
+            endpoint
+        );
+    }
+
+    #[test]
     fn add_new_with_nex_resolves_with_endpoint() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
@@ -28364,6 +28412,36 @@ mod build_nex_chat_pty_args_tests {
                 "https://lambda01.tail334fe6.ts.net:30000"
             ]
         );
+    }
+
+    #[test]
+    fn blank_endpoint_bare_vendor_model_routes_to_openrouter() {
+        // nex-optional-openrouter-endpoint: leaving the endpoint blank for a
+        // bare `vendor/model` route must keep an explicit `openrouter:` spec
+        // and emit NO `-e` flag — so `wg nex` targets OpenRouter, not a local
+        // endpoint.
+        let args = build_nex_chat_pty_args(Some("minimax/minimax-m3"), None);
+        assert_eq!(args, vec!["nex", "-m", "openrouter:minimax/minimax-m3"]);
+        assert!(
+            !args.iter().any(|a| a == "-e"),
+            "blank endpoint must not emit a -e flag: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn blank_endpoint_openrouter_prefixed_model_keeps_prefix_no_endpoint() {
+        let args = build_nex_chat_pty_args(Some("openrouter:minimax/minimax-m3"), Some(""));
+        assert_eq!(args, vec!["nex", "-m", "openrouter:minimax/minimax-m3"]);
+    }
+
+    #[test]
+    fn explicit_endpoint_strips_prefix_for_oai_compat_server() {
+        // With an explicit endpoint, the provider prefix is stripped (oai-compat
+        // servers read a colon as a LoRA ref). A bare slash route is NOT
+        // rewritten to openrouter — the endpoint dictates the route.
+        let args = build_nex_chat_pty_args(Some("minimax/minimax-m3"), Some("lambda01"));
+        assert_eq!(args, vec!["nex", "-m", "minimax/minimax-m3", "-e", "lambda01"]);
     }
 
     #[test]
