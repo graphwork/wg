@@ -1176,6 +1176,17 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
         label: "nex",
         internal_executor: "native",
     },
+    // External chat-capable CLIs prototyped after the established executors so
+    // their addition does not shift the indices the launcher tests pin
+    // (claude=0, codex=1, opencode=2, nex=3) — prototype-octomind-dexto-chat.
+    AddNewExecutorChoice {
+        label: "octomind",
+        internal_executor: "octomind",
+    },
+    AddNewExecutorChoice {
+        label: "dexto",
+        internal_executor: "dexto",
+    },
     AddNewExecutorChoice {
         label: "Custom Command",
         internal_executor: "command",
@@ -1296,6 +1307,21 @@ fn model_short_name(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
 }
 
+/// Whether a chat PTY pane for `executor` should forward the child's OWN
+/// scroll keys (PageUp/Home/…) into the PTY instead of driving tmux copy-mode.
+///
+/// This is true ONLY for executors that take over the terminal **alternate
+/// screen** (so tmux copy-mode has no scrollback to walk) — currently just
+/// `opencode`. claude / codex / nex keep the tmux copy-mode path, and so do
+/// the prototyped `octomind` / `dexto` REPLs: both were verified to be
+/// line-oriented (no `ESC[?1049h` alt-screen takeover), so their tmux
+/// scrollback works normally — strictly better than OpenCode. Keeping them off
+/// the child-scroll path is what makes their scrolling "not worse than
+/// OpenCode" (prototype-octomind-dexto-chat).
+pub fn executor_uses_child_scroll_keys(executor: &str) -> bool {
+    executor == "opencode"
+}
+
 /// Normalize a selected [`ModelSuggestion`] into the launch spec to persist
 /// for the given `executor` (add-model-fuzzy). This is the single place that
 /// encodes per-executor route conventions:
@@ -1311,6 +1337,20 @@ pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) ->
     match executor {
         "opencode" => {
             workgraph::chat_command::opencode_model_arg(id).unwrap_or_else(|| id.to_string())
+        }
+        "octomind" => {
+            // Octomind shares WG's `provider:route` model spelling, so persist
+            // the `openrouter:<vendor>/<model>` form its `-m` flag consumes.
+            workgraph::chat_command::octomind_model_arg(id).unwrap_or_else(|| id.to_string())
+        }
+        "dexto" => {
+            // Dexto drives OpenRouter via a generated agent YAML; persist the
+            // canonical WG model spec so the YAML and any display agree.
+            if provider == "openrouter" || id.contains('/') {
+                format!("openrouter:{}", id.strip_prefix("openrouter/").unwrap_or(id))
+            } else {
+                id.to_string()
+            }
         }
         "native" | "nex" => {
             if provider == "openrouter" || id.contains('/') {
@@ -1711,8 +1751,8 @@ fn executor_model_boost(provider: &str, executor: &str) -> i64 {
     let fits = match executor {
         "claude" => provider == "anthropic",
         "codex" => provider == "openai",
-        // opencode/nex/native are OpenRouter-first.
-        "opencode" | "nex" | "native" => provider == "openrouter",
+        // opencode/octomind/dexto/nex/native are OpenRouter-first.
+        "opencode" | "octomind" | "dexto" | "nex" | "native" => provider == "openrouter",
         _ => false,
     };
     if fits {
@@ -14755,6 +14795,61 @@ impl VizApp {
                     }
                     ("opencode".to_string(), args, Some(project_root))
                 }
+                "octomind" => {
+                    // Octomind's interactive `run` REPL is line-oriented (NOT
+                    // alt-screen, verified), so tmux scrollback works without
+                    // the OpenCode child-scroll workaround. `-m` takes WG's
+                    // `openrouter:<vendor>/<model>` spelling verbatim, and
+                    // `-n <session>` resumes the named session if it already
+                    // exists — mapping onto WG chat continuity across relaunch.
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
+                    let mut args = vec!["run".to_string()];
+                    if let Some(model_arg) = chat_model
+                        .as_deref()
+                        .and_then(workgraph::chat_command::octomind_model_arg)
+                    {
+                        args.push("-m".to_string());
+                        args.push(model_arg);
+                    }
+                    args.push("-n".to_string());
+                    args.push(chat_ref.clone());
+                    args.push("--sandbox".to_string());
+                    ("octomind".to_string(), args, Some(project_root))
+                }
+                "dexto" => {
+                    // Dexto's --model flag rejects provider/model OpenRouter
+                    // routes, so WG pins the typed model through a generated
+                    // per-chat agent YAML (provider: openrouter). Its Ink CLI is
+                    // also NOT alt-screen (verified), so tmux scrollback works.
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
+                    let agent_path = match workgraph::chat_command::write_dexto_agent_config(
+                        &chat_dir,
+                        chat_model.as_deref(),
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!(
+                                "[tui] failed to write dexto agent config in {}: {e}",
+                                chat_dir.display()
+                            );
+                            return;
+                        }
+                    };
+                    let args = vec![
+                        "--agent".to_string(),
+                        agent_path.display().to_string(),
+                        "--auto-approve".to_string(),
+                    ];
+                    ("dexto".to_string(), args, Some(project_root))
+                }
                 _ => {
                     // Unknown executor — leave file-tailing path in charge.
                     return;
@@ -14919,9 +15014,10 @@ impl VizApp {
                 // its message-history scrollback. tmux copy-mode can't walk an
                 // alt-screen child's (non-existent) history, so WG's scroll
                 // controls must forward OpenCode's own scroll keys into the
-                // PTY instead. Executor-scoped: claude/codex/nex keep the
-                // tmux copy-mode path (fix-opencode-tui).
-                if pending.executor == "opencode" {
+                // PTY instead. Executor-scoped: claude/codex/nex — and the
+                // line-oriented octomind/dexto REPLs — keep the tmux copy-mode
+                // path (fix-opencode-tui, prototype-octomind-dexto-chat).
+                if executor_uses_child_scroll_keys(&pending.executor) {
                     pane.set_child_scroll_keys(true);
                 }
                 self.task_panes.insert(pending.task_id, pane);
@@ -26580,6 +26676,60 @@ mod launcher_redesign_tests {
         // nex (idx 3)
         state.add_executor_idx = 3;
         assert!(state.add_new_show_endpoint());
+        // octomind / dexto are OpenRouter-first (model route selects the
+        // provider) → no endpoint field, like opencode.
+        let octomind_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "octomind")
+            .unwrap();
+        state.add_executor_idx = octomind_idx;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "octomind must never show an endpoint field"
+        );
+        let dexto_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "dexto")
+            .unwrap();
+        state.add_executor_idx = dexto_idx;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "dexto must never show an endpoint field"
+        );
+    }
+
+    #[test]
+    fn add_new_octomind_resolves_model_without_endpoint() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "octomind")
+            .unwrap();
+        // Bare OpenRouter route typed by the user — must be preserved as the
+        // octomind `openrouter:<vendor>/<model>` spec, never a default.
+        state.add_model = "minimax/minimax-m3".into();
+        state.add_endpoint = "https://stale.example".into();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "octomind");
+        assert_eq!(model.as_deref(), Some("minimax/minimax-m3"));
+        assert!(endpoint.is_none(), "octomind must never carry an endpoint");
+    }
+
+    #[test]
+    fn add_new_dexto_resolves_model_without_endpoint() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "dexto")
+            .unwrap();
+        state.add_model = "minimax/minimax-m3".into();
+        state.add_endpoint = "https://stale.example".into();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "dexto");
+        assert_eq!(model.as_deref(), Some("minimax/minimax-m3"));
+        assert!(endpoint.is_none(), "dexto must never carry an endpoint");
     }
 
     #[test]
@@ -26631,7 +26781,12 @@ mod launcher_redesign_tests {
     fn add_new_custom_command_resolves_command_line() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = 4; // Custom Command (now at index 4)
+        // Look up Custom Command's index so adding executors before it
+        // (octomind/dexto) doesn't silently retarget this test.
+        state.add_executor_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "Custom Command")
+            .unwrap();
         state.add_model = "tail -f /tmp/test.log".into();
         let (executor, command, endpoint) = state.resolved_launch_args().unwrap();
         assert_eq!(executor, "command");
@@ -26660,7 +26815,15 @@ mod launcher_redesign_tests {
         let labels: Vec<_> = ADD_NEW_EXECUTOR_CHOICES.iter().map(|c| c.label).collect();
         assert_eq!(
             labels,
-            vec!["claude", "codex", "opencode", "nex", "Custom Command"]
+            vec![
+                "claude",
+                "codex",
+                "opencode",
+                "nex",
+                "octomind",
+                "dexto",
+                "Custom Command"
+            ]
         );
         // nex must lower to internal "native" — that's the executor
         // handler name the dispatch layer uses.
@@ -27128,6 +27291,46 @@ mod launcher_model_autocomplete_tests {
         assert_eq!(
             normalize_model_for_executor("deepseek/deepseek-r1", "openrouter", "native"),
             "openrouter:deepseek/deepseek-r1"
+        );
+    }
+
+    #[test]
+    fn child_scroll_keys_only_for_opencode_not_octomind_or_dexto() {
+        // The "not worse than OpenCode" scroll invariant: only opencode (which
+        // owns the alternate screen) forwards child scroll keys. octomind/dexto
+        // are line-oriented REPLs (verified non-alt-screen), so they stay on
+        // the tmux copy-mode path like claude/codex/nex — real scrollback.
+        assert!(super::executor_uses_child_scroll_keys("opencode"));
+        assert!(!super::executor_uses_child_scroll_keys("octomind"));
+        assert!(!super::executor_uses_child_scroll_keys("dexto"));
+        assert!(!super::executor_uses_child_scroll_keys("claude"));
+        assert!(!super::executor_uses_child_scroll_keys("codex"));
+        assert!(!super::executor_uses_child_scroll_keys("native"));
+    }
+
+    #[test]
+    fn normalize_octomind_and_dexto_preserve_openrouter_route() {
+        // octomind shares WG's provider:route spelling.
+        assert_eq!(
+            normalize_model_for_executor("minimax/minimax-m3", "openrouter", "octomind"),
+            "openrouter:minimax/minimax-m3"
+        );
+        // A single-token id octomind already knows passes through.
+        assert_eq!(
+            normalize_model_for_executor("qwen3-coder", "", "octomind"),
+            "qwen3-coder"
+        );
+        // dexto persists the canonical WG spec; the generated agent YAML
+        // carries the raw route.
+        assert_eq!(
+            normalize_model_for_executor("minimax/minimax-m3", "openrouter", "dexto"),
+            "openrouter:minimax/minimax-m3"
+        );
+        assert_eq!(
+            workgraph::chat_command::dexto_openrouter_model(
+                &normalize_model_for_executor("minimax/minimax-m3", "openrouter", "dexto")
+            ),
+            Some("minimax/minimax-m3".to_string())
         );
     }
 

@@ -1313,3 +1313,21 @@ owners = [
 ]
 description = "Pins verify-standalone-nex: installed standalone `nex` uses isolated .nex state/config, starts a fresh project session for each bare invocation, honors CLI/NEX_* precedence over project config, and `wg nex --autonomous` ignores human ~/.nex routing state. Uses WG_FAKE_LLM so the actual command-line flow is deterministic and does not require network credentials."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_plus_octomind_chat"
+script = "scenarios/tui_plus_octomind_chat.sh"
+owners = [
+    "prototype-octomind-dexto-chat",
+]
+description = "Pins prototype-octomind-dexto-chat: the real `wg tui` `+` new-chat menu can select the octomind executor and type the bare OpenRouter route minimax/minimax-m3; WG must preserve the model and launch `octomind run -m openrouter:minimax/minimax-m3 --sandbox` (octomind's `-m` takes WG's provider:route spelling verbatim), persist executor_preset_name=octomind on .chat-1 + CoordinatorState, and carry NO endpoint override. Credential-free (metadata/argv only). SKIPs without tmux."
+timeout_seconds = 90
+
+[[scenario]]
+name = "tui_plus_dexto_chat"
+script = "scenarios/tui_plus_dexto_chat.sh"
+owners = [
+    "prototype-octomind-dexto-chat",
+]
+description = "Pins prototype-octomind-dexto-chat: the real `wg tui` `+` new-chat menu can select the dexto executor and type minimax/minimax-m3; because dexto's --model rejects provider/model OpenRouter routes, WG must launch `dexto --agent <abs>/dexto-agent.yml --auto-approve` and write that per-chat agent YAML pinning `provider: openrouter` + `model: minimax/minimax-m3` (typed model preserved, no fallback), persist executor_preset_name=dexto, and carry NO endpoint override. Credential-free (metadata/config only). SKIPs without tmux."
+timeout_seconds = 90

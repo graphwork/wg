@@ -931,6 +931,8 @@ fn executor_uses_auto_prompt(executor_type: &str) -> bool {
             | "cline"
             | "crush"
             | "amplifier"
+            | "octomind"
+            | "dexto"
     )
 }
 
@@ -942,6 +944,10 @@ enum ExternalCliModelStyle {
     ProviderFlagAndModel,
     /// `--model <model-id>` after the CLI has been configured for OpenRouter.
     BareOpenRouterModel,
+    /// `--model openrouter:<model-id>` — the provider-colon-route spelling
+    /// Octomind's `-m`/`--model` flag consumes (e.g.
+    /// `--model openrouter:minimax/minimax-m3`).
+    ProviderColonModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -971,6 +977,11 @@ fn external_cli_model_style(executor_type: &str) -> Option<ExternalCliModelStyle
         "opencode" | "aider" | "crush" => Some(ExternalCliModelStyle::ProviderSlashModel),
         "goose" | "cline" => Some(ExternalCliModelStyle::ProviderFlagAndModel),
         "qwen" | "qwen-code" | "qwen_code" => Some(ExternalCliModelStyle::BareOpenRouterModel),
+        // Octomind's `-m` takes WG's `openrouter:<vendor>/<model>` spelling.
+        // (Dexto is intentionally absent: its CLI rejects provider/model
+        // routes and requires a generated agent YAML, so it has no worker-path
+        // argv model style — prototype-octomind-dexto-chat.)
+        "octomind" => Some(ExternalCliModelStyle::ProviderColonModel),
         _ => None,
     }
 }
@@ -1020,6 +1031,10 @@ fn external_cli_model_args(
                 provider: None,
                 model: Some(("--model", openrouter_model)),
             },
+            ExternalCliModelStyle::ProviderColonModel => ExternalCliModelArgs {
+                provider: None,
+                model: Some(("--model", format!("openrouter:{}", openrouter_model))),
+            },
         };
     }
 
@@ -1039,6 +1054,7 @@ fn model_template_value_for_executor(
     let openrouter_model = openrouter_model_id(model, effective_provider)?;
     Some(match style {
         ExternalCliModelStyle::ProviderSlashModel => format!("openrouter/{}", openrouter_model),
+        ExternalCliModelStyle::ProviderColonModel => format!("openrouter:{}", openrouter_model),
         ExternalCliModelStyle::ProviderFlagAndModel
         | ExternalCliModelStyle::BareOpenRouterModel => openrouter_model,
     })
@@ -2463,6 +2479,29 @@ mod tests {
                 "openrouter".to_string(),
                 "--model".to_string(),
                 "deepseek/deepseek-v3.2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_external_cli_model_args_octomind_uses_provider_colon_model() {
+        // Octomind's `-m` takes WG's `openrouter:<vendor>/<model>` spelling, so
+        // a worker spawn preserves the typed route rather than silently falling
+        // back to octomind's default (prototype-octomind-dexto-chat).
+        assert_eq!(
+            normalized_args("octomind"),
+            vec![
+                "--model".to_string(),
+                "openrouter:deepseek/deepseek-v3.2".to_string()
+            ]
+        );
+        // minimax/minimax-m3 specifically (the task's named regression model).
+        assert_eq!(
+            external_cli_model_args("octomind", Some("minimax/minimax-m3"), Some("openrouter"))
+                .to_vec(),
+            vec![
+                "--model".to_string(),
+                "openrouter:minimax/minimax-m3".to_string()
             ]
         );
     }

@@ -267,6 +267,17 @@ pub fn resolve_handler(
         | ExecutorKind::Amplifier => {
             return Err(worker_only_executor_error(plan.executor));
         }
+        ExecutorKind::Octomind | ExecutorKind::Dexto => {
+            // Chat-capable external CLIs wired only into the TUI live-chat PTY
+            // path (which owns chat_dir + PTY sizing), not the daemon
+            // spawn-task handler path (prototype-octomind-dexto-chat).
+            return Err(anyhow!(
+                "executor '{}' currently runs only via the TUI live-chat PTY path \
+                 (open a chat from the TUI [+] menu and choose it); it has no \
+                 spawn-task / daemon handler yet",
+                plan.executor.as_str()
+            ));
+        }
         ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \

@@ -1636,6 +1636,51 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "octomind" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "octomind".to_string(),
+                    command: "octomind".to_string(),
+                    // Octomind's non-interactive surface (`run --format jsonl`,
+                    // reading the task prompt on stdin). The live-chat path uses
+                    // interactive `octomind run` built in chat_command/state; this
+                    // default config exists so the registry can enumerate the
+                    // executor (prototype-octomind-dexto-chat).
+                    args: vec![
+                        "run".to_string(),
+                        "--format".to_string(),
+                        "jsonl".to_string(),
+                    ],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
+            "dexto" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "dexto".to_string(),
+                    command: "dexto".to_string(),
+                    // Dexto's headless surface (`dexto run`). The live-chat path
+                    // generates a per-chat agent YAML and uses the interactive
+                    // Ink CLI; this default config exists so the registry can
+                    // enumerate the executor (prototype-octomind-dexto-chat).
+                    args: vec!["run".to_string()],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "shell" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "shell".to_string(),

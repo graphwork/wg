@@ -1529,8 +1529,29 @@ pub fn create_chat_in_graph(
         )
     } else {
         let preset = workgraph::chat_command::preset_name_for_executor(executor, model);
+        let mut argv = workgraph::chat_command::argv_for_preset(&preset, model, endpoint, "wg");
+        // Dexto drives OpenRouter via a generated per-chat agent YAML; write it
+        // now and substitute its absolute path so the stored command record is
+        // runnable even outside the TUI (prototype-octomind-dexto-chat).
+        if preset == "dexto" {
+            let chat_ref = format!("chat-{}", next_id);
+            let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+            match workgraph::chat_command::write_dexto_agent_config(&chat_dir, model) {
+                Ok(path) => {
+                    if let Some(slot) = argv
+                        .iter_mut()
+                        .find(|a| a.as_str() == workgraph::chat_command::DEXTO_AGENT_CONFIG_FILE)
+                    {
+                        *slot = path.display().to_string();
+                    }
+                }
+                Err(e) => {
+                    anyhow::bail!("failed to write dexto agent config: {e}");
+                }
+            }
+        }
         (
-            workgraph::chat_command::argv_for_preset(&preset, model, endpoint, "wg"),
+            argv,
             Some(project_root.display().to_string()),
             Some(preset),
         )

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 pub const CORE_EXECUTORS: &[&str] = &["native", "claude", "codex", "shell"];
 pub const STABLE_EXTERNAL_EXECUTORS: &[&str] = &["opencode", "aider", "goose", "qwen", "cline"];
 pub const PROVIDER_SPECIFIC_EXECUTORS: &[&str] = &["gemini"];
-pub const EXPERIMENTAL_EXTERNAL_EXECUTORS: &[&str] = &["crush", "amplifier"];
+pub const EXPERIMENTAL_EXTERNAL_EXECUTORS: &[&str] = &["octomind", "dexto", "crush", "amplifier"];
 
 /// One executor, whether it's usable here, and where the backing
 /// binary lives (if applicable).
@@ -123,6 +123,16 @@ const EXECUTORS: &[ExecutorSpec] = &[
         binary_candidates: &["cline"],
     },
     ExecutorSpec {
+        name: "octomind",
+        description: "Octomind CLI live chat (`octomind run -m openrouter:<vendor>/<model>`; line-oriented REPL, tmux-safe)",
+        binary_candidates: &["octomind"],
+    },
+    ExecutorSpec {
+        name: "dexto",
+        description: "Dexto CLI live chat (`dexto --agent <yml>`; OpenRouter via generated agent config)",
+        binary_candidates: &["dexto"],
+    },
+    ExecutorSpec {
         name: "crush",
         description: "Experimental Crush CLI worker (`crush run`; verify flags against your installed version)",
         binary_candidates: &["crush"],
@@ -206,6 +216,8 @@ mod tests {
         assert!(names.contains(&"cline"));
         assert!(names.contains(&"crush"));
         assert!(names.contains(&"amplifier"));
+        assert!(names.contains(&"octomind"));
+        assert!(names.contains(&"dexto"));
     }
 
     #[test]

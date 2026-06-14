@@ -69,6 +69,12 @@ pub enum ExecutorKind {
     Crush,
     /// Amplifier CLI worker. Experimental one-shot task executor only.
     Amplifier,
+    /// Octomind CLI. Chat-capable external CLI (`octomind run`); currently
+    /// integrated for the TUI live-chat PTY path only (no spawn-task handler).
+    Octomind,
+    /// Dexto CLI. Chat-capable external CLI (`dexto --agent`); currently
+    /// integrated for the TUI live-chat PTY path only (no spawn-task handler).
+    Dexto,
 }
 
 impl ExecutorKind {
@@ -89,13 +95,17 @@ impl ExecutorKind {
         ExecutorKind::Cline,
         ExecutorKind::Crush,
         ExecutorKind::Amplifier,
+        ExecutorKind::Octomind,
+        ExecutorKind::Dexto,
     ];
 
     /// The subset of [`EXTERNAL_CLIS`](Self::EXTERNAL_CLIS) that can ONLY run
     /// as one-shot task-agent workers and do NOT implement WG's live
     /// chat/session protocol. `OpenCode` is deliberately absent: it ships a
     /// live chat handler (`wg opencode-handler --chat`), so it is an external
-    /// CLI that is *also* chat-capable.
+    /// CLI that is *also* chat-capable. `Octomind` / `Dexto` are likewise
+    /// absent: they are chat-capable external CLIs wired into the TUI
+    /// live-chat PTY path (see `prototype-octomind-dexto-chat`).
     pub const WORKER_ONLY_EXTERNALS: &'static [ExecutorKind] = &[
         ExecutorKind::Aider,
         ExecutorKind::Goose,
@@ -118,6 +128,8 @@ impl ExecutorKind {
             ExecutorKind::Cline => "cline",
             ExecutorKind::Crush => "crush",
             ExecutorKind::Amplifier => "amplifier",
+            ExecutorKind::Octomind => "octomind",
+            ExecutorKind::Dexto => "dexto",
         }
     }
 
@@ -134,6 +146,8 @@ impl ExecutorKind {
             "cline" => Some(ExecutorKind::Cline),
             "crush" => Some(ExecutorKind::Crush),
             "amplifier" => Some(ExecutorKind::Amplifier),
+            "octomind" => Some(ExecutorKind::Octomind),
+            "dexto" => Some(ExecutorKind::Dexto),
             _ => None,
         }
     }

@@ -4097,9 +4097,11 @@ pub enum ChatCommands {
         name: Option<String>,
 
         /// Live chat executor shortcut: "claude", "codex", "opencode",
-        /// or "nex"/"native". `opencode` runs an OpenRouter (or other
-        /// OpenCode-supported) model route and needs no `--endpoint`;
-        /// `nex`/`native` is the only executor that takes one.
+        /// "octomind", "dexto", or "nex"/"native". `opencode`, `octomind`,
+        /// and `dexto` run an OpenRouter (or other supported) model route and
+        /// need no `--endpoint`; `nex`/`native` is the only executor that
+        /// takes one. `octomind`/`dexto` are line-oriented (tmux-scrollback
+        /// safe) and currently launch via the TUI live-chat PTY path.
         #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,
 
