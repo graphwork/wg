@@ -14904,7 +14904,7 @@ impl VizApp {
             )
         };
         match spawn_result {
-            Ok(pane) => {
+            Ok(mut pane) => {
                 // Record spawn info for use in the death panel if this pane later exits.
                 if let Some(cid) = pending
                     .task_id
@@ -14914,6 +14914,15 @@ impl VizApp {
                     let spawn_cmd = format!("{} {}", pending.bin, pending.args.join(" "));
                     self.chat_last_spawn_info
                         .insert(cid, (pending.executor.clone(), spawn_cmd));
+                }
+                // OpenCode runs its own full-screen alt-screen TUI that owns
+                // its message-history scrollback. tmux copy-mode can't walk an
+                // alt-screen child's (non-existent) history, so WG's scroll
+                // controls must forward OpenCode's own scroll keys into the
+                // PTY instead. Executor-scoped: claude/codex/nex keep the
+                // tmux copy-mode path (fix-opencode-tui).
+                if pending.executor == "opencode" {
+                    pane.set_child_scroll_keys(true);
                 }
                 self.task_panes.insert(pending.task_id, pane);
                 self.chat_pty_mode = true;

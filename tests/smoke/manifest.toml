@@ -315,6 +315,15 @@ description = "fix-real-tui 2026-06-13: drives the real wg tui '+' new-chat menu
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_opencode_scrollback"
+script = "scenarios/tui_opencode_scrollback.sh"
+owners = [
+    "fix-opencode-tui",
+]
+description = "fix-opencode-tui 2026-06-14: live human-flow guard that OpenCode chat scrollback works in the REAL wg tui/tmux path. OpenCode launches its own alternate-screen full-redraw TUI inside WG's tmux-wrapped pane, so WG's default scroll path (drive tmux copy-mode) is a no-op — the alt screen has no tmux history to scan, so the user 'cannot scan up in history'. The fix is executor-scoped: for OpenCode panes WG forwards OpenCode's OWN scroll keys (PageUp/PageDown/Home/End == messages_page_up/down/first/last) into the PTY child and never touches tmux copy-mode; claude/codex/nex keep the copy-mode path. Drives wg tui in tmux, opens an OpenCode chat via the + menu, focuses the live OpenCode PTY pane, scrolls with the same controls a human uses (direct PageUp/Home AND Ctrl+] scroll-mode), then asserts (1) the OpenCode pane's WG_PTY_DUMP forwarded-input tee contains the PageUp (ESC[5~) and Home (ESC[H) sequences and (2) the wrapping wg-chat-*-chat-1 tmux session is NOT in copy-mode. Both assertions flip between main (broken) and the fixed build. Credential-free (OpenCode only needs to launch its TUI; scroll-key forwarding is entirely WG-side). SKIPs without tmux or the opencode binary."
+timeout_seconds = 150
+
+[[scenario]]
 name = "tui_plus_opencode_minimax"
 script = "scenarios/tui_plus_opencode_minimax.sh"
 owners = [

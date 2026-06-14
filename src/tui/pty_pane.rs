@@ -115,6 +115,18 @@ pub struct PtyPane {
     /// — NOT a query against tmux's actual scroll position. See
     /// `scroll_up` for why we track it locally (fix-mouse-wheel-3).
     tmux_scroll_lines: usize,
+    /// When true, the wrapped child is a self-scrolling full-screen TUI
+    /// (e.g. OpenCode) that owns its own message-history scrollback on the
+    /// alternate screen. tmux copy-mode is useless for such a child — the
+    /// alt-screen has no tmux scrollback history to walk (it only ever
+    /// holds the current repaint frame), so copy-mode scrolling produces
+    /// no movement and the user "cannot scan up in history"
+    /// (fix-opencode-tui). For these panes WG's scroll controls instead
+    /// forward the child's OWN scroll keys (PageUp / PageDown / Home /
+    /// End) into the PTY so the child scrolls its internal transcript.
+    /// Executor-scoped: only set for OpenCode chat panes; claude / codex /
+    /// nex keep the tmux copy-mode path.
+    child_scroll_keys: bool,
 }
 
 impl PtyPane {
@@ -351,6 +363,7 @@ impl PtyPane {
             tmux_session: None,
             input_bytes_written: Arc::new(AtomicU64::new(0)),
             tmux_scroll_lines: 0,
+            child_scroll_keys: false,
         })
     }
 
@@ -548,7 +561,9 @@ impl PtyPane {
     /// In both cases zero bytes are written to the PTY child's stdin
     /// — fix-mouse-wheel-2's invariant is preserved.
     pub fn scroll_up(&mut self, n: usize) {
-        if let Some(session) = self.tmux_session.clone() {
+        if self.child_scroll_keys {
+            self.send_child_scroll_key(KeyCode::PageUp);
+        } else if let Some(session) = self.tmux_session.clone() {
             self.tmux_scroll_up(&session, n);
         } else {
             self.auto_follow = false;
@@ -561,7 +576,9 @@ impl PtyPane {
 
     /// Scroll the view down (toward live output) by `n` lines.
     pub fn scroll_down(&mut self, n: usize) {
-        if let Some(session) = self.tmux_session.clone() {
+        if self.child_scroll_keys {
+            self.send_child_scroll_key(KeyCode::PageDown);
+        } else if let Some(session) = self.tmux_session.clone() {
             self.tmux_scroll_down(&session, n);
         } else if let Ok(mut p) = self.parser.lock() {
             let current = p.screen().scrollback();
@@ -576,7 +593,10 @@ impl PtyPane {
 
     /// Jump to the top of scrollback.
     pub fn scroll_to_top(&mut self) {
-        if let Some(session) = self.tmux_session.clone() {
+        if self.child_scroll_keys {
+            // OpenCode's `messages_first` is bound to Home (and ctrl+g).
+            self.send_child_scroll_key(KeyCode::Home);
+        } else if let Some(session) = self.tmux_session.clone() {
             // Enter copy mode (idempotent) then jump to history top.
             if self.tmux_scroll_lines == 0 {
                 let _ = std::process::Command::new("tmux")
@@ -602,7 +622,10 @@ impl PtyPane {
 
     /// Jump to the bottom (live output).
     pub fn scroll_to_bottom(&mut self) {
-        if let Some(session) = self.tmux_session.clone() {
+        if self.child_scroll_keys {
+            // OpenCode's `messages_last` is bound to End (and ctrl+alt+g).
+            self.send_child_scroll_key(KeyCode::End);
+        } else if let Some(session) = self.tmux_session.clone() {
             if self.tmux_scroll_lines > 0 {
                 // `cancel` exits copy mode, restoring the live tail.
                 let _ = std::process::Command::new("tmux")
@@ -723,6 +746,45 @@ impl PtyPane {
     #[allow(dead_code)]
     pub fn bytes_processed(&self) -> u64 {
         self.bytes_processed.load(Ordering::Relaxed)
+    }
+
+    /// Mark this pane as wrapping a self-scrolling full-screen TUI child
+    /// (OpenCode) whose scrollback lives inside the child, not in tmux's
+    /// copy-mode history. After this call WG's scroll controls
+    /// (`scroll_up`/`scroll_down`/`scroll_to_top`/`scroll_to_bottom`)
+    /// forward the child's OWN scroll keys into the PTY instead of driving
+    /// tmux copy-mode (which is a no-op against an alt-screen child).
+    /// See the `child_scroll_keys` field doc (fix-opencode-tui).
+    pub fn set_child_scroll_keys(&mut self, enabled: bool) {
+        self.child_scroll_keys = enabled;
+    }
+
+    /// Whether this pane forwards scroll as child keystrokes (OpenCode
+    /// path) rather than driving tmux copy-mode. Tests use this.
+    #[allow(dead_code)]
+    pub fn uses_child_scroll_keys(&self) -> bool {
+        self.child_scroll_keys
+    }
+
+    /// Forward a single scroll keystroke (PageUp/PageDown/Home/End) into
+    /// the child's stdin so a self-scrolling TUI (OpenCode) moves its own
+    /// transcript viewport. Unlike [`send_key`] this does NOT touch tmux
+    /// copy-mode (we never enter it for these panes) and does NOT reset
+    /// `auto_follow`/scrollback bookkeeping (the child owns its scroll
+    /// position; WG cannot mirror it). The bytes are teed so smoke tests
+    /// can assert the forwarded escape sequence (fix-opencode-tui).
+    fn send_child_scroll_key(&mut self, code: KeyCode) {
+        let bytes = key_event_to_bytes(&KeyEvent::new(code, KeyModifiers::NONE));
+        if bytes.is_empty() {
+            return;
+        }
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.write_all(&bytes);
+            let _ = w.flush();
+            self.tee_input(&bytes);
+            self.input_bytes_written
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
     }
 
     /// Forward a crossterm key event to the embedded process. Returns
@@ -2151,6 +2213,60 @@ sleep 5
             p.screen_mut().set_scrollback(0);
             assert_eq!(p.screen().scrollback(), 0);
         }
+    }
+
+    #[test]
+    fn child_scroll_keys_forwards_scroll_keystrokes_to_child() {
+        // OpenCode-style pane (fix-opencode-tui): WG's scroll controls must
+        // forward OpenCode's OWN scroll keys (PageUp/PageDown/Home/End) into
+        // the PTY rather than driving tmux copy-mode — OpenCode owns its
+        // alt-screen message-history scrollback, so copy-mode can't scan it.
+        let mut pane = PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn cat");
+        assert!(!pane.uses_child_scroll_keys());
+        pane.set_child_scroll_keys(true);
+        assert!(pane.uses_child_scroll_keys());
+
+        // Each scroll maps to exactly one keystroke's worth of bytes. The
+        // line-count argument is ignored: OpenCode pages, it has no
+        // single-line scroll key. The mapped sequences are OpenCode's
+        // documented defaults (pageup / pagedown / home=messages_first /
+        // end=messages_last).
+        let cases: [(fn(&mut PtyPane), &[u8]); 4] = [
+            (|p: &mut PtyPane| p.scroll_up(5), b"\x1b[5~"),
+            (|p: &mut PtyPane| p.scroll_down(5), b"\x1b[6~"),
+            (|p: &mut PtyPane| p.scroll_to_top(), b"\x1b[H"),
+            (|p: &mut PtyPane| p.scroll_to_bottom(), b"\x1b[F"),
+        ];
+        for (action, expected) in cases {
+            let before = pane.child_input_bytes_written();
+            action(&mut pane);
+            assert_eq!(
+                pane.child_input_bytes_written() - before,
+                expected.len() as u64,
+                "opencode pane scroll must forward {:?} to the child",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn non_opencode_pane_scroll_writes_no_child_bytes() {
+        // Regression guard: claude/codex/nex panes (child_scroll_keys=false)
+        // drive the vt100/tmux scrollback and must forward ZERO bytes to the
+        // child on scroll (fix-mouse-wheel-2's invariant; not regressed by
+        // fix-opencode-tui's executor-scoped change).
+        let mut pane = PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn cat");
+        assert!(!pane.uses_child_scroll_keys());
+        let before = pane.child_input_bytes_written();
+        pane.scroll_up(5);
+        pane.scroll_down(5);
+        pane.scroll_to_top();
+        pane.scroll_to_bottom();
+        assert_eq!(
+            pane.child_input_bytes_written(),
+            before,
+            "a non-opencode pane must not forward any keystrokes to the child on scroll"
+        );
     }
 
     /// Render the parser screen via tui-term + ratatui TestBackend at the
