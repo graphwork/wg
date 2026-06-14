@@ -324,6 +324,15 @@ description = "fix-tui-opencode 2026-06-13: drives the real wg tui '+' new-chat 
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_plus_nex_chat"
+script = "scenarios/tui_plus_nex_chat.sh"
+owners = [
+    "confirm-real-tui",
+]
+description = "confirm-real-tui 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex in the Add-new executor choices, and confirms the nex-only Endpoint field is actually visible (not clipped below the fold) before typing a `nex:` model and a local OAI-compatible endpoint URL. Asserts the launched .chat-1 graph row + CoordinatorState preserve BOTH typed values exactly (model `nex:qwen3-coder`, the typed endpoint, executor_preset_name=nex / executor_override=native) and that command_argv is the working CLI shape [\"wg\",\"nex\",\"-m\",\"qwen3-coder\",\"-e\",<endpoint>] — never a stale default/recent value. Seeds a decoy global default endpoint AND a decoy recent launcher-history combo so a fallback regression would be caught. Also pins the render fix where the launcher modal is centered over the full frame so the Endpoint/Name/Launch rows are not clipped when a chat PTY shrinks the panel. Credential-free (asserts persisted metadata only; no live nex reply)."
+timeout_seconds = 120
+
+[[scenario]]
 name = "launcher_focus_new_chat_on_launch"
 script = "scenarios/launcher_focus_new_chat_on_launch.sh"
 owners = [

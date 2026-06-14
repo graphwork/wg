@@ -3403,15 +3403,31 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }
 
-    // Full-pane launcher: takes over the entire area below the tab bar.
+    // New-chat launcher: render as a centered modal over the FULL frame
+    // rather than the (often thin) chat panel. When a chat PTY is live the
+    // chat panel is only a handful of rows tall — enough to clip the lower
+    // rows of the AddNew form (the nex-only Endpoint field, plus Name and
+    // [Launch]). Centering on `frame.area()` reclaims the graph-split space
+    // so the whole form is visible and interactive regardless of the panel
+    // layout (confirm-real-tui).
     if app.launcher.is_some() {
-        let launcher_area = Rect {
-            x: area.x,
-            y: area.y + tab_bar_height,
-            width: area.width,
-            height: area.height.saturating_sub(tab_bar_height),
-        };
-        draw_launcher_pane(frame, app, launcher_area);
+        let full = frame.area();
+        let width = full.width.saturating_sub(4).clamp(40, 100).min(full.width);
+        let height = full.height.saturating_sub(2).clamp(12, 26).min(full.height);
+        let mx = full.x + full.width.saturating_sub(width) / 2;
+        let my = full.y + full.height.saturating_sub(height) / 2;
+        let modal = Rect::new(mx, my, width, height);
+        frame.render_widget(Clear, modal);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let inner = block.inner(modal);
+        frame.render_widget(block, modal);
+        draw_launcher_pane(frame, app, inner);
         return;
     }
 
