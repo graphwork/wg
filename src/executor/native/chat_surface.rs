@@ -167,14 +167,25 @@ impl ChatInboxReader {
         loop {
             // Check cooperative release marker. If another process
             // (typically the TUI, after a user-send takeover trigger)
-            // asked us to release, return None — the caller treats
-            // None as EOF and exits the loop cleanly at the next turn
-            // boundary. Without this check, the handler would block
-            // forever on the inbox even after the release was
-            // requested. See docs/design/sessions-as-identity.md
+            // asked *this* handler generation to release, return None —
+            // the caller treats None as EOF and exits the loop cleanly
+            // at the next turn boundary. Without this check, the handler
+            // would block forever on the inbox even after the release
+            // was requested. See docs/design/sessions-as-identity.md
             // §Handoff policy.
-            if crate::session_lock::release_requested(&chat_dir) {
+            //
+            // The check is generation-aware (`release_requested_for`):
+            // we only honor a marker that targets OUR pid. A marker left
+            // by a previous handoff (different pid, or untargeted) is
+            // stale — we clear it and keep serving the inbox instead of
+            // exiting at turns=0 with reason=eof (the bug this fixes).
+            let my_pid = std::process::id();
+            if crate::session_lock::release_requested_for(&chat_dir, my_pid) {
+                crate::session_lock::clear_release_marker(&chat_dir);
                 return None;
+            }
+            if crate::session_lock::stale_release_marker(&chat_dir, my_pid) {
+                crate::session_lock::clear_release_marker(&chat_dir);
             }
             match self.try_next_entry() {
                 Ok(Some(entry)) => return Some(entry),
@@ -383,6 +394,63 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "response text");
         assert_eq!(msgs[0].request_id, "r1");
+    }
+
+    #[tokio::test]
+    async fn next_entry_ignores_stale_other_generation_release_marker() {
+        // Regression for fix-nex-chat23-eof-resume: a release marker left by
+        // a PREVIOUS handler generation (different pid) must NOT make a
+        // freshly-started handler return None (which the agent loop treats
+        // as EOF → session_end reason=eof turns=0). The reader honors a
+        // marker only when it targets OUR pid.
+        use crate::chat_sessions::{SessionKind, create_session};
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let uuid = create_session(wg_dir, SessionKind::Interactive, &[], None).unwrap();
+        let paths = ChatPaths::for_ref(wg_dir, &uuid);
+        let chat_dir = crate::chat::chat_dir_for_ref(wg_dir, &uuid);
+
+        // Marker aimed at some OTHER (dead) generation, not this process.
+        let other_pid = std::process::id().wrapping_add(1);
+        crate::session_lock::request_release_for(&chat_dir, other_pid).unwrap();
+
+        let reader = ChatInboxReader::new(wg_dir.to_path_buf(), uuid.clone(), paths).unwrap();
+
+        // A real user message is waiting. The reader must deliver it rather
+        // than bailing on the stale marker.
+        crate::chat::append_inbox_ref(wg_dir, &uuid, "still alive", "r1").unwrap();
+        let entry =
+            tokio::time::timeout(std::time::Duration::from_secs(2), reader.next_entry(Duration::from_millis(50)))
+                .await
+                .expect("next_entry must not hang")
+                .expect("stale marker must not force EOF");
+        assert_eq!(entry.message, "still alive");
+
+        // The stale marker should have been cleared as a side effect.
+        assert!(
+            !crate::session_lock::release_requested(&chat_dir),
+            "stale marker should be cleaned up by the reader"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_entry_honors_release_for_our_generation() {
+        // The complement: a marker that DOES target our pid ends the loop
+        // (cooperative handoff). This is the legitimate takeover path.
+        use crate::chat_sessions::{SessionKind, create_session};
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        let uuid = create_session(wg_dir, SessionKind::Interactive, &[], None).unwrap();
+        let paths = ChatPaths::for_ref(wg_dir, &uuid);
+        let chat_dir = crate::chat::chat_dir_for_ref(wg_dir, &uuid);
+
+        crate::session_lock::request_release_for(&chat_dir, std::process::id()).unwrap();
+        let reader = ChatInboxReader::new(wg_dir.to_path_buf(), uuid.clone(), paths).unwrap();
+        let out =
+            tokio::time::timeout(std::time::Duration::from_secs(2), reader.next_entry(Duration::from_millis(50)))
+                .await
+                .expect("next_entry must not hang");
+        assert!(out.is_none(), "a marker targeting our pid ends the session");
     }
 
     #[test]

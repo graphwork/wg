@@ -14175,8 +14175,15 @@ impl VizApp {
         // release and swaps the observer pane for an owner pane
         // when it happens.
         if self.chat_pty_mode && self.chat_pty_observer {
-            let task_id = workgraph::chat_id::format_chat_task_id(self.active_coordinator_id);
-            let chat_dir = self.workgraph_dir.join("chat").join(&task_id);
+            // Resolve through the session registry using the dot-less
+            // `chat-N` ref the handler runs under: the live handler holds
+            // its lock/marker under the UUID session dir, not the literal
+            // `chat/.chat-N` join. Writing to the literal path would leave a
+            // marker the handler never sees (and never cleans up).
+            // `request_release` records the live holder's PID so only that
+            // handler generation acts on it.
+            let chat_ref = workgraph::chat_id::format_chat_session_ref(self.active_coordinator_id);
+            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
             if let Err(e) = workgraph::session_lock::request_release(&chat_dir) {
                 eprintln!("[tui] failed to write release marker for takeover: {}", e);
             } else {

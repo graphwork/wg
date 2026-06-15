@@ -17,6 +17,18 @@ pub fn format_chat_task_id(id: u32) -> String {
     format!("{}{}", CHAT_PREFIX, id)
 }
 
+/// Format the chat *session* reference for a chat agent (`chat-<N>`, no
+/// leading dot). This is the registry alias the live handler runs under
+/// (`wg nex --chat chat-<N>`) and the key `chat_sessions::resolve_ref`
+/// resolves to the session's UUID dir. Use this — NOT `format_chat_task_id`
+/// (`.chat-<N>`) — whenever you resolve the chat dir to read/write the
+/// handler lock or release marker; `resolve_ref` does not know the dotted
+/// task-id form and would silently fall back to a literal `chat/.chat-N`
+/// path, split-braining from where the handler actually holds its lock.
+pub fn format_chat_session_ref(id: u32) -> String {
+    format!("chat-{}", id)
+}
+
 /// Parse a chat task ID (accepts both `.chat-N` and legacy `.coordinator-N`).
 pub fn parse_chat_task_id(s: &str) -> Option<u32> {
     if let Some(rest) = s.strip_prefix(CHAT_PREFIX) {

@@ -1066,6 +1066,16 @@ fn subprocess_coordinator_loop(
         *alive.lock().unwrap_or_else(|e| e.into_inner()) = false;
         *pid.lock().unwrap_or_else(|e| e.into_inner()) = 0;
 
+        // A cooperative release marker that targeted the handler we just
+        // reaped has done its job — clear it so the next respawn (fresh
+        // PID) starts clean. Without this, a marker left on disk would
+        // linger; a successor handler ignores it via the generation-aware
+        // `release_requested_for` check, but clearing here keeps the
+        // on-disk state honest and avoids confusing `wg session` readers.
+        if workgraph::session_lock::release_target(&chat_dir) == Some(child_pid) {
+            workgraph::session_lock::clear_release_marker(&chat_dir);
+        }
+
         let success = matches!(&exit_status, Ok(s) if s.success());
         // Read the live session-lock holder right at exit time. If the
         // child crashed *because* it lost a startup race against another
@@ -1098,6 +1108,24 @@ fn subprocess_coordinator_loop(
                 // consumer is connected.
                 let idle_threshold = std::time::Duration::from_secs(CHAT_IDLE_THRESHOLD_SECS);
                 if chat::chat_session_is_idle(dir, coordinator_id, idle_threshold) {
+                    // Do NOT abandon a chat a live TUI is actively driving.
+                    // A fresh TUI-created chat starts with an empty inbox and
+                    // no cursor activity, so it looks "idle" — but if the
+                    // handler exited at turns=0 (e.g. a cooperative release
+                    // during the TUI's takeover handoff) and we gave up here,
+                    // the chat would be left stopped with no handler, exactly
+                    // the fix-nex-chat23-eof-resume failure. While the TUI
+                    // sentinel is alive, defer and respawn so the chat keeps a
+                    // handler available for the next message instead of dying.
+                    if let Some(tui_pid) = tui_driver_deferral_pid(&chat_dir) {
+                        logger.info(&format!(
+                            "Coordinator-{}: looks idle but a live TUI (pid={}) is driving this chat — \
+                             deferring 2s and keeping a handler available (no idle-exit).",
+                            coordinator_id, tui_pid
+                        ));
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        continue;
+                    }
                     logger.info(&format!(
                         "Coordinator-{}: idle (no consumer + empty inbox for {}s) — exiting supervisor (no respawn).",
                         coordinator_id, CHAT_IDLE_THRESHOLD_SECS

@@ -1350,3 +1350,12 @@ owners = [
 ]
 description = "Pins prototype-octomind-dexto-chat: the real `wg tui` `+` new-chat menu can select the dexto executor and type minimax/minimax-m3; because dexto's --model rejects provider/model OpenRouter routes, WG must launch `dexto --agent <abs>/dexto-agent.yml --auto-approve` and write that per-chat agent YAML pinning `provider: openrouter` + `model: minimax/minimax-m3` (typed model preserved, no fallback), persist executor_preset_name=dexto, and carry NO endpoint override. Credential-free (metadata/config only). SKIPs without tmux."
 timeout_seconds = 90
+
+[[scenario]]
+name = "nex_openrouter_chat_stays_alive_and_resumes"
+script = "scenarios/nex_openrouter_chat_stays_alive_and_resumes.sh"
+owners = [
+    "fix-nex-chat23-eof-resume",
+]
+description = "Pins fix-nex-chat23-eof-resume: a Nex/OpenRouter chat (blank endpoint → OpenRouter default) created against an isolated daemon must come up with a LIVE inbox-driven handler and stay alive — no session_end reason=eof at turns=0 from a stale .handler.release-requested marker. `wg chat show` and `wg session status` must agree on the live handler, and `wg chat resume <id>` must succeed from saved executor/model metadata without the internal 'at least one of --executor or --model' error. Credential-free: the inbox handler blocks without calling the model."
+timeout_seconds = 90

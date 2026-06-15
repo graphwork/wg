@@ -268,19 +268,80 @@ fn read_holder_at(path: &Path) -> Result<Option<LockInfo>> {
 /// loop checks for this marker at each turn boundary and exits
 /// cleanly when it sees it.
 ///
-/// Does nothing if there's no holder. Idempotent — writing the
+/// The marker is **generation-aware**: it records the PID of the
+/// handler the requester wants to release (read from the live lock
+/// file). A freshly-(re)started handler with a different PID treats
+/// such a marker as stale and ignores it — see `release_requested_for`.
+/// Without this, a stale marker left by a previous handoff would make
+/// every successor handler exit immediately at `turns=0` with
+/// `reason=eof`, the exact failure this guards against.
+///
+/// Does nothing meaningful if there's no holder (records target pid 0,
+/// which no live handler will match). Idempotent — writing the
 /// marker twice is fine.
 pub fn request_release(chat_dir: &Path) -> Result<()> {
+    let target = read_holder(chat_dir).ok().flatten().map(|h| h.pid);
+    request_release_for(chat_dir, target.unwrap_or(0))
+}
+
+/// Ask a *specific* handler generation (by PID) to release. The marker
+/// records `target_pid` so only that handler acts on it; a successor
+/// handler with a different PID ignores it as stale.
+pub fn request_release_for(chat_dir: &Path, target_pid: u32) -> Result<()> {
     let marker = SessionLock::release_marker_path(chat_dir);
-    std::fs::write(&marker, format!("{}\n", chrono::Utc::now().to_rfc3339()))
-        .with_context(|| format!("write release marker {:?}", marker))?;
+    std::fs::write(
+        &marker,
+        format!("{}\n{}\n", chrono::Utc::now().to_rfc3339(), target_pid),
+    )
+    .with_context(|| format!("write release marker {:?}", marker))?;
     Ok(())
 }
 
-/// True if a release has been requested for this session. The
-/// running handler polls this at turn boundaries.
+/// The handler PID a pending release marker targets, if any.
+///
+/// Returns:
+///   * `None` — no marker present.
+///   * `Some(0)` — a marker with no recorded target (legacy format or
+///     written when no handler held the lock). No live handler matches
+///     pid 0, so such markers are treated as stale.
+///   * `Some(pid)` — the handler generation the requester wants gone.
+pub fn release_target(chat_dir: &Path) -> Option<u32> {
+    let marker = SessionLock::release_marker_path(chat_dir);
+    let contents = std::fs::read_to_string(&marker).ok()?;
+    // Line 0 is the ISO timestamp; line 1 (if present) is the target pid.
+    let pid = contents
+        .lines()
+        .nth(1)
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    Some(pid)
+}
+
+/// True if a release has been requested for this session, regardless of
+/// which handler generation it targets. Used by external observers
+/// (TUI, `wg session`) that only care whether a request is outstanding.
+/// Running handlers must use `release_requested_for` so a stale marker
+/// from a prior generation does not kill them.
 pub fn release_requested(chat_dir: &Path) -> bool {
     SessionLock::release_marker_path(chat_dir).exists()
+}
+
+/// True iff a release was requested for the handler generation running
+/// as `my_pid`. A marker targeting a *different* (older) PID — or one
+/// with no recorded target — is stale and returns `false`, so a
+/// freshly (re)started handler is never killed by a leftover marker
+/// from a previous handoff. This is the generation-aware check every
+/// live handler should poll at its turn boundary / inbox read.
+pub fn release_requested_for(chat_dir: &Path, my_pid: u32) -> bool {
+    matches!(release_target(chat_dir), Some(pid) if pid == my_pid)
+}
+
+/// True if a marker exists but does NOT target `my_pid` — i.e. it is a
+/// stale request left by a previous handler generation (or an
+/// untargeted legacy marker). The current holder can safely clear such
+/// markers since at most one handler holds the lock at a time.
+pub fn stale_release_marker(chat_dir: &Path, my_pid: u32) -> bool {
+    matches!(release_target(chat_dir), Some(pid) if pid != my_pid)
 }
 
 /// Clear any pending release marker. Called by a handler after it
@@ -476,6 +537,60 @@ mod tests {
         assert!(release_requested(dir.path()));
         clear_release_marker(dir.path());
         assert!(!release_requested(dir.path()));
+    }
+
+    #[test]
+    fn request_release_embeds_live_holder_pid() {
+        let dir = tempdir().unwrap();
+        let _lock = SessionLock::acquire(dir.path(), HandlerKind::ChatNex).unwrap();
+        request_release(dir.path()).unwrap();
+        // The marker should target the live holder (this process).
+        assert_eq!(release_target(dir.path()), Some(std::process::id()));
+        assert!(release_requested_for(dir.path(), std::process::id()));
+    }
+
+    #[test]
+    fn release_request_targets_only_its_generation() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        // A request explicitly aimed at handler generation pid=4242.
+        request_release_for(dir.path(), 4242).unwrap();
+
+        // The targeted generation must observe it.
+        assert!(release_requested_for(dir.path(), 4242));
+        // A DIFFERENT (e.g. freshly respawned) generation must NOT — this is
+        // the core guard against a stale marker killing a successor handler
+        // at turns=0 with reason=eof.
+        assert!(!release_requested_for(dir.path(), 9999));
+        // ...and it is detectable as stale from the successor's view.
+        assert!(stale_release_marker(dir.path(), 9999));
+        assert!(!stale_release_marker(dir.path(), 4242));
+    }
+
+    #[test]
+    fn legacy_untargeted_marker_is_treated_as_stale() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        // Simulate a marker written by the pre-generation-aware code:
+        // a single timestamp line, no target pid.
+        std::fs::write(
+            SessionLock::release_marker_path(dir.path()),
+            "2020-01-01T00:00:00Z\n",
+        )
+        .unwrap();
+        assert_eq!(release_target(dir.path()), Some(0));
+        // No live handler runs as pid 0, so no generation honors it.
+        assert!(!release_requested_for(dir.path(), 1234));
+        assert!(stale_release_marker(dir.path(), 1234));
+    }
+
+    #[test]
+    fn no_marker_has_no_target() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        assert_eq!(release_target(dir.path()), None);
+        assert!(!release_requested_for(dir.path(), 1));
+        assert!(!stale_release_marker(dir.path(), 1));
     }
 
     #[test]

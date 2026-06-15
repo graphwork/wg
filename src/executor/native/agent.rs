@@ -1767,8 +1767,13 @@ impl AgentLoop {
             //    re-exit, record the exit reason, break out.
             //    See docs/design/sessions-as-identity.md §Handoff policy.
             if let (Some(wgd), Some(sref)) = (&self.workgraph_dir, &self.chat_session_ref) {
-                let chat_dir = wgd.join("chat").join(sref);
-                if crate::session_lock::release_requested(&chat_dir) {
+                // Resolve through the session registry so aliases land on
+                // the same UUID dir the requester wrote to (the literal
+                // `chat/<sref>` join split-brains when `sref` is an alias
+                // like `.chat-23`).
+                let chat_dir = crate::chat::chat_dir_for_ref(wgd, sref);
+                let my_pid = std::process::id();
+                if crate::session_lock::release_requested_for(&chat_dir, my_pid) {
                     crate::session_lock::clear_release_marker(&chat_dir);
                     if !self.autonomous {
                         eprintln!(
@@ -1777,6 +1782,11 @@ impl AgentLoop {
                     }
                     session_exit_reason = "release_requested";
                     break;
+                }
+                // Stale marker from a previous generation — clear it so it
+                // doesn't trip a successor, but keep serving this session.
+                if crate::session_lock::stale_release_marker(&chat_dir, my_pid) {
+                    crate::session_lock::clear_release_marker(&chat_dir);
                 }
             }
 

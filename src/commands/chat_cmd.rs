@@ -130,6 +130,42 @@ fn classify_chat_task(
 
 /// Query the running daemon for its supervised chat IDs (if reachable).
 /// Returns empty Vec on failure or when daemon is down.
+/// True when a live handler currently holds the chat's session lock.
+///
+/// `wg chat show`/`list` derive runtime status from the daemon's
+/// supervised-coordinator list, but a handler can be alive (holding the
+/// lock, serving the inbox) before/without appearing in that list — e.g.
+/// a TUI-driven pane or a just-(re)spawned handler. Consulting the lock
+/// directly keeps `wg chat show` honest: if there's a live handler, the
+/// chat is running, not "stopped". Acceptance criterion for
+/// fix-nex-chat23-eof-resume: show/status must agree on a live handler.
+fn chat_handler_is_live(dir: &Path, cid: u32) -> bool {
+    // Use the dot-less session ref the handler runs under, not the
+    // `.chat-N` task id — only the former resolves to the UUID dir where
+    // the lock actually lives.
+    let chat_ref = chat_id::format_chat_session_ref(cid);
+    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+    workgraph::session_lock::read_holder(&chat_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|info| info.alive)
+}
+
+/// Promote a `Stopped` classification to `Supervised` when a live handler
+/// actually holds the lock. Leaves every other status untouched (an
+/// archived/deleted/dormant chat stays as classified).
+fn refine_status_with_live_handler(
+    status: ChatRuntimeStatus,
+    dir: &Path,
+    cid: u32,
+) -> ChatRuntimeStatus {
+    if matches!(status, ChatRuntimeStatus::Stopped) && chat_handler_is_live(dir, cid) {
+        ChatRuntimeStatus::Supervised
+    } else {
+        status
+    }
+}
+
 fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
     if !service_is_running(dir) {
         return Vec::new();
@@ -305,6 +341,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
             None => continue,
         };
         let status = classify_chat_task(task, daemon_running, &supervised);
+        let status = refine_status_with_live_handler(status, dir, cid);
         rows.push((cid, task, status));
     }
     rows.sort_by_key(|(cid, _, _)| *cid);
@@ -372,6 +409,7 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let daemon_running = service_is_running(dir);
     let supervised = supervised_chat_ids(dir);
     let status = classify_chat_task(task, daemon_running, &supervised);
+    let status = refine_status_with_live_handler(status, dir, cid);
 
     // Per-chat overrides from CoordinatorState.
     let coord_state = crate::commands::service::CoordinatorState::load_for(dir, cid);
@@ -379,6 +417,17 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .as_ref()
         .and_then(|s| s.executor_override.clone());
     let model_override = coord_state.as_ref().and_then(|s| s.model_override.clone());
+
+    // Live handler (session-lock holder), if any. Reported so `wg chat
+    // show` agrees with `wg session status` — both must reflect a live
+    // handler after launch/resume. Resolve via the dot-less session ref
+    // (the handler's actual lock dir), not the `.chat-N` task id.
+    let chat_ref = chat_id::format_chat_session_ref(cid);
+    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+    let handler = workgraph::session_lock::read_holder(&chat_dir)
+        .ok()
+        .flatten()
+        .filter(|info| info.alive);
 
     if json {
         let v = serde_json::json!({
@@ -390,6 +439,11 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
             "service_running": daemon_running,
             "executor": exec_override,
             "model": model_override,
+            "handler": handler.as_ref().map(|info| serde_json::json!({
+                "pid": info.pid,
+                "kind": info.kind.map(|k| k.label()),
+                "started_at": info.started_at,
+            })),
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -410,6 +464,14 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         "  service  : {}",
         if daemon_running { "running" } else { "stopped" }
     );
+    match &handler {
+        Some(info) => println!(
+            "  handler  : live pid={} kind={}",
+            info.pid,
+            info.kind.map(|k| k.label()).unwrap_or("unknown")
+        ),
+        None => println!("  handler  : none"),
+    }
     Ok(())
 }
 
@@ -481,6 +543,48 @@ pub fn run_stop(dir: &Path, reference: &str, json: bool) -> Result<()> {
     crate::commands::service::run_stop_coordinator(dir, cid, json)
 }
 
+/// Reconstruct the `(executor, model)` a chat should resume with from
+/// its saved metadata, mirroring the precedence `wg chat show` uses:
+///
+///   * executor: per-chat `CoordinatorState.executor_override`, falling
+///     back to the chat task's `executor_preset_name` (e.g. `nex`).
+///   * model:    per-chat `CoordinatorState.model_override`, falling
+///     back to the chat task's own `task.model`.
+///
+/// Either field may be `None` if nothing was ever recorded; callers
+/// must ensure at least one is `Some` before sending the swap IPC.
+/// Deriving the executor from the preset guarantees a non-empty result
+/// even for a chat created with `--exec nex` and no explicit model, so
+/// `wg chat resume <id>` never falls through to the hidden-flags error.
+/// Returning the saved values means resume reproduces the exact
+/// (executor, model) the chat last ran with — no hidden flags.
+pub(crate) fn reconstruct_resume_metadata(
+    dir: &Path,
+    cid: u32,
+) -> (Option<String>, Option<String>) {
+    let coord_state = crate::commands::service::CoordinatorState::load_for(dir, cid);
+    let mut executor = coord_state
+        .as_ref()
+        .and_then(|s| s.executor_override.clone());
+    let mut model = coord_state.as_ref().and_then(|s| s.model_override.clone());
+
+    // Fall back to the chat task's own model/preset when no per-chat
+    // override is recorded (the common case for TUI-created chats, whose
+    // model lives on the `.chat-N` task).
+    if (model.is_none() || executor.is_none())
+        && let Ok(graph) = workgraph::parser::load_graph(&graph_path(dir))
+        && let Some(task) = chat_id::find_chat_task(&graph, cid)
+    {
+        if model.is_none() {
+            model = task.model.clone();
+        }
+        if executor.is_none() {
+            executor = task.executor_preset_name.clone();
+        }
+    }
+    (executor, model)
+}
+
 /// `wg chat resume` — ask the supervisor to (re)spawn the handler.
 /// Requires the daemon. Errors clearly when down.
 pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
@@ -497,19 +601,24 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
             cid
         );
     }
-    // The supervisor lazy-spawns the handler on the next message — sending an
-    // empty marker via SetChatExecutor with no overrides is a no-op that
-    // reaches the daemon; for now, rely on the lazy-spawn path triggered by
-    // any subsequent UserChat IPC. To force a respawn now, we use the
-    // existing executor swap path with current settings.
+    // Resume re-spawns the handler using the chat's *saved* executor /
+    // model metadata (per-chat CoordinatorState override, falling back to
+    // the chat task's own model). The respawn path is the executor-swap
+    // IPC (`SetChatExecutor`), which requires at least one of
+    // executor/model — passing `None, None` made `wg chat resume` fail
+    // with "at least one of --executor or --model must be provided" even
+    // though the metadata was on disk. We reconstruct it here so the user
+    // never has to supply the (non-existent) flags. See
+    // `reconstruct_resume_metadata`.
+    let (executor, model) = reconstruct_resume_metadata(dir, cid);
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::send_request;
     let resp = send_request(
         dir,
         &IpcRequest::SetChatExecutor {
             chat_id: cid,
-            executor: None,
-            model: None,
+            executor,
+            model,
         },
     )?;
     if !resp.ok {
@@ -894,6 +1003,88 @@ mod tests {
             "Resume error should explain service is down: {}",
             msg
         );
+    }
+
+    #[test]
+    fn resume_metadata_falls_back_to_chat_task_model() {
+        // No CoordinatorState on disk — the model must be reconstructed
+        // from the chat task itself (the common TUI-created-chat case).
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-23".to_string(),
+            title: "Chat 23".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
+            model: Some("openrouter:minimax/minimax-m3".to_string()),
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+
+        let (executor, model) = reconstruct_resume_metadata(dir, 23);
+        assert_eq!(executor, None);
+        assert_eq!(model.as_deref(), Some("openrouter:minimax/minimax-m3"));
+        // The reconstructed pair is non-empty, so the SetChatExecutor IPC
+        // will NOT hit the "at least one of --executor or --model" error.
+        assert!(
+            executor.is_some() || model.is_some(),
+            "resume must supply saved metadata so the swap IPC is accepted"
+        );
+    }
+
+    #[test]
+    fn resume_metadata_derives_executor_from_preset_when_no_model() {
+        // A chat created with `--exec nex` and no explicit model: the model
+        // is absent everywhere, but the executor preset is recorded on the
+        // task. Resume must still yield a non-empty pair so the swap IPC is
+        // accepted (otherwise it falls through to the hidden-flags error).
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-3".to_string(),
+            title: "Chat 3".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
+            executor_preset_name: Some("nex".to_string()),
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+
+        let (executor, model) = reconstruct_resume_metadata(dir, 3);
+        assert_eq!(executor.as_deref(), Some("nex"));
+        assert_eq!(model, None);
+        assert!(
+            executor.is_some() || model.is_some(),
+            "resume must supply at least the executor preset"
+        );
+    }
+
+    #[test]
+    fn resume_metadata_prefers_coordinator_state_overrides() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-7".to_string(),
+            title: "Chat 7".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
+            model: Some("nex:qwen3-coder".to_string()),
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+
+        // A per-chat hot-swap was persisted to CoordinatorState — it wins.
+        let mut state = crate::commands::service::CoordinatorState::load_or_default_for(dir, 7);
+        state.executor_override = Some("native".to_string());
+        state.model_override = Some("openrouter:anthropic/claude-opus-4-7".to_string());
+        state.save_for(dir, 7);
+
+        let (executor, model) = reconstruct_resume_metadata(dir, 7);
+        assert_eq!(executor.as_deref(), Some("native"));
+        assert_eq!(model.as_deref(), Some("openrouter:anthropic/claude-opus-4-7"));
     }
 
     #[test]
