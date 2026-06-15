@@ -1216,6 +1216,43 @@ pub struct EndpointSuggestion {
     pub is_default: bool,
 }
 
+impl EndpointSuggestion {
+    /// The synthetic "blank = OpenRouter default" option offered for
+    /// OpenRouter-routed nex models (nex-openrouter-default-ui). It carries
+    /// an empty `name` so accepting it leaves the endpoint field blank —
+    /// which `resolved_launch_args` / `build_nex_chat_pty_args` translate
+    /// into "no `-e` flag, route to OpenRouter". It is identified by its
+    /// empty name (a real configured endpoint always has a name).
+    pub fn openrouter_default() -> Self {
+        EndpointSuggestion {
+            name: String::new(),
+            url: None,
+            provider: "openrouter".to_string(),
+            is_default: false,
+        }
+    }
+
+    /// True for the synthetic OpenRouter-default option (blank name). Real
+    /// configured endpoints always have a non-empty name, so a blank name
+    /// unambiguously marks the synthetic "no endpoint / OpenRouter" row.
+    pub fn is_openrouter_default(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    /// Primary label shown in the endpoint dropdown. Normally the configured
+    /// `name`; for the synthetic OpenRouter-default option (blank name) it
+    /// renders a friendly, self-explanatory label so the "leave blank to use
+    /// OpenRouter" path is an obvious, selectable choice rather than an empty
+    /// row.
+    pub fn display_name(&self) -> String {
+        if self.is_openrouter_default() {
+            "OpenRouter (default — leave endpoint blank)".to_string()
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
 /// Build the endpoint-autocomplete suggestion list from the effective WG
 /// config. Preserves config order; the default endpoint (if any) is
 /// surfaced via [`EndpointSuggestion::is_default`] so the launcher can
@@ -1232,6 +1269,39 @@ pub fn build_endpoint_suggestions(config: &Config) -> Vec<EndpointSuggestion> {
             is_default: ep.is_default,
         })
         .collect()
+}
+
+/// Build endpoint suggestions for the launcher picker, unioning the
+/// effective (merged) config's endpoints with the *global* config's
+/// endpoints so globally-configured endpoint names are always selectable —
+/// even when the project's local config has not opted into global endpoint
+/// inheritance (`[llm_endpoints] inherit_global`, opt-in by default; see
+/// `apply_endpoint_inheritance_policy`). Without this, an endpoint declared
+/// only in `~/.wg/config.toml` would never appear in the new-chat picker
+/// for a project that declares its own (or no) endpoints.
+///
+/// Project-local / effective entries take precedence: they appear first and
+/// suppress any global entry that shares their `name`, so a locally
+/// overridden endpoint keeps its local URL/provider/default flag.
+pub fn build_endpoint_suggestions_with_global(
+    effective: &Config,
+    global: Option<&Config>,
+) -> Vec<EndpointSuggestion> {
+    let mut out = build_endpoint_suggestions(effective);
+    let mut seen: HashSet<String> = out.iter().map(|s| s.name.clone()).collect();
+    if let Some(g) = global {
+        for ep in &g.llm_endpoints.endpoints {
+            if seen.insert(ep.name.clone()) {
+                out.push(EndpointSuggestion {
+                    name: ep.name.clone(),
+                    url: ep.url.clone(),
+                    provider: ep.provider.clone(),
+                    is_default: ep.is_default,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// One model suggestion offered by the Add-new Model field's fuzzy
@@ -1820,6 +1890,28 @@ impl LauncherState {
         self.add_executor_choice().label == "nex"
     }
 
+    /// True when the Add-new Model field currently resolves to an OpenRouter
+    /// route — either a bare `vendor/model` slug (e.g. `minimax/minimax-m3`)
+    /// or an explicit `openrouter:` spec. For such models the endpoint is
+    /// OPTIONAL: a blank endpoint intentionally defaults to OpenRouter
+    /// (nex-optional-openrouter-endpoint), so the launcher must NOT present
+    /// the endpoint as "required" and SHOULD offer "blank = OpenRouter" as a
+    /// first-class, selectable option (nex-openrouter-default-ui).
+    ///
+    /// Only meaningful for the `nex` executor; mirrors the normalization in
+    /// [`build_nex_chat_pty_args`] so the UI copy matches the launched argv.
+    pub fn add_model_routes_to_openrouter(&self) -> bool {
+        if !self.add_new_show_endpoint() {
+            return false;
+        }
+        let m = self.add_model.trim();
+        if m.is_empty() {
+            return false;
+        }
+        let normalized = workgraph::config::normalize_bare_openrouter_route(m);
+        workgraph::config::model_is_openrouter(&normalized)
+    }
+
     /// True when the current endpoint text is a raw `http(s)://` URL the
     /// user is typing directly. In that state autocomplete steps aside
     /// entirely — no suggestions are shown and accept is a no-op — so a
@@ -1841,20 +1933,34 @@ impl LauncherState {
             return Vec::new();
         }
         let q = self.add_endpoint.trim().to_lowercase();
-        self.endpoint_suggestions
-            .iter()
-            .filter(|s| {
-                if q.is_empty() {
-                    return true;
-                }
-                s.name.to_lowercase().contains(&q)
-                    || s.url
-                        .as_deref()
-                        .is_some_and(|u| u.to_lowercase().contains(&q))
-                    || s.provider.to_lowercase().contains(&q)
-            })
-            .cloned()
-            .collect()
+        let mut out: Vec<EndpointSuggestion> = Vec::new();
+        // First-class "blank = OpenRouter default" option for OpenRouter-routed
+        // nex models (nex-openrouter-default-ui). Sits at the top of the list so
+        // it is preselected on first focus; accepting it leaves the endpoint
+        // blank (its name is empty), which routes to OpenRouter with no `-e`.
+        // Surfaced only when the query is empty or matches "openrouter"/"default"
+        // so a specific endpoint search still narrows the list.
+        if self.add_model_routes_to_openrouter()
+            && (q.is_empty() || "openrouter default".contains(&q))
+        {
+            out.push(EndpointSuggestion::openrouter_default());
+        }
+        out.extend(
+            self.endpoint_suggestions
+                .iter()
+                .filter(|s| {
+                    if q.is_empty() {
+                        return true;
+                    }
+                    s.name.to_lowercase().contains(&q)
+                        || s.url
+                            .as_deref()
+                            .is_some_and(|u| u.to_lowercase().contains(&q))
+                        || s.provider.to_lowercase().contains(&q)
+                })
+                .cloned(),
+        );
+        out
     }
 
     /// The currently-highlighted endpoint suggestion, clamping the stored
@@ -1910,6 +2016,14 @@ impl LauncherState {
     /// is first focused. Leaves the typed text untouched — preselection
     /// is highlight-only; nothing is written until the user accepts.
     pub fn preselect_default_endpoint(&mut self) {
+        // For OpenRouter-routed models the synthetic "blank = OpenRouter"
+        // option is prepended at the top of the filtered list, so highlight
+        // it (index 0) — keeping it selected launches against OpenRouter with
+        // no endpoint, the intended default (nex-openrouter-default-ui).
+        if self.add_model_routes_to_openrouter() {
+            self.endpoint_suggestion_selected = 0;
+            return;
+        }
         let default_idx = self
             .endpoint_suggestions
             .iter()
@@ -2064,6 +2178,21 @@ impl LauncherState {
             }
             (LauncherMode::AddNew, _) => LauncherSection::AddNew(AddNewField::Executor),
         };
+        self.preselect_on_endpoint_focus();
+    }
+
+    /// When focus has just landed on the nex Endpoint field, highlight the
+    /// most sensible default suggestion: the synthetic "blank = OpenRouter"
+    /// row for an OpenRouter-routed model, or the configured default endpoint
+    /// otherwise (nex-openrouter-default-ui). No-op for any other field, so
+    /// it's safe to call unconditionally at the tail of section navigation.
+    fn preselect_on_endpoint_focus(&mut self) {
+        if matches!(
+            self.active_section,
+            LauncherSection::AddNew(AddNewField::Endpoint)
+        ) {
+            self.preselect_default_endpoint();
+        }
     }
 
     /// Cycle to the previous form field — inverse of `next_section`.
@@ -2090,6 +2219,7 @@ impl LauncherState {
             }
             (LauncherMode::AddNew, _) => LauncherSection::AddNew(AddNewField::Executor),
         };
+        self.preselect_on_endpoint_focus();
     }
 
     /// Resolve the (executor, model, endpoint) tuple that Launch will
@@ -15287,7 +15417,13 @@ impl VizApp {
             return;
         }
 
-        let endpoint_suggestions = build_endpoint_suggestions(&config);
+        // Union the effective (merged) endpoints with the *global* config's
+        // endpoints so globally-configured endpoint names are selectable in the
+        // picker even when this project hasn't opted into global endpoint
+        // inheritance (nex-openrouter-default-ui). Project-local entries win.
+        let global_config = Config::load_global().ok().flatten();
+        let endpoint_suggestions =
+            build_endpoint_suggestions_with_global(&config, global_config.as_ref());
         // Preselect the default endpoint up front so it is already
         // highlighted if/when the user reaches the nex Endpoint field.
         let endpoint_suggestion_selected = endpoint_suggestions
@@ -26935,7 +27071,7 @@ mod launcher_redesign_tests {
 mod launcher_endpoint_autocomplete_tests {
     use super::{
         AddNewField, EndpointSuggestion, LauncherMode, LauncherSection, LauncherState,
-        build_endpoint_suggestions,
+        build_endpoint_suggestions, build_endpoint_suggestions_with_global,
     };
     use workgraph::config::{Config, EndpointConfig};
 
@@ -27152,6 +27288,181 @@ mod launcher_endpoint_autocomplete_tests {
         state.add_endpoint = "local".into();
         let hi = state.highlighted_endpoint_suggestion().unwrap();
         assert_eq!(hi.name, "local");
+    }
+
+    // ── Global endpoint union (nex-openrouter-default-ui) ──────────────────
+
+    #[test]
+    fn with_global_unions_local_and_global_endpoints() {
+        let local =
+            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", false)]);
+        let global =
+            config_with_endpoints(vec![endpoint_cfg("global-lambda", "http://b", "openrouter", true)]);
+        let sug = build_endpoint_suggestions_with_global(&local, Some(&global));
+        assert_eq!(sug.len(), 2, "both local and global endpoints surface");
+        assert_eq!(sug[0].name, "local", "local entries come first");
+        assert_eq!(sug[1].name, "global-lambda", "global names are appended");
+    }
+
+    #[test]
+    fn with_global_local_wins_on_name_collision() {
+        // Same name in both: the local (effective) entry must win and the
+        // global duplicate must be suppressed.
+        let local = config_with_endpoints(vec![endpoint_cfg(
+            "shared",
+            "http://local-url",
+            "local",
+            false,
+        )]);
+        let global = config_with_endpoints(vec![endpoint_cfg(
+            "shared",
+            "http://global-url",
+            "openrouter",
+            true,
+        )]);
+        let sug = build_endpoint_suggestions_with_global(&local, Some(&global));
+        assert_eq!(sug.len(), 1, "the duplicate name is deduped");
+        assert_eq!(sug[0].url.as_deref(), Some("http://local-url"));
+        assert_eq!(sug[0].provider, "local");
+    }
+
+    #[test]
+    fn with_global_none_is_just_local() {
+        let local =
+            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", true)]);
+        let sug = build_endpoint_suggestions_with_global(&local, None);
+        assert_eq!(sug, build_endpoint_suggestions(&local));
+    }
+
+    #[test]
+    fn with_global_surfaces_global_when_local_has_none() {
+        // The opt-in-inheritance case the fix targets: local declares no
+        // endpoints (so the merged config dropped global ones), yet the picker
+        // must still surface globally-configured names.
+        let local = Config::default();
+        let global = config_with_endpoints(vec![
+            endpoint_cfg("g1", "http://g1", "openrouter", false),
+            endpoint_cfg("g2", "http://g2", "local", true),
+        ]);
+        let sug = build_endpoint_suggestions_with_global(&local, Some(&global));
+        let names: Vec<&str> = sug.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["g1", "g2"]);
+    }
+
+    // ── OpenRouter-default synthetic option (nex-openrouter-default-ui) ─────
+
+    #[test]
+    fn add_model_routes_to_openrouter_detects_routes() {
+        let mut state = nex_state(vec![]);
+        // bare vendor/model slug → OpenRouter route
+        state.add_model = "minimax/minimax-m3".into();
+        assert!(state.add_model_routes_to_openrouter());
+        // explicit openrouter: prefix
+        state.add_model = "openrouter:anthropic/claude-opus-4-7".into();
+        assert!(state.add_model_routes_to_openrouter());
+        // bare local name → NOT openrouter
+        state.add_model = "qwen3-coder".into();
+        assert!(!state.add_model_routes_to_openrouter());
+        // claude family bare name → NOT openrouter
+        state.add_model = "opus".into();
+        assert!(!state.add_model_routes_to_openrouter());
+        // empty → NOT openrouter
+        state.add_model = "".into();
+        assert!(!state.add_model_routes_to_openrouter());
+        // non-nex executor → never openrouter-default (no endpoint field)
+        state.add_model = "minimax/minimax-m3".into();
+        state.add_executor_idx = 0; // claude
+        assert!(!state.add_model_routes_to_openrouter());
+    }
+
+    #[test]
+    fn openrouter_model_prepends_synthetic_default_option() {
+        let mut state = nex_state(vec![ep("lambda", Some("http://b"), "openrouter", true)]);
+        state.add_model = "minimax/minimax-m3".into();
+        let f = state.filtered_endpoint_suggestions();
+        assert_eq!(f.len(), 2, "synthetic OpenRouter row + configured endpoint");
+        assert!(
+            f[0].is_openrouter_default(),
+            "the synthetic OpenRouter-default option is first"
+        );
+        assert!(f[0].name.is_empty(), "synthetic option has a blank name");
+        assert!(
+            f[0].display_name().contains("OpenRouter"),
+            "synthetic option renders a friendly OpenRouter label"
+        );
+        assert_eq!(f[1].name, "lambda");
+    }
+
+    #[test]
+    fn local_model_has_no_synthetic_default_option() {
+        let mut state = nex_state(vec![ep("local", Some("http://a"), "local", true)]);
+        state.add_model = "qwen3-coder".into();
+        let f = state.filtered_endpoint_suggestions();
+        assert_eq!(f.len(), 1);
+        assert!(
+            !f[0].is_openrouter_default(),
+            "local nex model must NOT get an OpenRouter-default row"
+        );
+        assert_eq!(f[0].name, "local");
+    }
+
+    #[test]
+    fn synthetic_default_filtered_out_by_specific_query() {
+        let mut state = nex_state(vec![ep("lambda", Some("http://b"), "openrouter", true)]);
+        state.add_model = "minimax/minimax-m3".into();
+        // Typing a specific endpoint name narrows past the synthetic row.
+        state.add_endpoint = "lambda".into();
+        let f = state.filtered_endpoint_suggestions();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].name, "lambda");
+    }
+
+    #[test]
+    fn accept_openrouter_default_leaves_endpoint_blank() {
+        let mut state = nex_state(vec![ep("lambda", Some("http://b"), "openrouter", true)]);
+        state.add_model = "minimax/minimax-m3".into();
+        // Synthetic option is preselected at index 0.
+        state.preselect_default_endpoint();
+        assert_eq!(state.endpoint_suggestion_selected, 0);
+        assert!(state.accept_endpoint_suggestion());
+        assert!(
+            state.add_endpoint.is_empty(),
+            "accepting the OpenRouter-default option keeps the endpoint blank"
+        );
+        // Resolves to native + the OpenRouter model with NO endpoint.
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "native");
+        assert_eq!(model.as_deref(), Some("minimax/minimax-m3"));
+        assert!(endpoint.is_none(), "blank endpoint → route to OpenRouter");
+    }
+
+    #[test]
+    fn preselect_highlights_openrouter_default_for_or_model() {
+        // Even with a configured is_default endpoint present, an OpenRouter
+        // model preselects the synthetic blank/OpenRouter option at the top.
+        let mut state = nex_state(vec![
+            ep("local", Some("http://a"), "local", false),
+            ep("lambda", Some("http://b"), "openrouter", true),
+        ]);
+        state.add_model = "minimax/minimax-m3".into();
+        state.preselect_default_endpoint();
+        assert_eq!(state.endpoint_suggestion_selected, 0);
+        let hi = state.highlighted_endpoint_suggestion().unwrap();
+        assert!(hi.is_openrouter_default());
+    }
+
+    #[test]
+    fn named_endpoint_still_selectable_for_openrouter_model() {
+        // Requirement 4: selecting a configured endpoint NAME still passes it
+        // verbatim, even when the synthetic OpenRouter-default row is present.
+        let mut state = nex_state(vec![ep("lambda", Some("http://b"), "openrouter", true)]);
+        state.add_model = "minimax/minimax-m3".into();
+        // index 0 = synthetic, index 1 = "lambda"
+        state.endpoint_suggestion_selected = 1;
+        assert!(state.accept_endpoint_suggestion());
+        assert_eq!(state.add_endpoint, "lambda");
+        let (_e, _m, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(endpoint.as_deref(), Some("lambda"));
     }
 }
 

@@ -6921,6 +6921,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         add_model,
         add_endpoint,
         show_endpoint,
+        model_routes_openrouter,
         endpoint_suggestions,
         endpoint_suggestion_selected,
         model_suggestions,
@@ -6938,6 +6939,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.add_model.clone(),
             l.add_endpoint.clone(),
             l.add_new_show_endpoint(),
+            l.add_model_routes_to_openrouter(),
             l.filtered_endpoint_suggestions(),
             l.endpoint_suggestion_selected,
             l.filtered_model_suggestions(),
@@ -7244,10 +7246,16 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 };
                 let mut ep_spans: Vec<Span> =
                     vec![Span::styled(ep_prefix.to_string(), ep_label_style)];
-                // Placeholder hints at autocomplete when endpoints are
-                // configured, but always allows a raw URL.
-                let ep_placeholder = if endpoint_suggestions.is_empty() {
-                    "(URL — required for nex)"
+                // Placeholder copy depends on whether the typed model routes to
+                // OpenRouter (nex-openrouter-default-ui): for an OpenRouter model
+                // the endpoint is OPTIONAL — blank intentionally defaults to
+                // OpenRouter — so we must NOT claim it is "required for nex".
+                // Non-OpenRouter (local / oai-compat) nex models still need an
+                // explicit endpoint, so that copy is preserved for them.
+                let ep_placeholder = if model_routes_openrouter {
+                    "(blank = OpenRouter \u{2014} \u{2191}\u{2193} pick, Tab accept)"
+                } else if endpoint_suggestions.is_empty() {
+                    "(URL — required for local nex models)"
                 } else {
                     "(name or URL — \u{2191}\u{2193} pick, Tab accept)"
                 };
@@ -7322,7 +7330,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                         };
                         let mut row: Vec<Span> = vec![
                             Span::styled(format!("        {} ", bullet), name_style),
-                            Span::styled(sug.name.clone(), name_style),
+                            Span::styled(sug.display_name(), name_style),
                         ];
                         // Default marker comes first (right after the name)
                         // so it stays visible even when a long URL would
@@ -16030,6 +16038,95 @@ mod tests {
         assert!(
             !render.contains("local-gpu"),
             "suggestions must be suppressed while typing a raw URL.\n{render}"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // OpenRouter-default endpoint UX (nex-openrouter-default-ui)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// For an OpenRouter-routed nex model the Endpoint field must NOT claim the
+    /// endpoint is "required for nex" — blank intentionally defaults to
+    /// OpenRouter. The acceptance criterion: the modal no longer shows
+    /// "Endpoint: (URL — required for nex)" for the OpenRouter-default path.
+    #[test]
+    fn launcher_endpoint_not_required_for_openrouter_nex_model() {
+        let (viz, _) = build_hud_test_graph();
+        // nex (idx 3), Endpoint focused, NO configured endpoints.
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, Vec::new());
+        launcher.add_model = "minimax/minimax-m3".into(); // OpenRouter route
+        app.launcher = Some(launcher);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            !render.contains("required for nex"),
+            "OpenRouter-routed nex model must NOT show 'required for nex'.\n{render}"
+        );
+        assert!(
+            render.contains("OpenRouter"),
+            "the Endpoint UI must surface the OpenRouter default option.\n{render}"
+        );
+    }
+
+    /// The synthetic "blank = OpenRouter default" row is a first-class,
+    /// selectable option in the endpoint dropdown for an OpenRouter nex model,
+    /// even when no endpoints are configured.
+    #[test]
+    fn launcher_openrouter_default_is_selectable_option() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, Vec::new());
+        launcher.add_model = "openrouter:minimax/minimax-m3".into();
+        app.launcher = Some(launcher);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("OpenRouter (default"),
+            "endpoint dropdown must list the synthetic OpenRouter-default row.\n{render}"
+        );
+    }
+
+    /// A non-OpenRouter (local) nex model still needs an explicit endpoint, so
+    /// the field keeps clear "required" copy and does NOT advertise an
+    /// OpenRouter default.
+    #[test]
+    fn launcher_endpoint_required_for_local_nex_model() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        // nex, Model focused so the inactive Endpoint field shows its
+        // placeholder; bare local model (no slash, no provider prefix).
+        let mut launcher = launcher_addnew(3, EpAddNewField::Model, Vec::new());
+        launcher.add_model = "qwen3-coder".into();
+        app.launcher = Some(launcher);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("required for local nex models"),
+            "local nex model must keep 'required' endpoint copy.\n{render}"
+        );
+        assert!(
+            !render.contains("blank = OpenRouter"),
+            "local nex model must NOT advertise an OpenRouter default.\n{render}"
+        );
+    }
+
+    /// Globally-configured endpoint NAMES (unioned into the suggestion list by
+    /// `build_endpoint_suggestions_with_global`) must render selectably in the
+    /// picker just like project-local ones. The union itself is unit-tested in
+    /// state.rs; here we prove the dropdown renders every supplied name.
+    #[test]
+    fn launcher_lists_global_endpoint_names() {
+        let (viz, _) = build_hud_test_graph();
+        let suggestions = vec![
+            ep_suggestion("project-local", "http://127.0.0.1:8088", "local", false),
+            ep_suggestion("global-lambda", "https://lambda01:30000", "openrouter", false),
+        ];
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, suggestions);
+        launcher.add_model = "qwen3-coder".into(); // local model: no synthetic row
+        app.launcher = Some(launcher);
+        let render = render_launcher_to_string(&mut app);
+        assert!(
+            render.contains("project-local") && render.contains("global-lambda"),
+            "endpoint dropdown must list BOTH local and global endpoint names.\n{render}"
         );
     }
 

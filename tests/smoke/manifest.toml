@@ -355,8 +355,18 @@ name = "tui_plus_nex_openrouter_no_endpoint"
 script = "scenarios/tui_plus_nex_openrouter_no_endpoint.sh"
 owners = [
     "nex-optional-openrouter-endpoint",
+    "nex-openrouter-default-ui",
 ]
-description = "nex-optional-openrouter-endpoint 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex, types the OpenRouter route `minimax/minimax-m3` in the Model field, and LAUNCHES with Enter WITHOUT ever touching the Endpoint field — proving the endpoint is optional for OpenRouter nex models. Seeds a DECOY local is_default endpoint (`local-decoy`) plus a decoy recent launcher-history combo so any silent fallback to the local/default endpoint would be caught. Asserts the launched .chat-1 graph row + CoordinatorState route to OpenRouter (executor_preset_name=nex / executor_override=native, model resolves to `openrouter:minimax/minimax-m3`), the endpoint is blank/absent (no endpoint_override), and command_argv is exactly [\"wg\",\"nex\",\"-m\",\"openrouter:minimax/minimax-m3\"] — an explicit OpenRouter route with NO -e/--endpoint flag and no leaked local-default token. Credential-free (asserts persisted metadata only; OpenRouter never has to be reachable). Complements tui_plus_nex_endpoint_autocomplete.sh (named-endpoint path) and tui_plus_nex_chat.sh (raw-URL path)."
+description = "nex-optional-openrouter-endpoint 2026-06-14: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex, types the OpenRouter route `minimax/minimax-m3` in the Model field, and LAUNCHES with Enter WITHOUT ever touching the Endpoint field — proving the endpoint is optional for OpenRouter nex models. Seeds a DECOY local is_default endpoint (`local-decoy`) plus a decoy recent launcher-history combo so any silent fallback to the local/default endpoint would be caught. Asserts the launched .chat-1 graph row + CoordinatorState route to OpenRouter (executor_preset_name=nex / executor_override=native, model resolves to `openrouter:minimax/minimax-m3`), the endpoint is blank/absent (no endpoint_override), and command_argv is exactly [\"wg\",\"nex\",\"-m\",\"openrouter:minimax/minimax-m3\"] — an explicit OpenRouter route with NO -e/--endpoint flag and no leaked local-default token. Credential-free (asserts persisted metadata only; OpenRouter never has to be reachable). Also owned by nex-openrouter-default-ui: the same blank/OpenRouter-default launch path whose endpoint copy that task fixed (no longer 'required for nex'). Complements tui_plus_nex_endpoint_autocomplete.sh (named-endpoint path) and tui_plus_nex_chat.sh (raw-URL path)."
+timeout_seconds = 120
+
+[[scenario]]
+name = "tui_plus_nex_global_endpoint_picker"
+script = "scenarios/tui_plus_nex_global_endpoint_picker.sh"
+owners = [
+    "nex-openrouter-default-ui",
+]
+description = "nex-openrouter-default-ui 2026-06-15: drives the real wg tui '+' new-chat menu in tmux from a PTY-focused chat, selects nex, and proves the Endpoint picker surfaces GLOBALLY-configured endpoint names (union of global + project-local endpoints) even when the project declares its OWN local endpoints and has not opted into global endpoint inheritance. Configures a LOCAL is_default endpoint (`local-only`) AND a GLOBAL-only endpoint (`global-router`, added via `wg endpoints add --global`), verifies the global name is written ONLY to the global config (not the local project config), then Tabs to the Endpoint field and asserts the dropdown lists BOTH names. Filters by `global`, Enter ACCEPTS the highlighted global name + launches. Asserts the launched .chat-1 graph row + CoordinatorState carry endpoint=`global-router` (the accepted GLOBAL name, NOT the local default) with command_argv [\"wg\",\"nex\",\"-m\",\"qwen3-coder\",\"-e\",\"global-router\"] and endpoint_override=global-router. Credential-free (asserts persisted metadata only; the endpoint never has to be reachable)."
 timeout_seconds = 120
 
 [[scenario]]
