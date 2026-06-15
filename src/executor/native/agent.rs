@@ -880,7 +880,10 @@ impl AgentLoop {
         // derived from the output_log's parent. If output_log has no parent
         // (unusual), channeling is disabled and outputs pass through.
         let tool_output_channeler = output_log.parent().map(|agent_dir| {
-            super::channel::ToolOutputChanneler::new(agent_dir.join("tool-outputs"))
+            super::channel::ToolOutputChanneler::for_context_window(
+                agent_dir.join("tool-outputs"),
+                client.context_window(),
+            )
         });
 
         Self {
@@ -3136,7 +3139,9 @@ impl AgentLoop {
                         // Channel oversized outputs to disk before they
                         // enter the message vec (L1).
                         let channeled_content = match &self.tool_output_channeler {
-                            Some(c) => c.maybe_channel(name, &output.content),
+                            Some(c) => {
+                                c.maybe_channel_with_input(name, Some(input), &output.content)
+                            }
                             None => output.content.clone(),
                         };
 

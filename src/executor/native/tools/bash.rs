@@ -9,7 +9,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use super::{Tool, ToolOutput, ToolStreamCallback, truncate_for_tool};
+use super::{Tool, ToolOutput, ToolStreamCallback};
 use crate::executor::native::client::ToolDefinition;
 
 const DEFAULT_TIMEOUT_MS: u64 = 300_000; // 5 minutes
@@ -99,17 +99,14 @@ impl Tool for BashTool {
                     if result.is_empty() {
                         ToolOutput::success("(no output)".to_string())
                     } else {
-                        ToolOutput::success(truncate_for_tool(&result, "bash"))
+                        ToolOutput::success(result)
                     }
                 } else {
                     let code = output.status.code().unwrap_or(-1);
                     if result.is_empty() {
                         ToolOutput::error(format!("Command exited with code {}", code))
                     } else {
-                        ToolOutput::error(truncate_for_tool(
-                            &format!("Exit code: {}\n{}", code, result),
-                            "bash",
-                        ))
+                        ToolOutput::error(format!("Exit code: {}\n{}", code, result))
                     }
                 }
             }
@@ -194,17 +191,14 @@ impl Tool for BashTool {
                                 if accumulated.is_empty() {
                                     ToolOutput::success("(no output)".to_string())
                                 } else {
-                                    ToolOutput::success(truncate_for_tool(&accumulated, "bash"))
+                                    ToolOutput::success(accumulated)
                                 }
                             } else {
                                 let code = exit_status.code().unwrap_or(-1);
                                 if accumulated.is_empty() {
                                     ToolOutput::error(format!("Command exited with code {}", code))
                                 } else {
-                                    ToolOutput::error(truncate_for_tool(
-                                        &format!("Exit code: {}\n{}", code, accumulated),
-                                        "bash",
-                                    ))
+                                    ToolOutput::error(format!("Exit code: {}\n{}", code, accumulated))
                                 }
                             };
                             return result;
@@ -216,5 +210,36 @@ impl Tool for BashTool {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn bash_returns_large_output_untruncated_for_channeler() {
+        let tmp = TempDir::new().unwrap();
+        let tool = BashTool {
+            working_dir: tmp.path().to_path_buf(),
+        };
+
+        let output = tool
+            .execute(&json!({
+                "command": "python3 - <<'PY'\nprint('A' * 20000)\nPY"
+            }))
+            .await;
+
+        assert!(!output.is_error, "bash failed: {}", output.content);
+        assert!(
+            output.content.len() >= 20_000,
+            "bash should return full output to the channeler, got {} bytes",
+            output.content.len()
+        );
+        assert!(
+            !output.content.contains("chars omitted"),
+            "bash tool must not pre-truncate before artifact routing"
+        );
     }
 }

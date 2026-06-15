@@ -1,11 +1,8 @@
 //! Tool output channeling.
 //!
 //! Large tool outputs (bash dumps, file reads, grep results) are written to
-//! disk and replaced in the message vec with a small handle string that
-//! tells the agent where to look. The goal is a **hard invariant**: no
-//! single tool call can inject more than `threshold_bytes` of content into
-//! the message vec, so context explosion from a single chatty tool call is
-//! structurally impossible.
+//! disk and replaced in the message vec with a bounded preview and a handle
+//! string that tells the agent where to look.
 //!
 //! The handle string includes a short preview plus explicit bash hints
 //! (`cat`, `head`, `tail`, `sed`, `grep`) so the agent can retrieve any
@@ -16,9 +13,21 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Default threshold: tool outputs up to 2 KiB pass through unchanged.
-/// Anything larger gets channeled.
-pub const DEFAULT_CHANNEL_THRESHOLD_BYTES: usize = 2048;
+/// Fallback threshold when no model context window is available.
+///
+/// This is intentionally much larger than the old ~4 KiB behavior. A 32k-token
+/// model can usually afford a single ~32 KiB command result (roughly 8k tokens
+/// before tokenizer overhead) while context-pressure checks and compaction still
+/// protect the full conversation. Context-aware callers should prefer
+/// [`threshold_for_context_window`].
+pub const DEFAULT_CHANNEL_THRESHOLD_BYTES: usize = 32 * 1024;
+
+/// Maximum inline budget for one tool result, even on very large-context models.
+///
+/// Rendering and log surfaces become hard to scan well before model context is
+/// exhausted, so we cap one inline tool result at 128 KiB and store the rest as
+/// an artifact with first/last previews.
+pub const MAX_CHANNEL_THRESHOLD_BYTES: usize = 128 * 1024;
 
 /// Tools whose output should NEVER be channeled — their whole job is
 /// to bring structured data INTO the model's context, so replacing
@@ -37,8 +46,21 @@ pub const DEFAULT_CHANNEL_THRESHOLD_BYTES: usize = 2048;
 /// name fragments) and confabulated plausible variants for the rest.
 const NEVER_CHANNEL_TOOLS: &[&str] = &["web_search"];
 
-/// Number of chars of preview included in the handle string.
-pub const DEFAULT_PREVIEW_CHARS: usize = 400;
+/// Number of chars from each edge included in artifact handles.
+pub const DEFAULT_EDGE_PREVIEW_CHARS: usize = 2 * 1024;
+
+/// Derive an inline output budget from the model context window.
+///
+/// Policy: spend up to about 8% of the context window on a single command
+/// result, using the same rough 4 chars/token estimate as fallback context
+/// accounting. This keeps useful command output inline on 32k+ models, avoids
+/// the old premature 4 KiB stop, and still leaves room for system/tool overhead,
+/// the user request, prior turns, and the next answer. The budget is bounded to
+/// 32-128 KiB for terminal readability and predictable rendering costs.
+pub fn threshold_for_context_window(context_window_tokens: usize) -> usize {
+    let estimated_bytes = context_window_tokens.saturating_mul(4).saturating_mul(8) / 100;
+    estimated_bytes.clamp(DEFAULT_CHANNEL_THRESHOLD_BYTES, MAX_CHANNEL_THRESHOLD_BYTES)
+}
 
 /// Routes oversized tool outputs to disk and returns a compact handle.
 pub struct ToolOutputChanneler {
@@ -49,8 +71,8 @@ pub struct ToolOutputChanneler {
     counter: AtomicUsize,
     /// Outputs ≤ this size pass through unchanged.
     threshold_bytes: usize,
-    /// Chars of preview to include in the handle string.
-    preview_chars: usize,
+    /// Chars from each edge to include in the handle string.
+    edge_preview_chars: usize,
 }
 
 impl ToolOutputChanneler {
@@ -63,8 +85,12 @@ impl ToolOutputChanneler {
             dir,
             counter: AtomicUsize::new(0),
             threshold_bytes,
-            preview_chars: DEFAULT_PREVIEW_CHARS,
+            edge_preview_chars: DEFAULT_EDGE_PREVIEW_CHARS,
         }
+    }
+
+    pub fn for_context_window(dir: PathBuf, context_window_tokens: usize) -> Self {
+        Self::with_threshold(dir, threshold_for_context_window(context_window_tokens))
     }
 
     /// If `content` exceeds the threshold, write it to disk and return a
@@ -78,11 +104,31 @@ impl ToolOutputChanneler {
     /// On any I/O failure, returns the original content rather than
     /// silently losing it — channeling is best-effort, never a blocker.
     pub fn maybe_channel(&self, tool_name: &str, content: &str) -> String {
+        self.maybe_channel_with_input(tool_name, None, content)
+    }
+
+    pub fn maybe_channel_with_input(
+        &self,
+        tool_name: &str,
+        input: Option<&serde_json::Value>,
+        content: &str,
+    ) -> String {
         if NEVER_CHANNEL_TOOLS.contains(&tool_name) {
             return content.to_string();
         }
         if content.len() <= self.threshold_bytes {
             return content.to_string();
+        }
+
+        if tool_name == "bash" {
+            if let Some(path) = artifact_path_from_bash_input(input) {
+                return render_artifact_read_preview(
+                    &path,
+                    content,
+                    self.edge_preview_chars,
+                    self.threshold_bytes,
+                );
+            }
         }
 
         let n = self.counter.fetch_add(1, Ordering::SeqCst);
@@ -112,28 +158,120 @@ impl ToolOutputChanneler {
             .display()
             .to_string();
 
-        let preview_end = content.floor_char_boundary(self.preview_chars);
-        let preview = &content[..preview_end];
-
-        format!(
-            "[CHANNELED OUTPUT — {bytes} bytes from tool '{tool}' saved to {path}]\n\
-             First {plen} chars preview:\n\
-             ---\n\
-             {preview}\n\
-             ---\n\
-             [Full output is on disk. To retrieve specific parts, use bash:]\n\
-             - `cat {path}`                  (entire file)\n\
-             - `head -n 50 {path}`           (first 50 lines)\n\
-             - `tail -n 50 {path}`           (last 50 lines)\n\
-             - `sed -n '100,200p' {path}`    (lines 100–200)\n\
-             - `grep -n 'PATTERN' {path}`    (find pattern with line numbers)\n\
-             - `wc -l {path}`                (total line count)",
-            bytes = content.len(),
-            tool = tool_name,
-            path = display_path,
-            plen = preview.len(),
-            preview = preview,
+        render_channeled_handle(
+            tool_name,
+            content,
+            &display_path,
+            self.edge_preview_chars,
+            self.threshold_bytes,
         )
+    }
+}
+
+fn render_channeled_handle(
+    tool_name: &str,
+    content: &str,
+    display_path: &str,
+    edge_preview_chars: usize,
+    threshold_bytes: usize,
+) -> String {
+    let preview = edge_preview(content, edge_preview_chars);
+    let line_count = content.lines().count();
+
+    format!(
+        "[CHANNELED OUTPUT — {bytes} bytes, {lines} lines from tool '{tool}' saved to {path}]\n\
+         Inline policy: output exceeded the per-call preview budget ({threshold} bytes), \
+         derived from model context budget and terminal usability.\n\
+         Preview (first/last bounded slices):\n\
+         --- BEGIN FIRST SLICE ---\n\
+         {head}\n\
+         --- END FIRST SLICE ---\n\
+         [... {omitted} bytes omitted; full output is preserved on disk ...]\n\
+         --- BEGIN LAST SLICE ---\n\
+         {tail}\n\
+         --- END LAST SLICE ---\n\
+         Inspect safely with:\n\
+         - `head -n 80 {path}`\n\
+         - `tail -n 80 {path}`\n\
+         - `sed -n '100,200p' {path}`\n\
+         - `grep -n 'PATTERN' {path}`\n\
+         - `wc -l {path}`\n\
+         Note: `cat {path}` returns a bounded non-recursive preview in Nex; use head/tail/sed/grep for slices.",
+        bytes = content.len(),
+        lines = line_count,
+        tool = tool_name,
+        path = display_path,
+        threshold = threshold_bytes,
+        head = preview.head,
+        tail = preview.tail,
+        omitted = preview.omitted_bytes,
+    )
+}
+
+fn render_artifact_read_preview(
+    path: &str,
+    content: &str,
+    edge_preview_chars: usize,
+    threshold_bytes: usize,
+) -> String {
+    let preview = edge_preview(content, edge_preview_chars);
+    format!(
+        "[TOOL OUTPUT ARTIFACT PREVIEW — {bytes} bytes, {lines} lines from {path}]\n\
+         This is a bounded preview of an existing routed output artifact. Nex did not \
+         create another artifact for this read, avoiding recursive output routing.\n\
+         Preview budget: {threshold} bytes before artifact routing.\n\
+         --- BEGIN FIRST SLICE ---\n\
+         {head}\n\
+         --- END FIRST SLICE ---\n\
+         [... {omitted} bytes omitted from the middle ...]\n\
+         --- BEGIN LAST SLICE ---\n\
+         {tail}\n\
+         --- END LAST SLICE ---\n\
+         Continue with `head -n 80 {path}`, `tail -n 80 {path}`, \
+         `sed -n '100,200p' {path}`, or `grep -n 'PATTERN' {path}`.",
+        bytes = content.len(),
+        lines = content.lines().count(),
+        path = path,
+        threshold = threshold_bytes,
+        head = preview.head,
+        tail = preview.tail,
+        omitted = preview.omitted_bytes,
+    )
+}
+
+struct EdgePreview<'a> {
+    head: &'a str,
+    tail: &'a str,
+    omitted_bytes: usize,
+}
+
+fn edge_preview(content: &str, edge_preview_chars: usize) -> EdgePreview<'_> {
+    let head_end = content.floor_char_boundary(edge_preview_chars);
+    let raw_tail_start = content.len().saturating_sub(edge_preview_chars);
+    let tail_start = content.floor_char_boundary(raw_tail_start).max(head_end);
+    let head = &content[..head_end];
+    let tail = &content[tail_start..];
+    EdgePreview {
+        head,
+        tail,
+        omitted_bytes: content.len().saturating_sub(head.len() + tail.len()),
+    }
+}
+
+fn artifact_path_from_bash_input(input: Option<&serde_json::Value>) -> Option<String> {
+    let command = input?.get("command")?.as_str()?.trim();
+    if !command.contains("/tool-outputs/") || !command.starts_with("cat ") {
+        return None;
+    }
+    let path = command
+        .strip_prefix("cat ")?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
+    if path.contains("/tool-outputs/") {
+        Some(path.to_string())
+    } else {
+        None
     }
 }
 
@@ -156,17 +294,17 @@ mod tests {
     fn test_large_output_is_channeled() {
         let tmp = TempDir::new().unwrap();
         let channeler = ToolOutputChanneler::with_threshold(tmp.path().to_path_buf(), 100);
-        let content: String = "a".repeat(5000);
+        let content: String = "a\n".repeat(20_000);
         let handle = channeler.maybe_channel("read_file", &content);
 
         // Handle is much smaller than original
         assert!(handle.len() < content.len() / 2);
         // Handle mentions the size
-        assert!(handle.contains("5000 bytes"));
+        assert!(handle.contains(&format!("{} bytes", content.len())));
+        assert!(handle.contains("lines"));
         // Handle mentions the tool name
         assert!(handle.contains("read_file"));
         // Handle includes bash hints
-        assert!(handle.contains("cat "));
         assert!(handle.contains("head -n"));
         assert!(handle.contains("grep"));
 
@@ -213,15 +351,41 @@ mod tests {
     }
 
     #[test]
-    fn test_default_threshold_is_reasonable() {
+    fn test_default_threshold_spends_more_than_4kb() {
         let tmp = TempDir::new().unwrap();
         let channeler = ToolOutputChanneler::new(tmp.path().to_path_buf());
-        // 1KB passes through at default threshold
-        let small = "a".repeat(1024);
-        assert_eq!(channeler.maybe_channel("bash", &small), small);
-        // 4KB gets channeled
+        assert!(DEFAULT_CHANNEL_THRESHOLD_BYTES > 4 * 1024);
         let large = "a".repeat(4096);
-        let handle = channeler.maybe_channel("bash", &large);
-        assert!(handle.contains("CHANNELED OUTPUT"));
+        assert_eq!(channeler.maybe_channel("bash", &large), large);
+    }
+
+    #[test]
+    fn test_threshold_scales_with_context_window() {
+        assert_eq!(threshold_for_context_window(32_768), 32 * 1024);
+        assert_eq!(threshold_for_context_window(200_000), 64_000);
+        assert_eq!(threshold_for_context_window(1_000_000), 128 * 1024);
+    }
+
+    #[test]
+    fn test_cat_of_artifact_is_non_recursive_preview() {
+        let tmp = TempDir::new().unwrap();
+        let tool_dir = tmp.path().join("tool-outputs");
+        let channeler = ToolOutputChanneler::with_threshold(tool_dir.clone(), 100);
+        let artifact = tool_dir.join("00000.log");
+        let display = artifact.display().to_string();
+        let content = format!("HEAD\n{}\nTAIL\n", "x".repeat(5000));
+        let input = serde_json::json!({ "command": format!("cat {}", display) });
+
+        let preview = channeler.maybe_channel_with_input("bash", Some(&input), &content);
+
+        assert!(preview.contains("TOOL OUTPUT ARTIFACT PREVIEW"));
+        assert!(preview.contains("Nex did not create another artifact"));
+        assert!(preview.contains("HEAD"));
+        assert!(preview.contains("TAIL"));
+        assert!(preview.contains("sed -n"));
+        assert!(
+            std::fs::read_dir(&tool_dir).is_err(),
+            "recursive artifact read should not create a new tool-output file"
+        );
     }
 }

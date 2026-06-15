@@ -438,6 +438,15 @@ description = "Resume a 500-msg journal against a 32k context window must trunca
 timeout_seconds = 300
 
 [[scenario]]
+name = "nex_large_output_nonrecursive"
+script = "scenarios/nex_large_output_nonrecursive.sh"
+owners = [
+    "fix-nex-large",
+]
+description = "Pins Nex large-output routing without a live endpoint: bash preserves full output for artifact routing; context-aware thresholds avoid the old ~4 KB premature stop; oversized output gets metadata plus first/last previews; cat of a routed tool-output artifact returns a bounded non-recursive preview instead of creating another artifact."
+timeout_seconds = 120
+
+[[scenario]]
 name = "tui_log_pane_renders_raw_stream"
 script = "scenarios/tui_log_pane_renders_raw_stream.sh"
 owners = [
