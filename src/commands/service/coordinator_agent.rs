@@ -176,10 +176,7 @@ pub(crate) fn resolve_chat_task_id(
 }
 
 pub(crate) fn tui_driver_deferral_pid(chat_dir: &Path) -> Option<u32> {
-    workgraph::session_lock::read_tui_driver_sentinel(chat_dir)
-        .ok()
-        .flatten()
-        .and_then(|info| info.alive.then_some(info.pid))
+    workgraph::session_lock::active_tui_driver_pid(chat_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,8 +1931,17 @@ mod tests {
         let chat_dir = tmp.path().join("chat");
         workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
 
+        assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
+
+        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
+        let lock = workgraph::session_lock::SessionLock::acquire(
+            &chat_dir,
+            workgraph::session_lock::HandlerKind::InteractiveNex,
+        )
+        .unwrap();
         assert_eq!(tui_driver_deferral_pid(&chat_dir), Some(std::process::id()));
 
+        drop(lock);
         workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
         assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
 

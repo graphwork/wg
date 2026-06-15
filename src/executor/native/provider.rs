@@ -163,6 +163,41 @@ fn parse_endpoint_model_shorthand(
     (None, model.to_string())
 }
 
+fn resolve_explicit_endpoint(
+    config: &crate::config::Config,
+    config_root: &Path,
+    name: &str,
+) -> Result<Option<crate::config::EndpointConfig>> {
+    if let Some(ep) = config.llm_endpoints.find_by_name(name) {
+        return Ok(Some(ep.clone()));
+    }
+
+    let global = crate::config::Config::load_global()
+        .with_context(|| "Failed to load global WG config while resolving named endpoint")?;
+    let Some(global) = global else {
+        return Ok(None);
+    };
+    let Some(ep) = global.llm_endpoints.find_by_name(name).cloned() else {
+        return Ok(None);
+    };
+
+    if matches!(
+        crate::config::provider_to_native_provider(&ep.provider),
+        "openrouter" | "oai-compat" | "openai" | "local"
+    ) {
+        eprintln!(
+            "[native-exec] using global endpoint '{}' from {}. \
+             To make this visible in project config, set [llm_endpoints] inherit_global = true in {}.",
+            name,
+            crate::config::Config::global_config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "~/.wg/config.toml".to_string()),
+            config_root.join("config.toml").display(),
+        );
+    }
+    Ok(Some(ep))
+}
+
 /// Create a provider, optionally overriding the provider name, endpoint, and/or API key.
 ///
 /// Resolution order for API key (WG credential contract — see
@@ -280,6 +315,11 @@ pub fn create_provider_ext_with_config(
         parse_endpoint_model_shorthand(config, model, endpoint_name);
     let endpoint_name = endpoint_name_owned.as_deref();
     let model = effective_model_str.as_str();
+    let explicit_endpoint = endpoint_name.and_then(|name| {
+        resolve_explicit_endpoint(config, config_root, name)
+            .ok()
+            .flatten()
+    });
 
     // Early endpoint lookup (by name only). If the caller passed an
     // explicit `-e <name>` OR the shorthand matched a named endpoint,
@@ -296,7 +336,12 @@ pub fn create_provider_ext_with_config(
     // tag ("oai-compat") flows downstream and `provider.name()` reports
     // it consistently.
     let endpoint_provider_override: Option<String> = endpoint_name
-        .and_then(|name| config.llm_endpoints.find_by_name(name))
+        .and_then(|name| {
+            explicit_endpoint
+                .as_ref()
+                .filter(|ep| ep.name == name)
+                .or_else(|| config.llm_endpoints.find_by_name(name))
+        })
         .map(|ep| crate::config::provider_to_native_provider(&ep.provider).to_string());
 
     let native_cfg = config_val.and_then(|v| v.get("native_executor"));
@@ -377,22 +422,16 @@ pub fn create_provider_ext_with_config(
     };
 
     // Look up endpoint config: by name first, then by provider, then default endpoint
-    let endpoint = endpoint_name
-        .and_then(|name| config.llm_endpoints.find_by_name(name))
-        .or_else(|| config.llm_endpoints.find_for_provider(&provider_name))
-        .or_else(|| {
-            // Never let an OpenRouter-routed model fall back to a default
-            // endpoint of a DIFFERENT provider — that would send an OpenRouter
-            // model to a local server (nex-optional-openrouter-endpoint). With
-            // no matching OpenRouter endpoint, leave `endpoint` unresolved so
-            // the URL falls through to `default_url_for_provider("openrouter")`
-            // (openrouter.ai) below. Other providers keep the historical
-            // default-endpoint fallback.
-            config
-                .llm_endpoints
-                .find_default()
-                .filter(|ep| provider_name != "openrouter" || ep.provider == "openrouter")
-        });
+    let endpoint = if let Some(ep) = explicit_endpoint.as_ref() {
+        Some(ep)
+    } else if let Some(ep) = config.llm_endpoints.find_for_provider(&provider_name) {
+        Some(ep)
+    } else {
+        config
+            .llm_endpoints
+            .find_default()
+            .filter(|ep| provider_name != "openrouter" || ep.provider == "openrouter")
+    };
     // STRICT key resolution: read api_key / api_key_file / api_key_env
     // from the matched endpoint's config — NEVER fall back to implicit
     // provider env vars (ANTHROPIC_API_KEY etc). See create_provider_ext
@@ -667,9 +706,16 @@ mod tests {
         // endpoint configured must route to OpenRouter, NOT the local server.
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_local_default();
-        let client =
-            create_provider_ext_with_config(dir.path(), &config, None, "minimax/minimax-m3", None, None, None)
-                .unwrap();
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            None,
+            "minimax/minimax-m3",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             client.name(),
             "openrouter",
@@ -732,6 +778,53 @@ mod tests {
             Some("my-openrouter"),
             "configured openrouter endpoint should win over the local default"
         );
+    }
+
+    #[test]
+    fn explicit_endpoint_name_can_resolve_from_global_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let key_file = global_dir.path().join("openrouter.key");
+        std::fs::write(&key_file, "test-key\n").unwrap();
+        std::fs::write(
+            global_dir.path().join("config.toml"),
+            format!(
+                r#"
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key_file = "{}"
+"#,
+                key_file.display()
+            ),
+        )
+        .unwrap();
+
+        let old = std::env::var_os("WG_GLOBAL_DIR");
+        unsafe {
+            std::env::set_var("WG_GLOBAL_DIR", global_dir.path());
+        }
+        let result = create_provider_ext_with_config(
+            dir.path(),
+            &Config::default(),
+            None,
+            "openrouter:deepseek/deepseek-v4-flash",
+            None,
+            Some("openrouter"),
+            None,
+        );
+        unsafe {
+            if let Some(old) = old {
+                std::env::set_var("WG_GLOBAL_DIR", old);
+            } else {
+                std::env::remove_var("WG_GLOBAL_DIR");
+            }
+        }
+
+        let client = result.unwrap();
+        assert_eq!(client.name(), "openrouter");
+        assert_eq!(client.endpoint_name(), Some("openrouter"));
     }
 
     #[test]

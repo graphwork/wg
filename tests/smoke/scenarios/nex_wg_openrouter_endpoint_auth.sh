@@ -148,6 +148,36 @@ if ! env -u OPENROUTER_API_KEY -u OPENAI_API_KEY timeout 45s nex --wg --eval-mod
     loud_fail "nex --wg eval-mode did not use configured api_key_file credentials. stderr:\n$(redact_file nex-wg-file.err)"
 fi
 
+global_home="$scratch/home-global-only"
+global_dir="$scratch/global-wg"
+mkdir -p "$global_home" "$global_dir"
+cat >"$global_dir/config.toml" <<TOML
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "$endpoint"
+api_key_file = "$key_file"
+is_default = true
+TOML
+cat >"$scratch/.wg/config.toml" <<TOML
+[agent]
+model = "$model"
+
+[dispatcher]
+model = "$model"
+
+[llm_endpoints]
+inherit_global = false
+TOML
+
+if ! env -u OPENROUTER_API_KEY -u OPENAI_API_KEY HOME="$global_home" WG_GLOBAL_DIR="$global_dir" \
+        timeout 45s wg nex --eval-mode --minimal-tools \
+        --model "$model" --endpoint openrouter --max-turns 1 \
+        "Reply with exactly: WG_NEX_GLOBAL_FILE_AUTH_OK" >wg-nex-global-file.out 2>wg-nex-global-file.err; then
+    assert_no_key_leaked wg-nex-global-file.out wg-nex-global-file.err
+    loud_fail "wg nex eval-mode did not use explicit global openrouter endpoint credentials. stderr:\n$(redact_file wg-nex-global-file.err)"
+fi
+
 cat >"$scratch/.wg/config.toml" <<TOML
 [agent]
 model = "$model"
@@ -180,11 +210,13 @@ fi
 assert_no_key_leaked \
     wg-nex-file.out wg-nex-file.err \
     nex-wg-file.out nex-wg-file.err \
+    wg-nex-global-file.out wg-nex-global-file.err \
     wg-nex-env.out wg-nex-env.err \
     nex-wg-env.out nex-wg-env.err
 
 grep -q '"status":"ok"' wg-nex-file.out || loud_fail "wg nex api_key_file did not report ok: $(redact_file wg-nex-file.out)"
 grep -q '"status":"ok"' nex-wg-file.out || loud_fail "nex --wg api_key_file did not report ok: $(redact_file nex-wg-file.out)"
+grep -q '"status":"ok"' wg-nex-global-file.out || loud_fail "wg nex global api_key_file did not report ok: $(redact_file wg-nex-global-file.out)"
 grep -q '"status":"ok"' wg-nex-env.out || loud_fail "wg nex api_key_env did not report ok: $(redact_file wg-nex-env.out)"
 grep -q '"status":"ok"' nex-wg-env.out || loud_fail "nex --wg api_key_env did not report ok: $(redact_file nex-wg-env.out)"
 
@@ -199,8 +231,8 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as f:
     requests = [json.loads(line) for line in f if line.strip()]
 
-if len(requests) != 4:
-    raise SystemExit(f"expected exactly four configured-endpoint requests, got {len(requests)}: {requests}")
+if len(requests) != 5:
+    raise SystemExit(f"expected exactly five configured-endpoint requests, got {len(requests)}: {requests}")
 
 for req in requests:
     if req.get("path") != "/v1/chat/completions":
@@ -211,4 +243,4 @@ for req in requests:
         raise SystemExit(f"configured Bearer auth was missing: {req}")
 PY
 
-echo "PASS: WG-scoped Nex eval entrypoints attach configured OpenRouter api_key_file and api_key_env credentials"
+echo "PASS: WG-scoped Nex eval entrypoints attach configured local/global OpenRouter api_key_file and api_key_env credentials"

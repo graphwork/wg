@@ -370,6 +370,15 @@ description = "nex-openrouter-default-ui 2026-06-15: drives the real wg tui '+' 
 timeout_seconds = 120
 
 [[scenario]]
+name = "nex_stale_tui_sentinel_respawns"
+script = "scenarios/nex_stale_tui_sentinel_respawns.sh"
+owners = [
+    "fix-nex-chat",
+]
+description = "fix-nex-chat 2026-06-15: real daemon/supervisor flow for a Nex chat with .tui-driven pointing at a live sentinel PID, no live .handler.pid, and a prior turns=0 EOF trace. The supervisor must clear/ignore the stale sentinel and respawn instead of logging 'TUI sentinel alive ... deferring respawn' forever; `wg chat resume 0` must recover the same stale-sentinel/no-handler state without manual deletion."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_plus_opencode_model_fuzzy"
 script = "scenarios/tui_plus_opencode_model_fuzzy.sh"
 owners = [
@@ -622,10 +631,11 @@ name = "nex_wg_openrouter_endpoint_auth"
 script = "scenarios/nex_wg_openrouter_endpoint_auth.sh"
 owners = [
     "fix-nex-openrouter",
+    "fix-nex-chat",
     "fix-wg-nex",
     "smoke-gate-is",
 ]
-description = "Pins fix-wg-nex/fix-nex-openrouter: WG-scoped Nex eval entrypoints (`wg nex --eval-mode` and `nex --wg --eval-mode`) must use configured OpenRouter endpoint credentials from .wg/config.toml, including both api_key_file and api_key_env, instead of falling into standalone .nex-eval config with no Bearer auth."
+description = "Pins fix-wg-nex/fix-nex-openrouter/fix-nex-chat: WG-scoped Nex eval entrypoints (`wg nex --eval-mode` and `nex --wg --eval-mode`) must use configured OpenRouter endpoint credentials from .wg/config.toml, including both api_key_file and api_key_env, instead of falling into standalone .nex-eval config with no Bearer auth. Also covers the explicit global endpoint path: `wg nex -e openrouter -m openrouter:<model>` in a project resolves the global endpoint/key file instead of silently ignoring it."
 timeout_seconds = 90
 
 [[scenario]]

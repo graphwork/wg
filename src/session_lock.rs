@@ -406,6 +406,38 @@ pub fn clear_tui_driver_sentinel(chat_dir: &Path) {
     }
 }
 
+/// True when a live `wg tui` sentinel is paired with a live session
+/// handler. This is the only state where the daemon supervisor should
+/// defer its own respawn: the TUI has claimed the surface and there is
+/// an actual handler generation available to receive input.
+///
+/// A live TUI process alone is not enough. If `.tui-driven` survives a
+/// failed PTY startup or a turns=0 EOF exit while `.handler.pid` is gone
+/// or stale, treating the marker as authoritative strands the chat with
+/// no handler. In that stale case this helper clears the sentinel and
+/// returns `None` so callers can respawn normally.
+pub fn active_tui_driver_pid(chat_dir: &Path) -> Option<u32> {
+    let tui = read_tui_driver_sentinel(chat_dir).ok().flatten()?;
+    if !tui.alive {
+        clear_tui_driver_sentinel(chat_dir);
+        return None;
+    }
+
+    match read_holder(chat_dir) {
+        Ok(Some(holder)) if holder.alive => {}
+        Ok(Some(_)) => {
+            clear_tui_driver_sentinel(chat_dir);
+            return None;
+        }
+        Ok(None) | Err(_) => {
+            clear_tui_driver_sentinel(chat_dir);
+            return None;
+        }
+    }
+
+    Some(tui.pid)
+}
+
 /// True when a live `wg tui` process currently owns the chat surface.
 pub fn tui_driver_sentinel_alive(chat_dir: &Path) -> bool {
     read_tui_driver_sentinel(chat_dir)
@@ -639,6 +671,22 @@ mod tests {
         clear_tui_driver_sentinel(dir.path());
         assert!(read_tui_driver_sentinel(dir.path()).unwrap().is_none());
         assert!(!tui_driver_sentinel_alive(dir.path()));
+    }
+
+    #[test]
+    fn active_tui_driver_requires_live_handler_lock() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
+
+        assert_eq!(active_tui_driver_pid(dir.path()), None);
+        assert!(
+            read_tui_driver_sentinel(dir.path()).unwrap().is_none(),
+            "stale sentinel should be cleared when no live handler lock exists"
+        );
+
+        write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
+        let _lock = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex).unwrap();
+        assert_eq!(active_tui_driver_pid(dir.path()), Some(std::process::id()));
     }
 
     #[test]

@@ -601,6 +601,20 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
             cid
         );
     }
+    let chat_ref = format!("chat-{}", cid);
+    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+    if workgraph::session_lock::read_tui_driver_sentinel(&chat_dir)
+        .ok()
+        .flatten()
+        .is_some()
+        && workgraph::session_lock::active_tui_driver_pid(&chat_dir).is_none()
+        && !json
+    {
+        eprintln!(
+            "\x1b[2m[wg chat]\x1b[0m cleared stale TUI sentinel for chat {} before resume",
+            cid
+        );
+    }
     // Resume re-spawns the handler using the chat's *saved* executor /
     // model metadata (per-chat CoordinatorState override, falling back to
     // the chat task's own model). The respawn path is the executor-swap
@@ -1084,7 +1098,10 @@ mod tests {
 
         let (executor, model) = reconstruct_resume_metadata(dir, 7);
         assert_eq!(executor.as_deref(), Some("native"));
-        assert_eq!(model.as_deref(), Some("openrouter:anthropic/claude-opus-4-7"));
+        assert_eq!(
+            model.as_deref(),
+            Some("openrouter:anthropic/claude-opus-4-7")
+        );
     }
 
     #[test]
