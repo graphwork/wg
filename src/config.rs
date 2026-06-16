@@ -1823,7 +1823,7 @@ pub fn model_is_openrouter(model: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use workgraph::config::parse_model_spec_strict;
+/// use worksgood::config::parse_model_spec_strict;
 ///
 /// // Valid: known provider prefix
 /// let spec = parse_model_spec_strict("claude:opus").unwrap();
