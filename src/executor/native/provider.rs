@@ -7,7 +7,8 @@
 //!
 //! Use `create_provider()` to route a model string to the appropriate backend:
 //! - Bare name (`claude-sonnet-4-6`) → Anthropic native API
-//! - Prefixed (`openai/gpt-4o`, `deepseek/deepseek-chat`) → OpenAI-compatible
+//! - Bare `vendor/model` with no endpoint or configured provider → OpenRouter
+//! - Explicit provider prefixes/config (`openai:...`, `[native_executor].provider`) → that provider
 
 use std::path::Path;
 
@@ -296,19 +297,26 @@ pub fn create_provider_ext_with_config(
         )?));
     }
 
-    // A bare `vendor/model` route with NO endpoint is an OpenRouter route
+    let native_cfg = config_val.and_then(|v| v.get("native_executor"));
+    let native_provider = native_cfg
+        .and_then(|c| c.get("provider"))
+        .and_then(|v| v.as_str());
+
+    // A bare `vendor/model` route with NO endpoint and NO explicit provider is
+    // an OpenRouter route.
     // (nex-optional-openrouter-endpoint): `wg nex -m minimax/minimax-m3`
     // should reach OpenRouter, not the bare-name oai-compat/local default.
     // Normalize to `openrouter:<route>` so provider resolution below targets
-    // OpenRouter directly. Skipped when an endpoint is given — that endpoint's
-    // provider dictates the route, so the model stays verbatim.
+    // OpenRouter directly. Skipped when an endpoint or provider is given — that
+    // explicit route dictates the provider, so the model stays verbatim.
     let openrouter_normalized: String;
-    let model = if endpoint_name.is_none() {
-        openrouter_normalized = crate::config::normalize_bare_openrouter_route(model);
-        openrouter_normalized.as_str()
-    } else {
-        model
-    };
+    let model =
+        if endpoint_name.is_none() && provider_override.is_none() && native_provider.is_none() {
+            openrouter_normalized = crate::config::normalize_bare_openrouter_route(model);
+            openrouter_normalized.as_str()
+        } else {
+            model
+        };
 
     // Endpoint-in-model shorthand — see `parse_endpoint_model_shorthand`.
     let (endpoint_name_owned, effective_model_str) =
@@ -343,8 +351,6 @@ pub fn create_provider_ext_with_config(
                 .or_else(|| config.llm_endpoints.find_by_name(name))
         })
         .map(|ep| crate::config::provider_to_native_provider(&ep.provider).to_string());
-
-    let native_cfg = config_val.and_then(|v| v.get("native_executor"));
 
     // Parse unified provider:model spec (e.g. "openrouter:deepseek/deepseek-v3.2").
     // When a known provider prefix is present, it takes priority over all other
@@ -386,10 +392,7 @@ pub fn create_provider_ext_with_config(
             // explicit `provider_override` path above. The match arm below
             // accepts both the canonical "oai-compat" tag and the legacy
             // "openai" alias, so verbatim preservation does not affect routing.
-            native_cfg
-                .and_then(|c| c.get("provider"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
+            native_provider.map(String::from)
         })
         .or_else(|| {
             // Legacy heuristic takes precedence over env var for explicit model prefixes
@@ -778,6 +781,52 @@ mod tests {
             Some("my-openrouter"),
             "configured openrouter endpoint should win over the local default"
         );
+    }
+
+    #[test]
+    fn native_executor_provider_keeps_bare_vendor_model_off_openrouter() {
+        // An explicit legacy provider config is stronger than the bare
+        // vendor/model OpenRouter convenience. The model stays unprefixed and
+        // routes through the configured OpenAI-compatible provider.
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![EndpointConfig {
+                name: "test-openai".to_string(),
+                provider: "openai".to_string(),
+                url: Some("https://example.com/v1".to_string()),
+                model: None,
+                api_key: Some("test-key".to_string()),
+                api_key_env: None,
+                api_key_ref: None,
+                api_key_file: None,
+                is_default: true,
+                context_window: None,
+            }],
+        };
+        let config_val: toml::Value = toml::from_str(
+            r#"
+[native_executor]
+provider = "openai"
+"#,
+        )
+        .unwrap();
+
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            Some(&config_val),
+            "deepseek/deepseek-chat",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(client.name(), "openai");
+        assert_eq!(client.model(), "deepseek/deepseek-chat");
+        assert_eq!(client.endpoint_name(), Some("test-openai"));
     }
 
     #[test]
