@@ -3,13 +3,13 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use workgraph::config::Config;
-use workgraph::graph::{
+use worksgood::config::Config;
+use worksgood::graph::{
     CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task,
     TokenUsage, format_tokens, parse_token_usage_live,
 };
-use workgraph::query::build_reverse_index;
-use workgraph::service::AgentRegistry;
+use worksgood::query::build_reverse_index;
+use worksgood::service::AgentRegistry;
 
 use super::service::CoordinatorState;
 
@@ -115,7 +115,7 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    wait_condition: Option<workgraph::graph::WaitSpec>,
+    wait_condition: Option<worksgood::graph::WaitSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -137,7 +137,7 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    iteration_config: Option<workgraph::agency::IterationConfig>,
+    iteration_config: Option<worksgood::agency::IterationConfig>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     rescued: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -243,7 +243,7 @@ fn gather_task_runtime_info(
                 .or_else(|| {
                     Some(
                         config
-                            .resolve_model_for_role(workgraph::config::DispatchRole::Default)
+                            .resolve_model_for_role(worksgood::config::DispatchRole::Default)
                             .model,
                     )
                 });
@@ -269,18 +269,18 @@ fn gather_task_runtime_info(
         .as_ref()
         .map(|s| s.split_whitespace().count());
 
-    let journal_path = workgraph::executor::native::journal::journal_path(dir, &task.id);
+    let journal_path = worksgood::executor::native::journal::journal_path(dir, &task.id);
     let journal_present = journal_path.exists();
 
     let (journal_entries, compaction_count, last_compaction) = if journal_present {
-        match workgraph::executor::native::journal::Journal::read_all(&journal_path) {
+        match worksgood::executor::native::journal::Journal::read_all(&journal_path) {
             Ok(entries) => {
                 let mut count = 0u64;
                 let mut last = None;
                 for entry in &entries {
                     if matches!(
                         entry.kind,
-                        workgraph::executor::native::journal::JournalEntryKind::Compaction { .. }
+                        worksgood::executor::native::journal::JournalEntryKind::Compaction { .. }
                     ) {
                         count += 1;
                         last = Some(entry.timestamp.clone());
@@ -403,10 +403,10 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         .iter()
         .map(|blocker_id| {
             if let Some((peer_name, remote_task_id)) =
-                workgraph::federation::parse_remote_ref(blocker_id)
+                worksgood::federation::parse_remote_ref(blocker_id)
             {
                 // Cross-repo dependency — resolve via federation
-                let remote = workgraph::federation::resolve_remote_task_status(
+                let remote = worksgood::federation::resolve_remote_task_status(
                     peer_name,
                     remote_task_id,
                     dir,
@@ -466,12 +466,12 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
             return Some(usage);
         }
         // Fallback: read stream.jsonl (native executor writes usage there directly)
-        let stream_path = agent_dir.join(workgraph::stream_event::STREAM_FILE_NAME);
+        let stream_path = agent_dir.join(worksgood::stream_event::STREAM_FILE_NAME);
         if stream_path.exists()
-            && let Ok((events, _)) = workgraph::stream_event::read_stream_events(&stream_path, 0)
+            && let Ok((events, _)) = worksgood::stream_event::read_stream_events(&stream_path, 0)
             && !events.is_empty()
         {
-            let mut state = workgraph::stream_event::AgentStreamState::default();
+            let mut state = worksgood::stream_event::AgentStreamState::default();
             state.ingest(&events, 0);
             let usage = state.to_token_usage();
             if usage.input_tokens > 0 || usage.output_tokens > 0 {
@@ -487,7 +487,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let evaluations = {
         let evals_dir = dir.join("agency").join("evaluations");
         if evals_dir.is_dir() {
-            let all_evals = workgraph::agency::load_all_evaluations_or_warn(&evals_dir);
+            let all_evals = worksgood::agency::load_all_evaluations_or_warn(&evals_dir);
             all_evals
                 .into_iter()
                 .filter(|e| e.task_id == id)
@@ -869,7 +869,7 @@ fn print_human_readable(details: &TaskDetails) {
                 println!(
                     "  Last iteration completed: {} ({} ago)",
                     last_ts,
-                    workgraph::format_duration(ago, true)
+                    worksgood::format_duration(ago, true)
                 );
             } else {
                 println!("  Last iteration completed: {}", last_ts);
@@ -881,7 +881,7 @@ fn print_human_readable(details: &TaskDetails) {
             let delay_secs = cc
                 .delay
                 .as_ref()
-                .and_then(|d| workgraph::graph::parse_delay(d))?;
+                .and_then(|d| worksgood::graph::parse_delay(d))?;
             let last_ts = details
                 .last_iteration_completed_at
                 .as_ref()?
@@ -898,7 +898,7 @@ fn print_human_readable(details: &TaskDetails) {
                 let secs = (parsed - now).num_seconds();
                 println!(
                     "  Next iteration due: in {}",
-                    workgraph::format_duration(secs, true)
+                    worksgood::format_duration(secs, true)
                 );
             } else {
                 println!("  Next iteration due: ready now");
@@ -1087,7 +1087,7 @@ fn print_retry_history(dir: &Path, task_id: &str) {
             .ok()
             .map(|parsed| {
                 let ago = now.signed_duration_since(parsed).num_seconds();
-                format!(" ({} ago)", workgraph::format_duration(ago.max(0), true))
+                format!(" ({} ago)", worksgood::format_duration(ago.max(0), true))
             })
             .unwrap_or_default();
 
@@ -1188,7 +1188,7 @@ fn find_eval_for_attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1396,7 +1396,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "no-such-task", false);
         assert!(result.is_err());
@@ -1408,7 +1408,7 @@ mod tests {
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Test task")));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
@@ -1420,7 +1420,7 @@ mod tests {
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Test task")));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", true);
         assert!(result.is_ok());
@@ -1435,14 +1435,14 @@ mod tests {
         let mut registry = AgentRegistry::new();
         registry.agents.insert(
             "agent-1".to_string(),
-            workgraph::service::AgentEntry {
+            worksgood::service::AgentEntry {
                 id: "agent-1".to_string(),
                 pid: 123,
                 task_id: "native-task".to_string(),
                 executor: "native".to_string(),
                 started_at: "2026-01-20T16:00:00Z".to_string(),
                 last_heartbeat: "2026-01-20T16:05:00Z".to_string(),
-                status: workgraph::service::AgentStatus::Working,
+                status: worksgood::service::AgentStatus::Working,
                 output_file: "output.log".to_string(),
                 model: Some("openrouter/minimax".to_string()),
                 completed_at: None,
@@ -1452,12 +1452,12 @@ mod tests {
         registry.save(temp_dir.path()).unwrap();
 
         let journal_path =
-            workgraph::executor::native::journal::journal_path(temp_dir.path(), "native-task");
+            worksgood::executor::native::journal::journal_path(temp_dir.path(), "native-task");
         let mut journal =
-            workgraph::executor::native::journal::Journal::open(&journal_path).unwrap();
+            worksgood::executor::native::journal::Journal::open(&journal_path).unwrap();
         journal
             .append(
-                workgraph::executor::native::journal::JournalEntryKind::Init {
+                worksgood::executor::native::journal::JournalEntryKind::Init {
                     model: "openrouter/minimax".to_string(),
                     provider: "openrouter".to_string(),
                     system_prompt: "test".to_string(),
@@ -1468,7 +1468,7 @@ mod tests {
             .unwrap();
         journal
             .append(
-                workgraph::executor::native::journal::JournalEntryKind::Compaction {
+                worksgood::executor::native::journal::JournalEntryKind::Compaction {
                     compacted_through_seq: 1,
                     summary: "summary".to_string(),
                     original_message_count: 4,
@@ -1506,7 +1506,7 @@ mod tests {
         let mut task = make_task("t1", "Task with ghost blocker");
         task.after = vec!["nonexistent".to_string()];
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Should succeed (not crash), blocker defaults to Status::Open with a warning
         let result = run(temp_dir.path(), "t1", false);
@@ -1521,7 +1521,7 @@ mod tests {
         let mut task = make_task("t1", "Task with ghost blocker");
         task.after = vec!["ghost".to_string()];
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", true);
         assert!(result.is_ok());
@@ -1544,7 +1544,7 @@ mod tests {
         task.verify = Some("cargo test".to_string());
         task.verify_failures = 2;
         task.status = Status::InProgress;
-        task.log.push(workgraph::graph::LogEntry {
+        task.log.push(worksgood::graph::LogEntry {
             timestamp: "2026-01-01T00:00:00+00:00".to_string(),
             actor: Some("verify".to_string()),
             user: None,
@@ -1553,7 +1553,7 @@ mod tests {
                     .to_string(),
         });
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", true);
         assert!(result.is_ok());
@@ -1570,7 +1570,7 @@ mod tests {
         task.verify_failures = 2;
         task.status = Status::InProgress;
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Should not panic and should succeed
         let result = run(temp_dir.path(), "t1", false);
@@ -1588,14 +1588,14 @@ mod tests {
         task.verify_failures = 3;
         task.status = Status::Failed;
         task.failure_reason = Some("Circuit breaker tripped".to_string());
-        task.log.push(workgraph::graph::LogEntry {
+        task.log.push(worksgood::graph::LogEntry {
             timestamp: "2026-01-01T00:00:00+00:00".to_string(),
             actor: Some("verify-circuit-breaker".to_string()),
             user: None,
             message: "Circuit breaker tripped: verify command failed 3 times".to_string(),
         });
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
@@ -1608,7 +1608,7 @@ mod tests {
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "No verify task")));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
@@ -1623,7 +1623,7 @@ mod tests {
         let mut task = make_task("model-task", "Task with model");
         task.model = Some("claude:opus".to_string());
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // JSON output should contain the user's input string, never a dated ID
         let result = run(temp_dir.path(), "model-task", true);
@@ -1644,10 +1644,10 @@ mod tests {
         task2.model = Some("claude:opus-4-6".to_string());
         graph.add_node(Node::Task(task2));
 
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Verify the model field in TaskDetails preserves user's string exactly
-        let graph = workgraph::parser::load_graph(&path).unwrap();
+        let graph = worksgood::parser::load_graph(&path).unwrap();
         let t1 = graph.get_task("t-opus").unwrap();
         assert_eq!(t1.model.as_deref(), Some("claude:opus"));
         let t2 = graph.get_task("t-pinned").unwrap();
@@ -1658,17 +1658,17 @@ mod tests {
     fn test_show_no_dated_id_in_config_constants() {
         // Verify that the canonical model constants are bare aliases, not dated IDs
         assert_eq!(
-            workgraph::config::CLAUDE_OPUS_MODEL_ID,
+            worksgood::config::CLAUDE_OPUS_MODEL_ID,
             "opus",
             "CLAUDE_OPUS_MODEL_ID must be bare alias, not dated"
         );
         assert_eq!(
-            workgraph::config::CLAUDE_SONNET_MODEL_ID,
+            worksgood::config::CLAUDE_SONNET_MODEL_ID,
             "sonnet",
             "CLAUDE_SONNET_MODEL_ID must be bare alias, not dated"
         );
         assert_eq!(
-            workgraph::config::CLAUDE_HAIKU_MODEL_ID,
+            worksgood::config::CLAUDE_HAIKU_MODEL_ID,
             "haiku",
             "CLAUDE_HAIKU_MODEL_ID must be bare alias, not dated"
         );
@@ -1725,7 +1725,7 @@ mod tests {
         t.status = Status::Failed;
         graph.add_node(Node::Task(t));
         let graph_path = wg_dir.join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
         // Create a worktree for the task with one extra commit
         let agent_id = "agent-77";

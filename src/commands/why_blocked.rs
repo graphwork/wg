@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::WorkGraph;
-use workgraph::graph::{Status, Task};
+use worksgood::WorkGraph;
+use worksgood::graph::{Status, Task};
 
 /// Information about a blocking chain node
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let phantom_root_ids: Vec<String> = root_blocker_ids
         .iter()
         .filter(|rid| {
-            graph.get_task(rid).is_none() && workgraph::federation::parse_remote_ref(rid).is_none()
+            graph.get_task(rid).is_none() && worksgood::federation::parse_remote_ref(rid).is_none()
         })
         .cloned()
         .collect();
@@ -86,7 +86,7 @@ fn build_blocking_tree(
     dir: &Path,
 ) -> BlockingNode {
     let task = graph.get_task(task_id);
-    let is_phantom = task.is_none() && workgraph::federation::parse_remote_ref(task_id).is_none();
+    let is_phantom = task.is_none() && worksgood::federation::parse_remote_ref(task_id).is_none();
     let status = task.map(|t| t.status).unwrap_or(Status::Open);
 
     let mut node = BlockingNode {
@@ -109,10 +109,10 @@ fn build_blocking_tree(
             }
 
             if let Some((_peer_name, _remote_task_id)) =
-                workgraph::federation::parse_remote_ref(blocker_id)
+                worksgood::federation::parse_remote_ref(blocker_id)
             {
                 // Cross-repo dependency — resolve remote status
-                let remote = workgraph::federation::resolve_remote_task_status(
+                let remote = worksgood::federation::resolve_remote_task_status(
                     _peer_name,
                     _remote_task_id,
                     dir,
@@ -172,7 +172,7 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     }
     task.after
         .iter()
-        .all(|blocker_id| workgraph::query::is_blocker_satisfied(blocker_id, graph, Some(dir)))
+        .all(|blocker_id| worksgood::query::is_blocker_satisfied(blocker_id, graph, Some(dir)))
 }
 
 fn count_blockers(node: &BlockingNode) -> usize {
@@ -358,7 +358,7 @@ fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task};
+    use worksgood::graph::{Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

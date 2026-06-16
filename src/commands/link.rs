@@ -5,8 +5,8 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::graph::Status;
-use workgraph::parser::modify_graph;
+use worksgood::graph::Status;
+use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
@@ -81,8 +81,8 @@ pub fn run_link(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Record provenance
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "link",
         Some(task_id),
@@ -158,8 +158,8 @@ pub fn run_unlink(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> 
     super::notify_graph_changed(dir);
 
     // Record provenance
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "unlink",
         Some(task_id),
@@ -182,7 +182,7 @@ pub fn run_unlink(dir: &Path, task_id: &str, dependency_id: &str) -> Result<()> 
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
 
     fn setup_graph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();

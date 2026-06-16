@@ -11,12 +11,12 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use tempfile::TempDir;
-use workgraph::config::{
+use worksgood::config::{
     CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole, EndpointConfig,
     EndpointsConfig,
 };
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -202,7 +202,7 @@ fn openrouter_endpoint_bound_to_evaluator_resolves_correctly() {
 fn openrouter_client_creation_from_resolved_config() {
     // Simulates what call_openai_native / create_provider_ext does:
     // resolve endpoint → extract key + url → create OpenAiClient
-    use workgraph::executor::native::openai_client::OpenAiClient;
+    use worksgood::executor::native::openai_client::OpenAiClient;
 
     let mut config = Config::default();
     config.llm_endpoints = EndpointsConfig {
@@ -880,7 +880,7 @@ fn default_url_for_known_providers() {
 
 #[test]
 fn model_discovery_fetch_and_cache_via_mock() {
-    use workgraph::executor::native::openai_client::fetch_openrouter_models_blocking;
+    use worksgood::executor::native::openai_client::fetch_openrouter_models_blocking;
 
     let models_payload = serde_json::json!({
         "data": [
@@ -908,7 +908,7 @@ fn model_discovery_fetch_and_cache_via_mock() {
     fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
 
     // Validate a known model against the cache we just built
-    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    use worksgood::executor::native::openai_client::validate_openrouter_model;
     let result = validate_openrouter_model("anthropic/claude-sonnet-4-6", tmp.path());
     assert!(result.was_valid);
     assert_eq!(result.model, "anthropic/claude-sonnet-4-6");
@@ -916,7 +916,7 @@ fn model_discovery_fetch_and_cache_via_mock() {
 
 #[test]
 fn model_discovery_auto_routing_accepted_as_default() {
-    use workgraph::executor::native::openai_client::{
+    use worksgood::executor::native::openai_client::{
         OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
 
@@ -940,7 +940,7 @@ fn model_discovery_auto_routing_accepted_as_default() {
 
 #[test]
 fn invalid_model_triggers_validation_suggestion_no_fallback() {
-    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    use worksgood::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
     let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
@@ -987,7 +987,7 @@ fn invalid_model_triggers_validation_suggestion_no_fallback() {
 
 #[test]
 fn cache_expiry_triggers_stale_detection() {
-    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    use worksgood::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
 
@@ -1029,7 +1029,7 @@ fn cache_expiry_triggers_stale_detection() {
 
 #[test]
 fn concurrent_cache_read_is_safe() {
-    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    use worksgood::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
     let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
@@ -1076,7 +1076,7 @@ fn concurrent_cache_read_is_safe() {
 
 #[test]
 fn concurrent_cache_write_and_read() {
-    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    use worksgood::executor::native::openai_client::validate_openrouter_model;
 
     let tmp = TempDir::new().unwrap();
     let dir = Arc::new(tmp);
@@ -1123,7 +1123,7 @@ fn concurrent_cache_write_and_read() {
 
 #[test]
 fn create_provider_ext_validates_openrouter_model() {
-    use workgraph::executor::native::provider::create_provider_ext;
+    use worksgood::executor::native::provider::create_provider_ext;
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
@@ -1194,7 +1194,7 @@ fn create_provider_ext_validates_openrouter_model() {
 #[test]
 #[ignore] // Run with: cargo test -- --ignored live_openrouter
 fn live_openrouter_model_list_query() {
-    use workgraph::executor::native::openai_client::fetch_openrouter_models_blocking;
+    use worksgood::executor::native::openai_client::fetch_openrouter_models_blocking;
 
     let api_key =
         std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set for live tests");

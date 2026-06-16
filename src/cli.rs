@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::PathBuf;
-use workgraph::nex_cli::NexArgs;
+use worksgood::nex_cli::NexArgs;
 
 #[derive(Parser)]
 #[command(name = "wg")]

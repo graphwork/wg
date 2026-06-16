@@ -17,7 +17,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use workgraph::commands::codex_oai_compat;
+use worksgood::commands::codex_oai_compat;
 
 // ---------------------------------------------------------------------------
 // Pure-helper assertions

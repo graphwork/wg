@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::graph::Status;
+use worksgood::graph::Status;
 
 /// Source of context (which dependency produced it)
 #[derive(Debug, Serialize)]
@@ -194,8 +194,8 @@ pub fn run_dependents(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

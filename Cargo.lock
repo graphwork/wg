@@ -7913,7 +7913,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "workgraph"
+name = "worksgood"
 version = "0.1.0"
 dependencies = [
  "ammonia",
@@ -7975,7 +7975,7 @@ dependencies = [
  "uuid",
  "vt100",
  "walkdir",
- "workgraph",
+ "worksgood",
  "zstd",
 ]
 

@@ -13,8 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("could not get current exe path");
@@ -86,7 +86,7 @@ fn test_dependent_task_unblocks_when_eval_passes() {
     let wg_dir = setup_workgraph(&tmp, vec![task_a, eval_a, task_b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         ready_ids.contains(&"b"),
@@ -113,7 +113,7 @@ fn test_dependent_task_stays_blocked_when_eval_in_flight() {
     let wg_dir = setup_workgraph(&tmp, vec![task_a, eval_a, task_b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         !ready_ids.contains(&"b"),
@@ -143,7 +143,7 @@ fn test_dependent_task_stays_blocked_when_eval_open_not_started() {
     let wg_dir = setup_workgraph(&tmp, vec![task_a, eval_a, task_b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         !ready_ids.contains(&"b"),
@@ -168,7 +168,7 @@ fn test_dependent_unblocks_when_no_eval_task_exists() {
     let wg_dir = setup_workgraph(&tmp, vec![task_a, task_b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         ready_ids.contains(&"b"),
@@ -193,7 +193,7 @@ fn test_system_dependents_skip_eval_gate() {
     let wg_dir = setup_workgraph(&tmp, vec![task_a, eval_a, flip_a]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         ready_ids.contains(&".flip-a"),
@@ -255,7 +255,7 @@ fn test_no_routine_pending_validation_state() {
 
 #[test]
 fn test_legacy_pending_validation_migrated() {
-    use workgraph::graph::WorkGraph;
+    use worksgood::graph::WorkGraph;
 
     // Build a graph in memory that contains a PendingValidation task and an
     // unrelated task. After the migration sweep, the PendingValidation task
@@ -269,7 +269,7 @@ fn test_legacy_pending_validation_migrated() {
     // Run the migration directly. This tests the helper in isolation; the
     // dispatcher invokes it on every tick, which is exercised separately by
     // the live coordinator harness.
-    let migrated = workgraph::lifecycle::migrate_pending_validation_tasks(&mut graph);
+    let migrated = worksgood::lifecycle::migrate_pending_validation_tasks(&mut graph);
     let modified = !migrated.is_empty();
     assert!(modified, "migration should have run");
 
@@ -295,14 +295,14 @@ fn test_legacy_pending_validation_migrated() {
 
 #[test]
 fn test_migration_idempotent() {
-    use workgraph::graph::WorkGraph;
+    use worksgood::graph::WorkGraph;
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("stuck", Status::PendingValidation)));
 
-    let first = workgraph::lifecycle::migrate_pending_validation_tasks(&mut graph);
+    let first = worksgood::lifecycle::migrate_pending_validation_tasks(&mut graph);
     assert_eq!(first.len(), 1);
-    let second = workgraph::lifecycle::migrate_pending_validation_tasks(&mut graph);
+    let second = worksgood::lifecycle::migrate_pending_validation_tasks(&mut graph);
     assert!(
         second.is_empty(),
         "second sweep should be a no-op (no PendingValidation tasks left)"
@@ -311,14 +311,14 @@ fn test_migration_idempotent() {
 
 #[test]
 fn test_migration_skips_human_review_opt_in() {
-    use workgraph::graph::WorkGraph;
+    use worksgood::graph::WorkGraph;
 
     let mut graph = WorkGraph::new();
     let mut human = make_task("opt-in", Status::PendingValidation);
     human.tags = vec!["human-review".to_string()];
     graph.add_node(Node::Task(human));
 
-    let migrated = workgraph::lifecycle::migrate_pending_validation_tasks(&mut graph);
+    let migrated = worksgood::lifecycle::migrate_pending_validation_tasks(&mut graph);
     let modified = !migrated.is_empty();
     assert!(
         !modified,
@@ -336,8 +336,8 @@ fn test_migration_skips_human_review_opt_in() {
 
 #[test]
 fn test_rescue_count_field_persists() {
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::{load_graph, save_graph};
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
@@ -370,7 +370,7 @@ fn test_max_eval_rescues_caps_loops() {
     //
     // The actual rescue spawning is exercised by integration_agency_loop and
     // covered there. Here we assert the data shape.
-    use workgraph::config::Config;
+    use worksgood::config::Config;
 
     let mut config = Config::default();
     config.coordinator.max_verify_failures = 3;

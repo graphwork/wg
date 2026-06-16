@@ -2,9 +2,9 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::cycle::{EdgeAddResult, check_edge_addition};
-use workgraph::graph::{CycleConfig, parse_delay};
-use workgraph::parser::modify_graph;
+use worksgood::cycle::{EdgeAddResult, check_edge_addition};
+use worksgood::graph::{CycleConfig, parse_delay};
+use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
@@ -64,7 +64,7 @@ pub fn run(
 
     // Validate model uses provider:model format
     if let Some(m) = model
-        && let Err(e) = workgraph::config::parse_model_spec_strict(m)
+        && let Err(e) = worksgood::config::parse_model_spec_strict(m)
     {
         anyhow::bail!("Invalid --model format: {}", e);
     }
@@ -84,14 +84,14 @@ pub fn run(
     // Validate add-after dependencies before taking mutable borrow (phantom edge prevention)
     if !allow_phantom {
         for dep in add_after {
-            if workgraph::federation::parse_remote_ref(dep).is_some() {
+            if worksgood::federation::parse_remote_ref(dep).is_some() {
                 continue;
             }
             if graph.get_node(dep).is_none() {
                 let mut msg = format!("Dependency '{}' does not exist.", dep);
                 let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
                 if let Some((suggestion, _)) =
-                    workgraph::check::fuzzy_match_task_id(dep, all_ids.iter().copied(), 3)
+                    worksgood::check::fuzzy_match_task_id(dep, all_ids.iter().copied(), 3)
                 {
                     msg.push_str(&format!("\n  → Did you mean '{}'?", suggestion));
                 }
@@ -434,7 +434,7 @@ pub fn run(
         // Update context scope
         if let Some(scope) = context_scope {
             // Validate
-            if let Err(e) = scope.parse::<workgraph::context_scope::ContextScope>() {
+            if let Err(e) = scope.parse::<worksgood::context_scope::ContextScope>() {
                 error = Some(anyhow::anyhow!("{}", e));
                 return false;
             }
@@ -448,7 +448,7 @@ pub fn run(
 
         // Update exec mode
         if let Some(mode) = exec_mode {
-            if let Err(e) = mode.parse::<workgraph::config::ExecMode>() {
+            if let Err(e) = mode.parse::<worksgood::config::ExecMode>() {
                 error = Some(anyhow::anyhow!("{}", e));
                 return false;
             }
@@ -465,7 +465,7 @@ pub fn run(
             return false;
         }
         if let Some(d) = delay {
-            let secs = match workgraph::graph::parse_delay(d) {
+            let secs = match worksgood::graph::parse_delay(d) {
                 Some(s) => s,
                 None => {
                     error = Some(anyhow::anyhow!("Invalid delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d));
@@ -504,11 +504,11 @@ pub fn run(
                 changed = true;
             } else {
                 // Set or update cron schedule
-                match workgraph::cron::parse_cron_expression(cron_expr) {
+                match worksgood::cron::parse_cron_expression(cron_expr) {
                     Ok(schedule) => {
                         task.cron_schedule = Some(cron_expr.to_string());
                         task.cron_enabled = true;
-                        task.next_cron_fire = workgraph::cron::calculate_next_fire_with_jitter(
+                        task.next_cron_fire = worksgood::cron::calculate_next_fire_with_jitter(
                             &task.id,
                             &schedule,
                             chrono::Utc::now(),
@@ -560,8 +560,8 @@ pub fn run(
             && let Some(assign_task) = graph.get_task_mut(aid)
         {
             match assign_task.status {
-                workgraph::graph::Status::Open | workgraph::graph::Status::InProgress => {
-                    assign_task.status = workgraph::graph::Status::Abandoned;
+                worksgood::graph::Status::Open | worksgood::graph::Status::InProgress => {
+                    assign_task.status = worksgood::graph::Status::Abandoned;
                     println!("Abandoned assignment task '{}' (dependencies changed)", aid);
                 }
                 _ => {}
@@ -609,8 +609,8 @@ pub fn run(
         super::notify_graph_changed(dir);
 
         // Record operation
-        let config = workgraph::config::Config::load_or_default(dir);
-        let _ = workgraph::provenance::record(
+        let config = worksgood::config::Config::load_or_default(dir);
+        let _ = worksgood::provenance::record(
             dir,
             "edit",
             Some(task_id),
@@ -632,7 +632,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn create_test_graph(dir: &Path) -> Result<()> {
         // Create the WG directory if it doesn't exist
@@ -1490,15 +1490,15 @@ mod tests {
         let path = graph_path(temp_dir.path());
         {
             let mut graph = load_graph(&path).unwrap();
-            let assign_task = workgraph::graph::Task {
+            let assign_task = worksgood::graph::Task {
                 id: "assign-test-task".to_string(),
                 title: "Assign agent for: Test Task".to_string(),
-                status: workgraph::graph::Status::Open,
+                status: worksgood::graph::Status::Open,
                 tags: vec!["assignment".to_string()],
                 before: vec!["test-task".to_string()],
-                ..workgraph::graph::Task::default()
+                ..worksgood::graph::Task::default()
             };
-            graph.add_node(workgraph::graph::Node::Task(assign_task));
+            graph.add_node(worksgood::graph::Node::Task(assign_task));
             save_graph(&graph, &path).unwrap();
         }
 
@@ -1538,7 +1538,7 @@ mod tests {
         let assign = graph.get_task("assign-test-task").unwrap();
         assert_eq!(
             assign.status,
-            workgraph::graph::Status::Abandoned,
+            worksgood::graph::Status::Abandoned,
             "assign task should be abandoned when deps change"
         );
     }
@@ -1634,8 +1634,8 @@ mod tests {
     fn test_cycle_detection_blocks_unconfigured_cycle() {
         use crate::commands::graph_path;
         use tempfile::TempDir;
-        use workgraph::graph::{Node, Status, Task, WorkGraph};
-        use workgraph::parser::save_graph;
+        use worksgood::graph::{Node, Status, Task, WorkGraph};
+        use worksgood::parser::save_graph;
 
         let temp_dir = TempDir::new().unwrap();
         let path = graph_path(temp_dir.path());
@@ -1700,8 +1700,8 @@ mod tests {
     fn test_cycle_detection_allows_with_flag() {
         use crate::commands::{graph_path, load_graph};
         use tempfile::TempDir;
-        use workgraph::graph::{Node, Status, Task, WorkGraph};
-        use workgraph::parser::save_graph;
+        use worksgood::graph::{Node, Status, Task, WorkGraph};
+        use worksgood::parser::save_graph;
 
         let temp_dir = TempDir::new().unwrap();
         let path = graph_path(temp_dir.path());

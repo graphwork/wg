@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::query::cost_of;
+use worksgood::query::cost_of;
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
@@ -35,8 +35,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Estimate, Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Estimate, Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

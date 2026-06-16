@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::journal::{self, EndReason, Journal, JournalEntryKind};
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::journal::{self, EndReason, Journal, JournalEntryKind};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::tools::ToolRegistry;
 
 /// A mock provider that returns a pre-scripted response.
 struct MockProvider {
@@ -123,8 +123,8 @@ impl Provider for MockProvider {
 fn setup_workgraph(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let graph_path = dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 }
 
 // ── Test: journal is created when agent loop runs ──────────────────────
@@ -188,7 +188,7 @@ async fn test_journal_created_on_agent_run() {
     // Check User message
     match &entries[1].kind {
         JournalEntryKind::Message { role, content, .. } => {
-            assert_eq!(*role, workgraph::executor::native::client::Role::User);
+            assert_eq!(*role, worksgood::executor::native::client::Role::User);
             assert_eq!(content.len(), 1);
         }
         _ => panic!("Expected User Message at seq 2"),
@@ -203,7 +203,7 @@ async fn test_journal_created_on_agent_run() {
             stop_reason,
             ..
         } => {
-            assert_eq!(*role, workgraph::executor::native::client::Role::Assistant);
+            assert_eq!(*role, worksgood::executor::native::client::Role::Assistant);
             assert!(usage.is_some());
             assert_eq!(response_id.as_deref(), Some("msg-test-001"));
             assert_eq!(*stop_reason, Some(StopReason::EndTurn));
@@ -339,8 +339,8 @@ async fn test_journal_with_tool_calls() {
             .map(|e| match &e.kind {
                 JournalEntryKind::Init { .. } => "Init",
                 JournalEntryKind::Message { role, .. } => match role {
-                    workgraph::executor::native::client::Role::User => "User",
-                    workgraph::executor::native::client::Role::Assistant => "Assistant",
+                    worksgood::executor::native::client::Role::User => "User",
+                    worksgood::executor::native::client::Role::Assistant => "Assistant",
                 },
                 JournalEntryKind::ToolExecution { .. } => "ToolExecution",
                 JournalEntryKind::Compaction { .. } => "Compaction",
@@ -376,7 +376,7 @@ async fn test_journal_with_tool_calls() {
     // The entry before ToolExecution should be the assistant's tool_use message
     match &entries[tool_exec_idx - 1].kind {
         JournalEntryKind::Message { role, content, .. } => {
-            assert_eq!(*role, workgraph::executor::native::client::Role::Assistant);
+            assert_eq!(*role, worksgood::executor::native::client::Role::Assistant);
             assert!(
                 content
                     .iter()
@@ -388,7 +388,7 @@ async fn test_journal_with_tool_calls() {
     // The entry after ToolExecution should be the user's tool_result message
     match &entries[tool_exec_idx + 1].kind {
         JournalEntryKind::Message { role, content, .. } => {
-            assert_eq!(*role, workgraph::executor::native::client::Role::User);
+            assert_eq!(*role, worksgood::executor::native::client::Role::User);
             assert!(
                 content
                     .iter()
@@ -465,7 +465,7 @@ async fn test_journal_survives_crash() {
 
     journal
         .append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "Resumed after crash.".to_string(),
             }],

@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::Barrier;
 
-use workgraph::executor::native::client::ToolDefinition;
-use workgraph::executor::native::tools::{
+use worksgood::executor::native::client::ToolDefinition;
+use worksgood::executor::native::tools::{
     DEFAULT_MAX_CONCURRENT_TOOLS, Tool, ToolCall, ToolOutput, ToolRegistry,
 };
 

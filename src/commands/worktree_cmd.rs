@@ -251,7 +251,7 @@ pub fn gc(workgraph_dir: &Path, execute: bool, older: Option<&str>, dead_only: b
 
     // Build the live-agent set if we'll need it.
     let alive_agents: std::collections::HashSet<String> = if dead_only {
-        use workgraph::service::AgentRegistry;
+        use worksgood::service::AgentRegistry;
         match AgentRegistry::load_locked(workgraph_dir) {
             Ok(reg) => reg
                 .list_alive_agents()

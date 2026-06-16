@@ -32,8 +32,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use workgraph::chat;
-use workgraph::session_lock::{HandlerKind, SessionLock};
+use worksgood::chat;
+use worksgood::session_lock::{HandlerKind, SessionLock};
 
 const INBOX_POLL: Duration = Duration::from_millis(200);
 
@@ -59,7 +59,7 @@ pub fn run(
 
     // Route through the session registry so aliases resolve to the
     // UUID-backed storage dir — see `chat::chat_dir_for_ref`.
-    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 
@@ -282,7 +282,7 @@ fn opencode_model_arg(model: Option<&str>) -> Option<String> {
     let m = match raw.split_once(':') {
         Some((prefix, rest))
             if !rest.trim().is_empty()
-                && workgraph::dispatch::ExecutorKind::from_str(prefix)
+                && worksgood::dispatch::ExecutorKind::from_str(prefix)
                     .is_some_and(|k| k.is_external_cli()) =>
         {
             rest.trim()
@@ -295,7 +295,7 @@ fn opencode_model_arg(model: Option<&str>) -> Option<String> {
     // `minimax/minimax-m3`, which must become `openrouter/minimax/minimax-m3`
     // rather than being passed through (OpenCode can't resolve provider
     // `minimax` and silently falls back to its default model).
-    workgraph::chat_command::opencode_model_arg(m)
+    worksgood::chat_command::opencode_model_arg(m)
 }
 
 /// Build the argv (excluding the `opencode` binary itself) for one

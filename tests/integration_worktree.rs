@@ -179,7 +179,7 @@ fn test_worktree_cargo_isolation() {
 
 #[test]
 fn test_worktree_isolation_default_config() {
-    use workgraph::config::CoordinatorConfig;
+    use worksgood::config::CoordinatorConfig;
 
     // Verify that worktree isolation is enabled by default
     let config = CoordinatorConfig::default();
@@ -247,8 +247,8 @@ fn test_worktree_creates_separate_target_dirs() {
 
 #[test]
 fn test_cleanup_orphaned_worktrees_skips_live_agents() {
-    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
-    use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+    use worksgood::commands::service::worktree::cleanup_orphaned_worktrees;
+    use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
     let project = temp.path().join("project");
@@ -289,9 +289,9 @@ fn test_cleanup_orphaned_worktrees_skips_live_agents() {
 
 #[test]
 fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
-    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
-    use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+    use worksgood::commands::service::worktree::cleanup_orphaned_worktrees;
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
+    use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
     let project = temp.path().join("project");
@@ -347,7 +347,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
         status: Status::Done,
         ..Task::default()
     }));
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+    worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
         .expect("Failed to write graph");
 
     // Merge the branch into main so retention is satisfied
@@ -371,9 +371,9 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
 /// survive for `wg retry` to resume in-place.
 #[test]
 fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
-    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
-    use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+    use worksgood::commands::service::worktree::cleanup_orphaned_worktrees;
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
+    use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
     let project = temp.path().join("project");
@@ -415,7 +415,7 @@ fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
         status: Status::Failed,
         ..Task::default()
     }));
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
+    worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl"))
         .expect("Failed to write graph");
 
     let cleaned_count = cleanup_orphaned_worktrees(&wg_dir).expect("Cleanup should not fail");
@@ -431,7 +431,7 @@ fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
 
 #[test]
 fn test_cleanup_dead_agent_worktree() {
-    use workgraph::commands::service::worktree::cleanup_dead_agent_worktree_with_config;
+    use worksgood::commands::service::worktree::cleanup_dead_agent_worktree_with_config;
 
     let temp = TempDir::new().expect("Failed to create temp dir");
     let project = temp.path().join("project");

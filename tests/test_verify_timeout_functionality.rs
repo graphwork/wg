@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::config::CoordinatorConfig;
-use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph, parse_delay};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::config::CoordinatorConfig;
+use worksgood::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph, parse_delay};
+use worksgood::parser::{load_graph, save_graph};
 
 fn wg_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));

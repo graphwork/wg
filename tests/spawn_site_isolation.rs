@@ -11,7 +11,7 @@
 //! This test pins the invariant *structurally* via a grep pass:
 //!
 //!   - Every spawn site outside `src/dispatch/` MUST call
-//!     `workgraph::dispatch::plan_spawn`.
+//!     `worksgood::dispatch::plan_spawn`.
 //!   - The set of files that build executor-aware spawn argv is a closed
 //!     allowlist — a new file showing up with a `plan_spawn` call (or with
 //!     `spawn_agent_inner`-style argv construction) is a signal that a

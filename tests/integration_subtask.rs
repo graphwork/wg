@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WaitCondition, WaitSpec, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Status, Task, WaitCondition, WaitSpec, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ fn subtask_coordinator_resumes_parent_on_child_done() {
 
     let mut child = make_task("child-task");
     child.status = Status::Done;
-    child.log.push(workgraph::graph::LogEntry {
+    child.log.push(worksgood::graph::LogEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         actor: Some("agent-2".to_string()),
         user: None,
@@ -263,7 +263,7 @@ fn subtask_coordinator_resumes_parent_on_child_done() {
 
     let wg_dir = setup_workgraph(dir.path(), vec![parent, child]);
 
-    use workgraph::parser::modify_graph;
+    use worksgood::parser::modify_graph;
     let gp = graph_path(&wg_dir);
     let mut did_change = false;
     let _ = modify_graph(&gp, |graph| {
@@ -324,7 +324,7 @@ fn subtask_coordinator_resumes_parent_on_child_failed() {
 
     let wg_dir = setup_workgraph(dir.path(), vec![parent, child]);
 
-    use workgraph::parser::modify_graph;
+    use worksgood::parser::modify_graph;
     let gp = graph_path(&wg_dir);
     let mut did_change = false;
     let _ = modify_graph(&gp, |graph| {

@@ -33,10 +33,10 @@ use std::thread::{self, JoinHandle};
 
 use chrono::{DateTime, Utc};
 
-use workgraph::chat;
-use workgraph::graph::Status;
-use workgraph::parser::load_graph;
-use workgraph::service::registry::AgentRegistry;
+use worksgood::chat;
+use worksgood::graph::Status;
+use worksgood::parser::load_graph;
+use worksgood::service::registry::AgentRegistry;
 
 use crate::commands::{graph_path, is_process_alive};
 
@@ -161,10 +161,10 @@ pub(crate) fn rate_limit_wait(
 /// the resolution logic is isolated here so tests can drive every branch
 /// without needing a real handler.
 pub(crate) fn resolve_chat_task_id(
-    graph: &workgraph::graph::WorkGraph,
+    graph: &worksgood::graph::WorkGraph,
     coordinator_id: u32,
 ) -> Option<String> {
-    let new_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let new_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let legacy_id = format!(".coordinator-{}", coordinator_id);
     if graph.get_task(&new_id).is_some() {
         Some(new_id)
@@ -176,7 +176,7 @@ pub(crate) fn resolve_chat_task_id(
 }
 
 pub(crate) fn tui_driver_deferral_pid(chat_dir: &Path) -> Option<u32> {
-    workgraph::session_lock::active_tui_driver_pid(chat_dir)
+    worksgood::session_lock::active_tui_driver_pid(chat_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -450,18 +450,18 @@ impl CoordinatorAgent {
         // (the chat task's id) and let plan_spawn cascade through the
         // explicit `agent_executor` (the supervisor's `executor` arg)
         // → config → default rules.
-        let supervisor_config = workgraph::config::Config::load_or_default(dir);
-        let chat_task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
-        let mut chat_task = workgraph::graph::Task {
+        let supervisor_config = worksgood::config::Config::load_or_default(dir);
+        let chat_task_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
+        let mut chat_task = worksgood::graph::Task {
             id: chat_task_id.clone(),
             title: chat_task_id.clone(),
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         };
         if let Some(m) = model {
             chat_task.model = Some(m.to_string());
         }
         let supervisor_plan =
-            workgraph::dispatch::plan_spawn(&chat_task, &supervisor_config, Some(executor), model)
+            worksgood::dispatch::plan_spawn(&chat_task, &supervisor_config, Some(executor), model)
                 .context("plan_spawn for coordinator agent supervisor failed")?;
         // Post-Phase-7, ALL supported executors are backed by a
         // handler subprocess that reads the inbox directly:
@@ -472,7 +472,7 @@ impl CoordinatorAgent {
         // hints retained as a hedge for the legacy non-canonical
         // values still seen in older configs (the cleanup belongs in
         // a separate task — keep behavior conservative here).
-        let uses_subprocess = supervisor_plan.executor != workgraph::dispatch::ExecutorKind::Shell
+        let uses_subprocess = supervisor_plan.executor != worksgood::dispatch::ExecutorKind::Shell
             || matches!(
                 provider,
                 Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
@@ -766,7 +766,7 @@ fn subprocess_coordinator_loop(
         // the `daemon_style_coordinator_registration_creates_both_paths`
         // unit test that locks in the invariant.
         let chat_alias = format!("coordinator-{}", coordinator_id);
-        if let Err(e) = workgraph::chat_sessions::register_coordinator_session(dir, coordinator_id)
+        if let Err(e) = worksgood::chat_sessions::register_coordinator_session(dir, coordinator_id)
         {
             logger.error(&format!(
                 "Coordinator-{}: register_coordinator_session failed: {}",
@@ -800,10 +800,10 @@ fn subprocess_coordinator_loop(
         // a clear error and exit cleanly so the supervisor thread terminates
         // instead of chewing CPU forever.
         let task_id = {
-            let new_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+            let new_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
             let legacy_id = format!(".coordinator-{}", coordinator_id);
             let graph_path = crate::commands::graph_path(dir);
-            match workgraph::parser::load_graph(&graph_path) {
+            match worksgood::parser::load_graph(&graph_path) {
                 Ok(g) => {
                     let resolved = resolve_chat_task_id(&g, coordinator_id);
                     let Some(rid) = resolved else {
@@ -824,14 +824,14 @@ fn subprocess_coordinator_loop(
                     // the supervisor loop after they've mutated the graph.
                     if let Some(t) = g.get_task(&rid) {
                         let is_archived = t.tags.iter().any(|x| x == "archived");
-                        let is_done = matches!(t.status, workgraph::graph::Status::Done);
-                        let is_abandoned = matches!(t.status, workgraph::graph::Status::Abandoned);
+                        let is_done = matches!(t.status, worksgood::graph::Status::Done);
+                        let is_abandoned = matches!(t.status, worksgood::graph::Status::Abandoned);
                         if is_archived
                             || (is_done
                                 && !t
                                     .tags
                                     .iter()
-                                    .any(|x| workgraph::chat_id::is_chat_loop_tag(x)))
+                                    .any(|x| worksgood::chat_id::is_chat_loop_tag(x)))
                             || is_abandoned
                         {
                             logger.info(&format!(
@@ -853,7 +853,7 @@ fn subprocess_coordinator_loop(
             }
         };
         let chat_ref = format!("chat-{}", coordinator_id);
-        let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+        let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
         if let Some(tui_pid) = tui_driver_deferral_pid(&chat_dir) {
             logger.info(&format!(
                 "Coordinator-{}: TUI sentinel alive (pid={}) — deferring respawn 5s",
@@ -881,22 +881,22 @@ fn subprocess_coordinator_loop(
         // any per-task model/exec overrides on `.chat-N` (or legacy
         // `.coordinator-N`) are honored, then layer the supervisor's
         // explicit `exec_override` as the agency-level executor input.
-        let supervisor_config = workgraph::config::Config::load_or_default(dir);
-        let chat_task = match workgraph::parser::load_graph(&crate::commands::graph_path(dir)) {
+        let supervisor_config = worksgood::config::Config::load_or_default(dir);
+        let chat_task = match worksgood::parser::load_graph(&crate::commands::graph_path(dir)) {
             Ok(g) => g
                 .get_task(&task_id)
                 .cloned()
-                .unwrap_or_else(|| workgraph::graph::Task {
+                .unwrap_or_else(|| worksgood::graph::Task {
                     id: task_id.clone(),
                     title: task_id.clone(),
                     model: model_override.clone(),
-                    ..workgraph::graph::Task::default()
+                    ..worksgood::graph::Task::default()
                 }),
-            Err(_) => workgraph::graph::Task {
+            Err(_) => worksgood::graph::Task {
                 id: task_id.clone(),
                 title: task_id.clone(),
                 model: model_override.clone(),
-                ..workgraph::graph::Task::default()
+                ..worksgood::graph::Task::default()
             },
         };
         if !chat_task.command_argv.is_empty() && chat_task.executor_preset_name.is_none() {
@@ -907,7 +907,7 @@ fn subprocess_coordinator_loop(
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
-        let plan = match workgraph::dispatch::plan_spawn(
+        let plan = match worksgood::dispatch::plan_spawn(
             &chat_task,
             &supervisor_config,
             Some(&exec_override),
@@ -1069,8 +1069,8 @@ fn subprocess_coordinator_loop(
         // linger; a successor handler ignores it via the generation-aware
         // `release_requested_for` check, but clearing here keeps the
         // on-disk state honest and avoids confusing `wg session` readers.
-        if workgraph::session_lock::release_target(&chat_dir) == Some(child_pid) {
-            workgraph::session_lock::clear_release_marker(&chat_dir);
+        if worksgood::session_lock::release_target(&chat_dir) == Some(child_pid) {
+            worksgood::session_lock::clear_release_marker(&chat_dir);
         }
 
         let success = matches!(&exit_status, Ok(s) if s.success());
@@ -1079,7 +1079,7 @@ fn subprocess_coordinator_loop(
         // handler, the winning holder will still be present here. We
         // squash any IO error to "no holder" so a transient stat() fail
         // doesn't pretend a contention happened.
-        let lock_holder_alive = workgraph::session_lock::read_holder(&chat_dir)
+        let lock_holder_alive = worksgood::session_lock::read_holder(&chat_dir)
             .ok()
             .flatten()
             .map(|h| h.alive)
@@ -1363,7 +1363,7 @@ pub fn build_coordinator_context(
 
     // --- Conversation Context Summary ---
     {
-        use workgraph::service::chat_compactor::{ChatCompactorState, context_summary_path};
+        use worksgood::service::chat_compactor::{ChatCompactorState, context_summary_path};
         let summary_path = context_summary_path(dir, coordinator_id);
         if summary_path.exists()
             && let Ok(contents) = std::fs::read_to_string(&summary_path)
@@ -1384,7 +1384,7 @@ pub fn build_coordinator_context(
     }
 
     // --- Injected History Context (from Ctrl+H history browser) ---
-    if let Some(injected) = workgraph::chat::take_injected_context(dir, coordinator_id) {
+    if let Some(injected) = worksgood::chat::take_injected_context(dir, coordinator_id) {
         parts.push(format!(
             "\n### Injected History Context\n\
              _The user selected this from conversation history for your reference:_\n\n{}",
@@ -1539,7 +1539,7 @@ mod tests {
 
     #[test]
     fn test_coordinator_context_does_not_include_compaction() {
-        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+        use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1562,8 +1562,8 @@ mod tests {
 
     #[test]
     fn test_coordinator_context_includes_chat_summary() {
-        use workgraph::service::chat_compactor::{ChatCompactorState, context_summary_path};
-        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+        use worksgood::service::chat_compactor::{ChatCompactorState, context_summary_path};
+        use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1611,7 +1611,7 @@ mod tests {
 
     #[test]
     fn test_coordinator_context_without_chat_summary() {
-        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+        use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn test_coordinator_context_includes_injected_history() {
-        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+        use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1640,7 +1640,7 @@ mod tests {
         );
 
         // Write injected context
-        workgraph::chat::write_injected_context(dir, 0, "We discussed auth last week").unwrap();
+        worksgood::chat::write_injected_context(dir, 0, "We discussed auth last week").unwrap();
 
         let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
 
@@ -1656,14 +1656,14 @@ mod tests {
 
         // After consumption, the file should be gone (take_injected_context removes it)
         assert!(
-            workgraph::chat::take_injected_context(dir, 0).is_none(),
+            worksgood::chat::take_injected_context(dir, 0).is_none(),
             "injected context should be consumed after build_coordinator_context"
         );
     }
 
     #[test]
     fn test_coordinator_context_no_injected_history_when_absent() {
-        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+        use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1683,8 +1683,8 @@ mod tests {
     /// keep supervising graphs that haven't run `wg migrate chat-rename` yet.
     #[test]
     fn test_resolve_chat_task_id_prefers_new_prefix() {
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-7".to_string(),
             title: "Chat 7".to_string(),
             ..Default::default()
@@ -1694,8 +1694,8 @@ mod tests {
 
     #[test]
     fn test_resolve_chat_task_id_falls_back_to_legacy_prefix() {
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".coordinator-2".to_string(),
             title: "Legacy 2".to_string(),
             ..Default::default()
@@ -1711,13 +1711,13 @@ mod tests {
         // Edge case: a half-migrated graph where both prefixes exist.
         // The supervisor must commit to the new prefix so subsequent
         // `wg spawn-task` invocations land on the canonical task.
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-3".to_string(),
             title: "Chat 3".to_string(),
             ..Default::default()
         }));
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".coordinator-3".to_string(),
             title: "Coordinator 3".to_string(),
             ..Default::default()
@@ -1731,7 +1731,7 @@ mod tests {
     /// per-coord state file so daemon restarts do not resurrect dead chats.
     #[test]
     fn test_resolve_chat_task_id_returns_none_for_orphan_supervisor() {
-        let graph = workgraph::graph::WorkGraph::new();
+        let graph = worksgood::graph::WorkGraph::new();
         assert!(resolve_chat_task_id(&graph, 99).is_none());
     }
 
@@ -1753,7 +1753,7 @@ mod tests {
         assert!(super::super::CoordinatorState::load_for(dir, 5).is_some());
 
         // Graph contains neither `.chat-5` nor `.coordinator-5`.
-        let graph = workgraph::graph::WorkGraph::new();
+        let graph = worksgood::graph::WorkGraph::new();
         assert!(resolve_chat_task_id(&graph, 5).is_none());
 
         // Supervisor's orphan-exit calls remove_for; verify the file is gone.
@@ -1929,25 +1929,25 @@ mod tests {
     fn test_tui_sentinel_defers_supervisor_respawn_only_while_alive() {
         let tmp = TempDir::new().unwrap();
         let chat_dir = tmp.path().join("chat");
-        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
+        worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
 
         assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
 
-        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
-        let lock = workgraph::session_lock::SessionLock::acquire(
+        worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
+        let lock = worksgood::session_lock::SessionLock::acquire(
             &chat_dir,
-            workgraph::session_lock::HandlerKind::InteractiveNex,
+            worksgood::session_lock::HandlerKind::InteractiveNex,
         )
         .unwrap();
         assert_eq!(tui_driver_deferral_pid(&chat_dir), Some(std::process::id()));
 
         drop(lock);
-        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+        worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
         assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
 
         std::fs::create_dir_all(&chat_dir).unwrap();
         std::fs::write(
-            workgraph::session_lock::tui_driver_sentinel_path(&chat_dir),
+            worksgood::session_lock::tui_driver_sentinel_path(&chat_dir),
             "999999\n2020-01-01T00:00:00Z\n",
         )
         .unwrap();

@@ -11,7 +11,7 @@
 
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Lineage};
+use worksgood::agency::{self, Lineage};
 
 /// Helper: set up agency storage and return (tmp, agency_dir).
 fn setup() -> (TempDir, std::path::PathBuf) {

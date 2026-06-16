@@ -7,12 +7,12 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
-use workgraph::executor::native::client::{
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::executor::native::client::{
     ContentBlock, Message, MessagesRequest, Role, StopReason, ToolDefinition,
 };
-use workgraph::executor::native::openai_client::OpenAiClient;
-use workgraph::executor::native::provider::Provider;
+use worksgood::executor::native::openai_client::OpenAiClient;
+use worksgood::executor::native::provider::Provider;
 
 // ---------------------------------------------------------------------------
 // Helpers: mock HTTP server
@@ -548,7 +548,7 @@ async fn streaming_api_error_propagates() {
 
 #[test]
 fn from_endpoint_sets_streaming_for_openrouter() {
-    use workgraph::config::EndpointConfig;
+    use worksgood::config::EndpointConfig;
 
     let ep = EndpointConfig {
         name: "or-test".to_string(),

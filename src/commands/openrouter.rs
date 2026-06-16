@@ -4,8 +4,8 @@ use crate::cli::OpenRouterCommands;
 use crate::commands::service::CoordinatorState;
 use anyhow::Result;
 use std::path::Path;
-use workgraph::config::Config;
-use workgraph::executor::native::openai_client::{
+use worksgood::config::Config;
+use worksgood::executor::native::openai_client::{
     fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir,
 };
 

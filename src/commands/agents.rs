@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use std::path::Path;
-use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::service::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::{is_process_alive, kill_process_force, kill_process_graceful};
 
@@ -321,8 +321,8 @@ pub struct AgentSummary {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn setup_with_agents() -> TempDir {
         let temp_dir = TempDir::new().unwrap();

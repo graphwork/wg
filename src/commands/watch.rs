@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use workgraph::provenance;
+use worksgood::provenance;
 
 #[derive(Debug, Serialize)]
 pub struct WatchEvent {

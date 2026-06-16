@@ -2,8 +2,8 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::graph::Status;
-use workgraph::query::build_reverse_index;
+use worksgood::graph::Status;
+use worksgood::query::build_reverse_index;
 
 use super::collect_transitive_dependents;
 
@@ -164,7 +164,7 @@ fn generate_recommendation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

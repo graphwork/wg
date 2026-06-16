@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::parser::modify_graph;
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 /// Register an artifact (produced output) for a task
 pub fn run_add(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> {
@@ -43,8 +43,8 @@ pub fn run_add(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "artifact_add",
         Some(task_id),
@@ -93,8 +93,8 @@ pub fn run_remove(dir: &Path, task_id: &str, artifact_path: &str) -> Result<()> 
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "artifact_rm",
         Some(task_id),
@@ -162,8 +162,8 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

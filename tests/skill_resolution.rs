@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use workgraph::agency::{self, ContentRef};
+use worksgood::agency::{self, ContentRef};
 
 // ---------------------------------------------------------------------------
 // resolve_skill – individual variants

@@ -11,13 +11,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status, Task};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status, Task};
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 /// Options for `wg recover`.
 #[derive(Debug, Clone, Default)]
@@ -104,7 +104,7 @@ pub fn build_plan(tasks: &[Task], opts: &RecoverOptions) -> Result<Plan> {
             endpoint_change: opts.set_endpoint.clone(),
         };
 
-        if workgraph::graph::is_system_task(&task.id) {
+        if worksgood::graph::is_system_task(&task.id) {
             // Agency followups: abandon (unless --keep-agency).
             if is_agency_followup(&task.id) && !opts.keep_agency {
                 plan.agency_abandons.push(PlanEntry {
@@ -287,7 +287,7 @@ fn task_matches_filters(task: &Task, filters: &[Filter]) -> bool {
 fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
     let path = super::graph_path(dir);
     let now = Utc::now().to_rfc3339();
-    let user = workgraph::current_user();
+    let user = worksgood::current_user();
     let recover_msg = format!(
         "Reset by `wg recover`{}",
         opts.reason
@@ -356,8 +356,8 @@ fn apply_plan(dir: &Path, plan: &Plan, opts: &RecoverOptions) -> Result<()> {
 
     super::notify_graph_changed(dir);
 
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "recover",
         None,
@@ -444,12 +444,12 @@ pub fn run(dir: &Path, opts: RecoverOptions) -> Result<()> {
     }
 
     if let Some(m) = &opts.set_model
-        && let Err(e) = workgraph::config::parse_model_spec_strict(m)
+        && let Err(e) = worksgood::config::parse_model_spec_strict(m)
     {
         anyhow::bail!("Invalid --set-model format: {}", e);
     }
 
-    let graph = workgraph::parser::load_graph(&path).context("Failed to load graph")?;
+    let graph = worksgood::parser::load_graph(&path).context("Failed to load graph")?;
     let tasks: Vec<Task> = graph.tasks().cloned().collect();
     let plan = build_plan(&tasks, &opts)?;
     print_plan(&plan, &opts);
@@ -475,8 +475,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn task(id: &str, status: Status) -> Task {
         Task {

@@ -4,10 +4,10 @@
 //! covering dependency wiring, task creation, readiness blocking,
 //! and evaluator prompt rendering with verify context.
 
-use workgraph::agency::{EvaluatorInput, render_evaluator_prompt};
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
-use workgraph::query::ready_tasks;
+use worksgood::agency::{EvaluatorInput, render_evaluator_prompt};
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
+use worksgood::query::ready_tasks;
 
 // Pull in the scaffold functions (they're pub in eval_scaffold.rs which is
 // a file under src/commands/, re-exported as a binary helper — we use the

@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::config::Tier;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
-use workgraph::service::{AgentRegistry, is_process_alive, kill_process_graceful};
+use worksgood::config::Tier;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
+use worksgood::service::{AgentRegistry, is_process_alive, kill_process_graceful};
 
 use super::claim_lifecycle;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(
     dir: &Path,
@@ -30,7 +30,7 @@ pub fn run(
     // (incrementing retry_count, which fail/incomplete normally do for us).
     // For Failed/Incomplete we follow the existing reset path.
     let initial_status = {
-        let graph = workgraph::parser::load_graph(&path).context("Failed to load graph")?;
+        let graph = worksgood::parser::load_graph(&path).context("Failed to load graph")?;
         graph.get_task(id).map(|t| t.status)
     };
 
@@ -79,7 +79,7 @@ pub fn run(
         }
     }
 
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let escalate_on_retry = config.coordinator.escalate_on_retry;
 
     let mut error: Option<anyhow::Error> = None;
@@ -158,7 +158,7 @@ pub fn run(
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: msg.clone(),
                 });
                 tier_escalation_msg = Some(msg);
@@ -176,7 +176,7 @@ pub fn run(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!(
                 "Task reset for retry from {} (attempt #{}){}",
                 source,
@@ -222,7 +222,7 @@ pub fn run(
     super::notify_graph_changed(dir);
 
     // Record operation
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "retry",
         Some(id),
@@ -301,7 +301,7 @@ fn retry_in_progress(
     //    because kill_process_graceful sleeps up to 5s.
     let registry = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
     let task_snapshot = {
-        let graph = workgraph::parser::load_graph(path).context("Failed to load graph")?;
+        let graph = worksgood::parser::load_graph(path).context("Failed to load graph")?;
         graph.get_task(id).cloned()
     };
     let task = task_snapshot.ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
@@ -328,7 +328,7 @@ fn retry_in_progress(
         && let Ok(mut locked) = AgentRegistry::load_locked(dir)
     {
         if let Some(agent) = locked.get_agent_mut(aid) {
-            agent.status = workgraph::service::AgentStatus::Dead;
+            agent.status = worksgood::service::AgentStatus::Dead;
             if agent.completed_at.is_none() {
                 agent.completed_at = Some(Utc::now().to_rfc3339());
             }
@@ -338,7 +338,7 @@ fn retry_in_progress(
 
     // 3) Reset the task: status=Open, clear assigned, increment retry_count,
     //    log retry. This is atomic under the graph flock.
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let escalate_on_retry = config.coordinator.escalate_on_retry;
     let mut error: Option<anyhow::Error> = None;
     let mut attempt: u32 = 0;
@@ -397,7 +397,7 @@ fn retry_in_progress(
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: msg.clone(),
                 });
                 tier_escalation_msg = Some(msg);
@@ -414,7 +414,7 @@ fn retry_in_progress(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!(
                 "Task reset for retry from in-progress (attempt #{}){}{}",
                 task.retry_count, kill_note, reason_suffix
@@ -468,7 +468,7 @@ fn retry_in_progress(
 
     super::notify_graph_changed(dir);
 
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "retry",
         Some(id),
@@ -513,8 +513,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -1125,7 +1125,7 @@ mod tests {
     /// Helper: write a registry with one Dead agent at `dir/registry.json`.
     /// Used by the downstream-claim TDD tests below.
     fn write_dead_agent_registry(dir: &Path, agent_id: &str) {
-        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+        use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
         let mut reg = AgentRegistry::new();
         reg.agents.insert(
             agent_id.to_string(),
@@ -1201,7 +1201,7 @@ mod tests {
     /// cleared — eager path is conservative.
     #[test]
     fn test_wg_retry_preserves_live_downstream_claims() {
-        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+        use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 

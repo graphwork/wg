@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tempfile::TempDir;
 
-use workgraph::graph::parse_delay;
+use worksgood::graph::parse_delay;
 
 #[test]
 fn test_verify_timeout_parsing() -> Result<()> {

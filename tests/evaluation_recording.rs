@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
+use worksgood::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
 
 // ---------------------------------------------------------------------------
 // Helpers

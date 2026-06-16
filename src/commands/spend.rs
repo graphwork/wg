@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use workgraph::graph::Status;
+use worksgood::graph::Status;
 
 /// Daily spend summary entry.
 #[derive(Debug)]
@@ -162,8 +162,8 @@ fn format_number(n: u64) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn setup_workgraph(dir: &Path, tasks: Vec<Task>) {
         let path = dir.join("graph.jsonl");
@@ -199,7 +199,7 @@ mod tests {
             status: Status::Done,
             ..Default::default()
         };
-        task.token_usage = Some(workgraph::graph::TokenUsage {
+        task.token_usage = Some(worksgood::graph::TokenUsage {
             cost_usd: 0.50,
             input_tokens: 1000,
             output_tokens: 500,

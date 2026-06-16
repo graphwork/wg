@@ -1,18 +1,18 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::agency::capture_task_output;
-use workgraph::config::Config;
-use workgraph::graph::{
+use worksgood::agency::capture_task_output;
+use worksgood::config::Config;
+use worksgood::graph::{
     FailureClass, LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
 };
-use workgraph::parser::modify_graph;
-use workgraph::service::registry::AgentRegistry;
+use worksgood::parser::modify_graph;
+use worksgood::service::registry::AgentRegistry;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, class: Option<FailureClass>) -> Result<()> {
     run_inner(dir, id, reason, class, false)
@@ -66,7 +66,7 @@ fn run_inner(
     // Shell tasks (exec set or exec_mode="shell") have no .evaluate-* scaffold
     // (suppressed in eval_scaffold), so the rescue path can never resolve.
     // Route them straight to terminal Failed.
-    let is_shell = workgraph::parser::load_graph(&path)
+    let is_shell = worksgood::parser::load_graph(&path)
         .ok()
         .and_then(|g| g.get_task(id).map(super::eval_scaffold::is_shell_task))
         .unwrap_or(false);
@@ -136,7 +136,7 @@ fn run_inner(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Agent exited without wg done — entering failed-pending-eval for rescue evaluation".to_string(),
             });
 
@@ -172,7 +172,7 @@ fn run_inner(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: log_message,
         });
 
@@ -212,7 +212,7 @@ fn run_inner(
     // periodic triage detects the dead process.
     if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
         if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-            use workgraph::service::registry::AgentStatus;
+            use worksgood::service::registry::AgentStatus;
             agent.status = AgentStatus::Failed;
             if agent.completed_at.is_none() {
                 agent.completed_at = Some(Utc::now().to_rfc3339());
@@ -230,12 +230,12 @@ fn run_inner(
     }
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let detail = match reason {
         Some(r) => serde_json::json!({ "reason": r }),
         None => serde_json::Value::Null,
     };
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "fail",
         Some(id),
@@ -296,7 +296,7 @@ fn run_inner(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::test_helpers::{make_task_with_status as make_task, setup_workgraph};
+    use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
     #[test]
     fn test_fail_in_progress_task() {
@@ -550,7 +550,7 @@ mod tests {
     fn test_fail_updates_agent_registry() {
         // When a task is marked failed, the agent registry entry should also
         // transition to Failed so the agent slot is freed immediately.
-        use workgraph::service::registry::{AgentRegistry, AgentStatus};
+        use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
 
 extern crate libc;
 
@@ -587,7 +587,7 @@ fn executor_registry_default_command_is_claude() {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(&wg_dir);
+    let registry = worksgood::service::executor::ExecutorRegistry::new(&wg_dir);
     let config = registry.load_config("claude").unwrap();
 
     assert_eq!(
@@ -618,7 +618,7 @@ args = ["--print"]
     )
     .unwrap();
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(&wg_dir);
+    let registry = worksgood::service::executor::ExecutorRegistry::new(&wg_dir);
     let config = registry.load_config("claude").unwrap();
 
     assert_eq!(

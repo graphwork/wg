@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use workgraph::federation;
+use worksgood::federation;
 
 /// Add a named peer WG project.
 pub fn run_add(
@@ -334,7 +334,7 @@ struct TaskCounts {
 
 /// Count tasks by status in a graph.jsonl file.
 fn count_tasks_in_graph(graph_path: &Path) -> Result<TaskCounts> {
-    let graph = workgraph::parser::load_graph(graph_path)?;
+    let graph = worksgood::parser::load_graph(graph_path)?;
     let mut counts = TaskCounts {
         total: 0,
         open: 0,
@@ -346,16 +346,16 @@ fn count_tasks_in_graph(graph_path: &Path) -> Result<TaskCounts> {
     for task in graph.tasks() {
         counts.total += 1;
         match task.status {
-            workgraph::graph::Status::Open => counts.open += 1,
-            workgraph::graph::Status::InProgress => counts.in_progress += 1,
-            workgraph::graph::Status::Done => counts.done += 1,
-            workgraph::graph::Status::Failed => counts.failed += 1,
-            workgraph::graph::Status::Abandoned
-            | workgraph::graph::Status::Blocked
-            | workgraph::graph::Status::Waiting
-            | workgraph::graph::Status::PendingValidation
-            | workgraph::graph::Status::Incomplete => {}
-            workgraph::graph::Status::PendingEval | workgraph::graph::Status::FailedPendingEval => {
+            worksgood::graph::Status::Open => counts.open += 1,
+            worksgood::graph::Status::InProgress => counts.in_progress += 1,
+            worksgood::graph::Status::Done => counts.done += 1,
+            worksgood::graph::Status::Failed => counts.failed += 1,
+            worksgood::graph::Status::Abandoned
+            | worksgood::graph::Status::Blocked
+            | worksgood::graph::Status::Waiting
+            | worksgood::graph::Status::PendingValidation
+            | worksgood::graph::Status::Incomplete => {}
+            worksgood::graph::Status::PendingEval | worksgood::graph::Status::FailedPendingEval => {
                 counts.in_progress += 1
             }
         }

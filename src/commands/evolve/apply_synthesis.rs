@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role,
     RoleComponent,
 };

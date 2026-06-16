@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::config::{Config, DispatchRole};
-use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
+use worksgood::config::{Config, DispatchRole};
+use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 // ---------------------------------------------------------------------------
 // Helpers

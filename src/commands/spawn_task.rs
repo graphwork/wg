@@ -33,8 +33,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 
-use workgraph::dispatch::ExecutorKind;
-use workgraph::graph::Task;
+use worksgood::dispatch::ExecutorKind;
+use worksgood::graph::Task;
 
 /// Dispatch table for what handler to run for a task. Parsed from
 /// the task's executor hint (config override) or defaults to native.
@@ -132,10 +132,10 @@ pub fn run(
     // OTHER load error (malformed JSONL, permissions, etc.) still
     // bails.
     let graph = if graph_path.exists() {
-        workgraph::parser::load_graph(&graph_path)
+        worksgood::parser::load_graph(&graph_path)
             .with_context(|| format!("load graph at {:?}", graph_path))?
     } else {
-        workgraph::graph::WorkGraph::new()
+        worksgood::graph::WorkGraph::new()
     };
     let found = graph.tasks().find(|t| t.id == task_id).cloned();
     let task = match found {
@@ -170,7 +170,7 @@ pub fn run(
 /// config + task-specific overrides.
 ///
 /// All `{executor, model, endpoint}` decisions are delegated to
-/// [`workgraph::dispatch::plan_spawn`] — the single source of truth for
+/// [`worksgood::dispatch::plan_spawn`] — the single source of truth for
 /// spawn-time resolution. This function only sources `WG_EXECUTOR_TYPE`
 /// (the per-coordinator env hint set by the daemon) and converts the
 /// resulting `SpawnPlan` into a `HandlerSpec` for the local exec adapter.
@@ -179,7 +179,7 @@ pub fn resolve_handler(
     task: &Task,
     role_override: Option<&str>,
 ) -> Result<HandlerSpec> {
-    let config = workgraph::config::Config::load_or_default(workgraph_dir);
+    let config = worksgood::config::Config::load_or_default(workgraph_dir);
 
     // chat_ref convention: task id IS the chat alias, until Phase 5
     // migration swaps to `.chat-<uuid>`. Exceptions: `.chat-N` and
@@ -224,7 +224,7 @@ pub fn resolve_handler(
     //     half of the per-chat plan.
     let env_executor = std::env::var("WG_EXECUTOR_TYPE").ok();
     let env_model = std::env::var("WG_MODEL").ok();
-    let plan = workgraph::dispatch::plan_spawn(
+    let plan = worksgood::dispatch::plan_spawn(
         task,
         &config,
         env_executor.as_deref(),
@@ -242,7 +242,7 @@ pub fn resolve_handler(
     // Resume if the session journal exists on disk — same rule
     // `wg nex` uses internally. Route through the registry so
     // aliases (`coordinator-0`, `0`) resolve to the UUID dir.
-    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, &chat_ref);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, &chat_ref);
     let journal_exists = chat_dir.join("conversation.jsonl").exists();
 
     let model = Some(plan.model.raw.clone());
@@ -710,13 +710,13 @@ mod tests {
 
             let task = mktask(".coordinator-0");
             assert!(task.model.is_none(), "synthesized task has no model");
-            let config = workgraph::config::Config::load_or_default(wg_dir);
+            let config = worksgood::config::Config::load_or_default(wg_dir);
             let expected_model = config
                 .coordinator
                 .model
                 .clone()
                 .unwrap_or_else(|| config.agent.model.clone());
-            let expected_executor = workgraph::dispatch::handler_for_model(&expected_model);
+            let expected_executor = worksgood::dispatch::handler_for_model(&expected_model);
             let spec = resolve_handler(wg_dir, &task, None).unwrap();
 
             let preview = spec.command_preview();
@@ -902,7 +902,7 @@ mod tests {
             let wg_dir = dir.path();
 
             let mut task = mktask(".chat-32");
-            task.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+            task.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
             task.model = Some("nex:qwen3-coder".to_string());
             task.endpoint = Some("https://lambda01.tail334fe6.ts.net:30000".to_string());
 

@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 /// Reclaim a task from a dead/unresponsive agent
 ///
@@ -63,7 +63,7 @@ pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Resul
         task.log.push(LogEntry {
             timestamp: now,
             actor: Some(to_actor.to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!(
                 "Task reclaimed from @{} to @{} (agent takeover)",
                 from_actor, to_actor
@@ -91,8 +91,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

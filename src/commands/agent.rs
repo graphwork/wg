@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::query::ready_tasks;
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::query::ready_tasks;
 
 use super::graph_path;
 
@@ -350,7 +350,7 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
     }
 
     // Select best task: prefer tasks with exec commands
-    let mut best_task: Option<(&workgraph::graph::Task, i32)> = None;
+    let mut best_task: Option<(&worksgood::graph::Task, i32)> = None;
 
     for task in &ready {
         let mut score: i32 = 0;
@@ -447,7 +447,7 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some(actor_id.to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Claimed by autonomous agent".to_string(),
             });
             true
@@ -476,7 +476,7 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some(actor_id.to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Completed by autonomous agent".to_string(),
             });
             true
@@ -506,7 +506,7 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some(actor_id.to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Failed: {}", reason),
             });
             true
@@ -528,8 +528,8 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

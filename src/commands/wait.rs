@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status, WaitCondition, WaitSpec, parse_delay};
-use workgraph::parser::modify_graph;
-use workgraph::service::registry::{AgentRegistry, AgentStatus};
+use worksgood::graph::{LogEntry, Status, WaitCondition, WaitSpec, parse_delay};
+use worksgood::parser::modify_graph;
+use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 /// Parse a condition string into a WaitCondition.
 ///
@@ -13,7 +13,7 @@ use workgraph::service::registry::{AgentRegistry, AgentStatus};
 /// - `human-input` — wait for a human message
 /// - `message` — wait for any message
 /// - `file:<path>` — wait for a file to change
-fn parse_condition(s: &str, graph: &workgraph::graph::WorkGraph) -> Result<WaitCondition> {
+fn parse_condition(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitCondition> {
     let s = s.trim();
 
     if s == "human-input" {
@@ -96,7 +96,7 @@ fn parse_condition(s: &str, graph: &workgraph::graph::WorkGraph) -> Result<WaitC
 ///
 /// Comma-separated = AND (All), pipe-separated = OR (Any).
 /// Cannot mix AND and OR in one expression.
-fn parse_wait_spec(s: &str, graph: &workgraph::graph::WorkGraph) -> Result<WaitSpec> {
+fn parse_wait_spec(s: &str, graph: &worksgood::graph::WorkGraph) -> Result<WaitSpec> {
     let has_comma = s.contains(',');
     let has_pipe = s.contains('|');
 
@@ -176,7 +176,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!("Agent parked. Waiting for: {}", until),
         });
 
@@ -220,9 +220,9 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::graph::{Status, WaitCondition, WaitSpec};
-    use workgraph::parser::load_graph;
-    use workgraph::test_helpers::{make_task_with_status as make_task, setup_workgraph};
+    use worksgood::graph::{Status, WaitCondition, WaitSpec};
+    use worksgood::parser::load_graph;
+    use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
     fn graph_path(dir: &Path) -> std::path::PathBuf {
         dir.join("graph.jsonl")

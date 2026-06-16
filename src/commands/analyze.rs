@@ -3,9 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::check::check_all;
-use workgraph::graph::{Status, WorkGraph};
-use workgraph::query::{build_reverse_index, ready_tasks};
+use worksgood::check::check_all;
+use worksgood::graph::{Status, WorkGraph};
+use worksgood::query::{build_reverse_index, ready_tasks};
 
 use super::collect_transitive_dependents;
 
@@ -837,8 +837,8 @@ fn print_human_readable(output: &AnalysisOutput) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Estimate, Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Estimate, Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

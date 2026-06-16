@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use std::path::Path;
-use workgraph::parser::modify_graph;
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(
     dir: &Path,
@@ -77,8 +77,8 @@ mod tests {
     use chrono::DateTime;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

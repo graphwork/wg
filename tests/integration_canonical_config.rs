@@ -11,8 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe");
@@ -155,7 +155,7 @@ fn config_init_global_writes_minimal_canonical() {
 
     // The file must parse cleanly as a `Config` — that's the round-trip
     // guarantee the profile-as-snapshot model rests on.
-    let cfg: workgraph::config::Config = toml::from_str(&body)
+    let cfg: worksgood::config::Config = toml::from_str(&body)
         .unwrap_or_else(|e| panic!("global config must round-trip through Config: {e}\n{body}"));
     assert_eq!(cfg.tiers.standard.as_deref(), Some("claude:opus"));
     assert_eq!(
@@ -215,7 +215,7 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     );
 
     // Round-trips through Config.
-    let parsed: Result<workgraph::config::Config, _> = toml::from_str(&body);
+    let parsed: Result<worksgood::config::Config, _> = toml::from_str(&body);
     assert!(parsed.is_ok(), "codex-cli config must parse as Config");
     let cfg = parsed.unwrap();
     assert_eq!(cfg.agent.model, "codex:gpt-5.5");
@@ -246,7 +246,7 @@ fn config_init_route_codex_cli_matches_codex_profile_template() {
         &["config", "init", "--global", "--route", "codex-cli"],
     );
     let written = fs::read_to_string(home.join(".wg/config.toml")).unwrap();
-    let template = workgraph::profile::named::STARTER_CODEX;
+    let template = worksgood::profile::named::STARTER_CODEX;
     assert_eq!(
         written, template,
         "codex-cli route must emit the codex profile template verbatim",

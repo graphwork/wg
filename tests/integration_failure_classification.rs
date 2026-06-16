@@ -6,8 +6,8 @@
 use std::fs;
 use std::io::Write;
 use tempfile::TempDir;
-use workgraph::graph::{FailureClass, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{FailureClass, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 /// Initialize WG for CLI invocation (creates .wg/graph.jsonl).
 fn setup_wg(project_dir: &std::path::Path, tasks: Vec<Task>) -> std::path::PathBuf {

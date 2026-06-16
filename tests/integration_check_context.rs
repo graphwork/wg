@@ -4,9 +4,9 @@
 //! artifact lifecycle that back `wg check`, `wg context`, and `wg artifact`.
 
 use tempfile::TempDir;
-use workgraph::check::check_all;
-use workgraph::graph::{Node, Resource, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::check::check_all;
+use worksgood::graph::{Node, Resource, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 /// Helper: create a minimal open task.
 fn make_task(id: &str, title: &str) -> Task {

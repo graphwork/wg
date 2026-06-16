@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use workgraph::config::{Config, ConfigSource, normalize_legacy_tables};
+use worksgood::config::{Config, ConfigSource, normalize_legacy_tables};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,7 +55,7 @@ fn load_merged_custom(global_dir: &Path, local_dir: &Path) -> Config {
     let mut warnings = Vec::new();
     normalize_legacy_tables(&mut global_val, "global", &mut warnings);
     normalize_legacy_tables(&mut local_val, "local", &mut warnings);
-    let merged = workgraph::config::merge_toml(global_val, local_val);
+    let merged = worksgood::config::merge_toml(global_val, local_val);
     merged.try_into().expect("deserialize merged config")
 }
 
@@ -74,7 +74,7 @@ fn load_with_sources_custom(
     record_sources(&global_val, "", &ConfigSource::Global, &mut sources);
     record_sources(&local_val, "", &ConfigSource::Local, &mut sources);
 
-    let merged = workgraph::config::merge_toml(global_val, local_val);
+    let merged = worksgood::config::merge_toml(global_val, local_val);
     let config: Config = merged.try_into().expect("deserialize merged config");
 
     // Fill in defaults for keys present in neither file

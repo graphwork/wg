@@ -6,11 +6,11 @@
 use std::fs;
 use std::path::Path;
 
-use workgraph::config::Config;
-use workgraph::context_scope::ContextScope;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::notify::config::NotifyConfig;
-use workgraph::notify::telegram::TelegramConfig;
+use worksgood::config::Config;
+use worksgood::context_scope::ContextScope;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::notify::config::NotifyConfig;
+use worksgood::notify::telegram::TelegramConfig;
 
 /// Knowledge tiers for model-specific context injection
 #[derive(Debug, Clone, PartialEq)]
@@ -24,8 +24,8 @@ pub(crate) enum KnowledgeTier {
 ///
 /// When scope >= Task, includes upstream task titles alongside artifacts (R5).
 pub(crate) fn build_task_context(
-    graph: &workgraph::WorkGraph,
-    task: &workgraph::graph::Task,
+    graph: &worksgood::WorkGraph,
+    task: &worksgood::graph::Task,
 ) -> String {
     let mut context_parts = Vec::new();
 
@@ -119,13 +119,13 @@ pub(crate) fn build_task_context(
 /// Gathers R1 (downstream awareness), R4 (tags/skills), project description,
 /// graph summaries, and CLAUDE.md content based on the resolved scope.
 pub(crate) fn build_scope_context(
-    graph: &workgraph::WorkGraph,
-    task: &workgraph::graph::Task,
+    graph: &worksgood::WorkGraph,
+    task: &worksgood::graph::Task,
     scope: ContextScope,
     config: &Config,
     workgraph_dir: &Path,
-) -> workgraph::service::executor::ScopeContext {
-    let mut ctx = workgraph::service::executor::ScopeContext::default();
+) -> worksgood::service::executor::ScopeContext {
+    let mut ctx = worksgood::service::executor::ScopeContext::default();
 
     // R1: Downstream awareness (task+ scope)
     if scope >= ContextScope::Task {
@@ -183,7 +183,7 @@ pub(crate) fn build_scope_context(
 
     // Task+ scope: queued messages
     if scope >= ContextScope::Task {
-        ctx.queued_messages = workgraph::messages::format_queued_messages(workgraph_dir, &task.id);
+        ctx.queued_messages = worksgood::messages::format_queued_messages(workgraph_dir, &task.id);
     }
 
     // Note: cursor advancement happens after spawn in execution.rs,
@@ -429,8 +429,8 @@ fn inline_artifact_content(artifacts: &[String], workgraph_dir: &Path) -> String
 /// Neighbor content is wrapped in XML fencing for prompt injection protection.
 /// Hard cap at 4000 chars.
 pub(crate) fn build_graph_summary(
-    graph: &workgraph::WorkGraph,
-    task: &workgraph::graph::Task,
+    graph: &worksgood::WorkGraph,
+    task: &worksgood::graph::Task,
     workgraph_dir: &Path,
 ) -> String {
     let mut parts = Vec::new();
@@ -554,7 +554,7 @@ pub(crate) fn build_graph_summary(
 /// Build a full graph summary for full scope.
 ///
 /// Lists all tasks with statuses and dependency edges, with 4000-char budget.
-pub(crate) fn build_full_graph_summary(graph: &workgraph::WorkGraph) -> String {
+pub(crate) fn build_full_graph_summary(graph: &worksgood::WorkGraph) -> String {
     let mut parts = vec!["## Full Graph Summary\n".to_string()];
     let mut budget = 4000i32;
     let total = graph.tasks().count();
@@ -608,7 +608,7 @@ pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
     {
         return content;
     }
-    workgraph::service::executor::DEFAULT_WG_GUIDE.to_string()
+    worksgood::service::executor::DEFAULT_WG_GUIDE.to_string()
 }
 
 /// Classify model into knowledge tier based on context window and capabilities
@@ -1080,7 +1080,7 @@ wg add 'Choose best result' --after backup-strategy,fallback-implementation
 /// Resolve the effective exec_mode for a task using the priority hierarchy:
 /// task.exec_mode > role.default_exec_mode > "full".
 pub(crate) fn resolve_task_exec_mode(
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
     workgraph_dir: &Path,
 ) -> String {
     if let Some(ref mode) = task.exec_mode {
@@ -1092,8 +1092,8 @@ pub(crate) fn resolve_task_exec_mode(
         let agency_dir = workgraph_dir.join("agency");
         let agents_dir = agency_dir.join("cache/agents");
         let roles_dir = agency_dir.join("cache/roles");
-        if let Ok(agent) = workgraph::agency::find_agent_by_prefix(&agents_dir, agent_hash)
-            && let Ok(role) = workgraph::agency::find_role_by_prefix(&roles_dir, &agent.role_id)
+        if let Ok(agent) = worksgood::agency::find_agent_by_prefix(&agents_dir, agent_hash)
+            && let Ok(role) = worksgood::agency::find_role_by_prefix(&roles_dir, &agent.role_id)
             && let Some(mode) = role.default_exec_mode
         {
             return mode;
@@ -1106,7 +1106,7 @@ pub(crate) fn resolve_task_exec_mode(
 /// Resolve the context scope for a task using the priority hierarchy:
 /// task > role > coordinator config > default ("task").
 pub(crate) fn resolve_task_scope(
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
     config: &Config,
     workgraph_dir: &Path,
 ) -> ContextScope {
@@ -1115,12 +1115,12 @@ pub(crate) fn resolve_task_scope(
         let agency_dir = workgraph_dir.join("agency");
         let agents_dir = agency_dir.join("cache/agents");
         let roles_dir = agency_dir.join("cache/roles");
-        let agent = workgraph::agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()?;
-        let role = workgraph::agency::find_role_by_prefix(&roles_dir, &agent.role_id).ok()?;
+        let agent = worksgood::agency::find_agent_by_prefix(&agents_dir, agent_hash).ok()?;
+        let role = worksgood::agency::find_role_by_prefix(&roles_dir, &agent.role_id).ok()?;
         role.default_context_scope
     });
 
-    workgraph::context_scope::resolve_context_scope(
+    worksgood::context_scope::resolve_context_scope(
         task.context_scope.as_deref(),
         role_scope.as_deref(),
         config.coordinator.default_context_scope.as_deref(),
@@ -1141,7 +1141,7 @@ pub(crate) fn resolve_task_scope(
 ///
 /// Returns empty string if both counts are 0 or there is no recoverable context.
 pub(crate) fn build_previous_attempt_context(
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
     workgraph_dir: &Path,
     max_tokens: u32,
 ) -> String {
@@ -1319,7 +1319,7 @@ fn combine_with_eval_context(base: &str, eval_context: &str) -> String {
 }
 
 /// Find the most recent checkpoint for a task from any previously assigned agent.
-fn find_checkpoint_for_task(task: &workgraph::graph::Task, workgraph_dir: &Path) -> Option<String> {
+fn find_checkpoint_for_task(task: &worksgood::graph::Task, workgraph_dir: &Path) -> Option<String> {
     let mut prev_agents: Vec<String> = Vec::new();
     for entry in &task.log {
         if let Some(ref actor) = entry.actor
@@ -1376,7 +1376,7 @@ fn format_previous_context(timestamp: &str, content: &str, max_bytes: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1398,19 +1398,19 @@ mod tests {
             LogEntry {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Started work".to_string(),
             },
             LogEntry {
                 timestamp: "2026-01-01T00:01:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Found important result".to_string(),
             },
             LogEntry {
                 timestamp: "2026-01-01T00:02:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Completed successfully".to_string(),
             },
         ];
@@ -2050,7 +2050,7 @@ mod tests {
         task.log = vec![LogEntry {
             timestamp: "2026-03-07T09:00:00Z".to_string(),
             actor: Some("agent-99".to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Spawned by coordinator".to_string(),
         }];
 
@@ -2082,13 +2082,13 @@ mod tests {
             LogEntry {
                 timestamp: "2026-03-07T09:00:00Z".to_string(),
                 actor: Some("agent-50".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Started research".to_string(),
             },
             LogEntry {
                 timestamp: "2026-03-07T09:30:00Z".to_string(),
                 actor: Some("agent-50".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Found key insight about X".to_string(),
             },
         ];
@@ -2361,7 +2361,7 @@ mod tests {
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let guide = read_wg_guide(&wg_dir);
-        assert_eq!(guide, workgraph::service::executor::DEFAULT_WG_GUIDE);
+        assert_eq!(guide, worksgood::service::executor::DEFAULT_WG_GUIDE);
     }
 
     #[test]
@@ -2386,7 +2386,7 @@ mod tests {
         std::fs::write(wg_dir.join("wg-guide.md"), "  \n  ").unwrap();
 
         let guide = read_wg_guide(&wg_dir);
-        assert_eq!(guide, workgraph::service::executor::DEFAULT_WG_GUIDE);
+        assert_eq!(guide, worksgood::service::executor::DEFAULT_WG_GUIDE);
     }
 
     #[test]

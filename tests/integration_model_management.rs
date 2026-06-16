@@ -13,12 +13,12 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use workgraph::config::{
+use worksgood::config::{
     CLAUDE_HAIKU_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole, EndpointConfig,
     EndpointsConfig, ModelRegistryEntry, Tier,
 };
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 // ===========================================================================
 // Helpers
@@ -259,12 +259,12 @@ mod model_management_per_task_override {
                     return Self { model, provider };
                 }
                 if let Some(ref m) = model {
-                    let spec = workgraph::config::parse_model_spec(m);
+                    let spec = worksgood::config::parse_model_spec(m);
                     if let Some(ref p) = spec.provider {
                         return Self {
                             model,
                             provider: Some(
-                                workgraph::config::provider_to_native_provider(p).to_string(),
+                                worksgood::config::provider_to_native_provider(p).to_string(),
                             ),
                         };
                     }
@@ -1504,7 +1504,7 @@ mod model_management_config_persistence {
 mod unified_key_resolution {
     use super::*;
     use serial_test::serial;
-    use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
+    use worksgood::executor::native::openai_client::resolve_openai_api_key_from_dir;
 
     /// Isolate from real global config by pointing HOME at a temp dir.
     /// Returns saved HOME value for restoration.

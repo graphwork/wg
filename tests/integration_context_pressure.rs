@@ -7,8 +7,8 @@
 //!
 //! Run with: cargo test --test integration_context_pressure
 
-use workgraph::executor::native::client::{ContentBlock, Message, Role};
-use workgraph::executor::native::resume::{ContextBudget, ContextPressureAction};
+use worksgood::executor::native::client::{ContentBlock, Message, Role};
+use worksgood::executor::native::resume::{ContextBudget, ContextPressureAction};
 
 /// Helper: create a message with text of a given byte length.
 fn make_text_message(role: Role, size: usize) -> Message {

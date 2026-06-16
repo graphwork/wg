@@ -13,8 +13,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::Status;
-use workgraph::parser::load_graph;
+use worksgood::graph::Status;
+use worksgood::parser::load_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,7 +61,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     stdout
 }
 
-fn graph(wg_dir: &Path) -> workgraph::graph::WorkGraph {
+fn graph(wg_dir: &Path) -> worksgood::graph::WorkGraph {
     load_graph(wg_dir.join("graph.jsonl")).unwrap()
 }
 

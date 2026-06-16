@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::config::{
+use worksgood::config::{
     CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
     ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
 };
-use workgraph::graph::{Node, Status, Task, WorkGraph, is_system_task};
-use workgraph::parser::save_graph;
+use worksgood::graph::{Node, Status, Task, WorkGraph, is_system_task};
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -870,7 +870,7 @@ fn resolve_model_source_reports_explicit_for_models_override() {
 #[test]
 fn resolve_model_source_reports_explicit_for_models_section() {
     let mut config = Config::default();
-    config.models.evaluator = Some(workgraph::config::RoleModelConfig {
+    config.models.evaluator = Some(worksgood::config::RoleModelConfig {
         model: Some("haiku".to_string()),
         provider: None,
         tier: None,
@@ -925,7 +925,7 @@ fn publish_creates_full_pipeline_all_tasks() {
     wg_ok(&wg_dir, &["publish", "my-feature"]);
 
     // Load the graph and verify pipeline tasks exist
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
@@ -962,7 +962,7 @@ fn publish_creates_all_pipeline_edges_correctly() {
     wg_ok(&wg_dir, &["add", "My Feature"]);
     wg_ok(&wg_dir, &["publish", "my-feature"]);
 
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
@@ -1014,7 +1014,7 @@ fn publish_no_place_task_created() {
     wg_ok(&wg_dir, &["add", "My Task"]);
     wg_ok(&wg_dir, &["publish", "my-task"]);
 
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
@@ -1123,7 +1123,7 @@ fn placement_hints_cli_roundtrip() {
 
     // Verify hints are stored by loading the graph directly
     // (JSON show doesn't include place_near/place_before)
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
     let task = graph.get_task("task-with-hints").unwrap();

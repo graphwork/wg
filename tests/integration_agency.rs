@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
-use workgraph::graph::{LogEntry, Status, Task};
+use worksgood::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
+use worksgood::graph::{LogEntry, Status, Task};
 
 /// Helper: create a minimal Task for testing.
 fn make_task(

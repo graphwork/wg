@@ -8,10 +8,10 @@ use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use workgraph::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
-use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
-use workgraph::models::ModelRegistry;
-use workgraph::notify::config as notify_config;
+use worksgood::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
+use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
+use worksgood::models::ModelRegistry;
+use worksgood::notify::config as notify_config;
 
 /// Marker used to detect whether WG directives are already present in agent guides.
 const CLAUDE_MD_MARKER: &str = "<!-- WG-managed -->";
@@ -164,7 +164,7 @@ pub struct EndpointChoices {
 
 /// Build a Config from wizard choices, optionally layered on top of an existing config.
 pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
-    use workgraph::config::{EndpointConfig, EndpointsConfig};
+    use worksgood::config::{EndpointConfig, EndpointsConfig};
 
     let mut config = base.cloned().unwrap_or_default();
 
@@ -631,7 +631,7 @@ pub fn infer_tier_from_model_id(model_id: &str) -> Tier {
 ///
 /// Picks one model per tier (fast, standard, premium). If multiple models
 /// share a tier, the first one wins.
-pub fn auto_map_tiers(entries: &[ModelRegistryEntry]) -> workgraph::config::TierConfig {
+pub fn auto_map_tiers(entries: &[ModelRegistryEntry]) -> worksgood::config::TierConfig {
     let mut fast: Option<String> = None;
     let mut standard: Option<String> = None;
     let mut premium: Option<String> = None;
@@ -645,7 +645,7 @@ pub fn auto_map_tiers(entries: &[ModelRegistryEntry]) -> workgraph::config::Tier
         }
     }
 
-    workgraph::config::TierConfig {
+    worksgood::config::TierConfig {
         fast,
         standard,
         premium,
@@ -870,7 +870,7 @@ pub struct PickerEntry {
 /// previously called `record_use` but never read it back; this helper
 /// closes the loop.
 pub fn build_model_picker_entries(
-    history: &[workgraph::launcher_history::HistoryEntry],
+    history: &[worksgood::launcher_history::HistoryEntry],
     route_defaults: &[(String, String)],
     history_limit: usize,
 ) -> Vec<PickerEntry> {
@@ -915,8 +915,8 @@ pub fn build_model_picker_entries(
 
 /// Read the most recent N launcher_history combos. Errors are
 /// swallowed (history is best-effort) — callers get an empty Vec.
-pub fn recent_history(limit: usize) -> Vec<workgraph::launcher_history::HistoryEntry> {
-    workgraph::launcher_history::recent_combos(limit).unwrap_or_default()
+pub fn recent_history(limit: usize) -> Vec<worksgood::launcher_history::HistoryEntry> {
+    worksgood::launcher_history::recent_combos(limit).unwrap_or_default()
 }
 
 /// Record a successful `wg setup` (interactive or non-interactive) in
@@ -925,7 +925,7 @@ pub fn recent_history(limit: usize) -> Vec<workgraph::launcher_history::HistoryE
 fn record_setup_history(choices: &SetupChoices, source: &str) {
     let endpoint_url = choices.endpoint.as_ref().map(|e| e.url.as_str());
     let _ =
-        workgraph::launcher_history::record_use(&workgraph::launcher_history::HistoryEntry::new(
+        worksgood::launcher_history::record_use(&worksgood::launcher_history::HistoryEntry::new(
             &choices.executor,
             Some(&choices.model),
             endpoint_url,
@@ -1679,7 +1679,7 @@ fn configure_openrouter(
             id: model_id.clone(),
             provider: "openrouter".to_string(),
             model: model_id.clone(),
-            tier: workgraph::config::Tier::Standard,
+            tier: worksgood::config::Tier::Standard,
             ..Default::default()
         };
 
@@ -1755,7 +1755,7 @@ fn configure_openai(
         id: model_id.clone(),
         provider: "openai".to_string(),
         model: model_id.clone(),
-        tier: workgraph::config::Tier::Standard,
+        tier: worksgood::config::Tier::Standard,
         ..Default::default()
     };
 
@@ -1793,7 +1793,7 @@ fn configure_local(
         id: model_id.clone(),
         provider: "local".to_string(),
         model: model_id.clone(),
-        tier: workgraph::config::Tier::Standard,
+        tier: worksgood::config::Tier::Standard,
         ..Default::default()
     };
 
@@ -1840,7 +1840,7 @@ fn configure_custom_provider(
         id: model_id.clone(),
         provider: provider_name.clone(),
         model: model_id.clone(),
-        tier: workgraph::config::Tier::Standard,
+        tier: worksgood::config::Tier::Standard,
         ..Default::default()
     };
 
@@ -1916,7 +1916,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
             id: "opus".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-opus-4-7".to_string(),
-            tier: workgraph::config::Tier::Premium,
+            tier: worksgood::config::Tier::Premium,
             context_window: 200_000,
             max_output_tokens: 32_000,
             ..Default::default()
@@ -1925,7 +1925,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
             id: "sonnet".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-sonnet-4-6".to_string(),
-            tier: workgraph::config::Tier::Standard,
+            tier: worksgood::config::Tier::Standard,
             context_window: 200_000,
             max_output_tokens: 64_000,
             ..Default::default()
@@ -1934,7 +1934,7 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
             id: "haiku".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-haiku-4-5".to_string(),
-            tier: workgraph::config::Tier::Fast,
+            tier: worksgood::config::Tier::Fast,
             context_window: 200_000,
             max_output_tokens: 8_192,
             ..Default::default()
@@ -2296,7 +2296,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use workgraph::config::{CLAUDE_SONNET_MODEL_ID, Config};
+    use worksgood::config::{CLAUDE_SONNET_MODEL_ID, Config};
 
     fn with_history_env<F: FnOnce(&Path)>(f: F) {
         let tmp = TempDir::new().unwrap();
@@ -3012,7 +3012,7 @@ mod tests {
         config
             .llm_endpoints
             .endpoints
-            .push(workgraph::config::EndpointConfig {
+            .push(worksgood::config::EndpointConfig {
                 name: "my-ep".to_string(),
                 provider: "openrouter".to_string(),
                 url: Some("https://openrouter.ai/api/v1".to_string()),
@@ -3465,9 +3465,9 @@ mod tests {
     #[test]
     fn test_format_delta_summary_claude_cli_route_lists_changes() {
         // The claude-cli route diverges from default in a handful of keys.
-        let cfg = workgraph::config_defaults::config_for_route(
-            workgraph::config_defaults::SetupRoute::ClaudeCli,
-            workgraph::config_defaults::RouteParams::default(),
+        let cfg = worksgood::config_defaults::config_for_route(
+            worksgood::config_defaults::SetupRoute::ClaudeCli,
+            worksgood::config_defaults::RouteParams::default(),
         );
         let summary = format_delta_summary(&cfg);
         // Must list separate counts.
@@ -3547,7 +3547,7 @@ mod tests {
 
     #[test]
     fn test_picker_entries_history_appears_first() {
-        let history = vec![workgraph::launcher_history::HistoryEntry {
+        let history = vec![worksgood::launcher_history::HistoryEntry {
             timestamp: "2026-04-27T12:00:00Z".to_string(),
             executor: "claude".to_string(),
             model: Some("claude:haiku".to_string()),
@@ -3574,7 +3574,7 @@ mod tests {
     fn test_picker_entries_dedupes_history_against_defaults() {
         // History entry shares a model with a route default — history wins,
         // default isn't duplicated.
-        let history = vec![workgraph::launcher_history::HistoryEntry {
+        let history = vec![worksgood::launcher_history::HistoryEntry {
             timestamp: "2026-04-27T12:00:00Z".to_string(),
             executor: "claude".to_string(),
             model: Some("claude:opus".to_string()),
@@ -3596,7 +3596,7 @@ mod tests {
     #[test]
     fn test_picker_entries_skips_history_without_model() {
         // Entries with no model field are silently dropped.
-        let history = vec![workgraph::launcher_history::HistoryEntry {
+        let history = vec![worksgood::launcher_history::HistoryEntry {
             timestamp: "2026-04-27T12:00:00Z".to_string(),
             executor: "claude".to_string(),
             model: None,
@@ -3610,7 +3610,7 @@ mod tests {
 
     #[test]
     fn test_picker_entries_history_label_includes_endpoint() {
-        let history = vec![workgraph::launcher_history::HistoryEntry {
+        let history = vec![worksgood::launcher_history::HistoryEntry {
             timestamp: "2026-04-27T12:00:00Z".to_string(),
             executor: "native".to_string(),
             model: Some("local:qwen3".to_string()),

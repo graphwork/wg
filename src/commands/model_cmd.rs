@@ -11,14 +11,14 @@ use super::config_cmd::{self, ConfigScope};
 pub fn run_list(dir: &Path, tier: Option<&str>, json: bool) -> Result<()> {
     if let Some(tier_str) = tier {
         // Validate tier string early
-        let _: workgraph::config::Tier = tier_str.parse()?;
+        let _: worksgood::config::Tier = tier_str.parse()?;
     }
 
-    let config = workgraph::config::Config::load_merged(dir)?;
+    let config = worksgood::config::Config::load_merged(dir)?;
     let entries = config.effective_registry();
 
     let filtered: Vec<_> = if let Some(tier_str) = tier {
-        let tier: workgraph::config::Tier = tier_str.parse()?;
+        let tier: worksgood::config::Tier = tier_str.parse()?;
         entries.into_iter().filter(|e| e.tier == tier).collect()
     } else {
         entries
@@ -52,7 +52,7 @@ pub fn run_list(dir: &Path, tier: Option<&str>, json: bool) -> Result<()> {
     // Determine the default model
     let default_model = config
         .models
-        .get_role(workgraph::config::DispatchRole::Default)
+        .get_role(worksgood::config::DispatchRole::Default)
         .and_then(|r| r.model.as_deref());
 
     println!(
@@ -132,7 +132,7 @@ pub fn run_remove(dir: &Path, alias: &str, force: bool, global: bool, json: bool
 
 /// `wg model set-default <alias>` — set the default model for agent dispatch.
 pub fn run_set_default(dir: &Path, alias: &str, global: bool) -> Result<()> {
-    use workgraph::config::{Config, DispatchRole, parse_model_spec};
+    use worksgood::config::{Config, DispatchRole, parse_model_spec};
 
     let scope = if global {
         ConfigScope::Global
@@ -212,8 +212,8 @@ pub fn run_set(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::config::Config;
-    use workgraph::parser::save_graph;
+    use worksgood::config::Config;
+    use worksgood::parser::save_graph;
 
     fn setup_dir() -> TempDir {
         let tmp = TempDir::new().unwrap();
@@ -221,7 +221,7 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         // Create empty graph
         let graph_path = dir.join("graph.jsonl");
-        let graph = workgraph::graph::WorkGraph::new();
+        let graph = worksgood::graph::WorkGraph::new();
         save_graph(&graph, &graph_path).unwrap();
         // Create default config
         let config = Config::default();
@@ -327,7 +327,7 @@ mod tests {
         let config = Config::load(dir).unwrap();
         let default = config
             .models
-            .get_role(workgraph::config::DispatchRole::Default)
+            .get_role(worksgood::config::DispatchRole::Default)
             .unwrap();
         assert_eq!(default.model.as_deref(), Some("claude:sonnet"));
     }
@@ -353,7 +353,7 @@ mod tests {
         let config = Config::load(dir).unwrap();
         let role = config
             .models
-            .get_role(workgraph::config::DispatchRole::Evaluator)
+            .get_role(worksgood::config::DispatchRole::Evaluator)
             .unwrap();
         assert_eq!(role.model.as_deref(), Some("claude:opus"));
     }
@@ -406,7 +406,7 @@ mod tests {
         let config = Config::load(dir).unwrap();
         let default = config
             .models
-            .get_role(workgraph::config::DispatchRole::Default)
+            .get_role(worksgood::config::DispatchRole::Default)
             .unwrap();
         assert_eq!(default.model.as_deref(), Some("openai:my-model"));
 

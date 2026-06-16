@@ -56,14 +56,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc;
 
-use workgraph::config::{Config, DispatchRole};
-use workgraph::executor::native::client::{
+use worksgood::config::{Config, DispatchRole};
+use worksgood::executor::native::client::{
     ContentBlock, Message, MessagesRequest, Role, StopReason,
 };
-use workgraph::executor::native::provider::{Provider, create_provider_ext};
-use workgraph::executor::native::tools::ToolRegistry;
-use workgraph::executor::native::tools::helper_routing::HelperRouting;
-use workgraph::models::ModelRegistry;
+use worksgood::executor::native::provider::{Provider, create_provider_ext};
+use worksgood::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::tools::helper_routing::HelperRouting;
+use worksgood::models::ModelRegistry;
 
 /// Message from the UI to the agent task.
 enum UiToAgent {
@@ -308,7 +308,7 @@ async fn run_agent_task(
                     // At idle, a hard cancel kills any lingering
                     // subprocess tree (e.g. leftover bash children)
                     // and returns to idle. Rare but harmless.
-                    workgraph::service::kill_descendants(std::process::id());
+                    worksgood::service::kill_descendants(std::process::id());
                     let _ = tx_output.send(AgentToUi::Info(
                         "[hard-cancel] subprocess tree killed".to_string(),
                     ));
@@ -377,7 +377,7 @@ async fn run_agent_task(
                             ));
                         }
                         UiToAgent::HardCancel => {
-                            workgraph::service::kill_descendants(std::process::id());
+                            worksgood::service::kill_descendants(std::process::id());
                             let _ = tx_output.send(AgentToUi::Info(
                                 "[hard-cancel] subprocess tree killed".to_string(),
                             ));
@@ -686,7 +686,7 @@ async fn run_async(
                                 .last_ctrl_c
                                 .map(|t| {
                                     now.duration_since(t)
-                                        <= workgraph::executor::native::cancel::DOUBLE_TAP_WINDOW
+                                        <= worksgood::executor::native::cancel::DOUBLE_TAP_WINDOW
                                 })
                                 .unwrap_or(false);
 

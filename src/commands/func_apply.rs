@@ -2,11 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use workgraph::function::{
+use worksgood::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
-use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task};
-use workgraph::parser::{load_graph, modify_graph};
+use worksgood::graph::{Node, PRIORITY_DEFAULT, Status, Task};
+use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
 
@@ -23,7 +23,7 @@ fn resolve_function_source(
 ) -> Result<TraceFunction> {
     if let Some((peer_name, remote_func_id)) = source.split_once(':') {
         // peer:function-id syntax
-        let resolved = workgraph::federation::resolve_peer(peer_name, workgraph_dir)?;
+        let resolved = worksgood::federation::resolve_peer(peer_name, workgraph_dir)?;
         let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
         function::find_function_by_prefix(&peer_func_dir, remote_func_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", peer_name, e))
@@ -34,7 +34,7 @@ fn resolve_function_source(
             .map_err(|e| anyhow::anyhow!("Failed to load function from '{}': {}", source, e))
     } else {
         // Treat as a peer name, with function_id as the function to look up
-        let resolved = workgraph::federation::resolve_peer(source, workgraph_dir)?;
+        let resolved = worksgood::federation::resolve_peer(source, workgraph_dir)?;
         let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
         function::find_function_by_prefix(&peer_func_dir, function_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", source, e))
@@ -114,8 +114,8 @@ pub fn run(
     let memory_text = if func.version >= 3 {
         if let Some(ref memory_config) = func.memory {
             let summaries =
-                workgraph::function_memory::load_run_summaries(dir, &func.id, memory_config);
-            workgraph::function_memory::render_run_summaries(&summaries, &memory_config.include)
+                worksgood::function_memory::load_run_summaries(dir, &func.id, memory_config);
+            worksgood::function_memory::render_run_summaries(&summaries, &memory_config.include)
         } else {
             "No previous runs recorded.".to_string()
         }
@@ -389,7 +389,7 @@ pub fn run(
     super::notify_graph_changed(dir);
 
     // Record provenance
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let input_summary: serde_json::Value = final_inputs
         .iter()
         .map(|(k, v)| {
@@ -401,7 +401,7 @@ pub fn run(
         .collect::<serde_json::Map<String, serde_json::Value>>()
         .into();
 
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "apply",
         None,
@@ -605,7 +605,7 @@ fn execute_plan_or_fallback(
     _inputs: &HashMap<String, serde_yaml::Value>,
     _memory_text: &str,
     prefix: &str,
-    graph: &mut workgraph::graph::WorkGraph,
+    graph: &mut worksgood::graph::WorkGraph,
     _graph_file: &Path,
     _after: Option<&str>,
     _model: Option<&str>,
@@ -615,14 +615,14 @@ fn execute_plan_or_fallback(
 
     // Check if planner task exists and is Done
     if let Some(task) = graph.get_task(&planner_task_id)
-        && task.status == workgraph::graph::Status::Done
+        && task.status == worksgood::graph::Status::Done
         && let Some(generated) = try_parse_planner_output(task)
     {
         // Validate against constraints if enabled
         if planning.validate_plan
             && let Some(ref constraints) = func.constraints
         {
-            match workgraph::plan_validator::validate_plan(&generated, constraints) {
+            match worksgood::plan_validator::validate_plan(&generated, constraints) {
                 Ok(()) => return Ok(generated),
                 Err(errors) => {
                     eprintln!("Plan validation failed ({} error(s)):", errors.len());
@@ -650,7 +650,7 @@ fn execute_plan_or_fallback(
 ///
 /// Checks artifacts first (for .yaml/.yml files), then log entries for
 /// embedded ```yaml blocks.
-fn try_parse_planner_output(task: &workgraph::graph::Task) -> Option<Vec<TaskTemplate>> {
+fn try_parse_planner_output(task: &worksgood::graph::Task) -> Option<Vec<TaskTemplate>> {
     // Check artifacts for YAML files
     for artifact in &task.artifacts {
         if (artifact.ends_with(".yaml") || artifact.ends_with(".yml"))
@@ -707,9 +707,9 @@ fn append_run_record(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::function::*;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::function::*;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn sample_function() -> TraceFunction {
         TraceFunction {
@@ -1410,7 +1410,7 @@ mod tests {
         )
         .unwrap();
 
-        let ops = workgraph::provenance::read_all_operations(dir).unwrap();
+        let ops = worksgood::provenance::read_all_operations(dir).unwrap();
         let apply_ops: Vec<_> = ops.iter().filter(|e| e.op == "apply").collect();
         assert_eq!(apply_ops.len(), 1);
 
@@ -1473,17 +1473,17 @@ mod tests {
         function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
-        let config = workgraph::federation::FederationConfig {
+        let config = worksgood::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "mypeer".to_string(),
-                workgraph::federation::PeerConfig {
+                worksgood::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
                 },
             )]),
             ..Default::default()
         };
-        workgraph::federation::save_federation_config(&local_dir, &config).unwrap();
+        worksgood::federation::save_federation_config(&local_dir, &config).unwrap();
 
         // Instantiate from peer
         run(
@@ -1523,17 +1523,17 @@ mod tests {
         function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
-        let config = workgraph::federation::FederationConfig {
+        let config = worksgood::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "mypeer".to_string(),
-                workgraph::federation::PeerConfig {
+                worksgood::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
                 },
             )]),
             ..Default::default()
         };
-        workgraph::federation::save_federation_config(&local_dir, &config).unwrap();
+        worksgood::federation::save_federation_config(&local_dir, &config).unwrap();
 
         // Use --from with just the peer name (function_id is the positional arg)
         run(
@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn instantiate_v2_uses_planner_output() {
-        use workgraph::graph::{LogEntry, Node, Status, Task};
+        use worksgood::graph::{LogEntry, Node, Status, Task};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1888,7 +1888,7 @@ mod tests {
             log: vec![LogEntry {
                 timestamp: "2026-02-21T12:00:00Z".to_string(),
                 actor: Some("agent".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: planner_yaml.to_string(),
             }],
             ..Task::default()

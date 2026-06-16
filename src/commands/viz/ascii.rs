@@ -2,10 +2,10 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthChar;
-use workgraph::graph::{
+use worksgood::graph::{
     PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display,
 };
-use workgraph::messages::{CoordinatorMessageStatus, MessageStats};
+use worksgood::messages::{CoordinatorMessageStatus, MessageStats};
 
 use super::{LayoutMode, VizOutput};
 
@@ -427,7 +427,7 @@ pub(crate) fn generate_ascii(
                     nb.parse::<chrono::DateTime<Utc>>().ok().and_then(|ts| {
                         if ts > now {
                             let secs = (ts - now).num_seconds();
-                            let dur = workgraph::format_duration(secs, true);
+                            let dur = worksgood::format_duration(secs, true);
                             if use_color {
                                 Some(format!(" \x1b[33m⏳{}\x1b[0m", dur))
                             } else {
@@ -453,7 +453,7 @@ pub(crate) fn generate_ascii(
             })
             .map(|dt| {
                 let secs = (now - dt.with_timezone(&Utc)).num_seconds().max(0);
-                let dur = workgraph::format_duration(secs, true);
+                let dur = worksgood::format_duration(secs, true);
                 if use_color {
                     format!(" \x1b[90m{}\x1b[0m", dur)
                 } else {
@@ -1594,7 +1594,7 @@ pub(crate) fn truncate_lines(text: &str, max_columns: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task};
+    use worksgood::graph::{Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -2065,7 +2065,7 @@ mod tests {
 
     #[test]
     fn test_ascii_loop_symbol_on_task_with_cycle_config() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");
@@ -2117,7 +2117,7 @@ mod tests {
 
     #[test]
     fn test_ascii_loop_symbol_independent_task() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut task = make_task("looper", "Looping task");
@@ -2164,7 +2164,7 @@ mod tests {
 
     #[test]
     fn test_ascii_loop_symbol_with_cycle_config_no_iteration() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");
@@ -2288,7 +2288,7 @@ mod tests {
     #[test]
     fn test_self_loop_with_cycle_config_no_duplicate() {
         // A task with cycle_config AND a self-loop edge should NOT get double ↺
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut task = make_task("cycler", "Cycling task");
@@ -2345,7 +2345,7 @@ mod tests {
     #[test]
     fn test_non_self_loop_cycle_unchanged() {
         // A two-task cycle (A→B→A) should NOT show ⟳ — only standard back-edge arcs
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut a = make_task("task-a", "Task A");
@@ -2403,7 +2403,7 @@ mod tests {
         // A→B→A cycle: back-edge should produce right-side arcs with arrows
         let mut graph = WorkGraph::new();
         let mut a = make_task("design", "Design");
-        a.cycle_config = Some(workgraph::graph::CycleConfig {
+        a.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 3,
             guard: None,
             delay: None,
@@ -2680,7 +2680,7 @@ mod tests {
         // B should use └→ (not ├→), no orphaned │.
         let mut graph = WorkGraph::new();
         let mut a = make_task("parent", "Parent");
-        a.cycle_config = Some(workgraph::graph::CycleConfig {
+        a.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 2,
             guard: None,
             delay: None,
@@ -2734,7 +2734,7 @@ mod tests {
         // Target with multiple sources should collapse into one column
         let mut graph = WorkGraph::new();
         let mut target = make_task("hub", "Hub");
-        target.cycle_config = Some(workgraph::graph::CycleConfig {
+        target.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 2,
             guard: None,
             delay: None,
@@ -2807,7 +2807,7 @@ mod tests {
         // Arcs should have a space between node text and dash fill
         let mut graph = WorkGraph::new();
         let mut a = make_task("aa", "AA");
-        a.cycle_config = Some(workgraph::graph::CycleConfig {
+        a.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 2,
             guard: None,
             delay: None,
@@ -3095,7 +3095,7 @@ mod tests {
         f.created_at = Some("2024-01-01T00:05:00Z".to_string());
         // C also blocks A (non-tree) → part of Arc B
         a.after.push("ccc".to_string());
-        a.cycle_config = Some(workgraph::graph::CycleConfig {
+        a.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 2,
             guard: None,
             delay: None,
@@ -4914,7 +4914,7 @@ mod tests {
     /// Smoke test: cycle edges produce cycle_members map entries.
     #[test]
     fn test_smoke_cycle_members_populated() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut a = make_task("a", "A");
@@ -5099,7 +5099,7 @@ mod tests {
     /// Smoke test: graph with multiple cycles renders without panic.
     #[test]
     fn test_smoke_multiple_cycles_no_panic() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
 
@@ -5233,7 +5233,7 @@ mod tests {
         );
     }
 
-    use workgraph::graph::LogEntry;
+    use worksgood::graph::LogEntry;
 
     #[test]
     fn test_coordinator_with_recent_log_sorts_above_in_progress() {
@@ -5251,7 +5251,7 @@ mod tests {
         coordinator.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Processing turn".to_string(),
         });
         graph.add_node(Node::Task(coordinator));

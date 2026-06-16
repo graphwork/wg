@@ -2,14 +2,14 @@
 
 use anyhow::Result;
 use std::path::Path;
-use workgraph::config::{
+use worksgood::config::{
     Config, ConfigSource, EndpointConfig, MatrixConfig, ModelRegistryEntry, Tier,
 };
 
 fn clear_dispatcher_executor_for_model(config: &mut Config, model: &str) -> Option<String> {
-    let spec = workgraph::config::parse_model_spec(model);
+    let spec = worksgood::config::parse_model_spec(model);
     let provider = spec.provider.as_deref()?;
-    let implied = workgraph::config::provider_to_executor(provider);
+    let implied = worksgood::config::provider_to_executor(provider);
     let previous = config.coordinator.executor.take()?;
     Some(format!(
         "Cleared deprecated dispatcher.executor = \"{}\"; dispatcher.model implies executor = \"{}\"",
@@ -21,19 +21,19 @@ fn print_executor_choices_section() {
     println!("[executor choices]");
     println!(
         "  core = {}",
-        workgraph::executor_discovery::CORE_EXECUTORS.join(", ")
+        worksgood::executor_discovery::CORE_EXECUTORS.join(", ")
     );
     println!(
         "  stable_external = {}",
-        workgraph::executor_discovery::STABLE_EXTERNAL_EXECUTORS.join(", ")
+        worksgood::executor_discovery::STABLE_EXTERNAL_EXECUTORS.join(", ")
     );
     println!(
         "  provider_specific = {}",
-        workgraph::executor_discovery::PROVIDER_SPECIFIC_EXECUTORS.join(", ")
+        worksgood::executor_discovery::PROVIDER_SPECIFIC_EXECUTORS.join(", ")
     );
     println!(
         "  experimental_external = {}",
-        workgraph::executor_discovery::EXPERIMENTAL_EXTERNAL_EXECUTORS.join(", ")
+        worksgood::executor_discovery::EXPERIMENTAL_EXTERNAL_EXECUTORS.join(", ")
     );
     println!("  discovery = \"wg executors --all\" (shows installed/usable status)");
     println!();
@@ -52,7 +52,7 @@ fn try_restart_daemon(dir: &Path) -> Result<bool> {
     use crate::commands::service::{self, ServiceState};
 
     let running = match ServiceState::load(dir) {
-        Ok(Some(state)) => workgraph::service::is_process_alive(state.pid),
+        Ok(Some(state)) => worksgood::service::is_process_alive(state.pid),
         _ => false,
     };
     if !running {
@@ -224,7 +224,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
 
         // Unified agency agents display
         {
-            use workgraph::config::DispatchRole;
+            use worksgood::config::DispatchRole;
             println!("[agency agents]");
 
             // Helper to get auto-toggle status for applicable roles
@@ -271,10 +271,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                 let tier = role.default_tier();
                 // Display as provider:id (e.g., "claude:opus") for consistency
                 let display_model = if let Some(ref entry) = resolved.registry_entry {
-                    let prefix = workgraph::config::native_provider_to_prefix(&entry.provider);
+                    let prefix = worksgood::config::native_provider_to_prefix(&entry.provider);
                     format!("{}:{}", prefix, entry.id)
                 } else if let Some(ref provider) = resolved.provider {
-                    let prefix = workgraph::config::native_provider_to_prefix(provider);
+                    let prefix = worksgood::config::native_provider_to_prefix(provider);
                     format!("{}:{}", prefix, resolved.model)
                 } else {
                     resolved.model.clone()
@@ -324,7 +324,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         }
         // Display unified [models] section
         {
-            use workgraph::config::DispatchRole;
+            use worksgood::config::DispatchRole;
             let has_any = config.models.default.is_some()
                 || DispatchRole::ALL
                     .iter()
@@ -413,7 +413,7 @@ pub fn init_minimal(
     bare: bool,
     force: bool,
 ) -> Result<()> {
-    let route_enum = workgraph::config_defaults::SetupRoute::from_name(route).ok_or_else(|| {
+    let route_enum = worksgood::config_defaults::SetupRoute::from_name(route).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown route '{}'. Valid: claude-cli, codex-cli, openrouter, local, nex-custom",
             route,
@@ -482,11 +482,11 @@ pub fn init_minimal(
 /// Built-in defaults cover everything else — `wg show <task>` from a fresh
 /// install with no `~/.wg/config.toml` already runs claude:opus correctly.
 pub fn render_minimal_config(
-    route: workgraph::config_defaults::SetupRoute,
+    route: worksgood::config_defaults::SetupRoute,
     scope: ConfigScope,
     bare: bool,
 ) -> String {
-    use workgraph::config_defaults::SetupRoute as R;
+    use worksgood::config_defaults::SetupRoute as R;
 
     if bare {
         return match scope {
@@ -541,12 +541,12 @@ pub fn render_minimal_config(
         // Drops the header comment when serving from the profile template
         // (the template's own `description = "..."` line is the equivalent).
         (R::ClaudeCli, ConfigScope::Global) => {
-            workgraph::profile::named::STARTER_CLAUDE.to_string()
+            worksgood::profile::named::STARTER_CLAUDE.to_string()
         }
 
-        (R::CodexCli, ConfigScope::Global) => workgraph::profile::named::STARTER_CODEX.to_string(),
+        (R::CodexCli, ConfigScope::Global) => worksgood::profile::named::STARTER_CODEX.to_string(),
 
-        (R::Local, ConfigScope::Global) => workgraph::profile::named::STARTER_NEX.to_string(),
+        (R::Local, ConfigScope::Global) => worksgood::profile::named::STARTER_NEX.to_string(),
 
         (R::Openrouter, ConfigScope::Global) => format!(
             "{header}\
@@ -747,7 +747,7 @@ pub fn update(
         && !endpoint_handled_model
     {
         // Validate provider:model format
-        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+        if let Err(e) = worksgood::config::parse_model_spec_strict(m) {
             anyhow::bail!(
                 "Invalid model format: {}. Use provider:model format (e.g., 'claude:opus').",
                 e
@@ -814,7 +814,7 @@ pub fn update(
 
     if let Some(m) = coordinator_model {
         // Validate provider:model format
-        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+        if let Err(e) = worksgood::config::parse_model_spec_strict(m) {
             anyhow::bail!(
                 "Invalid model format: {}. Use provider:model format (e.g., 'claude:opus').",
                 e
@@ -839,7 +839,7 @@ pub fn update(
             .as_deref()
             .unwrap_or(&config.agent.model);
         // Extract just the model ID (strip any existing provider prefix)
-        let current_model_id = workgraph::config::parse_model_spec(current_model_raw).model_id;
+        let current_model_id = worksgood::config::parse_model_spec(current_model_raw).model_id;
         eprintln!(
             "Warning: --coordinator-provider is deprecated. Use provider:model format in --dispatcher-model instead.\n\
              Example: wg config --dispatcher-model {}:{}",
@@ -1050,17 +1050,17 @@ pub fn update(
             .map(std::string::ToString::to_string)
             .or_else(|| {
                 mdl.and_then(|m| {
-                    workgraph::config::parse_model_spec(m)
+                    worksgood::config::parse_model_spec(m)
                         .provider
                         .as_deref()
-                        .map(workgraph::config::provider_to_executor)
+                        .map(worksgood::config::provider_to_executor)
                         .map(std::string::ToString::to_string)
                 })
             })
             .unwrap_or_else(|| config.agent.executor.clone());
         let ep = endpoint;
-        let _ = workgraph::launcher_history::record_use(
-            &workgraph::launcher_history::HistoryEntry::new(&exec, mdl, ep, "config"),
+        let _ = worksgood::launcher_history::record_use(
+            &worksgood::launcher_history::HistoryEntry::new(&exec, mdl, ep, "config"),
         );
     }
 
@@ -1078,7 +1078,7 @@ pub fn update(
             || flip_comparison_model.is_some()
             || flip_model.is_some());
     let active_profile_to_clear = if direct_global_routing_change {
-        workgraph::profile::named::active().unwrap_or(None)
+        worksgood::profile::named::active().unwrap_or(None)
     } else {
         None
     };
@@ -1098,7 +1098,7 @@ pub fn update(
                 let path = Config::global_config_path()?;
                 println!("Global configuration saved to {}", path.display());
                 if let Some(prev) = active_profile_to_clear {
-                    workgraph::profile::named::set_active(None)?;
+                    worksgood::profile::named::set_active(None)?;
                     println!(
                         "Active profile cleared (was: {}) because global model routing was edited directly.",
                         prev
@@ -1380,7 +1380,7 @@ pub fn update_matrix(
 
 /// Show model routing configuration: resolved model+provider for each dispatch role.
 pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
 
     let config = Config::load_merged(dir)?;
 
@@ -1430,7 +1430,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         let provider_display = resolved
             .provider
             .as_deref()
-            .map(workgraph::config::native_provider_to_prefix)
+            .map(worksgood::config::native_provider_to_prefix)
             .unwrap_or("(not set)");
         println!(
             "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
@@ -1449,7 +1449,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             let provider_display = resolved
                 .provider
                 .as_deref()
-                .map(workgraph::config::native_provider_to_prefix)
+                .map(worksgood::config::native_provider_to_prefix)
                 .unwrap_or("(not set)");
             println!(
                 "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
@@ -1520,12 +1520,12 @@ fn apply_flip_model_updates(
     inference_model: Option<&str>,
     comparison_model: Option<&str>,
 ) -> Result<bool> {
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
 
     let mut changed = false;
 
     if let Some(model) = inference_model {
-        if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+        if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
             anyhow::bail!(
                 "Invalid model format for --flip-inference-model: {}. Use provider:model format (e.g., 'claude:opus').",
                 e
@@ -1533,7 +1533,7 @@ fn apply_flip_model_updates(
         }
         config.models.set_model(DispatchRole::FlipInference, model);
         println!("Set models.flip_inference.model = \"{}\"", model);
-        let spec = workgraph::config::parse_model_spec(model);
+        let spec = worksgood::config::parse_model_spec(model);
         if let Some(ref provider) = spec.provider {
             config
                 .models
@@ -1543,7 +1543,7 @@ fn apply_flip_model_updates(
     }
 
     if let Some(model) = comparison_model {
-        if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+        if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
             anyhow::bail!(
                 "Invalid model format for --flip-comparison-model: {}. Use provider:model format (e.g., 'claude:haiku').",
                 e
@@ -1551,7 +1551,7 @@ fn apply_flip_model_updates(
         }
         config.models.set_model(DispatchRole::FlipComparison, model);
         println!("Set models.flip_comparison.model = \"{}\"", model);
-        let spec = workgraph::config::parse_model_spec(model);
+        let spec = worksgood::config::parse_model_spec(model);
         if let Some(ref provider) = spec.provider {
             config
                 .models
@@ -1569,11 +1569,11 @@ fn apply_model_for_role(
     role_name: &str,
     model: &str,
 ) -> Result<()> {
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
 
     let role: DispatchRole = role_name.parse()?;
 
-    if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+    if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
         anyhow::bail!(
             "Invalid model format: {}. Use provider:model format (e.g., 'claude:opus').",
             e
@@ -1583,7 +1583,7 @@ fn apply_model_for_role(
     config.models.set_model(role, model);
     println!("Set models.{}.model = \"{}\"", role, model);
 
-    let spec = workgraph::config::parse_model_spec(model);
+    let spec = worksgood::config::parse_model_spec(model);
     if let Some(ref provider) = spec.provider {
         config.models.set_provider(role, provider);
         println!(
@@ -1616,7 +1616,7 @@ fn apply_model_for_role(
 }
 
 fn apply_provider_for_role(config: &mut Config, role_name: &str, provider: &str) -> Result<()> {
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
 
     let suggested_provider = if provider == "anthropic" {
         "claude"
@@ -1639,7 +1639,7 @@ fn apply_endpoint_for_role(
     role_name: &str,
     endpoint_name: &str,
 ) -> Result<()> {
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
 
     let role: DispatchRole = role_name.parse()?;
     if config.llm_endpoints.find_by_name(endpoint_name).is_none() {
@@ -1904,7 +1904,7 @@ pub fn remove_registry_entry(
     }
 
     // Check role overrides (including default, which is excluded from ALL)
-    use workgraph::config::DispatchRole;
+    use worksgood::config::DispatchRole;
     if let Some(ref default_cfg) = config.models.default
         && default_cfg.model.as_deref() == Some(id)
     {
@@ -2028,7 +2028,7 @@ fn save_config(config: &Config, dir: &Path, scope: ConfigScope) -> Result<()> {
 
 /// Check OpenRouter API key validity and credit status
 pub fn check_key(dir: &Path, json: bool) -> Result<()> {
-    use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
+    use worksgood::executor::native::openai_client::resolve_openai_api_key_from_dir;
 
     let key = match resolve_openai_api_key_from_dir(dir) {
         Ok(k) => k,
@@ -2227,7 +2227,7 @@ pub fn reset_to_route(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
-    use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
+    use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
     // Resolve the target path + load the existing config (if any).
     let (target_path, existing) = match scope {
@@ -2451,7 +2451,7 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
 
     match key {
         "agent.model" => {
-            workgraph::config::parse_model_spec_strict(v).map_err(|e| {
+            worksgood::config::parse_model_spec_strict(v).map_err(|e| {
                 anyhow::anyhow!(
                     "Invalid model format: {}. Use provider:model (e.g. 'claude:opus').",
                     e
@@ -2496,7 +2496,7 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
             config.coordinator.coordinator_agent = parse_bool(v)?;
         }
         "coordinator.model" | "dispatcher.model" => {
-            workgraph::config::parse_model_spec_strict(v).map_err(|e| {
+            worksgood::config::parse_model_spec_strict(v).map_err(|e| {
                 anyhow::anyhow!(
                     "Invalid model format: {}. Use provider:model (e.g. 'claude:opus').",
                     e
@@ -2523,17 +2523,17 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
             config.agency.auto_create = parse_bool(v)?;
         }
         "tiers.fast" => {
-            workgraph::config::parse_model_spec_strict(v)
+            worksgood::config::parse_model_spec_strict(v)
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.fast = Some(v.to_string());
         }
         "tiers.standard" => {
-            workgraph::config::parse_model_spec_strict(v)
+            worksgood::config::parse_model_spec_strict(v)
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.standard = Some(v.to_string());
         }
         "tiers.premium" => {
-            workgraph::config::parse_model_spec_strict(v)
+            worksgood::config::parse_model_spec_strict(v)
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.premium = Some(v.to_string());
         }
@@ -3142,7 +3142,7 @@ mod tests {
         // surface the effective endpoint state, including the inherit_global
         // flag. This is what users will check when asking "is openrouter
         // still being inherited from global?"
-        use workgraph::config::{EndpointConfig, EndpointsConfig};
+        use worksgood::config::{EndpointConfig, EndpointsConfig};
 
         // Effective config with NO endpoints and inherit_global=false (the
         // new default behavior — what the user wants).

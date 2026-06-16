@@ -1,9 +1,9 @@
 use chrono::{TimeZone, Timelike, Utc};
 use serde_json;
 use tempfile::TempDir;
-use workgraph::cron::{calculate_next_fire, is_cron_due, parse_cron_expression};
-use workgraph::graph::{Node, PRIORITY_NORMAL, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::cron::{calculate_next_fire, is_cron_due, parse_cron_expression};
+use worksgood::graph::{Node, PRIORITY_NORMAL, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 #[test]
 fn test_cron_expression_parsing() {

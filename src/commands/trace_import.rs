@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use workgraph::agency;
-use workgraph::provenance;
+use worksgood::agency;
+use worksgood::provenance;
 
 use super::trace_export::TraceExport;
 
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use crate::commands::trace_export::{ExportMetadata, ExportedTask, TraceExport};
     use tempfile::TempDir;
-    use workgraph::graph::Status;
+    use worksgood::graph::Status;
 
     fn make_minimal_export(tasks: Vec<ExportedTask>) -> TraceExport {
         TraceExport {

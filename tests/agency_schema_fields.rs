@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use workgraph::agency::{
+use worksgood::agency::{
     ComponentCategory, ContentRef, DesiredOutcome, Lineage, PerformanceRecord, RoleComponent,
     TradeoffConfig,
 };

@@ -8,13 +8,13 @@
 
 use tempfile::TempDir;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, Agent, EvaluatorInput, Lineage, PerformanceRecord, assigner_components,
     content_hash_agent, creator_components, evaluator_components, evolver_components,
     render_evaluator_prompt, render_identity_prompt_rich, resolve_all_components, resolve_outcome,
     save_agent, seed_starters, special_agent_roles, special_agent_tradeoffs,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 /// Seed an agency dir and return it along with the TempDir handle.
 fn setup_agency() -> (TempDir, std::path::PathBuf) {

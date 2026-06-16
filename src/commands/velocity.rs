@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{Status, WorkGraph};
+use worksgood::graph::{Status, WorkGraph};
 
 /// Number of weeks to show by default
 const DEFAULT_WEEKS: usize = 4;
@@ -302,7 +302,7 @@ fn print_human_output(summary: &VelocitySummary) {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use workgraph::graph::{Estimate, Node, Task};
+    use worksgood::graph::{Estimate, Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

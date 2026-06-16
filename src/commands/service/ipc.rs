@@ -9,12 +9,12 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-use workgraph::config::Config;
-use workgraph::cron::{calculate_next_fire, parse_cron_expression};
-use workgraph::dispatch::ExecutorKind;
-use workgraph::graph::{Node, PRIORITY_DEFAULT, PRIORITY_HIGH, Status, Task};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::registry::AgentRegistry;
+use worksgood::config::Config;
+use worksgood::cron::{calculate_next_fire, parse_cron_expression};
+use worksgood::dispatch::ExecutorKind;
+use worksgood::graph::{Node, PRIORITY_DEFAULT, PRIORITY_HIGH, Status, Task};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::registry::AgentRegistry;
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
 use crate::commands::graph_path;
@@ -138,7 +138,7 @@ pub enum IpcRequest {
         request_id: String,
         /// Optional file attachments
         #[serde(default)]
-        attachments: Vec<workgraph::chat::Attachment>,
+        attachments: Vec<worksgood::chat::Attachment>,
         /// Target chat agent (default: 0)
         #[serde(default, alias = "coordinator_id")]
         chat_id: Option<u32>,
@@ -678,7 +678,7 @@ fn handle_request(
 
 /// Handle spawn request.
 ///
-/// Routes through `workgraph::dispatch::plan_spawn` so the IPC spawn entry
+/// Routes through `worksgood::dispatch::plan_spawn` so the IPC spawn entry
 /// honors the same {executor, model, endpoint} precedence as the
 /// dispatcher tick. The IPC-passed `executor` is treated as a manual hint
 /// that plan_spawn consults at the `agent_executor` level (wins over
@@ -713,7 +713,7 @@ fn handle_spawn(
     let agent_entity = task
         .agent
         .as_ref()
-        .and_then(|hash| workgraph::agency::find_agent_by_prefix(&agents_dir, hash).ok());
+        .and_then(|hash| worksgood::agency::find_agent_by_prefix(&agents_dir, hash).ok());
     let agency_executor = agent_entity
         .as_ref()
         .and_then(|a| a.explicit_executor().map(str::to_string));
@@ -725,7 +725,7 @@ fn handle_spawn(
     let agent_executor_owned = agency_executor.or(ipc_executor);
 
     // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
-    let plan = match workgraph::dispatch::plan_spawn(
+    let plan = match worksgood::dispatch::plan_spawn(
         &task,
         &config,
         agent_executor_owned.as_deref(),
@@ -887,7 +887,7 @@ fn handle_shutdown(dir: &Path, kill_agents: bool, logger: &DaemonLogger) -> IpcR
 /// and update registry + coordinator state.
 #[cfg(unix)]
 fn handle_freeze(dir: &Path, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
-    use workgraph::service::registry::AgentStatus;
+    use worksgood::service::registry::AgentStatus;
 
     let mut coord_state = CoordinatorState::load_or_default(dir);
     if coord_state.frozen {
@@ -966,7 +966,7 @@ fn handle_freeze(
 #[cfg(unix)]
 fn handle_thaw(dir: &Path, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
     use crate::commands::is_process_alive;
-    use workgraph::service::registry::AgentStatus;
+    use worksgood::service::registry::AgentStatus;
 
     let mut coord_state = CoordinatorState::load_or_default(dir);
     if !coord_state.frozen {
@@ -1338,8 +1338,8 @@ fn handle_add_task(
 
     // Record provenance
     let origin_str = origin.unwrap_or("unknown");
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "add_task",
         Some(&task_id),
@@ -1372,7 +1372,7 @@ fn handle_send_message(
         return IpcResponse::error(&format!("Task '{}' not found", task_id));
     }
 
-    match workgraph::messages::send_message(dir, task_id, body, sender, priority) {
+    match worksgood::messages::send_message(dir, task_id, body, sender, priority) {
         Ok(msg_id) => IpcResponse::success(serde_json::json!({
             "task_id": task_id,
             "message_id": msg_id,
@@ -1405,18 +1405,18 @@ fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
 }
 
 /// Append a user chat message to a coordinator's inbox.
-/// Delegates to workgraph::chat for the actual storage.
+/// Delegates to worksgood::chat for the actual storage.
 fn append_chat_inbox(
     dir: &Path,
     coordinator_id: u32,
     content: &str,
     request_id: &str,
-    attachments: Vec<workgraph::chat::Attachment>,
+    attachments: Vec<worksgood::chat::Attachment>,
 ) -> Result<u64> {
     if attachments.is_empty() {
-        workgraph::chat::append_inbox_for(dir, coordinator_id, content, request_id)
+        worksgood::chat::append_inbox_for(dir, coordinator_id, content, request_id)
     } else {
-        workgraph::chat::append_inbox_with_attachments_for(
+        worksgood::chat::append_inbox_with_attachments_for(
             dir,
             coordinator_id,
             content,
@@ -1430,12 +1430,12 @@ fn append_chat_inbox(
 /// (legacy `.coordinator-N` and new `.chat-N`) and existing chat history files.
 /// Returns max(existing_ids) + 1 to ensure the new chat has never existed before
 /// and has no chat history files.
-fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Path) -> u32 {
+fn find_next_fresh_coordinator_id(graph: &worksgood::graph::WorkGraph, dir: &Path) -> u32 {
     let mut max_id = None::<u32>;
 
     // Scan all existing chat tasks (both new .chat-N and legacy .coordinator-N)
     for task in graph.tasks() {
-        if let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) {
+        if let Some(id) = worksgood::chat_id::parse_chat_task_id(&task.id) {
             max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
         }
     }
@@ -1459,9 +1459,9 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
     // Scan sessions.json for all coordinator aliases (active + archived).
     // This replaces the old filesystem scan and catches archived
     // coordinators whose chat dirs have been moved to .archive/.
-    if let Ok(reg) = workgraph::chat_sessions::load(dir) {
+    if let Ok(reg) = worksgood::chat_sessions::load(dir) {
         for meta in reg.sessions.values() {
-            if meta.kind != workgraph::chat_sessions::SessionKind::Coordinator {
+            if meta.kind != worksgood::chat_sessions::SessionKind::Coordinator {
                 continue;
             }
             for alias in &meta.aliases {
@@ -1504,12 +1504,12 @@ pub fn create_chat_in_graph(
     }
     let graph_path = crate::commands::graph_path(dir);
     let mut graph =
-        workgraph::parser::load_graph(&graph_path).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path).with_context(|| "Failed to load graph")?;
 
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let max = config.coordinator.max_coordinators;
     let alive =
-        workgraph::chat::count_live_chats(dir, &graph, workgraph::chat::CHAT_CAP_IDLE_THRESHOLD);
+        worksgood::chat::count_live_chats(dir, &graph, worksgood::chat::CHAT_CAP_IDLE_THRESHOLD);
     if alive >= max {
         anyhow::bail!("Chat cap reached ({}/{})", alive, max);
     }
@@ -1521,27 +1521,27 @@ pub fn create_chat_in_graph(
         .map(|n| format!("Chat: {}", n))
         .unwrap_or_else(|| format!("Chat {}", next_id));
 
-    let project_root = workgraph::chat_command::project_root_for_workgraph_dir(dir);
+    let project_root = worksgood::chat_command::project_root_for_workgraph_dir(dir);
     let (command_argv, working_dir, executor_preset_name) = if let Some(command) = command {
         (
-            workgraph::chat_command::argv_for_command_line(command),
+            worksgood::chat_command::argv_for_command_line(command),
             Some(project_root.display().to_string()),
             None,
         )
     } else {
-        let preset = workgraph::chat_command::preset_name_for_executor(executor, model);
-        let mut argv = workgraph::chat_command::argv_for_preset(&preset, model, endpoint, "wg");
+        let preset = worksgood::chat_command::preset_name_for_executor(executor, model);
+        let mut argv = worksgood::chat_command::argv_for_preset(&preset, model, endpoint, "wg");
         // Dexto drives OpenRouter via a generated per-chat agent YAML; write it
         // now and substitute its absolute path so the stored command record is
         // runnable even outside the TUI (prototype-octomind-dexto-chat).
         if preset == "dexto" {
             let chat_ref = format!("chat-{}", next_id);
-            let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
-            match workgraph::chat_command::write_dexto_agent_config(&chat_dir, model) {
+            let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+            match worksgood::chat_command::write_dexto_agent_config(&chat_dir, model) {
                 Ok(path) => {
                     if let Some(slot) = argv
                         .iter_mut()
-                        .find(|a| a.as_str() == workgraph::chat_command::DEXTO_AGENT_CONFIG_FILE)
+                        .find(|a| a.as_str() == worksgood::chat_command::DEXTO_AGENT_CONFIG_FILE)
                     {
                         *slot = path.display().to_string();
                     }
@@ -1554,14 +1554,14 @@ pub fn create_chat_in_graph(
         (argv, Some(project_root.display().to_string()), Some(preset))
     };
 
-    let task = workgraph::graph::Task {
-        id: workgraph::chat_id::format_chat_task_id(next_id),
+    let task = worksgood::graph::Task {
+        id: worksgood::chat_id::format_chat_task_id(next_id),
         title,
         description: Some(format!("Chat {} — persistent chat agent.", next_id)),
-        status: workgraph::graph::Status::InProgress,
+        status: worksgood::graph::Status::InProgress,
         priority: PRIORITY_HIGH,
-        tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
-        cycle_config: Some(workgraph::graph::CycleConfig {
+        tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+        cycle_config: Some(worksgood::graph::CycleConfig {
             max_iterations: 0,
             guard: None,
             delay: None,
@@ -1580,29 +1580,29 @@ pub fn create_chat_in_graph(
         executor_preset_name,
         created_at: Some(chrono::Utc::now().to_rfc3339()),
         started_at: Some(chrono::Utc::now().to_rfc3339()),
-        log: vec![workgraph::graph::LogEntry {
+        log: vec![worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!("Chat {} task created via IPC", next_id),
         }],
         ..Default::default()
     };
 
-    graph.add_node(workgraph::graph::Node::Task(task));
+    graph.add_node(worksgood::graph::Node::Task(task));
 
     // Companion `.archive-N` and `.compact-N` tasks are no longer created.
     // Archival runs natively in the dispatcher (see `run_automatic_archival`);
     // graph-cycle compaction has been retired entirely.
 
-    workgraph::parser::modify_graph(&graph_path, |fresh| {
+    worksgood::parser::modify_graph(&graph_path, |fresh| {
         // Re-apply all mutations to a fresh graph
         for node in graph.nodes() {
-            if let workgraph::graph::Node::Task(t) = node {
+            if let worksgood::graph::Node::Task(t) = node {
                 if let Some(ft) = fresh.get_task_mut(&t.id) {
                     *ft = t.clone();
                 } else {
-                    fresh.add_node(workgraph::graph::Node::Task(t.clone()));
+                    fresh.add_node(worksgood::graph::Node::Task(t.clone()));
                 }
             }
         }
@@ -1613,8 +1613,8 @@ pub fn create_chat_in_graph(
     // Record executor/model/endpoint combo in launcher history
     {
         let exec = executor.unwrap_or("claude");
-        let _ = workgraph::launcher_history::record_use(
-            &workgraph::launcher_history::HistoryEntry::new(exec, model, endpoint, "tui"),
+        let _ = worksgood::launcher_history::record_use(
+            &worksgood::launcher_history::HistoryEntry::new(exec, model, endpoint, "tui"),
         );
     }
 
@@ -1651,7 +1651,7 @@ fn handle_create_coordinator(
             IpcResponse::success(serde_json::json!({
                 "coordinator_id": next_id,
                 "chat_id": next_id,
-                "task_id": workgraph::chat_id::format_chat_task_id(next_id),
+                "task_id": worksgood::chat_id::format_chat_task_id(next_id),
                 "name": name,
             })),
             Some(next_id),
@@ -1667,10 +1667,10 @@ fn handle_create_coordinator(
 /// with a live worker is not silently orphaned when the user clicks ✕.
 fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let legacy_task_id = format!(".coordinator-{}", coordinator_id);
 
-    let resolved_task_id = if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+    let resolved_task_id = if let Ok(graph) = worksgood::parser::load_graph(&graph_path) {
         if graph.get_task(&task_id).is_some() {
             task_id.clone()
         } else if graph.get_task(&legacy_task_id).is_some() {
@@ -1684,7 +1684,7 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
         task_id.clone()
     };
 
-    if let Ok(graph) = workgraph::parser::load_graph(&graph_path)
+    if let Ok(graph) = worksgood::parser::load_graph(&graph_path)
         && let Some(task) = graph.get_task(&resolved_task_id)
         && task.agent.is_some()
         && let Ok(registry) = AgentRegistry::load(dir)
@@ -1698,7 +1698,7 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     }
 
     let mut result_msg: Option<String> = None;
-    match workgraph::parser::modify_graph(&graph_path, |graph| {
+    match worksgood::parser::modify_graph(&graph_path, |graph| {
         let resolved_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
         } else if graph.get_task(&legacy_task_id).is_some() {
@@ -1710,11 +1710,11 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = workgraph::graph::Status::Abandoned;
-        task.log.push(workgraph::graph::LogEntry {
+        task.status = worksgood::graph::Status::Abandoned;
+        task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!("Chat {} deleted via IPC", coordinator_id),
         });
         true
@@ -1754,7 +1754,7 @@ fn handle_purge_chats(
     caller_chat_id: Option<u32>,
 ) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let graph = match workgraph::parser::load_graph(&graph_path) {
+    let graph = match worksgood::parser::load_graph(&graph_path) {
         Ok(g) => g,
         Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
     };
@@ -1767,11 +1767,11 @@ fn handle_purge_chats(
         let has_chat_tag = task
             .tags
             .iter()
-            .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+            .any(|t| worksgood::chat_id::is_chat_loop_tag(t));
         if !has_chat_tag {
             continue;
         }
-        let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) else {
+        let Some(id) = worksgood::chat_id::parse_chat_task_id(&task.id) else {
             continue;
         };
         if task.tags.iter().any(|t| t == "archived") {
@@ -1803,7 +1803,7 @@ fn handle_purge_chats(
     for id in &to_purge {
         let r = handle_archive_coordinator(dir, *id);
         if r.ok {
-            let task_id = workgraph::chat_id::format_chat_task_id(*id);
+            let task_id = worksgood::chat_id::format_chat_task_id(*id);
             purged.push(serde_json::json!({
                 "chat_id": *id,
                 "task_id": task_id,
@@ -1828,7 +1828,7 @@ fn handle_purge_chats(
     for (id, reason) in &active_skips {
         skipped.push(serde_json::json!({
             "chat_id": *id,
-            "task_id": workgraph::chat_id::format_chat_task_id(*id),
+            "task_id": worksgood::chat_id::format_chat_task_id(*id),
             "reason": *reason,
         }));
     }
@@ -1842,10 +1842,10 @@ fn handle_purge_chats(
 
 fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let legacy_task_id = format!(".coordinator-{}", coordinator_id);
     let mut result_msg: Option<String> = None;
-    match workgraph::parser::modify_graph(&graph_path, |graph| {
+    match worksgood::parser::modify_graph(&graph_path, |graph| {
         // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let resolved_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
@@ -1858,16 +1858,16 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(resolved_id).unwrap();
-        task.status = workgraph::graph::Status::Done;
+        task.status = worksgood::graph::Status::Done;
         task.tags
-            .retain(|t| !workgraph::chat_id::is_chat_loop_tag(t));
+            .retain(|t| !worksgood::chat_id::is_chat_loop_tag(t));
         if !task.tags.contains(&"archived".to_string()) {
             task.tags.push("archived".to_string());
         }
-        task.log.push(workgraph::graph::LogEntry {
+        task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!("Chat {} archived via IPC", coordinator_id),
         });
         true
@@ -1882,7 +1882,7 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     // Archive the chat session so the chat dir moves to .archive/
     // and won't be resurrected on daemon restart.
     let alias = format!("coordinator-{}", coordinator_id);
-    if let Err(e) = workgraph::chat_sessions::archive_session(dir, &alias) {
+    if let Err(e) = worksgood::chat_sessions::archive_session(dir, &alias) {
         eprintln!(
             "[ipc] Warning: chat {} task archived but chat session archive failed: {}",
             coordinator_id, e
@@ -1934,7 +1934,7 @@ fn handle_set_coordinator_executor(
         .join("chat")
         .join(format!("coordinator-{}", coordinator_id));
     let mut handler_pid: Option<u32> = None;
-    if let Ok(Some(info)) = workgraph::session_lock::read_holder(&chat_dir)
+    if let Ok(Some(info)) = worksgood::session_lock::read_holder(&chat_dir)
         && info.alive
     {
         handler_pid = Some(info.pid);
@@ -1967,11 +1967,11 @@ fn worker_only_live_chat_executor_error(executor: Option<&str>) -> Option<String
 
 fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let legacy_task_id = format!(".coordinator-{}", coordinator_id);
 
     // Resolve the actual task ID (.chat-N new, .coordinator-N legacy, or .coordinator very-legacy)
-    let resolved_task_id = if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+    let resolved_task_id = if let Ok(graph) = worksgood::parser::load_graph(&graph_path) {
         if graph.get_task(&task_id).is_some() {
             task_id.clone()
         } else if graph.get_task(&legacy_task_id).is_some() {
@@ -1986,7 +1986,7 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     };
 
     // Kill any running agent (must happen before modify_graph to avoid holding lock)
-    if let Ok(graph) = workgraph::parser::load_graph(&graph_path)
+    if let Ok(graph) = worksgood::parser::load_graph(&graph_path)
         && let Some(task) = graph.get_task(&resolved_task_id)
         && task.agent.is_some()
         && let Ok(registry) = AgentRegistry::load(dir)
@@ -2000,7 +2000,7 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     }
 
     let mut result_msg: Option<String> = None;
-    match workgraph::parser::modify_graph(&graph_path, |graph| {
+    match worksgood::parser::modify_graph(&graph_path, |graph| {
         // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let actual_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
@@ -2013,12 +2013,12 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
             return false;
         };
         let task = graph.get_task_mut(actual_id).unwrap();
-        task.status = workgraph::graph::Status::Open;
+        task.status = worksgood::graph::Status::Open;
         task.assigned = None;
-        task.log.push(workgraph::graph::LogEntry {
+        task.log.push(worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("daemon".to_string()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!("Chat {} stopped via IPC", coordinator_id),
         });
         true
@@ -2039,7 +2039,7 @@ fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 /// Handle ListCoordinators IPC request.
 fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let graph = match workgraph::parser::load_graph(&graph_path) {
+    let graph = match worksgood::parser::load_graph(&graph_path) {
         Ok(g) => g,
         Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
     };
@@ -2048,7 +2048,7 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     for task in graph.tasks() {
         if task.tags.iter().any(|t| t == "coordinator-loop") {
             // Skip abandoned or archived coordinators
-            if matches!(task.status, workgraph::graph::Status::Abandoned) {
+            if matches!(task.status, worksgood::graph::Status::Abandoned) {
                 continue;
             }
             if task.tags.iter().any(|t| t == "archived") {
@@ -2614,8 +2614,8 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
         fs::create_dir_all(dir.join("service")).unwrap();
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let mut running = true;
         let mut wake_coordinator = false;
@@ -2687,8 +2687,8 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
         fs::create_dir_all(dir.join("service")).unwrap();
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Force chat-cap-reached by writing a config with max_coordinators=0.
         let toml = "[coordinator]\nmax_coordinators = 0\n";
@@ -2803,7 +2803,7 @@ poll_interval = 120
         assert_eq!(pending_coordinator_ids, vec![0]);
 
         // Verify message was written to inbox (coordinator 0)
-        let msgs = workgraph::chat::read_inbox(dir).unwrap();
+        let msgs = worksgood::chat::read_inbox(dir).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "test message");
         assert_eq!(msgs[0].request_id, "req-test-1");
@@ -2863,10 +2863,10 @@ poll_interval = 120
         assert_eq!(pending_coordinator_ids, vec![1]);
 
         // Message should be in coordinator 1's inbox, not coordinator 0's
-        let msgs0 = workgraph::chat::read_inbox(dir).unwrap();
+        let msgs0 = worksgood::chat::read_inbox(dir).unwrap();
         assert!(msgs0.is_empty());
 
-        let msgs1 = workgraph::chat::read_inbox_for(dir, 1).unwrap();
+        let msgs1 = worksgood::chat::read_inbox_for(dir, 1).unwrap();
         assert_eq!(msgs1.len(), 1);
         assert_eq!(msgs1[0].content, "message for coord 1");
     }
@@ -3091,34 +3091,34 @@ poll_interval = 120
         let dir = temp_dir.path();
 
         // Create coordinator tasks with various statuses
-        let active = workgraph::graph::Task {
+        let active = worksgood::graph::Task {
             id: ".coordinator-0".to_string(),
             title: "Active Coordinator".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         };
-        let abandoned = workgraph::graph::Task {
+        let abandoned = worksgood::graph::Task {
             id: ".coordinator-1".to_string(),
             title: "Abandoned Coordinator".to_string(),
-            status: workgraph::graph::Status::Abandoned,
+            status: worksgood::graph::Status::Abandoned,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         };
-        let done = workgraph::graph::Task {
+        let done = worksgood::graph::Task {
             id: ".coordinator-2".to_string(),
             title: "Done Coordinator".to_string(),
-            status: workgraph::graph::Status::Done,
+            status: worksgood::graph::Status::Done,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         };
 
         // Write graph to disk
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(active));
-        graph.add_node(workgraph::graph::Node::Task(abandoned));
-        graph.add_node(workgraph::graph::Node::Task(done));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(active));
+        graph.add_node(worksgood::graph::Node::Task(abandoned));
+        graph.add_node(worksgood::graph::Node::Task(done));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let resp = handle_list_coordinators(dir);
         assert!(resp.ok);
@@ -3144,25 +3144,25 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let task = workgraph::graph::Task {
+        let task = worksgood::graph::Task {
             id: ".coordinator-2".to_string(),
             title: "Coordinator 2".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         };
 
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(task));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(task));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let resp = handle_archive_coordinator(dir, 2);
         assert!(resp.ok);
 
         // Reload and check task state
-        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let task = graph.get_task(".coordinator-2").unwrap();
-        assert_eq!(task.status, workgraph::graph::Status::Done);
+        assert_eq!(task.status, worksgood::graph::Status::Done);
         assert!(task.tags.contains(&"archived".to_string()));
         assert!(!task.tags.contains(&"coordinator-loop".to_string()));
     }
@@ -3172,25 +3172,25 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let active = workgraph::graph::Task {
+        let active = worksgood::graph::Task {
             id: ".coordinator-0".to_string(),
             title: "Active".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         };
-        let archived = workgraph::graph::Task {
+        let archived = worksgood::graph::Task {
             id: ".coordinator-1".to_string(),
             title: "Archived".to_string(),
-            status: workgraph::graph::Status::Done,
+            status: worksgood::graph::Status::Done,
             tags: vec!["coordinator-loop".to_string(), "archived".to_string()],
             ..Default::default()
         };
 
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(active));
-        graph.add_node(workgraph::graph::Node::Task(archived));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(active));
+        graph.add_node(worksgood::graph::Node::Task(archived));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let resp = handle_list_coordinators(dir);
         assert!(resp.ok);
@@ -3208,8 +3208,8 @@ poll_interval = 120
         fs::create_dir_all(dir.join("service")).unwrap();
 
         // Create empty graph
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Create chat agent labeled "alice"
         let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
@@ -3217,7 +3217,7 @@ poll_interval = 120
         assert_eq!(new_id, Some(0), "first chat should be chat 0");
 
         // Verify the chat task was created with correct label and new prefix
-        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let coord = graph
             .get_task(".chat-0")
             .expect("chat task should exist with new .chat-N prefix");
@@ -3229,7 +3229,7 @@ poll_interval = 120
         assert!(resp.ok, "create_chat for bob should succeed");
         assert_eq!(new_id, Some(1), "second chat should be chat 1");
 
-        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let coord = graph.get_task(".chat-1").expect("second chat should exist");
         assert_eq!(coord.title, "Chat: bob");
 
@@ -3245,8 +3245,8 @@ poll_interval = 120
         fs::create_dir_all(dir.join("service")).unwrap();
 
         // Create empty graph and two coordinators
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let _ = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
         let _ = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
@@ -3295,8 +3295,8 @@ poll_interval = 120
     /// chat". `find_next_fresh_coordinator_id` must return max(existing) + 1.
     #[test]
     fn test_dialog_enter_creates_new_chat_with_fresh_id() {
-        use workgraph::chat_id::{CHAT_LOOP_TAG, format_chat_task_id};
-        use workgraph::graph::{CycleConfig, Status, Task, WorkGraph};
+        use worksgood::chat_id::{CHAT_LOOP_TAG, format_chat_task_id};
+        use worksgood::graph::{CycleConfig, Status, Task, WorkGraph};
 
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -3326,7 +3326,7 @@ poll_interval = 120
             }),
             ..Default::default()
         };
-        graph_with_zero.add_node(workgraph::graph::Node::Task(chat0));
+        graph_with_zero.add_node(worksgood::graph::Node::Task(chat0));
         assert_eq!(
             find_next_fresh_coordinator_id(&graph_with_zero, dir),
             1,
@@ -3350,7 +3350,7 @@ poll_interval = 120
             }),
             ..Default::default()
         };
-        graph_with_gap.add_node(workgraph::graph::Node::Task(chat3));
+        graph_with_gap.add_node(worksgood::graph::Node::Task(chat3));
         assert_eq!(
             find_next_fresh_coordinator_id(&graph_with_gap, dir),
             4,
@@ -3367,36 +3367,36 @@ poll_interval = 120
         let dir = temp_dir.path();
 
         // Three chats: one new-prefix, one legacy-prefix, one already-archived.
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-0".to_string(),
             title: "Chat 0".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["chat-loop".to_string()],
             ..Default::default()
         }));
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".coordinator-1".to_string(),
             title: "Legacy Coord 1".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["coordinator-loop".to_string()],
             ..Default::default()
         }));
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-2".to_string(),
             title: "Already Archived Chat 2".to_string(),
-            status: workgraph::graph::Status::Done,
+            status: worksgood::graph::Status::Done,
             tags: vec!["chat-loop".to_string(), "archived".to_string()],
             ..Default::default()
         }));
         // Non-chat task — must be untouched.
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: "regular-work".to_string(),
             title: "Regular Work".to_string(),
-            status: workgraph::graph::Status::Open,
+            status: worksgood::graph::Status::Open,
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // include_active=true preserves the original full-nuke semantics this
         // test was written against (no on-disk activity exists for these in-
@@ -3416,26 +3416,26 @@ poll_interval = 120
         );
 
         // Reload graph and verify state.
-        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
 
         let t0 = g.get_task(".chat-0").expect("chat-0 task still exists");
-        assert_eq!(t0.status, workgraph::graph::Status::Done);
+        assert_eq!(t0.status, worksgood::graph::Status::Done);
         assert!(t0.tags.contains(&"archived".to_string()));
         assert!(!t0.tags.iter().any(|t| t == "chat-loop"));
 
         let t1 = g
             .get_task(".coordinator-1")
             .expect("coordinator-1 task still exists");
-        assert_eq!(t1.status, workgraph::graph::Status::Done);
+        assert_eq!(t1.status, worksgood::graph::Status::Done);
         assert!(t1.tags.contains(&"archived".to_string()));
         assert!(!t1.tags.iter().any(|t| t == "coordinator-loop"));
 
         let t2 = g.get_task(".chat-2").expect("chat-2 task still exists");
-        assert_eq!(t2.status, workgraph::graph::Status::Done);
+        assert_eq!(t2.status, worksgood::graph::Status::Done);
 
         // Non-chat task untouched.
         let regular = g.get_task("regular-work").unwrap();
-        assert_eq!(regular.status, workgraph::graph::Status::Open);
+        assert_eq!(regular.status, worksgood::graph::Status::Open);
 
         // Re-running is a no-op (idempotent): everything is already archived,
         // so the second purge produces zero new archives. Skipped includes
@@ -3456,8 +3456,8 @@ poll_interval = 120
     fn test_handle_purge_chats_empty_graph_is_noop() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
         let resp = handle_purge_chats(dir, false, None);
         assert!(resp.ok, "empty-graph purge should succeed");
         let data = resp.data.unwrap();
@@ -3477,8 +3477,8 @@ poll_interval = 120
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("service")).unwrap();
 
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let (resp, new_id) = handle_create_coordinator(
             dir,
@@ -3530,8 +3530,8 @@ poll_interval = 120
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("service")).unwrap();
 
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // `aider` is still worker-only (no live chat handler), so it is
         // rejected here. (OpenCode is NO LONGER rejected — see
@@ -3559,7 +3559,7 @@ poll_interval = 120
             err
         );
 
-        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.tasks().count(),
             0,
@@ -3575,8 +3575,8 @@ poll_interval = 120
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("service")).unwrap();
 
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let id = create_chat_in_graph(
             dir,
@@ -3588,13 +3588,13 @@ poll_interval = 120
         )
         .expect("opencode is chat-capable and must create a live chat");
 
-        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.tasks().count(),
             1,
             "a successful opencode chat create must write exactly one chat task"
         );
-        let task_id = workgraph::chat_id::format_chat_task_id(id);
+        let task_id = worksgood::chat_id::format_chat_task_id(id);
         let task = graph.get_task(&task_id).expect("chat task present");
         assert_eq!(
             task.model.as_deref(),
@@ -3692,29 +3692,29 @@ poll_interval = 120
     /// visible tabs".
     #[test]
     fn test_create_chat_in_graph_excludes_archived_from_cap() {
-        use workgraph::chat_id::CHAT_LOOP_TAG;
+        use worksgood::chat_id::CHAT_LOOP_TAG;
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
         // Pre-load graph with 2 active chats and 2 archived chats —
         // total 4 chat-loop-tagged tasks, but only 2 occupy slots.
         let now = chrono::Utc::now().to_rfc3339();
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for (i, archived) in [(0u32, false), (1, false), (2, true), (3, true)] {
             let mut tags = vec![CHAT_LOOP_TAG.to_string()];
             if archived {
                 tags.push("archived".to_string());
             }
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(i),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(i),
                 title: format!("Chat {}", i),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags,
                 created_at: Some(now.clone()),
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Default max_coordinators is 4. We have 2 live + 2 archived =
         // 2/4 — creation must succeed (fresh chat 4 lands).
@@ -3735,7 +3735,7 @@ poll_interval = 120
     /// the cap counter agree on what's live.
     #[test]
     fn test_create_chat_in_graph_zombie_supervisors_do_not_block() {
-        use workgraph::chat_id::CHAT_LOOP_TAG;
+        use worksgood::chat_id::CHAT_LOOP_TAG;
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
@@ -3744,18 +3744,18 @@ poll_interval = 120
         // would treat them all as idle and exit. Cap counter should
         // therefore see 0 live, allowing a new chat to land.
         let stale = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for i in 0u32..4 {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(i),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(i),
                 title: format!("Chat {}", i),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec![CHAT_LOOP_TAG.to_string()],
                 created_at: Some(stale.clone()),
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // 4 zombies + cap of 4 = pre-fix would bail with "Chat cap
         // reached (4/4)". Post-fix the zombies don't count and creation
@@ -3776,25 +3776,25 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-0".to_string(),
             title: "Chat 0".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["chat-loop".to_string()],
             ..Default::default()
         }));
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-3".to_string(),
             title: "Chat 3".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["chat-loop".to_string()],
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Pre-purge: both chats should boot.
-        let pre = workgraph::service::enumerate_chat_supervisors_for_boot(dir);
+        let pre = worksgood::service::enumerate_chat_supervisors_for_boot(dir);
         let pre_ids: Vec<u32> = pre.iter().map(|s| s.chat_id).collect();
         assert_eq!(pre_ids, vec![0, 3]);
 
@@ -3805,7 +3805,7 @@ poll_interval = 120
         assert!(resp.ok);
 
         // Post-purge: zero supervisors enumerated → daemon restart spawns nothing.
-        let post = workgraph::service::enumerate_chat_supervisors_for_boot(dir);
+        let post = worksgood::service::enumerate_chat_supervisors_for_boot(dir);
         assert!(
             post.is_empty(),
             "after purge, boot enumerator must yield no supervisors, got {:?}",
@@ -3823,20 +3823,20 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [5u32, 6, 7] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Mark .chat-5 as active (freshly-touched consumer cursor).
-        workgraph::chat::write_cursor_for(dir, 5, 0).unwrap();
+        worksgood::chat::write_cursor_for(dir, 5, 0).unwrap();
 
         let resp = handle_purge_chats(dir, false, None);
         assert!(resp.ok, "purge should succeed: {:?}", resp.error);
@@ -3862,7 +3862,7 @@ poll_interval = 120
         );
 
         // Verify graph: .chat-5 keeps chat-loop tag; others archived.
-        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let t5 = g.get_task(".chat-5").unwrap();
         assert!(
             t5.tags.iter().any(|t| t == "chat-loop"),
@@ -3878,19 +3878,19 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [5u32, 6] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
         // Active chat cursor — should be ignored under include_active=true.
-        workgraph::chat::write_cursor_for(dir, 5, 0).unwrap();
+        worksgood::chat::write_cursor_for(dir, 5, 0).unwrap();
 
         let resp = handle_purge_chats(dir, true, None);
         assert!(resp.ok);
@@ -3917,17 +3917,17 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [3u32, 4] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // No on-disk activity — only the caller hint differentiates.
         let resp = handle_purge_chats(dir, false, Some(3));
@@ -3959,17 +3959,17 @@ poll_interval = 120
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [10u32, 11, 12] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let resp = handle_purge_chats(dir, false, None);
         assert!(resp.ok);
@@ -4038,8 +4038,8 @@ poll_interval = 120
     /// cleanly without erroring.
     #[test]
     fn test_handle_delete_coordinator_marks_abandoned() {
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::test_helpers::make_task_with_status;
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
@@ -4050,12 +4050,12 @@ poll_interval = 120
         task.tags = vec!["chat-loop".to_string()];
         graph.add_node(Node::Task(task));
         let graph_path = dir.join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
         let resp = handle_delete_coordinator(dir, 4);
         assert!(resp.ok, "delete must succeed; error = {:?}", resp.error);
 
-        let graph2 = workgraph::parser::load_graph(&graph_path).unwrap();
+        let graph2 = worksgood::parser::load_graph(&graph_path).unwrap();
         let task = graph2.get_task(".chat-4").expect("task must still exist");
         assert_eq!(
             task.status,
@@ -4075,8 +4075,8 @@ poll_interval = 120
     /// legacy fallback ladder in `handle_delete_coordinator`.
     #[test]
     fn test_handle_delete_coordinator_legacy_id_resolves() {
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::test_helpers::make_task_with_status;
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
@@ -4084,12 +4084,12 @@ poll_interval = 120
         let mut task = make_task_with_status(".coordinator-7", "Legacy Chat 7", Status::InProgress);
         task.tags = vec!["coordinator-loop".to_string()];
         graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let resp = handle_delete_coordinator(dir, 7);
         assert!(resp.ok);
 
-        let graph2 = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph2 = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let task = graph2.get_task(".coordinator-7").unwrap();
         assert_eq!(task.status, Status::Abandoned);
     }

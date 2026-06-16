@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use workgraph::agency::AgencyStore;
-use workgraph::federation;
+use worksgood::agency::AgencyStore;
+use worksgood::federation;
 
 /// Add a named remote.
 pub fn run_add(
@@ -201,7 +201,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::LocalStore;
+    use worksgood::agency::LocalStore;
 
     fn setup_workgraph_dir(tmp: &TempDir) -> std::path::PathBuf {
         let wg_dir = tmp.path().join(".wg");
@@ -211,7 +211,7 @@ mod tests {
 
     fn setup_remote_store(tmp: &TempDir, name: &str) -> LocalStore {
         let path = tmp.path().join(name).join("agency");
-        workgraph::agency::init(&path).unwrap();
+        worksgood::agency::init(&path).unwrap();
         LocalStore::new(path)
     }
 
@@ -286,7 +286,7 @@ mod tests {
         let store = setup_remote_store(&tmp, "remote-store");
 
         // Add some entities
-        use workgraph::agency::{Lineage, PerformanceRecord, Role};
+        use worksgood::agency::{Lineage, PerformanceRecord, Role};
         store
             .save_role(&Role {
                 id: "r1".to_string(),

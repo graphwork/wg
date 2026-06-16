@@ -4,8 +4,8 @@ use anyhow::{Result, bail};
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use workgraph::config::Config;
-use workgraph::secret::{
+use worksgood::config::Config;
+use worksgood::secret::{
     Backend, SecretsConfig, backend_status, check_ref_reachable, delete, get, list, set,
 };
 
@@ -329,7 +329,7 @@ fn migrate_endpoints_in_config(
                         env_name, secret_name
                     );
                     if !dry_run {
-                        workgraph::secret::keyring_set(&secret_name, &env_value)?;
+                        worksgood::secret::keyring_set(&secret_name, &env_value)?;
                         println!("  Stored '{}' in keyring.", secret_name);
                     }
                 } else {

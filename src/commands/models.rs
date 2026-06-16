@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
+use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
 
 /// List all models in the registry
 pub fn run_list(workgraph_dir: &Path, tier: Option<&str>, json: bool) -> Result<()> {
@@ -132,7 +132,7 @@ pub fn run_init(workgraph_dir: &Path) -> Result<()> {
 
 // ── Remote model discovery ──────────────────────────────────────────────
 
-use workgraph::executor::native::openai_client::{
+use worksgood::executor::native::openai_client::{
     self, OpenRouterModel, fetch_openrouter_models_blocking,
 };
 
@@ -381,7 +381,7 @@ fn format_context_window(tokens: u64) -> String {
 
 // ── Benchmark registry commands ─────────────────────────────────────────
 
-use workgraph::model_benchmarks::{self, BenchmarkRegistry};
+use worksgood::model_benchmarks::{self, BenchmarkRegistry};
 
 /// Fetch model data from OpenRouter and write the benchmark registry.
 pub fn run_fetch(workgraph_dir: &Path, no_cache: bool) -> Result<()> {

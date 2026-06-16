@@ -254,7 +254,7 @@ pub fn apply_placement_command(cmd: &PlacementCommand, dir: &Path) -> Result<boo
             let graph_path = dir.join("graph.jsonl");
 
             let mut error: Option<anyhow::Error> = None;
-            workgraph::parser::modify_graph(&graph_path, |graph| {
+            worksgood::parser::modify_graph(&graph_path, |graph| {
                 let task = match graph.get_task_mut(task_id) {
                     Some(t) => t,
                     None => {
@@ -280,10 +280,10 @@ pub fn apply_placement_command(cmd: &PlacementCommand, dir: &Path) -> Result<boo
                 }
 
                 if modified {
-                    task.log.push(workgraph::graph::LogEntry {
+                    task.log.push(worksgood::graph::LogEntry {
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         actor: Some("placement".to_string()),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Placement applied: {}{}",
                             if !after.is_empty() {

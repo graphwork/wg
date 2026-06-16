@@ -53,7 +53,7 @@ fn test_no_dated_model_ids_anywhere_in_source() {
 
 #[test]
 fn test_constants_are_bare_aliases() {
-    assert_eq!(workgraph::config::CLAUDE_OPUS_MODEL_ID, "opus");
-    assert_eq!(workgraph::config::CLAUDE_SONNET_MODEL_ID, "sonnet");
-    assert_eq!(workgraph::config::CLAUDE_HAIKU_MODEL_ID, "haiku");
+    assert_eq!(worksgood::config::CLAUDE_OPUS_MODEL_ID, "opus");
+    assert_eq!(worksgood::config::CLAUDE_SONNET_MODEL_ID, "sonnet");
+    assert_eq!(worksgood::config::CLAUDE_HAIKU_MODEL_ID, "haiku");
 }

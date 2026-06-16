@@ -9,8 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -286,7 +286,7 @@ fn test_replay_creates_provenance_entries() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     // Read provenance log and verify replay entry exists
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
     assert!(
         !replay_ops.is_empty(),
@@ -358,7 +358,7 @@ fn test_replay_plan_only_no_side_effects() {
     }
 
     // Verify no provenance entries were created for replay
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
     assert!(
         replay_ops.is_empty(),

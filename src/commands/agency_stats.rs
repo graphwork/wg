@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::agency::{self, DesiredOutcome, Evaluation, Role, RoleComponent, TradeoffConfig};
-use workgraph::parser::load_graph;
+use worksgood::agency::{self, DesiredOutcome, Evaluation, Role, RoleComponent, TradeoffConfig};
+use worksgood::parser::load_graph;
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_find_underexplored() {
-        use workgraph::agency::{Lineage, PerformanceRecord};
+        use worksgood::agency::{Lineage, PerformanceRecord};
 
         let roles = vec![Role {
             id: "r1".into(),
@@ -1093,7 +1093,7 @@ mod tests {
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
-            access_control: workgraph::agency::AccessControl::default(),
+            access_control: worksgood::agency::AccessControl::default(),
             domain_tags: vec![],
             metadata: HashMap::new(),
             former_agents: vec![],

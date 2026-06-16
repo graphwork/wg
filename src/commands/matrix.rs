@@ -8,13 +8,13 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tokio::runtime::Runtime;
 
-use workgraph::config::MatrixConfig;
+use worksgood::config::MatrixConfig;
 
 // Use the appropriate Matrix types based on the enabled feature
 #[cfg(feature = "matrix")]
-use workgraph::{ListenerConfig, MatrixClient, MatrixListener};
+use worksgood::{ListenerConfig, MatrixClient, MatrixListener};
 #[cfg(all(feature = "matrix-lite", not(feature = "matrix")))]
-use workgraph::{
+use worksgood::{
     ListenerConfigLite as ListenerConfig, MatrixClientLite as MatrixClient,
     MatrixListenerLite as MatrixListener,
 };

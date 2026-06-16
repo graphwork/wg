@@ -19,9 +19,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::registry::{AgentRegistry, AgentStatus};
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive};
 
@@ -78,7 +78,7 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                 let is_loop_task = task
                     .tags
                     .iter()
-                    .any(|t| workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop");
+                    .any(|t| worksgood::chat_id::is_chat_loop_tag(t) || t == "compact-loop");
                 if !is_loop_task {
                     orphaned.push(OrphanedTask {
                         task_id: task.id.clone(),
@@ -257,7 +257,7 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("sweep".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!("Sweep: task unclaimed — {}", o.reason),
                 });
                 fixed.push(o.task_id.clone());
@@ -272,7 +272,7 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("sweep".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!("Sweep: task unclaimed — {}", o.reason),
                 });
                 fixed.push(o.task_id.clone());
@@ -405,7 +405,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         // first user message arrives.
                         task.status == Status::InProgress
                             && !task.tags.iter().any(|t| {
-                                workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
+                                worksgood::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
                             })
                     }
                 };
@@ -437,7 +437,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("reconcile".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!(
                         "Reconciliation: {} (was {:?}, agent: {})",
                         kind, prev_status, agent_desc
@@ -456,9 +456,9 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::service::registry::AgentRegistry;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::service::registry::AgentRegistry;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -525,7 +525,7 @@ mod tests {
         let mut registry = AgentRegistry::new();
 
         // Manually insert a dead agent entry
-        use workgraph::service::registry::AgentEntry;
+        use worksgood::service::registry::AgentEntry;
         registry.agents.insert(
             "dead-agent-1".to_string(),
             AgentEntry {
@@ -786,7 +786,7 @@ mod tests {
         save_graph(&graph, &gpath).unwrap();
 
         // Registry: dead agent.
-        use workgraph::service::registry::AgentEntry;
+        use worksgood::service::registry::AgentEntry;
         let mut reg = AgentRegistry::new();
         reg.agents.insert(
             "agent-zombie-1".to_string(),
@@ -841,7 +841,7 @@ mod tests {
         graph.add_node(Node::Task(t));
         save_graph(&graph, &gpath).unwrap();
 
-        use workgraph::service::registry::AgentEntry;
+        use worksgood::service::registry::AgentEntry;
         let mut reg = AgentRegistry::new();
         reg.agents.insert(
             "agent-alive-1".to_string(),
@@ -914,7 +914,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         // chat-loop (new tag): must be skipped
         let mut chat_new = make_task(".chat-7", "Chat 7", Status::InProgress);
-        chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+        chat_new.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
         graph.add_node(Node::Task(chat_new));
         // coordinator-loop (legacy tag): must be skipped via is_chat_loop_tag
         let mut chat_legacy = make_task(".coordinator-3", "Coordinator 3", Status::InProgress);
@@ -939,7 +939,7 @@ mod tests {
             "only the untagged plain task should be recovered"
         );
 
-        let g2 = workgraph::parser::load_graph(&gpath).unwrap();
+        let g2 = worksgood::parser::load_graph(&gpath).unwrap();
         assert_eq!(
             g2.get_task(".chat-7").unwrap().status,
             Status::InProgress,
@@ -976,7 +976,7 @@ mod tests {
 
         let mut graph = WorkGraph::new();
         let mut chat_new = make_task(".chat-9", "Chat 9", Status::InProgress);
-        chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+        chat_new.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
         graph.add_node(Node::Task(chat_new));
         let mut compact = make_task(".compact-0", "Compact", Status::InProgress);
         compact.tags = vec!["compact-loop".to_string()];

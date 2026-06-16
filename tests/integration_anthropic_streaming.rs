@@ -7,11 +7,11 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
-use workgraph::executor::native::client::{
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::executor::native::client::{
     AnthropicClient, ContentBlock, Message, MessagesRequest, Role, StopReason, ToolDefinition,
 };
-use workgraph::executor::native::provider::Provider;
+use worksgood::executor::native::provider::Provider;
 
 // ---------------------------------------------------------------------------
 // Helpers: mock HTTP server
@@ -449,8 +449,8 @@ fn anthropic_prefix_routes_to_anthropic_provider() {
     let tmp = tempfile::TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
     std::fs::create_dir_all(tmp.path()).unwrap();
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     // Mock server returning Anthropic format
     let mock_body = format!(
@@ -488,7 +488,7 @@ is_default = true
     // "claude:<model>" should route to Anthropic, stripping prefix
     let prefixed_model = format!("claude:{CLAUDE_SONNET_MODEL_ID}");
     let provider =
-        workgraph::executor::native::provider::create_provider(tmp.path(), &prefixed_model)
+        worksgood::executor::native::provider::create_provider(tmp.path(), &prefixed_model)
             .unwrap();
     assert_eq!(provider.name(), "anthropic");
     // Model should have prefix stripped
@@ -539,7 +539,7 @@ async fn anthropic_streaming_api_error_propagates() {
 
 #[tokio::test]
 async fn anthropic_and_openai_produce_identical_canonical_format() {
-    use workgraph::executor::native::openai_client::OpenAiClient;
+    use worksgood::executor::native::openai_client::OpenAiClient;
 
     // Anthropic mock: streaming SSE
     let anthropic_events = vec![

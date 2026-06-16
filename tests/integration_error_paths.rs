@@ -8,10 +8,10 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::{NamedTempFile, TempDir};
-use workgraph::check::{check_all, check_cycles, check_orphans};
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{ParseError, load_graph, save_graph};
-use workgraph::query::{after, ready_tasks};
+use worksgood::check::{check_all, check_cycles, check_orphans};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{ParseError, load_graph, save_graph};
+use worksgood::query::{after, ready_tasks};
 
 /// Helper: create a minimal open task.
 fn make_task(id: &str) -> Task {

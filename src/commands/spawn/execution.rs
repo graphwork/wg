@@ -7,13 +7,13 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use workgraph::agency;
-use workgraph::config::{CapBehavior, Config, EndpointConfig};
-use workgraph::dispatch::plan_spawn;
-use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
-use workgraph::service::registry::AgentRegistry;
+use worksgood::agency;
+use worksgood::config::{CapBehavior, Config, EndpointConfig};
+use worksgood::dispatch::plan_spawn;
+use worksgood::graph::{LogEntry, Node, Status, Task, is_system_task};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
+use worksgood::service::registry::AgentRegistry;
 
 use super::context::{
     build_previous_attempt_context, build_scope_context, build_task_context, discover_test_files,
@@ -81,12 +81,12 @@ pub(crate) fn spawn_agent_inner(
     // also flow through the authoritative SpawnPlan.
     let task_model = task.model.clone().or_else(|| {
         if let Some(ref tier_str) = task.tier
-            && let Ok(tier) = tier_str.parse::<workgraph::config::Tier>()
+            && let Ok(tier) = tier_str.parse::<worksgood::config::Tier>()
             && let Some(resolved) = config.resolve_tier(tier)
         {
             return Some(resolved.model);
         }
-        workgraph::config::resolve_tag_routing(&config.tag_routing, &task.tags)
+        worksgood::config::resolve_tag_routing(&config.tag_routing, &task.tags)
             .map(|rule| rule.model.clone())
     });
     let plan_default_model = task_model.as_deref().or(model);
@@ -163,7 +163,7 @@ pub(crate) fn spawn_agent_inner(
     // Check OpenRouter cost caps before proceeding with expensive operations
     if let Some(provider) = resolved_model_for_spawn
         .as_deref()
-        .and_then(|m| workgraph::config::parse_model_spec(m).provider)
+        .and_then(|m| worksgood::config::parse_model_spec(m).provider)
         && provider == "openrouter"
     {
         check_openrouter_cost_caps(&config, dir, task_id, resolved_model_for_spawn.as_deref())?;
@@ -251,7 +251,7 @@ pub(crate) fn spawn_agent_inner(
     // extracted automatically via parse_model_spec().
     let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
     let resolved_task_agent =
-        config.resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent);
+        config.resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent);
     let resolved = resolve_model_and_provider(
         resolved_model_for_spawn.clone(),
         task_provider.clone(),
@@ -287,7 +287,7 @@ pub(crate) fn spawn_agent_inner(
             && !BUILTIN_TIER_ALIASES.contains(&m.as_str())
         {
             let validation =
-                workgraph::executor::native::openai_client::validate_openrouter_model(m, dir);
+                worksgood::executor::native::openai_client::validate_openrouter_model(m, dir);
             if !validation.was_valid {
                 if let Some(ref w) = validation.warning {
                     eprintln!("[spawn] WARNING: {}", w);
@@ -607,17 +607,17 @@ pub(crate) fn spawn_agent_inner(
             .to_string(),
     );
     // Propagate user identity to spawned agents
-    cmd.env("WG_USER", workgraph::current_user());
+    cmd.env("WG_USER", worksgood::current_user());
     if let Some(ref m) = effective_model {
         cmd.env("WG_MODEL", m);
     }
     {
         let tier_str =
             task_tier.as_deref().unwrap_or_else(
-                || match workgraph::config::DispatchRole::TaskAgent.default_tier() {
-                    workgraph::config::Tier::Fast => "fast",
-                    workgraph::config::Tier::Standard => "standard",
-                    workgraph::config::Tier::Premium => "premium",
+                || match worksgood::config::DispatchRole::TaskAgent.default_tier() {
+                    worksgood::config::Tier::Fast => "fast",
+                    worksgood::config::Tier::Standard => "standard",
+                    worksgood::config::Tier::Premium => "premium",
                 },
             );
         cmd.env("WG_TIER", tier_str);
@@ -695,7 +695,7 @@ pub(crate) fn spawn_agent_inner(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(temp_agent_id_clone.clone()),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!(
                 "Spawned by {} --executor {}{}",
                 spawned_by_clone,
@@ -747,7 +747,7 @@ pub(crate) fn spawn_agent_inner(
                 log: vec![LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: "Created at spawn time (no prior .assign-* task existed)".to_string(),
                 }],
                 ..Default::default()
@@ -776,7 +776,7 @@ pub(crate) fn spawn_agent_inner(
                     t.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some(agent_id_rollback.clone()),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: err_msg.clone(),
                     });
                     true
@@ -841,10 +841,10 @@ pub(crate) fn spawn_agent_inner(
 
     // Advance message cursor for this agent so queued messages aren't re-read.
     // The queued messages were already included in the prompt via ScopeContext.
-    if let Ok(all_msgs) = workgraph::messages::list_messages(dir, task_id)
+    if let Ok(all_msgs) = worksgood::messages::list_messages(dir, task_id)
         && let Some(last) = all_msgs.last()
     {
-        let _ = workgraph::messages::write_cursor(dir, &agent_id, task_id, last.id);
+        let _ = worksgood::messages::write_cursor(dir, &agent_id, task_id, last.id);
     }
 
     // Write metadata
@@ -987,11 +987,11 @@ fn external_cli_model_style(executor_type: &str) -> Option<ExternalCliModelStyle
 }
 
 fn openrouter_model_id(model: &str, effective_provider: Option<&str>) -> Option<String> {
-    let spec = workgraph::config::parse_model_spec(model);
+    let spec = worksgood::config::parse_model_spec(model);
     let provider_from_model = spec
         .provider
         .as_deref()
-        .map(workgraph::config::provider_to_native_provider);
+        .map(worksgood::config::provider_to_native_provider);
     let provider = effective_provider.or(provider_from_model);
     if provider == Some("openrouter") {
         Some(
@@ -1092,7 +1092,7 @@ fn append_external_cli_model_args(
 
 fn write_executor_prompt_file(
     output_dir: &Path,
-    settings: &workgraph::service::executor::ExecutorSettings,
+    settings: &worksgood::service::executor::ExecutorSettings,
 ) -> Result<std::path::PathBuf> {
     let prompt_content = settings
         .prompt_template
@@ -1106,7 +1106,7 @@ fn write_executor_prompt_file(
 }
 
 fn external_prompt_command(
-    settings: &workgraph::service::executor::ExecutorSettings,
+    settings: &worksgood::service::executor::ExecutorSettings,
     output_dir: &Path,
     effective_model: &Option<String>,
     effective_provider: &Option<String>,
@@ -1234,7 +1234,7 @@ fn prompt_file_as_last_argument_command(prompt_file: &str, cmd_parts: &[String])
 }
 
 fn preflight_executor_command(
-    settings: &workgraph::service::executor::ExecutorSettings,
+    settings: &worksgood::service::executor::ExecutorSettings,
     executor_name: &str,
     working_dir: Option<&Path>,
 ) -> Result<()> {
@@ -1356,7 +1356,7 @@ fn inject_api_key_env(
 /// longer exists, the wrapper can fall back to a fresh session.
 #[allow(clippy::too_many_arguments)]
 fn build_inner_command(
-    settings: &workgraph::service::executor::ExecutorSettings,
+    settings: &worksgood::service::executor::ExecutorSettings,
     exec_mode: &str,
     output_dir: &Path,
     effective_model: &Option<String>,
@@ -1650,7 +1650,7 @@ fn build_inner_command(
 /// Build the fresh (non-resume) claude command for fallback.
 /// Mirrors the `"claude"` full-mode arm in `build_inner_command`.
 fn build_claude_fresh_command(
-    settings: &workgraph::service::executor::ExecutorSettings,
+    settings: &worksgood::service::executor::ExecutorSettings,
     exec_mode: &str,
     output_dir: &Path,
     effective_model: &Option<String>,
@@ -2014,11 +2014,11 @@ impl ResolutionTier {
             return Self { model, provider };
         }
         if let Some(ref m) = model {
-            let spec = workgraph::config::parse_model_spec(m);
+            let spec = worksgood::config::parse_model_spec(m);
             if let Some(ref p) = spec.provider {
                 return Self {
                     model,
-                    provider: Some(workgraph::config::provider_to_native_provider(p).to_string()),
+                    provider: Some(worksgood::config::provider_to_native_provider(p).to_string()),
                 };
             }
         }
@@ -2104,10 +2104,10 @@ fn resolve_model_via_registry(
     // Parse unified provider:model spec. If the model has an explicit provider
     // prefix (e.g. "openrouter:deepseek/deepseek-v3.2"), extract it and use
     // the model ID for registry lookup.
-    let spec = workgraph::config::parse_model_spec(&model_str);
+    let spec = worksgood::config::parse_model_spec(&model_str);
     if let Some(ref provider_prefix) = spec.provider {
         let native_provider =
-            Some(workgraph::config::provider_to_native_provider(provider_prefix).to_string());
+            Some(worksgood::config::provider_to_native_provider(provider_prefix).to_string());
         // Try registry lookup on the bare model part for endpoint resolution
         let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
         let endpoint = merged
@@ -2123,7 +2123,7 @@ fn resolve_model_via_registry(
         // the bare model ID. Native/API-backed executors preserve the full spec
         // so downstream provider resolution can re-parse the prefix.
         let effective = if matches!(
-            workgraph::config::provider_to_executor(provider_prefix),
+            worksgood::config::provider_to_executor(provider_prefix),
             "claude" | "codex"
         ) {
             spec.model_id.clone()
@@ -2170,7 +2170,7 @@ fn resolve_model_via_registry(
             Ok((effective_model, None, None))
         } else {
             // Short alias that's not registered — try resolving against model cache.
-            let resolution = workgraph::executor::native::openai_client::resolve_short_model_name(
+            let resolution = worksgood::executor::native::openai_client::resolve_short_model_name(
                 &model_str, dir,
             );
             if let Some(resolved_id) = resolution.resolved {
@@ -2180,9 +2180,9 @@ fn resolve_model_via_registry(
                 );
                 // Re-resolve with the full provider:model format
                 let full_spec = format!("openrouter:{}", resolved_id);
-                let spec = workgraph::config::parse_model_spec(&full_spec);
+                let spec = worksgood::config::parse_model_spec(&full_spec);
                 let native_provider = Some(
-                    workgraph::config::provider_to_native_provider(
+                    worksgood::config::provider_to_native_provider(
                         spec.provider.as_deref().unwrap_or("openrouter"),
                     )
                     .to_string(),
@@ -2241,7 +2241,7 @@ fn check_openrouter_cost_caps(
     model: Option<&str>,
 ) -> Result<()> {
     use crate::commands::service::CoordinatorState;
-    use workgraph::executor::native::openai_client::{
+    use worksgood::executor::native::openai_client::{
         fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir,
     };
 
@@ -2382,7 +2382,7 @@ fn handle_cost_cap_violation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::config::CLAUDE_OPUS_MODEL_ID;
+    use worksgood::config::CLAUDE_OPUS_MODEL_ID;
 
     // --- executor_uses_auto_prompt tests ---
 
@@ -2411,7 +2411,7 @@ mod tests {
 
     #[test]
     fn test_executor_uses_auto_prompt_includes_external_cli_adapters() {
-        for kind in workgraph::dispatch::ExecutorKind::EXTERNAL_CLIS
+        for kind in worksgood::dispatch::ExecutorKind::EXTERNAL_CLIS
             .iter()
             .map(|kind| kind.as_str())
             .chain(["qwen-code", "qwen_code"])
@@ -2925,11 +2925,11 @@ mod tests {
     }
 
     /// Helper to build an EndpointsConfig for endpoint resolution tests.
-    fn test_endpoints_config() -> workgraph::config::EndpointsConfig {
-        workgraph::config::EndpointsConfig {
+    fn test_endpoints_config() -> worksgood::config::EndpointsConfig {
+        worksgood::config::EndpointsConfig {
             inherit_global: false,
             endpoints: vec![
-                workgraph::config::EndpointConfig {
+                worksgood::config::EndpointConfig {
                     name: "my-openrouter".to_string(),
                     provider: "openrouter".to_string(),
                     url: Some("https://openrouter.ai/api/v1".to_string()),
@@ -2941,7 +2941,7 @@ mod tests {
                     is_default: true,
                     context_window: None,
                 },
-                workgraph::config::EndpointConfig {
+                worksgood::config::EndpointConfig {
                     name: "my-anthropic".to_string(),
                     provider: "anthropic".to_string(),
                     url: Some("https://api.anthropic.com".to_string()),
@@ -3113,11 +3113,11 @@ mod tests {
 
         // Create a config with a custom model registry entry
         let mut config = Config::default();
-        config.model_registry = vec![workgraph::config::ModelRegistryEntry {
+        config.model_registry = vec![worksgood::config::ModelRegistryEntry {
             id: "my-custom".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-3.5-sonnet".to_string(),
-            tier: workgraph::config::Tier::Standard,
+            tier: worksgood::config::Tier::Standard,
             endpoint: Some("my-openrouter".to_string()),
             ..Default::default()
         }];
@@ -3408,8 +3408,8 @@ mod tests {
         executor_type: &str,
         command: &str,
         args: &[&str],
-    ) -> workgraph::service::executor::ExecutorSettings {
-        workgraph::service::executor::ExecutorSettings {
+    ) -> worksgood::service::executor::ExecutorSettings {
+        worksgood::service::executor::ExecutorSettings {
             executor_type: executor_type.to_string(),
             command: command.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -3446,7 +3446,7 @@ mod tests {
     fn default_external_settings(
         workgraph_dir: &Path,
         executor_type: &str,
-    ) -> workgraph::service::executor::ExecutorSettings {
+    ) -> worksgood::service::executor::ExecutorSettings {
         let registry = ExecutorRegistry::new(workgraph_dir);
         let mut settings = registry.load_config(executor_type).unwrap().executor;
         settings.prompt_template = Some(PromptTemplate {
@@ -3994,7 +3994,7 @@ mod tests {
     fn test_build_inner_command_codex_uses_prompt_file_and_model() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
-        let settings = workgraph::service::executor::ExecutorSettings {
+        let settings = worksgood::service::executor::ExecutorSettings {
             executor_type: "codex".to_string(),
             command: "codex".to_string(),
             args: vec![
@@ -4083,7 +4083,7 @@ mod tests {
     fn test_build_inner_command_claude_resume_produces_fallback() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
-        let settings = workgraph::service::executor::ExecutorSettings {
+        let settings = worksgood::service::executor::ExecutorSettings {
             executor_type: "claude".to_string(),
             command: "claude".to_string(),
             args: vec![
@@ -4174,7 +4174,7 @@ mod tests {
     fn test_build_inner_command_claude_no_resume_no_fallback() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
-        let settings = workgraph::service::executor::ExecutorSettings {
+        let settings = worksgood::service::executor::ExecutorSettings {
             executor_type: "claude".to_string(),
             command: "claude".to_string(),
             args: vec![

@@ -198,7 +198,7 @@ fn chat_round_trip_storage() {
     );
 
     // Check inbox has the user message
-    let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
+    let inbox = worksgood::chat::read_inbox(&wg_dir).unwrap();
     assert_eq!(
         inbox.len(),
         1,
@@ -209,7 +209,7 @@ fn chat_round_trip_storage() {
     assert_eq!(inbox[0].content, "storage test message");
 
     // Check outbox has the coordinator response
-    let outbox = workgraph::chat::read_outbox_since(&wg_dir, 0).unwrap();
+    let outbox = worksgood::chat::read_outbox_since(&wg_dir, 0).unwrap();
     assert_eq!(
         outbox.len(),
         1,
@@ -369,7 +369,7 @@ fn chat_concurrent_messages() {
     }
 
     // Verify storage has all messages
-    let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
+    let inbox = worksgood::chat::read_inbox(&wg_dir).unwrap();
     assert_eq!(
         inbox.len(),
         num_messages,
@@ -378,7 +378,7 @@ fn chat_concurrent_messages() {
         inbox.len()
     );
 
-    let outbox = workgraph::chat::read_outbox_since(&wg_dir, 0).unwrap();
+    let outbox = worksgood::chat::read_outbox_since(&wg_dir, 0).unwrap();
     assert_eq!(
         outbox.len(),
         num_messages,
@@ -463,7 +463,7 @@ fn chat_clear_works() {
     assert!(output.status.success());
 
     // Verify data exists
-    let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
+    let inbox = worksgood::chat::read_inbox(&wg_dir).unwrap();
     assert!(!inbox.is_empty(), "Inbox should have messages before clear");
 
     // Clear
@@ -475,9 +475,9 @@ fn chat_clear_works() {
     );
 
     // Verify data is gone
-    let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
+    let inbox = worksgood::chat::read_inbox(&wg_dir).unwrap();
     assert!(inbox.is_empty(), "Inbox should be empty after clear");
-    let outbox = workgraph::chat::read_outbox_since(&wg_dir, 0).unwrap();
+    let outbox = worksgood::chat::read_outbox_since(&wg_dir, 0).unwrap();
     assert!(outbox.is_empty(), "Outbox should be empty after clear");
 }
 
@@ -498,7 +498,7 @@ fn chat_coordinator_cursor_advances() {
     assert!(output.status.success());
 
     // Check coordinator cursor advanced
-    let cursor = workgraph::chat::read_coordinator_cursor(&wg_dir).unwrap();
+    let cursor = worksgood::chat::read_coordinator_cursor(&wg_dir).unwrap();
     assert!(
         cursor >= 1,
         "Coordinator cursor should have advanced to >= 1, got {}",
@@ -509,7 +509,7 @@ fn chat_coordinator_cursor_advances() {
     let output = wg_cmd(&wg_dir, &["chat", "cursor test 2", "--timeout", "10"]);
     assert!(output.status.success());
 
-    let cursor2 = workgraph::chat::read_coordinator_cursor(&wg_dir).unwrap();
+    let cursor2 = worksgood::chat::read_coordinator_cursor(&wg_dir).unwrap();
     assert!(
         cursor2 > cursor,
         "Coordinator cursor should have advanced further: {} -> {}",

@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{AgencyStore, DesiredOutcome, LocalStore, RoleComponent, TradeoffConfig};
-use workgraph::federation::{self, EntityFilter, TransferOptions};
+use worksgood::agency::{AgencyStore, DesiredOutcome, LocalStore, RoleComponent, TradeoffConfig};
+use worksgood::federation::{self, EntityFilter, TransferOptions};
 
 /// Options for the push command.
 pub struct PushOptions<'a> {
@@ -278,8 +278,8 @@ fn agency_csv_fields(
     origin_instance_id: Option<&str>,
     parent_content_hash: Option<&str>,
     scope: Option<&str>,
-    performance: &workgraph::agency::PerformanceRecord,
-    lineage: &workgraph::agency::Lineage,
+    performance: &worksgood::agency::PerformanceRecord,
+    lineage: &worksgood::agency::Lineage,
     domain_tags: &[String],
     metadata: &std::collections::HashMap<String, String>,
 ) -> Result<[String; 12]> {
@@ -436,10 +436,10 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::{
+    use worksgood::agency::{
         self, AgencyStore, Agent, Lineage, PerformanceRecord, Role, TradeoffConfig,
     };
-    use workgraph::graph::TrustLevel;
+    use worksgood::graph::TrustLevel;
 
     /// Byte-equal CSV roundtrip on a synthetic fixture covering the three
     /// classes of drift that previously broke roundtripping the upstream
@@ -588,7 +588,7 @@ role_component,verify-install-path,Run install command from documentation in cle
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
-            access_control: workgraph::agency::AccessControl::default(),
+            access_control: worksgood::agency::AccessControl::default(),
             domain_tags: vec![],
             metadata: std::collections::HashMap::new(),
             former_agents: vec![],

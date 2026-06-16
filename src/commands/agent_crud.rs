@@ -7,8 +7,8 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
-use workgraph::graph::TrustLevel;
+use worksgood::agency::{self, Agent, Lineage, PerformanceRecord};
+use worksgood::graph::TrustLevel;
 
 /// Get the agency agents subdirectory (creates agency structure if needed).
 fn agents_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
@@ -766,7 +766,7 @@ mod tests {
         assert_eq!(agents[0].capacity, Some(3.0));
         assert_eq!(
             agents[0].trust_level,
-            workgraph::graph::TrustLevel::Verified
+            worksgood::graph::TrustLevel::Verified
         );
         assert_eq!(agents[0].contact, Some("ops@example.com".to_string()));
         assert_eq!(agents[0].executor, "claude");

@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use workgraph::agency::{AgencyStore, LocalStore};
-use workgraph::federation::{self, TransferOptions, TransferSummary};
+use worksgood::agency::{AgencyStore, LocalStore};
+use worksgood::federation::{self, TransferOptions, TransferSummary};
 
 /// Options for the merge command.
 pub struct MergeOptions {
@@ -151,14 +151,14 @@ pub fn run(workgraph_dir: &Path, opts: &MergeOptions) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::{
+    use worksgood::agency::{
         AgencyStore, Agent, EvaluationRef, Lineage, PerformanceRecord, Role, TradeoffConfig,
     };
-    use workgraph::graph::TrustLevel;
+    use worksgood::graph::TrustLevel;
 
     fn setup_store(tmp: &TempDir, name: &str) -> LocalStore {
         let path = tmp.path().join(name).join("agency");
-        workgraph::agency::init(&path).unwrap();
+        worksgood::agency::init(&path).unwrap();
         LocalStore::new(path)
     }
 
@@ -191,7 +191,7 @@ mod tests {
             unacceptable_tradeoffs: Vec::new(),
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
-            access_control: workgraph::agency::AccessControl::default(),
+            access_control: worksgood::agency::AccessControl::default(),
             domain_tags: vec![],
             metadata: std::collections::HashMap::new(),
             former_agents: vec![],
@@ -248,7 +248,7 @@ mod tests {
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
-        workgraph::agency::init(&agency_dir).unwrap();
+        worksgood::agency::init(&agency_dir).unwrap();
 
         let opts = MergeOptions {
             sources: vec![
@@ -322,7 +322,7 @@ mod tests {
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
-        workgraph::agency::init(&agency_dir).unwrap();
+        worksgood::agency::init(&agency_dir).unwrap();
 
         let opts = MergeOptions {
             sources: vec![
@@ -394,7 +394,7 @@ mod tests {
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
-        workgraph::agency::init(&agency_dir).unwrap();
+        worksgood::agency::init(&agency_dir).unwrap();
 
         let opts = MergeOptions {
             sources: vec![
@@ -429,7 +429,7 @@ mod tests {
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
-        workgraph::agency::init(&agency_dir).unwrap();
+        worksgood::agency::init(&agency_dir).unwrap();
 
         let opts = MergeOptions {
             sources: vec![
@@ -498,7 +498,7 @@ mod tests {
         let wg_dir = tmp.path().join("target").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
-        workgraph::agency::init(&agency_dir).unwrap();
+        worksgood::agency::init(&agency_dir).unwrap();
 
         let opts = MergeOptions {
             sources: vec![

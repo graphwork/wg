@@ -3,8 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, modify_graph};
+use worksgood::graph::{Node, Status, Task};
+use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
 
@@ -103,7 +103,7 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
 
 /// Check if a task has active (non-terminal) downstream dependents.
 /// Tasks with active dependents should not be archived.
-pub fn has_active_dependents(task: &Task, graph: &workgraph::graph::WorkGraph) -> bool {
+pub fn has_active_dependents(task: &Task, graph: &worksgood::graph::WorkGraph) -> bool {
     for dep_id in &task.before {
         if let Some(dep) = graph.get_task(dep_id)
             && !dep.status.is_terminal()
@@ -505,9 +505,9 @@ pub fn run(
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let task_ids: Vec<&str> = tasks_to_archive.iter().map(|t| t.id.as_str()).collect();
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "archive",
         None,
@@ -573,9 +573,9 @@ pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
     super::notify_graph_changed(dir);
 
     // Record provenance
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let task_ids: Vec<&str> = tasks_to_archive.iter().map(|t| t.id.as_str()).collect();
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "archive",
         None,
@@ -591,8 +591,8 @@ pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status, completed_at: Option<&str>) -> Task {
         Task {

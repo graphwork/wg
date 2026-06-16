@@ -2,9 +2,9 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::function::{self, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig};
-use workgraph::function_memory;
-use workgraph::provenance;
+use worksgood::function::{self, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig};
+use worksgood::function_memory;
+use worksgood::provenance;
 
 /// Run the `wg func make-adaptive <function-id>` command.
 ///
@@ -204,9 +204,9 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::function::*;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::function::*;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();

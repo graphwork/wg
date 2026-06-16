@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
+use worksgood::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
 
 // ---------------------------------------------------------------------------
 // 1. Creating an agent with nonexistent role_id or motivation_id

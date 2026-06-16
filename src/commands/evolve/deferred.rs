@@ -3,9 +3,9 @@ use chrono::Utc;
 use std::fs;
 use std::path::Path;
 
-use workgraph::agency;
-use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task};
-use workgraph::modify_graph;
+use worksgood::agency;
+use worksgood::graph::{Node, PRIORITY_DEFAULT, Status, Task};
+use worksgood::modify_graph;
 
 use super::operations::apply_operation;
 use super::strategy::EvolverOperation;

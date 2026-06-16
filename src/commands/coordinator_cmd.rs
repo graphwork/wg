@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use workgraph::chat_sessions::{self, SessionKind};
+use worksgood::chat_sessions::{self, SessionKind};
 
 /// `wg coordinator list [--archived] [--all]`
 pub fn run_list(dir: &Path, archived: bool, all: bool, json: bool) -> Result<()> {

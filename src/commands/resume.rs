@@ -2,15 +2,15 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use workgraph::graph::{LogEntry, WorkGraph};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, WorkGraph};
+use worksgood::parser::modify_graph;
 
 use super::eval_scaffold;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
     run_inner(dir, id, Mode::Subgraph(only), false, None, false)
@@ -79,7 +79,7 @@ fn run_inner(
     // to global at dispatch. A name is valid if it loads as an on-disk
     // profile or a built-in starter.
     if let Some(name) = profile {
-        if let Err(e) = workgraph::profile::named::load(name) {
+        if let Err(e) = worksgood::profile::named::load(name) {
             anyhow::bail!("Cannot publish with --profile '{}': {}", name, e);
         }
     }
@@ -407,14 +407,14 @@ fn validate_task_deps(graph: &WorkGraph, task_id: &str, is_publish: bool) -> Res
     let task = graph.get_task_or_err(task_id)?;
     let mut missing = Vec::new();
     for dep_id in &task.after {
-        if workgraph::federation::parse_remote_ref(dep_id).is_some() {
+        if worksgood::federation::parse_remote_ref(dep_id).is_some() {
             continue;
         }
         if graph.get_node(dep_id).is_none() {
             let mut msg = format!("'{}'", dep_id);
             let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
             if let Some((suggestion, _)) =
-                workgraph::check::fuzzy_match_task_id(dep_id, all_ids.iter().copied(), 3)
+                worksgood::check::fuzzy_match_task_id(dep_id, all_ids.iter().copied(), 3)
             {
                 msg.push_str(&format!(" (did you mean '{}'?)", suggestion));
             }
@@ -442,14 +442,14 @@ fn validate_subgraph(graph: &WorkGraph, subgraph: &[String], is_publish: bool) -
 
         // Check for dangling after-dependencies
         for dep_id in &task.after {
-            if workgraph::federation::parse_remote_ref(dep_id).is_some() {
+            if worksgood::federation::parse_remote_ref(dep_id).is_some() {
                 continue;
             }
             if graph.get_node(dep_id).is_none() {
                 let mut msg = format!("Task '{}': dangling dependency '{}'", task_id, dep_id);
                 let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
                 if let Some((suggestion, _)) =
-                    workgraph::check::fuzzy_match_task_id(dep_id, all_ids.iter().copied(), 3)
+                    worksgood::check::fuzzy_match_task_id(dep_id, all_ids.iter().copied(), 3)
                 {
                     msg.push_str(&format!(" (did you mean '{}'?)", suggestion));
                 }
@@ -460,7 +460,7 @@ fn validate_subgraph(graph: &WorkGraph, subgraph: &[String], is_publish: bool) -
 
     // Check cycle validity: any cycle in the subgraph must have max_iterations configured
     let subgraph_set: HashSet<&str> = subgraph.iter().map(|s| s.as_str()).collect();
-    let cycle_analysis = workgraph::graph::CycleAnalysis::from_graph(graph);
+    let cycle_analysis = worksgood::graph::CycleAnalysis::from_graph(graph);
     for cycle in &cycle_analysis.cycles {
         // Check if this cycle intersects with our subgraph
         let members_in_subgraph: Vec<&str> = cycle
@@ -503,7 +503,7 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
-        user: Some(workgraph::current_user()),
+        user: Some(worksgood::current_user()),
         message: format!("Task {}", action),
     });
 }
@@ -522,7 +522,7 @@ fn stamp_profile(graph: &mut WorkGraph, members: &[String], profile: &str) -> us
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Profile pinned: {}", profile),
             });
             changed += 1;
@@ -543,13 +543,13 @@ fn scaffold_eval_for_unpaused(
     task_ids: &[String],
     action: &str,
 ) {
-    let global = workgraph::config::Config::load_or_default(dir);
+    let global = worksgood::config::Config::load_or_default(dir);
 
     // Collect (id, title, profile) triples, filtering out system tasks.
     // The profile was just stamped on each member by `stamp_profile`.
     let candidates: Vec<(String, String, Option<String>)> = task_ids
         .iter()
-        .filter(|id| !workgraph::graph::is_system_task(id))
+        .filter(|id| !worksgood::graph::is_system_task(id))
         .filter_map(|id| {
             graph
                 .get_task(id)
@@ -558,7 +558,7 @@ fn scaffold_eval_for_unpaused(
         .collect();
 
     // Memoize loaded profile configs by name within this publish pass.
-    let mut profile_cache: std::collections::HashMap<String, Option<workgraph::config::Config>> =
+    let mut profile_cache: std::collections::HashMap<String, Option<worksgood::config::Config>> =
         std::collections::HashMap::new();
     let mut count = 0;
 
@@ -566,10 +566,10 @@ fn scaffold_eval_for_unpaused(
         // Resolve the effective config for this task's profile so the agency
         // satellites bake the PROFILE's evaluator/assigner model (overriding
         // the default claude:haiku pin) instead of the global one.
-        let eff: workgraph::config::Config = match profile {
+        let eff: worksgood::config::Config = match profile {
             Some(name) => profile_cache
                 .entry(name.clone())
-                .or_insert_with(|| workgraph::dispatch::profile::load_profile_config(name))
+                .or_insert_with(|| worksgood::dispatch::profile::load_profile_config(name))
                 .clone()
                 .unwrap_or_else(|| global.clone()),
             None => global.clone(),
@@ -601,9 +601,9 @@ fn scaffold_eval_for_unpaused(
 }
 
 fn record_provenance(dir: &Path, id: &str, is_publish: bool) {
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let op = if is_publish { "publish" } else { "resume" };
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         op,
         Some(id),
@@ -618,8 +618,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{CycleConfig, Node, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{CycleConfig, Node, Status, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
@@ -1098,7 +1098,7 @@ mod tests {
         // Now pause and resume the task
         {
             let path = graph_path(dir.path());
-            workgraph::parser::modify_graph(&path, |g| {
+            worksgood::parser::modify_graph(&path, |g| {
                 let t = g.get_task_mut("my-task").unwrap();
                 t.paused = true;
                 true
@@ -1390,7 +1390,7 @@ mod tests {
         c.after = vec!["b".to_string()];
         let mut graph = WorkGraph::new();
         for t in [a.clone(), b.clone(), c.clone()] {
-            graph.add_node(workgraph::graph::Node::Task(t));
+            graph.add_node(worksgood::graph::Node::Task(t));
         }
         let _ = (a, b, c); // silence unused-mut lints from clones above
         let sorted = topo_sort_subset(&graph, &["c".to_string(), "b".to_string(), "a".to_string()]);
@@ -1410,7 +1410,7 @@ mod tests {
         y.after = vec!["x".to_string()];
         let mut graph = WorkGraph::new();
         for t in [a.clone(), b.clone(), x.clone(), y.clone()] {
-            graph.add_node(workgraph::graph::Node::Task(t));
+            graph.add_node(worksgood::graph::Node::Task(t));
         }
         let _ = (a, b, x, y);
 

@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
-use workgraph::config::Config;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
+use worksgood::config::Config;
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers

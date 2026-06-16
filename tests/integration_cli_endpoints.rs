@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers

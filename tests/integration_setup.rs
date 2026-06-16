@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,8 +63,8 @@ fn setup_env(tmp: &TempDir) -> (PathBuf, PathBuf) {
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Create minimal graph.jsonl
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
     (fake_home, wg_dir)
 }

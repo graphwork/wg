@@ -11,7 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use workgraph::graph::{Status, WorkGraph};
+use worksgood::graph::{Status, WorkGraph};
 
 use super::load_workgraph;
 use crate::commands::service::worktree::{WORKTREES_DIR, remove_worktree, verify_worktree_cleanup};

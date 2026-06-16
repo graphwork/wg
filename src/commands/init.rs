@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
+use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 /// Default content for .wg/.gitignore
 const GITIGNORE_CONTENT: &str = r#"# WG gitignore
@@ -177,7 +177,7 @@ pub fn run_with_route(
     // `wg config show` / load the file don't see a deprecation warning
     // for a key wg itself wrote. Existing legacy configs still emit the
     // warning; this purge only prevents new ones from spawning it.
-    workgraph::config::strip_redundant_executor_keys(&mut config);
+    worksgood::config::strip_redundant_executor_keys(&mut config);
 
     config.save(dir).context("Failed to save config.toml")?;
 
@@ -199,7 +199,7 @@ pub fn run_with_route(
         super::agency_init::run(dir).context("Failed to initialize agency")?;
     }
 
-    if let Ok(global_path) = workgraph::config::Config::global_config_path()
+    if let Ok(global_path) = worksgood::config::Config::global_config_path()
         && !global_path.exists()
     {
         println!();
@@ -234,13 +234,13 @@ pub fn run_with_route(
 /// previous default (always ClaudeCli) overwrote codex/nex globals with
 /// claude:opus the moment a user ran `wg init`.
 fn default_route_from_global_or_claude() -> SetupRoute {
-    let Ok(Some(global)) = workgraph::config::Config::load_global() else {
+    let Ok(Some(global)) = worksgood::config::Config::load_global() else {
         return SetupRoute::ClaudeCli;
     };
-    let spec = workgraph::config::parse_model_spec(&global.agent.model);
+    let spec = worksgood::config::parse_model_spec(&global.agent.model);
     spec.provider
         .as_deref()
-        .map(workgraph::config::provider_to_executor)
+        .map(worksgood::config::provider_to_executor)
         .and_then(SetupRoute::try_from_executor)
         .unwrap_or(SetupRoute::ClaudeCli)
 }
@@ -253,10 +253,10 @@ fn default_route_from_global_or_claude() -> SetupRoute {
 /// recognized provider prefix → `None` (caller falls back to the
 /// legacy required-executor path with a migration hint).
 fn executor_for_model_spec(model: &str) -> Option<&'static str> {
-    let spec = workgraph::config::parse_model_spec(model);
+    let spec = worksgood::config::parse_model_spec(model);
     spec.provider
         .as_deref()
-        .map(workgraph::config::provider_to_executor)
+        .map(worksgood::config::provider_to_executor)
 }
 
 /// Emit a one-line deprecation warning when `--executor` (`-x`) is supplied
@@ -489,7 +489,7 @@ pub fn run(
     }
 
     // Hint about global config if it doesn't exist
-    if let Ok(global_path) = workgraph::config::Config::global_config_path()
+    if let Ok(global_path) = worksgood::config::Config::global_config_path()
         && !global_path.exists()
     {
         println!();
@@ -526,8 +526,8 @@ pub fn run(
         "nex" => "native",
         other => other,
     };
-    let _ = workgraph::launcher_history::record_use(
-        &workgraph::launcher_history::HistoryEntry::new(canonical_executor, model, endpoint, "cli"),
+    let _ = worksgood::launcher_history::record_use(
+        &worksgood::launcher_history::HistoryEntry::new(canonical_executor, model, endpoint, "cli"),
     );
 
     Ok(())
@@ -556,7 +556,7 @@ fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
         _ => None,
     };
 
-    let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
+    let mut config = worksgood::config::Config::load(dir).unwrap_or_default();
 
     if let Some(route) = route {
         let route_cfg = config_for_route(route, RouteParams::default());
@@ -580,7 +580,7 @@ fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
     } else {
         config.coordinator.executor = Some(canonical.to_string());
     }
-    workgraph::config::strip_redundant_executor_keys(&mut config);
+    worksgood::config::strip_redundant_executor_keys(&mut config);
     config.save(dir).context("Failed to save config.toml")?;
     println!("Set coordinator.executor = \"{}\"", canonical);
     if route.is_some() {
@@ -599,7 +599,7 @@ fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
 /// Thin wrapper around `Config::apply_model_endpoint` so init shares the
 /// same semantics as `wg config -m/-e`.
 fn apply_model_endpoint(dir: &Path, model: Option<&str>, endpoint: Option<&str>) -> Result<()> {
-    let mut config = workgraph::config::Config::load(dir).unwrap_or_default();
+    let mut config = worksgood::config::Config::load(dir).unwrap_or_default();
     let summary = config
         .apply_model_endpoint(model, endpoint)
         .context("apply model/endpoint")?;
@@ -795,7 +795,7 @@ mod tests {
         );
 
         // Config should have auto_assign and auto_evaluate enabled
-        let config = workgraph::config::Config::load(&wg_dir).unwrap();
+        let config = worksgood::config::Config::load(&wg_dir).unwrap();
         assert!(config.agency.auto_assign, "auto_assign should be enabled");
         assert!(
             config.agency.auto_evaluate,
@@ -880,7 +880,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = workgraph::config::Config::load(&wg_dir).unwrap();
+        let config = worksgood::config::Config::load(&wg_dir).unwrap();
         // With an endpoint given, the model fields get the `nex:` prefix
         // (canonical, matches `wg nex`) so the provider:model validator
         // accepts them on reload.

@@ -5,7 +5,7 @@
 //! edge cases, and malformed responses correctly.
 
 use std::collections::HashMap;
-use workgraph::json_extract::extract_json;
+use worksgood::json_extract::extract_json;
 
 // ---------------------------------------------------------------------------
 // Response structs (mirrors the private types in evaluate.rs and evolve.rs)

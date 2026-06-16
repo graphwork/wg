@@ -14,15 +14,15 @@ use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
 
-use workgraph::agency::evolver;
-use workgraph::agency::{
+use worksgood::agency::evolver;
+use worksgood::agency::{
     Evaluation, EvaluationRef, EvolutionTrigger, EvolverState, build_role, build_tradeoff,
     count_evaluation_files, init, recalculate_avg_score, record_evaluation, save_role,
     save_tradeoff, should_trigger_evolution,
 };
-use workgraph::config::AgencyConfig;
-use workgraph::graph::{Node, Status, Task, WorkGraph, is_system_task};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::config::AgencyConfig;
+use worksgood::graph::{Node, Status, Task, WorkGraph, is_system_task};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers

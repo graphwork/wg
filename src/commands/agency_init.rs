@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
-use workgraph::agency::{
+use worksgood::agency::{
     self, Agent, DesiredOutcome, Lineage, PerformanceRecord, RoleComponent, TradeoffConfig,
 };
-use workgraph::config::Config;
-use workgraph::graph::TrustLevel;
+use worksgood::config::Config;
+use worksgood::graph::TrustLevel;
 
 use super::agency_import;
 
@@ -182,7 +182,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     // a full reasoning model. Using haiku reduces cost and rate limit pressure.
     // Use [models.*] table format instead of deprecated agency.*_model fields.
     if config.models.assigner.is_none() {
-        config.models.assigner = Some(workgraph::config::RoleModelConfig {
+        config.models.assigner = Some(worksgood::config::RoleModelConfig {
             model: Some("claude:haiku".to_string()),
             provider: None,
             tier: None,
@@ -191,7 +191,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         config_changed = true;
     }
     if config.models.evaluator.is_none() {
-        config.models.evaluator = Some(workgraph::config::RoleModelConfig {
+        config.models.evaluator = Some(worksgood::config::RoleModelConfig {
             model: Some("claude:haiku".to_string()),
             provider: None,
             tier: None,
@@ -223,11 +223,11 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     // 5. Register the creator-pipeline function if it doesn't exist
-    let func_dir = workgraph::function::functions_dir(workgraph_dir);
+    let func_dir = worksgood::function::functions_dir(workgraph_dir);
     let pipeline_path = func_dir.join("creator-pipeline.yaml");
     if !pipeline_path.exists() {
         let func = agency::creator_pipeline_function();
-        if let Err(e) = workgraph::function::save_function(&func, &func_dir) {
+        if let Err(e) = worksgood::function::save_function(&func, &func_dir) {
             eprintln!(
                 "Warning: failed to register creator-pipeline function: {}",
                 e

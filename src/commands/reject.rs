@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::parser::{load_graph, save_graph};
 
 /// Reject a task that is pending validation, reopening it with feedback.
 /// If rejection_count >= max_rejections, the task is failed instead.
@@ -56,7 +56,7 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: std::env::var("WG_AGENT_ID").ok(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "Task rejected ({}/{}), failing: {}",
                     rejection_count, max_rejections, reason
@@ -69,7 +69,7 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: std::env::var("WG_AGENT_ID").ok(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "Task rejected ({}/{}): {}",
                     rejection_count, max_rejections, reason
@@ -87,8 +87,8 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
 
     super::notify_graph_changed(dir);
 
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "reject",
         Some(id),
@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

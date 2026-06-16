@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{Status, Task, WorkGraph};
+use worksgood::graph::{Status, Task, WorkGraph};
 
 /// Age bucket categories
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,8 +395,8 @@ fn output_json(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

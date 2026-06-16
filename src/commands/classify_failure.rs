@@ -13,7 +13,7 @@ pub fn run(raw_stream: Option<&str>, exit_code: i32) -> Result<()> {
     let class = match raw_stream {
         Some(path) => classify_from_raw_stream(Path::new(path), exit_code),
         None => {
-            use workgraph::graph::FailureClass;
+            use worksgood::graph::FailureClass;
             if exit_code == 124 {
                 FailureClass::AgentHardTimeout
             } else {

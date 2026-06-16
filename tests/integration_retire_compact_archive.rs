@@ -8,9 +8,9 @@
 
 use std::path::Path;
 use tempfile::TempDir;
-use workgraph::chat_id::format_chat_task_id;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::chat_id::format_chat_task_id;
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 fn workgraph_dir(tmp: &TempDir) -> std::path::PathBuf {
     let dir = tmp.path().join(".wg");
@@ -47,7 +47,7 @@ fn test_create_chat_does_not_create_compact_companion() {
         id: format_chat_task_id(0),
         title: "Chat 0".to_string(),
         status: Status::InProgress,
-        tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
+        tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
         ..Default::default()
     }));
     save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
@@ -80,7 +80,7 @@ fn test_create_chat_does_not_create_archive_companion() {
         id: format_chat_task_id(0),
         title: "Chat 0".to_string(),
         status: Status::InProgress,
-        tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
+        tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
         ..Default::default()
     }));
     save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
@@ -110,7 +110,7 @@ fn test_legacy_compact_archive_tasks_loaded_then_abandoned() {
         id: format_chat_task_id(0),
         title: "Chat 0".to_string(),
         status: Status::InProgress,
-        tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
+        tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
         ..Default::default()
     }));
     graph.add_node(Node::Task(Task {
@@ -224,7 +224,7 @@ compaction_threshold_ratio = 0.5
 ";
     std::fs::write(dir.join("config.toml"), toml).unwrap();
 
-    let config = workgraph::config::Config::load(&dir).expect("config should load");
+    let config = worksgood::config::Config::load(&dir).expect("config should load");
     let warnings = config.deprecated_compaction_warnings();
 
     // Every retired key produces a warning.
@@ -258,7 +258,7 @@ compaction_threshold_ratio = 0.5
     // Default config => no warnings.
     let dir2 = workgraph_dir(&tmp);
     std::fs::write(dir2.join("config.toml"), "[coordinator]\n").unwrap();
-    let config2 = workgraph::config::Config::load(&dir2).expect("default config should load");
+    let config2 = worksgood::config::Config::load(&dir2).expect("default config should load");
     assert!(
         config2.deprecated_compaction_warnings().is_empty(),
         "default config should not emit deprecation warnings"

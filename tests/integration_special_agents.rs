@@ -5,8 +5,8 @@
 //! stores their hashes in config, and that the operation is idempotent.
 
 use tempfile::TempDir;
-use workgraph::agency;
-use workgraph::config::Config;
+use worksgood::agency;
+use worksgood::config::Config;
 
 /// Helper: run agency init on a fresh temp directory and return the WG dir path.
 fn init_fresh() -> (TempDir, std::path::PathBuf) {
@@ -50,7 +50,7 @@ fn compose_special_agents_and_config(wg_dir: &std::path::Path, agency_dir: &std:
             capabilities: vec![],
             rate: None,
             capacity: None,
-            trust_level: workgraph::graph::TrustLevel::default(),
+            trust_level: worksgood::graph::TrustLevel::default(),
             contact: None,
             executor: "claude".to_string(),
             preferred_model: None,
@@ -96,7 +96,7 @@ fn compose_special_agents_and_config(wg_dir: &std::path::Path, agency_dir: &std:
                 capabilities: vec![],
                 rate: None,
                 capacity: None,
-                trust_level: workgraph::graph::TrustLevel::default(),
+                trust_level: worksgood::graph::TrustLevel::default(),
                 contact: None,
                 executor: "claude".to_string(),
                 preferred_model: None,

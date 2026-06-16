@@ -20,10 +20,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use tempfile::TempDir;
-use workgraph::config::parse_model_spec;
-use workgraph::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
-use workgraph::executor::native::openai_client::{OpenAiClient, validate_openrouter_model};
-use workgraph::executor::native::provider::Provider;
+use worksgood::config::parse_model_spec;
+use worksgood::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
+use worksgood::executor::native::openai_client::{OpenAiClient, validate_openrouter_model};
+use worksgood::executor::native::provider::Provider;
 
 // ---------------------------------------------------------------------------
 // Helpers

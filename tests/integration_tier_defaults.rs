@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::config::{Config, DispatchRole, Tier};
+use worksgood::config::{Config, DispatchRole, Tier};
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("could not get current exe path");
@@ -57,8 +57,8 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
     wg_dir
 }
 
@@ -345,7 +345,7 @@ fn test_no_tier_escalation_flag() {
         &["add", "Test task", "--no-place", "--no-tier-escalation"],
     );
 
-    let graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();
     assert!(
         task.no_tier_escalation,

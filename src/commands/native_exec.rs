@@ -14,14 +14,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use workgraph::config::{Config, DispatchRole};
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::bundle::resolve_bundle;
-use workgraph::executor::native::journal;
-use workgraph::executor::native::provider::create_provider_ext;
-use workgraph::executor::native::tools::ToolRegistry;
-use workgraph::executor::native::tools::helper_routing::HelperRouting;
-use workgraph::models::ModelRegistry;
+use worksgood::config::{Config, DispatchRole};
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::bundle::resolve_bundle;
+use worksgood::executor::native::journal;
+use worksgood::executor::native::provider::create_provider_ext;
+use worksgood::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::tools::helper_routing::HelperRouting;
+use worksgood::models::ModelRegistry;
 
 /// Run the native executor agent loop.
 #[allow(clippy::too_many_arguments)]
@@ -177,10 +177,10 @@ pub fn run(
     // Register by task-id — task-ids are already unique within a
     // WG, so we use them as the session key directly instead
     // of a fresh UUID.
-    let mut reg = workgraph::chat_sessions::load(workgraph_dir).unwrap_or_default();
+    let mut reg = worksgood::chat_sessions::load(workgraph_dir).unwrap_or_default();
     reg.sessions.entry(task_id.to_string()).or_insert_with(|| {
-        workgraph::chat_sessions::SessionMeta {
-            kind: workgraph::chat_sessions::SessionKind::TaskAgent,
+        worksgood::chat_sessions::SessionMeta {
+            kind: worksgood::chat_sessions::SessionKind::TaskAgent,
             created: chrono::Utc::now().to_rfc3339(),
             aliases: vec![session_alias.clone()],
             label: Some(format!("task {}", task_id)),
@@ -188,7 +188,7 @@ pub fn run(
             archived_at: None,
         }
     });
-    let _ = workgraph::chat_sessions::save(workgraph_dir, &reg);
+    let _ = worksgood::chat_sessions::save(workgraph_dir, &reg);
 
     let mut agent = AgentLoop::with_tool_support(
         client,

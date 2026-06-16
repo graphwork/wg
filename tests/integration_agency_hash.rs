@@ -1,4 +1,4 @@
-use workgraph::agency::{
+use worksgood::agency::{
     ComponentCategory, ContentRef, content_hash_agent, content_hash_component,
     content_hash_outcome, content_hash_role, content_hash_tradeoff, description_hash,
 };

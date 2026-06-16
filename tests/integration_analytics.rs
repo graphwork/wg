@@ -9,8 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Estimate, Node, Status, Task, WorkGraph};
-use workgraph::parser::save_graph;
+use worksgood::graph::{Estimate, Node, Status, Task, WorkGraph};
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers

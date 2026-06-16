@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tempfile::TempDir;
-use workgraph::executor::native::client::{ContentBlock, MessagesRequest, Role};
-use workgraph::executor::native::openai_client::OpenAiClient;
-use workgraph::executor::native::provider::Provider;
+use worksgood::executor::native::client::{ContentBlock, MessagesRequest, Role};
+use worksgood::executor::native::openai_client::OpenAiClient;
+use worksgood::executor::native::provider::Provider;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,7 +124,7 @@ fn smoke_streaming_token_reporting() {
         model: "minimax/minimax-m2.7".to_string(),
         max_tokens: 100,
         system: Some("You are a helpful assistant.".to_string()),
-        messages: vec![workgraph::executor::native::client::Message {
+        messages: vec![worksgood::executor::native::client::Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: "Reply with exactly 3 sentences.".to_string(),

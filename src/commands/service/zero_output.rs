@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
-use workgraph::stream_event;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::stream_event;
 
 use crate::commands::{graph_path, is_process_alive};
 
@@ -218,7 +218,7 @@ fn check_zero_output(agent: &AgentEntry) -> Option<u64> {
         // Don't flag as zero-output if agent has active child processes —
         // it may be waiting on a subprocess (e.g., slow model API startup,
         // compilation, or sub-agent initialization)
-        if workgraph::service::has_active_children(agent.pid) {
+        if worksgood::service::has_active_children(agent.pid) {
             return None;
         }
         Some(age_secs)
@@ -325,7 +325,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
             "[zero-output] Killing zero-output agent {} (task {}, PID {}, alive {}s)",
             agent_id, task_id, pid, age_secs
         );
-        if let Err(e) = workgraph::service::kill_process_force(*pid) {
+        if let Err(e) = worksgood::service::kill_process_force(*pid) {
             eprintln!(
                 "[zero-output] Failed to kill PID {} (agent {}): {}",
                 pid, agent_id, e
@@ -382,7 +382,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("zero-output-detector".to_string()),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Circuit breaker tripped: agent '{}' (PID {}) killed after {}s \
                              with zero output. Max respawns ({}) exceeded — marked incomplete for evaluator review.",
@@ -406,7 +406,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("zero-output-detector".to_string()),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Zero-output agent '{}' (PID {}) killed after {}s. \
                              Task reset for respawn (attempt {}/{}).",

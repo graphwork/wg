@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::path::Path;
-use workgraph::config::{Config, EndpointConfig};
+use worksgood::config::{Config, EndpointConfig};
 
 /// Known provider names for inference from endpoint name.
 const KNOWN_PROVIDERS: &[&str] = &[

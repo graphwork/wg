@@ -21,8 +21,8 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use workgraph::chat_id;
-use workgraph::graph::{Status, WorkGraph};
+use worksgood::chat_id;
+use worksgood::graph::{Status, WorkGraph};
 
 use crate::commands::graph_path;
 use crate::commands::is_process_alive;
@@ -104,7 +104,7 @@ pub fn resolve_chat_id(graph: &WorkGraph, reference: &str) -> Option<u32> {
 
 /// Categorize a chat task's runtime status given current daemon state.
 fn classify_chat_task(
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
     daemon_running: bool,
     supervised_ids: &[u32],
 ) -> ChatRuntimeStatus {
@@ -144,8 +144,8 @@ fn chat_handler_is_live(dir: &Path, cid: u32) -> bool {
     // `.chat-N` task id — only the former resolves to the UUID dir where
     // the lock actually lives.
     let chat_ref = chat_id::format_chat_session_ref(cid);
-    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
-    workgraph::session_lock::read_holder(&chat_dir)
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    worksgood::session_lock::read_holder(&chat_dir)
         .ok()
         .flatten()
         .is_some_and(|info| info.alive)
@@ -192,7 +192,7 @@ fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
 
 fn migrate_existing_chat_tasks(dir: &Path) -> Result<()> {
     let path = graph_path(dir);
-    workgraph::parser::modify_graph(&path, |graph| {
+    worksgood::parser::modify_graph(&path, |graph| {
         let mut changed = false;
         let ids: Vec<String> = graph
             .tasks()
@@ -218,7 +218,7 @@ fn migrate_existing_chat_tasks(dir: &Path) -> Result<()> {
                     .as_ref()
                     .and_then(|s| s.endpoint_override.as_deref())
                     .or(task_endpoint.as_deref());
-                changed |= workgraph::chat_command::migrate_chat_task_metadata(
+                changed |= worksgood::chat_command::migrate_chat_task_metadata(
                     task, dir, executor, model, endpoint,
                 );
             }
@@ -326,7 +326,7 @@ fn run_create_direct(
 pub fn run_list(dir: &Path, json: bool) -> Result<()> {
     migrate_existing_chat_tasks(dir)?;
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
 
     let daemon_running = service_is_running(dir);
     let supervised = supervised_chat_ids(dir);
@@ -399,7 +399,7 @@ pub fn run_list(dir: &Path, json: bool) -> Result<()> {
 pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
     migrate_existing_chat_tasks(dir)?;
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
 
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
@@ -423,8 +423,8 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
     // handler after launch/resume. Resolve via the dot-less session ref
     // (the handler's actual lock dir), not the `.chat-N` task id.
     let chat_ref = chat_id::format_chat_session_ref(cid);
-    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
-    let handler = workgraph::session_lock::read_holder(&chat_dir)
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    let handler = worksgood::session_lock::read_holder(&chat_dir)
         .ok()
         .flatten()
         .filter(|info| info.alive);
@@ -487,14 +487,14 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
 /// queues until the daemon (re)starts.
 pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 
     // Make sure the chat dir exists (chat::append_inbox_for creates parent
     // dirs, but we want a stable filesystem location for non-running chats).
     let request_id = format!("wg-chat-send-{}", chrono::Utc::now().timestamp_millis());
-    let inbox_id = workgraph::chat::append_inbox_for(dir, cid, message, &request_id)
+    let inbox_id = worksgood::chat::append_inbox_for(dir, cid, message, &request_id)
         .with_context(|| format!("Failed to append to chat {} inbox", cid))?;
 
     let running = service_is_running(dir);
@@ -529,7 +529,7 @@ pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Resul
 /// Requires the daemon (the supervisor owns the handler).
 pub fn run_stop(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     if !service_is_running(dir) {
@@ -572,7 +572,7 @@ pub(crate) fn reconstruct_resume_metadata(
     // override is recorded (the common case for TUI-created chats, whose
     // model lives on the `.chat-N` task).
     if (model.is_none() || executor.is_none())
-        && let Ok(graph) = workgraph::parser::load_graph(&graph_path(dir))
+        && let Ok(graph) = worksgood::parser::load_graph(&graph_path(dir))
         && let Some(task) = chat_id::find_chat_task(&graph, cid)
     {
         if model.is_none() {
@@ -589,7 +589,7 @@ pub(crate) fn reconstruct_resume_metadata(
 /// Requires the daemon. Errors clearly when down.
 pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     if !service_is_running(dir) {
@@ -602,12 +602,12 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         );
     }
     let chat_ref = format!("chat-{}", cid);
-    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
-    if workgraph::session_lock::read_tui_driver_sentinel(&chat_dir)
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    if worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
         .ok()
         .flatten()
         .is_some()
-        && workgraph::session_lock::active_tui_driver_pid(&chat_dir).is_none()
+        && worksgood::session_lock::active_tui_driver_pid(&chat_dir).is_none()
         && !json
     {
         eprintln!(
@@ -664,7 +664,7 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
 /// chats can still be inspected; their dirs are moved to .archive/).
 pub fn run_archive(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
     let result = if service_is_running(dir) {
@@ -683,7 +683,7 @@ fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
     let graph_p = graph_path(dir);
     let task_id = chat_id::format_chat_task_id(cid);
     let legacy_id = format!(".coordinator-{}", cid);
-    workgraph::parser::modify_graph(&graph_p, |g| {
+    worksgood::parser::modify_graph(&graph_p, |g| {
         let resolved = if g.get_task(&task_id).is_some() {
             task_id.clone()
         } else if g.get_task(&legacy_id).is_some() {
@@ -696,10 +696,10 @@ fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
             if !t.tags.iter().any(|x| x == "archived") {
                 t.tags.push("archived".to_string());
             }
-            t.log.push(workgraph::graph::LogEntry {
+            t.log.push(worksgood::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("wg-chat-archive".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Chat {} archived (service down)", cid),
             });
         }
@@ -723,7 +723,7 @@ fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
 /// `wg chat delete` — abandon the graph task and remove the chat dir.
 pub fn run_delete(dir: &Path, reference: &str, yes: bool, json: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 
@@ -755,7 +755,7 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
     let graph_p = graph_path(dir);
     let task_id = chat_id::format_chat_task_id(cid);
     let legacy_id = format!(".coordinator-{}", cid);
-    workgraph::parser::modify_graph(&graph_p, |g| {
+    worksgood::parser::modify_graph(&graph_p, |g| {
         let resolved = if g.get_task(&task_id).is_some() {
             task_id.clone()
         } else if g.get_task(&legacy_id).is_some() {
@@ -765,10 +765,10 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
         };
         if let Some(t) = g.get_task_mut(&resolved) {
             t.status = Status::Abandoned;
-            t.log.push(workgraph::graph::LogEntry {
+            t.log.push(worksgood::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("wg-chat-delete".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Chat {} deleted (service down)", cid),
             });
         }
@@ -808,7 +808,7 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
 ///      enqueue messages.
 pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
     let graph =
-        workgraph::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
 
@@ -859,7 +859,7 @@ fn chat_tmux_session_for_dir(dir: &Path, cid: u32) -> Option<String> {
     let project_root = dir.parent().unwrap_or(dir).to_path_buf();
     let project_tag = project_root.file_name().and_then(|n| n.to_str())?;
     let chat_ref = format!("chat-{}", cid);
-    Some(workgraph::chat_id::chat_tmux_session_name(
+    Some(worksgood::chat_id::chat_tmux_session_name(
         project_tag,
         &chat_ref,
     ))
@@ -911,7 +911,7 @@ mod tests {
         run_create_direct(dir, Some("alpha"), None, None, None, None, true).unwrap();
 
         // Graph contains a .chat-N task
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         let chat_tasks: Vec<_> = g
             .tasks()
             .filter(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
@@ -932,7 +932,7 @@ mod tests {
         let dir = td.path();
         run_create_direct(dir, Some("shell"), None, None, None, Some("bash"), true).unwrap();
 
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         let chat = g
             .tasks()
             .find(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
@@ -949,21 +949,21 @@ mod tests {
     fn migrate_legacy_preset_chat_writes_command_metadata() {
         let td = mk_workgraph_dir();
         let dir = td.path();
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-0".to_string(),
             title: "Chat 0".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
             model: Some("nex:qwen3-coder".to_string()),
             endpoint: Some("http://127.0.0.1:8088".to_string()),
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
 
         migrate_existing_chat_tasks(dir).unwrap();
 
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         let chat = g.get_task(".chat-0").unwrap();
         assert_eq!(chat.executor_preset_name.as_deref(), Some("nex"));
         assert_eq!(chat.command_argv[0], "wg");
@@ -978,7 +978,7 @@ mod tests {
         run_create_direct(dir, Some("bot"), None, None, None, None, true).unwrap();
 
         // Find the chat id we just created
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         let chat = g
             .tasks()
             .find(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
@@ -989,7 +989,7 @@ mod tests {
         run_send(dir, &cid.to_string(), "hi from test", true).unwrap();
 
         // Inbox file exists and has one message
-        let inbox = workgraph::chat::chat_dir_for_ref(dir, &cid.to_string()).join("inbox.jsonl");
+        let inbox = worksgood::chat::chat_dir_for_ref(dir, &cid.to_string()).join("inbox.jsonl");
         let contents = std::fs::read_to_string(&inbox).expect("inbox file written");
         assert!(
             contents.contains("hi from test"),
@@ -1003,7 +1003,7 @@ mod tests {
         let td = mk_workgraph_dir();
         let dir = td.path();
         run_create_direct(dir, Some("c"), None, None, None, None, true).unwrap();
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         let chat = g
             .tasks()
             .find(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
@@ -1025,16 +1025,16 @@ mod tests {
         // from the chat task itself (the common TUI-created-chat case).
         let td = mk_workgraph_dir();
         let dir = td.path();
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-23".to_string(),
             title: "Chat 23".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
             model: Some("openrouter:minimax/minimax-m3".to_string()),
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
 
         let (executor, model) = reconstruct_resume_metadata(dir, 23);
         assert_eq!(executor, None);
@@ -1055,16 +1055,16 @@ mod tests {
         // accepted (otherwise it falls through to the hidden-flags error).
         let td = mk_workgraph_dir();
         let dir = td.path();
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-3".to_string(),
             title: "Chat 3".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
             executor_preset_name: Some("nex".to_string()),
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
 
         let (executor, model) = reconstruct_resume_metadata(dir, 3);
         assert_eq!(executor.as_deref(), Some("nex"));
@@ -1079,16 +1079,16 @@ mod tests {
     fn resume_metadata_prefers_coordinator_state_overrides() {
         let td = mk_workgraph_dir();
         let dir = td.path();
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-7".to_string(),
             title: "Chat 7".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
             model: Some("nex:qwen3-coder".to_string()),
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
 
         // A per-chat hot-swap was persisted to CoordinatorState — it wins.
         let mut state = crate::commands::service::CoordinatorState::load_or_default_for(dir, 7);
@@ -1112,7 +1112,7 @@ mod tests {
         run_create_direct(dir, Some("beta"), None, None, None, None, true).unwrap();
 
         // Build the in-memory representation list_truthfully would emit.
-        let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
         for task in g
             .tasks()
             .filter(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn classify_archived_and_deleted() {
-        let mut t = workgraph::graph::Task::default();
+        let mut t = worksgood::graph::Task::default();
         t.id = ".chat-1".to_string();
         t.tags = vec![chat_id::CHAT_LOOP_TAG.to_string(), "archived".to_string()];
         t.status = Status::Done;
@@ -1137,7 +1137,7 @@ mod tests {
             ChatRuntimeStatus::Archived
         );
 
-        let mut t2 = workgraph::graph::Task::default();
+        let mut t2 = worksgood::graph::Task::default();
         t2.id = ".chat-2".to_string();
         t2.tags = vec![chat_id::CHAT_LOOP_TAG.to_string()];
         t2.status = Status::Abandoned;
@@ -1146,7 +1146,7 @@ mod tests {
             ChatRuntimeStatus::Deleted
         );
 
-        let mut t3 = workgraph::graph::Task::default();
+        let mut t3 = worksgood::graph::Task::default();
         t3.id = ".chat-3".to_string();
         t3.tags = vec![chat_id::CHAT_LOOP_TAG.to_string()];
         t3.status = Status::InProgress;

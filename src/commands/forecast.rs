@@ -3,8 +3,8 @@ use chrono::{Duration, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{Status, WorkGraph};
-use workgraph::query::build_reverse_index;
+use worksgood::graph::{Status, WorkGraph};
+use worksgood::query::build_reverse_index;
 
 use super::collect_transitive_dependents;
 use super::velocity::calculate_velocity;
@@ -515,7 +515,7 @@ fn print_human_output(forecast: &ForecastOutput) {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use workgraph::graph::{Estimate, Node, Task};
+    use worksgood::graph::{Estimate, Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

@@ -6,7 +6,7 @@
 use std::fs;
 use tempfile::TempDir;
 
-use workgraph::agency;
+use worksgood::agency;
 
 /// Verify that save_role writes atomically (no .tmp file left behind,
 /// target file contains valid YAML).

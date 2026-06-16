@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 const OLD_MARKER: &[u8] = b"\nWG_UPGRADE_TEST_OLD_BINARY\n";
 const NEW_MARKER: &[u8] = b"\nWG_UPGRADE_TEST_NEW_BINARY\n";

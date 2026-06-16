@@ -11,9 +11,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use workgraph::federation::{self, FederationConfig, PeerConfig, check_peer_service, resolve_peer};
-use workgraph::graph::WorkGraph;
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::federation::{self, FederationConfig, PeerConfig, check_peer_service, resolve_peer};
+use worksgood::graph::WorkGraph;
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -216,7 +216,7 @@ fn direct_add_task_to_peer_graph() {
     let graph_path = remote_wg.join("graph.jsonl");
     let mut graph = load_graph(&graph_path).unwrap();
 
-    use workgraph::graph::{Node, Status, Task};
+    use worksgood::graph::{Node, Status, Task};
 
     let task = Task {
         id: "remote-task".to_string(),
@@ -246,7 +246,7 @@ fn direct_add_task_with_after() {
     let remote_wg = remote.join(".wg");
     let graph_path = remote_wg.join("graph.jsonl");
 
-    use workgraph::graph::{Node, Status, Task};
+    use worksgood::graph::{Node, Status, Task};
 
     // Create a prerequisite task in the remote graph
     let mut graph = load_graph(&graph_path).unwrap();
@@ -580,8 +580,8 @@ fn cli_add_without_repo_flag_adds_locally() {
 
 #[test]
 fn cross_repo_dep_ready_when_remote_task_done() {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -623,8 +623,8 @@ fn cross_repo_dep_ready_when_remote_task_done() {
 
 #[test]
 fn cross_repo_dep_blocked_when_remote_task_open() {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -664,8 +664,8 @@ fn cross_repo_dep_blocked_when_remote_task_open() {
 
 #[test]
 fn cross_repo_dep_blocked_when_peer_unknown() {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -689,8 +689,8 @@ fn cross_repo_dep_blocked_when_peer_unknown() {
 
 #[test]
 fn cross_repo_dep_mixed_with_local_deps() {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -741,8 +741,8 @@ fn cross_repo_dep_mixed_with_local_deps() {
 
 #[test]
 fn cross_repo_dep_mixed_one_not_done() {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -837,8 +837,8 @@ fn cli_add_with_cross_repo_after() {
 
 #[test]
 fn resolve_remote_task_status_direct_access() {
-    use workgraph::federation::{RemoteResolution, resolve_remote_task_status};
-    use workgraph::graph::{Node, Status, Task};
+    use worksgood::federation::{RemoteResolution, resolve_remote_task_status};
+    use worksgood::graph::{Node, Status, Task};
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
@@ -866,14 +866,14 @@ fn resolve_remote_task_status_direct_access() {
 
 #[test]
 fn resolve_remote_task_status_peer_not_found() {
-    use workgraph::federation::{RemoteResolution, resolve_remote_task_status};
+    use worksgood::federation::{RemoteResolution, resolve_remote_task_status};
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
     let local_wg = local.join(".wg");
 
     let result = resolve_remote_task_status("nonexistent", "any-task", &local_wg);
-    assert_eq!(result.status, workgraph::graph::Status::Open);
+    assert_eq!(result.status, worksgood::graph::Status::Open);
     assert!(matches!(
         result.resolution,
         RemoteResolution::Unreachable(_)
@@ -892,7 +892,7 @@ fn resolve_remote_task_status_peer_not_found() {
 
 /// Helper: save a trace function to a WG function directory.
 fn setup_function(wg_dir: &Path) {
-    use workgraph::function::{
+    use worksgood::function::{
         FunctionInput, FunctionVisibility, InputType, TaskTemplate, TraceFunction,
     };
 
@@ -963,16 +963,16 @@ fn setup_function(wg_dir: &Path) {
         redacted_fields: vec![],
     };
 
-    let func_dir = workgraph::function::functions_dir(wg_dir);
-    workgraph::function::save_function(&func, &func_dir).unwrap();
+    let func_dir = worksgood::function::functions_dir(wg_dir);
+    worksgood::function::save_function(&func, &func_dir).unwrap();
 }
 
 #[test]
 fn end_to_end_cross_repo_all_four_subsystems() {
     use std::process::Command;
-    use workgraph::federation::{RemoteResolution, resolve_remote_task_status};
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::federation::{RemoteResolution, resolve_remote_task_status};
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
 
@@ -1104,8 +1104,8 @@ fn end_to_end_cross_repo_all_four_subsystems() {
     setup_function(&wg_b);
 
     // Verify B has the function
-    let peer_func_dir = workgraph::function::functions_dir(&wg_b);
-    let peer_funcs = workgraph::function::load_all_functions(&peer_func_dir).unwrap();
+    let peer_func_dir = worksgood::function::functions_dir(&wg_b);
+    let peer_funcs = worksgood::function::load_all_functions(&peer_func_dir).unwrap();
     assert_eq!(peer_funcs.len(), 1);
     assert_eq!(peer_funcs[0].id, "deploy-service");
 
@@ -1181,8 +1181,8 @@ fn end_to_end_cross_repo_all_four_subsystems() {
 fn end_to_end_cross_repo_mixed_local_and_remote_deps() {
     //! A task blocked by both a local task and a remote task.
     //! Both must be done before the task becomes ready.
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::query::ready_tasks_with_peers;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::query::ready_tasks_with_peers;
 
     let tmp = TempDir::new().unwrap();
     let project_a = setup_project(&tmp, "project-a");
@@ -1325,8 +1325,8 @@ fn end_to_end_dispatch_and_query_roundtrip() {
     //! Dispatch from A to B, then verify we can query the task's status
     //! from A using resolve_remote_task_status.
     use std::process::Command;
-    use workgraph::federation::{RemoteResolution, resolve_remote_task_status};
-    use workgraph::graph::Status;
+    use worksgood::federation::{RemoteResolution, resolve_remote_task_status};
+    use worksgood::graph::Status;
 
     let tmp = TempDir::new().unwrap();
     let project_a = setup_project(&tmp, "project-a");

@@ -8,9 +8,9 @@
 
 use std::io::Write;
 use tempfile::{NamedTempFile, tempdir};
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, modify_graph, save_graph};
-use workgraph::{chat, messages};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, modify_graph, save_graph};
+use worksgood::{chat, messages};
 
 fn make_task(id: &str, title: &str) -> Task {
     Task {
@@ -152,7 +152,7 @@ fn modify_graph_does_not_bump_when_only_interaction_field_changed() {
 #[test]
 fn modify_graph_bumps_only_changed_tasks() {
     let file = NamedTempFile::new().unwrap();
-    let mut graph = workgraph::graph::WorkGraph::default();
+    let mut graph = worksgood::graph::WorkGraph::default();
     graph.add_node(Node::Task(make_task("a", "Task A")));
     graph.add_node(Node::Task(make_task("b", "Task B")));
     save_graph(&graph, file.path()).unwrap();
@@ -179,7 +179,7 @@ fn modify_graph_bumps_only_changed_tasks() {
 #[test]
 fn modify_graph_bumps_brand_new_task() {
     let file = NamedTempFile::new().unwrap();
-    save_graph(&workgraph::graph::WorkGraph::default(), file.path()).unwrap();
+    save_graph(&worksgood::graph::WorkGraph::default(), file.path()).unwrap();
 
     modify_graph(file.path(), |g| {
         g.add_node(Node::Task(Task {

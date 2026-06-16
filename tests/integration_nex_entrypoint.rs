@@ -10,8 +10,8 @@ use std::thread;
 
 use serde_json::Value;
 use tempfile::TempDir;
-use workgraph::config::{Config, DispatchRole};
-use workgraph::nex_runtime::{
+use worksgood::config::{Config, DispatchRole};
+use worksgood::nex_runtime::{
     NexRuntimeResolveInput, load_config, resolve_standalone, resolve_wg_autonomous,
 };
 

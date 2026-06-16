@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
-use workgraph::config::parse_model_spec;
-use workgraph::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
-use workgraph::executor::native::openai_client::OpenAiClient;
-use workgraph::executor::native::provider::{Provider, create_provider_ext};
+use worksgood::config::parse_model_spec;
+use worksgood::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
+use worksgood::executor::native::openai_client::OpenAiClient;
+use worksgood::executor::native::provider::{Provider, create_provider_ext};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,8 +59,8 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     wg_dir
 }
 

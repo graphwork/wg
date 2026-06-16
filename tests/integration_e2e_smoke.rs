@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::Status;
-use workgraph::parser::load_graph;
+use worksgood::graph::Status;
+use worksgood::parser::load_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers (same pattern as other integration tests)

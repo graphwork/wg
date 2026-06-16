@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
-use workgraph::graph::Status;
+use worksgood::graph::Status;
 
 use super::trace::{GraphSnapshot, collect_descendants, format_duration, reconstruct_temporal};
 
@@ -70,8 +70,8 @@ pub fn run(dir: &Path, root_id: &str, speed: f64) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn run_animation_loop(
     stdout: &mut io::Stdout,
-    graph: &workgraph::graph::WorkGraph,
-    descendants: &[&workgraph::graph::Task],
+    graph: &worksgood::graph::WorkGraph,
+    descendants: &[&worksgood::graph::Task],
     subgraph_ids: &HashSet<&str>,
     snapshots: &[GraphSnapshot],
     first_ts: chrono::DateTime<chrono::Utc>,
@@ -234,8 +234,8 @@ fn run_animation_loop(
 #[allow(clippy::too_many_arguments)]
 fn render_frame(
     stdout: &mut io::Stdout,
-    graph: &workgraph::graph::WorkGraph,
-    descendants: &[&workgraph::graph::Task],
+    graph: &worksgood::graph::WorkGraph,
+    descendants: &[&worksgood::graph::Task],
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, super::viz::AnnotationInfo>,
     snapshot: &GraphSnapshot,

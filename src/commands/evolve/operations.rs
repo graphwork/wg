@@ -2,11 +2,11 @@ use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role,
     TradeoffConfig,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 use super::deferred::{defer_operation, defer_self_mutation, should_defer};
 use super::meta::{

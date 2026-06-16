@@ -24,8 +24,8 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use workgraph::config::ResourceManagementConfig;
-use workgraph::metrics::{CleanupTimer, ResourceRecoveryStats, record_recovery_branch};
+use worksgood::config::ResourceManagementConfig;
+use worksgood::metrics::{CleanupTimer, ResourceRecoveryStats, record_recovery_branch};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -75,7 +75,7 @@ pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 /// This is the safe default: keep the worktree until we can affirmatively prove
 /// the work is captured. See task `worktree-retention-don` for motivation.
 pub fn is_safe_to_reap(
-    graph: Option<&workgraph::graph::WorkGraph>,
+    graph: Option<&worksgood::graph::WorkGraph>,
     task_id: Option<&str>,
     project_root: &Path,
     branch: Option<&str>,
@@ -92,12 +92,12 @@ pub fn is_safe_to_reap(
         Some(t) => t,
         None => return false,
     };
-    if task.status != workgraph::graph::Status::Done {
+    if task.status != worksgood::graph::Status::Done {
         return false;
     }
     let eval_id = format!(".evaluate-{}", task_id);
     if let Some(eval) = graph.get_task(&eval_id)
-        && eval.status != workgraph::graph::Status::Done
+        && eval.status != worksgood::graph::Status::Done
     {
         return false;
     }
@@ -560,7 +560,7 @@ pub fn cleanup_dead_agent_worktree_with_config(
     agent_id: &str,
     config: Option<&ResourceManagementConfig>,
 ) {
-    use workgraph::metrics::record_dead_agent_cleanup;
+    use worksgood::metrics::record_dead_agent_cleanup;
 
     eprintln!(
         "[worktree] Cleaning up dead agent {} worktree {:?} (branch: {})",
@@ -665,7 +665,7 @@ pub fn find_branch_for_worktree(project_root: &Path, worktree_path: &Path) -> Op
 /// Called once on service startup. Scans `.wg-worktrees/` for directories
 /// that don't correspond to alive agents.
 pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
-    use workgraph::metrics::{CleanupTimer, record_orphaned_cleanup};
+    use worksgood::metrics::{CleanupTimer, record_orphaned_cleanup};
 
     let timer = CleanupTimer::start("cleanup_orphaned_worktrees");
     let project_root = dir
@@ -674,17 +674,17 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
     let worktrees_dir = project_root.join(WORKTREES_DIR);
 
     if !worktrees_dir.exists() {
-        timer.complete(true, workgraph::metrics::ResourceRecoveryStats::default());
+        timer.complete(true, worksgood::metrics::ResourceRecoveryStats::default());
         return Ok(0);
     }
 
-    let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
 
     // Load graph so the retention policy can verify task state. If the graph
     // can't be read, fall back to retain-by-default (don't reap).
     let graph_path = dir.join("graph.jsonl");
     let graph = if graph_path.exists() {
-        workgraph::parser::load_graph(&graph_path).ok()
+        worksgood::parser::load_graph(&graph_path).ok()
     } else {
         None
     };
@@ -807,7 +807,7 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
     // Other agents may be running concurrently; global prune can damage their
     // worktree metadata if their directory is temporarily absent.
 
-    let resources = workgraph::metrics::ResourceRecoveryStats {
+    let resources = worksgood::metrics::ResourceRecoveryStats {
         worktrees_removed: cleaned as u64,
         ..Default::default()
     };
@@ -876,7 +876,7 @@ pub fn reap_dead_target_dirs(dir: &Path) -> Result<(usize, u64)> {
         return Ok((0, 0));
     }
 
-    let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
     let mut count = 0usize;
     let mut bytes_freed = 0u64;
 
@@ -964,13 +964,13 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
         return Ok(0);
     }
 
-    let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
 
     // Load graph to check task status. If this fails we skip the sweep rather
     // than do potentially unsafe removals.
     let graph_path = dir.join("graph.jsonl");
     let graph = if graph_path.exists() {
-        Some(workgraph::parser::load_graph(&graph_path).context("Failed to load graph for sweep")?)
+        Some(worksgood::parser::load_graph(&graph_path).context("Failed to load graph for sweep")?)
     } else {
         None
     };
@@ -1107,7 +1107,7 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
         return Ok(0);
     }
 
-    let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
     let mut pruned = 0;
 
     for entry in fs::read_dir(&worktrees_dir)? {
@@ -1811,10 +1811,10 @@ mod tests {
     fn write_graph_with_task_and_eval(
         wg_dir: &Path,
         task_id: &str,
-        status: workgraph::graph::Status,
-        eval_status: Option<workgraph::graph::Status>,
+        status: worksgood::graph::Status,
+        eval_status: Option<worksgood::graph::Status>,
     ) {
-        use workgraph::graph::{Node, Task, WorkGraph};
+        use worksgood::graph::{Node, Task, WorkGraph};
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(Task {
             id: task_id.to_string(),
@@ -1831,7 +1831,7 @@ mod tests {
             }));
         }
         let graph_path = wg_dir.join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     }
 
     fn create_test_worktree(
@@ -2268,7 +2268,7 @@ mod tests {
 
     #[test]
     fn test_cleanup_orphaned_worktrees_skips_live_agents() {
-        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+        use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2329,8 +2329,8 @@ mod tests {
         write_graph_with_task_and_eval(
             &wg_dir,
             "task-dead",
-            workgraph::graph::Status::Done,
-            Some(workgraph::graph::Status::Done),
+            worksgood::graph::Status::Done,
+            Some(worksgood::graph::Status::Done),
         );
         merge_branch_into_main(&project, "wg/agent-200/task-dead");
 
@@ -2347,8 +2347,8 @@ mod tests {
 
     // ---------- Two-phase atomic cleanup tests ----------
 
-    fn write_graph_with_task(wg_dir: &Path, task_id: &str, status: workgraph::graph::Status) {
-        use workgraph::graph::{Node, Task, WorkGraph};
+    fn write_graph_with_task(wg_dir: &Path, task_id: &str, status: worksgood::graph::Status) {
+        use worksgood::graph::{Node, Task, WorkGraph};
         let mut graph = WorkGraph::new();
         let task = Task {
             id: task_id.to_string(),
@@ -2358,7 +2358,7 @@ mod tests {
         };
         graph.add_node(Node::Task(task));
         let graph_path = wg_dir.join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     }
 
     fn register_agent(
@@ -2366,7 +2366,7 @@ mod tests {
         agent_id: &str,
         task_id: &str,
         pid: u32,
-        status: workgraph::service::registry::AgentStatus,
+        status: worksgood::service::registry::AgentStatus,
     ) {
         register_agent_with_worktree(wg_dir, agent_id, task_id, pid, status, None);
     }
@@ -2376,10 +2376,10 @@ mod tests {
         agent_id: &str,
         task_id: &str,
         pid: u32,
-        status: workgraph::service::registry::AgentStatus,
+        status: worksgood::service::registry::AgentStatus,
         worktree_path: Option<&Path>,
     ) {
-        use workgraph::service::registry::{AgentEntry, AgentRegistry};
+        use worksgood::service::registry::{AgentEntry, AgentRegistry};
         let now = chrono::Utc::now().to_rfc3339();
         let mut registry = AgentRegistry::load(wg_dir).unwrap_or_default();
         registry.agents.insert(
@@ -2403,8 +2403,8 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_on_success() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2443,8 +2443,8 @@ mod tests {
     /// or agent state. The WIP needs to survive for `wg retry`-in-place.
     #[test]
     fn test_worktree_not_reaped_on_agent_failure() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2477,8 +2477,8 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_skips_no_marker() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2510,8 +2510,8 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_skips_live_agent() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2541,8 +2541,8 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_skips_in_progress_task() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2575,7 +2575,7 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_orphan_agent_checks_task_via_branch() {
-        use workgraph::graph::Status;
+        use worksgood::graph::Status;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2592,7 +2592,7 @@ mod tests {
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
         write_graph_with_task(&wg_dir, "task-orphan", Status::Open);
         // Ensure an empty registry file exists so load() doesn't fail.
-        workgraph::service::registry::AgentRegistry::default()
+        worksgood::service::registry::AgentRegistry::default()
             .save(&wg_dir)
             .unwrap();
 
@@ -2606,7 +2606,7 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_orphan_agent_terminal_task_is_swept() {
-        use workgraph::graph::Status;
+        use worksgood::graph::Status;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2621,7 +2621,7 @@ mod tests {
         let (wt_path, branch) = create_test_worktree(&project, "agent-orph2", "task-orph2");
         fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
         write_graph_with_task_and_eval(&wg_dir, "task-orph2", Status::Done, Some(Status::Done));
-        workgraph::service::registry::AgentRegistry::default()
+        worksgood::service::registry::AgentRegistry::default()
             .save(&wg_dir)
             .unwrap();
         merge_branch_into_main(&project, &branch);
@@ -2633,8 +2633,8 @@ mod tests {
 
     #[test]
     fn atomic_worktree_cleanup_idempotent() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2669,8 +2669,8 @@ mod tests {
     /// worktree alive.
     #[test]
     fn test_worktree_reaped_only_after_eval_pass_and_merge() {
-        use workgraph::graph::Status;
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
 
         // ---- Scenario A: Done but eval pending → KEEP ----
         let temp_a = TempDir::new().unwrap();
@@ -2776,7 +2776,7 @@ mod tests {
     /// preserve the worktree until eval+merge — so `wg retry` can resume.
     #[test]
     fn test_orphan_cleanup_preserves_unfinished_work() {
-        use workgraph::graph::Status;
+        use worksgood::graph::Status;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2789,7 +2789,7 @@ mod tests {
         // Task is Failed (crashed). Under new policy: KEEP.
         let (wt_path, _branch) = create_test_worktree(&project, "agent-crash", "task-crash");
         write_graph_with_task_and_eval(&wg_dir, "task-crash", Status::Failed, None);
-        workgraph::service::registry::AgentRegistry::default()
+        worksgood::service::registry::AgentRegistry::default()
             .save(&wg_dir)
             .unwrap();
 
@@ -2860,7 +2860,7 @@ mod tests {
 
     #[test]
     fn reap_dead_target_dirs_skips_live_agents() {
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2918,7 +2918,7 @@ mod tests {
         let wg_dir = project.join(".wg");
         fs::create_dir_all(wg_dir.join("service")).unwrap();
         // Save an empty registry so load() succeeds.
-        workgraph::service::registry::AgentRegistry::default()
+        worksgood::service::registry::AgentRegistry::default()
             .save(&wg_dir)
             .unwrap();
 
@@ -2934,7 +2934,7 @@ mod tests {
 
     #[test]
     fn reap_dead_target_dirs_idempotent() {
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");
@@ -2972,7 +2972,7 @@ mod tests {
     /// lookup (agent-A) reports dead.
     #[test]
     fn reap_dead_target_dirs_protects_retry_in_place_worktree() {
-        use workgraph::service::registry::AgentStatus;
+        use worksgood::service::registry::AgentStatus;
 
         let temp = TempDir::new().unwrap();
         let project = temp.path().join("project");

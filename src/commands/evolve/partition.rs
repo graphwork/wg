@@ -3,8 +3,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use workgraph::agency::{Evaluation, Role, TradeoffConfig};
-use workgraph::config::{Config, Tier};
+use worksgood::agency::{Evaluation, Role, TradeoffConfig};
+use worksgood::config::{Config, Tier};
 
 use super::strategy::Strategy;
 
@@ -630,7 +630,7 @@ fn partition_coordinator_evolution(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use workgraph::agency::{AccessControl, Lineage, PerformanceRecord};
+    use worksgood::agency::{AccessControl, Lineage, PerformanceRecord};
 
     fn make_role(id: &str, avg_score: Option<f64>, task_count: u32) -> Role {
         Role {

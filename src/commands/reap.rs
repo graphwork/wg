@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use std::path::Path;
-use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::service::{AgentEntry, AgentRegistry, AgentStatus};
 
 /// Statuses considered reapable
 fn is_reapable(status: AgentStatus) -> bool {

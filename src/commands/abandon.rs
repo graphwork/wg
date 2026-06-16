@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String]) -> Result<()> {
     let path = super::graph_path(dir);
@@ -56,7 +56,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: log_message,
         });
 
@@ -93,7 +93,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!("Auto-abandoned: parent '{}' was abandoned", id),
                 });
             }
@@ -114,8 +114,8 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
 
     super::notify_graph_changed(dir);
 
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "abandon",
         Some(id),
@@ -142,8 +142,8 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

@@ -105,7 +105,7 @@ pub fn run(
         .with_context(|| format!("Failed to write checkpoint: {}", checkpoint_path.display()))?;
 
     // Load config for max_checkpoints
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let max_checkpoints = config.checkpoint.max_checkpoints as usize;
 
     // Auto-prune old checkpoints (keep only last N)
@@ -243,8 +243,8 @@ fn prune_checkpoints(checkpoint_dir: &Path, max: usize) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

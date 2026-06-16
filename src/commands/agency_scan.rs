@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use workgraph::agency::{LocalStore, StoreCounts};
+use worksgood::agency::{LocalStore, StoreCounts};
 
 /// Directories to skip during recursive scan.
 const SKIP_DIRS: &[&str] = &[

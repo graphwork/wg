@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 use std::fs;
 use std::path::Path;
-use workgraph::config::{Config, EndpointConfig};
+use worksgood::config::{Config, EndpointConfig};
 
 /// Set an API key for a provider.
 ///

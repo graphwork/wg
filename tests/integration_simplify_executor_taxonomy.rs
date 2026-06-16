@@ -171,7 +171,7 @@ fn test_legacy_executor_flag_warns_and_works() {
 // --------------------------------------------------------------------
 #[test]
 fn test_legacy_executor_field_warns_on_load() {
-    let warnings = workgraph::config::deprecated_executor_warnings_for_toml(
+    let warnings = worksgood::config::deprecated_executor_warnings_for_toml(
         r#"
 [agent]
 executor = "claude"
@@ -184,7 +184,7 @@ model = "claude:opus"
         warnings
     );
 
-    let warnings = workgraph::config::deprecated_executor_warnings_for_toml(
+    let warnings = worksgood::config::deprecated_executor_warnings_for_toml(
         r#"
 [dispatcher]
 executor = "native"
@@ -197,7 +197,7 @@ executor = "native"
     );
 
     // A clean config (model only, no executor) emits no warning.
-    let warnings = workgraph::config::deprecated_executor_warnings_for_toml(
+    let warnings = worksgood::config::deprecated_executor_warnings_for_toml(
         r#"
 [agent]
 model = "claude:opus"
@@ -215,7 +215,7 @@ model = "claude:opus"
 // --------------------------------------------------------------------
 #[test]
 fn test_handler_for_model_is_single_source_of_truth() {
-    use workgraph::dispatch::{ExecutorKind, handler_for_model};
+    use worksgood::dispatch::{ExecutorKind, handler_for_model};
 
     // Anthropic models → claude handler.
     assert_eq!(handler_for_model("claude:opus"), ExecutorKind::Claude);

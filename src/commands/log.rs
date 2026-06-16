@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
-use workgraph::graph::LogEntry;
-use workgraph::messages;
-use workgraph::parser::modify_graph;
+use worksgood::graph::LogEntry;
+use worksgood::messages;
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
@@ -36,7 +36,7 @@ pub fn run_add(
         let entry = LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: actor.map(String::from),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: message.to_string(),
         };
 
@@ -287,7 +287,7 @@ pub fn run_agent(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
 /// Show the operations log (current + rotated compressed files).
 pub fn run_operations(dir: &Path, json: bool) -> Result<()> {
-    let entries = workgraph::provenance::read_all_operations(dir)?;
+    let entries = worksgood::provenance::read_all_operations(dir)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -329,8 +329,8 @@ pub fn run_operations(dir: &Path, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

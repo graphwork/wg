@@ -48,8 +48,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use workgraph::chat;
-use workgraph::session_lock::{HandlerKind, SessionLock};
+use worksgood::chat;
+use worksgood::session_lock::{HandlerKind, SessionLock};
 
 /// Poll interval for new inbox messages when the inbox appears empty.
 /// Short enough that chat feels snappy; long enough not to hammer the
@@ -79,7 +79,7 @@ pub fn run(
     // canonical `chat/<uuid>/` dir. A naive join here used to
     // create a `chat/<alias>/` directory that got orphaned from
     // the UUID-backed storage.
-    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 
@@ -365,7 +365,7 @@ fn spawn_claude_process(
     model: Option<&str>,
     logger: &HandlerLogger,
 ) -> Result<(Child, ChildStdin, ChildStdout)> {
-    let registry = workgraph::service::executor::ExecutorRegistry::new(workgraph_dir);
+    let registry = worksgood::service::executor::ExecutorRegistry::new(workgraph_dir);
     let executor_config = registry
         .load_config("claude")
         .context("load claude executor config")?;
@@ -388,7 +388,7 @@ fn spawn_claude_process(
 
     if let Some(m) = model {
         // Strip provider prefix (e.g., "claude:opus" → "opus") for the CLI
-        let spec = workgraph::config::parse_model_spec(m);
+        let spec = worksgood::config::parse_model_spec(m);
         cmd.args(["--model", &spec.model_id]);
     }
 

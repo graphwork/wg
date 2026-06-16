@@ -2,9 +2,9 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use workgraph::agency;
-use workgraph::graph::Status;
-use workgraph::query::ready_tasks;
+use worksgood::agency;
+use worksgood::graph::Status;
+use worksgood::query::ready_tasks;
 
 /// Information about an agent's workload
 #[derive(Debug, Serialize)]
@@ -208,8 +208,8 @@ fn print_human_readable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::agency::{Agent, Lineage, PerformanceRecord};
-    use workgraph::graph::{Estimate, Node, Task, TrustLevel, WorkGraph};
+    use worksgood::agency::{Agent, Lineage, PerformanceRecord};
+    use worksgood::graph::{Estimate, Node, Task, TrustLevel, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
