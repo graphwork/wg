@@ -675,9 +675,10 @@ owners = [
     "polish-nex-queued",
     "tune-nex-follow",
     "add-compact-nex",
+    "fix-nex-chat-2",
     "smoke-gate-is",
 ]
-description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts normal follow-up prompts stay plain `>`, compact working indicators appear only while busy with safe no-color fallback, a bash tool call does not get preceded by misleading prompt text, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
+description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts idle follow-up prompts render as `> `, the compact working indicator swaps IN PLACE of the `>` glyph (`↯ ` / no-color `* `, same width + trailing space) only while busy with safe no-color fallback, a bash tool call does not get preceded by misleading prompt text, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
 timeout_seconds = 120
 
 [[scenario]]

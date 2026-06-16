@@ -6,7 +6,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -372,7 +372,7 @@ enum LiveReadlineEvent {
 }
 
 const NEX_IDLE_PROMPT: &str = "> ";
-const NEX_WORKING_PROMPT_RAW: &str = "*>"; // Same display width as `> `.
+const NEX_WORKING_PROMPT_RAW: &str = "* "; // Same display width as `> `.
 const NEX_WORKING_GLYPH: &str = "↯";
 const NEX_WORKING_FALLBACK: &str = "*";
 
@@ -381,7 +381,6 @@ struct NexPromptState {
     waiting_for_input: Arc<AtomicBool>,
     color_enabled: bool,
     working_indicator: &'static str,
-    color_tick: Arc<AtomicUsize>,
 }
 
 impl NexPromptState {
@@ -392,7 +391,6 @@ impl NexPromptState {
             waiting_for_input,
             color_enabled,
             working_indicator,
-            color_tick: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -401,7 +399,6 @@ impl NexPromptState {
             self.waiting_for_input.load(Ordering::SeqCst),
             self.color_enabled,
             self.working_indicator,
-            self.color_tick.fetch_add(1, Ordering::Relaxed),
         )
     }
 }
@@ -450,23 +447,29 @@ fn render_nex_prompt(
     waiting_for_input: bool,
     color_enabled: bool,
     working_indicator: &str,
-    tick: usize,
 ) -> String {
     if waiting_for_input {
+        // Idle / ready: greater-than glyph + one trailing space.
         if color_enabled {
-            format!("\x1b[1;36m>\x1b[0m ")
+            "\x1b[1;36m>\x1b[0m ".to_string()
         } else {
             NEX_IDLE_PROMPT.to_string()
         }
     } else if color_enabled {
-        const COLORS: [u8; 5] = [196, 214, 46, 33, 129];
-        let color = COLORS[tick % COLORS.len()];
-        format!(
-            "\x1b[1;38;5;{}m{}\x1b[0m\x1b[1;36m>\x1b[0m",
-            color, working_indicator
-        )
+        // Working: the lightning glyph is swapped IN PLACE of the `>` (not
+        // prepended), keeping the same 2-cell width and the trailing space
+        // so the input column never shifts. Fixed color, NOT animated:
+        // rustyline repaints the prompt on every keystroke and every
+        // ExternalPrinter::print, so a tick-driven color cycle would only
+        // advance while output streams (frozen during quiet tool calls) and
+        // would re-emit a new color on each keystroke — read as input lag.
+        // Reliable animation would need a timer forcing repaints, which
+        // rustyline cannot do without emitting output (added contention).
+        // See fix-nex-chat-2 for the full root-cause note.
+        format!("\x1b[1;38;5;214m{}\x1b[0m ", working_indicator)
     } else {
-        format!("{}>", working_indicator)
+        // No-color / dumb terminal: ASCII star fallback + trailing space.
+        format!("{} ", working_indicator)
     }
 }
 
@@ -4267,28 +4270,45 @@ mod prompt_indicator_tests {
 
     #[test]
     fn compact_prompt_keeps_input_column_stable() {
-        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK, 0);
-        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 0);
+        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK);
+        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK);
 
+        // Idle and working share the same 2-cell width and trailing space —
+        // the glyph swaps in place so the input column never shifts.
         assert_eq!(idle, "> ");
-        assert_eq!(working, "*>");
+        assert_eq!(working, "* ");
         assert_eq!(UnicodeWidthStr::width(idle.as_str()), 2);
         assert_eq!(UnicodeWidthStr::width(working.as_str()), 2);
     }
 
     #[test]
-    fn colored_working_prompt_is_single_cell_indicator_plus_prompt() {
-        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 2);
+    fn colored_working_prompt_swaps_glyph_in_place_with_trailing_space() {
+        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
         let plain = strip_ansi(&rendered);
 
-        assert_eq!(plain, format!("{}>", NEX_WORKING_GLYPH));
+        // Lightning glyph REPLACES the `>` in place (no prepended `>`),
+        // followed by exactly one trailing space — same 2-cell width as the
+        // idle `> ` prompt.
+        assert_eq!(plain, format!("{} ", NEX_WORKING_GLYPH));
+        assert!(!plain.contains('>'), "working prompt must not keep a `>`");
         assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
         assert!(rendered.contains("\x1b[1;38;5;"));
     }
 
     #[test]
+    fn colored_working_prompt_is_fixed_color_across_repaints() {
+        // The prompt must be stable across repeated renders — no per-render
+        // color cycling that would flicker on every keystroke (fix-nex-chat-2).
+        let first = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        let second = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        let third = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
+
+    #[test]
     fn colored_idle_prompt_renders_plain_prompt_text() {
-        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH, 0);
+        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH);
         let plain = strip_ansi(&rendered);
 
         assert_eq!(plain, "> ");

@@ -4,13 +4,15 @@
 # Drives standalone `nex` and `wg nex` through a real PTY against a local
 # OpenAI-compatible test server. The transcript covers:
 #   * a first user turn that triggers a real bash tool call
-#   * a normal stable-boundary follow-up prompt, rendered as plain `>`
-#   * a compact single-cell working indicator in the live prompt while
-#     the assistant is busy, removed again at idle boundaries
+#   * a normal stable-boundary follow-up prompt, rendered as idle `> `
+#   * a compact single-cell working indicator that swaps IN PLACE of the
+#     `>` glyph in the live prompt while the assistant is busy (idle `> `
+#     -> working `↯ `, same width + trailing space), removed again at idle
+#     boundaries
 #   * a third line typed while the assistant is streaming, visibly marked
 #     as queued and delivered once as the next turn
-#   * no-color fallback to an ASCII working indicator
-#   * dumb-terminal fallback that suppresses live prompt animation cleanly
+#   * no-color fallback to an ASCII working indicator (`* `)
+#   * dumb-terminal fallback that suppresses the live working prompt cleanly
 #
 # The PTY has kernel echo disabled. Live rustyline must therefore own the
 # editable input area; otherwise text typed while output is active would be
@@ -65,7 +67,9 @@ queued_turn = "SECOND_QUEUED_SMOKE while stream active"
 first_header = f"[assistant for: {first_turn}]"
 stable_header = f"[assistant for: {stable_followup}]"
 queued_header = f"[assistant for: {queued_turn}]"
-working_prompt_markers = ("↯>", "*>")
+# Working prompt swaps the glyph IN PLACE of `>`: color `↯ `, no-color `* `.
+# Both keep the trailing space and the 2-cell width of the idle `> ` prompt.
+working_prompt_markers = ("↯ ", "* ")
 
 ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -366,16 +370,21 @@ def has_working_prompt(transcript):
 def assert_working_prompt_visible(transcript):
     if not has_working_prompt(transcript):
         fail("compact working prompt indicator never appeared while assistant was active", transcript)
+    # The working glyph must SWAP IN PLACE of `>` (fix-nex-chat-2), not be
+    # prepended to it — the old `↯>` / `*>` forms must never appear.
+    cleaned = clean(transcript)
+    if "↯>" in cleaned or "*>" in cleaned:
+        fail("working glyph must replace `>` in place, not prepend to it", transcript)
     if terminal_mode == "no_color":
-        if "↯>" in transcript:
+        if "↯" in transcript:
             fail("no-color terminal should use the ASCII working prompt fallback", transcript)
-        if "*>" not in transcript:
+        if "* " not in transcript:
             fail("no-color terminal did not show the ASCII working prompt fallback", transcript)
 
 
 def assert_dumb_prompt_animation_suppressed(transcript):
     cleaned = clean(transcript)
-    if "↯>" in cleaned or "*>" in cleaned:
+    if "↯" in cleaned or "* " in cleaned:
         fail("dumb terminal should suppress live working prompt animation cleanly", transcript)
     if "live input printer unavailable" not in cleaned:
         fail("dumb terminal did not explain live prompt suppression", transcript)
@@ -406,7 +415,7 @@ def assert_payload_lines_not_prompt_prefixed(transcript):
         if not any(marker in line for marker in payload_markers):
             continue
         stripped = line.lstrip()
-        if stripped.startswith(("↯>", "*>", ">")):
+        if stripped.startswith(("↯ ", "* ", "> ")):
             fail("assistant/tool output line was prefixed with prompt indicator text", transcript)
 
 
