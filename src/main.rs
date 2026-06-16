@@ -1229,9 +1229,20 @@ fn main() -> Result<()> {
         Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
         Commands::Pause { id } => commands::pause::run(&workgraph_dir, &id),
         Commands::Resume { id, only } => commands::resume::run(&workgraph_dir, &id, only),
-        Commands::Publish { id, only, wcc } => {
-            commands::resume::publish(&workgraph_dir, &id, only, wcc)
-        }
+        Commands::Publish {
+            id,
+            only,
+            wcc,
+            profile,
+            no_release,
+        } => commands::resume::publish(
+            &workgraph_dir,
+            &id,
+            only,
+            wcc,
+            profile.as_deref(),
+            no_release,
+        ),
         Commands::Wait {
             id,
             until,

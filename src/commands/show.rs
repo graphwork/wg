@@ -79,6 +79,9 @@ struct TaskDetails {
     failure_class: Option<FailureClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// WCC profile pinned to this task (`wg publish --profile`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     actual_executor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -529,6 +532,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         failure_reason: task.failure_reason.clone(),
         failure_class: task.failure_class,
         model: task.model.clone(),
+        profile: task.profile.clone(),
         actual_executor,
         actual_model,
         native_compaction,
@@ -605,6 +609,9 @@ fn print_human_readable(details: &TaskDetails) {
     }
     if let Some(ref agent) = details.agent {
         println!("Agent: {}", agent);
+    }
+    if let Some(ref profile) = details.profile {
+        println!("Profile: {} (pinned via wg publish --profile)", profile);
     }
     if details.actual_executor.is_some()
         || details.model.is_some()
@@ -1312,6 +1319,7 @@ mod tests {
             failure_reason: None,
             failure_class: None,
             model: None,
+            profile: None,
             actual_executor: Some("native".to_string()),
             actual_model: Some("openrouter/minimax".to_string()),
             native_compaction: Some(NativeCompactionInfo {

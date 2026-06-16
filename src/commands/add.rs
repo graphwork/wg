@@ -549,6 +549,13 @@ pub fn run(
         (None, false, None)
     };
 
+    // Inherit-on-attach: a task linked into a component that already carries a
+    // WCC profile (via `wg publish --profile`) inherits that profile, so a
+    // profiled subgraph keeps its routing as agents grow it
+    // (`wg add 'subtask' --after $WG_TASK_ID`). Tie-break is deterministic
+    // (lexicographically smallest neighbor profile). See `dispatch::profile`.
+    let inherited_profile = inherit_profile_from_neighbors(graph, &effective_after);
+
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
@@ -580,6 +587,7 @@ pub fn run(
         model: model.map(String::from),
         provider: provider.map(String::from),
         endpoint: None,
+        profile: inherited_profile,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,
@@ -1055,6 +1063,7 @@ fn add_task_directly(
             model: model.map(String::from),
             provider: provider.map(String::from),
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -1160,6 +1169,29 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
                 && (e.detail.get("agent_id").and_then(|v| v.as_str()) == Some(agent_id))
         })
         .count() as u32
+}
+
+/// Inherit-on-attach: when a new task is linked into a component that already
+/// carries a WCC profile (stamped by `wg publish --profile`), it inherits that
+/// profile so the profiled subgraph keeps its routing as it grows. Looks only
+/// at the new task's `after`-neighbors (its only existing edges at creation).
+///
+/// Tie-break is deterministic: if neighbors carry different profiles, the
+/// lexicographically smallest profile name wins (and the caller could warn,
+/// though in practice a single component carries at most one profile).
+/// Returns `None` when no neighbor is profiled — the task stays on the global
+/// active profile (backward-compatible default).
+fn inherit_profile_from_neighbors(
+    graph: &workgraph::WorkGraph,
+    after: &[String],
+) -> Option<String> {
+    let mut profiles: Vec<String> = after
+        .iter()
+        .filter_map(|id| graph.get_task(id).and_then(|t| t.profile.clone()))
+        .collect();
+    profiles.sort();
+    profiles.dedup();
+    profiles.into_iter().next()
 }
 
 fn default_parent_after(graph: &workgraph::WorkGraph, after: &[String]) -> Vec<String> {
@@ -2778,6 +2810,66 @@ tier = "standard"
         assert!(
             result.unwrap_err().to_string().contains("in-progress"),
             "Should fail when parent is not in-progress"
+        );
+    }
+
+    // ---- inherit-on-attach (WCC profile propagation) ----
+
+    #[test]
+    fn inherit_profile_from_neighbors_picks_profiled_neighbor() {
+        let mut graph = WorkGraph::new();
+        let mut parent = stub_task("parent");
+        parent.profile = Some("burn".to_string());
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(stub_task("unprofiled")));
+
+        // Neighbor carries a profile → inherit it.
+        assert_eq!(
+            inherit_profile_from_neighbors(&graph, &["parent".to_string()]),
+            Some("burn".to_string())
+        );
+        // No profiled neighbor → None (stays on global active profile).
+        assert_eq!(
+            inherit_profile_from_neighbors(&graph, &["unprofiled".to_string()]),
+            None
+        );
+        // Deterministic tie-break: lexicographically smallest profile wins.
+        let mut g2 = WorkGraph::new();
+        let mut a = stub_task("a");
+        a.profile = Some("zeta".to_string());
+        let mut b = stub_task("b");
+        b.profile = Some("alpha".to_string());
+        g2.add_node(Node::Task(a));
+        g2.add_node(Node::Task(b));
+        assert_eq!(
+            inherit_profile_from_neighbors(&g2, &["a".to_string(), "b".to_string()]),
+            Some("alpha".to_string())
+        );
+    }
+
+    /// `wg add 'child' --after <profiled-parent>` makes the child inherit the
+    /// parent's WCC profile — the mechanism by which tasks added to a profiled
+    /// component later honor the profile.
+    #[test]
+    fn add_child_inherits_parent_profile() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe { std::env::remove_var("WG_TASK_ID") };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = super::graph_path(dir.path());
+        let mut graph = WorkGraph::new();
+        let mut parent = stub_task("parent");
+        parent.profile = Some("burn".to_string());
+        graph.add_node(Node::Task(parent));
+        save_graph(&graph, &path).unwrap();
+
+        add_minimal_task(dir.path(), "Child", "child", &["parent".to_string()]).unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        assert_eq!(
+            graph.get_task("child").unwrap().profile.as_deref(),
+            Some("burn"),
+            "child added --after a profiled parent must inherit the profile"
         );
     }
 }

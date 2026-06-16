@@ -1829,6 +1829,7 @@ fn build_auto_assign_tasks(
                     model: Some(creator_resolved.model),
                     provider: creator_resolved.provider,
                     endpoint: None,
+                    profile: None,
                     command_argv: vec![],
                     working_dir: None,
                     executor_preset_name: None,
@@ -2225,6 +2226,7 @@ fn build_flip_verification_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -2500,6 +2502,7 @@ fn build_separate_verify_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -2705,6 +2708,7 @@ fn build_auto_evolve_task(
         model: Some(evolver_resolved.model),
         provider: evolver_resolved.provider,
         endpoint: None,
+        profile: None,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,
@@ -2913,6 +2917,7 @@ fn build_auto_create_task(
         model: Some(creator_resolved.model),
         provider: creator_resolved.provider,
         endpoint: None,
+        profile: None,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,
@@ -3930,6 +3935,9 @@ fn spawn_agents_for_ready_tasks(
     let agents_dir = dir.join("agency").join("cache/agents");
     let gp = graph_path(dir);
     let mut spawned = 0;
+    // Memoize loaded WCC-profile configs by name for this tick so a component
+    // of N profiled tasks loads each profile file at most once.
+    let mut profile_cache = workgraph::dispatch::ProfileCache::new();
 
     // Sort ready tasks by priority with starvation prevention and priority inheritance
     let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks_raw, config);
@@ -4090,12 +4098,32 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
+        // Per-WCC profile: if this task was stamped with a profile (via
+        // `wg publish --profile`), resolve a per-task effective config from
+        // that profile's complete snapshot and hand THAT to `plan_spawn`
+        // instead of the global config. A profile file carries the whole
+        // `coordinator.*` / `[models.*]` / `[llm_endpoints]` surface, so the
+        // existing executor/model/endpoint cascade transparently honors it.
+        // No profile ⇒ `effective_config_for_task` returns the global config
+        // unchanged (backward-compatible).
+        let eff_config =
+            workgraph::dispatch::effective_config_for_task(task, config, &mut profile_cache);
+        let eff_config: &Config = eff_config.as_ref();
+
         // Resolve model per-task: system tasks use their respective role models,
-        // all other tasks use the default (TaskAgent) model.
+        // all other tasks use the default (TaskAgent) model. When a profile is
+        // pinned, resolve the TaskAgent model from the PROFILE so the work
+        // task routes through the profile's model, not the global default.
         let task_model = if task.id.starts_with(".assign-") {
             Some(
-                config
+                eff_config
                     .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
+                    .spawn_model_spec(),
+            )
+        } else if task.profile.is_some() {
+            Some(
+                eff_config
+                    .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
                     .spawn_model_spec(),
             )
         } else {
@@ -4119,7 +4147,7 @@ fn spawn_agents_for_ready_tasks(
         let agent_executor = agent_entity.as_ref().and_then(|a| a.explicit_executor());
         let plan = match workgraph::dispatch::plan_spawn(
             task,
-            config,
+            eff_config,
             agent_executor,
             task_model.as_deref(),
         ) {

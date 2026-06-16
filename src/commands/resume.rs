@@ -13,16 +13,38 @@ use super::graph_path;
 use workgraph::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
-    run_inner(dir, id, Mode::Subgraph(only), false)
+    run_inner(dir, id, Mode::Subgraph(only), false, None, false)
 }
 
 /// Publish a draft task (alias for resume with validation messaging).
 ///
 /// `only` and `wcc` are mutually exclusive at the CLI layer; here `wcc`
 /// wins if the caller passes both.
-pub fn publish(dir: &Path, id: &str, only: bool, wcc: bool) -> Result<()> {
-    let mode = if wcc { Mode::Wcc } else { Mode::Subgraph(only) };
-    run_inner(dir, id, mode, true)
+///
+/// `profile` pins a named profile onto every member of the released set
+/// (the WCC, the downstream subgraph, or the single task), propagating its
+/// `(executor, model, endpoint)` routing across the component at dispatch.
+/// When `profile` is set and neither `--only` nor `--wcc` was passed, the
+/// scope defaults to the whole weakly-connected component (the stated intent
+/// of `--profile`: pin the ENTIRE component). `no_release` stamps the profile
+/// without unpausing — annotate a staged subgraph for later release.
+pub fn publish(
+    dir: &Path,
+    id: &str,
+    only: bool,
+    wcc: bool,
+    profile: Option<&str>,
+    no_release: bool,
+) -> Result<()> {
+    // `--profile` defaults to WCC scope unless the caller narrowed it with
+    // `--only`. An explicit `--wcc` always selects WCC.
+    let use_wcc = wcc || (profile.is_some() && !only);
+    let mode = if use_wcc {
+        Mode::Wcc
+    } else {
+        Mode::Subgraph(only)
+    };
+    run_inner(dir, id, mode, true, profile, no_release)
 }
 
 /// What to release relative to the seed task.
@@ -39,10 +61,27 @@ enum Mode {
     Wcc,
 }
 
-fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
+fn run_inner(
+    dir: &Path,
+    id: &str,
+    mode: Mode,
+    is_publish: bool,
+    profile: Option<&str>,
+    no_release: bool,
+) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
+    }
+
+    // Validate the profile name up front (before touching the graph) so a
+    // typo never silently stamps a non-existent profile that would fall back
+    // to global at dispatch. A name is valid if it loads as an on-disk
+    // profile or a built-in starter.
+    if let Some(name) = profile {
+        if let Err(e) = workgraph::profile::named::load(name) {
+            anyhow::bail!("Cannot publish with --profile '{}': {}", name, e);
+        }
     }
 
     // Use modify_graph for atomic load-modify-save under a single exclusive
@@ -51,6 +90,7 @@ fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
     // snapshot (the root cause of the "publish doesn't clear paused" bug).
     let mut error: Option<anyhow::Error> = None;
     let mut unpaused: Vec<String> = Vec::new();
+    let mut stamped: usize = 0;
 
     let _graph = modify_graph(&path, |graph| {
         // Verify seed task exists and is paused
@@ -66,44 +106,26 @@ fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
             return false;
         }
 
-        match mode {
+        // Compute the member set (to stamp the profile on) and the ordered
+        // release list (to unpause) for this mode.
+        let action = if is_publish { "published" } else { "resumed" };
+        let (members, ordered): (Vec<String>, Vec<String>) = match mode {
             Mode::Subgraph(true) => {
-                // Single-task mode: validate just this task's deps, then unpause
+                // Single-task mode: validate just this task's deps.
                 if let Err(e) = validate_task_deps(graph, id, is_publish) {
                     error = Some(e);
                     return false;
                 }
-                let action = if is_publish { "published" } else { "resumed" };
-                unpause_task(graph, id, action);
-                unpaused.push(id.to_string());
-
-                // Eagerly scaffold agency pipeline (idempotent — skips if already scaffolded)
-                scaffold_eval_for_unpaused(dir, graph, &[id.to_string()], action);
+                (vec![id.to_string()], vec![id.to_string()])
             }
             Mode::Subgraph(false) => {
-                // Propagating mode: discover subgraph, validate all, unpause all
+                // Propagating mode: discover subgraph, validate as a whole.
                 let subgraph = discover_downstream(graph, id);
-
-                // Validate the entire subgraph structure
                 if let Err(e) = validate_subgraph(graph, &subgraph, is_publish) {
                     error = Some(e);
                     return false;
                 }
-
-                // Atomic unpause: all paused tasks in the subgraph
-                let action = if is_publish { "published" } else { "resumed" };
-                for task_id in &subgraph {
-                    let t = graph.get_task(task_id).unwrap();
-                    if t.paused {
-                        unpaused.push(task_id.clone());
-                    }
-                }
-                for task_id in &unpaused {
-                    unpause_task(graph, task_id, action);
-                }
-
-                // Eagerly scaffold agency pipeline (idempotent — skips if already scaffolded)
-                scaffold_eval_for_unpaused(dir, graph, &unpaused, action);
+                (subgraph.clone(), subgraph)
             }
             Mode::Wcc => {
                 // WCC mode: discover the entire weakly-connected component,
@@ -111,25 +133,38 @@ fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
                 // (deps before dependents) so a task being unpaused already
                 // has all of its dependencies unpaused.
                 let component = discover_wcc(graph, id);
-
                 if let Err(e) = validate_subgraph(graph, &component, is_publish) {
                     error = Some(e);
                     return false;
                 }
-
                 let ordered = topo_sort_subset(graph, &component);
-                let action = if is_publish { "published" } else { "resumed" };
-                for task_id in &ordered {
-                    let t = graph.get_task(task_id).unwrap();
-                    if t.paused {
-                        unpause_task(graph, task_id, action);
-                        unpaused.push(task_id.clone());
-                    }
-                }
-
-                // Eagerly scaffold agency pipeline for every newly-unpaused task.
-                scaffold_eval_for_unpaused(dir, graph, &unpaused, action);
+                (component, ordered)
             }
+        };
+
+        // Eager profile stamp: pin the profile onto EVERY member of the set
+        // (the WCC / subgraph / single task) in this same atomic transaction.
+        // Tasks added to the component later inherit via `wg add`
+        // (inherit-on-attach), and agency satellites are stamped inside
+        // `scaffold_eval_for_unpaused` below.
+        if let Some(name) = profile {
+            stamped = stamp_profile(graph, &members, name);
+        }
+
+        // `--no-release` stamps the profile without unpausing — annotate a
+        // staged subgraph to be released later. Skip unpause + scaffolding.
+        if !no_release {
+            for task_id in &ordered {
+                let t = graph.get_task(task_id).unwrap();
+                if t.paused {
+                    unpause_task(graph, task_id, action);
+                    unpaused.push(task_id.clone());
+                }
+            }
+
+            // Eagerly scaffold agency pipeline for every newly-unpaused task.
+            // Each satellite inherits the parent task's stamped profile.
+            scaffold_eval_for_unpaused(dir, graph, &unpaused, action);
         }
 
         true
@@ -145,6 +180,18 @@ fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
     // activity within sub-second after publish/resume succeeds.
     super::notify_kick(dir);
     record_provenance(dir, id, is_publish);
+
+    // `--no-release` only stamps the profile (no unpause): report the stamp.
+    if no_release {
+        match profile {
+            Some(name) => println!(
+                "Stamped profile '{}' on {} task(s) (not released — use `wg publish {}` to release)",
+                name, stamped, id
+            ),
+            None => println!("Nothing to do: --no-release without --profile"),
+        }
+        return Ok(());
+    }
 
     match mode {
         Mode::Subgraph(true) => {
@@ -172,6 +219,12 @@ fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
                 unpaused.len().saturating_sub(1)
             );
         }
+    }
+    if let Some(name) = profile {
+        println!(
+            "Pinned profile '{}' on {} task(s) in the component",
+            name, stamped
+        );
     }
 
     Ok(())
@@ -455,6 +508,29 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     });
 }
 
+/// Stamp `profile` onto every task in `members`. Idempotent: a task already
+/// carrying that exact profile is left untouched (no duplicate log entry).
+/// Returns the number of tasks whose profile was set or changed.
+fn stamp_profile(graph: &mut WorkGraph, members: &[String], profile: &str) -> usize {
+    let mut changed = 0;
+    for task_id in members {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            if task.profile.as_deref() == Some(profile) {
+                continue;
+            }
+            task.profile = Some(profile.to_string());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: None,
+                user: Some(workgraph::current_user()),
+                message: format!("Profile pinned: {}", profile),
+            });
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Create the full agency pipeline (`.assign-*`, `.flip-*`,
 /// `.evaluate-*`) for each unpaused task in one atomic pass.
 ///
@@ -467,17 +543,55 @@ fn scaffold_eval_for_unpaused(
     task_ids: &[String],
     action: &str,
 ) {
-    let config = workgraph::config::Config::load_or_default(dir);
+    let global = workgraph::config::Config::load_or_default(dir);
 
-    // Collect (id, title) pairs, filtering out system tasks
-    let candidates: Vec<(String, String)> = task_ids
+    // Collect (id, title, profile) triples, filtering out system tasks.
+    // The profile was just stamped on each member by `stamp_profile`.
+    let candidates: Vec<(String, String, Option<String>)> = task_ids
         .iter()
         .filter(|id| !workgraph::graph::is_system_task(id))
-        .filter_map(|id| graph.get_task(id).map(|t| (id.clone(), t.title.clone())))
+        .filter_map(|id| {
+            graph
+                .get_task(id)
+                .map(|t| (id.clone(), t.title.clone(), t.profile.clone()))
+        })
         .collect();
 
-    // Scaffold the full pipeline (.place → .assign → task → .flip → .evaluate)
-    let count = eval_scaffold::scaffold_full_pipeline_batch(dir, graph, &candidates, &config);
+    // Memoize loaded profile configs by name within this publish pass.
+    let mut profile_cache: std::collections::HashMap<String, Option<workgraph::config::Config>> =
+        std::collections::HashMap::new();
+    let mut count = 0;
+
+    for (id, title, profile) in &candidates {
+        // Resolve the effective config for this task's profile so the agency
+        // satellites bake the PROFILE's evaluator/assigner model (overriding
+        // the default claude:haiku pin) instead of the global one.
+        let eff: workgraph::config::Config = match profile {
+            Some(name) => profile_cache
+                .entry(name.clone())
+                .or_insert_with(|| workgraph::dispatch::profile::load_profile_config(name))
+                .clone()
+                .unwrap_or_else(|| global.clone()),
+            None => global.clone(),
+        };
+
+        if eval_scaffold::scaffold_full_pipeline(dir, graph, id, title, &eff) {
+            count += 1;
+        }
+
+        // Stamp the parent's profile onto each agency satellite so it is
+        // itself a profiled WCC member and its dispatch (`wg evaluate`/`wg
+        // assign`) resolves through the profile too.
+        if let Some(name) = profile {
+            for prefix in [".assign-", ".flip-", ".evaluate-"] {
+                let sat_id = format!("{}{}", prefix, id);
+                if let Some(sat) = graph.get_task_mut(&sat_id) {
+                    sat.profile = Some(name.clone());
+                }
+            }
+        }
+    }
+
     if count > 0 {
         eprintln!(
             "[{}] Eagerly scaffolded full agency pipeline for {} task(s)",
@@ -755,7 +869,7 @@ mod tests {
         task.after = vec!["missing-task".to_string()];
         setup_workgraph(dir.path(), vec![task]);
 
-        let result = publish(dir.path(), "t1", false, false);
+        let result = publish(dir.path(), "t1", false, false, None, false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("structural errors"), "got: {msg}");
@@ -771,7 +885,7 @@ mod tests {
         task.after = vec!["dep1".to_string()];
         setup_workgraph(dir.path(), vec![dep, task]);
 
-        let result = publish(dir.path(), "t1", false, false);
+        let result = publish(dir.path(), "t1", false, false, None, false);
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
@@ -787,7 +901,7 @@ mod tests {
         task.paused = true;
         setup_workgraph(dir.path(), vec![task]);
 
-        let result = publish(dir.path(), "t1", false, false);
+        let result = publish(dir.path(), "t1", false, false, None, false);
         assert!(result.is_ok());
     }
 
@@ -889,7 +1003,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = publish(dir.path(), "my-task", false, false);
+        let result = publish(dir.path(), "my-task", false, false, None, false);
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
@@ -973,7 +1087,7 @@ mod tests {
         .unwrap();
 
         // First: publish (creates scaffold tasks)
-        publish(dir.path(), "my-task", false, false).unwrap();
+        publish(dir.path(), "my-task", false, false, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         let assign = graph.get_task(".assign-my-task").unwrap();
@@ -1024,7 +1138,7 @@ mod tests {
         // Publish from the LEAF (downstream-most) node — the existing
         // default would only unpause the leaf because nothing is downstream
         // of it. WCC must still pull every node in the component.
-        publish(dir.path(), "n4", false, true).unwrap();
+        publish(dir.path(), "n4", false, true, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         for i in 0..5 {
@@ -1055,7 +1169,7 @@ mod tests {
         d.after = vec!["b".to_string(), "c".to_string()];
         setup_workgraph(dir.path(), vec![a, b, c, d]);
 
-        publish(dir.path(), "d", false, true).unwrap();
+        publish(dir.path(), "d", false, true, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         for id in &["a", "b", "c", "d"] {
@@ -1097,7 +1211,7 @@ mod tests {
         setup_workgraph(dir.path(), all);
 
         // From the synthesis end.
-        publish(dir.path(), "synthesis", false, true).unwrap();
+        publish(dir.path(), "synthesis", false, true, None, false).unwrap();
         let graph = load_graph(graph_path(dir.path())).unwrap();
         assert!(!graph.get_task("setup").unwrap().paused);
         for id in &audit_ids {
@@ -1126,7 +1240,7 @@ mod tests {
         c.after = vec!["mid".to_string()];
         setup_workgraph(dir.path(), vec![a, b, c]);
 
-        publish(dir.path(), "leaf", false, true).unwrap();
+        publish(dir.path(), "leaf", false, true, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         // Each task got exactly one log entry from the unpause; we compare
@@ -1170,7 +1284,7 @@ mod tests {
         y.after = vec!["x".to_string()];
         setup_workgraph(dir.path(), vec![a, b, x, y]);
 
-        publish(dir.path(), "b", false, true).unwrap();
+        publish(dir.path(), "b", false, true, None, false).unwrap();
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         assert!(!graph.get_task("a").unwrap().paused);
@@ -1204,7 +1318,7 @@ mod tests {
         c2.after = vec!["b".to_string()];
         setup_workgraph(dir2.path(), vec![a2, b2, c2]);
 
-        publish(dir2.path(), "c", false, true).unwrap();
+        publish(dir2.path(), "c", false, true, None, false).unwrap();
         let graph = load_graph(graph_path(dir2.path())).unwrap();
         assert!(!graph.get_task("a").unwrap().paused);
         assert!(!graph.get_task("b").unwrap().paused);
@@ -1228,7 +1342,7 @@ mod tests {
         b.after = vec!["a".to_string(), "missing".to_string()];
         setup_workgraph(dir.path(), vec![a, b]);
 
-        let res = publish(dir.path(), "a", false, true);
+        let res = publish(dir.path(), "a", false, true, None, false);
         assert!(res.is_err());
         let msg = res.unwrap_err().to_string();
         assert!(msg.contains("missing"), "got: {msg}");
@@ -1254,7 +1368,7 @@ mod tests {
         c.after = vec!["b".to_string()];
         setup_workgraph(dir.path(), vec![a, b, c]);
 
-        publish(dir.path(), "c", false, true).unwrap();
+        publish(dir.path(), "c", false, true, None, false).unwrap();
         let graph = load_graph(graph_path(dir.path())).unwrap();
         for id in &["a", "b", "c"] {
             assert!(
@@ -1304,5 +1418,143 @@ mod tests {
         assert_eq!(comp_a, vec!["a".to_string(), "b".to_string()]);
         let comp_y = discover_wcc(&graph, "y");
         assert_eq!(comp_y, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    // --- Profile propagation tests (`wg publish --profile`) ---
+
+    /// `wg publish <seed> --profile <name>` stamps the profile onto EVERY task
+    /// in the weakly-connected component (work tasks) AND each work task's
+    /// agency satellites (.assign-*/.evaluate-*).
+    #[test]
+    fn test_publish_with_profile_stamps_wcc_and_satellites() {
+        let dir = tempdir().unwrap();
+        let mut t1 = make_task("research", "Research X", Status::Open);
+        t1.paused = true;
+        let mut t2 = make_task("implement", "Implement X", Status::Open);
+        t2.paused = true;
+        t2.after = vec!["research".to_string()];
+        let mut t3 = make_task("test-x", "Test X", Status::Open);
+        t3.paused = true;
+        t3.after = vec!["implement".to_string()];
+        setup_workgraph(dir.path(), vec![t1, t2, t3]);
+
+        // Enable agency scaffolding so satellites are created at publish.
+        fs::write(
+            dir.path().join("config.toml"),
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n",
+        )
+        .unwrap();
+
+        // `claude` is a built-in starter profile, so it always loads.
+        let result = publish(dir.path(), "research", false, false, Some("claude"), false);
+        assert!(result.is_ok(), "publish --profile failed: {:?}", result);
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+
+        // Every work task in the WCC carries the profile.
+        for id in &["research", "implement", "test-x"] {
+            assert_eq!(
+                graph.get_task(id).unwrap().profile.as_deref(),
+                Some("claude"),
+                "work task '{}' must carry the WCC profile",
+                id
+            );
+            assert!(
+                !graph.get_task(id).unwrap().paused,
+                "{} should be released",
+                id
+            );
+        }
+
+        // Each work task's agency satellites inherit the profile too.
+        for sat in &[
+            ".assign-research",
+            ".evaluate-research",
+            ".assign-implement",
+            ".evaluate-implement",
+            ".assign-test-x",
+            ".evaluate-test-x",
+        ] {
+            let t = graph
+                .get_task(sat)
+                .unwrap_or_else(|| panic!("satellite '{}' must exist", sat));
+            assert_eq!(
+                t.profile.as_deref(),
+                Some("claude"),
+                "agency satellite '{}' must inherit the WCC profile",
+                sat
+            );
+        }
+    }
+
+    /// `--no-release` stamps the profile WITHOUT unpausing the component.
+    #[test]
+    fn test_publish_profile_no_release_stamps_without_unpausing() {
+        let dir = tempdir().unwrap();
+        let mut t1 = make_task("research", "Research X", Status::Open);
+        t1.paused = true;
+        let mut t2 = make_task("implement", "Implement X", Status::Open);
+        t2.paused = true;
+        t2.after = vec!["research".to_string()];
+        setup_workgraph(dir.path(), vec![t1, t2]);
+
+        let result = publish(dir.path(), "research", false, false, Some("claude"), true);
+        assert!(
+            result.is_ok(),
+            "publish --profile --no-release failed: {:?}",
+            result
+        );
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        for id in &["research", "implement"] {
+            assert_eq!(
+                graph.get_task(id).unwrap().profile.as_deref(),
+                Some("claude"),
+                "{} must be stamped",
+                id
+            );
+            assert!(
+                graph.get_task(id).unwrap().paused,
+                "{} must stay paused under --no-release",
+                id
+            );
+        }
+    }
+
+    /// No `--profile` ⇒ behavior unchanged: tasks keep `profile = None`.
+    #[test]
+    fn test_publish_without_profile_leaves_profile_none() {
+        let dir = tempdir().unwrap();
+        let mut t1 = make_task("research", "Research X", Status::Open);
+        t1.paused = true;
+        setup_workgraph(dir.path(), vec![t1]);
+
+        publish(dir.path(), "research", false, false, None, false).unwrap();
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert_eq!(graph.get_task("research").unwrap().profile, None);
+    }
+
+    /// An unknown profile name is rejected at publish time (fail-fast), never
+    /// silently stamped.
+    #[test]
+    fn test_publish_unknown_profile_fails() {
+        let dir = tempdir().unwrap();
+        let mut t1 = make_task("research", "Research X", Status::Open);
+        t1.paused = true;
+        setup_workgraph(dir.path(), vec![t1]);
+
+        let result = publish(
+            dir.path(),
+            "research",
+            false,
+            false,
+            Some("no-such-profile-zzz"),
+            false,
+        );
+        assert!(result.is_err(), "unknown profile must be rejected");
+        // Nothing stamped.
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        assert_eq!(graph.get_task("research").unwrap().profile, None);
     }
 }
