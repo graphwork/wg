@@ -157,7 +157,7 @@ fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
         && app
             .hud_detail
             .as_ref()
-            .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress);
+            .is_some_and(|d| d.task_status == worksgood::graph::Status::InProgress);
     let zone = iter_nav_click_zone(relative_column, w, current_display, total, live);
 
     if zone == IterNavClickZone::Left && can_go_prev {
@@ -626,7 +626,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         let is_scroll_toggle =
             matches!(code, KeyCode::Char(']')) && modifiers.contains(KeyModifiers::CONTROL);
         if is_scroll_toggle {
-            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
             app.input_mode = InputMode::ScrollMode { task_id };
             return;
         }
@@ -635,7 +635,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
         ) && modifiers.is_empty();
         if is_scroll {
-            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 let page = (app.last_right_content_area.height as usize).max(10);
                 match code {
@@ -649,7 +649,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
         if !is_toggle {
-            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
                     let _ = pane.interrupt_foreground();
@@ -762,7 +762,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             .chat_agent_death
             .contains_key(&app.active_coordinator_id);
     if vendor_pty_active {
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.send_text(text);
             return;
@@ -2514,9 +2514,9 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // open the detail view. Agency tasks drill through to fullscreen detail.
         KeyCode::Enter => {
             if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
-                if workgraph::chat_id::is_chat_task_id(&task_id) {
+                if worksgood::chat_id::is_chat_task_id(&task_id) {
                     // Chat node: Enter opens/focuses the chat tab.
-                    if let Some(cid) = workgraph::chat_id::parse_chat_task_id(&task_id) {
+                    if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&task_id) {
                         if cid != app.active_coordinator_id {
                             app.switch_coordinator(cid);
                         }
@@ -3410,16 +3410,16 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
         Some(t) => t,
         None => return false,
     };
-    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
     // Resolve through the registry using the dot-less `chat-N` ref the
     // handler runs under: the handler holds its lock under the UUID
     // session dir, not the literal `chat/.chat-N` join. Reading the
     // literal path would always see "no holder" and report a premature
     // (false) release.
-    let chat_ref = workgraph::chat_id::format_chat_session_ref(app.active_coordinator_id);
-    let chat_dir = workgraph::chat::chat_dir_for_ref(&app.workgraph_dir, &chat_ref);
+    let chat_ref = worksgood::chat_id::format_chat_session_ref(app.active_coordinator_id);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(&app.workgraph_dir, &chat_ref);
     // Has the handler released?
-    let released = match workgraph::session_lock::read_holder(&chat_dir) {
+    let released = match worksgood::session_lock::read_holder(&chat_dir) {
         Ok(None) => true,
         Ok(Some(info)) => !info.alive,
         Err(_) => false,
@@ -3445,7 +3445,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
     // per-executor spawn logic (same path as startup auto-enable).
     app.task_panes.remove(&task_id);
     app.chat_pty_observer = false;
-    workgraph::session_lock::clear_release_marker(&chat_dir);
+    worksgood::session_lock::clear_release_marker(&chat_dir);
     app.chat_pty_mode = false;
     app.maybe_auto_enable_chat_pty();
     true
@@ -3458,7 +3458,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
 /// `maybe_auto_enable_chat_pty` which handles per-executor spawn
 /// (native → `wg nex`, claude → `claude`, codex → `codex`).
 fn toggle_chat_pty_mode(app: &mut VizApp) {
-    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
     let pane_live = app
         .task_panes
         .get_mut(&task_id)
@@ -3501,7 +3501,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Detail => app.hud_scroll_up(amount),
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_up(amount);
                     return;
@@ -3578,7 +3578,7 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_down(amount);
                     return;
@@ -3665,7 +3665,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_top();
                     return;
@@ -3734,7 +3734,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_bottom();
                     return;
@@ -3804,7 +3804,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
 /// nothing. Keyboard scrolling lives behind Ctrl+] scroll mode (see
 /// `implement-tui-scroll`). — fix-mouse-wheel-2.
 fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind) {
-    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
     let Some(pane) = app.task_panes.get_mut(&task_id) else {
         return;
     };
@@ -4465,13 +4465,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     app.load_messages_panel();
                                 } else if app
                                     .selected_task_id()
-                                    .map(workgraph::chat_id::is_chat_task_id)
+                                    .map(worksgood::chat_id::is_chat_task_id)
                                     .unwrap_or(false)
                                 {
                                     // Chat node: click opens/focuses the chat tab.
                                     let cid = app
                                         .selected_task_id()
-                                        .and_then(workgraph::chat_id::parse_chat_task_id);
+                                        .and_then(worksgood::chat_id::parse_chat_task_id);
                                     if let Some(cid) = cid {
                                         if cid != app.active_coordinator_id {
                                             app.switch_coordinator(cid);
@@ -5780,9 +5780,9 @@ mod scrollbar_tests {
     use crate::tui::viz_viewer::state::ScrollbarDragTarget;
     use ratatui::layout::Rect;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     /// Build a minimal graph and VizApp for scrollbar testing.
     /// Returns (VizApp, TempDir) — keep TempDir alive.
@@ -7892,9 +7892,9 @@ mod drilldown_tests {
         use crate::commands::viz::LayoutMode as VizLayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
         use std::collections::{HashMap, HashSet};
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::parser::save_graph;
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::parser::save_graph;
+        use worksgood::test_helpers::make_task_with_status;
 
         let mut graph = WorkGraph::new();
         let t = make_task_with_status("test-task-1", "Test Task 1", Status::InProgress);
@@ -8208,9 +8208,9 @@ mod chat_tab_navigation_tests {
     use crate::commands::viz::ascii::generate_ascii;
     use ratatui::layout::Rect;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
+    use worksgood::test_helpers::make_task_with_status;
 
     /// Build a VizApp whose graph contains chat-loop tasks for each
     /// `coordinator_ids` entry, so `list_coordinator_ids()` returns them
@@ -8557,13 +8557,13 @@ mod chat_tab_navigation_tests {
         );
         // The underlying task still exists in the graph with its original status.
         let graph_path = app.workgraph_dir.join("graph.jsonl");
-        let graph = workgraph::parser::load_graph(&graph_path).unwrap();
+        let graph = worksgood::parser::load_graph(&graph_path).unwrap();
         let task = graph
             .get_task(".coordinator-4")
             .expect("close_tab must NOT abandon/delete the graph task");
         assert_eq!(
             task.status,
-            workgraph::graph::Status::InProgress,
+            worksgood::graph::Status::InProgress,
             "task status must be unchanged after close_tab"
         );
     }
@@ -8829,7 +8829,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_mode = true;
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         // Insert a stub pane so `pane.is_alive()` returns true.
         if let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
@@ -8907,7 +8907,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = false;
         app.mouse_enabled = true;
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &[
@@ -8989,7 +8989,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = true;
         app.mouse_enabled = true;
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &[
@@ -9278,7 +9278,7 @@ mod chat_tab_navigation_tests {
 
         // Spawn a real PTY child (cat blocks on stdin so it stays alive)
         // so we can read `child_input_bytes_written()` on it.
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -9400,7 +9400,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -9625,7 +9625,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = false;
         app.input_mode = super::InputMode::Normal;
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -9663,7 +9663,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = super::InputMode::Normal;
 
         let graph_path = app.workgraph_dir.join("graph.jsonl");
-        workgraph::parser::modify_graph(&graph_path, |graph| {
+        worksgood::parser::modify_graph(&graph_path, |graph| {
             let task = graph.get_task_mut(".coordinator-1").unwrap();
             task.last_interaction_at = Some("2026-04-30T00:00:00+00:00".to_string());
             true
@@ -9676,7 +9676,7 @@ mod chat_tab_navigation_tests {
             .last_interaction_at
             .clone();
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -9848,7 +9848,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = super::InputMode::Normal;
         // No death info — normal PTY operation.
 
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -10184,9 +10184,9 @@ mod chat_open_tests {
     use crate::tui::viz_viewer::state::CoordinatorPlusHit;
     use ratatui::layout::Rect;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     /// Build a test app with one .chat-1 task and one regular task.
     fn build_app_with_chat_node() -> (VizApp, tempfile::TempDir) {

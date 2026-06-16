@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use workgraph::graph::WorkGraph;
+use worksgood::graph::WorkGraph;
 
 /// Operations slower than this surface a "disk slow" indicator in the status bar.
 pub const SLOW_OP_THRESHOLD: Duration = Duration::from_millis(500);
@@ -348,7 +348,7 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: Sender<FsResponse>, inner: Arc<Async
             FsRequest::LoadGraph(path) => {
                 let start = Instant::now();
                 let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                let result = workgraph::parser::load_graph(&path);
+                let result = worksgood::parser::load_graph(&path);
                 let success = result.is_ok();
                 if let Ok(graph) = result {
                     *inner.graph_cache.lock().unwrap() = Some((Arc::new(graph), mtime));
@@ -390,7 +390,7 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: Sender<FsResponse>, inner: Arc<Async
                 session_ref,
             } => {
                 let start = Instant::now();
-                workgraph::chat::bump_chat_interaction(&workgraph_dir, &session_ref);
+                worksgood::chat::bump_chat_interaction(&workgraph_dir, &session_ref);
                 let _ = tx.send(FsResponse::BumpDone {
                     duration: start.elapsed(),
                 });

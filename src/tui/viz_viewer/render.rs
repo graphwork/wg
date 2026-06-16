@@ -15,8 +15,8 @@ use super::state::{
     VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
-use workgraph::AgentStatus;
-use workgraph::graph::{TokenUsage, format_tokens};
+use worksgood::AgentStatus;
+use worksgood::graph::{TokenUsage, format_tokens};
 
 use super::chat_palette::chat_task_label_color;
 use crate::tui::markdown::markdown_to_lines;
@@ -1227,7 +1227,7 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let coordinator_lines: HashSet<usize> = if chat_active {
         app.node_line_map
             .iter()
-            .filter(|(id, _)| workgraph::chat_id::is_chat_task_id(id))
+            .filter(|(id, _)| worksgood::chat_id::is_chat_task_id(id))
             .map(|(_, &line)| line)
             .collect()
     } else {
@@ -1236,7 +1236,7 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let legacy_coordinator_lines: HashSet<usize> = if chat_active {
         app.node_line_map
             .iter()
-            .filter(|(id, _)| workgraph::chat_id::is_legacy_coordinator_id(id))
+            .filter(|(id, _)| worksgood::chat_id::is_legacy_coordinator_id(id))
             .map(|(_, &line)| line)
             .collect()
     } else {
@@ -1250,11 +1250,11 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         && app
             .selected_task_idx
             .and_then(|idx| app.task_order.get(idx))
-            .is_some_and(|id| workgraph::graph::is_user_board(id));
+            .is_some_and(|id| worksgood::graph::is_user_board(id));
     let user_board_lines: HashSet<usize> = if messages_on_user_board {
         app.node_line_map
             .iter()
-            .filter(|(id, _)| workgraph::graph::is_user_board(id))
+            .filter(|(id, _)| worksgood::graph::is_user_board(id))
             .map(|(_, &line)| line)
             .collect()
     } else {
@@ -1931,10 +1931,10 @@ fn draw_history_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let is_selected = i == app.history_browser.selected;
 
         let source_tag = match seg.source {
-            workgraph::chat::HistorySource::ContextSummary => "📋",
-            workgraph::chat::HistorySource::ActiveChat => "💬",
-            workgraph::chat::HistorySource::Archive => "📦",
-            workgraph::chat::HistorySource::CrossCoordinator { .. } => "🔗",
+            worksgood::chat::HistorySource::ContextSummary => "📋",
+            worksgood::chat::HistorySource::ActiveChat => "💬",
+            worksgood::chat::HistorySource::Archive => "📦",
+            worksgood::chat::HistorySource::CrossCoordinator { .. } => "🔗",
         };
 
         let line_text = format!("  {} {} ", source_tag, seg.label);
@@ -2253,7 +2253,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             && app
                 .selected_task_idx
                 .and_then(|idx| app.task_order.get(idx))
-                .is_some_and(|id| workgraph::graph::is_user_board(id));
+                .is_some_and(|id| worksgood::graph::is_user_board(id));
         let border_color = if divider_active || is_user_board_active {
             Color::Yellow
         } else if is_chat_tab && app.chat.coordinator_active {
@@ -2378,7 +2378,7 @@ fn draw_tab_bar(
     app: &mut VizApp,
     active: RightPanelTab,
     area: Rect,
-    msg_status: Option<workgraph::messages::CoordinatorMessageStatus>,
+    msg_status: Option<worksgood::messages::CoordinatorMessageStatus>,
 ) {
     let tab_labels: Vec<Line> = RightPanelTab::ALL
         .iter()
@@ -2487,7 +2487,7 @@ fn format_iteration_navigator(app: &VizApp) -> String {
         && app
             .hud_detail
             .as_ref()
-            .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress)
+            .is_some_and(|d| d.task_status == worksgood::graph::Status::InProgress)
     {
         " (live)"
     } else {
@@ -3143,7 +3143,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let selected_user_board: Option<String> = app
             .selected_task_idx
             .and_then(|idx| app.task_order.get(idx))
-            .filter(|id| workgraph::graph::is_user_board(id))
+            .filter(|id| worksgood::graph::is_user_board(id))
             .cloned();
 
         // Build the unified entry list (coordinator tabs first, then user-board tabs)
@@ -3457,7 +3457,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // below continues to render normally; keys route to the PTY via
     // the Ctrl+T branch in event.rs.
     if app.chat_pty_mode {
-        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let cid = app.active_coordinator_id;
 
         // Dead-handler detection: if the embedded process exited, capture
@@ -4264,7 +4264,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 fn draw_chat_booting_placeholder(frame: &mut Frame, area: Rect, app: &VizApp, cid: u32) {
     use ratatui::text::Text;
 
-    let task_id = workgraph::chat_id::format_chat_task_id(cid);
+    let task_id = worksgood::chat_id::format_chat_task_id(cid);
 
     // Friendly chat label: prefer the graph's canonical task id (which
     // resolves to `.chat-N` for new chats and `.coordinator-N` for any
@@ -5245,26 +5245,26 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
-    let config = workgraph::config::Config::load_or_default(&app.workgraph_dir);
+    let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
     let executor = config.coordinator.effective_executor();
     let model = config.coordinator.model.clone().unwrap_or_else(|| {
         config
-            .resolve_model_for_role(workgraph::config::DispatchRole::Default)
+            .resolve_model_for_role(worksgood::config::DispatchRole::Default)
             .model
     });
     let cid = app.active_coordinator_id;
     let state =
-        workgraph::service::chat_compactor::ChatCompactorState::load(&app.workgraph_dir, cid);
+        worksgood::service::chat_compactor::ChatCompactorState::load(&app.workgraph_dir, cid);
     let threshold = config.chat.compact_threshold;
     let pending =
-        workgraph::chat::read_inbox_since_for(&app.workgraph_dir, cid, state.last_inbox_id)
+        worksgood::chat::read_inbox_since_for(&app.workgraph_dir, cid, state.last_inbox_id)
             .map(|m| m.len())
             .unwrap_or(0)
-            + workgraph::chat::read_outbox_since_for(&app.workgraph_dir, cid, state.last_outbox_id)
+            + worksgood::chat::read_outbox_since_for(&app.workgraph_dir, cid, state.last_outbox_id)
                 .map(|m| m.len())
                 .unwrap_or(0);
     let summary_present =
-        workgraph::service::chat_compactor::context_summary_path(&app.workgraph_dir, cid).exists();
+        worksgood::service::chat_compactor::context_summary_path(&app.workgraph_dir, cid).exists();
     let last = state
         .last_compaction
         .clone()
@@ -6048,13 +6048,13 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Some(phase) => {
                     // Status indicator
                     let status_icon = match phase.status {
-                        workgraph::graph::Status::Done => {
+                        worksgood::graph::Status::Done => {
                             Span::styled("✓ ", Style::default().fg(Color::Green))
                         }
-                        workgraph::graph::Status::InProgress => {
+                        worksgood::graph::Status::InProgress => {
                             Span::styled("● ", Style::default().fg(Color::Yellow))
                         }
-                        workgraph::graph::Status::Failed => {
+                        worksgood::graph::Status::Failed => {
                             Span::styled("✗ ", Style::default().fg(Color::Red))
                         }
                         _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
@@ -6120,8 +6120,8 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
                     // Runtime
                     if let Some(secs) = phase.runtime_secs {
-                        let dur = workgraph::format_duration(secs, false);
-                        let timing_label = if phase.status == workgraph::graph::Status::InProgress {
+                        let dur = worksgood::format_duration(secs, false);
+                        let timing_label = if phase.status == worksgood::graph::Status::InProgress {
                             format!("  Running: {}", dur)
                         } else {
                             format!("  Duration: {}", dur)
@@ -6297,7 +6297,7 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 let is_alive = matches!(agent.status, AgentStatus::Working);
                 let runtime_str = agent
                     .runtime_secs
-                    .map(|s| workgraph::format_duration(s, false));
+                    .map(|s| worksgood::format_duration(s, false));
                 let start_local = agent.started_at.as_deref().and_then(|s| {
                     chrono::DateTime::parse_from_rfc3339(s)
                         .ok()
@@ -6322,7 +6322,7 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         let ago_secs = (chrono::Utc::now() - c.with_timezone(&chrono::Utc))
                             .num_seconds()
                             .max(0);
-                        workgraph::format_duration(ago_secs, true)
+                        worksgood::format_duration(ago_secs, true)
                     });
                     match (runtime_str, finished_ago, completed_local) {
                         (Some(dur), Some(ago), Some(ct)) => {
@@ -8497,9 +8497,9 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 "–".to_string()
             };
             let color = match ct.status {
-                workgraph::graph::Status::InProgress => Color::Green,
-                workgraph::graph::Status::Open => Color::Yellow,
-                workgraph::graph::Status::Done => Color::Cyan,
+                worksgood::graph::Status::InProgress => Color::Green,
+                worksgood::graph::Status::Open => Color::Yellow,
+                worksgood::graph::Status::Done => Color::Cyan,
                 _ => Color::DarkGray,
             };
             spans.push(Span::styled(
@@ -9771,11 +9771,11 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn source_label(src: &workgraph::config::ConfigSource) -> (&'static str, Color) {
+fn source_label(src: &worksgood::config::ConfigSource) -> (&'static str, Color) {
     match src {
-        workgraph::config::ConfigSource::Default => ("built-in", Color::DarkGray),
-        workgraph::config::ConfigSource::Global => ("global", Color::Green),
-        workgraph::config::ConfigSource::Local => ("local", Color::Blue),
+        worksgood::config::ConfigSource::Default => ("built-in", Color::DarkGray),
+        worksgood::config::ConfigSource::Global => ("global", Color::Green),
+        worksgood::config::ConfigSource::Local => ("local", Color::Blue),
     }
 }
 
@@ -9863,7 +9863,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Precompute endpoint index → name for test status display.
     let endpoint_names: HashMap<usize, String> = {
-        let config = workgraph::config::Config::load_or_default(&app.workgraph_dir);
+        let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
         config
             .llm_endpoints
             .endpoints
@@ -10377,8 +10377,8 @@ mod tests {
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
 
@@ -13017,7 +13017,7 @@ mod tests {
         app.workgraph_dir = temp.path().to_path_buf();
 
         // Seed an empty local config so we can inspect what was written.
-        let cfg = workgraph::config::Config::default();
+        let cfg = worksgood::config::Config::default();
         cfg.save(&app.workgraph_dir).unwrap();
 
         app.right_panel_tab = RightPanelTab::Settings;
@@ -13049,7 +13049,7 @@ mod tests {
 
         // Reload from disk independently of the panel state and confirm
         // the value made it through `config_cmd::set_setting_value`.
-        let reloaded = workgraph::config::Config::load(&app.workgraph_dir).unwrap();
+        let reloaded = worksgood::config::Config::load(&app.workgraph_dir).unwrap();
         assert_eq!(reloaded.agent.model, "claude:sonnet");
 
         // The panel itself should now reflect the new value with source = local.
@@ -13060,7 +13060,7 @@ mod tests {
             .find(|e| e.key == "agent.model")
             .unwrap();
         assert_eq!(entry.value, "claude:sonnet");
-        assert_eq!(entry.source, workgraph::config::ConfigSource::Local);
+        assert_eq!(entry.source, worksgood::config::ConfigSource::Local);
     }
 
     /// Invalid input must not write the config file. Confirms the
@@ -13072,7 +13072,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         app.workgraph_dir = temp.path().to_path_buf();
 
-        let cfg = workgraph::config::Config::default();
+        let cfg = worksgood::config::Config::default();
         cfg.save(&app.workgraph_dir).unwrap();
 
         app.right_panel_tab = RightPanelTab::Settings;
@@ -13094,7 +13094,7 @@ mod tests {
             "invalid value should surface an error"
         );
         // Original value preserved on disk.
-        let reloaded = workgraph::config::Config::load(&app.workgraph_dir).unwrap();
+        let reloaded = worksgood::config::Config::load(&app.workgraph_dir).unwrap();
         assert_eq!(reloaded.coordinator.max_agents, cfg.coordinator.max_agents);
     }
 
@@ -13764,7 +13764,7 @@ mod tests {
     /// whether the chat was idle or generating.
     fn build_app_for_tab_color_test(coordinator_ids: &[u32]) -> (VizApp, tempfile::TempDir) {
         use crate::tui::viz_viewer::state::{RightPanelTab, VizApp};
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
 
         let mut graph = WorkGraph::new();
         for &cid in coordinator_ids {
@@ -13957,7 +13957,7 @@ mod tests {
         let (mut app, _tmp) = build_app_for_tab_color_test(&[0, 1]);
         app.chat.coordinator_active = true;
         // Write streaming text for cid=1 (the non-active tab).
-        workgraph::chat::write_streaming(&app.workgraph_dir, 1, "partial reply").unwrap();
+        worksgood::chat::write_streaming(&app.workgraph_dir, 1, "partial reply").unwrap();
 
         let buf = render_chat_tab_to_buffer(&mut app);
         // Find inactive tab dot `●` and its color. The first `●` we
@@ -13991,7 +13991,7 @@ mod tests {
         // even when the streaming file is non-empty. The deprecation treatment takes
         // precedence over chat state.
         use crate::tui::viz_viewer::state::{RightPanelTab, VizApp};
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
 
         let mut graph = WorkGraph::new();
         // Create old-style .coordinator-1 task.
@@ -14034,7 +14034,7 @@ mod tests {
         app.sync_active_tabs_from_graph();
 
         // Write streaming data for cid=1 — state would normally be Yellow for .chat-N.
-        workgraph::chat::write_streaming(&wg_dir, 1, "partial reply").unwrap();
+        worksgood::chat::write_streaming(&wg_dir, 1, "partial reply").unwrap();
 
         let buf = render_chat_tab_to_buffer(&mut app);
         let color = active_tab_dot_color(&buf).expect("◉ not found in tab bar");
@@ -14828,13 +14828,13 @@ mod tests {
         }
         graph.add_node(Node::Task(parent));
 
-        let mut internal = workgraph::graph::Task {
+        let mut internal = worksgood::graph::Task {
             id: internal_id.to_string(),
             title: internal_title.to_string(),
             tags: vec![internal_tag.to_string(), "agency".to_string()],
             after: internal_after.into_iter().map(String::from).collect(),
             status: Status::InProgress,
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         };
         let _ = &mut internal; // suppress unused warning
         graph.add_node(Node::Task(internal));
@@ -14969,22 +14969,22 @@ mod tests {
         parent.after = vec![".assign-parent".to_string()];
         graph.add_node(Node::Task(parent));
 
-        let assign = workgraph::graph::Task {
+        let assign = worksgood::graph::Task {
             id: ".assign-parent".to_string(),
             title: "Assign parent".to_string(),
             tags: vec!["assignment".to_string(), "agency".to_string()],
             status: Status::InProgress,
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         };
         graph.add_node(Node::Task(assign));
 
-        let eval = workgraph::graph::Task {
+        let eval = worksgood::graph::Task {
             id: ".evaluate-parent".to_string(),
             title: "Evaluate parent".to_string(),
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             after: vec!["parent".to_string()],
             status: Status::InProgress,
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         };
         graph.add_node(Node::Task(eval));
 
@@ -16251,9 +16251,9 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use std::collections::{HashMap, HashSet};
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::parser::save_graph;
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::parser::save_graph;
+        use worksgood::test_helpers::make_task_with_status;
 
         // 1) Set up a WG dir with one in-progress task assigned to agent-77.
         let mut graph = WorkGraph::new();
@@ -16859,7 +16859,7 @@ mod tests {
     #[test]
     fn test_light_theme_initialized_from_config() {
         use crate::tui::viz_viewer::state::VizApp;
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
         let tmp = tempfile::tempdir().unwrap();
         let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
