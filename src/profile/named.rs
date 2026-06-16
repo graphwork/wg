@@ -693,8 +693,7 @@ is_default = true
         // tiers: lightweight (stepfun, the proven live route) as the default
         // worker/coordinator model, and premium (minimax-m2.7) on the premium
         // tier (see research-opencode-default-models).
-        let prof =
-            parse_profile(STARTER_OPENCODE, Path::new("opencode.toml"), "opencode").unwrap();
+        let prof = parse_profile(STARTER_OPENCODE, Path::new("opencode.toml"), "opencode").unwrap();
         let lightweight = "opencode:openrouter/stepfun/step-3.7-flash";
         let premium = "opencode:openrouter/minimax/minimax-m2.7";
         assert_eq!(prof.config.agent.model, lightweight);

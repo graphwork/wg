@@ -204,10 +204,7 @@ pub const DEXTO_AGENT_CONFIG_FILE: &str = "dexto-agent.yml";
 /// Idempotent: overwrites any prior copy so a model change on relaunch is
 /// honored. The TUI live-chat PTY path and `wg chat create` both call this so
 /// the launched `dexto --agent <path>` always matches the chat's pinned model.
-pub fn write_dexto_agent_config(
-    chat_dir: &Path,
-    model: Option<&str>,
-) -> std::io::Result<PathBuf> {
+pub fn write_dexto_agent_config(chat_dir: &Path, model: Option<&str>) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(chat_dir)?;
     let path = chat_dir.join(DEXTO_AGENT_CONFIG_FILE);
     std::fs::write(&path, dexto_agent_yaml(model))?;
@@ -235,17 +232,17 @@ pub fn argv_for_preset(
                 // prefix — an oai-compat server reads a colon as a LoRA-adapter
                 // reference and 400s otherwise.
                 let normalized = crate::config::normalize_bare_openrouter_route(m);
-                let model_arg = if endpoint.is_none() && crate::config::model_is_openrouter(&normalized)
-                {
-                    normalized
-                } else {
-                    let spec = parse_model_spec(m);
-                    if spec.model_id.is_empty() {
-                        m.to_string()
+                let model_arg =
+                    if endpoint.is_none() && crate::config::model_is_openrouter(&normalized) {
+                        normalized
                     } else {
-                        spec.model_id
-                    }
-                };
+                        let spec = parse_model_spec(m);
+                        if spec.model_id.is_empty() {
+                            m.to_string()
+                        } else {
+                            spec.model_id
+                        }
+                    };
                 argv.push(model_arg);
             }
             if let Some(ep) = endpoint {
@@ -639,10 +636,7 @@ mod tests {
 
     #[test]
     fn write_dexto_agent_config_writes_file_with_model() {
-        let tmp = std::env::temp_dir().join(format!(
-            "wg-dexto-cfg-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("wg-dexto-cfg-test-{}", std::process::id()));
         let path = write_dexto_agent_config(&tmp, Some("minimax/minimax-m3")).unwrap();
         assert!(path.ends_with(DEXTO_AGENT_CONFIG_FILE));
         let body = std::fs::read_to_string(&path).unwrap();

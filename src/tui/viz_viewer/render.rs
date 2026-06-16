@@ -3418,13 +3418,11 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let my = full.y + full.height.saturating_sub(height) / 2;
         let modal = Rect::new(mx, my, width, height);
         frame.render_widget(Clear, modal);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            );
+        let block = Block::default().borders(Borders::ALL).border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
         let inner = block.inner(modal);
         frame.render_widget(block, modal);
         draw_launcher_pane(frame, app, inner);
@@ -7187,7 +7185,11 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             if model_active && !model_suggestions.is_empty() {
                 const MAX_ROWS: usize = 6;
                 let sel = model_suggestion_selected.min(model_suggestions.len().saturating_sub(1));
-                let start = if sel >= MAX_ROWS { sel + 1 - MAX_ROWS } else { 0 };
+                let start = if sel >= MAX_ROWS {
+                    sel + 1 - MAX_ROWS
+                } else {
+                    0
+                };
                 let end = (start + MAX_ROWS).min(model_suggestions.len());
                 for (i, sug) in model_suggestions[start..end].iter().enumerate() {
                     let idx = start + i;
@@ -7351,10 +7353,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                             detail.push_str(&format!("  ({})", sug.provider));
                         }
                         if !detail.is_empty() {
-                            row.push(Span::styled(
-                                detail,
-                                Style::default().fg(Color::DarkGray),
-                            ));
+                            row.push(Span::styled(detail, Style::default().fg(Color::DarkGray)));
                         }
                         lines.push(Line::from(row));
                     }
@@ -15916,7 +15915,12 @@ mod tests {
         LauncherSection as EpLauncherSection, LauncherState as EpLauncherState,
     };
 
-    fn ep_suggestion(name: &str, url: &str, provider: &str, is_default: bool) -> EndpointSuggestion {
+    fn ep_suggestion(
+        name: &str,
+        url: &str,
+        provider: &str,
+        is_default: bool,
+    ) -> EndpointSuggestion {
         EndpointSuggestion {
             name: name.to_string(),
             url: Some(url.to_string()),
@@ -15996,7 +16000,11 @@ mod tests {
         // opencode (executor idx 2) → no Endpoint field, no suggestions,
         // even though suggestions are loaded in state.
         let mut app = build_app_from_viz_output(&viz, "a");
-        app.launcher = Some(launcher_addnew(2, EpAddNewField::Model, suggestions.clone()));
+        app.launcher = Some(launcher_addnew(
+            2,
+            EpAddNewField::Model,
+            suggestions.clone(),
+        ));
         let oc_render = render_launcher_to_string(&mut app);
         assert!(
             !oc_render.contains("local-gpu") && !oc_render.contains("lambda"),
@@ -16117,7 +16125,12 @@ mod tests {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![
             ep_suggestion("project-local", "http://127.0.0.1:8088", "local", false),
-            ep_suggestion("global-lambda", "https://lambda01:30000", "openrouter", false),
+            ep_suggestion(
+                "global-lambda",
+                "https://lambda01:30000",
+                "openrouter",
+                false,
+            ),
         ];
         let mut app = build_app_from_viz_output(&viz, "a");
         let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, suggestions);

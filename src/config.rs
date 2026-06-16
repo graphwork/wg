@@ -7197,7 +7197,10 @@ provider = "openrouter"
             normalize_bare_openrouter_route("openrouter:minimax/minimax-m3"),
             "openrouter:minimax/minimax-m3"
         );
-        assert_eq!(normalize_bare_openrouter_route("claude:opus"), "claude:opus");
+        assert_eq!(
+            normalize_bare_openrouter_route("claude:opus"),
+            "claude:opus"
+        );
         assert_eq!(
             normalize_bare_openrouter_route("nex:qwen3-coder"),
             "nex:qwen3-coder"

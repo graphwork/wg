@@ -1417,7 +1417,10 @@ pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) ->
             // Dexto drives OpenRouter via a generated agent YAML; persist the
             // canonical WG model spec so the YAML and any display agree.
             if provider == "openrouter" || id.contains('/') {
-                format!("openrouter:{}", id.strip_prefix("openrouter/").unwrap_or(id))
+                format!(
+                    "openrouter:{}",
+                    id.strip_prefix("openrouter/").unwrap_or(id)
+                )
             } else {
                 id.to_string()
             }
@@ -1837,11 +1840,7 @@ fn executor_model_boost(provider: &str, executor: &str) -> i64 {
         "opencode" | "octomind" | "dexto" | "nex" | "native" => provider == "openrouter",
         _ => false,
     };
-    if fits {
-        10
-    } else {
-        0
-    }
+    if fits { 10 } else { 0 }
 }
 
 impl LauncherState {
@@ -1987,9 +1986,7 @@ impl LauncherState {
             self.endpoint_suggestion_selected = 0;
             return;
         }
-        let cur = self
-            .endpoint_suggestion_selected
-            .min(len.saturating_sub(1)) as isize;
+        let cur = self.endpoint_suggestion_selected.min(len.saturating_sub(1)) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1);
         self.endpoint_suggestion_selected = next as usize;
     }
@@ -2085,7 +2082,11 @@ impl LauncherState {
             .filter_map(|(i, s)| {
                 let hay = format!("{} {} {}", s.id, s.provider, s.source);
                 let base = fuzzy_match_score(&hay, q)?;
-                Some((base + executor_model_boost(&s.provider, executor), i, s.clone()))
+                Some((
+                    base + executor_model_boost(&s.provider, executor),
+                    i,
+                    s.clone(),
+                ))
             })
             .collect();
         // Higher score first; original order breaks ties (keeps recent /
@@ -2116,9 +2117,7 @@ impl LauncherState {
             self.model_suggestion_selected = 0;
             return;
         }
-        let cur = self
-            .model_suggestion_selected
-            .min(len.saturating_sub(1)) as isize;
+        let cur = self.model_suggestion_selected.min(len.saturating_sub(1)) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1);
         self.model_suggestion_selected = next as usize;
     }
@@ -15441,7 +15440,8 @@ impl VizApp {
         // Build the model fuzzy-autocomplete suggestions from local,
         // network-free sources (add-model-fuzzy): registry + curated
         // OpenRouter routes + recent launcher history + endpoint defaults.
-        let registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+        let registry =
+            workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
         let recent_models = workgraph::launcher_history::recent_models(20).unwrap_or_default();
         let model_suggestions = build_model_suggestions(&config, &registry, &recent_models);
 
@@ -27140,7 +27140,10 @@ mod launcher_endpoint_autocomplete_tests {
         ]);
         let sug = build_endpoint_suggestions(&config);
         assert_eq!(sug.len(), 2);
-        assert_eq!(sug[0], ep("local", Some("http://127.0.0.1:8088"), "local", false));
+        assert_eq!(
+            sug[0],
+            ep("local", Some("http://127.0.0.1:8088"), "local", false)
+        );
         assert_eq!(
             sug[1],
             ep("lambda", Some("https://lambda01:30000"), "openrouter", true)
@@ -27183,7 +27186,12 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn filtered_suppressed_for_raw_url_entry() {
-        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        let mut state = nex_state(vec![ep(
+            "local",
+            Some("http://127.0.0.1:8088"),
+            "local",
+            true,
+        )]);
         state.add_endpoint = "http://my-custom:9000".into();
         assert!(state.endpoint_input_is_raw_url());
         assert!(
@@ -27263,7 +27271,12 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn accept_is_noop_for_raw_url() {
-        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        let mut state = nex_state(vec![ep(
+            "local",
+            Some("http://127.0.0.1:8088"),
+            "local",
+            true,
+        )]);
         state.add_endpoint = "http://my-custom:9000".into();
         assert!(
             !state.accept_endpoint_suggestion(),
@@ -27301,10 +27314,13 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn with_global_unions_local_and_global_endpoints() {
-        let local =
-            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", false)]);
-        let global =
-            config_with_endpoints(vec![endpoint_cfg("global-lambda", "http://b", "openrouter", true)]);
+        let local = config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", false)]);
+        let global = config_with_endpoints(vec![endpoint_cfg(
+            "global-lambda",
+            "http://b",
+            "openrouter",
+            true,
+        )]);
         let sug = build_endpoint_suggestions_with_global(&local, Some(&global));
         assert_eq!(sug.len(), 2, "both local and global endpoints surface");
         assert_eq!(sug[0].name, "local", "local entries come first");
@@ -27335,8 +27351,7 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn with_global_none_is_just_local() {
-        let local =
-            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", true)]);
+        let local = config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", true)]);
         let sug = build_endpoint_suggestions_with_global(&local, None);
         assert_eq!(sug, build_endpoint_suggestions(&local));
     }
@@ -27591,21 +27606,37 @@ mod launcher_model_autocomplete_tests {
             is_default: false,
             context_window: None,
         }];
-        let registry = registry_with(&[("deepseek/deepseek-chat", "openrouter", ModelTier::Budget)]);
+        let registry =
+            registry_with(&[("deepseek/deepseek-chat", "openrouter", ModelTier::Budget)]);
         let recent = vec!["nex:my-recent-model".to_string()];
 
         let out = build_model_suggestions(&config, &registry, &recent);
         let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
 
         // registry
-        assert!(ids.contains(&"deepseek/deepseek-chat"), "registry model present: {ids:?}");
+        assert!(
+            ids.contains(&"deepseek/deepseek-chat"),
+            "registry model present: {ids:?}"
+        );
         // curated (network-free seed) — the task's headline routes
-        assert!(ids.contains(&"minimax/minimax-m3"), "curated minimax present: {ids:?}");
-        assert!(ids.contains(&"qwen/qwen3-coder"), "curated qwen coder present: {ids:?}");
+        assert!(
+            ids.contains(&"minimax/minimax-m3"),
+            "curated minimax present: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"qwen/qwen3-coder"),
+            "curated qwen coder present: {ids:?}"
+        );
         // recent (routing prefix stripped to bare id)
-        assert!(ids.contains(&"my-recent-model"), "recent model present: {ids:?}");
+        assert!(
+            ids.contains(&"my-recent-model"),
+            "recent model present: {ids:?}"
+        );
         // endpoint default model (provider prefix stripped)
-        assert!(ids.contains(&"special/endpoint-model"), "endpoint model present: {ids:?}");
+        assert!(
+            ids.contains(&"special/endpoint-model"),
+            "endpoint model present: {ids:?}"
+        );
     }
 
     #[test]
@@ -27619,10 +27650,19 @@ mod launcher_model_autocomplete_tests {
         };
         let recent = vec!["openrouter:minimax/minimax-m3".to_string()];
         let out = build_model_suggestions(&config, &registry, &recent);
-        let minimax: Vec<&ModelSuggestion> =
-            out.iter().filter(|s| s.id == "minimax/minimax-m3").collect();
-        assert_eq!(minimax.len(), 1, "minimax must be de-duplicated across sources");
-        assert_eq!(minimax[0].source, "recent", "recent source wins (listed first)");
+        let minimax: Vec<&ModelSuggestion> = out
+            .iter()
+            .filter(|s| s.id == "minimax/minimax-m3")
+            .collect();
+        assert_eq!(
+            minimax.len(),
+            1,
+            "minimax must be de-duplicated across sources"
+        );
+        assert_eq!(
+            minimax[0].source, "recent",
+            "recent source wins (listed first)"
+        );
     }
 
     // ── executor-aware normalization (the heart of the feature) ────────
@@ -27693,9 +27733,11 @@ mod launcher_model_autocomplete_tests {
             "openrouter:minimax/minimax-m3"
         );
         assert_eq!(
-            workgraph::chat_command::dexto_openrouter_model(
-                &normalize_model_for_executor("minimax/minimax-m3", "openrouter", "dexto")
-            ),
+            workgraph::chat_command::dexto_openrouter_model(&normalize_model_for_executor(
+                "minimax/minimax-m3",
+                "openrouter",
+                "dexto"
+            )),
             Some("minimax/minimax-m3".to_string())
         );
     }
@@ -27730,7 +27772,10 @@ mod launcher_model_autocomplete_tests {
     fn filtered_returns_all_for_empty_query() {
         let state = model_state(
             NEX,
-            vec![sug("minimax/minimax-m3", "openrouter", "curated"), sug("qwen3-coder", "", "recent")],
+            vec![
+                sug("minimax/minimax-m3", "openrouter", "curated"),
+                sug("qwen3-coder", "", "recent"),
+            ],
         );
         assert_eq!(state.filtered_model_suggestions().len(), 2);
     }
@@ -27776,8 +27821,14 @@ mod launcher_model_autocomplete_tests {
         // Custom-command executor is the last choice; its Model field is a
         // raw command line, never a model picker.
         let last = super::ADD_NEW_EXECUTOR_CHOICES.len() - 1;
-        assert_eq!(super::ADD_NEW_EXECUTOR_CHOICES[last].internal_executor, "command");
-        let state = model_state(last, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        assert_eq!(
+            super::ADD_NEW_EXECUTOR_CHOICES[last].internal_executor,
+            "command"
+        );
+        let state = model_state(
+            last,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         assert!(!state.add_new_show_model_suggestions());
         assert!(state.filtered_model_suggestions().is_empty());
     }
@@ -27813,7 +27864,10 @@ mod launcher_model_autocomplete_tests {
 
     #[test]
     fn accept_is_noop_for_free_text_with_no_match() {
-        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         // Arbitrary custom model that matches nothing → free text preserved.
         state.add_model = "my-totally-custom-thing".into();
         assert!(!state.accept_model_suggestion());
@@ -27824,7 +27878,10 @@ mod launcher_model_autocomplete_tests {
     fn accept_is_noop_for_explicit_spec_even_if_it_would_match() {
         // User typed a full route that fuzzy-matches a suggestion; the
         // explicit spec must NOT be overwritten.
-        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         state.add_model = "openrouter:minimax/minimax-m3".into();
         assert!(!state.accept_model_suggestion());
         assert_eq!(state.add_model, "openrouter:minimax/minimax-m3");
@@ -27834,7 +27891,10 @@ mod launcher_model_autocomplete_tests {
     fn move_clamps_within_filtered_bounds() {
         let mut state = model_state(
             NEX,
-            vec![sug("a/one", "openrouter", "c"), sug("b/two", "openrouter", "c")],
+            vec![
+                sug("a/one", "openrouter", "c"),
+                sug("b/two", "openrouter", "c"),
+            ],
         );
         state.move_model_suggestion(-1);
         assert_eq!(state.model_suggestion_selected, 0, "clamps at top");
@@ -28759,7 +28819,10 @@ mod build_nex_chat_pty_args_tests {
         // servers read a colon as a LoRA ref). A bare slash route is NOT
         // rewritten to openrouter — the endpoint dictates the route.
         let args = build_nex_chat_pty_args(Some("minimax/minimax-m3"), Some("lambda01"));
-        assert_eq!(args, vec!["nex", "-m", "minimax/minimax-m3", "-e", "lambda01"]);
+        assert_eq!(
+            args,
+            vec!["nex", "-m", "minimax/minimax-m3", "-e", "lambda01"]
+        );
     }
 
     #[test]

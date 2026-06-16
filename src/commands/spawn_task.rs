@@ -995,7 +995,10 @@ mod tests {
                         // The inner model is normalized to the openrouter spec.
                         assert_eq!(model.as_deref(), Some("openrouter:stepfun/step-3.7-flash"));
                     }
-                    other => panic!("expected OpenCode handler, got: {}", other.command_preview()),
+                    other => panic!(
+                        "expected OpenCode handler, got: {}",
+                        other.command_preview()
+                    ),
                 }
 
                 let preview = spec.command_preview();

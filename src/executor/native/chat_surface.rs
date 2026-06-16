@@ -419,11 +419,13 @@ mod tests {
         // A real user message is waiting. The reader must deliver it rather
         // than bailing on the stale marker.
         crate::chat::append_inbox_ref(wg_dir, &uuid, "still alive", "r1").unwrap();
-        let entry =
-            tokio::time::timeout(std::time::Duration::from_secs(2), reader.next_entry(Duration::from_millis(50)))
-                .await
-                .expect("next_entry must not hang")
-                .expect("stale marker must not force EOF");
+        let entry = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.next_entry(Duration::from_millis(50)),
+        )
+        .await
+        .expect("next_entry must not hang")
+        .expect("stale marker must not force EOF");
         assert_eq!(entry.message, "still alive");
 
         // The stale marker should have been cleared as a side effect.
@@ -446,10 +448,12 @@ mod tests {
 
         crate::session_lock::request_release_for(&chat_dir, std::process::id()).unwrap();
         let reader = ChatInboxReader::new(wg_dir.to_path_buf(), uuid.clone(), paths).unwrap();
-        let out =
-            tokio::time::timeout(std::time::Duration::from_secs(2), reader.next_entry(Duration::from_millis(50)))
-                .await
-                .expect("next_entry must not hang");
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.next_entry(Duration::from_millis(50)),
+        )
+        .await
+        .expect("next_entry must not hang");
         assert!(out.is_none(), "a marker targeting our pid ends the session");
     }
 

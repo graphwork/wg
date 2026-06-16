@@ -1550,11 +1550,7 @@ pub fn create_chat_in_graph(
                 }
             }
         }
-        (
-            argv,
-            Some(project_root.display().to_string()),
-            Some(preset),
-        )
+        (argv, Some(project_root.display().to_string()), Some(preset))
     };
 
     let task = workgraph::graph::Task {
@@ -3624,7 +3620,10 @@ poll_interval = 120
             task.command_argv
         );
         assert!(
-            !task.command_argv.iter().any(|a| a == "-e" || a == "--endpoint"),
+            !task
+                .command_argv
+                .iter()
+                .any(|a| a == "-e" || a == "--endpoint"),
             "opencode argv must not carry an endpoint flag: {:?}",
             task.command_argv
         );

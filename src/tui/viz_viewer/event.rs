@@ -9987,10 +9987,7 @@ mod chat_tab_navigation_tests {
             l.add_endpoint, url,
             "Tab on a raw URL only advances; it must not clobber the URL"
         );
-        assert_eq!(
-            l.active_section,
-            LauncherSection::AddNew(AddNewField::Name)
-        );
+        assert_eq!(l.active_section, LauncherSection::AddNew(AddNewField::Name));
     }
 
     #[test]
@@ -10067,7 +10064,10 @@ mod chat_tab_navigation_tests {
         let f = l.filtered_model_suggestions();
         assert_eq!(f.len(), 1, "fuzzy narrows to one: {f:?}");
         assert_eq!(f[0].id, "minimax/minimax-m3");
-        assert_eq!(l.model_suggestion_selected, 0, "typing resets highlight to top");
+        assert_eq!(
+            l.model_suggestion_selected, 0,
+            "typing resets highlight to top"
+        );
     }
 
     #[test]
@@ -10083,10 +10083,7 @@ mod chat_tab_navigation_tests {
             "Tab fills the opencode-normalized route"
         );
         // opencode has no Endpoint field → Tab from Model advances to Name.
-        assert_eq!(
-            l.active_section,
-            LauncherSection::AddNew(AddNewField::Name)
-        );
+        assert_eq!(l.active_section, LauncherSection::AddNew(AddNewField::Name));
     }
 
     #[test]

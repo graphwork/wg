@@ -3536,17 +3536,8 @@ mod tests {
         let vars = test_template_vars();
 
         let result = build_inner_command(
-            &settings,
-            "full",
-            output_dir,
-            &None, // <- no resolved model
-            &None,
-            &None,
-            &None,
-            &None,
-            &vars,
-            &None,
-            None,
+            &settings, "full", output_dir, &None, // <- no resolved model
+            &None, &None, &None, &None, &vars, &None, None,
         );
 
         let err = result.expect_err("opencode with no resolved model must be a hard error");
