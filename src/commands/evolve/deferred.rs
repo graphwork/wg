@@ -118,6 +118,7 @@ pub(crate) fn defer_self_mutation(
         model: None,
         provider: None,
         endpoint: None,
+        profile: None,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,

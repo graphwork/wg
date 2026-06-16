@@ -737,6 +737,18 @@ pub enum Commands {
         /// fan-out + synthesis batch with one command.
         #[arg(long)]
         wcc: bool,
+        /// Pin a named profile (e.g. `claude`, `codex`, `nex`) onto every
+        /// task in the released set and propagate it across the whole
+        /// weakly-connected component — both work tasks AND their agency
+        /// satellites (.assign/.flip/.evaluate) route through this profile's
+        /// (executor, model, endpoint) at dispatch. Defaults to WCC scope
+        /// unless `--only` narrows it. Omit to use the globally-active profile.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+        /// Stamp the profile WITHOUT unpausing — annotate a staged subgraph
+        /// for later release. Only meaningful together with `--profile`.
+        #[arg(long)]
+        no_release: bool,
     },
 
     /// Park a task and exit — sets status to Waiting until condition is met

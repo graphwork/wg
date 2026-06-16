@@ -271,8 +271,19 @@ pub fn run(
     // Step 3.5: Compute git diff of artifacts (R5 — ground truth for evaluator)
     let artifact_diff = compute_artifact_diff(artifacts, task.started_at.as_deref());
 
-    // Step 3.6: Resolve evaluator agent identity (if configured)
-    let config = Config::load_or_default(dir);
+    // Step 3.6: Resolve evaluator agent identity (if configured).
+    //
+    // Per-WCC profile: if the task was published under a profile
+    // (`wg publish --profile`), load THAT profile's complete config so the
+    // evaluator role resolves through the profile's `[models.evaluator]` (or
+    // tier) instead of the global default claude:haiku pin. `None` ⇒ global
+    // config unchanged. This is the dispatch-time resolution point for the
+    // `.evaluate-*` satellite, since `run_lightweight_llm_call` re-resolves
+    // the model from this config by role.
+    let config = workgraph::dispatch::effective_config_owned(
+        task.profile.as_deref(),
+        Config::load_or_default(dir),
+    );
     let evaluator_identity = config
         .agency
         .evaluator_agent
@@ -795,8 +806,13 @@ pub fn run_flip(
         }
     }
 
-    // Check FLIP is enabled or task is tagged
-    let config = Config::load_or_default(dir);
+    // Check FLIP is enabled or task is tagged.
+    // Per-WCC profile: resolve through the task's pinned profile (if any) so
+    // FLIP inference/comparison roles route through the profile's models.
+    let config = workgraph::dispatch::effective_config_owned(
+        task.profile.as_deref(),
+        Config::load_or_default(dir),
+    );
     let flip_enabled = config.agency.flip_enabled || task.tags.iter().any(|t| t == "flip-eval");
     if !flip_enabled {
         bail!(

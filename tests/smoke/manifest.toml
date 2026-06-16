@@ -1379,3 +1379,12 @@ owners = [
 ]
 description = "Pins fix-nex-chat23-eof-resume: a Nex/OpenRouter chat (blank endpoint → OpenRouter default) created against an isolated daemon must come up with a LIVE inbox-driven handler and stay alive — no session_end reason=eof at turns=0 from a stale .handler.release-requested marker. `wg chat show` and `wg session status` must agree on the live handler, and `wg chat resume <id>` must succeed from saved executor/model metadata without the internal 'at least one of --executor or --model' error. Credential-free: the inbox handler blocks without calling the model."
 timeout_seconds = 90
+
+[[scenario]]
+name = "publish_profile_propagates_wcc"
+script = "scenarios/publish_profile_propagates_wcc.sh"
+owners = [
+    "implement-wg-publish",
+]
+description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
+timeout_seconds = 60
