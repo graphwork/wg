@@ -1,6 +1,6 @@
 //! Parse `notify.toml` configuration for notification routing.
 //!
-//! The config file lives at `~/.config/workgraph/notify.toml` (or the project's
+//! The config file lives at `~/.config/worksgood/notify.toml` (or the project's
 //! `.wg/notify.toml`). See `docs/research/human-in-the-loop-channels.md`
 //! for the full schema.
 
