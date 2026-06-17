@@ -693,6 +693,15 @@ description = "Drives `nex` and `wg nex` through a real PTY against a local mock
 timeout_seconds = 120
 
 [[scenario]]
+name = "nex_progressive_markdown_pty"
+script = "scenarios/nex_progressive_markdown_pty.sh"
+owners = [
+    "progressive-streaming-markdown",
+]
+description = "Drives standalone `nex` through a real PTY against a local mock OpenAI-compatible server that streams a MARKDOWN answer whose tokens are fragmented across SSE deltas (heading split mid-word, `**bold**` and an inline `code` span split across deltas, a ```python fence whose marker is split, and a bullet list). Asserts the user-visible behavior of progressive-streaming-markdown: on the TTY direct path (WG_NEX_LIVE_INPUT=0, color on) the answer renders as styled markdown — a tiny VT100 emulator reconstructs the FINAL screen and confirms heading/bold/inline-code/list/`│` code-bar render formatted, the raw `#`/`**`/backtick punctuation is consumed, ANSI styling is present, and the in-place erase control (ESC[0J) appears (proof the render is progressive, not buffer-then-print); and on the PLAIN fallback (stderr piped, non-tty) the SAME answer streams as RAW markdown — punctuation preserved verbatim and none of the renderer's `•`/`│` glyphs appear. Unit + virtual-terminal coverage (BlockSplitter chunking-invariance + CursorRenderer no-garble == one-shot render) lives in src/executor/native/streaming_markdown.rs."
+timeout_seconds = 120
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [
