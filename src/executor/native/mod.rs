@@ -25,6 +25,7 @@ pub mod provider;
 pub mod resume;
 pub mod state_injection;
 pub mod surface;
+pub mod think_filter;
 pub mod tokenizer;
 pub mod tools;
 pub mod touched_files;

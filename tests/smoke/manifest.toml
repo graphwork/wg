@@ -684,6 +684,15 @@ description = "Drives standalone `nex` and `wg nex` through a real PTY with term
 timeout_seconds = 120
 
 [[scenario]]
+name = "nex_think_collapse_pty"
+script = "scenarios/nex_think_collapse_pty.sh"
+owners = [
+    "collapse-toggle-think",
+]
+description = "Drives `nex` and `wg nex` through a real PTY against a local mock OpenAI-compatible server that streams a reasoning `<think>…</think>` block (both tags fragmented across SSE deltas, Qwen3/DeepSeek-style) then the answer. Asserts: DEFAULT collapses reasoning — raw `<think>` content and tags never reach the terminal, the answer is shown clean, and a one-line `✓ thought for N tokens` marker appears; the `/think on` REPL command flips display so the next turn reveals raw reasoning verbatim; and `WG_NEX_THINK=1` reveals raw reasoning on the first turn (the documented env default)."
+timeout_seconds = 120
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [
