@@ -3836,7 +3836,7 @@ impl AgentLoop {
     /// - `/bg delete <id>`         — remove a terminated job from the registry
     /// - `/cancel <id>`            — alias for `/bg kill <id>`
     async fn handle_nex_slash_command(
-        &self,
+        &mut self,
         input: &str,
         messages: &mut Vec<Message>,
         total_usage: &Usage,
@@ -3996,6 +3996,7 @@ impl AgentLoop {
                      \x1b[1;36m  /bg delete <id>\x1b[0m              — remove terminated job from registry\n\
                      \x1b[1;36m  /cancel <id>\x1b[0m                 — alias for /bg kill <id>\n\
                      \x1b[1;36m  /compact\x1b[0m                      — manually compact context (hard L2)\n\
+                     \x1b[1;36m  /tools [minimal|full]\x1b[0m         — show or switch the tool surface (lean vs full)\n\
                      \x1b[1;36m  /status\x1b[0m                       — show agent state (context, tokens, paths)\n\
                      \x1b[1;36m  /resume, /sessions\x1b[0m            — list all chat sessions with resume hints\n\
                      \x1b[1;36m  /fork [alias]\x1b[0m                 — fork this session (copy journal) to explore a different branch\n\
@@ -4247,9 +4248,20 @@ impl AgentLoop {
                     eprintln!("  Journal:       {}", jp.display());
                 }
                 eprintln!(
-                    "  Tools:         {} registered",
-                    self.tools.definitions().len()
+                    "  Tools:         {} active / {} registered",
+                    self.tools.active_tool_names().len(),
+                    self.tools.all_tool_names().len()
                 );
+                NexSlashResult::Continue
+            }
+
+            "/tools" => {
+                // Inspect or switch the tool surface live. The registry's
+                // active-allowlist view is non-destructive, so `/tools full`
+                // restores every tool (including any MCP tools discovered at
+                // startup) without rebuilding the registry.
+                let msg = render_tools_command(&mut self.tools, arg);
+                eprintln!("\x1b[2m[nex] {}\x1b[0m", msg);
                 NexSlashResult::Continue
             }
 
@@ -4261,6 +4273,55 @@ impl AgentLoop {
                 NexSlashResult::Continue
             }
         }
+    }
+}
+
+/// Apply a `/tools` REPL command to `registry`, returning the status line
+/// to print on stderr. `arg` is one of:
+///   - `""` / `show` / `status` — report the current surface (mode, count,
+///     active tool names) plus the usage hint,
+///   - `minimal` / `min` / `lean` — install the lean local-dev view,
+///   - `full` / `all` — restore the full surface.
+/// Unknown args report usage. The registry is mutated in place through its
+/// non-destructive active-allowlist view, so the switch is live and
+/// reversible (no rebuild, no lost MCP discovery). Factored out as a free
+/// function so it can be unit-tested without standing up an `AgentLoop`.
+fn render_tools_command(registry: &mut ToolRegistry, arg: &str) -> String {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "min" | "lean" => {
+            registry.set_active_allowlist(super::tools::MINIMAL_TOOL_NAMES);
+            format!(
+                "tool surface → minimal ({} of {} tools active): {}",
+                registry.active_tool_names().len(),
+                registry.all_tool_names().len(),
+                registry.active_tool_names().join(", ")
+            )
+        }
+        "full" | "all" => {
+            registry.clear_active_allowlist();
+            format!(
+                "tool surface → full ({} tools active)",
+                registry.active_tool_names().len()
+            )
+        }
+        "" | "show" | "status" => {
+            let mode = if registry.is_minimal_view_active() {
+                "minimal"
+            } else {
+                "full"
+            };
+            format!(
+                "tool surface: {} ({} of {} tools active): {}\n\
+                 \x20 /tools minimal — lean local-dev set    /tools full — all tools",
+                mode,
+                registry.active_tool_names().len(),
+                registry.all_tool_names().len(),
+                registry.active_tool_names().join(", ")
+            )
+        }
+        other => format!(
+            "unknown /tools argument {other:?} — use `/tools`, `/tools minimal`, or `/tools full`"
+        ),
     }
 }
 
@@ -4736,5 +4797,60 @@ mod rerender_tests {
         assert!(stop.load(Ordering::SeqCst));
         drop(SpinnerGuard::spawn(stop.clone()));
         assert!(stop.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod tools_command_tests {
+    use super::*;
+    use crate::executor::native::tools::MINIMAL_TOOL_NAMES;
+    use tempfile::TempDir;
+
+    /// `/tools show` reports the current surface; `/tools minimal` and
+    /// `/tools full` switch it live and reversibly through the registry's
+    /// non-destructive active-allowlist view.
+    #[test]
+    fn tools_command_shows_and_switches_surface_live() {
+        let tmp = TempDir::new().unwrap();
+        let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+        let full_count = registry.all_tool_names().len();
+
+        // Default surface is full; `show` reports it with the usage hint.
+        let shown = render_tools_command(&mut registry, "");
+        assert!(shown.contains("tool surface: full"), "show: {shown}");
+        assert!(
+            shown.contains("/tools minimal"),
+            "show includes hint: {shown}"
+        );
+        assert!(!registry.is_minimal_view_active());
+
+        // Switch to minimal — live, names limited to the lean allowlist.
+        let to_min = render_tools_command(&mut registry, "minimal");
+        assert!(to_min.contains("→ minimal"), "switch msg: {to_min}");
+        assert!(registry.is_minimal_view_active());
+        assert_eq!(registry.active_tool_names().len(), MINIMAL_TOOL_NAMES.len());
+        assert!(
+            !registry
+                .active_tool_names()
+                .contains(&"web_fetch".to_string())
+        );
+
+        // `show` now reflects minimal mode.
+        let shown_min = render_tools_command(&mut registry, "show");
+        assert!(
+            shown_min.contains("tool surface: minimal"),
+            "show: {shown_min}"
+        );
+
+        // Switch back to full — every tool restored without a rebuild.
+        let to_full = render_tools_command(&mut registry, "full");
+        assert!(to_full.contains("→ full"), "switch msg: {to_full}");
+        assert!(!registry.is_minimal_view_active());
+        assert_eq!(registry.active_tool_names().len(), full_count);
+
+        // Unknown arg reports usage without mutating the surface.
+        let bad = render_tools_command(&mut registry, "wat");
+        assert!(bad.contains("unknown /tools argument"), "usage: {bad}");
+        assert_eq!(registry.active_tool_names().len(), full_count);
     }
 }

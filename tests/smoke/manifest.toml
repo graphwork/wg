@@ -1337,6 +1337,15 @@ description = "Pins fix-nex-agent: real `wg nex --eval-mode` CLI invocations aga
 timeout_seconds = 60
 
 [[scenario]]
+name = "nex_minimal_tools_auto_default"
+script = "scenarios/nex_minimal_tools_auto_default.sh"
+owners = [
+    "wg-nex-probe",
+]
+description = "Pins wg-nex-probe: against a fake OAI-compatible endpoint advertising a small context window (n_ctx=8192 <= 32k threshold), `wg nex` with no tool flag auto-enables the lean tool surface (no web_fetch/web_search), --full-tools forces the full surface despite the small window, --minimal-tools forces lean, and a non-eval interactive run prints the discoverability banner on stderr naming `/tools full`."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_new_chat_focus_sticks"
 script = "scenarios/tui_new_chat_focus_sticks.sh"
 owners = [

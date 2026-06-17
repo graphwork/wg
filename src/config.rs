@@ -213,7 +213,13 @@ impl Default for ChatConfig {
 }
 
 /// Native executor configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// `Default` is implemented by hand (not derived) because
+/// `minimal_tools_context_threshold` needs a non-zero default — a derived
+/// `Default` would zero the `usize` and silently disable the probe-driven
+/// minimal-tools auto-default. Keep the manual impl in sync with the field
+/// list and with each field's `#[serde(default = ...)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeExecutorConfig {
     /// Web access settings (search + fetch).
     #[serde(default)]
@@ -236,6 +242,35 @@ pub struct NativeExecutorConfig {
     /// edits don't produce duplicate-key conflicts in the TOML.
     #[serde(default, skip_serializing_if = "ToolPermissionsConfig::is_empty")]
     pub permissions: ToolPermissionsConfig,
+
+    /// Context-window threshold (in tokens) for the probe-driven
+    /// minimal-tools default of `wg nex`. When neither `--minimal-tools`
+    /// nor `--full-tools` is passed, the lean tool surface auto-enables
+    /// iff the resolved context window (explicit config > live probe >
+    /// model registry > fallback) is **at or below** this value. Explicit
+    /// flags always win. Default `32_000` — the inflection where the full
+    /// tool-schema prefill stops being a material fraction of a small
+    /// window (and matches the channeling clamp's lower band). Set to `0`
+    /// to disable the auto-minimal behavior entirely (lean surface becomes
+    /// pure opt-in via `--minimal-tools`).
+    #[serde(default = "default_minimal_tools_context_threshold")]
+    pub minimal_tools_context_threshold: usize,
+}
+
+fn default_minimal_tools_context_threshold() -> usize {
+    32_000
+}
+
+impl Default for NativeExecutorConfig {
+    fn default() -> Self {
+        Self {
+            web: NativeWebConfig::default(),
+            background: NativeBackgroundConfig::default(),
+            delegate: NativeDelegateConfig::default(),
+            permissions: ToolPermissionsConfig::default(),
+            minimal_tools_context_threshold: default_minimal_tools_context_threshold(),
+        }
+    }
 }
 
 /// Tool permission configuration. First cut is a simple denylist;
