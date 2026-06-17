@@ -6,7 +6,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -376,21 +376,89 @@ const NEX_WORKING_PROMPT_RAW: &str = "* "; // Same display width as `> `.
 const NEX_WORKING_GLYPH: &str = "↯";
 const NEX_WORKING_FALLBACK: &str = "*";
 
+/// Live, per-turn generation progress shared between the streaming text
+/// callback (which increments it as output-text deltas arrive) and the
+/// rustyline prompt hinter (which reads it on each repaint to render
+/// `thinking… N tokens`). Reset to 0 at the start of each model call so
+/// the count restarts and the prefill phase is shown again before the
+/// first token streams.
+///
+/// This deliberately rides on the EXISTING in-place working glyph
+/// (`↯ ` / `* ` / fix-nex-chat-2) rather than competing with it: the
+/// glyph stays the fixed-width prompt prefix (input column never
+/// shifts) and the running token count is rendered as a trailing
+/// rustyline hint. The hint is recomputed inside rustyline's
+/// `refresh_line`, which fires on every keystroke AND every
+/// `ExternalPrinter::print` — so the count advances live as streamed
+/// text flushes, with no extra timer thread and no added render
+/// contention (the original throbber complaint).
+#[derive(Clone, Default)]
+struct LiveProgress {
+    tokens: Arc<AtomicU64>,
+}
+
+impl LiveProgress {
+    /// Clear the count at the start of a model call so the next turn's
+    /// `thinking…` indicator restarts from the prefill phase.
+    fn reset(&self) {
+        self.tokens.store(0, Ordering::Relaxed);
+    }
+
+    /// Accumulate generated output tokens for this turn.
+    fn add_tokens(&self, n: u64) {
+        self.tokens.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn tokens(&self) -> u64 {
+        self.tokens.load(Ordering::Relaxed)
+    }
+}
+
+/// A non-completable status hint. Unlike `String` (whose `completion()`
+/// returns the text), this returns `None` so a stray Right-arrow / End
+/// keystroke at the prompt never inserts the live status into the
+/// user's input line.
+struct NexStatusHint(String);
+
+impl rustyline::hint::Hint for NexStatusHint {
+    fn display(&self) -> &str {
+        &self.0
+    }
+
+    fn completion(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Format the live working-status hint shown after the prompt glyph.
+/// `prefilling…` until the first output token streams (useful for slow
+/// local models that spend seconds on prompt processing), then
+/// `thinking… N tokens` with the running generated-token count.
+fn render_nex_thinking_hint(tokens: u64) -> String {
+    if tokens == 0 {
+        "prefilling…".to_string()
+    } else {
+        format!("thinking… {} tokens", tokens)
+    }
+}
+
 #[derive(Clone)]
 struct NexPromptState {
     waiting_for_input: Arc<AtomicBool>,
     color_enabled: bool,
     working_indicator: &'static str,
+    progress: LiveProgress,
 }
 
 impl NexPromptState {
-    fn new(waiting_for_input: Arc<AtomicBool>) -> Self {
+    fn new(waiting_for_input: Arc<AtomicBool>, progress: LiveProgress) -> Self {
         let color_enabled = nex_prompt_color_enabled();
         let working_indicator = nex_working_prompt_indicator(color_enabled);
         Self {
             waiting_for_input,
             color_enabled,
             working_indicator,
+            progress,
         }
     }
 
@@ -400,6 +468,21 @@ impl NexPromptState {
             self.color_enabled,
             self.working_indicator,
         )
+    }
+
+    /// The trailing status hint shown after the prompt glyph while the
+    /// model is working. Returns `None` at idle (so the ready prompt is
+    /// a clean `> `) and whenever the user has started composing a line
+    /// (so a queued message is never cluttered by the status), leaving
+    /// the lightning glyph as the sole busy indicator in that case.
+    fn hint(&self, line: &str) -> Option<String> {
+        if self.waiting_for_input.load(Ordering::SeqCst) {
+            return None;
+        }
+        if !line.is_empty() {
+            return None;
+        }
+        Some(render_nex_thinking_hint(self.progress.tokens()))
     }
 }
 
@@ -424,7 +507,16 @@ impl rustyline::completion::Completer for NexReadlineHelper {
 }
 
 impl rustyline::hint::Hinter for NexReadlineHelper {
-    type Hint = String;
+    type Hint = NexStatusHint;
+
+    fn hint(
+        &self,
+        line: &str,
+        _pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> Option<NexStatusHint> {
+        self.prompt.hint(line).map(NexStatusHint)
+    }
 }
 
 impl rustyline::validate::Validator for NexReadlineHelper {}
@@ -439,6 +531,18 @@ impl rustyline::highlight::Highlighter for NexReadlineHelper {
             std::borrow::Cow::Owned(self.prompt.render())
         } else {
             std::borrow::Cow::Borrowed(prompt)
+        }
+    }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+        // Dim the trailing `thinking… N tokens` status so it reads as a
+        // status annotation, not as editable input. Matches the dim grey
+        // (244) used elsewhere in the nex REPL. No-color/dumb terminals
+        // get the plain text so nothing leaks raw escape codes.
+        if self.prompt.color_enabled {
+            std::borrow::Cow::Owned(format!("\x1b[2;38;5;244m{}\x1b[0m", hint))
+        } else {
+            std::borrow::Cow::Borrowed(hint)
         }
     }
 }
@@ -571,6 +675,7 @@ struct LiveTerminalInput {
     rx: tokio::sync::mpsc::UnboundedReceiver<LiveReadlineEvent>,
     output: LiveTerminalOutput,
     waiting_for_input: Arc<AtomicBool>,
+    progress: LiveProgress,
 }
 
 impl LiveTerminalInput {
@@ -590,7 +695,8 @@ impl LiveTerminalInput {
         }
 
         let waiting_for_input = Arc::new(AtomicBool::new(initially_waiting_for_input));
-        let prompt_state = NexPromptState::new(waiting_for_input.clone());
+        let progress = LiveProgress::default();
+        let prompt_state = NexPromptState::new(waiting_for_input.clone(), progress.clone());
         let mut editor =
             match rustyline::Editor::<NexReadlineHelper, rustyline::history::DefaultHistory>::new()
             {
@@ -684,11 +790,19 @@ impl LiveTerminalInput {
             rx,
             output,
             waiting_for_input,
+            progress,
         })
     }
 
     fn output(&self) -> LiveTerminalOutput {
         self.output.clone()
+    }
+
+    /// Handle to the live per-turn token counter, shared with the
+    /// rustyline hinter. The streaming callback increments it; the
+    /// hinter renders it as `thinking… N tokens`.
+    fn progress(&self) -> LiveProgress {
+        self.progress.clone()
     }
 
     fn set_waiting_for_input(&self, waiting: bool) {
@@ -1634,6 +1748,11 @@ impl AgentLoop {
             None
         };
         let live_output = live_terminal.as_ref().map(|terminal| terminal.output());
+        // Shared per-turn token counter feeding the live `thinking… N
+        // tokens` hint. `Some` only in the interactive TTY path (the same
+        // gate as `live_terminal`), so the indicator is automatically
+        // absent under --autonomous / --eval-mode / piped output.
+        let live_progress = live_terminal.as_ref().map(|terminal| terminal.progress());
 
         if !self.autonomous && live_terminal.is_none() {
             let _ = editor.load_history(&history_path);
@@ -2068,6 +2187,13 @@ impl AgentLoop {
                 stream: false,
             };
 
+            // Restart the live token counter for this model call so the
+            // `thinking…` hint counts up from the prefill phase rather
+            // than carrying over the previous turn's total.
+            if let Some(ref progress) = live_progress {
+                progress.reset();
+            }
+
             if !self.autonomous
                 && surface.is_none()
                 && let Some(label) =
@@ -2108,6 +2234,14 @@ impl AgentLoop {
             let chat_text_sink = surface.as_ref().map(|s| s.stream_sink());
             let live_stream_printer = live_output.clone().map(LiveStreamPrinter::new);
             let live_stream_for_sink = live_stream_printer.clone();
+            // Per-chunk generated-token accounting for the live
+            // `thinking… N tokens` hint. Uses nex's existing tokenizer
+            // (falls back to chars/4 when no BPE matches the model), so
+            // the running count tracks the same accounting verbose mode
+            // reports. `Some` only in the interactive path; absent under
+            // autonomous/eval/piped, where the hint is not shown anyway.
+            let live_progress_for_sink = live_progress.clone();
+            let tokenizer_model = self.client.model().to_string();
             let on_text = move |text: String| {
                 if is_autonomous {
                     if let Some(ref sw) = stream_writer_clone {
@@ -2130,6 +2264,15 @@ impl AgentLoop {
                     }
                     if let Ok(mut b) = turn_buf_for_sink.lock() {
                         b.push_str(&text);
+                    }
+                    // Advance the live token count before flushing the
+                    // text: the flush triggers rustyline's refresh, which
+                    // re-reads this counter for the `thinking… N tokens`
+                    // hint, so the displayed total reflects the chunk that
+                    // is about to appear.
+                    if let Some(ref progress) = live_progress_for_sink {
+                        let n = super::tokenizer::count_tokens(&text, &tokenizer_model) as u64;
+                        progress.add_tokens(n);
                     }
                     if let Some(ref printer) = live_stream_for_sink {
                         printer.push(&text);
@@ -4246,7 +4389,12 @@ fn stderr_cols() -> usize {
 
 #[cfg(test)]
 mod prompt_indicator_tests {
-    use super::{NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, render_nex_prompt};
+    use super::{
+        LiveProgress, NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, NexPromptState, NexStatusHint,
+        render_nex_prompt, render_nex_thinking_hint,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use unicode_width::UnicodeWidthStr;
 
     fn strip_ansi(input: &str) -> String {
@@ -4313,6 +4461,60 @@ mod prompt_indicator_tests {
 
         assert_eq!(plain, "> ");
         assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
+    }
+
+    #[test]
+    fn thinking_hint_shows_prefill_before_first_token() {
+        // Zero generated tokens = still prefilling (prompt processing on
+        // a slow local model); once tokens stream the running count shows.
+        assert_eq!(render_nex_thinking_hint(0), "prefilling…");
+        assert_eq!(render_nex_thinking_hint(1), "thinking… 1 tokens");
+        assert_eq!(render_nex_thinking_hint(1234), "thinking… 1234 tokens");
+    }
+
+    #[test]
+    fn hint_counts_up_as_tokens_accumulate() {
+        let waiting = Arc::new(AtomicBool::new(false));
+        let progress = LiveProgress::default();
+        let state = NexPromptState::new(waiting, progress.clone());
+
+        // Working + empty input line: the live status is shown.
+        assert_eq!(state.hint("").as_deref(), Some("prefilling…"));
+        progress.add_tokens(10);
+        assert_eq!(state.hint("").as_deref(), Some("thinking… 10 tokens"));
+        progress.add_tokens(5);
+        assert_eq!(state.hint("").as_deref(), Some("thinking… 15 tokens"));
+        // Reset (next turn) drops back to the prefill phase.
+        progress.reset();
+        assert_eq!(state.hint("").as_deref(), Some("prefilling…"));
+    }
+
+    #[test]
+    fn hint_suppressed_at_idle_and_while_composing() {
+        let progress = LiveProgress::default();
+        progress.add_tokens(42);
+
+        // Idle (waiting for input) — the ready prompt must stay a clean
+        // `> ` with no trailing status.
+        let idle = NexPromptState::new(Arc::new(AtomicBool::new(true)), progress.clone());
+        assert_eq!(idle.hint(""), None);
+
+        // Working, but the user has started typing a queued line — the
+        // status must not clutter their input; the glyph alone signals busy.
+        let working = NexPromptState::new(Arc::new(AtomicBool::new(false)), progress);
+        assert_eq!(working.hint("draft a follow-up"), None);
+        // …and reappears the moment the line is empty again.
+        assert_eq!(working.hint("").as_deref(), Some("thinking… 42 tokens"));
+    }
+
+    #[test]
+    fn status_hint_is_not_completable() {
+        use rustyline::hint::Hint;
+        // A stray Right-arrow / End keystroke must never insert the live
+        // status into the user's input line, so completion() is None.
+        let hint = NexStatusHint("thinking… 99 tokens".to_string());
+        assert_eq!(hint.display(), "thinking… 99 tokens");
+        assert_eq!(hint.completion(), None);
     }
 }
 

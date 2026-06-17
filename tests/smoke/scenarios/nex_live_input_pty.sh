@@ -9,6 +9,9 @@
 #     `>` glyph in the live prompt while the assistant is busy (idle `> `
 #     -> working `↯ `, same width + trailing space), removed again at idle
 #     boundaries
+#   * a live `thinking… N tokens` status rendered as a trailing rustyline
+#     hint while the assistant streams, whose token count climbs as tokens
+#     arrive and is cleared cleanly when the prompt returns to idle
 #   * a third line typed while the assistant is streaming, visibly marked
 #     as queued and delivered once as the next turn
 #   * no-color fallback to an ASCII working indicator (`* `)
@@ -382,7 +385,54 @@ def assert_working_prompt_visible(transcript):
             fail("no-color terminal did not show the ASCII working prompt fallback", transcript)
 
 
+# The live working status is rendered as a trailing rustyline hint:
+# `prefilling…` before the first generated token, then
+# `thinking… N tokens` with a running output-token count that advances
+# as the stream flushes. Extract every observed count.
+thinking_re = re.compile(r"thinking[^\d]{0,4}(\d+) tokens")
+
+
+def thinking_counts(transcript):
+    return [int(m) for m in thinking_re.findall(clean(transcript))]
+
+
+def assert_thinking_indicator_grows(timeout):
+    # Poll until the `thinking… N tokens` hint has been seen with at
+    # least two DISTINCT, increasing counts — proving N rises live as
+    # tokens stream (not merely that the label appeared once).
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        counts = thinking_counts(text())
+        if len(set(counts)) >= 2 and max(counts) > min(counts):
+            return clean(text())
+        read_some(0.1)
+    counts = thinking_counts(text())
+    if not counts:
+        fail("live `thinking… N tokens` indicator never appeared while streaming", text())
+    fail(
+        f"live thinking token count did not increase while streaming (saw {sorted(set(counts))})",
+        text(),
+    )
+
+
+def assert_thinking_indicator_cleared(transcript):
+    # Once the turn completes and the prompt returns to idle `> `, no
+    # `thinking…`/`prefilling…` status may trail the final idle prompt.
+    cleaned = clean(transcript)
+    idle_matches = list(re.finditer(r"(?m)^[ \t]*>[ \t]*$", cleaned))
+    if not idle_matches:
+        fail("idle prompt never reappeared after streaming completed", transcript)
+    tail = cleaned[idle_matches[-1].end():]
+    if "thinking…" in tail or "prefilling…" in tail:
+        fail("live thinking indicator was not cleared on turn completion", transcript)
+
+
 def assert_dumb_prompt_animation_suppressed(transcript):
+    cleaned = clean(transcript)
+    # The live thinking hint rides on the live prompt; a dumb terminal
+    # has no live prompt, so the status must never appear there.
+    if "thinking…" in cleaned or "prefilling…" in cleaned:
+        fail("dumb terminal must not emit the live thinking indicator", transcript)
     cleaned = clean(transcript)
     if "↯" in cleaned or "* " in cleaned:
         fail("dumb terminal should suppress live working prompt animation cleanly", transcript)
@@ -486,6 +536,10 @@ try:
     send_line(stable_followup)
 
     wait_for("SECOND_RESPONSE_MARKER", 25)
+    # The third turn streams ~140 chunks slowly. While the input line is
+    # still empty the live `thinking… N tokens` hint must appear and its
+    # count must climb as tokens stream in.
+    assert_thinking_indicator_grows(30)
     send_line("")
     send_line(queued_turn)
 
@@ -513,6 +567,13 @@ try:
         fail("queued follow-up should keep an assistant-for association label", full)
     if full.find("QUEUED_RESPONSE_MARKER") < full.find(queued_header):
         fail("queued assistant response was not separated after its turn header", full)
+
+    # After the final turn returns to the idle prompt, the live thinking
+    # indicator must be gone — no leftover `thinking…`/`prefilling…`
+    # trailing the ready `> ` prompt.
+    time.sleep(0.6)
+    read_some(0.5)
+    assert_thinking_indicator_cleared(text())
 
     send_line("/quit")
     deadline = time.monotonic() + 15
