@@ -24,6 +24,7 @@ pub mod openai_client;
 pub mod provider;
 pub mod resume;
 pub mod state_injection;
+pub mod streaming_markdown;
 pub mod surface;
 pub mod think_filter;
 pub mod tokenizer;

@@ -2275,6 +2275,30 @@ impl AgentLoop {
             let chat_text_sink = surface.as_ref().map(|s| s.stream_sink());
             let live_stream_printer = live_output.clone().map(LiveStreamPrinter::new);
             let live_stream_for_sink = live_stream_printer.clone();
+            // Progressive (streaming) markdown render for the direct-stderr
+            // TTY path. When no rustyline live-input layer owns the screen,
+            // nex owns the cursor and can render markdown token-by-token —
+            // committing finished blocks permanently and redrawing the
+            // in-progress block in place — instead of streaming plain text
+            // and re-rendering the whole turn at EndTurn. Disabled for
+            // autonomous/eval (raw text flows to the stream sinks), for
+            // non-TTY / piped stderr (plain passthrough), and when color is
+            // off. The rustyline live-input path keeps its plain live stream
+            // because its ExternalPrinter is append-only and cannot host an
+            // in-place redraw.
+            let cursor_md: Option<Arc<Mutex<super::streaming_markdown::CursorRenderer>>> =
+                if !is_autonomous
+                    && live_output.is_none()
+                    && stderr_is_tty()
+                    && nex_prompt_color_enabled()
+                {
+                    Some(Arc::new(Mutex::new(
+                        super::streaming_markdown::CursorRenderer::new(stderr_cols().max(20)),
+                    )))
+                } else {
+                    None
+                };
+            let cursor_md_for_sink = cursor_md.clone();
             // Per-chunk generated-token accounting for the live
             // `thinking… N tokens` hint. Uses nex's existing tokenizer
             // (falls back to chars/4 when no BPE matches the model), so
@@ -2392,6 +2416,18 @@ impl AgentLoop {
                             }
                             if let Some(ref printer) = live_stream_for_sink {
                                 printer.push(&atext);
+                            } else if let Some(ref cm) = cursor_md_for_sink {
+                                // Progressive markdown: feed the delta and
+                                // write the cursor-control + ANSI bytes it
+                                // returns (commit of finished blocks +
+                                // in-place redraw of the live block).
+                                let bytes =
+                                    cm.lock().unwrap_or_else(|e| e.into_inner()).push(&atext);
+                                if !bytes.is_empty() {
+                                    let mut err = std::io::stderr().lock();
+                                    let _ = err.write_all(bytes.as_bytes());
+                                    let _ = err.flush();
+                                }
                             } else {
                                 eprint!("{}", atext);
                                 let _ = std::io::stderr().flush();
@@ -2831,6 +2867,18 @@ impl AgentLoop {
                 }
             }
 
+            // Flush the progressive markdown renderer: commit the final
+            // in-progress block and drop the cursor onto a fresh line so the
+            // collapsed-reasoning marker / next prompt start cleanly.
+            if let Some(ref cm) = cursor_md {
+                let bytes = cm.lock().unwrap_or_else(|e| e.into_inner()).finish();
+                if !bytes.is_empty() {
+                    let mut err = std::io::stderr().lock();
+                    let _ = err.write_all(bytes.as_bytes());
+                    let _ = err.flush();
+                }
+            }
+
             // Reasoning was the entire turn (think-only, or an unclosed
             // `<think>` with no answer text): print the collapsed marker
             // now since the think→answer transition never fired.
@@ -3031,7 +3079,13 @@ impl AgentLoop {
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner()),
                             );
-                            if live_output.is_none() && !buffer.trim().is_empty() && stderr_is_tty()
+                            // Skip the buffer-then-rerender when the
+                            // progressive renderer already rendered this turn
+                            // markdown incrementally (cursor_md active).
+                            if cursor_md.is_none()
+                                && live_output.is_none()
+                                && !buffer.trim().is_empty()
+                                && stderr_is_tty()
                             {
                                 rerender_markdown_on_stderr(&buffer);
                             }
