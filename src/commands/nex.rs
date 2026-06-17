@@ -62,6 +62,7 @@ pub fn run_args_with_runtime(
         args.chatty,
         args.verbose,
         args.read_only,
+        args.yolo,
         args.resume.as_deref(),
         args.role.as_deref(),
         args.chat_id,
@@ -87,6 +88,7 @@ pub fn run(
     chatty: bool,
     verbose: bool,
     read_only: bool,
+    yolo: bool,
     resume: Option<&str>,
     role: Option<&str>,
     chat_id: Option<u32>,
@@ -111,6 +113,7 @@ pub fn run(
         chatty,
         verbose,
         read_only,
+        yolo,
         resume,
         role,
         chat_id,
@@ -137,6 +140,7 @@ fn run_inner(
     chatty: bool,
     verbose: bool,
     read_only: bool,
+    yolo: bool,
     resume: Option<&str>,
     role: Option<&str>,
     chat_id: Option<u32>,
@@ -164,6 +168,38 @@ fn run_inner(
     let autonomous = autonomous || eval_mode;
     // --minimal-tools implies --no-mcp (minimal surface excludes all MCP tools)
     let no_mcp = no_mcp || eval_mode || minimal_tools;
+
+    // --yolo: disable the workspace write sandbox so write_file/edit_file
+    // can touch paths outside the cwd subtree. Requested via the flag OR
+    // the WG_NEX_YOLO env var (1/true/yes/on). nex has no interactive
+    // approval gate to suppress — tools already run autonomously — so the
+    // only safety boundary yolo relaxes is the cwd-confinement sandbox in
+    // the file tools (bash is already unconfined).
+    //
+    // Conflict: --yolo + --read-only is contradictory. Read-only wins
+    // (the conservative choice — a request to NOT modify state must never
+    // be silently overridden by a request to modify it recklessly). We
+    // warn and ignore yolo in that case.
+    let yolo_requested = yolo || yolo_env_truthy();
+    let yolo_active = yolo_requested && !read_only;
+    if yolo_requested && read_only && !eval_mode {
+        eprintln!(
+            "\x1b[33m{} Warning: --yolo and --read-only are contradictory; read-only wins. \
+             yolo mode is OFF.\x1b[0m",
+            diagnostic_prefix
+        );
+    }
+    // Normalize WG_NEX_YOLO to a definite 1/0 so the file tools (which
+    // read this env var via `yolo_enabled()`) see exactly the effective
+    // decision — including when read-only forces yolo OFF despite a
+    // truthy env var inherited from a parent process. Mirrors the
+    // WG_STREAM_IDLE_TIMEOUT_SECS env-relay pattern below.
+    //
+    // SAFETY: single-threaded CLI setup before any threads spawn; this is
+    // process-wide config the agent loop / tools read shortly after.
+    unsafe {
+        std::env::set_var("WG_NEX_YOLO", if yolo_active { "1" } else { "0" });
+    }
 
     // Set the idle timeout via env var if provided via flag (flag takes precedence over
     // existing env var). The agent loop reads WG_STREAM_IDLE_TIMEOUT_SECS; we set it
@@ -579,6 +615,18 @@ fn run_inner(
                 "\x1b[1;32m{}\x1b[0m \x1b[33m[read-only]\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
                 display_name, effective_model
             );
+        } else if yolo_active {
+            // Loud, hard-to-miss banner: yolo mode lifts the workspace
+            // write sandbox, so the agent can modify files anywhere on
+            // disk with no confirmation. Make sure the human sees it.
+            eprintln!(
+                "\x1b[1;41;97m  YOLO MODE  \x1b[0m \x1b[1;31m{}\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+                display_name, effective_model
+            );
+            eprintln!(
+                "\x1b[1;31m⚠ All safety gating disabled: write_file/edit_file can write OUTSIDE the \
+                 working directory and no action requires confirmation.\x1b[0m"
+            );
         } else {
             eprintln!(
                 "\x1b[1;32m{}\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
@@ -771,6 +819,19 @@ fn fmt_context_window(tokens: usize) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+/// Whether the `WG_NEX_YOLO` env var requests yolo mode. Truthy values
+/// are `1` / `true` / `yes` / `on` (case-insensitive); anything else
+/// (including unset, empty, `0`, `false`) is falsey. Mirrors the truthy
+/// parsing used elsewhere for nex env flags.
+fn yolo_env_truthy() -> bool {
+    std::env::var("WG_NEX_YOLO").ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn build_default_system_prompt(

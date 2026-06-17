@@ -14,6 +14,20 @@ use super::file_cache::FileCache;
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 
+/// Whether `--yolo` mode is active for the current nex process. When on,
+/// the workspace write sandbox is lifted so `write_file`/`edit_file` may
+/// target paths outside the cwd subtree. Set by `wg nex --yolo` (or the
+/// `WG_NEX_YOLO` env var) which normalizes `WG_NEX_YOLO` to `1`/`0` at
+/// startup — see `crate::commands::nex`.
+fn yolo_enabled() -> bool {
+    std::env::var("WG_NEX_YOLO").ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 /// Resolve a user-provided path against the current working directory and
 /// reject anything that escapes the cwd subtree.
 ///
@@ -30,9 +44,13 @@ use crate::executor::native::client::ToolDefinition;
 ///   - absolute paths outside cwd (`/etc/passwd`, `/home/other/...`)
 ///   - relative paths that escape via `..` after canonicalization
 ///
+/// When `allow_outside_cwd` is true (yolo mode), the boundary check is
+/// skipped: the path is still resolved/normalized but writes outside the
+/// cwd subtree are permitted.
+///
 /// Non-existent targets are handled by canonicalizing the deepest existing
 /// ancestor and appending the remaining (not-yet-created) components.
-fn resolve_inside_cwd(input: &str) -> Result<PathBuf, String> {
+fn resolve_inside_cwd(input: &str, allow_outside_cwd: bool) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir()
         .map_err(|e| format!("cannot determine current working directory: {}", e))?;
     let cwd_canonical = cwd
@@ -71,12 +89,12 @@ fn resolve_inside_cwd(input: &str) -> Result<PathBuf, String> {
         }
     };
 
-    if !canonical.starts_with(&cwd_canonical) {
+    if !allow_outside_cwd && !canonical.starts_with(&cwd_canonical) {
         return Err(format!(
             "path '{}' resolves to '{}' which is outside the working directory '{}'. \
              Writes are restricted to the cwd subtree. Use a path inside the current \
              working directory, or tell the user the action you intended so they can \
-             take it themselves.",
+             take it themselves. (Pass --yolo to lift this restriction.)",
             input,
             canonical.display(),
             cwd_canonical.display()
@@ -270,7 +288,7 @@ impl Tool for WriteFileTool {
             None => return ToolOutput::error("Missing required parameter: content".to_string()),
         };
 
-        let safe_path = match resolve_inside_cwd(path_input) {
+        let safe_path = match resolve_inside_cwd(path_input, yolo_enabled()) {
             Ok(p) => p,
             Err(e) => return ToolOutput::error(e),
         };
@@ -360,7 +378,7 @@ impl Tool for EditFileTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let safe_path = match resolve_inside_cwd(path_input) {
+        let safe_path = match resolve_inside_cwd(path_input, yolo_enabled()) {
             Ok(p) => p,
             Err(e) => return ToolOutput::error(e),
         };
@@ -782,7 +800,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let resolved = resolve_inside_cwd("a/b/c.txt").expect("relative path should be allowed");
+        let resolved =
+            resolve_inside_cwd("a/b/c.txt", false).expect("relative path should be allowed");
         assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
         assert!(resolved.ends_with("a/b/c.txt"));
         std::env::set_current_dir(prev).unwrap();
@@ -796,8 +815,8 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let canon_cwd = tmp.path().canonicalize().unwrap();
         let abs = canon_cwd.join("foo.txt");
-        let resolved =
-            resolve_inside_cwd(abs.to_str().unwrap()).expect("abs path inside cwd should be OK");
+        let resolved = resolve_inside_cwd(abs.to_str().unwrap(), false)
+            .expect("abs path inside cwd should be OK");
         assert_eq!(resolved, abs);
         std::env::set_current_dir(prev).unwrap();
     }
@@ -808,7 +827,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let err = resolve_inside_cwd("/etc/passwd").expect_err("should reject escape");
+        let err = resolve_inside_cwd("/etc/passwd", false).expect_err("should reject escape");
         assert!(
             err.contains("outside the working directory"),
             "got: {}",
@@ -826,8 +845,8 @@ mod tests {
         std::fs::create_dir_all(&inner).unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(&inner).unwrap();
-        let err =
-            resolve_inside_cwd("../outside.txt").expect_err("dotdot escape should be rejected");
+        let err = resolve_inside_cwd("../outside.txt", false)
+            .expect_err("dotdot escape should be rejected");
         assert!(
             err.contains("outside the working directory"),
             "got: {}",
@@ -843,7 +862,51 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
-        let resolved = resolve_inside_cwd("does/not/exist/yet.txt").expect("new paths OK");
+        let resolved = resolve_inside_cwd("does/not/exist/yet.txt", false).expect("new paths OK");
+        assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    // ─── yolo mode (allow_outside_cwd) tests ───────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn test_yolo_allows_absolute_path_outside_cwd() {
+        // The exact escape rejected above is permitted when yolo is on.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved = resolve_inside_cwd("/etc/passwd", true)
+            .expect("yolo should permit absolute path outside cwd");
+        assert_eq!(resolved, Path::new("/etc/passwd"));
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_yolo_allows_dotdot_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner = tmp.path().join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&inner).unwrap();
+        let resolved = resolve_inside_cwd("../outside.txt", true)
+            .expect("yolo should permit dotdot escape");
+        // Resolves to the parent (tmp) dir's sibling file, outside cwd (inner).
+        assert!(resolved.ends_with("outside.txt"));
+        assert!(!resolved.starts_with(inner.canonicalize().unwrap()));
+        std::env::set_current_dir(prev).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_yolo_still_allows_paths_inside_cwd() {
+        // yolo is a superset: paths inside cwd keep working.
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let resolved =
+            resolve_inside_cwd("a/b/c.txt", true).expect("inside-cwd path should still resolve");
         assert!(resolved.starts_with(tmp.path().canonicalize().unwrap()));
         std::env::set_current_dir(prev).unwrap();
     }

@@ -347,7 +347,10 @@ fn standalone_nex_help_exposes_shared_options() {
         "--resume",
         "--chat",
         "--read-only",
-        "--minimal-tools",
+        "--yolo",
+        // NOTE: --minimal-tools / --full-tools are intentionally hidden from
+        // `--help` (see nex_cli.rs `hide = true`, landed with make-nex-tool /
+        // wg-nex-probe). Assert only the shared, user-visible options here.
         "--eval-mode",
         "--api-key",
     ] {
@@ -377,12 +380,115 @@ fn wg_nex_help_keeps_compatibility_options() {
         "--resume",
         "--chat",
         "--read-only",
-        "--minimal-tools",
+        "--yolo",
+        // NOTE: --minimal-tools / --full-tools are intentionally hidden from
+        // `--help` (see nex_cli.rs `hide = true`, landed with make-nex-tool /
+        // wg-nex-probe). Assert only the shared, user-visible options here.
         "--eval-mode",
         "--api-key",
     ] {
         assert!(text.contains(flag), "wg nex help missing {flag}:\n{text}");
     }
+}
+
+/// `--yolo` prints a loud startup banner, and `--yolo --read-only` is
+/// resolved in favor of read-only (with a warning) — yolo never silently
+/// overrides the conservative read-only request. Driven through a local
+/// SSE stub so the run terminates deterministically without a live model.
+#[test]
+fn wg_nex_yolo_banner_and_read_only_precedence() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("project");
+    let wg_dir = project.join(".wg");
+    fs::create_dir_all(&wg_dir).unwrap();
+    fs::create_dir_all(&home).unwrap();
+
+    let expected_key = "wg-yolo-test-key";
+    let key_file = tmp.path().join("openrouter.key");
+    fs::write(&key_file, format!("{expected_key}\n")).unwrap();
+    // Two requests: one for the yolo run, one for the read-only-wins run.
+    let (base_url, _captured) = start_auth_required_oai_stub(2, expected_key);
+    let endpoint = format!("{base_url}/v1");
+    let model = "openrouter:minimax/minimax-m2.7";
+
+    write(
+        &wg_dir.join("config.toml"),
+        &format!(
+            r#"
+[agent]
+model = "{model}"
+
+[dispatcher]
+model = "{model}"
+
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "{endpoint}"
+api_key_file = "{}"
+is_default = true
+"#,
+            key_file.display()
+        ),
+    );
+
+    // --yolo (non-eval autonomous so EndTurn exits and the banner prints).
+    let mut yolo_cmd = isolated_command(wg_binary(), &home, &project);
+    yolo_cmd.args([
+        "nex",
+        "--yolo",
+        "--autonomous",
+        "--no-mcp",
+        "--minimal-tools",
+        "--model",
+        model,
+        "--endpoint",
+        "openrouter",
+        "--max-turns",
+        "1",
+        "hi",
+    ]);
+    let yolo_text = output_text(&yolo_cmd.output().expect("spawn wg nex --yolo"));
+    assert!(
+        yolo_text.contains("YOLO MODE"),
+        "wg nex --yolo should print a loud YOLO banner:\n{yolo_text}"
+    );
+    assert!(
+        yolo_text.contains("All safety gating disabled"),
+        "yolo banner should warn that safety gating is disabled:\n{yolo_text}"
+    );
+
+    // --yolo + --read-only: read-only wins, yolo is OFF, no YOLO banner.
+    let mut conflict_cmd = isolated_command(wg_binary(), &home, &project);
+    conflict_cmd.args([
+        "nex",
+        "--yolo",
+        "--read-only",
+        "--autonomous",
+        "--no-mcp",
+        "--minimal-tools",
+        "--model",
+        model,
+        "--endpoint",
+        "openrouter",
+        "--max-turns",
+        "1",
+        "hi",
+    ]);
+    let conflict_text = output_text(&conflict_cmd.output().expect("spawn wg nex --yolo --read-only"));
+    assert!(
+        conflict_text.contains("read-only wins") && conflict_text.contains("yolo mode is OFF"),
+        "conflict run should warn that read-only wins and yolo is OFF:\n{conflict_text}"
+    );
+    assert!(
+        !conflict_text.contains("YOLO MODE"),
+        "conflict run must NOT show the active YOLO banner:\n{conflict_text}"
+    );
+    assert!(
+        conflict_text.contains("[read-only]"),
+        "conflict run should show the read-only banner:\n{conflict_text}"
+    );
 }
 
 #[test]

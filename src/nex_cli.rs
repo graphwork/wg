@@ -66,6 +66,27 @@ pub struct NexArgs {
     #[arg(long, short = 'r')]
     pub read_only: bool,
 
+    /// YOLO mode: the aggressive inverse of `--read-only`. Disables
+    /// every safety gate on tool execution so state-modifying tools
+    /// (bash, write_file, edit_file) run with no restrictions.
+    ///
+    /// nex already executes tool calls autonomously — it never pauses
+    /// for per-tool `[y/N]` approval. The only safety boundary today is
+    /// the workspace sandbox: write_file/edit_file refuse paths that
+    /// resolve outside the current working directory. `--yolo` lifts
+    /// that boundary, letting the agent write and edit anywhere on the
+    /// filesystem the process can reach. (bash is already unconfined.)
+    ///
+    /// Use ONLY for fully autonomous local-dev iteration where you
+    /// accept that the agent can touch files outside the repo. A loud
+    /// banner is printed on startup whenever yolo mode is active.
+    ///
+    /// Conflicts with `--read-only`; if both are given, read-only wins
+    /// (a warning is printed and yolo is ignored). Also enabled by the
+    /// `WG_NEX_YOLO` env var (set to 1/true/yes/on).
+    #[arg(long = "yolo")]
+    pub yolo: bool,
+
     /// Resume a previous nex session. Three shapes:
     ///
     ///   `nex --resume` / `wg nex --resume` — interactive picker
