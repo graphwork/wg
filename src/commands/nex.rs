@@ -19,6 +19,7 @@
 //! benchmark harnesses) and are documented inline. The regression lock
 //! lives in `tests/integration_handler_stdout_pristine.rs`.
 
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -576,6 +577,39 @@ fn run_inner(
             "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
             result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
         );
+    }
+
+    // On a clean interactive exit (EOF/Ctrl-D, /quit, /exit, or a
+    // normal end-of-turn) tell the human exactly how to resume THIS
+    // session. The hint uses the resolved `session_ref` — the same
+    // alias/uuid that `--resume <pattern>` matches — never a
+    // placeholder. Chat-bound sessions (`--chat` / `--chat-id`) print
+    // the chat-aware form so the resumed conversation lands on the
+    // same `chat/<ref>/conversation.jsonl`.
+    //
+    // Gated to genuine interactive use so non-interactive contracts
+    // stay clean:
+    //   * eval-mode reserves stdout for its JSON summary and keeps
+    //     stderr pristine for the harness — never emit the banner.
+    //   * autonomous one-shot runs are supervised by the daemon, not a
+    //     human at a terminal — no banner.
+    //   * piped/scripted stdin or a non-tty stderr means no human is
+    //     watching live — no banner (mirrors how the live-input editor
+    //     in agent.rs gates on `stdin()/stderr().is_terminal()`).
+    //   * abnormal exits (max_turns, context_limit, release_requested)
+    //     are not clean resumes — only emit on `terminated_cleanly()`.
+    if !eval_mode
+        && !autonomous
+        && result.terminated_cleanly()
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        let resume_cmd = if chat_ref.is_some() || chat_id.is_some() {
+            format!("{} --chat {} --resume", display_name, session_ref)
+        } else {
+            format!("{} --resume {}", display_name, session_ref)
+        };
+        eprintln!("\x1b[2mResume this session with:\x1b[0m  \x1b[1m{}\x1b[0m", resume_cmd);
     }
 
     // Eval mode: emit a single-line JSON summary on stdout so the

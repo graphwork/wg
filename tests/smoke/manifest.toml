@@ -1388,3 +1388,12 @@ owners = [
 ]
 description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "nex_resume_hint_on_exit"
+script = "scenarios/nex_resume_hint_on_exit.sh"
+owners = [
+    "print-resume-command",
+]
+description = "Pins print-resume-command: on a clean INTERACTIVE exit (Ctrl-D/EOF, /quit), `wg nex` prints a one-line `Resume this session with:  wg nex --resume <id>` hint using the REAL resolved session id — proven real by copy-pasting it back and asserting the resume lands in the SAME conversation.jsonl (both turns present). Chat-bound sessions (--chat) exited via `wg session release` print the chat-aware `wg nex --chat <ref> --resume` form instead. Non-interactive contracts stay clean: piped/non-tty output and --eval-mode (stdout JSON summary intact) never emit the banner. Live PTY human-flow harness against a local fake OpenAI server; credential-free."
+timeout_seconds = 120
