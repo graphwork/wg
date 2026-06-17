@@ -677,6 +677,7 @@ owners = [
     "add-compact-nex",
     "fix-nex-chat-2",
     "show-live-thinking",
+    "fix-nex-working",
     "smoke-gate-is",
 ]
 description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts idle follow-up prompts render as `> `, the compact working indicator swaps IN PLACE of the `>` glyph (`↯ ` / no-color `* `, same width + trailing space) only while busy with safe no-color fallback, the live `thinking… N tokens` status hint appears while streaming with a climbing token count and clears cleanly at idle (suppressed on dumb terminals), a bash tool call does not get preceded by misleading prompt text, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
