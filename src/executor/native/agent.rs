@@ -4455,7 +4455,7 @@ mod prompt_indicator_tests {
         render_nex_prompt, render_nex_thinking_hint,
     };
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use unicode_width::UnicodeWidthStr;
 
     fn strip_ansi(input: &str) -> String {
@@ -4502,6 +4502,51 @@ mod prompt_indicator_tests {
         assert!(!plain.contains('>'), "working prompt must not keep a `>`");
         assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
         assert!(rendered.contains("\x1b[1;38;5;"));
+    }
+
+    #[test]
+    fn working_prompt_with_thinking_hint_never_reintroduces_caret() {
+        // fix-nex-working: while the agent is busy the caret is REPLACED by
+        // the lightning glyph (`↯ `), and the live `thinking… N tokens` hint
+        // that rides after it must never reintroduce a `>` — the composed
+        // busy line is `↯ thinking… N tokens`, never `↯>` or any `>`-bearing
+        // form. When the turn finishes the prompt swaps cleanly back to the
+        // idle `> ` caret with no leftover glyph or hint.
+        let progress = LiveProgress::default();
+        // `waiting_for_input == false` == the agent is working.
+        let waiting = Arc::new(AtomicBool::new(false));
+        let state = NexPromptState::new(waiting.clone(), progress.clone());
+
+        progress.add_tokens(7);
+        let prompt = strip_ansi(&state.render());
+        let hint = state
+            .hint("")
+            .expect("busy + empty input line shows the live thinking hint");
+        let composed = format!("{}{}", prompt, hint);
+
+        // Caret swapped in place: glyph + exactly one trailing space, no `>`.
+        assert_eq!(prompt, format!("{} ", NEX_WORKING_GLYPH));
+        assert!(
+            prompt.ends_with(' '),
+            "working prompt must keep the trailing space"
+        );
+        assert!(
+            !composed.contains('>'),
+            "composed busy line must not contain any `>`: {composed:?}"
+        );
+        assert!(
+            !composed.contains("↯>"),
+            "lightning must never be prepended to a caret: {composed:?}"
+        );
+        assert_eq!(composed, "↯ thinking… 7 tokens");
+
+        // Turn finishes -> idle: caret swaps back to a clean `> `, with no
+        // leftover working glyph and no trailing hint.
+        waiting.store(true, Ordering::SeqCst);
+        let idle = strip_ansi(&state.render());
+        assert_eq!(idle, "> ");
+        assert!(!idle.contains('↯'), "no leftover working glyph at idle");
+        assert_eq!(state.hint(""), None, "no trailing hint at idle");
     }
 
     #[test]
