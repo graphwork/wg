@@ -161,6 +161,32 @@ pub struct ToolRegistry {
     /// invoking the tool's `execute`. The agent sees the error in
     /// its tool_result block and can adapt.
     permissions: crate::config::ToolPermissionsConfig,
+    /// Non-destructive active-tool view. `None` = every registered tool
+    /// is active (the full surface). `Some(set)` = only the canonical
+    /// tool names in `set` are surfaced to the model (`definitions()`)
+    /// and allowed to `execute()`; the rest are hidden but **not
+    /// dropped**. Because the underlying `tools` map is never mutated,
+    /// the surface can be toggled live (the `/tools` slash command,
+    /// `set_active_allowlist` / `clear_active_allowlist`) without
+    /// rebuilding the registry or re-running MCP discovery — unlike
+    /// `keep_only_tools`, which is destructive. Names stored here are
+    /// canonical (post-alias) tool names.
+    active_allowlist: Option<std::collections::HashSet<String>>,
+}
+
+/// Whether `canonical_name` is active under an active-allowlist `view`.
+/// `None` = full surface (everything active); `Some(set)` = active iff in
+/// the set. Free function so the parallel-batch closures (which capture a
+/// cloned view rather than borrowing `&self`) can consult the same logic
+/// as [`ToolRegistry::is_active`].
+fn active_with_view(
+    view: &Option<std::collections::HashSet<String>>,
+    canonical_name: &str,
+) -> bool {
+    match view {
+        None => true,
+        Some(set) => set.contains(canonical_name),
+    }
 }
 
 impl Default for ToolRegistry {
@@ -174,6 +200,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             permissions: crate::config::ToolPermissionsConfig::default(),
+            active_allowlist: None,
         }
     }
 
@@ -191,14 +218,36 @@ impl ToolRegistry {
         self.tools.insert(name, tool);
     }
 
-    /// Get JSON Schema definitions for all registered tools (for API request).
+    /// Whether `canonical_name` is currently surfaced/executable given the
+    /// active-allowlist view. `None` view = everything active; `Some(set)`
+    /// = active iff present in the set. `canonical_name` must already be
+    /// alias-resolved (see `resolve_tool_name`).
+    fn is_active(&self, canonical_name: &str) -> bool {
+        active_with_view(&self.active_allowlist, canonical_name)
+    }
+
+    /// Get JSON Schema definitions for the **active** tools (for API
+    /// request). When a lean view is in effect, hidden tools are omitted
+    /// from the surface sent to the model so their schemas don't inflate
+    /// prefill — without dropping the tools, so the view can be widened
+    /// again live.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.definition()).collect()
+        self.tools
+            .iter()
+            .filter(|(name, _)| self.is_active(name))
+            .map(|(_, t)| t.definition())
+            .collect()
     }
 
     /// Execute a tool by name.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolOutput {
         let name = self.resolve_tool_name(name);
+        if !self.is_active(name) {
+            return ToolOutput::error(format!(
+                "tool {:?} is not in the active tool surface (this session is running the minimal tool set). Use `/tools full` to expand the surface.",
+                name
+            ));
+        }
         if self.permissions.is_denied(name) {
             return ToolOutput::error(format!(
                 "permission denied: tool {:?} is on the deny list (see `[native_executor.permissions].deny_tools` in config.toml)",
@@ -219,6 +268,12 @@ impl ToolRegistry {
         on_chunk: ToolStreamCallback,
     ) -> ToolOutput {
         let name = self.resolve_tool_name(name);
+        if !self.is_active(name) {
+            return ToolOutput::error(format!(
+                "tool {:?} is not in the active tool surface (this session is running the minimal tool set). Use `/tools full` to expand the surface.",
+                name
+            ));
+        }
         if self.permissions.is_denied(name) {
             return ToolOutput::error(format!(
                 "permission denied: tool {:?} is on the deny list",
@@ -229,6 +284,47 @@ impl ToolRegistry {
             Some(tool) => tool.execute_streaming(input, on_chunk).await,
             None => ToolOutput::error(format!("Unknown tool: {}", name)),
         }
+    }
+
+    /// Apply a lean active view limited to the given canonical tool names.
+    /// Non-destructive: hidden tools stay registered and can be restored
+    /// with [`clear_active_allowlist`](Self::clear_active_allowlist).
+    /// Names not registered simply never surface. Used by the
+    /// probe-driven minimal-tools default and the `/tools minimal`
+    /// runtime toggle.
+    pub fn set_active_allowlist(&mut self, names: &[&str]) {
+        self.active_allowlist = Some(names.iter().map(|s| s.to_string()).collect());
+    }
+
+    /// Restore the full surface (drop the active view; every registered
+    /// tool becomes active again). Used by the `/tools full` toggle.
+    pub fn clear_active_allowlist(&mut self) {
+        self.active_allowlist = None;
+    }
+
+    /// True when a lean (allowlisted) view is currently active.
+    pub fn is_minimal_view_active(&self) -> bool {
+        self.active_allowlist.is_some()
+    }
+
+    /// All registered tool names regardless of the active view, sorted.
+    pub fn all_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tools.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Tool names currently surfaced to the model (respecting the active
+    /// view), sorted.
+    pub fn active_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tools
+            .keys()
+            .filter(|n| self.is_active(n))
+            .cloned()
+            .collect();
+        names.sort();
+        names
     }
 
     /// Create a filtered registry containing only the named tools.
@@ -245,6 +341,9 @@ impl ToolRegistry {
             // re-enable a denied tool by filtering down to a
             // narrower allow-list that happens to include it.
             permissions: self.permissions.clone(),
+            // A freshly-filtered registry starts with the full view of
+            // whatever survived the narrowing (no active-allowlist gate).
+            active_allowlist: None,
         };
         for name in allowed {
             if let Some(tool) = self.tools.remove(name) {
@@ -301,6 +400,9 @@ impl ToolRegistry {
             tools: HashMap::new(),
             // Preserve permissions — same rationale as `filter`.
             permissions: self.permissions.clone(),
+            // Read-only filtering is a destructive narrowing; the result
+            // starts with the full view of whatever read-only tools remain.
+            active_allowlist: None,
         };
         for (name, tool) in self.tools {
             if tool.is_read_only() {
@@ -346,9 +448,19 @@ impl ToolRegistry {
                     async move {
                         let _permit = sem.acquire().await.unwrap();
                         let start = std::time::Instant::now();
-                        let output = match self.tools.get(self.resolve_tool_name(&call.name)) {
-                            Some(tool) => tool.execute(&call.input).await,
-                            None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
+                        let resolved = self.resolve_tool_name(&call.name);
+                        let output = if !self.is_active(resolved) {
+                            ToolOutput::error(format!(
+                                "tool {:?} is not in the active tool surface (this session is running the minimal tool set). Use `/tools full` to expand the surface.",
+                                resolved
+                            ))
+                        } else {
+                            match self.tools.get(resolved) {
+                                Some(tool) => tool.execute(&call.input).await,
+                                None => {
+                                    ToolOutput::error(format!("Unknown tool: {}", call.name))
+                                }
+                            }
                         };
                         let duration_ms = start.elapsed().as_millis() as u64;
                         (
@@ -417,12 +529,17 @@ impl ToolRegistry {
         if !read_only.is_empty() {
             let semaphore = Arc::new(Semaphore::new(max_concurrent));
             let tools = Arc::new(&self.tools);
+            // Capture the active-allowlist view so each closure can gate
+            // hidden tools without borrowing `&self` (mirrors
+            // `is_active`); the parallel closures only hold `tools`.
+            let view = Arc::new(self.active_allowlist.clone());
 
             let futures: Vec<_> = read_only
                 .iter()
                 .map(|(idx, call)| {
                     let sem = Arc::clone(&semaphore);
                     let tools = Arc::clone(&tools);
+                    let view = Arc::clone(&view);
                     let cb = make_stream_callback(*idx);
                     async move {
                         let _permit = sem.acquire().await.unwrap();
@@ -435,9 +552,18 @@ impl ToolRegistry {
                         } else {
                             claude_code_alias(&call.name).unwrap_or(call.name.as_str())
                         };
-                        let output = match tools.get(resolved) {
-                            Some(tool) => tool.execute_streaming(&call.input, cb).await,
-                            None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
+                        let output = if !active_with_view(&view, resolved) {
+                            ToolOutput::error(format!(
+                                "tool {:?} is not in the active tool surface (this session is running the minimal tool set). Use `/tools full` to expand the surface.",
+                                resolved
+                            ))
+                        } else {
+                            match tools.get(resolved) {
+                                Some(tool) => tool.execute_streaming(&call.input, cb).await,
+                                None => {
+                                    ToolOutput::error(format!("Unknown tool: {}", call.name))
+                                }
+                            }
                         };
                         let duration_ms = start.elapsed().as_millis() as u64;
                         (
@@ -510,6 +636,9 @@ impl ToolRegistry {
         let mut registry = Self {
             tools: HashMap::new(),
             permissions: config.permissions.clone(),
+            // Full surface by default; the probe-driven minimal-tools
+            // default (and the `/tools` toggle) install a view later.
+            active_allowlist: None,
         };
 
         // File tools
@@ -939,6 +1068,85 @@ mod parallelism_tests {
                 registered
             );
         }
+    }
+
+    /// The active-allowlist view toggles the surface non-destructively:
+    /// full -> minimal -> full restores every tool WITHOUT rebuilding the
+    /// registry (the underlying `Box<dyn Tool>` instances are never
+    /// dropped). This is the property that lets `/tools` switch live.
+    #[test]
+    fn active_allowlist_view_toggles_non_destructively() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+
+        // Full surface to start: no view, definitions == all registered.
+        assert!(!registry.is_minimal_view_active());
+        let full: std::collections::HashSet<String> =
+            registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(full.contains("web_fetch") && full.contains("delegate"));
+        let full_count = full.len();
+        assert!(
+            full_count > MINIMAL_TOOL_NAMES.len(),
+            "full surface should be wider than the minimal allowlist"
+        );
+
+        // Install the lean view.
+        registry.set_active_allowlist(MINIMAL_TOOL_NAMES);
+        assert!(registry.is_minimal_view_active());
+        let minimal: std::collections::HashSet<String> =
+            registry.definitions().into_iter().map(|d| d.name).collect();
+        let expected: std::collections::HashSet<String> =
+            MINIMAL_TOOL_NAMES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            minimal, expected,
+            "lean view surfaces exactly the allowlist"
+        );
+        assert!(!minimal.contains("web_fetch"));
+        // Non-destructive: every tool is still registered under the hood.
+        assert_eq!(registry.all_tool_names().len(), full_count);
+
+        // Toggle back to full — all tools restored, no rebuild.
+        registry.clear_active_allowlist();
+        assert!(!registry.is_minimal_view_active());
+        let restored: std::collections::HashSet<String> =
+            registry.definitions().into_iter().map(|d| d.name).collect();
+        assert_eq!(
+            restored, full,
+            "full -> minimal -> full restores every tool"
+        );
+    }
+
+    /// A tool hidden by the active view cannot be executed — `execute`
+    /// returns an error pointing at `/tools full`, even though the tool is
+    /// still registered. Defense-in-depth for a model that calls a tool it
+    /// can no longer see.
+    #[tokio::test]
+    async fn hidden_tool_is_not_executable_under_lean_view() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "read_file".to_string(),
+            read_only: true,
+        }));
+        registry.register(Box::new(TestTool {
+            tool_name: "web_fetch".to_string(),
+            read_only: true,
+        }));
+        registry.set_active_allowlist(&["read_file"]);
+
+        // Visible tool still executes.
+        let ok = registry.execute("read_file", &serde_json::json!({})).await;
+        assert!(!ok.is_error, "active tool must run: {}", ok.content);
+
+        // Hidden tool is refused with a discoverability hint.
+        let blocked = registry.execute("web_fetch", &serde_json::json!({})).await;
+        assert!(blocked.is_error);
+        assert!(
+            blocked.content.contains("active tool surface")
+                && blocked.content.contains("/tools full"),
+            "hidden-tool error should point at /tools full: {}",
+            blocked.content
+        );
     }
 
     /// An aliased call must dispatch to the canonical tool's `execute`,
