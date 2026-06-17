@@ -1388,3 +1388,12 @@ owners = [
 ]
 description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "nex_yolo_banner_and_precedence"
+script = "scenarios/nex_yolo_banner_and_precedence.sh"
+owners = [
+    "add-yolo-mode",
+]
+description = "Pins add-yolo-mode: `wg nex --yolo` prints a loud 'YOLO MODE' startup banner announcing the workspace write sandbox is disabled (write_file/edit_file may write outside cwd, no confirmation), and the --yolo + --read-only conflict resolves in favor of read-only (warning 'read-only wins', 'yolo mode is OFF', active YOLO banner suppressed, read-only banner shown). Credential-free: the banner is emitted before any model round-trip, so a bogus endpoint suffices."
+timeout_seconds = 60
