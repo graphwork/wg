@@ -103,11 +103,23 @@ fn build_inline_url_client(
     // base_url must include the `/v1` path segment.
     let base = normalize_oai_compat_base_url(url);
     let key = api_key_override.map(String::from).unwrap_or_default();
-    let client = OpenAiClient::new(key, model, None)
+    let mut client = OpenAiClient::new(key.clone(), model, None)
         .context("initialize oai-compat client for inline URL")?
         .with_provider_hint("oai-compat")
         .with_endpoint_name(url)
         .with_base_url(&base);
+    // Zero-config path (e.g. `wg nex -e http://localhost:8088`): probe the
+    // server for its runtime context window so the tool-output channeling
+    // budget matches reality (a llama.cpp `-c 8192` server should not be
+    // treated as if it had a 128k window). Falls back to the client default
+    // when the endpoint can't be probed.
+    let context_window = super::context_probe::resolve_context_window(
+        None,
+        || super::context_probe::probe_context_window_blocking(&base, &key, model, "oai-compat"),
+        None,
+        super::context_probe::DEFAULT_FALLBACK_CONTEXT_WINDOW,
+    );
+    client = client.with_context_window(context_window);
     Ok(client)
 }
 
@@ -445,7 +457,10 @@ pub fn create_provider_ext_with_config(
     let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);
     let endpoint_name_owned: Option<String> = endpoint.map(|ep| ep.name.clone());
 
-    // Resolve context window: endpoint config > model registry > provider default
+    // Context-window inputs. Final resolution (config > live probe > registry >
+    // configurable fallback) happens at the OAI-compat client site below, where
+    // the resolved base URL, model, and provider hint are known — the probe
+    // needs all three. See `context_probe::resolve_context_window`.
     let registry_context_window = config
         .effective_registry()
         .into_iter()
@@ -457,7 +472,6 @@ pub fn create_provider_ext_with_config(
                 None
             }
         });
-    let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
     // Base URL resolution: endpoint config > legacy [native_executor] api_base.
     // Per the WG credential contract, env vars (WG_ENDPOINT_URL,
@@ -475,6 +489,16 @@ pub fn create_provider_ext_with_config(
         .and_then(|v| v.as_integer())
         .map(|v| v as u32);
 
+    // Configurable fallback context window for the tool-output channeling
+    // budget when nothing else resolves (plain OpenAI, unreachable local
+    // server). No hardcoded small constant: defaults to a generous 128k.
+    let fallback_context_window = native_cfg
+        .and_then(|c| c.get("fallback_context_window"))
+        .and_then(|v| v.as_integer())
+        .filter(|&v| v > 0)
+        .map(|v| v as usize)
+        .unwrap_or(super::context_probe::DEFAULT_FALLBACK_CONTEXT_WINDOW);
+
     match provider_name.as_str() {
         "oai-compat" | "openai" | "openrouter" | "local" => {
             // Resolve API key from CONFIG ONLY:
@@ -491,6 +515,9 @@ pub fn create_provider_ext_with_config(
             // path bailing with "No Anthropic API key found" before any
             // HTTP call when no env var was set.
             let resolved_key = api_key_override.map(String::from).or(endpoint_key);
+            // Keep a copy for the context-window probe (the original is moved
+            // into the client below). Empty string => probe sends no auth header.
+            let probe_api_key = resolved_key.clone().unwrap_or_default();
 
             let mut client = OpenAiClient::new(resolved_key.unwrap_or_default(), model, None)
                 .context("Failed to initialize OpenAI-compatible client")?;
@@ -524,9 +551,25 @@ pub fn create_provider_ext_with_config(
             if let Some(mt) = max_tokens {
                 client = client.with_max_tokens(mt);
             }
-            if let Some(cw) = resolved_context_window {
-                client = client.with_context_window(cw as usize);
-            }
+            // Resolve the context window: explicit config > live endpoint probe
+            // (llama.cpp /props n_ctx, vLLM /v1/models max_model_len) > model
+            // registry > configurable fallback. The probe runs only for the
+            // local-ish family and is cached per (base_url, model). This drives
+            // the tool-output channeling budget (see channel.rs).
+            let context_window = super::context_probe::resolve_context_window(
+                endpoint_context_window.map(|v| v as usize),
+                || {
+                    super::context_probe::probe_context_window_blocking(
+                        client.base_url(),
+                        &probe_api_key,
+                        client.model(),
+                        &provider_name,
+                    )
+                },
+                registry_context_window.map(|v| v as usize),
+                fallback_context_window,
+            );
+            client = client.with_context_window(context_window);
             // Validate model against cached OpenRouter model list (openrouter only)
             if provider_name == "openrouter" {
                 let validation =

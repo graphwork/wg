@@ -15,6 +15,7 @@ pub mod cancel;
 pub mod channel;
 pub mod chat_surface;
 pub mod client;
+pub mod context_probe;
 pub mod inbox;
 pub mod journal;
 pub mod l0_defense;
