@@ -16,6 +16,7 @@ pub mod progress;
 pub mod reader;
 pub mod research;
 pub mod summarize;
+pub mod todo;
 pub mod web_fetch;
 pub mod web_search;
 
@@ -94,6 +95,48 @@ pub trait Tool: Send + Sync {
 /// Default maximum concurrent read-only tool executions.
 pub const DEFAULT_MAX_CONCURRENT_TOOLS: usize = 10;
 
+/// Canonical lean tool surface for `wg nex --minimal-tools`.
+///
+/// Single source of truth — both the CLI wiring (`src/commands/nex.rs`)
+/// and its tests reference this list, so the allowlist cannot drift out
+/// of sync with the registry. **Every name here MUST resolve to a tool
+/// registered by `default_all_with_config_and_routing`** (enforced by
+/// `minimal_tool_names_all_resolve`); adding a phantom name that no tool
+/// implements would make `keep_only_tools` silently filter to nothing.
+pub const MINIMAL_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "edit_file",
+    "write_file",
+    "bash",
+    "grep",
+    "glob",
+    "todo_write",
+];
+
+/// Map a Claude Code PascalCase tool name to nex's canonical snake_case
+/// tool name, or `None` if `name` is not a known alias.
+///
+/// nex's registered tools are snake_case (`read_file`, `edit_file`, …),
+/// not Claude Code's PascalCase (`Read`, `Edit`, …). Models and harnesses
+/// trained against Claude Code emit the PascalCase names; resolving them
+/// here at dispatch time lets those prompts work unchanged without
+/// doubling the advertised tool schema (the aliases are NOT added to
+/// `definitions()`, so prefill cost is unaffected).
+pub fn claude_code_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Read" => "read_file",
+        "Edit" => "edit_file",
+        "Write" => "write_file",
+        "Bash" => "bash",
+        "Grep" => "grep",
+        "Glob" => "glob",
+        "TodoWrite" => "todo_write",
+        "WebFetch" => "web_fetch",
+        "WebSearch" => "web_search",
+        _ => return None,
+    })
+}
+
 /// A tool call request (name + input).
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -155,6 +198,7 @@ impl ToolRegistry {
 
     /// Execute a tool by name.
     pub async fn execute(&self, name: &str, input: &serde_json::Value) -> ToolOutput {
+        let name = self.resolve_tool_name(name);
         if self.permissions.is_denied(name) {
             return ToolOutput::error(format!(
                 "permission denied: tool {:?} is on the deny list (see `[native_executor.permissions].deny_tools` in config.toml)",
@@ -174,6 +218,7 @@ impl ToolRegistry {
         input: &serde_json::Value,
         on_chunk: ToolStreamCallback,
     ) -> ToolOutput {
+        let name = self.resolve_tool_name(name);
         if self.permissions.is_denied(name) {
             return ToolOutput::error(format!(
                 "permission denied: tool {:?} is on the deny list",
@@ -216,6 +261,19 @@ impl ToolRegistry {
         }
     }
 
+    /// Resolve a possibly-aliased tool name to the canonical name used
+    /// for dispatch. A name that is already a registered tool is returned
+    /// unchanged; otherwise a known Claude Code PascalCase alias
+    /// (`Read` → `read_file`, …) is mapped to its canonical snake_case
+    /// name. Unknown names pass through unchanged so the normal
+    /// "Unknown tool" error reports what the model actually sent.
+    pub fn resolve_tool_name<'a>(&self, name: &'a str) -> &'a str {
+        if self.tools.contains_key(name) {
+            return name;
+        }
+        claude_code_alias(name).unwrap_or(name)
+    }
+
     /// Keep only the specified tools by name, removing all others.
     /// Used by `wg nex --minimal-tools` to provide a lean tool surface
     /// for small local models (reduces prefill cost).
@@ -225,8 +283,11 @@ impl ToolRegistry {
             .retain(|name, _| keep_set.contains(name.as_str()));
     }
 
-    /// Check whether a tool is read-only by name.
+    /// Check whether a tool is read-only by name. Resolves aliases so
+    /// an aliased call (e.g. `Read`) is classified by its canonical
+    /// tool's read-only flag for batch parallelism.
     pub fn is_read_only(&self, name: &str) -> bool {
+        let name = self.resolve_tool_name(name);
         self.tools.get(name).is_some_and(|t| t.is_read_only())
     }
 
@@ -285,7 +346,7 @@ impl ToolRegistry {
                     async move {
                         let _permit = sem.acquire().await.unwrap();
                         let start = std::time::Instant::now();
-                        let output = match self.tools.get(&call.name) {
+                        let output = match self.tools.get(self.resolve_tool_name(&call.name)) {
                             Some(tool) => tool.execute(&call.input).await,
                             None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
                         };
@@ -366,7 +427,15 @@ impl ToolRegistry {
                     async move {
                         let _permit = sem.acquire().await.unwrap();
                         let start = std::time::Instant::now();
-                        let output = match tools.get(&call.name) {
+                        // Resolve Claude Code aliases against the captured
+                        // tool map (mirrors `resolve_tool_name`, which needs
+                        // `&self` we don't hold inside this closure).
+                        let resolved = if tools.contains_key(&call.name) {
+                            call.name.as_str()
+                        } else {
+                            claude_code_alias(&call.name).unwrap_or(call.name.as_str())
+                        };
+                        let output = match tools.get(resolved) {
                             Some(tool) => tool.execute_streaming(&call.input, cb).await,
                             None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
                         };
@@ -448,6 +517,11 @@ impl ToolRegistry {
 
         // Bash tool
         bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
+
+        // todo_write: in-context planning scratchpad (part of the minimal
+        // local-dev surface; also the canonical target of the `TodoWrite`
+        // Claude Code alias).
+        todo::register_todo_write_tool(&mut registry);
 
         // Web search tool
         web_search::register_web_search_tool(&mut registry);
@@ -841,5 +915,93 @@ mod parallelism_tests {
     #[test]
     fn test_default_max_concurrent() {
         assert_eq!(DEFAULT_MAX_CONCURRENT_TOOLS, 10);
+    }
+
+    /// The `--minimal-tools` allowlist must contain no phantom names:
+    /// every entry has to resolve to a tool the full default registry
+    /// actually registers. Otherwise `keep_only_tools` silently filters
+    /// the surface down to a name that never existed (the `todo_write`
+    /// bug this guards against).
+    #[test]
+    fn minimal_tool_names_all_resolve() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+        let registered: std::collections::HashSet<String> =
+            registry.definitions().into_iter().map(|d| d.name).collect();
+
+        for name in MINIMAL_TOOL_NAMES {
+            assert!(
+                registered.contains(*name),
+                "minimal-tools allowlist names a tool that is not registered: {:?} \
+                 (keep_only_tools would silently drop it). Registered: {:?}",
+                name,
+                registered
+            );
+        }
+    }
+
+    /// An aliased call must dispatch to the canonical tool's `execute`,
+    /// not fall through to the "Unknown tool" path.
+    #[tokio::test]
+    async fn aliased_call_dispatches_to_canonical_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool {
+            tool_name: "read_file".to_string(),
+            read_only: true,
+        }));
+
+        let out = registry.execute("Read", &serde_json::json!({})).await;
+        assert!(!out.is_error, "aliased call must dispatch: {}", out.content);
+        assert_eq!(out.content, "ok-read_file");
+
+        // Aliased classification routes through the read-only fast path.
+        assert!(registry.is_read_only("Read"));
+
+        // A denylist on the canonical name also blocks the alias.
+        let denied = registry.with_permissions(crate::config::ToolPermissionsConfig {
+            deny_tools: vec!["read_file".to_string()],
+        });
+        let out = denied.execute("Read", &serde_json::json!({})).await;
+        assert!(out.is_error);
+        assert!(out.content.contains("permission denied"));
+    }
+
+    /// Claude Code PascalCase tool names must resolve to nex's snake_case
+    /// tools so prompts/harnesses written against Claude Code work
+    /// unchanged. Aliases resolve at dispatch only — they are NOT added
+    /// to the advertised tool surface.
+    #[test]
+    fn claude_code_aliases_resolve() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+
+        for (alias, canonical) in [
+            ("Read", "read_file"),
+            ("Edit", "edit_file"),
+            ("Write", "write_file"),
+            ("Bash", "bash"),
+            ("Grep", "grep"),
+            ("Glob", "glob"),
+            ("TodoWrite", "todo_write"),
+        ] {
+            assert_eq!(
+                registry.resolve_tool_name(alias),
+                canonical,
+                "alias {alias:?} should resolve to {canonical:?}"
+            );
+        }
+
+        // A canonical name passes through unchanged.
+        assert_eq!(registry.resolve_tool_name("read_file"), "read_file");
+        // An unknown name passes through unchanged (lets the normal
+        // "Unknown tool" error path report the real name).
+        assert_eq!(registry.resolve_tool_name("not_a_tool"), "not_a_tool");
+
+        // Aliases must NOT bloat the advertised surface.
+        let names: std::collections::HashSet<String> =
+            registry.definitions().into_iter().map(|d| d.name).collect();
+        assert!(!names.contains("Read"), "alias must not be advertised");
     }
 }

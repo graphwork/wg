@@ -156,11 +156,13 @@ pub struct NexArgs {
     #[arg(long = "idle-timeout-secs")]
     pub idle_timeout_secs: Option<u64>,
 
-    /// Minimal tool surface: expose only the canonical local-dev
-    /// tool set (Read, Edit, Write, Bash, Grep, Glob, TodoWrite)
-    /// and omit everything else (WebFetch, WebSearch, NotebookEdit,
-    /// Monitor, Task*, Remote*, Cron*, MCP tools). Dramatically
-    /// reduces prefill cost for small local models. Implies --no-mcp.
+    /// Minimal tool surface: expose only the canonical local-dev tool
+    /// set (read_file, edit_file, write_file, bash, grep, glob,
+    /// todo_write) and omit everything else (web_fetch, web_search,
+    /// delegate, summarize, research, reader, map, MCP tools, ...).
+    /// Claude Code PascalCase names (Read/Edit/Write/Bash/Grep/Glob/
+    /// TodoWrite) resolve to these as aliases. Dramatically reduces
+    /// prefill cost for small local models. Implies --no-mcp.
     #[arg(long = "minimal-tools")]
     pub minimal_tools: bool,
 }

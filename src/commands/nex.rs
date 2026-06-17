@@ -235,15 +235,10 @@ fn run_inner(
         if minimal_tools {
             // Minimal tool surface: keep only the canonical local-dev set.
             // Dramatically reduces prefill cost for small local models.
-            reg.keep_only_tools(&[
-                "read_file",
-                "edit_file",
-                "write_file",
-                "bash",
-                "grep",
-                "glob",
-                "todo_write",
-            ]);
+            // The allowlist is a single shared constant so it can never name
+            // a tool the registry does not register (the `todo_write`
+            // phantom-filter bug).
+            reg.keep_only_tools(crate::executor::native::tools::MINIMAL_TOOL_NAMES);
         }
         if read_only {
             reg.filter_read_only()
@@ -865,17 +860,10 @@ mod tests {
 
     #[test]
     fn test_nex_minimal_tool_surface_keeps_bash_without_web_fetch() {
+        use crate::executor::native::tools::MINIMAL_TOOL_NAMES;
         let tmp = TempDir::new().unwrap();
         let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
-        registry.keep_only_tools(&[
-            "read_file",
-            "edit_file",
-            "write_file",
-            "bash",
-            "grep",
-            "glob",
-            "todo_write",
-        ]);
+        registry.keep_only_tools(MINIMAL_TOOL_NAMES);
         let names: Vec<String> = registry
             .definitions()
             .into_iter()
@@ -883,6 +871,17 @@ mod tests {
             .collect();
 
         assert!(names.contains(&"bash".to_string()));
+        // todo_write is a real tool now, so the minimal allowlist actually
+        // keeps it instead of silently filtering to a phantom name.
+        assert!(names.contains(&"todo_write".to_string()));
+        // Every kept name resolves to a registered tool — no phantoms slip
+        // through the minimal surface.
+        for kept in MINIMAL_TOOL_NAMES {
+            assert!(
+                names.contains(&kept.to_string()),
+                "minimal surface dropped {kept:?} — it is not a registered tool"
+            );
+        }
         assert!(!names.contains(&"web_fetch".to_string()));
         assert!(!names.contains(&"web_search".to_string()));
     }
