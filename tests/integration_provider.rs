@@ -57,9 +57,16 @@ fn openai_mock_response(model: &str) -> String {
     )
 }
 
-/// Start a mock HTTP server that responds to any POST with `body`.
+/// Start a mock HTTP server that responds to any request with `body`.
 /// Returns the base URL (e.g. "http://127.0.0.1:PORT").
-/// The server handles exactly `num_requests` requests then stops.
+/// The server accepts exactly `num_requests` connections then stops (it replies
+/// `Connection: close`, so one request == one connection).
+///
+/// NOTE: a provider built through `create_provider_ext` against an
+/// OpenAI-compatible endpoint issues two context-window probe requests
+/// (`GET /props`, `GET /v1/models`) *before* its first real call — budget for
+/// those when sizing `num_requests`. Tests that construct `OpenAiClient`
+/// directly skip the probe and need only the request count they make.
 fn start_mock_server(body: String, num_requests: usize) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -469,7 +476,16 @@ fn test_per_role_with_mock_servers() {
     let openai_body = openai_mock_response("gpt-4o-mini");
 
     let anthropic_url = start_mock_server(anthropic_body.clone(), 1);
-    let openai_url = start_mock_server(openai_body.clone(), 1);
+    // The OpenAI-compatible provider is built through `create_provider_ext`,
+    // which runs a context-window probe before any send: it issues
+    // `GET /props` (llama.cpp n_ctx) then `GET /v1/models` (vLLM max_model_len),
+    // and only then does the actual `POST /v1/chat/completions`. Each uses a
+    // fresh connection (the mock replies `Connection: close`), so the mock must
+    // accept all three. With a budget of 1 the probe consumed the single
+    // connection and the real send hit "Connection refused" — the pre-existing
+    // flake this test had. The Anthropic provider is not probed (its hint is not
+    // in `context_probe::PROBEABLE_HINTS`), so its mock still needs only 1.
+    let openai_url = start_mock_server(openai_body.clone(), 3);
 
     let config_content = format!(
         r#"
