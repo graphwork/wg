@@ -702,6 +702,15 @@ description = "Drives standalone `nex` through a real PTY against a local mock O
 timeout_seconds = 120
 
 [[scenario]]
+name = "nex_thinking_timer_pty"
+script = "scenarios/nex_thinking_timer_pty.sh"
+owners = [
+    "refresh-nex-thinking",
+]
+description = "Pins refresh-nex-thinking: the live `thinking… N tokens` working indicator repaints on a FIXED ~100ms timer decoupled from token arrival. Drives `wg nex` through a real PTY against a local SSE server that STALLS (sends nothing for ~1.5s of prefill, then a token, then stalls again). With the timer ON the `↯ prefilling…` indicator must repaint many times during the stall (one per tick, ZERO tokens arriving); with `WG_NEX_SPINNER_MS=off` (== pre-fix repaint-on-token-flush-only) it freezes at a single paint — so the contrast proves the timer is what unfreezes it. A small embedded VT100 emulator replays the captured bytes and asserts the cursor-neutral repaint NEVER scrolls the screen, and the indicator is cleanly cleared at the idle prompt on turn end."
+timeout_seconds = 120
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [

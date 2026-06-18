@@ -398,17 +398,37 @@ const NEX_WORKING_FALLBACK: &str = "*";
 /// shifts) and the running token count is rendered as a trailing
 /// rustyline hint. The hint is recomputed inside rustyline's
 /// `refresh_line`, which fires on every keystroke AND every
-/// `ExternalPrinter::print` — so the count advances live as streamed
-/// text flushes, with no extra timer thread and no added render
-/// contention (the original throbber complaint).
+/// `ExternalPrinter::print`.
+///
+/// Token flushes alone are a JITTERY repaint clock: nothing prints
+/// during prefill, and with reasoning hidden the count is incremented
+/// (silently) but never flushed, so the indicator freezes during long
+/// thinks/stalls. The repaint is therefore ALSO driven by a fixed
+/// ~100ms timer (see [`nex_spinner_interval`] /
+/// [`LiveTerminalOutput::repaint`]): every tick reads the latest
+/// cumulative `tokens` and advances `frame` so the count keeps moving
+/// and the `↯` glyph pulses even when no new tokens arrived. The timer
+/// is gated on `!waiting_for_input && !composing`, so it adds no input
+/// latency and never repaints over a half-typed line (the original
+/// throbber complaint that fix-nex-chat-2 guarded against).
 #[derive(Clone, Default)]
 struct LiveProgress {
     tokens: Arc<AtomicU64>,
+    /// Monotonic animation frame, advanced by the repaint timer (NOT by
+    /// keystrokes), so the working-glyph pulse is decoupled from typing
+    /// and never flickers per-keystroke.
+    frame: Arc<AtomicU64>,
+    /// Set true whenever the user has a non-empty input line (observed
+    /// by the rustyline hinter). The repaint timer reads it to suppress
+    /// repaints while the user composes a queued message.
+    composing: Arc<AtomicBool>,
 }
 
 impl LiveProgress {
     /// Clear the count at the start of a model call so the next turn's
-    /// `thinking…` indicator restarts from the prefill phase.
+    /// `thinking…` indicator restarts from the prefill phase. The
+    /// animation `frame` is intentionally left running so the glyph
+    /// pulse stays continuous across turns.
     fn reset(&self) {
         self.tokens.store(0, Ordering::Relaxed);
     }
@@ -421,6 +441,67 @@ impl LiveProgress {
     fn tokens(&self) -> u64 {
         self.tokens.load(Ordering::Relaxed)
     }
+
+    /// Advance the animation frame one step (called on each timer tick).
+    fn tick_frame(&self) {
+        self.frame.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn frame(&self) -> u64 {
+        self.frame.load(Ordering::Relaxed)
+    }
+
+    fn set_composing(&self, composing: bool) {
+        self.composing.store(composing, Ordering::Relaxed);
+    }
+
+    fn composing(&self) -> bool {
+        self.composing.load(Ordering::Relaxed)
+    }
+}
+
+/// Default repaint cadence for the live `thinking… N tokens` working
+/// indicator, in milliseconds (~10 fps). This is the standard band for
+/// agent CLIs (Claude Code ≈120ms; typical 80–250ms) — fast enough to
+/// read as smooth motion, slow enough to add no perceptible cost.
+/// Override at runtime with `WG_NEX_SPINNER_MS` (an integer count of
+/// milliseconds, or `0`/`off` to disable the timer and fall back to
+/// repaint-on-token-flush only).
+const NEX_SPINNER_DEFAULT_MS: u64 = 100;
+
+/// Floor for `WG_NEX_SPINNER_MS` so a pathologically small override
+/// can't peg a core or cause visible flicker.
+const NEX_SPINNER_MIN_MS: u64 = 16;
+
+/// Parse a `WG_NEX_SPINNER_MS` value into a repaint interval. `None`
+/// means the timer is explicitly disabled; `Some(interval)` is the
+/// (clamped) cadence. Empty / unparseable values fall back to the
+/// default rather than disabling, so a stray export never silently
+/// kills the animation. Split out from [`nex_spinner_interval`] so it
+/// is unit-testable without mutating the process environment.
+fn parse_spinner_interval(raw: Option<&str>) -> Option<Duration> {
+    let Some(value) = raw else {
+        return Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS));
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS));
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "0" | "off" | "false" | "none" | "disable" | "disabled"
+    ) {
+        return None;
+    }
+    match trimmed.parse::<u64>() {
+        Ok(ms) => Some(Duration::from_millis(ms.max(NEX_SPINNER_MIN_MS))),
+        Err(_) => Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS)),
+    }
+}
+
+/// Resolve the live-indicator repaint interval from the environment.
+fn nex_spinner_interval() -> Option<Duration> {
+    parse_spinner_interval(std::env::var("WG_NEX_SPINNER_MS").ok().as_deref())
 }
 
 /// Per-turn reasoning bookkeeping shared between the streaming callback
@@ -495,6 +576,7 @@ impl NexPromptState {
             self.waiting_for_input.load(Ordering::SeqCst),
             self.color_enabled,
             self.working_indicator,
+            self.progress.frame(),
         )
     }
 
@@ -504,10 +586,16 @@ impl NexPromptState {
     /// (so a queued message is never cluttered by the status), leaving
     /// the lightning glyph as the sole busy indicator in that case.
     fn hint(&self, line: &str) -> Option<String> {
+        // Record whether the user is mid-compose so the repaint timer can
+        // hold its repaints (avoiding flicker / input lag) while they type
+        // a queued line. The hinter is the natural observer: rustyline
+        // calls it on every refresh with the live buffer.
+        let composing = !line.is_empty();
+        self.progress.set_composing(composing);
         if self.waiting_for_input.load(Ordering::SeqCst) {
             return None;
         }
-        if !line.is_empty() {
+        if composing {
             return None;
         }
         Some(render_nex_thinking_hint(self.progress.tokens()))
@@ -575,10 +663,17 @@ impl rustyline::highlight::Highlighter for NexReadlineHelper {
     }
 }
 
+/// Working-glyph pulse palette (bold 256-color oranges). Stepped once per
+/// repaint-timer tick to give the `↯` glyph a gentle breathing animation
+/// (214 base → 220 bright → 214 → 208 dim → repeat). Width is unaffected —
+/// only the SGR color changes — so the input column never shifts.
+const NEX_WORKING_PULSE: [u8; 4] = [214, 220, 214, 208];
+
 fn render_nex_prompt(
     waiting_for_input: bool,
     color_enabled: bool,
     working_indicator: &str,
+    frame: u64,
 ) -> String {
     if waiting_for_input {
         // Idle / ready: greater-than glyph + one trailing space.
@@ -590,17 +685,19 @@ fn render_nex_prompt(
     } else if color_enabled {
         // Working: the lightning glyph is swapped IN PLACE of the `>` (not
         // prepended), keeping the same 2-cell width and the trailing space
-        // so the input column never shifts. Fixed color, NOT animated:
-        // rustyline repaints the prompt on every keystroke and every
-        // ExternalPrinter::print, so a tick-driven color cycle would only
-        // advance while output streams (frozen during quiet tool calls) and
-        // would re-emit a new color on each keystroke — read as input lag.
-        // Reliable animation would need a timer forcing repaints, which
-        // rustyline cannot do without emitting output (added contention).
-        // See fix-nex-chat-2 for the full root-cause note.
-        format!("\x1b[1;38;5;214m{}\x1b[0m ", working_indicator)
+        // so the input column never shifts. The color pulses across frames,
+        // but `frame` advances ONLY on the dedicated repaint timer — never
+        // per-keystroke — so the animation is smooth and decoupled from
+        // typing. (fix-nex-chat-2 banned per-keystroke color cycling, which
+        // read as input lag; a fixed-cadence timer is what it said reliable
+        // animation would require. The render stays a pure function of
+        // `frame`, so two refreshes within the same tick are identical.)
+        let color = NEX_WORKING_PULSE[(frame as usize) % NEX_WORKING_PULSE.len()];
+        format!("\x1b[1;38;5;{}m{}\x1b[0m ", color, working_indicator)
     } else {
         // No-color / dumb terminal: ASCII star fallback + trailing space.
+        // No color to animate; the live token count still advances on the
+        // timer via the trailing hint, which is the primary motion cue.
         format!("{} ", working_indicator)
     }
 }
@@ -657,6 +754,26 @@ impl LiveTerminalOutput {
             }
         }
     }
+
+    /// Force the live rustyline prompt (working glyph + `thinking… N
+    /// tokens` hint) to redraw WITHOUT appending visible output, so the
+    /// repaint timer can animate the indicator even when no tokens are
+    /// streaming.
+    ///
+    /// rustyline's `external_print` clears the prompt rows, writes the
+    /// message, then redraws the prompt below it — appending a `\n` unless
+    /// the message already ends in one. We send a cursor-neutral
+    /// `cursor-up-one-row` + `newline`: it ends in `\n` (so rustyline adds
+    /// no extra newline) and the up-then-down nets back to the same row,
+    /// leaving the redraw exactly in place with no scroll. Going through
+    /// rustyline (rather than writing stderr directly) keeps its layout
+    /// model consistent, and the print pipe serializes this with streamed
+    /// output so the two never interleave mid-write.
+    fn repaint(&self) {
+        if let Ok(mut printer) = self.printer.lock() {
+            let _ = printer.print("\x1b[1A\n".to_string());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -704,6 +821,10 @@ struct LiveTerminalInput {
     output: LiveTerminalOutput,
     waiting_for_input: Arc<AtomicBool>,
     progress: LiveProgress,
+    /// Dropping this sender disconnects the repaint timer's channel,
+    /// waking it immediately so it stops cleanly (see `Drop`).
+    spinner_stop: Option<std::sync::mpsc::Sender<()>>,
+    spinner_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl LiveTerminalInput {
@@ -814,11 +935,52 @@ impl LiveTerminalInput {
             let _ = editor.save_history(&history_path);
         });
 
+        // Fixed-cadence repaint timer. It drives the live `thinking… N
+        // tokens` indicator off a steady clock instead of riding solely on
+        // token-flush prints, so the count + glyph keep animating during
+        // prefill and long quiet thinks. Disabled (no thread) when
+        // `WG_NEX_SPINNER_MS=0/off`. Gated on `!waiting_for_input` (idle
+        // boundaries stay quiet) and `!composing` (never repaint over a
+        // half-typed queued line) so it adds no input latency.
+        let (spinner_stop, spinner_rx) = std::sync::mpsc::channel::<()>();
+        let spinner_handle = match nex_spinner_interval() {
+            Some(interval) => {
+                let output_for_timer = output.clone();
+                let waiting_for_timer = waiting_for_input.clone();
+                let progress_for_timer = progress.clone();
+                Some(std::thread::spawn(move || {
+                    use std::sync::mpsc::RecvTimeoutError;
+                    loop {
+                        match spinner_rx.recv_timeout(interval) {
+                            Err(RecvTimeoutError::Timeout) => {}
+                            // Sender dropped (session ending) or a stop
+                            // signal arrived — exit without a final repaint.
+                            _ => break,
+                        }
+                        if waiting_for_timer.load(Ordering::SeqCst) {
+                            continue;
+                        }
+                        if progress_for_timer.composing() {
+                            continue;
+                        }
+                        progress_for_timer.tick_frame();
+                        output_for_timer.repaint();
+                    }
+                }))
+            }
+            None => {
+                drop(spinner_rx);
+                None
+            }
+        };
+
         Some(Self {
             rx,
             output,
             waiting_for_input,
             progress,
+            spinner_stop: Some(spinner_stop),
+            spinner_handle,
         })
     }
 
@@ -868,6 +1030,20 @@ impl LiveTerminalInput {
             }
         }
         lines
+    }
+}
+
+impl Drop for LiveTerminalInput {
+    fn drop(&mut self) {
+        // Stop the repaint timer before the session tears down so no stray
+        // repaint lands after the final output. Dropping the sender
+        // disconnects the timer's channel, waking its `recv_timeout`
+        // immediately; the join then returns near-instantly (no waiting a
+        // full interval).
+        self.spinner_stop.take();
+        if let Some(handle) = self.spinner_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -4753,11 +4929,13 @@ fn stderr_cols() -> usize {
 #[cfg(test)]
 mod prompt_indicator_tests {
     use super::{
-        LiveProgress, NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, NexPromptState, NexStatusHint,
-        render_nex_prompt, render_nex_thinking_hint,
+        LiveProgress, NEX_SPINNER_DEFAULT_MS, NEX_SPINNER_MIN_MS, NEX_WORKING_FALLBACK,
+        NEX_WORKING_GLYPH, NEX_WORKING_PULSE, NexPromptState, NexStatusHint,
+        parse_spinner_interval, render_nex_prompt, render_nex_thinking_hint,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use unicode_width::UnicodeWidthStr;
 
     fn strip_ansi(input: &str) -> String {
@@ -4781,8 +4959,8 @@ mod prompt_indicator_tests {
 
     #[test]
     fn compact_prompt_keeps_input_column_stable() {
-        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK);
-        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK);
+        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK, 0);
+        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 0);
 
         // Idle and working share the same 2-cell width and trailing space —
         // the glyph swaps in place so the input column never shifts.
@@ -4794,7 +4972,7 @@ mod prompt_indicator_tests {
 
     #[test]
     fn colored_working_prompt_swaps_glyph_in_place_with_trailing_space() {
-        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 0);
         let plain = strip_ansi(&rendered);
 
         // Lightning glyph REPLACES the `>` in place (no prepended `>`),
@@ -4852,19 +5030,136 @@ mod prompt_indicator_tests {
     }
 
     #[test]
-    fn colored_working_prompt_is_fixed_color_across_repaints() {
-        // The prompt must be stable across repeated renders — no per-render
-        // color cycling that would flicker on every keystroke (fix-nex-chat-2).
-        let first = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
-        let second = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
-        let third = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+    fn colored_working_prompt_is_stable_within_a_frame() {
+        // fix-nex-chat-2 invariant: the render must be a pure function of
+        // the animation frame, so repeated refreshes WITHIN one timer tick
+        // (e.g. consecutive keystrokes) are byte-identical and never flicker
+        // the color. Animation comes ONLY from advancing `frame`, which the
+        // repaint timer does — not keystrokes.
+        let first = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 7);
+        let second = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 7);
+        let third = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 7);
         assert_eq!(first, second);
         assert_eq!(second, third);
     }
 
     #[test]
+    fn colored_working_prompt_pulses_across_frames() {
+        // Across timer ticks the working glyph cycles through the pulse
+        // palette (so it visibly animates), while the glyph char and the
+        // 2-cell width stay fixed (the input column never shifts).
+        let frames: Vec<String> = (0..NEX_WORKING_PULSE.len() as u64)
+            .map(|f| render_nex_prompt(false, true, NEX_WORKING_GLYPH, f))
+            .collect();
+        // At least two distinct colorings appear over a full cycle.
+        let distinct: std::collections::HashSet<&String> = frames.iter().collect();
+        assert!(
+            distinct.len() >= 2,
+            "working glyph must animate across frames: {frames:?}"
+        );
+        // The cycle repeats with the palette period.
+        assert_eq!(
+            render_nex_prompt(false, true, NEX_WORKING_GLYPH, 0),
+            render_nex_prompt(
+                false,
+                true,
+                NEX_WORKING_GLYPH,
+                NEX_WORKING_PULSE.len() as u64
+            ),
+        );
+        // Animation is color-only: the visible glyph + width never change.
+        for rendered in &frames {
+            let plain = strip_ansi(rendered);
+            assert_eq!(plain, format!("{} ", NEX_WORKING_GLYPH));
+            assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
+        }
+        // The no-color fallback has no color to animate: identical per frame.
+        assert_eq!(
+            render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 0),
+            render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 3),
+        );
+    }
+
+    #[test]
+    fn spinner_interval_parses_and_clamps() {
+        // Unset / empty / unparseable → default (never silently disabled).
+        assert_eq!(
+            parse_spinner_interval(None),
+            Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS))
+        );
+        assert_eq!(
+            parse_spinner_interval(Some("   ")),
+            Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS))
+        );
+        assert_eq!(
+            parse_spinner_interval(Some("not-a-number")),
+            Some(Duration::from_millis(NEX_SPINNER_DEFAULT_MS))
+        );
+        // Explicit disable forms.
+        for off in ["0", "off", "OFF", "false", "none", "disable", "disabled"] {
+            assert_eq!(
+                parse_spinner_interval(Some(off)),
+                None,
+                "{off} should disable"
+            );
+        }
+        // Valid override (with surrounding whitespace).
+        assert_eq!(
+            parse_spinner_interval(Some(" 150 ")),
+            Some(Duration::from_millis(150))
+        );
+        // Below the floor is clamped up, not disabled.
+        assert_eq!(
+            parse_spinner_interval(Some("1")),
+            Some(Duration::from_millis(NEX_SPINNER_MIN_MS))
+        );
+    }
+
+    #[test]
+    fn timer_frame_drives_glyph_animation_independent_of_tokens() {
+        // The repaint timer advances `frame` so the working glyph pulses
+        // even when the token count has not moved (prefill / stall), and
+        // token arrival advances the count without disturbing the
+        // animation. The two channels are fully decoupled.
+        let progress = LiveProgress::default();
+        // Timer ticks advance the animation frame without fabricating tokens…
+        progress.tick_frame();
+        progress.tick_frame();
+        assert_eq!(progress.frame(), 2);
+        assert_eq!(progress.tokens(), 0, "ticks must not fabricate tokens");
+        // …and token arrival advances the count without advancing the frame.
+        progress.add_tokens(5);
+        assert_eq!(progress.tokens(), 5);
+        assert_eq!(progress.frame(), 2, "tokens must not advance the frame");
+
+        // With color on, the glyph render reflects an advanced frame even
+        // though no NEW tokens arrived — the animation rides the timer, not
+        // token flushes. (Uses render_nex_prompt directly so the assertion
+        // does not depend on the test host's NO_COLOR/TERM environment.)
+        let f0 = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 0);
+        let f1 = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 1);
+        assert_ne!(f0, f1, "glyph color must advance with the frame");
+    }
+
+    #[test]
+    fn composing_flag_tracks_input_line_for_repaint_timer() {
+        // The hinter records compose-state so the repaint timer can hold
+        // its repaints while the user types a queued line, then resume the
+        // moment the line is empty again.
+        let progress = LiveProgress::default();
+        let waiting = Arc::new(AtomicBool::new(false));
+        let state = NexPromptState::new(waiting, progress.clone());
+
+        assert!(!progress.composing(), "starts not composing");
+        let _ = state.hint("draft a follow-up");
+        assert!(progress.composing(), "non-empty input marks composing");
+        let _ = state.hint("");
+        assert!(!progress.composing(), "empty input clears composing");
+    }
+
+    #[test]
     fn colored_idle_prompt_renders_plain_prompt_text() {
-        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH);
+        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH, 0);
         let plain = strip_ansi(&rendered);
 
         assert_eq!(plain, "> ");
