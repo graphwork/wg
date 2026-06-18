@@ -693,7 +693,10 @@ fn run_inner(
         } else {
             format!("{} --resume {}", display_name, session_ref)
         };
-        eprintln!("\x1b[2mResume this session with:\x1b[0m  \x1b[1m{}\x1b[0m", resume_cmd);
+        eprintln!(
+            "\x1b[2mResume this session with:\x1b[0m  \x1b[1m{}\x1b[0m",
+            resume_cmd
+        );
     }
 
     // Eval mode: emit a single-line JSON summary on stdout so the

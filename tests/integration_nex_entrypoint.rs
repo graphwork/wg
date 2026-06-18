@@ -476,7 +476,11 @@ is_default = true
         "1",
         "hi",
     ]);
-    let conflict_text = output_text(&conflict_cmd.output().expect("spawn wg nex --yolo --read-only"));
+    let conflict_text = output_text(
+        &conflict_cmd
+            .output()
+            .expect("spawn wg nex --yolo --read-only"),
+    );
     assert!(
         conflict_text.contains("read-only wins") && conflict_text.contains("yolo mode is OFF"),
         "conflict run should warn that read-only wins and yolo is OFF:\n{conflict_text}"

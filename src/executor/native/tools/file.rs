@@ -890,8 +890,8 @@ mod tests {
         std::fs::create_dir_all(&inner).unwrap();
         let prev = std::env::current_dir().unwrap();
         std::env::set_current_dir(&inner).unwrap();
-        let resolved = resolve_inside_cwd("../outside.txt", true)
-            .expect("yolo should permit dotdot escape");
+        let resolved =
+            resolve_inside_cwd("../outside.txt", true).expect("yolo should permit dotdot escape");
         // Resolves to the parent (tmp) dir's sibling file, outside cwd (inner).
         assert!(resolved.ends_with("outside.txt"));
         assert!(!resolved.starts_with(inner.canonicalize().unwrap()));
