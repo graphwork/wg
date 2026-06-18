@@ -310,7 +310,10 @@ async fn read_timeout_aborts_only_a_stalled_stream() {
         }
     }
     let err = err.expect("a stalled stream must trip the read-timeout");
-    assert!(err.is_timeout(), "stall must classify as a timeout: {err:?}");
+    assert!(
+        err.is_timeout(),
+        "stall must classify as a timeout: {err:?}"
+    );
     assert!(err.to_string().contains("error decoding response body"));
 }
 
@@ -383,7 +386,10 @@ async fn split_multibyte_utf8_is_reassembled() {
         .unwrap()
         .with_streaming(true);
 
-    let resp = client.send_streaming(&test_request(), &|_| {}).await.unwrap();
+    let resp = client
+        .send_streaming(&test_request(), &|_| {})
+        .await
+        .unwrap();
     let text = response_text(&resp);
     assert_eq!(text, "世界🌍 héllo");
     assert!(
