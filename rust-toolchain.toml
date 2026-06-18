@@ -1,0 +1,19 @@
+# Pin the toolchain so local `cargo fmt`/`cargo clippy` match CI exactly.
+#
+# Why this file exists: CI's "Check & Lint" job runs `cargo fmt --check` and
+# `cargo clippy` on the latest *stable* rustfmt (via dtolnay/rust-toolchain@stable).
+# rustfmt's output differs between stable and nightly (nightly collapses some
+# `assert!`/method-chain forms that stable re-expands), and can drift across
+# stable releases. Twice the polish branch shipped code formatted by a *nightly*
+# rustfmt and failed CI's stable `cargo fmt --check`.
+#
+# Pinning an exact channel here means `cargo fmt` / `cargo clippy` (and every
+# other cargo invocation) in this repo use the SAME rustfmt that CI uses, so
+# `cargo fmt` before pushing produces byte-identical output to CI. rustup
+# auto-installs this toolchain + components on first use.
+#
+# To bump Rust: change `channel` here AND keep it >= the version CI's @stable
+# resolves to. The CI "nightly" job opts out explicitly via `cargo +nightly`.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

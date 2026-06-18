@@ -702,6 +702,15 @@ description = "Drives standalone `nex` through a real PTY against a local mock O
 timeout_seconds = 120
 
 [[scenario]]
+name = "nex_thinking_timer_pty"
+script = "scenarios/nex_thinking_timer_pty.sh"
+owners = [
+    "refresh-nex-thinking",
+]
+description = "Pins refresh-nex-thinking: the live `thinking… N tokens` working indicator repaints on a FIXED ~100ms timer decoupled from token arrival. Drives `wg nex` through a real PTY against a local SSE server that STALLS (sends nothing for ~1.5s of prefill, then a token, then stalls again). With the timer ON the `↯ prefilling…` indicator must repaint many times during the stall (one per tick, ZERO tokens arriving); with `WG_NEX_SPINNER_MS=off` (== pre-fix repaint-on-token-flush-only) it freezes at a single paint — so the contrast proves the timer is what unfreezes it. A small embedded VT100 emulator replays the captured bytes and asserts the cursor-neutral repaint NEVER scrolls the screen, and the indicator is cleanly cleared at the idle prompt on turn end."
+timeout_seconds = 120
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [
@@ -1435,3 +1444,12 @@ owners = [
 ]
 description = "Pins add-yolo-mode: `wg nex --yolo` prints a loud 'YOLO MODE' startup banner announcing the workspace write sandbox is disabled (write_file/edit_file may write outside cwd, no confirmation), and the --yolo + --read-only conflict resolves in favor of read-only (warning 'read-only wins', 'yolo mode is OFF', active YOLO banner suppressed, read-only banner shown). Credential-free: the banner is emitted before any model round-trip, so a bogus endpoint suffices."
 timeout_seconds = 60
+
+[[scenario]]
+name = "nex_streaming_resilience"
+script = "scenarios/nex_streaming_resilience.sh"
+owners = [
+    "diagnose-fix-nex",
+]
+description = "Pins diagnose-fix-nex: the nex (OpenAI-compatible) streaming client must ride out a long, slow-but-healthy generation instead of failing with '[openai-client] Stream interrupted after ~N chunks: error decoding response body'. Root cause: reqwest 0.12 bytes_stream() collapses EVERY body error to Kind::Decode ('error decoding response body'), so the old 300s TOTAL request timeout cut a healthy long stream around the cap (~6300 tokens at a steady local rate). Fix: per-read (idle) timeout that resets on each frame (no total cap on streaming), plus a raw-byte SSE buffer so multi-byte UTF-8 split across chunk boundaries is not corrupted to U+FFFD. Drives the REAL OpenAiClient::send_streaming path over a TCP socket with chunked SSE (in-process mock llama.cpp): total-timeout reproduces the exact symptom + is_timeout cause; fixed client completes a slow 3s stream; read-timeout still aborts a genuinely stalled stream; a mid-stream connection drop recovers via retry; split multi-byte UTF-8 reassembles intact."
+timeout_seconds = 180

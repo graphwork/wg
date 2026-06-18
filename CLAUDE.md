@@ -51,6 +51,33 @@ install target, with `--locked` so Cargo uses the checked-in lockfile during
 install. Forgetting this step is a common source of "why isn't this working"
 issues when testing changes.
 
+### Formatting & lint MUST match CI (run `cargo fmt` before pushing)
+
+CI's "Check & Lint" job (`.github/workflows/ci.yml`) fails fast on
+`cargo fmt --check`, then runs `cargo clippy`, both on the **stable** toolchain.
+rustfmt's output differs between stable and nightly (nightly collapses some
+`assert!(...)` / method-chain forms that stable re-expands) and can drift across
+stable releases — this caused two separate fmt-drift CI failures on the polish
+branch.
+
+The repo pins the toolchain in **`rust-toolchain.toml`** (`channel = "1.96.0"`,
+with `rustfmt` + `clippy` components) so local and CI use the *same* rustfmt.
+Because of that pin, the plain commands already do the right thing — **always run
+these before committing/pushing**:
+
+```
+cargo fmt              # formats with the pinned stable rustfmt (matches CI)
+cargo fmt --check      # must be clean — CI fast-fails here
+cargo clippy           # same invocation CI runs
+```
+
+Do **not** format with `cargo +nightly fmt` or an editor configured to run a
+nightly/standalone rustfmt — that reintroduces the drift. If `rustfmt`/`clippy`
+aren't installed for the pinned toolchain, rustup auto-installs them on first
+use; otherwise `rustup component add rustfmt clippy`. To bump Rust, edit
+`channel` in `rust-toolchain.toml` (keep it `>=` the version CI's `@stable`
+resolves to); the CI `nightly` job opts out via `cargo +nightly`.
+
 ## Service Configuration
 
 Pick a **(model, endpoint)** pair — the `wg` command derives the handler from the model spec's provider prefix:

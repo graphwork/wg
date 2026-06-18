@@ -1,21 +1,28 @@
-//! Tests for edit_file edge cases and failure scenarios.
+//! Tests for edit_file edge cases — now exercising the FUZZY/robust matcher.
 //!
-//! This test module reproduces and prevents common edit_file failures identified
-//! in the investigation report (.wg/reports/edit-tool-investigation.md).
+//! Originally (see .wg/reports/edit-tool-investigation.md) edit_file required
+//! EXACT byte-for-byte matching, and this module documented the resulting
+//! failures (whitespace / line-ending / indentation / trailing-newline
+//! mismatches). The `add-fuzzy-robust` task flipped those failures into
+//! tolerant matches: edit_file now matches despite whitespace, indentation,
+//! and line-ending differences, re-indents the replacement to the file, and
+//! returns a near-miss diagnostic (not a bare "not found") when it truly can't
+//! match — so the model makes a targeted edit instead of rewriting the file.
 //!
-//! Key findings from investigation:
-//! - The edit_file tool requires EXACT byte-for-byte matching
-//! - Common failures: whitespace mismatches, line ending differences, trailing newline issues
-//! - Error messages are informative but could be more helpful
+//! The tests below therefore assert the NEW tolerant contract. The one
+//! deliberate boundary kept strict: interior-whitespace collapse (e.g.
+//! "hello world" vs "hello   world") stays a no-match unless the caller opts in
+//! via `normalize_whitespace`, to avoid over-matching semantically different
+//! code.
 //!
 //! Test cases cover:
-//! 1. Line ending sensitivity (Windows \r\n vs Unix \n)
-//! 2. Whitespace variations (spaces, tabs, mixed)
+//! 1. Line ending tolerance (Windows \r\n vs Unix \n)
+//! 2. Whitespace / indentation tolerance (spaces, tabs, mixed)
 //! 3. Partial vs full line matching
-//! 4. Exact match requirements
+//! 4. Exact / unique match requirements
 //! 5. Unicode character handling
 //! 6. Multiple match prevention
-//! 7. Error message verification
+//! 7. Near-miss diagnostics on no-match
 //!
 //! Run with: cargo test test_edit_file_edge_cases
 
@@ -119,9 +126,9 @@ async fn test_edit_with_windows_line_endings() {
     assert_eq!(content, "line1\r\nLINE2_MODIFIED\r\nline3\r\n");
 }
 
-/// Test: Mismatch between Unix search string and Windows file fails
+/// Test: Unix search string matches a Windows (\r\n) file — fuzzy tolerance.
 #[tokio::test]
-async fn test_edit_fails_on_line_ending_mismatch() {
+async fn test_edit_tolerates_line_ending_mismatch() {
     let dir = temp_dir();
     let file_path = dir.path().join("mismatch.txt");
 
@@ -136,13 +143,14 @@ async fn test_edit_fails_on_line_ending_mismatch() {
     )
     .await;
 
-    assert!(!is_success(&result), "Should fail on line ending mismatch");
-    let msg = error_msg(&result);
     assert!(
-        msg.contains("not found") || msg.contains("exactly"),
-        "Error should mention exact matching requirement: {}",
-        msg
+        is_success(&result),
+        "Should tolerate \\n vs \\r\\n line-ending differences: {:?}",
+        result
     );
+    // The file's CRLF convention is preserved in the replacement.
+    let content = fs::read_to_string(&file_path).unwrap();
+    assert_eq!(content, "A\r\nB\r\nline3\r\n");
 }
 
 /// Test: Mixed line endings in file content
@@ -170,9 +178,9 @@ async fn test_edit_with_mixed_line_endings() {
 
 // ── 2. Whitespace Variation Tests ───────────────────────────────────────────
 
-/// Test: Extra spaces in search string causes failure
+/// Test: A trailing space in the search string is tolerated (fuzzy).
 #[tokio::test]
-async fn test_edit_fails_with_extra_spaces() {
+async fn test_edit_tolerates_extra_trailing_space() {
     let dir = temp_dir();
     let file_path = dir.path().join("spaces.txt");
 
@@ -187,12 +195,20 @@ async fn test_edit_fails_with_extra_spaces() {
     )
     .await;
 
-    assert!(!is_success(&result), "Extra space should cause mismatch");
+    assert!(
+        is_success(&result),
+        "Trailing-space difference should be tolerated: {:?}",
+        result
+    );
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "hi there");
 }
 
-/// Test: Missing space in search string causes failure
+/// Test: Interior-whitespace differences are NOT collapsed by default.
+///
+/// This is the deliberate strict boundary — "hello world" must not silently
+/// match "hello   world" unless the caller opts into `normalize_whitespace`.
 #[tokio::test]
-async fn test_edit_fails_with_missing_spaces() {
+async fn test_edit_interior_whitespace_not_collapsed_by_default() {
     let dir = temp_dir();
     let file_path = dir.path().join("spaces2.txt");
 
@@ -207,12 +223,47 @@ async fn test_edit_fails_with_missing_spaces() {
     )
     .await;
 
-    assert!(!is_success(&result), "Missing spaces should cause mismatch");
+    assert!(
+        !is_success(&result),
+        "Interior whitespace must not be collapsed without opt-in"
+    );
+    // But the no-match is a helpful near-miss, not a bare failure.
+    let msg = error_msg(&result);
+    assert!(
+        msg.contains("not found") && msg.contains("Closest candidate"),
+        "No-match should include a near-miss diagnostic: {}",
+        msg
+    );
 }
 
-/// Test: Tab vs space difference
+/// Test: Interior-whitespace collapse works when explicitly opted in.
 #[tokio::test]
-async fn test_edit_fails_with_tab_space_mismatch() {
+async fn test_edit_interior_whitespace_collapsed_when_opted_in() {
+    let dir = temp_dir();
+    let file_path = dir.path().join("spaces3.txt");
+
+    fs::write(&file_path, "hello   world").unwrap();
+
+    let registry = make_tool_registry();
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "old_string": "hello world",
+        "new_string": "hi there",
+        "normalize_whitespace": true,
+    });
+    let result = registry.execute("edit_file", &input).await;
+
+    assert!(
+        is_success(&result),
+        "normalize_whitespace should collapse interior spaces: {:?}",
+        result
+    );
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "hi there");
+}
+
+/// Test: Tab vs space indentation is tolerated and the edit lands.
+#[tokio::test]
+async fn test_edit_tolerates_tab_space_mismatch() {
     let dir = temp_dir();
     let file_path = dir.path().join("tabs.txt");
 
@@ -228,14 +279,17 @@ async fn test_edit_fails_with_tab_space_mismatch() {
     .await;
 
     assert!(
-        !is_success(&result),
-        "Tab vs space mismatch should cause failure"
+        is_success(&result),
+        "Tab vs space indentation should be tolerated: {:?}",
+        result
     );
+    let content = fs::read_to_string(&file_path).unwrap();
+    assert!(content.contains("NEW"), "edit should land: {}", content);
 }
 
-/// Test: Trailing whitespace difference
+/// Test: Trailing whitespace in the file is tolerated.
 #[tokio::test]
-async fn test_edit_fails_with_trailing_whitespace_difference() {
+async fn test_edit_tolerates_trailing_whitespace_difference() {
     let dir = temp_dir();
     let file_path = dir.path().join("trailing.txt");
 
@@ -251,9 +305,11 @@ async fn test_edit_fails_with_trailing_whitespace_difference() {
     .await;
 
     assert!(
-        !is_success(&result),
-        "Trailing whitespace difference should cause failure"
+        is_success(&result),
+        "Trailing-whitespace difference should be tolerated: {:?}",
+        result
     );
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "CODE\nNEXT");
 }
 
 /// Test: Leading whitespace difference (search string not a substring of file content)
@@ -649,12 +705,17 @@ async fn test_edit_trailing_newline_vs_not() {
         is_success(&result1),
         "Match with trailing newline should work"
     );
+    // Reset for the second case.
+    fs::write(&file_path, "line1\n").unwrap();
 
+    // A missing trailing newline is now tolerated (the file's newline is kept).
     let result2 = edit_file(&registry, file_path.to_str().unwrap(), "line1", "LINE1").await;
     assert!(
-        !is_success(&result2),
-        "Missing trailing newline should fail when file has it"
+        is_success(&result2),
+        "Missing trailing newline should be tolerated: {:?}",
+        result2
     );
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "LINE1\n");
 }
 
 /// Test: Replacement string is empty

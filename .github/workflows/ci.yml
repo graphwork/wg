@@ -115,8 +115,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-nightly-
 
+      # `+nightly` overrides the channel pinned in rust-toolchain.toml so this
+      # job actually exercises nightly (the toml would otherwise force stable).
       - name: cargo build
-        run: cargo build
+        run: cargo +nightly build
 
       - name: cargo test
-        run: cargo test --lib
+        run: cargo +nightly test --lib
