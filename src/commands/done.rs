@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::agency::capture_task_output;
-use workgraph::config::{Config, CoordinatorConfig};
-use workgraph::graph::{
+use worksgood::agency::capture_task_output;
+use worksgood::config::{Config, CoordinatorConfig};
+use worksgood::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
     parse_wg_tokens, user_board_handle, user_board_seq,
 };
-use workgraph::graph::{Task, parse_delay};
-use workgraph::parser::modify_graph;
-use workgraph::query;
-use workgraph::service::registry::AgentRegistry;
-use workgraph::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
+use worksgood::graph::{Task, parse_delay};
+use worksgood::parser::modify_graph;
+use worksgood::query;
+use worksgood::service::registry::AgentRegistry;
+use worksgood::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 
 // Import evaluate module for LLM verification
 use crate::commands::evaluate;
@@ -19,7 +19,7 @@ use crate::commands::evaluate;
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 /// Enhanced timeout resolution with priority order
 fn resolve_verify_timeout(
@@ -1233,7 +1233,7 @@ fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
 /// paths (`.wg/`, `.wg.*/`, etc.) are filtered from the warning
 /// even when the check does run.
 fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
-    if tags.iter().any(|t| workgraph::chat_id::is_chat_loop_tag(t)) {
+    if tags.iter().any(|t| worksgood::chat_id::is_chat_loop_tag(t)) {
         return;
     }
     use std::process::Command;
@@ -1374,7 +1374,7 @@ fn run_smoke_gate(
 /// flip it to `Done` once the eval scores ≥ `eval_gate_threshold`. Returns
 /// `Done` for system tasks (dot-prefixed) and any task whose eval is missing
 /// or already terminal.
-fn pick_done_target_status(graph: &workgraph::graph::WorkGraph, id: &str) -> Status {
+fn pick_done_target_status(graph: &worksgood::graph::WorkGraph, id: &str) -> Status {
     // System tasks (.evaluate-X, .flip-X, .assign-X, etc.) bypass the gate to
     // avoid recursion: gating .evaluate-X on .evaluate-.evaluate-X would
     // deadlock the eval pipeline.
@@ -1527,7 +1527,7 @@ fn run_inner(
             .before
             .iter()
             .filter(|child_id| {
-                !workgraph::graph::is_system_task(child_id)
+                !worksgood::graph::is_system_task(child_id)
                     && graph
                         .get_task(child_id)
                         .is_some_and(|ct| !ct.status.is_terminal())
@@ -1652,7 +1652,7 @@ fn run_inner(
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: task.assigned.clone(),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: "Pending separate verification (verify_mode=separate)".to_string(),
                 });
                 true
@@ -1664,7 +1664,7 @@ fn run_inner(
             // Update agent registry
             if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
                 if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                    agent.status = workgraph::service::registry::AgentStatus::Done;
+                    agent.status = worksgood::service::registry::AgentStatus::Done;
                     if agent.completed_at.is_none() {
                         agent.completed_at = Some(Utc::now().to_rfc3339());
                     }
@@ -1755,7 +1755,7 @@ fn run_inner(
                 Err(output) => {
                     // Check if this is a malformed verify command that can be auto-corrected
                     if let Some(corrected_cmd) =
-                        workgraph::verify_lint::auto_correct_verify_command(&verify_cmd)
+                        worksgood::verify_lint::auto_correct_verify_command(&verify_cmd)
                     {
                         eprintln!(
                             "Verify command appears malformed, auto-correcting: {} → {}",
@@ -2023,7 +2023,7 @@ fn run_inner(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Task pending LLM gate validation".to_string(),
             });
             true
@@ -2033,7 +2033,7 @@ fn run_inner(
 
         if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
             if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                agent.status = workgraph::service::registry::AgentStatus::Done;
+                agent.status = worksgood::service::registry::AgentStatus::Done;
                 if agent.completed_at.is_none() {
                     agent.completed_at = Some(Utc::now().to_rfc3339());
                 }
@@ -2041,8 +2041,8 @@ fn run_inner(
             let _ = locked_registry.save_ref();
         }
 
-        let config = workgraph::config::Config::load_or_default(dir);
-        let _ = workgraph::provenance::record(
+        let config = worksgood::config::Config::load_or_default(dir);
+        let _ = worksgood::provenance::record(
             dir,
             "done",
             Some(id),
@@ -2096,7 +2096,7 @@ fn run_inner(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Task pending external validation".to_string(),
             });
             true
@@ -2107,7 +2107,7 @@ fn run_inner(
         // Update agent registry for external validation path too
         if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
             if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-                agent.status = workgraph::service::registry::AgentStatus::Done;
+                agent.status = worksgood::service::registry::AgentStatus::Done;
                 if agent.completed_at.is_none() {
                     agent.completed_at = Some(Utc::now().to_rfc3339());
                 }
@@ -2115,8 +2115,8 @@ fn run_inner(
             let _ = locked_registry.save_ref();
         }
 
-        let config = workgraph::config::Config::load_or_default(dir);
-        let _ = workgraph::provenance::record(
+        let config = worksgood::config::Config::load_or_default(dir);
+        let _ = worksgood::provenance::record(
             dir,
             "done",
             Some(id),
@@ -2172,7 +2172,7 @@ fn run_inner(
             .get_task(id)
             .and_then(|t| t.cycle_config.as_ref())
             .and_then(|c| c.guard.as_ref())
-            .map(|g| !matches!(g, workgraph::graph::LoopGuard::Always))
+            .map(|g| !matches!(g, worksgood::graph::LoopGuard::Always))
             .unwrap_or(false);
 
         // Check 2: the task is a non-header member of a cycle whose header
@@ -2189,7 +2189,7 @@ fn run_inner(
                             .get_task(mid)
                             .and_then(|t| t.cycle_config.as_ref())
                             .and_then(|c| c.guard.as_ref())
-                            .map(|g| !matches!(g, workgraph::graph::LoopGuard::Always))
+                            .map(|g| !matches!(g, worksgood::graph::LoopGuard::Always))
                             .unwrap_or(false)
                     });
                     let no_conv = cycle.members.iter().any(|mid| {
@@ -2388,7 +2388,7 @@ fn run_inner(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: match target_status {
                 Status::PendingEval => {
                     "Task pending eval (agent reported done; awaiting `.evaluate-*` to score)"
@@ -2451,7 +2451,7 @@ fn run_inner(
     // agent appears alive and consumes an agent slot.
     if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
         if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-            agent.status = workgraph::service::registry::AgentStatus::Done;
+            agent.status = worksgood::service::registry::AgentStatus::Done;
             if agent.completed_at.is_none() {
                 agent.completed_at = Some(Utc::now().to_rfc3339());
             }
@@ -2460,8 +2460,8 @@ fn run_inner(
     }
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "done",
         Some(id),
@@ -2572,7 +2572,7 @@ fn run_inner(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::test_helpers::{make_task_with_status as make_task, setup_workgraph};
+    use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
     #[test]
     fn test_done_open_task_transitions_to_done() {
@@ -2822,7 +2822,7 @@ mod tests {
     fn test_done_converged_ignored_when_cycle_guard_set_on_self() {
         // When the task itself has a cycle guard, --converged should be ignored.
         // The guard is authoritative — the agent cannot self-converge.
-        use workgraph::graph::{CycleConfig, LoopGuard};
+        use worksgood::graph::{CycleConfig, LoopGuard};
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -2867,7 +2867,7 @@ mod tests {
     fn test_done_converged_ignored_for_non_header_in_guarded_cycle() {
         // When a task is a non-header member of a cycle whose header has a guard,
         // --converged should also be ignored.
-        use workgraph::graph::{CycleConfig, LoopGuard};
+        use worksgood::graph::{CycleConfig, LoopGuard};
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -2916,7 +2916,7 @@ mod tests {
     #[test]
     fn test_done_converged_accepted_when_guard_is_always() {
         // When cycle_config has guard = Always (trivial), --converged should work.
-        use workgraph::graph::{CycleConfig, LoopGuard};
+        use worksgood::graph::{CycleConfig, LoopGuard};
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -2953,7 +2953,7 @@ mod tests {
     #[test]
     fn test_done_converged_accepted_when_no_guard() {
         // When cycle_config has no guard, --converged should work.
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -3041,7 +3041,7 @@ mod tests {
     #[test]
     fn test_done_converged_ignored_when_no_converge_set_on_self() {
         // When the task itself has no_converge, --converged should be ignored.
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -3087,7 +3087,7 @@ mod tests {
     fn test_done_converged_ignored_for_non_header_in_no_converge_cycle() {
         // When a task is a non-header member of a cycle with no_converge,
         // --converged should also be ignored.
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -3423,7 +3423,7 @@ mod tests {
     fn test_done_updates_agent_registry() {
         // When a task is marked done, the agent registry entry should also
         // transition to Done so the agent slot is freed immediately.
-        use workgraph::service::registry::{AgentRegistry, AgentStatus};
+        use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -4555,13 +4555,13 @@ mod tests {
         check_agent_git_hygiene(
             dir_path,
             ".chat-0",
-            &[workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
+            &[worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
         );
         // Also accept the legacy form.
         check_agent_git_hygiene(
             dir_path,
             ".coordinator-0",
-            &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()],
+            &[worksgood::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()],
         );
         // Non-chat tags do not skip — but with no git repo at the parent
         // dir the function silently no-ops, which is fine for this test.

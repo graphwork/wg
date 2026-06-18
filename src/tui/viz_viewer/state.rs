@@ -14,13 +14,13 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::layout::Rect;
 
 use crate::commands::viz::{VizOptions, VizOutput};
-use workgraph::config::Config;
-use workgraph::graph::{
+use worksgood::config::Config;
+use worksgood::graph::{
     CycleAnalysis, Status, TokenUsage, format_tokens, parse_token_usage_live_cached,
 };
-use workgraph::models::load_model_choices;
-use workgraph::parser::load_graph;
-use workgraph::{AgentRegistry, AgentStatus};
+use worksgood::models::load_model_choices;
+use worksgood::parser::load_graph;
+use worksgood::{AgentRegistry, AgentStatus};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
@@ -1396,7 +1396,7 @@ pub fn executor_uses_child_scroll_keys(executor: &str) -> bool {
 /// for the given `executor` (add-model-fuzzy). This is the single place that
 /// encodes per-executor route conventions:
 /// - `opencode` → OpenCode's `openrouter/<vendor>/<model>` route (reusing
-///   [`workgraph::chat_command::opencode_model_arg`] so the persisted spec and
+///   [`worksgood::chat_command::opencode_model_arg`] so the persisted spec and
 ///   the launched argv always agree),
 /// - `nex`/`native` → a WG model spec: `openrouter:<vendor>/<model>` for an
 ///   OpenRouter/vendor-route model, else `nex:<model>` for a bare id,
@@ -1406,18 +1406,21 @@ pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) ->
     let id = id.trim();
     match executor {
         "opencode" => {
-            workgraph::chat_command::opencode_model_arg(id).unwrap_or_else(|| id.to_string())
+            worksgood::chat_command::opencode_model_arg(id).unwrap_or_else(|| id.to_string())
         }
         "octomind" => {
             // Octomind shares WG's `provider:route` model spelling, so persist
             // the `openrouter:<vendor>/<model>` form its `-m` flag consumes.
-            workgraph::chat_command::octomind_model_arg(id).unwrap_or_else(|| id.to_string())
+            worksgood::chat_command::octomind_model_arg(id).unwrap_or_else(|| id.to_string())
         }
         "dexto" => {
             // Dexto drives OpenRouter via a generated agent YAML; persist the
             // canonical WG model spec so the YAML and any display agree.
             if provider == "openrouter" || id.contains('/') {
-                format!("openrouter:{}", id.strip_prefix("openrouter/").unwrap_or(id))
+                format!(
+                    "openrouter:{}",
+                    id.strip_prefix("openrouter/").unwrap_or(id)
+                )
             } else {
                 id.to_string()
             }
@@ -1506,7 +1509,7 @@ fn fuzzy_term_score(hay: &str, term: &str) -> Option<i64> {
 /// configured endpoint default models.
 pub fn build_model_suggestions(
     config: &Config,
-    registry: &workgraph::models::ModelRegistry,
+    registry: &worksgood::models::ModelRegistry,
     recent_models: &[String],
 ) -> Vec<ModelSuggestion> {
     let mut out: Vec<ModelSuggestion> = Vec::new();
@@ -1535,7 +1538,7 @@ pub fn build_model_suggestions(
 
     // 1. Recent launcher-history models (parse off any routing prefix).
     for m in recent_models {
-        let spec = workgraph::config::parse_model_spec(m);
+        let spec = worksgood::config::parse_model_spec(m);
         let provider = spec
             .provider
             .as_deref()
@@ -1569,7 +1572,7 @@ pub fn build_model_suggestions(
     // 4. Configured endpoint default models.
     for ep in &config.llm_endpoints.endpoints {
         if let Some(m) = ep.model.as_deref().filter(|m| !m.is_empty()) {
-            let spec = workgraph::config::parse_model_spec(m);
+            let spec = worksgood::config::parse_model_spec(m);
             let provider = spec
                 .provider
                 .as_deref()
@@ -1755,7 +1758,7 @@ pub fn build_codex_chat_pty_args(
         args.push(dir.display().to_string());
     }
     if let Some(m) = chat_model {
-        let spec = workgraph::config::parse_model_spec(m);
+        let spec = worksgood::config::parse_model_spec(m);
         if !spec.model_id.is_empty() {
             args.push("--model".to_string());
             args.push(spec.model_id);
@@ -1780,11 +1783,11 @@ pub fn build_nex_chat_pty_args(chat_model: Option<&str>, endpoint: Option<&str>)
         // (nex-optional-openrouter-endpoint). With an explicit endpoint, strip
         // the provider prefix — an oai-compat server reads a colon as a
         // LoRA-adapter reference and 400s otherwise.
-        let normalized = workgraph::config::normalize_bare_openrouter_route(m);
-        let model = if endpoint.is_none() && workgraph::config::model_is_openrouter(&normalized) {
+        let normalized = worksgood::config::normalize_bare_openrouter_route(m);
+        let model = if endpoint.is_none() && worksgood::config::model_is_openrouter(&normalized) {
             normalized
         } else {
-            let spec = workgraph::config::parse_model_spec(m);
+            let spec = worksgood::config::parse_model_spec(m);
             if spec.model_id.is_empty() {
                 m.to_string()
             } else {
@@ -1837,11 +1840,7 @@ fn executor_model_boost(provider: &str, executor: &str) -> i64 {
         "opencode" | "octomind" | "dexto" | "nex" | "native" => provider == "openrouter",
         _ => false,
     };
-    if fits {
-        10
-    } else {
-        0
-    }
+    if fits { 10 } else { 0 }
 }
 
 impl LauncherState {
@@ -1908,8 +1907,8 @@ impl LauncherState {
         if m.is_empty() {
             return false;
         }
-        let normalized = workgraph::config::normalize_bare_openrouter_route(m);
-        workgraph::config::model_is_openrouter(&normalized)
+        let normalized = worksgood::config::normalize_bare_openrouter_route(m);
+        worksgood::config::model_is_openrouter(&normalized)
     }
 
     /// True when the current endpoint text is a raw `http(s)://` URL the
@@ -1987,9 +1986,7 @@ impl LauncherState {
             self.endpoint_suggestion_selected = 0;
             return;
         }
-        let cur = self
-            .endpoint_suggestion_selected
-            .min(len.saturating_sub(1)) as isize;
+        let cur = self.endpoint_suggestion_selected.min(len.saturating_sub(1)) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1);
         self.endpoint_suggestion_selected = next as usize;
     }
@@ -2064,7 +2061,7 @@ impl LauncherState {
             return true;
         }
         t.split_once(':')
-            .is_some_and(|(p, _)| workgraph::config::KNOWN_PROVIDERS.contains(&p))
+            .is_some_and(|(p, _)| worksgood::config::KNOWN_PROVIDERS.contains(&p))
     }
 
     /// The model suggestions matching the current Model text, fuzzy-ranked
@@ -2085,7 +2082,11 @@ impl LauncherState {
             .filter_map(|(i, s)| {
                 let hay = format!("{} {} {}", s.id, s.provider, s.source);
                 let base = fuzzy_match_score(&hay, q)?;
-                Some((base + executor_model_boost(&s.provider, executor), i, s.clone()))
+                Some((
+                    base + executor_model_boost(&s.provider, executor),
+                    i,
+                    s.clone(),
+                ))
             })
             .collect();
         // Higher score first; original order breaks ties (keeps recent /
@@ -2116,9 +2117,7 @@ impl LauncherState {
             self.model_suggestion_selected = 0;
             return;
         }
-        let cur = self
-            .model_suggestion_selected
-            .min(len.saturating_sub(1)) as isize;
+        let cur = self.model_suggestion_selected.min(len.saturating_sub(1)) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1);
         self.model_suggestion_selected = next as usize;
     }
@@ -3105,7 +3104,7 @@ fn save_tui_state(
     tab: &RightPanelTab,
     open_tabs: &[String],
 ) {
-    let active = workgraph::chat_id::format_chat_task_id(coordinator_id);
+    let active = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let state = PersistedTuiState {
         active_coordinator_id: coordinator_id,
         right_panel_tab: format!("{:?}", tab),
@@ -3858,7 +3857,7 @@ pub struct HistoryBrowserState {
     /// Whether the history browser is currently open.
     pub active: bool,
     /// Loaded history segments available for selection.
-    pub segments: Vec<workgraph::chat::HistorySegment>,
+    pub segments: Vec<worksgood::chat::HistorySegment>,
     /// Currently selected segment index.
     pub selected: usize,
     /// Scroll offset (first visible row).
@@ -3872,7 +3871,7 @@ pub struct HistoryBrowserState {
 impl HistoryBrowserState {
     /// Load segments from disk for the given coordinator.
     pub fn load(&mut self, workgraph_dir: &std::path::Path, coordinator_id: u32) {
-        match workgraph::chat::load_history_segments(workgraph_dir, coordinator_id) {
+        match worksgood::chat::load_history_segments(workgraph_dir, coordinator_id) {
             Ok(segs) => {
                 self.segments = segs;
                 self.selected = 0;
@@ -3900,7 +3899,7 @@ impl HistoryBrowserState {
         self.load(workgraph_dir, coordinator_id);
 
         // Append cross-coordinator segments
-        if let Ok(cross_segs) = workgraph::chat::load_cross_coordinator_segments(
+        if let Ok(cross_segs) = worksgood::chat::load_cross_coordinator_segments(
             workgraph_dir,
             coordinator_id,
             coordinator_labels,
@@ -3911,7 +3910,7 @@ impl HistoryBrowserState {
     }
 
     /// Get the currently selected segment (if any).
-    pub fn selected_segment(&self) -> Option<&workgraph::chat::HistorySegment> {
+    pub fn selected_segment(&self) -> Option<&worksgood::chat::HistorySegment> {
         self.segments.get(self.selected)
     }
 }
@@ -5238,7 +5237,7 @@ pub struct MessageEntry {
     /// Direction: incoming to the task, or outgoing from the task's agent.
     pub direction: MessageDirection,
     /// Delivery status of this message.
-    pub delivery_status: workgraph::messages::DeliveryStatus,
+    pub delivery_status: worksgood::messages::DeliveryStatus,
     /// ISO 8601 timestamp of when this message was read by the agent (if read).
     pub read_at: Option<String>,
     /// Original send timestamp (ISO 8601) for temporal sorting / future use.
@@ -5421,7 +5420,7 @@ pub struct SettingsEntry {
     /// Current effective value as a displayable string.
     pub value: String,
     /// Where the value came from: built-in default / global / local.
-    pub source: workgraph::config::ConfigSource,
+    pub source: worksgood::config::ConfigSource,
     /// Group label (audit §2 layout) — e.g. "Agent", "Coordinator", "Tiers".
     pub section: &'static str,
 }
@@ -5582,9 +5581,9 @@ struct TaskCompactionSnapshot {
 
 fn load_task_runtime_snapshot(
     workgraph_dir: &Path,
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
 ) -> (
-    Option<workgraph::service::AgentEntry>,
+    Option<worksgood::service::AgentEntry>,
     Option<TaskCompactionSnapshot>,
 ) {
     let registry_entry = task.assigned.as_ref().and_then(|aid| {
@@ -5601,20 +5600,20 @@ fn load_task_runtime_snapshot(
         std::fs::read_to_string(path).ok()
     });
 
-    let journal_path = workgraph::executor::native::journal::journal_path(workgraph_dir, &task.id);
+    let journal_path = worksgood::executor::native::journal::journal_path(workgraph_dir, &task.id);
     let journal_present = journal_path.exists();
     let mut journal_entries = 0usize;
     let mut compaction_count = 0u64;
     let mut last_compaction = None;
 
     if journal_present
-        && let Ok(entries) = workgraph::executor::native::journal::Journal::read_all(&journal_path)
+        && let Ok(entries) = worksgood::executor::native::journal::Journal::read_all(&journal_path)
     {
         journal_entries = entries.len();
         for entry in entries {
             if matches!(
                 entry.kind,
-                workgraph::executor::native::journal::JournalEntryKind::Compaction { .. }
+                worksgood::executor::native::journal::JournalEntryKind::Compaction { .. }
             ) {
                 compaction_count += 1;
                 last_compaction = Some(entry.timestamp);
@@ -6150,7 +6149,7 @@ pub struct VizApp {
     pub message_drafts: HashMap<String, String>,
     /// Cached coordinator message status per task ID (TUI-perspective read state).
     /// Refreshed each graph reload. Used to color the Messages tab header.
-    pub task_message_statuses: HashMap<String, workgraph::messages::CoordinatorMessageStatus>,
+    pub task_message_statuses: HashMap<String, worksgood::messages::CoordinatorMessageStatus>,
 
     /// Cached per-task (status-priority, interaction-sort-key) tuple used by
     /// `apply_sort_mode` for the StatusGrouped path. Populated in
@@ -6207,7 +6206,7 @@ pub struct VizApp {
     /// Rendered stacked in top-right corner. Max 4 visible.
     pub toasts: Vec<Toast>,
     /// Previous agent statuses for detecting exits/stuck transitions.
-    pub prev_agent_statuses: HashMap<String, workgraph::AgentStatus>,
+    pub prev_agent_statuses: HashMap<String, worksgood::AgentStatus>,
 
     // ── Double-tap detection ──
     /// Timestamp of the last Tab key press, for double-tap recenter detection.
@@ -6722,7 +6721,7 @@ impl VizApp {
     }
 
     /// Load viz output from a pre-loaded graph, avoiding a redundant disk read.
-    pub fn load_viz_from_graph(&mut self, graph: &workgraph::graph::WorkGraph) {
+    pub fn load_viz_from_graph(&mut self, graph: &worksgood::graph::WorkGraph) {
         let viz_result = self.generate_viz_from_graph(graph);
         self.apply_viz_result(viz_result);
     }
@@ -6990,7 +6989,7 @@ impl VizApp {
     }
 
     /// Generate viz output from a pre-loaded graph, avoiding a redundant disk read.
-    fn generate_viz_from_graph(&self, graph: &workgraph::graph::WorkGraph) -> Result<VizOutput> {
+    fn generate_viz_from_graph(&self, graph: &worksgood::graph::WorkGraph) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
         opts.show_internal = self.show_system_tasks;
         opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
@@ -7249,7 +7248,7 @@ impl VizApp {
             },
             None => return,
         };
-        if let Some(cid) = workgraph::chat_id::parse_chat_task_id(&selected_id) {
+        if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&selected_id) {
             if cid != self.active_coordinator_id {
                 self.switch_coordinator(cid);
                 // Only switch to Chat tab when actually changing coordinators.
@@ -7258,7 +7257,7 @@ impl VizApp {
         } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
             self.switch_coordinator(0);
             self.right_panel_tab = RightPanelTab::Chat;
-        } else if workgraph::graph::is_user_board(&selected_id) {
+        } else if worksgood::graph::is_user_board(&selected_id) {
             // Switch to Messages tab for user board tasks.
             self.right_panel_tab = RightPanelTab::Messages;
         }
@@ -7938,7 +7937,7 @@ impl VizApp {
     }
 
     /// Load task counts and token usage from a pre-loaded graph.
-    pub fn load_stats_from_graph(&mut self, graph: &workgraph::graph::WorkGraph) {
+    pub fn load_stats_from_graph(&mut self, graph: &worksgood::graph::WorkGraph) {
         let mut counts = TaskCounts::default();
         let mut total_usage = TokenUsage {
             cost_usd: 0.0,
@@ -8052,7 +8051,7 @@ impl VizApp {
                     }
                     // Agent spawn: non-system task went to InProgress.
                     if snapshot.status == Status::InProgress
-                        && !workgraph::graph::is_system_task(&task.id)
+                        && !worksgood::graph::is_system_task(&task.id)
                         && let Some(ref agent_id) = task.assigned
                     {
                         let short = if agent_id.len() > 10 {
@@ -8067,7 +8066,7 @@ impl VizApp {
                     }
 
                     // Phase 1 toast triggers — non-system tasks only.
-                    if !workgraph::graph::is_system_task(&task.id) {
+                    if !worksgood::graph::is_system_task(&task.id) {
                         match snapshot.status {
                             Status::Done => {
                                 if old.status == Status::InProgress
@@ -8226,7 +8225,7 @@ impl VizApp {
                         let delay_secs = cc
                             .delay
                             .as_ref()
-                            .and_then(|d| workgraph::graph::parse_delay(d))?;
+                            .and_then(|d| worksgood::graph::parse_delay(d))?;
                         let last_ts = last_completed
                             .as_ref()?
                             .parse::<chrono::DateTime<chrono::Utc>>()
@@ -8254,7 +8253,7 @@ impl VizApp {
         self.task_message_statuses = graph
             .tasks()
             .filter_map(|t| {
-                workgraph::messages::coordinator_message_status_cached(&self.workgraph_dir, &t.id)
+                worksgood::messages::coordinator_message_status_cached(&self.workgraph_dir, &t.id)
                     .map(|s| (t.id.clone(), s))
             })
             .collect();
@@ -8347,7 +8346,7 @@ impl VizApp {
 
     fn apply_loaded_graph_refresh(
         &mut self,
-        graph: &workgraph::graph::WorkGraph,
+        graph: &worksgood::graph::WorkGraph,
         graph_mtime: Option<SystemTime>,
     ) {
         self.graph_reload_pending = false;
@@ -8442,7 +8441,7 @@ impl VizApp {
         if self.chat.awaiting_response() {
             let coord_id = self.active_coordinator_id;
             let streaming_path =
-                workgraph::chat::streaming_path_ref(&self.workgraph_dir, &coord_id.to_string());
+                worksgood::chat::streaming_path_ref(&self.workgraph_dir, &coord_id.to_string());
             self.async_fs.request_streaming(streaming_path, coord_id);
             let prev = self.chat.streaming_text.clone();
             let streaming = self.async_fs.cached_streaming(coord_id);
@@ -8561,7 +8560,7 @@ impl VizApp {
 
             // Chat outbox: check for new coordinator responses.
             if self.right_panel_tab == RightPanelTab::Chat || self.chat.awaiting_response() {
-                let outbox_path = workgraph::chat::outbox_path_ref(
+                let outbox_path = worksgood::chat::outbox_path_ref(
                     &self.workgraph_dir,
                     &self.active_coordinator_id.to_string(),
                 );
@@ -9340,7 +9339,7 @@ impl VizApp {
             let agency_dir = self.workgraph_dir.join("agency");
             let agents_cache = agency_dir.join("cache").join("agents");
             let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
-            if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
+            if let Ok(agent_entity) = worksgood::agency::load_agent(&agent_file) {
                 let short_hash = &agent_hash[..agent_hash.len().min(8)];
                 lines.push(format!("Identity: {} ({})", agent_entity.name, short_hash));
                 // Look up role name
@@ -9400,7 +9399,7 @@ impl VizApp {
                     .or_else(|| {
                         Some(
                             config
-                                .resolve_model_for_role(workgraph::config::DispatchRole::Default)
+                                .resolve_model_for_role(worksgood::config::DispatchRole::Default)
                                 .model,
                         )
                     });
@@ -9762,7 +9761,7 @@ impl VizApp {
         // any .evaluate-X / .flip-X siblings in the graph. This avoids silent
         // omission when (a) the evaluator hasn't run yet, (b) the evaluator
         // failed without writing a score, or (c) the eval is currently running.
-        if !rendered_eval && !workgraph::graph::is_system_task(&task.id) {
+        if !rendered_eval && !worksgood::graph::is_system_task(&task.id) {
             let eval_siblings: Vec<(&'static str, String)> = vec![
                 ("Evaluation", format!(".evaluate-{}", task.id)),
                 ("Evaluation", format!("evaluate-{}", task.id)),
@@ -9823,7 +9822,7 @@ impl VizApp {
         {
             let agents_dir = self.workgraph_dir.join("agents");
 
-            let get_usage = |t: &workgraph::graph::Task| -> Option<TokenUsage> {
+            let get_usage = |t: &worksgood::graph::Task| -> Option<TokenUsage> {
                 t.token_usage.clone().or_else(|| {
                     let agent_id = t.assigned.as_deref()?;
                     let log_path = agents_dir.join(agent_id).join("output.log");
@@ -9931,7 +9930,7 @@ impl VizApp {
                 let dur = (e - s).num_seconds();
                 lines.push(format!(
                     "  Duration:  {}",
-                    workgraph::format_duration(dur, false)
+                    worksgood::format_duration(dur, false)
                 ));
             }
             lines.push(String::new());
@@ -9955,7 +9954,7 @@ impl VizApp {
                 let ago = now.signed_duration_since(parsed).num_seconds();
                 lines.push(format!(
                     "  Last iter: {} ago",
-                    workgraph::format_duration(ago, true)
+                    worksgood::format_duration(ago, true)
                 ));
             }
             // Next due: use ready_after if present, otherwise compute from last_completed + delay
@@ -9963,7 +9962,7 @@ impl VizApp {
                 let delay_secs = cc
                     .delay
                     .as_ref()
-                    .and_then(|d| workgraph::graph::parse_delay(d))?;
+                    .and_then(|d| worksgood::graph::parse_delay(d))?;
                 let last_ts = task
                     .last_iteration_completed_at
                     .as_ref()?
@@ -9979,7 +9978,7 @@ impl VizApp {
                     let secs = (parsed - now).num_seconds();
                     lines.push(format!(
                         "  Next due:  in {}",
-                        workgraph::format_duration(secs, true)
+                        worksgood::format_duration(secs, true)
                     ));
                 } else {
                     lines.push("  Next due:  ready now".to_string());
@@ -10027,7 +10026,7 @@ impl VizApp {
                         .ok()
                         .map(|parsed| {
                             let ago = now.signed_duration_since(parsed).num_seconds();
-                            format!("  {} ago", workgraph::format_duration(ago.max(0), true))
+                            format!("  {} ago", worksgood::format_duration(ago.max(0), true))
                         })
                         .unwrap_or_default();
                     lines.push(format!(
@@ -10141,7 +10140,7 @@ impl VizApp {
             let agency_dir = self.workgraph_dir.join("agency");
             let agents_cache = agency_dir.join("cache").join("agents");
             let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
-            if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
+            if let Ok(agent_entity) = worksgood::agency::load_agent(&agent_file) {
                 let short_hash = &agent_hash[..agent_hash.len().min(8)];
                 lines.push(format!("Identity: {} ({})", agent_entity.name, short_hash));
                 let roles_dir = agency_dir.join("cache").join("roles");
@@ -10262,7 +10261,7 @@ impl VizApp {
                 let dur = (e - s).num_seconds();
                 lines.push(format!(
                     "  Duration:  {}",
-                    workgraph::format_duration(dur, false)
+                    worksgood::format_duration(dur, false)
                 ));
             }
             lines.push(String::new());
@@ -10286,14 +10285,14 @@ impl VizApp {
                 let ago = now.signed_duration_since(parsed).num_seconds();
                 lines.push(format!(
                     "  Last iter: {} ago",
-                    workgraph::format_duration(ago, true)
+                    worksgood::format_duration(ago, true)
                 ));
             }
             let next_due = task.ready_after.clone().or_else(|| {
                 let delay_secs = cc
                     .delay
                     .as_ref()
-                    .and_then(|d| workgraph::graph::parse_delay(d))?;
+                    .and_then(|d| worksgood::graph::parse_delay(d))?;
                 let last_ts = task
                     .last_iteration_completed_at
                     .as_ref()?
@@ -10309,7 +10308,7 @@ impl VizApp {
                     let secs = (parsed - now).num_seconds();
                     lines.push(format!(
                         "  Next due:  in {}",
-                        workgraph::format_duration(secs, true)
+                        worksgood::format_duration(secs, true)
                     ));
                 } else {
                     lines.push("  Next due:  ready now".to_string());
@@ -10506,7 +10505,7 @@ impl VizApp {
     /// "iter 5/5 (last)" (live slot but task is done — same content as
     /// previous archive). The "(live)" / "(last)" suffix tells the user
     /// whether the live pane is actively being written to.
-    pub fn iteration_view_label(&self, task: &workgraph::graph::Task) -> Option<String> {
+    pub fn iteration_view_label(&self, task: &worksgood::graph::Task) -> Option<String> {
         let total = self.iteration_archives.len();
         if total == 0 {
             return None;
@@ -11046,7 +11045,7 @@ impl VizApp {
                     .and_then(|t| t.assigned.clone())
             });
 
-        match workgraph::messages::list_messages(&self.workgraph_dir, &task_id) {
+        match worksgood::messages::list_messages(&self.workgraph_dir, &task_id) {
             Ok(msgs) if msgs.is_empty() => {
                 self.messages_panel
                     .rendered_lines
@@ -11132,7 +11131,7 @@ impl VizApp {
                 // which messages have been seen.
                 let max_id = msgs.last().map(|m| m.id).unwrap_or(0);
                 if max_id > 0 {
-                    let _ = workgraph::messages::write_cursor(
+                    let _ = worksgood::messages::write_cursor(
                         &self.workgraph_dir,
                         "tui",
                         &task_id,
@@ -11226,7 +11225,7 @@ impl VizApp {
             filtered_indices: None,
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
-            total_usage: workgraph::graph::TokenUsage {
+            total_usage: worksgood::graph::TokenUsage {
                 cost_usd: 0.0,
                 input_tokens: 0,
                 output_tokens: 0,
@@ -11807,7 +11806,7 @@ impl VizApp {
             .or_else(|| {
                 data.get("task_id")
                     .and_then(|value| value.as_str())
-                    .and_then(workgraph::chat_id::parse_chat_task_id)
+                    .and_then(worksgood::chat_id::parse_chat_task_id)
             })
     }
 
@@ -11950,15 +11949,15 @@ impl VizApp {
                         // Tear down the chat tmux session — the chat
                         // is being abandoned, so we don't want a
                         // dangling session reattaching on next launch.
-                        let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        let task_id = worksgood::chat_id::format_chat_task_id(cid);
                         let chat_ref = format!("chat-{}", cid);
                         let chat_dir =
-                            workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-                        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                            worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                        worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                         if let Some(mut pane) = self.task_panes.remove(&task_id) {
                             pane.kill_underlying_session();
                         } else {
-                            workgraph::chat_id::kill_chat_tmux_session_for_id(
+                            worksgood::chat_id::kill_chat_tmux_session_for_id(
                                 &self.workgraph_dir,
                                 cid,
                             );
@@ -11998,11 +11997,11 @@ impl VizApp {
                         // + archive-via-IPC paths uniformly. The CLI
                         // path (`wg chat archive`) does its own cleanup
                         // in chat_cmd::run_archive.
-                        let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        let task_id = worksgood::chat_id::format_chat_task_id(cid);
                         let chat_ref = format!("chat-{}", cid);
                         let chat_dir =
-                            workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-                        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                            worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                        worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                         if let Some(mut pane) = self.task_panes.remove(&task_id) {
                             pane.kill_underlying_session();
                         } else {
@@ -12010,7 +12009,7 @@ impl VizApp {
                             // may still be running because another TUI
                             // (or a prior `wg tui`) spawned it. Reach
                             // for it by canonical name.
-                            workgraph::chat_id::kill_chat_tmux_session_for_id(
+                            worksgood::chat_id::kill_chat_tmux_session_for_id(
                                 &self.workgraph_dir,
                                 cid,
                             );
@@ -12169,7 +12168,7 @@ impl VizApp {
         // Use fresh registry active_count for agents_alive instead of stale
         // CoordinatorState.agents_alive (which is only updated at tick boundaries).
         let fresh_alive =
-            workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir).active_count();
+            worksgood::AgentRegistry::load_or_warn(&self.workgraph_dir).active_count();
         let all_states = CoordinatorState::load_all(&self.workgraph_dir);
         self.dashboard.coordinator_cards = if all_states.is_empty() {
             vec![DashboardCoordinatorCard {
@@ -12241,7 +12240,7 @@ impl VizApp {
                     // Re-classify stuck agents: if they have active children,
                     // they're waiting on a subprocess, not stuck
                     if row.activity == DashboardAgentActivity::Stuck
-                        && workgraph::service::has_active_children(agent.pid)
+                        && worksgood::service::has_active_children(agent.pid)
                     {
                         row.activity = DashboardAgentActivity::Slow;
                     }
@@ -12849,7 +12848,7 @@ impl VizApp {
 
         // Helper: build a LifecyclePhase from a task
         let wg_dir = self.workgraph_dir.clone();
-        let build_phase = |t: &workgraph::graph::Task, label: &'static str| -> LifecyclePhase {
+        let build_phase = |t: &worksgood::graph::Task, label: &'static str| -> LifecyclePhase {
             let usage = t
                 .token_usage
                 .clone()
@@ -13069,7 +13068,7 @@ impl VizApp {
         self.service_health.agents_max = coord.max_agents;
 
         // Load provider health to determine pause reason
-        use workgraph::service::provider_health::ProviderHealth;
+        use worksgood::service::provider_health::ProviderHealth;
         let provider_health = ProviderHealth::load(dir).unwrap_or_default();
 
         // Detect auto-pause state change for notifications
@@ -13108,7 +13107,7 @@ impl VizApp {
         // statuses accurate. PID-based liveness checks are unreliable from the TUI
         // process because the daemon may have already reaped the zombie (removing it
         // from the process table) before updating the registry status.
-        let registry = workgraph::AgentRegistry::load_or_warn(dir);
+        let registry = worksgood::AgentRegistry::load_or_warn(dir);
         let alive = registry.active_count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
@@ -13125,16 +13124,16 @@ impl VizApp {
             let was_alive = prev.is_some_and(|s| {
                 matches!(
                     s,
-                    workgraph::AgentStatus::Starting
-                        | workgraph::AgentStatus::Working
-                        | workgraph::AgentStatus::Idle
+                    worksgood::AgentStatus::Starting
+                        | worksgood::AgentStatus::Working
+                        | worksgood::AgentStatus::Idle
                 )
             });
             let now_exited = matches!(
                 agent.status,
-                workgraph::AgentStatus::Done
-                    | workgraph::AgentStatus::Failed
-                    | workgraph::AgentStatus::Dead
+                worksgood::AgentStatus::Done
+                    | worksgood::AgentStatus::Failed
+                    | worksgood::AgentStatus::Dead
             );
             // Agent exited: was alive, now done/failed/dead.
             if was_alive && now_exited {
@@ -13168,7 +13167,7 @@ impl VizApp {
                     .map(|d| d.as_secs());
                 if let Some(secs) = output_age_secs
                     && secs > 300
-                    && !workgraph::service::has_active_children(agent.pid)
+                    && !worksgood::service::has_active_children(agent.pid)
                 {
                     agent_toasts.push(AgentToast::Dedup(
                         format!(
@@ -13200,9 +13199,9 @@ impl VizApp {
         // Detect stuck tasks: in-progress tasks whose agent PID is dead
         let graph_path = dir.join("graph.jsonl");
         let mut stuck = Vec::new();
-        if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+        if let Ok(graph) = worksgood::parser::load_graph(&graph_path) {
             for task in graph.tasks() {
-                if task.status == workgraph::graph::Status::InProgress
+                if task.status == worksgood::graph::Status::InProgress
                     && let Some(ref agent_id) = task.agent
                     && let Some(agent) = registry.agents.get(agent_id)
                     && !crate::commands::is_process_alive(agent.pid)
@@ -13305,7 +13304,7 @@ impl VizApp {
             return;
         }
         self.time_counters.service_uptime_secs = self.service_health.uptime_secs;
-        let registry = workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir);
+        let registry = worksgood::AgentRegistry::load_or_warn(&self.workgraph_dir);
         let now = chrono::Utc::now();
         let (mut cumulative, mut active, mut active_count) = (0i64, 0i64, 0usize);
         for agent in registry.agents.values() {
@@ -13473,7 +13472,7 @@ impl VizApp {
             self.chat.total_history_count = 0;
             self.chat.skipped_history_count = 0;
             // Still set outbox cursor so new messages during this session appear.
-            if let Ok(msgs) = workgraph::chat::read_outbox_since_for(
+            if let Ok(msgs) = worksgood::chat::read_outbox_since_for(
                 &self.workgraph_dir,
                 self.active_coordinator_id,
                 0,
@@ -13507,7 +13506,7 @@ impl VizApp {
                     result.total_count.saturating_sub(state.messages.len());
                 // Set outbox cursor so we don't re-display old messages.
                 if let Ok(outbox) =
-                    workgraph::chat::read_outbox_since_for(&self.workgraph_dir, cid, 0)
+                    worksgood::chat::read_outbox_since_for(&self.workgraph_dir, cid, 0)
                 {
                     state.outbox_cursor = outbox.last().map(|m| m.id).unwrap_or(0);
                 }
@@ -13532,7 +13531,7 @@ impl VizApp {
                 result.total_count.saturating_sub(self.chat.messages.len());
         } else {
             // Fall back to inbox/outbox (e.g. first run after upgrade).
-            let history = workgraph::chat::read_history_for(&self.workgraph_dir, coordinator_id)
+            let history = worksgood::chat::read_history_for(&self.workgraph_dir, coordinator_id)
                 .unwrap_or_default();
 
             self.chat.messages.clear();
@@ -13587,7 +13586,7 @@ impl VizApp {
         // Set outbox cursor to latest outbox message ID so we don't re-display old messages.
         // Use the active coordinator's outbox (each coordinator has independent ID sequences).
         if let Ok(msgs) =
-            workgraph::chat::read_outbox_since_for(&self.workgraph_dir, coordinator_id, 0)
+            worksgood::chat::read_outbox_since_for(&self.workgraph_dir, coordinator_id, 0)
         {
             self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
         }
@@ -13595,7 +13594,7 @@ impl VizApp {
         // Check if archive files exist for scrollback beyond the active file.
         self.chat.archives_loaded = false;
         self.chat.has_archives =
-            workgraph::chat::list_archives_for(&self.workgraph_dir, coordinator_id)
+            worksgood::chat::list_archives_for(&self.workgraph_dir, coordinator_id)
                 .map(|a| !a.is_empty())
                 .unwrap_or(false);
     }
@@ -13655,7 +13654,7 @@ impl VizApp {
                 self.cached_coordinator_id_set
                     .get(&id)
                     .cloned()
-                    .unwrap_or_else(|| workgraph::chat_id::format_chat_task_id(id))
+                    .unwrap_or_else(|| worksgood::chat_id::format_chat_task_id(id))
             })
             .collect()
     }
@@ -13709,7 +13708,7 @@ impl VizApp {
     fn load_archive_history(&mut self) -> bool {
         self.chat.archives_loaded = true;
 
-        let archives = match workgraph::chat::list_archives_for(
+        let archives = match worksgood::chat::list_archives_for(
             &self.workgraph_dir,
             self.active_coordinator_id,
         ) {
@@ -13728,7 +13727,7 @@ impl VizApp {
         // We need to convert them to TUI ChatMessage format.
         let mut archive_messages: Vec<ChatMessage> = Vec::new();
         for archive_path in &archives {
-            if let Ok(msgs) = workgraph::chat::read_archive_messages(archive_path) {
+            if let Ok(msgs) = worksgood::chat::read_archive_messages(archive_path) {
                 for msg in msgs {
                     let role = match msg.role.as_str() {
                         "user" => ChatRole::User,
@@ -13814,11 +13813,11 @@ impl VizApp {
         // Poll the streaming file for partial text while awaiting a response.
         if self.chat.awaiting_response() {
             let streaming =
-                workgraph::chat::read_streaming(&self.workgraph_dir, self.active_coordinator_id);
+                worksgood::chat::read_streaming(&self.workgraph_dir, self.active_coordinator_id);
             self.chat.streaming_text = streaming;
         }
 
-        let new_msgs = match workgraph::chat::read_outbox_since_for(
+        let new_msgs = match worksgood::chat::read_outbox_since_for(
             &self.workgraph_dir,
             self.active_coordinator_id,
             self.chat.outbox_cursor,
@@ -13976,7 +13975,7 @@ impl VizApp {
             let task_id = fname.trim_end_matches(".jsonl");
 
             // Read messages for this task.
-            let msgs = match workgraph::messages::list_messages(&self.workgraph_dir, task_id) {
+            let msgs = match worksgood::messages::list_messages(&self.workgraph_dir, task_id) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -13985,8 +13984,8 @@ impl VizApp {
                 // Only interleave messages that have been read by the agent.
                 if !matches!(
                     msg.status,
-                    workgraph::messages::DeliveryStatus::Read
-                        | workgraph::messages::DeliveryStatus::Acknowledged
+                    worksgood::messages::DeliveryStatus::Read
+                        | worksgood::messages::DeliveryStatus::Acknowledged
                 ) {
                     continue;
                 }
@@ -14075,7 +14074,7 @@ impl VizApp {
             attachments: att_names,
             edited: false,
             inbox_id: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             target_task: None,
             msg_timestamp: Some(chrono::Utc::now().to_rfc3339()),
             read_at: None,
@@ -14117,11 +14116,11 @@ impl VizApp {
         if self.chat_pty_mode && !self.chat_pty_observer {
             // Build attachment list in `chat::Attachment` shape so
             // append_inbox_with_attachments_for can record them.
-            let attachments: Vec<workgraph::chat::Attachment> = self
+            let attachments: Vec<worksgood::chat::Attachment> = self
                 .chat
                 .pending_attachments
                 .iter()
-                .map(|a| workgraph::chat::Attachment {
+                .map(|a| worksgood::chat::Attachment {
                     path: a.stored_path.clone(),
                     mime_type: a.mime_type.clone(),
                     size_bytes: a.size_bytes,
@@ -14129,7 +14128,7 @@ impl VizApp {
                 .collect();
             self.chat.pending_attachments.clear();
 
-            if let Err(e) = workgraph::chat::append_inbox_with_attachments_for(
+            if let Err(e) = worksgood::chat::append_inbox_with_attachments_for(
                 &self.workgraph_dir,
                 self.active_coordinator_id,
                 &text,
@@ -14182,9 +14181,9 @@ impl VizApp {
             // marker the handler never sees (and never cleans up).
             // `request_release` records the live holder's PID so only that
             // handler generation acts on it.
-            let chat_ref = workgraph::chat_id::format_chat_session_ref(self.active_coordinator_id);
-            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-            if let Err(e) = workgraph::session_lock::request_release(&chat_dir) {
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(self.active_coordinator_id);
+            let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+            if let Err(e) = worksgood::session_lock::request_release(&chat_dir) {
                 eprintln!("[tui] failed to write release marker for takeover: {}", e);
             } else {
                 self.chat_pty_takeover_pending_since = Some(std::time::Instant::now());
@@ -14196,7 +14195,7 @@ impl VizApp {
     /// Validates and copies to .wg/attachments/.
     pub fn attach_file(&mut self, path_str: &str) {
         let source = std::path::Path::new(path_str.trim());
-        match workgraph::chat::store_attachment(&self.workgraph_dir, source) {
+        match worksgood::chat::store_attachment(&self.workgraph_dir, source) {
             Ok(att) => {
                 let filename = std::path::Path::new(&att.path)
                     .file_name()
@@ -14285,7 +14284,7 @@ impl VizApp {
                     self.chat.messages[idx].edited = true;
                     // Update inbox if we have an ID
                     if let Some(inbox_id) = self.chat.messages[idx].inbox_id {
-                        let _ = workgraph::chat::edit_inbox_message_for(
+                        let _ = worksgood::chat::edit_inbox_message_for(
                             &self.workgraph_dir,
                             self.active_coordinator_id,
                             inbox_id,
@@ -14317,7 +14316,7 @@ impl VizApp {
         }
         // Delete from inbox if we have an ID
         if let Some(inbox_id) = self.chat.messages[index].inbox_id {
-            let _ = workgraph::chat::delete_inbox_message_for(
+            let _ = worksgood::chat::delete_inbox_message_for(
                 &self.workgraph_dir,
                 self.active_coordinator_id,
                 inbox_id,
@@ -14421,7 +14420,7 @@ impl VizApp {
         }
         self.cached_coordinator_id_set
             .entry(cid)
-            .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
+            .or_insert_with(|| worksgood::chat_id::format_chat_task_id(cid));
         self.rebuild_active_tab_entries_from_cache();
 
         self.right_panel_tab = RightPanelTab::Chat;
@@ -14486,7 +14485,7 @@ impl VizApp {
         // ID sequences — a cursor from coordinator-0 is meaningless for coordinator-6).
         if self.chat.outbox_cursor == 0
             && let Ok(msgs) =
-                workgraph::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
+                worksgood::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
         {
             self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
         }
@@ -14515,7 +14514,7 @@ impl VizApp {
         let coord_task_id = if target_id == 0 {
             ".coordinator".to_string()
         } else {
-            workgraph::chat_id::format_chat_task_id(target_id)
+            worksgood::chat_id::format_chat_task_id(target_id)
         };
         if let Some(idx) = self.task_order.iter().position(|id| *id == coord_task_id) {
             self.selected_task_idx = Some(idx);
@@ -14560,7 +14559,7 @@ impl VizApp {
                 .open_tabs
                 .iter()
                 .filter(|tab_id| {
-                    workgraph::chat_id::parse_chat_task_id(tab_id)
+                    worksgood::chat_id::parse_chat_task_id(tab_id)
                         .map(|cid| !known_ids.contains(&cid))
                         .unwrap_or(true)
                 })
@@ -14627,23 +14626,23 @@ impl VizApp {
         // the registry only has `chat-N`) causes fallback to a literal
         // path that doesn't exist, observer_mode reads false, and the
         // TUI incorrectly spawns in owner mode — "session lock busy".
-        let task_id = workgraph::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
         let chat_ref = format!("chat-{}", self.active_coordinator_id);
         let chat_task_metadata =
-            workgraph::parser::load_graph(crate::commands::graph_path(&self.workgraph_dir))
+            worksgood::parser::load_graph(crate::commands::graph_path(&self.workgraph_dir))
                 .ok()
                 .and_then(|g| g.get_task(&task_id).cloned());
         if let Some(mut task) = chat_task_metadata.clone()
             && task
                 .tags
                 .iter()
-                .any(|t| workgraph::chat_id::is_chat_loop_tag(t))
+                .any(|t| worksgood::chat_id::is_chat_loop_tag(t))
         {
             let coord_state = crate::commands::service::CoordinatorState::load_for(
                 &self.workgraph_dir,
                 self.active_coordinator_id,
             );
-            let migrated = workgraph::chat_command::migrate_chat_task_metadata(
+            let migrated = worksgood::chat_command::migrate_chat_task_metadata(
                 &mut task,
                 &self.workgraph_dir,
                 coord_state
@@ -14662,7 +14661,7 @@ impl VizApp {
             if migrated {
                 let replacement = task.clone();
                 let task_id_for_write = task_id.clone();
-                let _ = workgraph::parser::modify_graph(
+                let _ = worksgood::parser::modify_graph(
                     crate::commands::graph_path(&self.workgraph_dir),
                     |fresh| {
                         if let Some(t) = fresh.get_task_mut(&task_id_for_write) {
@@ -14697,8 +14696,8 @@ impl VizApp {
         // Resolve (binary, args, observer_mode) per executor. Observer
         // mode (lock-tailing) only applies to native today because the
         // vendor CLIs run their own session management off-graph.
-        let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-        let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
+        let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+        let observer_mode = worksgood::session_lock::read_holder(&chat_dir)
             .ok()
             .flatten()
             .is_some_and(|info| info.alive);
@@ -14715,19 +14714,19 @@ impl VizApp {
         // every respawn, so it defers instead of racing the TUI's PTY
         // handler back to the session lock.
         if let Err(e) =
-            workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
+            worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
         {
             eprintln!("[tui] failed to write TUI driver sentinel: {}", e);
         }
         if observer_mode {
-            let _ = workgraph::session_lock::request_release(&chat_dir);
-            let _ = workgraph::session_lock::wait_for_release(
+            let _ = worksgood::session_lock::request_release(&chat_dir);
+            let _ = worksgood::session_lock::wait_for_release(
                 &chat_dir,
                 std::time::Duration::from_secs(5),
             );
         }
         // Re-check lock state after cooperative handoff.
-        let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
+        let observer_mode = worksgood::session_lock::read_holder(&chat_dir)
             .ok()
             .flatten()
             .is_some_and(|info| info.alive);
@@ -14775,7 +14774,7 @@ impl VizApp {
                 .and_then(|n| n.to_str())
                 .unwrap_or("project");
             let tmux_session = if crate::tui::pty_pane::tmux_available() {
-                Some(workgraph::chat_id::chat_tmux_session_name(
+                Some(worksgood::chat_id::chat_tmux_session_name(
                     project_tag,
                     &chat_ref,
                 ))
@@ -14807,10 +14806,10 @@ impl VizApp {
                     // working CLI shape (`wg nex -m ... -e ...`) so
                     // nex stays on rustyline stdin and tmux owns
                     // persistence/resume for the pane.
-                    let _ = workgraph::chat_sessions::ensure_session(
+                    let _ = worksgood::chat_sessions::ensure_session(
                         &self.workgraph_dir,
                         &chat_ref,
-                        workgraph::chat_sessions::SessionKind::Coordinator,
+                        worksgood::chat_sessions::SessionKind::Coordinator,
                         Some(format!("chat {}", self.active_coordinator_id)),
                     );
                     // Per-chat model override wins; otherwise use
@@ -14831,8 +14830,8 @@ impl VizApp {
                         // an explicit `openrouter:` spec in
                         // build_nex_chat_pty_args, so nex resolves OpenRouter
                         // on its own.
-                        let or_route = workgraph::config::model_is_openrouter(
-                            &workgraph::config::normalize_bare_openrouter_route(&model),
+                        let or_route = worksgood::config::model_is_openrouter(
+                            &worksgood::config::normalize_bare_openrouter_route(&model),
                         );
                         if or_route {
                             None
@@ -14888,7 +14887,7 @@ impl VizApp {
                     // vs sonnet on a per-tab basis). Strip the provider
                     // prefix — claude CLI expects bare model ids.
                     if let Some(ref m) = chat_model {
-                        let spec = workgraph::config::parse_model_spec(m);
+                        let spec = worksgood::config::parse_model_spec(m);
                         if !spec.model_id.is_empty() {
                             args.push("--model".to_string());
                             args.push(spec.model_id);
@@ -14952,7 +14951,7 @@ impl VizApp {
                     let mut args: Vec<String> = Vec::new();
                     if let Some(model_arg) = chat_model
                         .as_deref()
-                        .and_then(workgraph::chat_command::opencode_model_arg)
+                        .and_then(worksgood::chat_command::opencode_model_arg)
                     {
                         args.push("--model".to_string());
                         args.push(model_arg);
@@ -14974,7 +14973,7 @@ impl VizApp {
                     let mut args = vec!["run".to_string()];
                     if let Some(model_arg) = chat_model
                         .as_deref()
-                        .and_then(workgraph::chat_command::octomind_model_arg)
+                        .and_then(worksgood::chat_command::octomind_model_arg)
                     {
                         args.push("-m".to_string());
                         args.push(model_arg);
@@ -14994,7 +14993,7 @@ impl VizApp {
                         .parent()
                         .unwrap_or(&self.workgraph_dir)
                         .to_path_buf();
-                    let agent_path = match workgraph::chat_command::write_dexto_agent_config(
+                    let agent_path = match worksgood::chat_command::write_dexto_agent_config(
                         &chat_dir,
                         chat_model.as_deref(),
                     ) {
@@ -15057,7 +15056,7 @@ impl VizApp {
             .and_then(|n| n.to_str())
             .unwrap_or("project");
         let tmux_session = if crate::tui::pty_pane::tmux_available() {
-            Some(workgraph::chat_id::chat_tmux_session_name(
+            Some(worksgood::chat_id::chat_tmux_session_name(
                 project_tag,
                 &chat_ref,
             ))
@@ -15197,8 +15196,8 @@ impl VizApp {
                 {
                     let chat_ref = format!("chat-{}", cid);
                     let chat_dir =
-                        workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-                    workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                        worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                    worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                 }
                 eprintln!(
                     "[tui] auto-enable chat PTY for executor '{}' failed ({}): \
@@ -15241,7 +15240,7 @@ impl VizApp {
             .to_string();
         format!(
             "{}{}-",
-            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
             project_tag.replace([':', '.'], "-")
         )
     }
@@ -15277,17 +15276,17 @@ impl VizApp {
         // every non-archived/non-abandoned task with the chat-loop tag.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let live_refs: std::collections::HashSet<String> =
-            workgraph::parser::load_graph(&graph_path)
+            worksgood::parser::load_graph(&graph_path)
                 .map(|g| {
                     g.tasks()
                         .filter(|t| {
                             t.tags
                                 .iter()
-                                .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
+                                .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
                         })
-                        .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
+                        .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
                         .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
-                        .filter_map(|t| workgraph::chat_id::parse_chat_task_id(&t.id))
+                        .filter_map(|t| worksgood::chat_id::parse_chat_task_id(&t.id))
                         .map(|n| format!("chat-{}", n))
                         .collect()
                 })
@@ -15297,12 +15296,12 @@ impl VizApp {
         // ref isn't in `live_refs`.
         let prefix = format!(
             "{}{}-",
-            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
             project_tag.replace([':', '.'], "-")
         );
         let sessions = crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix);
         for session in &sessions {
-            let Some(chat_ref) = workgraph::chat_id::parse_chat_tmux_session(session, &project_tag)
+            let Some(chat_ref) = worksgood::chat_id::parse_chat_tmux_session(session, &project_tag)
             else {
                 continue;
             };
@@ -15332,7 +15331,7 @@ impl VizApp {
         // pty_pane for the centralized list of options wg owns.
         self.sync_chat_tmux_settings();
 
-        let user = workgraph::current_user();
+        let user = worksgood::current_user();
         // Don't auto-create for the fallback "unknown" identity
         if user == "unknown" {
             return;
@@ -15345,7 +15344,7 @@ impl VizApp {
         // list_coordinator_ids_and_labels() returns display labels like ".chat-N"
         // which don't match the "Chat: {user}" title format.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = workgraph::parser::load_graph(&graph_path).ok();
+        let graph = worksgood::parser::load_graph(&graph_path).ok();
 
         // Find a non-archived chat task whose title matches (new or legacy)
         let existing_coord: Option<u32> = graph.as_ref().and_then(|g| {
@@ -15353,13 +15352,13 @@ impl VizApp {
                 .filter(|t| {
                     t.tags
                         .iter()
-                        .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
+                        .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
                 })
-                .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
+                .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
                 .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
                 .filter(|t| t.title == expected_title || t.title == legacy_expected_title)
                 .filter_map(|t| {
-                    workgraph::chat_id::parse_chat_task_id(&t.id).or_else(|| {
+                    worksgood::chat_id::parse_chat_task_id(&t.id).or_else(|| {
                         if t.id == ".coordinator" {
                             Some(0)
                         } else {
@@ -15376,8 +15375,8 @@ impl VizApp {
                 g.tasks().any(|t| {
                     t.tags
                         .iter()
-                        .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
-                        && !matches!(t.status, workgraph::graph::Status::Abandoned)
+                        .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+                        && !matches!(t.status, worksgood::graph::Status::Abandoned)
                         && !t.tags.iter().any(|tag| tag == "archived")
                 })
             });
@@ -15441,8 +15440,9 @@ impl VizApp {
         // Build the model fuzzy-autocomplete suggestions from local,
         // network-free sources (add-model-fuzzy): registry + curated
         // OpenRouter routes + recent launcher history + endpoint defaults.
-        let registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
-        let recent_models = workgraph::launcher_history::recent_models(20).unwrap_or_default();
+        let registry =
+            worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+        let recent_models = worksgood::launcher_history::recent_models(20).unwrap_or_default();
         let model_suggestions = build_model_suggestions(&config, &registry, &recent_models);
 
         self.launcher = Some(LauncherState {
@@ -15562,8 +15562,8 @@ impl VizApp {
         // Record history (executor + model + endpoint) so a future v2
         // recall list (deferred — see task spec) can surface this combo.
         if model.is_some() || endpoint.is_some() {
-            if let Ok(()) = workgraph::launcher_history::record_use(
-                &workgraph::launcher_history::HistoryEntry::new(
+            if let Ok(()) = worksgood::launcher_history::record_use(
+                &worksgood::launcher_history::HistoryEntry::new(
                     &executor,
                     model.as_deref(),
                     endpoint.as_deref(),
@@ -15632,7 +15632,7 @@ impl VizApp {
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = workgraph::parser::load_graph(&graph_path).ok();
+        let graph = worksgood::parser::load_graph(&graph_path).ok();
 
         let ids_and_labels = self.list_coordinator_ids_and_labels();
         let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
@@ -15640,7 +15640,7 @@ impl VizApp {
         for (cid, label) in &ids_and_labels {
             // Prefer .chat-N (new), fall back to .coordinator-N or bare .coordinator (legacy)
             let task_id = if let Some(ref g) = graph {
-                let new_id = workgraph::chat_id::format_chat_task_id(*cid);
+                let new_id = worksgood::chat_id::format_chat_task_id(*cid);
                 if g.get_task(&new_id).is_some() {
                     new_id
                 } else if *cid == 0 && g.get_task(".coordinator").is_some() {
@@ -15651,7 +15651,7 @@ impl VizApp {
             } else if *cid == 0 {
                 ".coordinator".to_string()
             } else {
-                workgraph::chat_id::format_chat_task_id(*cid)
+                worksgood::chat_id::format_chat_task_id(*cid)
             };
 
             let (status_desc, is_alive) = if let Some(ref g) = graph {
@@ -15698,7 +15698,7 @@ impl VizApp {
     /// selectable list for bulk-abandon. See `ChatManagerState`.
     pub fn open_chat_manager(&mut self) {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match workgraph::parser::load_graph(&graph_path) {
+        let graph = match worksgood::parser::load_graph(&graph_path) {
             Ok(g) => g,
             Err(_) => return,
         };
@@ -15708,7 +15708,7 @@ impl VizApp {
             let is_chat = task
                 .tags
                 .iter()
-                .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+                .any(|t| worksgood::chat_id::is_chat_loop_tag(t));
             if !is_chat {
                 continue;
             }
@@ -15717,7 +15717,7 @@ impl VizApp {
             if task.tags.iter().any(|t| t == "archived") {
                 continue;
             }
-            let cid = match workgraph::chat_id::parse_chat_task_id(&task.id) {
+            let cid = match worksgood::chat_id::parse_chat_task_id(&task.id) {
                 Some(c) => c,
                 None if task.id == ".coordinator" => 0,
                 None => continue,
@@ -15878,12 +15878,12 @@ impl VizApp {
             .to_string();
         let prefix = format!(
             "{}{}-",
-            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
             project_tag.replace([':', '.'], "-")
         );
         crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix)
             .into_iter()
-            .filter_map(|s| workgraph::chat_id::parse_chat_tmux_session(&s, &project_tag))
+            .filter_map(|s| worksgood::chat_id::parse_chat_tmux_session(&s, &project_tag))
             .filter_map(|cref| {
                 cref.strip_prefix("chat-")
                     .and_then(|n| n.parse::<u32>().ok())
@@ -15916,14 +15916,14 @@ impl VizApp {
             // Prefer pane-owned cleanup so the local task_panes entry is
             // disposed; fall back to direct kill-by-name otherwise (e.g.
             // for chats spawned under a prior TUI process).
-            let task_id = workgraph::chat_id::format_chat_task_id(cid);
+            let task_id = worksgood::chat_id::format_chat_task_id(cid);
             let chat_ref = format!("chat-{}", cid);
-            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-            workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+            let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
             if let Some(mut pane) = self.task_panes.remove(&task_id) {
                 pane.kill_underlying_session();
             } else {
-                workgraph::chat_id::kill_chat_tmux_session_for_id(&self.workgraph_dir, cid);
+                worksgood::chat_id::kill_chat_tmux_session_for_id(&self.workgraph_dir, cid);
             }
         }
         self.input_mode = InputMode::Normal;
@@ -15942,14 +15942,14 @@ impl VizApp {
             if !close {
                 continue;
             }
-            let task_id = workgraph::chat_id::format_chat_task_id(*cid);
+            let task_id = worksgood::chat_id::format_chat_task_id(*cid);
             let chat_ref = format!("chat-{}", cid);
-            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
-            workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+            let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
             if let Some(mut pane) = self.task_panes.remove(&task_id) {
                 pane.kill_underlying_session();
             } else {
-                workgraph::chat_id::kill_chat_tmux_session_for_id(&self.workgraph_dir, *cid);
+                worksgood::chat_id::kill_chat_tmux_session_for_id(&self.workgraph_dir, *cid);
             }
         }
         self.input_mode = InputMode::Normal;
@@ -16013,19 +16013,19 @@ impl VizApp {
     /// in the per-tick refresh path (see `maybe_refresh`) so we don't
     /// re-parse `graph.jsonl` once per render frame.
     fn list_coordinator_ids_and_labels_from_graph(
-        graph: &workgraph::graph::WorkGraph,
+        graph: &worksgood::graph::WorkGraph,
     ) -> Vec<(u32, String)> {
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
             .filter(|t| {
                 t.tags
                     .iter()
-                    .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
+                    .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
             })
             .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .filter_map(|t| {
-                let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
+                let cid = worksgood::chat_id::parse_chat_task_id(&t.id)
                     .or_else(|| (t.id == ".coordinator").then_some(0))?;
                 Some((cid, String::new()))
             })
@@ -16036,7 +16036,7 @@ impl VizApp {
             entries.push((0, String::new()));
         }
         for (cid, label) in entries.iter_mut() {
-            *label = workgraph::chat_id::canonical_chat_task_id(graph, *cid);
+            *label = worksgood::chat_id::canonical_chat_task_id(graph, *cid);
         }
         entries
     }
@@ -16045,15 +16045,15 @@ impl VizApp {
     /// Pairs with `list_coordinator_ids_and_labels_from_graph` for the
     /// per-tick cache refresh.
     fn list_user_board_entries_from_graph(
-        graph: &workgraph::graph::WorkGraph,
+        graph: &worksgood::graph::WorkGraph,
     ) -> Vec<(String, String)> {
         let mut entries: Vec<(String, String)> = graph
             .tasks()
-            .filter(|t| workgraph::graph::is_user_board(&t.id))
+            .filter(|t| worksgood::graph::is_user_board(&t.id))
             .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .map(|t| {
-                let label = workgraph::graph::user_board_handle(&t.id)
+                let label = worksgood::graph::user_board_handle(&t.id)
                     .map(|h| h.to_string())
                     .unwrap_or_else(|| t.id.clone());
                 (t.id.clone(), label)
@@ -16068,7 +16068,7 @@ impl VizApp {
     /// renderer (`render::draw_chat_tab`) reads `cached_chat_tab_entries`
     /// and `cached_user_board_entries` instead of re-loading + re-parsing
     /// the 2 MB+ `graph.jsonl` on every frame (the original 55 % CPU bug).
-    pub fn refresh_chat_tab_caches(&mut self, graph: &workgraph::graph::WorkGraph) {
+    pub fn refresh_chat_tab_caches(&mut self, graph: &worksgood::graph::WorkGraph) {
         let coordinator_entries = Self::list_coordinator_ids_and_labels_from_graph(graph);
         let pending_seen_in_graph = self
             .pending_new_chat_focus
@@ -16104,7 +16104,7 @@ impl VizApp {
                         (self.pending_new_chat_focus == Some(id)
                             && self.active_coordinator_id == id
                             && !self.closed_tabs.contains(&id))
-                        .then(|| workgraph::chat_id::format_chat_task_id(id))
+                        .then(|| worksgood::chat_id::format_chat_task_id(id))
                     })
                     .map(|label| (id, label))
             })
@@ -16120,7 +16120,7 @@ impl VizApp {
         }
         self.cached_coordinator_id_set
             .entry(cid)
-            .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
+            .or_insert_with(|| worksgood::chat_id::format_chat_task_id(cid));
     }
 
     /// Count chats that occupy a slot toward `coordinator.max_coordinators`.
@@ -16132,14 +16132,14 @@ impl VizApp {
     /// chat-0 entry — empty graph means zero live chats.
     pub fn live_chat_count(&self) -> usize {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match workgraph::parser::load_graph(&graph_path) {
+        let graph = match worksgood::parser::load_graph(&graph_path) {
             Ok(g) => g,
             Err(_) => return 0,
         };
-        workgraph::chat::count_live_chats(
+        worksgood::chat::count_live_chats(
             &self.workgraph_dir,
             &graph,
-            workgraph::chat::CHAT_CAP_IDLE_THRESHOLD,
+            worksgood::chat::CHAT_CAP_IDLE_THRESHOLD,
         )
     }
 
@@ -16148,16 +16148,16 @@ impl VizApp {
     /// (`.chat-N`) matching what `wg show` / `wg list` use.
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match workgraph::parser::load_graph(&graph_path) {
+        let graph = match worksgood::parser::load_graph(&graph_path) {
             Ok(g) => g,
-            Err(_) => return vec![(0, workgraph::chat_id::format_chat_task_id(0))],
+            Err(_) => return vec![(0, worksgood::chat_id::format_chat_task_id(0))],
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
             .filter(|t| {
                 t.tags
                     .iter()
-                    .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
+                    .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
             })
             .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
@@ -16165,7 +16165,7 @@ impl VizApp {
                 // Accept .chat-N, .coordinator-N (legacy), and bare .coordinator
                 // (legacy cid 0). The bare-.coordinator case is what older
                 // graphs use for the very first chat before chat-rename runs.
-                let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
+                let cid = worksgood::chat_id::parse_chat_task_id(&t.id)
                     .or_else(|| (t.id == ".coordinator").then_some(0))?;
                 Some((cid, String::new()))
             })
@@ -16180,7 +16180,7 @@ impl VizApp {
         // This lets the tab bar and other renderers apply distinct styling
         // based on the prefix.
         for (cid, label) in entries.iter_mut() {
-            *label = workgraph::chat_id::canonical_chat_task_id(&graph, *cid);
+            *label = worksgood::chat_id::canonical_chat_task_id(&graph, *cid);
         }
         entries
     }
@@ -16234,7 +16234,7 @@ impl VizApp {
         {
             current
                 .entry(cid)
-                .or_insert_with(|| workgraph::chat_id::format_chat_task_id(cid));
+                .or_insert_with(|| worksgood::chat_id::format_chat_task_id(cid));
         }
         if pending_seen_in_graph {
             self.pending_new_chat_focus = None;
@@ -16298,17 +16298,17 @@ impl VizApp {
     /// Returns Vec of (task_id, label) for active `.user-*` tasks.
     pub fn list_user_board_entries(&self) -> Vec<(String, String)> {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match workgraph::parser::load_graph(&graph_path) {
+        let graph = match worksgood::parser::load_graph(&graph_path) {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
         let mut entries: Vec<(String, String)> = graph
             .tasks()
-            .filter(|t| workgraph::graph::is_user_board(&t.id))
+            .filter(|t| worksgood::graph::is_user_board(&t.id))
             .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .map(|t| {
-                let label = workgraph::graph::user_board_handle(&t.id)
+                let label = worksgood::graph::user_board_handle(&t.id)
                     .map(|h| h.to_string())
                     .unwrap_or_else(|| t.id.clone());
                 (t.id.clone(), label)
@@ -16417,7 +16417,7 @@ impl VizApp {
             Some(seg) => {
                 let is_cross = matches!(
                     seg.source,
-                    workgraph::chat::HistorySource::CrossCoordinator { .. }
+                    worksgood::chat::HistorySource::CrossCoordinator { .. }
                 );
                 (seg.content.clone(), seg.label.clone(), is_cross)
             }
@@ -16440,7 +16440,7 @@ impl VizApp {
             content
         };
         let cid = self.active_coordinator_id;
-        match workgraph::chat::write_injected_context(&self.workgraph_dir, cid, &wrapped) {
+        match worksgood::chat::write_injected_context(&self.workgraph_dir, cid, &wrapped) {
             Ok(()) => {
                 self.close_history_browser();
                 self.push_toast(format!("Injected: {}", label), ToastSeverity::Info);
@@ -16588,7 +16588,7 @@ impl VizApp {
                 key: format!("endpoint.{}.name", i),
                 label: format!("{}{}  ({})", status_icon, ep.name, ep.provider),
                 value: ep.url.clone().unwrap_or_else(|| {
-                    workgraph::config::EndpointConfig::default_url_for_provider(&ep.provider)
+                    worksgood::config::EndpointConfig::default_url_for_provider(&ep.provider)
                         .to_string()
                 }),
                 edit_kind: ConfigEditKind::TextInput,
@@ -16697,9 +16697,9 @@ impl VizApp {
         // ── 3. Model Registry (from models.yaml) ──
         {
             let registry =
-                workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+                worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
             let default_id = registry.default_model.clone();
-            let mut models: Vec<&workgraph::models::ModelEntry> =
+            let mut models: Vec<&worksgood::models::ModelEntry> =
                 registry.models.values().collect();
             models.sort_by(|a, b| a.id.cmp(&b.id));
             for model in &models {
@@ -17228,7 +17228,7 @@ impl VizApp {
                 value: effective
                     .fast
                     .clone()
-                    .unwrap_or_else(|| workgraph::config::Tier::Fast.default_alias().into()),
+                    .unwrap_or_else(|| worksgood::config::Tier::Fast.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -17238,7 +17238,7 @@ impl VizApp {
                 value: effective
                     .standard
                     .clone()
-                    .unwrap_or_else(|| workgraph::config::Tier::Standard.default_alias().into()),
+                    .unwrap_or_else(|| worksgood::config::Tier::Standard.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -17248,7 +17248,7 @@ impl VizApp {
                 value: effective
                     .premium
                     .clone()
-                    .unwrap_or_else(|| workgraph::config::Tier::Premium.default_alias().into()),
+                    .unwrap_or_else(|| worksgood::config::Tier::Premium.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -17256,7 +17256,7 @@ impl VizApp {
 
         // ── 9. Model Routing ──
         {
-            use workgraph::config::DispatchRole;
+            use worksgood::config::DispatchRole;
             let tier_choices = vec![
                 "(inherit)".to_string(),
                 "fast".to_string(),
@@ -17393,18 +17393,18 @@ impl VizApp {
     /// user to drop to `wg config --list`.
     pub fn load_settings_panel(&mut self) {
         let (config, sources) =
-            match workgraph::config::Config::load_with_sources(&self.workgraph_dir) {
+            match worksgood::config::Config::load_with_sources(&self.workgraph_dir) {
                 Ok(pair) => pair,
                 Err(_) => {
-                    let cfg = workgraph::config::Config::load_or_default(&self.workgraph_dir);
+                    let cfg = worksgood::config::Config::load_or_default(&self.workgraph_dir);
                     (cfg, std::collections::BTreeMap::new())
                 }
             };
-        let lookup = |key: &str| -> workgraph::config::ConfigSource {
+        let lookup = |key: &str| -> worksgood::config::ConfigSource {
             sources
                 .get(key)
                 .cloned()
-                .unwrap_or(workgraph::config::ConfigSource::Default)
+                .unwrap_or(worksgood::config::ConfigSource::Default)
         };
 
         let mut entries: Vec<SettingsEntry> = Vec::new();
@@ -17871,7 +17871,7 @@ impl VizApp {
                             self.config_panel.editing = false;
                             return;
                         }
-                        if let Ok(role) = role_str.parse::<workgraph::config::DispatchRole>() {
+                        if let Ok(role) = role_str.parse::<worksgood::config::DispatchRole>() {
                             let is_inherit = new_value == "(inherit)" || new_value.is_empty();
                             match field {
                                 "model" => {
@@ -17901,12 +17901,12 @@ impl VizApp {
                                             c.tier = None;
                                         }
                                     } else if let Ok(tier) =
-                                        new_value.parse::<workgraph::config::Tier>()
+                                        new_value.parse::<worksgood::config::Tier>()
                                     {
                                         if let Some(c) = slot {
                                             c.tier = Some(tier);
                                         } else {
-                                            *slot = Some(workgraph::config::RoleModelConfig {
+                                            *slot = Some(worksgood::config::RoleModelConfig {
                                                 provider: None,
                                                 model: None,
                                                 tier: Some(tier),
@@ -18032,7 +18032,7 @@ impl VizApp {
             && let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".remove"))
-            && let Ok(mut registry) = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+            && let Ok(mut registry) = worksgood::models::ModelRegistry::load(&self.workgraph_dir)
         {
             registry.models.remove(model_id);
             // Clear default if removed model was default
@@ -18051,7 +18051,7 @@ impl VizApp {
             && let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".set_default"))
-            && let Ok(mut registry) = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+            && let Ok(mut registry) = worksgood::models::ModelRegistry::load(&self.workgraph_dir)
         {
             if registry.default_model.as_deref() == Some(model_id) {
                 // Toggle off: clear default
@@ -18127,7 +18127,7 @@ impl VizApp {
         config
             .llm_endpoints
             .endpoints
-            .push(workgraph::config::EndpointConfig {
+            .push(worksgood::config::EndpointConfig {
                 name: fields.name.trim().to_string(),
                 provider,
                 url: if fields.url.is_empty() {
@@ -18168,11 +18168,11 @@ impl VizApp {
             return;
         }
         let mut registry =
-            workgraph::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+            worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
         let tier = match fields.tier.to_lowercase().as_str() {
-            "frontier" => workgraph::models::ModelTier::Frontier,
-            "mid" => workgraph::models::ModelTier::Mid,
-            _ => workgraph::models::ModelTier::Budget,
+            "frontier" => worksgood::models::ModelTier::Frontier,
+            "mid" => worksgood::models::ModelTier::Mid,
+            _ => worksgood::models::ModelTier::Budget,
         };
         let cost_in = fields.cost_in.parse::<f64>().unwrap_or(0.0);
         let cost_out = fields.cost_out.parse::<f64>().unwrap_or(0.0);
@@ -18181,7 +18181,7 @@ impl VizApp {
         } else {
             fields.provider.clone()
         };
-        let entry = workgraph::models::ModelEntry {
+        let entry = worksgood::models::ModelEntry {
             id: fields.id.trim().to_string(),
             provider,
             cost_per_1m_input: cost_in,
@@ -18279,7 +18279,7 @@ impl VizApp {
 /// - **macOS**: `osascript` to check clipboard type, then extract via `pngpaste` or `osascript`
 fn clipboard_grab_image(
     workgraph_dir: &std::path::Path,
-) -> Result<Option<workgraph::chat::Attachment>> {
+) -> Result<Option<worksgood::chat::Attachment>> {
     // Detect environment
     if cfg!(target_os = "macos") {
         clipboard_grab_macos(workgraph_dir)
@@ -18314,7 +18314,7 @@ fn clipboard_temp_path(workgraph_dir: &std::path::Path) -> std::path::PathBuf {
 /// Linux X11: use xclip to detect and extract clipboard image.
 fn clipboard_grab_x11(
     workgraph_dir: &std::path::Path,
-) -> Result<Option<workgraph::chat::Attachment>> {
+) -> Result<Option<worksgood::chat::Attachment>> {
     // Check if xclip is available and clipboard has image data
     let targets = Command::new("xclip")
         .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
@@ -18358,7 +18358,7 @@ fn clipboard_grab_x11(
 /// Linux Wayland: use wl-paste to detect and extract clipboard image.
 fn clipboard_grab_wayland(
     workgraph_dir: &std::path::Path,
-) -> Result<Option<workgraph::chat::Attachment>> {
+) -> Result<Option<worksgood::chat::Attachment>> {
     // Check available MIME types
     let types = Command::new("wl-paste").arg("--list-types").output();
 
@@ -18391,7 +18391,7 @@ fn clipboard_grab_wayland(
 /// macOS: use osascript/pngpaste to detect and extract clipboard image.
 fn clipboard_grab_macos(
     workgraph_dir: &std::path::Path,
-) -> Result<Option<workgraph::chat::Attachment>> {
+) -> Result<Option<worksgood::chat::Attachment>> {
     // Check clipboard type via osascript
     let check = Command::new("osascript")
         .args(["-e", "clipboard info"])
@@ -18425,7 +18425,7 @@ fn clipboard_grab_macos(
         && o.status.success()
         && tmp.exists()
     {
-        let att = workgraph::chat::store_attachment(workgraph_dir, &tmp)?;
+        let att = worksgood::chat::store_attachment(workgraph_dir, &tmp)?;
         // Clean up temp file (store_attachment copies it)
         let _ = std::fs::remove_file(&tmp);
         return Ok(Some(att));
@@ -18441,7 +18441,7 @@ fn clipboard_grab_macos(
 
     match result {
         Ok(o) if o.status.success() && tmp.exists() => {
-            let att = workgraph::chat::store_attachment(workgraph_dir, &tmp)?;
+            let att = worksgood::chat::store_attachment(workgraph_dir, &tmp)?;
             let _ = std::fs::remove_file(&tmp);
             Ok(Some(att))
         }
@@ -18456,13 +18456,13 @@ fn clipboard_grab_macos(
 fn save_clipboard_image(
     workgraph_dir: &std::path::Path,
     image_bytes: &[u8],
-) -> Result<Option<workgraph::chat::Attachment>> {
+) -> Result<Option<worksgood::chat::Attachment>> {
     let tmp = clipboard_temp_path(workgraph_dir);
     if let Some(parent) = tmp.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&tmp, image_bytes)?;
-    let att = workgraph::chat::store_attachment(workgraph_dir, &tmp)?;
+    let att = worksgood::chat::store_attachment(workgraph_dir, &tmp)?;
     // Clean up the temp file (store_attachment copies it with content-addressed name)
     let _ = std::fs::remove_file(&tmp);
     Ok(Some(att))
@@ -19151,9 +19151,9 @@ impl ViewportScroll {
 mod hud_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, TokenUsage, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, TokenUsage, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
     use crate::commands::viz::{LayoutMode, VizOutput};
@@ -19336,14 +19336,14 @@ mod hud_tests {
         let mut registry = AgentRegistry::new();
         registry.agents.insert(
             "agent-001".to_string(),
-            workgraph::service::AgentEntry {
+            worksgood::service::AgentEntry {
                 id: "agent-001".to_string(),
                 pid: 123,
                 task_id: "a".to_string(),
                 executor: "native".to_string(),
                 started_at: "2026-01-20T16:00:00Z".to_string(),
                 last_heartbeat: "2026-01-20T16:05:00Z".to_string(),
-                status: workgraph::service::AgentStatus::Working,
+                status: worksgood::service::AgentStatus::Working,
                 output_file: "output.log".to_string(),
                 model: Some("openrouter/minimax".to_string()),
                 completed_at: None,
@@ -19352,12 +19352,12 @@ mod hud_tests {
         );
         registry.save(_tmp.path()).unwrap();
 
-        let journal_path = workgraph::executor::native::journal::journal_path(_tmp.path(), "a");
+        let journal_path = worksgood::executor::native::journal::journal_path(_tmp.path(), "a");
         let mut journal =
-            workgraph::executor::native::journal::Journal::open(&journal_path).unwrap();
+            worksgood::executor::native::journal::Journal::open(&journal_path).unwrap();
         journal
             .append(
-                workgraph::executor::native::journal::JournalEntryKind::Init {
+                worksgood::executor::native::journal::JournalEntryKind::Init {
                     model: "openrouter/minimax".to_string(),
                     provider: "openrouter".to_string(),
                     system_prompt: "test".to_string(),
@@ -19368,7 +19368,7 @@ mod hud_tests {
             .unwrap();
         journal
             .append(
-                workgraph::executor::native::journal::JournalEntryKind::Compaction {
+                worksgood::executor::native::journal::JournalEntryKind::Compaction {
                     compacted_through_seq: 1,
                     summary: "summary".to_string(),
                     original_message_count: 4,
@@ -20304,7 +20304,7 @@ mod hud_tests {
         let mut task = make_task_with_status("cycle-task", "Cyclic Task", Status::InProgress);
         task.description = Some("A task in a cycle".to_string());
         task.loop_iteration = iteration_count as u32;
-        task.cycle_config = Some(workgraph::graph::CycleConfig {
+        task.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 10,
             guard: None,
             delay: None,
@@ -20805,7 +20805,7 @@ mod hud_tests {
         // A cyclic task with 0 completed iterations should not crash TUI
         let mut graph = WorkGraph::new();
         let mut task = make_task_with_status("zero-iter", "Zero Iteration", Status::Open);
-        task.cycle_config = Some(workgraph::graph::CycleConfig {
+        task.cycle_config = Some(worksgood::graph::CycleConfig {
             max_iterations: 5,
             guard: None,
             delay: None,
@@ -21101,8 +21101,8 @@ mod extract_assistant_text_tests {
 mod remap_panel_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::LayoutMode as VizLayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
@@ -21114,7 +21114,7 @@ mod remap_panel_tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let gpath = tmp.path().join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+        worksgood::parser::save_graph(&graph, &gpath).unwrap();
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
@@ -21399,8 +21399,8 @@ mod firehose_tests {
     use crate::commands::viz::ascii::generate_ascii;
     use std::collections::{HashMap, HashSet};
     use std::io::Write;
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::test_helpers::make_task_with_status;
 
     fn write_registry(workgraph_dir: &std::path::Path, agents_json: &str) {
         let svc_dir = workgraph_dir.join("service");
@@ -21424,7 +21424,7 @@ mod firehose_tests {
         graph.add_node(Node::Task(a));
         let tmp = tempfile::tempdir().unwrap();
         let gpath = tmp.path().join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &gpath).unwrap();
+        worksgood::parser::save_graph(&graph, &gpath).unwrap();
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
@@ -21771,10 +21771,10 @@ mod service_health_tests {
 mod tui_config_panel_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
-    use workgraph::config::Config;
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::config::Config;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::LayoutMode as VizLayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
@@ -22335,7 +22335,7 @@ mod tui_config_panel_tests {
 
         let config = Config::load(&app.workgraph_dir).unwrap();
         let triage_tier = config.models.triage.as_ref().and_then(|c| c.tier);
-        assert_eq!(triage_tier, Some(workgraph::config::Tier::Premium));
+        assert_eq!(triage_tier, Some(worksgood::config::Tier::Premium));
 
         // Set an endpoint for evaluator
         app.load_config_panel();
@@ -23045,7 +23045,7 @@ mod activity_feed_tests {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
-    use workgraph::AgentStatus;
+    use worksgood::AgentStatus;
 
     // ── Agent activity classification ──────────────────────────────────────
 
@@ -23803,8 +23803,8 @@ mod vitals_tests {
 #[cfg(test)]
 mod task_counts_active_tests {
     use super::*;
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::test_helpers::make_task_with_status;
 
     /// Build a graph with a known mix of statuses, save it, and return both
     /// the graph and a temp dir keeping the file alive. Callers can then call
@@ -23856,7 +23856,7 @@ mod task_counts_active_tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let graph_path = tmp.path().join("graph.jsonl");
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
         (graph, tmp)
     }
 
@@ -23927,9 +23927,9 @@ mod tui_chat_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
     use crate::commands::viz::{LayoutMode as VizLayoutMode, VizOutput};
@@ -24530,10 +24530,10 @@ mod tui_chat_tests {
 
         // Write messages directly to coordinator 0 and 3 inbox/outbox
         // (simulating the daemon writing chat without any persisted TUI history).
-        workgraph::chat::append_inbox_for(&wg_dir, 0, "hello from coord 0", "r0").unwrap();
-        workgraph::chat::append_outbox_for(&wg_dir, 0, "reply from coord 0", "r0").unwrap();
-        workgraph::chat::append_inbox_for(&wg_dir, 3, "hello from coord 3", "r3").unwrap();
-        workgraph::chat::append_outbox_for(&wg_dir, 3, "reply from coord 3", "r3").unwrap();
+        worksgood::chat::append_inbox_for(&wg_dir, 0, "hello from coord 0", "r0").unwrap();
+        worksgood::chat::append_outbox_for(&wg_dir, 0, "reply from coord 0", "r0").unwrap();
+        worksgood::chat::append_inbox_for(&wg_dir, 3, "hello from coord 3", "r3").unwrap();
+        worksgood::chat::append_outbox_for(&wg_dir, 3, "reply from coord 3", "r3").unwrap();
 
         // Load for coordinator 3 — must NOT see coordinator 0's messages.
         let mut app = build_test_app(&viz, &wg_dir);
@@ -25130,7 +25130,7 @@ mod tui_chat_tests {
 
         app.drain_commands();
 
-        let stale_graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl"))
+        let stale_graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl"))
             .expect("stale graph fixture should load");
         app.refresh_chat_tab_caches(&stale_graph);
         app.sync_active_tabs_from_graph();
@@ -25632,7 +25632,7 @@ mod tui_chat_tests {
     #[test]
     fn session_boundary_config_default() {
         // Verify the default config value is 30 minutes.
-        let config = workgraph::config::TuiConfig::default();
+        let config = worksgood::config::TuiConfig::default();
         assert_eq!(config.session_gap_minutes, 30);
     }
 
@@ -25837,7 +25837,7 @@ mod tui_chat_tests {
         app.active_tabs = vec![0, 1, 2];
 
         let graph_path = wg_dir.join("graph.jsonl");
-        let graph = workgraph::parser::load_graph(&graph_path).unwrap();
+        let graph = worksgood::parser::load_graph(&graph_path).unwrap();
         app.refresh_chat_tab_caches(&graph);
 
         let from_disk_chat = app.active_tab_ids_and_labels();
@@ -25863,7 +25863,7 @@ mod tui_chat_tests {
         let mut app = build_test_app(&viz, &wg_dir);
         app.active_tabs = vec![0, 1, 2];
 
-        let graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
         app.refresh_chat_tab_caches(&graph);
         assert_eq!(app.cached_chat_tab_entries.len(), 3);
 
@@ -27080,7 +27080,7 @@ mod launcher_endpoint_autocomplete_tests {
         AddNewField, EndpointSuggestion, LauncherMode, LauncherSection, LauncherState,
         build_endpoint_suggestions, build_endpoint_suggestions_with_global,
     };
-    use workgraph::config::{Config, EndpointConfig};
+    use worksgood::config::{Config, EndpointConfig};
 
     fn ep(name: &str, url: Option<&str>, provider: &str, is_default: bool) -> EndpointSuggestion {
         EndpointSuggestion {
@@ -27140,7 +27140,10 @@ mod launcher_endpoint_autocomplete_tests {
         ]);
         let sug = build_endpoint_suggestions(&config);
         assert_eq!(sug.len(), 2);
-        assert_eq!(sug[0], ep("local", Some("http://127.0.0.1:8088"), "local", false));
+        assert_eq!(
+            sug[0],
+            ep("local", Some("http://127.0.0.1:8088"), "local", false)
+        );
         assert_eq!(
             sug[1],
             ep("lambda", Some("https://lambda01:30000"), "openrouter", true)
@@ -27183,7 +27186,12 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn filtered_suppressed_for_raw_url_entry() {
-        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        let mut state = nex_state(vec![ep(
+            "local",
+            Some("http://127.0.0.1:8088"),
+            "local",
+            true,
+        )]);
         state.add_endpoint = "http://my-custom:9000".into();
         assert!(state.endpoint_input_is_raw_url());
         assert!(
@@ -27263,7 +27271,12 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn accept_is_noop_for_raw_url() {
-        let mut state = nex_state(vec![ep("local", Some("http://127.0.0.1:8088"), "local", true)]);
+        let mut state = nex_state(vec![ep(
+            "local",
+            Some("http://127.0.0.1:8088"),
+            "local",
+            true,
+        )]);
         state.add_endpoint = "http://my-custom:9000".into();
         assert!(
             !state.accept_endpoint_suggestion(),
@@ -27301,10 +27314,13 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn with_global_unions_local_and_global_endpoints() {
-        let local =
-            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", false)]);
-        let global =
-            config_with_endpoints(vec![endpoint_cfg("global-lambda", "http://b", "openrouter", true)]);
+        let local = config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", false)]);
+        let global = config_with_endpoints(vec![endpoint_cfg(
+            "global-lambda",
+            "http://b",
+            "openrouter",
+            true,
+        )]);
         let sug = build_endpoint_suggestions_with_global(&local, Some(&global));
         assert_eq!(sug.len(), 2, "both local and global endpoints surface");
         assert_eq!(sug[0].name, "local", "local entries come first");
@@ -27335,8 +27351,7 @@ mod launcher_endpoint_autocomplete_tests {
 
     #[test]
     fn with_global_none_is_just_local() {
-        let local =
-            config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", true)]);
+        let local = config_with_endpoints(vec![endpoint_cfg("local", "http://a", "local", true)]);
         let sug = build_endpoint_suggestions_with_global(&local, None);
         assert_eq!(sug, build_endpoint_suggestions(&local));
     }
@@ -27479,8 +27494,8 @@ mod launcher_model_autocomplete_tests {
         AddNewField, LauncherMode, LauncherSection, LauncherState, ModelSuggestion,
         build_model_suggestions, fuzzy_match_score, normalize_model_for_executor,
     };
-    use workgraph::config::{Config, EndpointConfig};
-    use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
+    use worksgood::config::{Config, EndpointConfig};
+    use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
 
     fn sug(id: &str, provider: &str, source: &str) -> ModelSuggestion {
         ModelSuggestion {
@@ -27591,21 +27606,37 @@ mod launcher_model_autocomplete_tests {
             is_default: false,
             context_window: None,
         }];
-        let registry = registry_with(&[("deepseek/deepseek-chat", "openrouter", ModelTier::Budget)]);
+        let registry =
+            registry_with(&[("deepseek/deepseek-chat", "openrouter", ModelTier::Budget)]);
         let recent = vec!["nex:my-recent-model".to_string()];
 
         let out = build_model_suggestions(&config, &registry, &recent);
         let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
 
         // registry
-        assert!(ids.contains(&"deepseek/deepseek-chat"), "registry model present: {ids:?}");
+        assert!(
+            ids.contains(&"deepseek/deepseek-chat"),
+            "registry model present: {ids:?}"
+        );
         // curated (network-free seed) — the task's headline routes
-        assert!(ids.contains(&"minimax/minimax-m3"), "curated minimax present: {ids:?}");
-        assert!(ids.contains(&"qwen/qwen3-coder"), "curated qwen coder present: {ids:?}");
+        assert!(
+            ids.contains(&"minimax/minimax-m3"),
+            "curated minimax present: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"qwen/qwen3-coder"),
+            "curated qwen coder present: {ids:?}"
+        );
         // recent (routing prefix stripped to bare id)
-        assert!(ids.contains(&"my-recent-model"), "recent model present: {ids:?}");
+        assert!(
+            ids.contains(&"my-recent-model"),
+            "recent model present: {ids:?}"
+        );
         // endpoint default model (provider prefix stripped)
-        assert!(ids.contains(&"special/endpoint-model"), "endpoint model present: {ids:?}");
+        assert!(
+            ids.contains(&"special/endpoint-model"),
+            "endpoint model present: {ids:?}"
+        );
     }
 
     #[test]
@@ -27619,10 +27650,19 @@ mod launcher_model_autocomplete_tests {
         };
         let recent = vec!["openrouter:minimax/minimax-m3".to_string()];
         let out = build_model_suggestions(&config, &registry, &recent);
-        let minimax: Vec<&ModelSuggestion> =
-            out.iter().filter(|s| s.id == "minimax/minimax-m3").collect();
-        assert_eq!(minimax.len(), 1, "minimax must be de-duplicated across sources");
-        assert_eq!(minimax[0].source, "recent", "recent source wins (listed first)");
+        let minimax: Vec<&ModelSuggestion> = out
+            .iter()
+            .filter(|s| s.id == "minimax/minimax-m3")
+            .collect();
+        assert_eq!(
+            minimax.len(),
+            1,
+            "minimax must be de-duplicated across sources"
+        );
+        assert_eq!(
+            minimax[0].source, "recent",
+            "recent source wins (listed first)"
+        );
     }
 
     // ── executor-aware normalization (the heart of the feature) ────────
@@ -27693,9 +27733,11 @@ mod launcher_model_autocomplete_tests {
             "openrouter:minimax/minimax-m3"
         );
         assert_eq!(
-            workgraph::chat_command::dexto_openrouter_model(
-                &normalize_model_for_executor("minimax/minimax-m3", "openrouter", "dexto")
-            ),
+            worksgood::chat_command::dexto_openrouter_model(&normalize_model_for_executor(
+                "minimax/minimax-m3",
+                "openrouter",
+                "dexto"
+            )),
             Some("minimax/minimax-m3".to_string())
         );
     }
@@ -27730,7 +27772,10 @@ mod launcher_model_autocomplete_tests {
     fn filtered_returns_all_for_empty_query() {
         let state = model_state(
             NEX,
-            vec![sug("minimax/minimax-m3", "openrouter", "curated"), sug("qwen3-coder", "", "recent")],
+            vec![
+                sug("minimax/minimax-m3", "openrouter", "curated"),
+                sug("qwen3-coder", "", "recent"),
+            ],
         );
         assert_eq!(state.filtered_model_suggestions().len(), 2);
     }
@@ -27776,8 +27821,14 @@ mod launcher_model_autocomplete_tests {
         // Custom-command executor is the last choice; its Model field is a
         // raw command line, never a model picker.
         let last = super::ADD_NEW_EXECUTOR_CHOICES.len() - 1;
-        assert_eq!(super::ADD_NEW_EXECUTOR_CHOICES[last].internal_executor, "command");
-        let state = model_state(last, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        assert_eq!(
+            super::ADD_NEW_EXECUTOR_CHOICES[last].internal_executor,
+            "command"
+        );
+        let state = model_state(
+            last,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         assert!(!state.add_new_show_model_suggestions());
         assert!(state.filtered_model_suggestions().is_empty());
     }
@@ -27813,7 +27864,10 @@ mod launcher_model_autocomplete_tests {
 
     #[test]
     fn accept_is_noop_for_free_text_with_no_match() {
-        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         // Arbitrary custom model that matches nothing → free text preserved.
         state.add_model = "my-totally-custom-thing".into();
         assert!(!state.accept_model_suggestion());
@@ -27824,7 +27878,10 @@ mod launcher_model_autocomplete_tests {
     fn accept_is_noop_for_explicit_spec_even_if_it_would_match() {
         // User typed a full route that fuzzy-matches a suggestion; the
         // explicit spec must NOT be overwritten.
-        let mut state = model_state(NEX, vec![sug("minimax/minimax-m3", "openrouter", "curated")]);
+        let mut state = model_state(
+            NEX,
+            vec![sug("minimax/minimax-m3", "openrouter", "curated")],
+        );
         state.add_model = "openrouter:minimax/minimax-m3".into();
         assert!(!state.accept_model_suggestion());
         assert_eq!(state.add_model, "openrouter:minimax/minimax-m3");
@@ -27834,7 +27891,10 @@ mod launcher_model_autocomplete_tests {
     fn move_clamps_within_filtered_bounds() {
         let mut state = model_state(
             NEX,
-            vec![sug("a/one", "openrouter", "c"), sug("b/two", "openrouter", "c")],
+            vec![
+                sug("a/one", "openrouter", "c"),
+                sug("b/two", "openrouter", "c"),
+            ],
         );
         state.move_model_suggestion(-1);
         assert_eq!(state.model_suggestion_selected, 0, "clamps at top");
@@ -28072,9 +28132,9 @@ mod agent_stream_tests {
         use crate::commands::viz::ascii::generate_ascii;
         use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::parser::save_graph;
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::parser::save_graph;
+        use worksgood::test_helpers::make_task_with_status;
 
         let mut graph = WorkGraph::new();
         let mut task = make_task_with_status("codex-task", "Codex Task", Status::InProgress);
@@ -28177,9 +28237,9 @@ mod agent_stream_tests {
         use crate::commands::viz::ascii::generate_ascii;
         use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::parser::save_graph;
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::parser::save_graph;
+        use worksgood::test_helpers::make_task_with_status;
 
         let mut graph = WorkGraph::new();
         let mut task = make_task_with_status("my-task", "My Task", Status::InProgress);
@@ -28273,8 +28333,8 @@ mod agent_stream_tests {
         use crate::commands::viz::ascii::generate_ascii;
         use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
-        use workgraph::graph::{Node, Status, WorkGraph};
-        use workgraph::test_helpers::make_task_with_status;
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::test_helpers::make_task_with_status;
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task_with_status("t", "T", Status::Open)));
@@ -28759,7 +28819,10 @@ mod build_nex_chat_pty_args_tests {
         // servers read a colon as a LoRA ref). A bare slash route is NOT
         // rewritten to openrouter — the endpoint dictates the route.
         let args = build_nex_chat_pty_args(Some("minimax/minimax-m3"), Some("lambda01"));
-        assert_eq!(args, vec!["nex", "-m", "minimax/minimax-m3", "-e", "lambda01"]);
+        assert_eq!(
+            args,
+            vec!["nex", "-m", "minimax/minimax-m3", "-e", "lambda01"]
+        );
     }
 
     #[test]
@@ -29340,9 +29403,9 @@ mod chat_exit_prompt_tests {
 mod viewport_stability_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
     use crate::commands::viz::{LayoutMode, VizOutput};
@@ -29605,7 +29668,7 @@ mod viewport_stability_tests {
         let mut app = build_app_post_initial(&viz, tmp.path(), 12);
         app.last_graph_mtime = old_mtime;
         app.refresh_interval = std::time::Duration::ZERO;
-        if let Ok(old_graph) = workgraph::parser::load_graph(&graph_path) {
+        if let Ok(old_graph) = worksgood::parser::load_graph(&graph_path) {
             app.async_fs.seed_graph(old_graph, old_mtime);
         }
         app.async_fs.seed_stat(graph_path.clone(), old_mtime);
@@ -29877,10 +29940,10 @@ mod viewport_stability_tests {
 mod message_indicator_refresh_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::messages::CoordinatorMessageStatus;
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::messages::CoordinatorMessageStatus;
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::LayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
@@ -29922,7 +29985,7 @@ mod message_indicator_refresh_tests {
         // Production code seeds this in `VizApp::new`; tests that build
         // an app via `from_viz_output_for_test` and then re-point
         // `workgraph_dir` need to seed manually.
-        if let Ok(g) = workgraph::parser::load_graph(&graph_path) {
+        if let Ok(g) = worksgood::parser::load_graph(&graph_path) {
             app.async_fs.seed_graph(g, app.last_graph_mtime);
         }
         app.async_fs.seed_stat(graph_path, app.last_graph_mtime);
@@ -30061,7 +30124,7 @@ mod message_indicator_refresh_tests {
 
         // Advance the TUI cursor as load_messages_panel would do when the
         // user opens the Messages tab on this task.
-        workgraph::messages::write_cursor(tmp.path(), "tui", "t1", 1).unwrap();
+        worksgood::messages::write_cursor(tmp.path(), "tui", "t1", 1).unwrap();
 
         // The cursor file change touches messages/.cursors/, which our
         // watcher filter excludes. Drive the refresh manually since this
@@ -30091,9 +30154,9 @@ mod activity_sort_debounce_tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
-    use workgraph::graph::{Node, Status, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::make_task_with_status;
+    use worksgood::graph::{Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
 
     use crate::commands::viz::ascii::generate_ascii;
     use crate::commands::viz::{LayoutMode, VizOutput};

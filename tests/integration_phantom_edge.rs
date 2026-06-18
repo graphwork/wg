@@ -12,8 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -391,7 +391,7 @@ fn phantom_blockers_query_detects_phantoms() {
     graph.add_node(Node::Task(task));
     graph.add_node(Node::Task(real));
 
-    let phantoms = workgraph::query::phantom_blockers(graph.get_task("blocked").unwrap(), &graph);
+    let phantoms = worksgood::query::phantom_blockers(graph.get_task("blocked").unwrap(), &graph);
     assert_eq!(phantoms, vec!["phantom-dep".to_string()]);
 }
 
@@ -405,7 +405,7 @@ fn phantom_blockers_query_empty_when_all_deps_exist() {
     graph.add_node(Node::Task(task));
     graph.add_node(Node::Task(parent));
 
-    let phantoms = workgraph::query::phantom_blockers(graph.get_task("child").unwrap(), &graph);
+    let phantoms = worksgood::query::phantom_blockers(graph.get_task("child").unwrap(), &graph);
     assert!(phantoms.is_empty());
 }
 

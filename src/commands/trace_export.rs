@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
-use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
-use workgraph::function::{
+use worksgood::agency::{Evaluation, load_all_evaluations_or_warn};
+use worksgood::function::{
     self, FunctionVisibility, TraceFunction, export_function, function_visible_at,
 };
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::load_graph;
-use workgraph::provenance;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::load_graph;
+use worksgood::provenance;
 
 /// Exported trace data with metadata, tasks, evaluations, operations, and functions.
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,7 +95,7 @@ pub fn run(
     };
 
     // Visibility filtering
-    let included_tasks: Vec<&workgraph::graph::Task> = graph
+    let included_tasks: Vec<&worksgood::graph::Task> = graph
         .tasks()
         .filter(|t| task_ids.contains(&t.id))
         .filter(|t| match visibility {
@@ -257,7 +257,7 @@ pub fn run(
 
 /// Collect all descendants of a task (tasks that are after it, transitively).
 fn collect_descendants(
-    graph: &workgraph::graph::WorkGraph,
+    graph: &worksgood::graph::WorkGraph,
     root_id: &str,
     collected: &mut HashSet<String>,
 ) {
@@ -271,7 +271,7 @@ fn collect_descendants(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{LogEntry, Node, Task, WorkGraph};
+    use worksgood::graph::{LogEntry, Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -351,7 +351,7 @@ mod tests {
             log: vec![LogEntry {
                 timestamp: "2026-02-28T12:30:00Z".to_string(),
                 actor: None,
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: "Progress update".to_string(),
             }],
         };

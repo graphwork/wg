@@ -10,10 +10,10 @@
 //! - Escalation on unfixable / low confidence
 
 use chrono::{Duration, Utc};
-use workgraph::graph::{
+use worksgood::graph::{
     LogEntry, Node, Status, Task, WaitCondition, WaitSpec, WorkGraph, is_system_task,
 };
-use workgraph::query::ready_tasks;
+use worksgood::query::ready_tasks;
 
 // ---------------------------------------------------------------------------
 // Helpers — simulate the remediation pipeline's graph operations
@@ -661,7 +661,7 @@ fn test_smoke_healing_paused_tasks_skipped() {
 /// Config type exists and can be constructed.
 #[test]
 fn test_smoke_healing_config_exists() {
-    use workgraph::config::Config;
+    use worksgood::config::Config;
 
     // Config can be created with defaults
     let _config = Config::default();

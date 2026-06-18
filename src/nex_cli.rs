@@ -66,6 +66,27 @@ pub struct NexArgs {
     #[arg(long, short = 'r')]
     pub read_only: bool,
 
+    /// YOLO mode: the aggressive inverse of `--read-only`. Disables
+    /// every safety gate on tool execution so state-modifying tools
+    /// (bash, write_file, edit_file) run with no restrictions.
+    ///
+    /// nex already executes tool calls autonomously — it never pauses
+    /// for per-tool `[y/N]` approval. The only safety boundary today is
+    /// the workspace sandbox: write_file/edit_file refuse paths that
+    /// resolve outside the current working directory. `--yolo` lifts
+    /// that boundary, letting the agent write and edit anywhere on the
+    /// filesystem the process can reach. (bash is already unconfined.)
+    ///
+    /// Use ONLY for fully autonomous local-dev iteration where you
+    /// accept that the agent can touch files outside the repo. A loud
+    /// banner is printed on startup whenever yolo mode is active.
+    ///
+    /// Conflicts with `--read-only`; if both are given, read-only wins
+    /// (a warning is printed and yolo is ignored). Also enabled by the
+    /// `WG_NEX_YOLO` env var (set to 1/true/yes/on).
+    #[arg(long = "yolo")]
+    pub yolo: bool,
+
     /// Resume a previous nex session. Three shapes:
     ///
     ///   `nex --resume` / `wg nex --resume` — interactive picker
@@ -156,11 +177,33 @@ pub struct NexArgs {
     #[arg(long = "idle-timeout-secs")]
     pub idle_timeout_secs: Option<u64>,
 
-    /// Minimal tool surface: expose only the canonical local-dev
-    /// tool set (Read, Edit, Write, Bash, Grep, Glob, TodoWrite)
-    /// and omit everything else (WebFetch, WebSearch, NotebookEdit,
-    /// Monitor, Task*, Remote*, Cron*, MCP tools). Dramatically
-    /// reduces prefill cost for small local models. Implies --no-mcp.
-    #[arg(long = "minimal-tools")]
+    /// Force the minimal tool surface: expose only the canonical
+    /// local-dev tool set (read_file, edit_file, write_file, bash, grep,
+    /// glob, todo_write) and omit everything else (web_fetch, web_search,
+    /// delegate, summarize, research, reader, map, MCP tools, ...).
+    /// Claude Code PascalCase names (Read/Edit/Write/Bash/Grep/Glob/
+    /// TodoWrite) resolve to these as aliases. Dramatically reduces
+    /// prefill cost for small local models. Implies --no-mcp.
+    ///
+    /// This is the EXPLICIT override of the probe-driven conditional
+    /// default: by default, `wg nex` auto-enables the minimal surface
+    /// only when the resolved context window is at or below
+    /// `[native_executor].minimal_tools_context_threshold` (32k). Passing
+    /// this flag forces the lean surface regardless of window size; pass
+    /// `--full-tools` to force the full surface. Either flag always wins
+    /// over the auto-decision. Hidden from `--help` because the startup
+    /// banner and the `/tools` REPL command carry discoverability; toggle
+    /// live with `/tools minimal` / `/tools full`.
+    #[arg(long = "minimal-tools", hide = true)]
     pub minimal_tools: bool,
+
+    /// Force the full tool surface, overriding the probe-driven
+    /// conditional minimal-tools default upward. Use this when a small
+    /// context window would otherwise auto-enable the lean surface but you
+    /// want every tool available anyway. If both `--minimal-tools` and
+    /// `--full-tools` are passed, minimal wins. Hidden from `--help` for
+    /// the same reason as `--minimal-tools`; the `/tools` REPL command and
+    /// startup banner carry discoverability.
+    #[arg(long = "full-tools", hide = true)]
+    pub full_tools: bool,
 }

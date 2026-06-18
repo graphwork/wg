@@ -11,7 +11,7 @@ use std::fs;
 
 use tempfile::TempDir;
 
-use workgraph::config::{CLAUDE_SONNET_MODEL_ID, Config, EndpointConfig, EndpointsConfig};
+use worksgood::config::{CLAUDE_SONNET_MODEL_ID, Config, EndpointConfig, EndpointsConfig};
 
 // ===========================================================================
 // Helpers
@@ -20,8 +20,8 @@ use workgraph::config::{CLAUDE_SONNET_MODEL_ID, Config, EndpointConfig, Endpoint
 fn setup_workgraph_dir() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     tmp
 }
 
@@ -252,7 +252,7 @@ fn integration_openrouter_default_url() {
 /// The actual env var setting happens in spawn_agent_inner; here we test
 /// the resolution functions that drive those env vars.
 mod provider_env_var_tests {
-    use workgraph::config::{
+    use worksgood::config::{
         CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole, EndpointConfig,
         EndpointsConfig,
     };
@@ -378,7 +378,7 @@ mod provider_env_var_tests {
 /// spawn/execution.rs. Those functions are pub(crate), so we replicate the
 /// logic here to validate the precedence chain end-to-end.
 mod agent_model_preference_tests {
-    use workgraph::config::{
+    use worksgood::config::{
         CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole, EndpointConfig,
         EndpointsConfig,
     };
@@ -411,12 +411,12 @@ mod agent_model_preference_tests {
                     return Self { model, provider };
                 }
                 if let Some(ref m) = model {
-                    let spec = workgraph::config::parse_model_spec(m);
+                    let spec = worksgood::config::parse_model_spec(m);
                     if let Some(ref p) = spec.provider {
                         return Self {
                             model,
                             provider: Some(
-                                workgraph::config::provider_to_native_provider(p).to_string(),
+                                worksgood::config::provider_to_native_provider(p).to_string(),
                             ),
                         };
                     }
@@ -779,7 +779,7 @@ mod config_roundtrip_tests {
 
     #[test]
     fn integration_openrouter_config_roundtrip_with_model_routing() {
-        use workgraph::config::DispatchRole;
+        use worksgood::config::DispatchRole;
 
         let tmp = setup_workgraph_dir();
         let dir = tmp.path();
@@ -1167,8 +1167,8 @@ is_default = true
 
 mod auto_routing_tests {
     use super::*;
-    use workgraph::config::CLAUDE_OPUS_MODEL_ID;
-    use workgraph::executor::native::openai_client::{
+    use worksgood::config::CLAUDE_OPUS_MODEL_ID;
+    use worksgood::executor::native::openai_client::{
         OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
 

@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::agency::{
+use worksgood::agency::{
     Evaluation, build_role, build_tradeoff, init as init_agency, record_evaluation, save_role,
     save_tradeoff,
 };
-use workgraph::graph::{Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers

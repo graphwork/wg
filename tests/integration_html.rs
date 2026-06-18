@@ -10,11 +10,11 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::TempDir;
-use workgraph::chat;
-use workgraph::chat_sessions::{self, SessionKind};
-use workgraph::graph::{Node, Status, Task, WorkGraph};
+use worksgood::chat;
+use worksgood::chat_sessions::{self, SessionKind};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
 
-use workgraph::html;
+use worksgood::html;
 
 fn make_task(id: &str, title: &str, visibility: &str) -> Task {
     Task {
@@ -1010,7 +1010,7 @@ fn v2_strip_ansi_keeps_unicode_and_drops_csi() {
     // Internal helper, but the contract matters: the viz capture path strips
     // ANSI escapes before wrapping in clickable spans, and must preserve
     // multibyte UTF-8 (box-drawing characters) intact.
-    use workgraph::html;
+    use worksgood::html;
     // Round-trip through the public render_site only verifies output, but
     // strip_ansi is private. We exercise it indirectly via parse_since edge
     // cases as a sanity check that html.rs is wired up.

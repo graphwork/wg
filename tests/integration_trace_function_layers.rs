@@ -17,15 +17,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::function::{
+use worksgood::function::{
     self, ExtractionSource, ForbiddenPattern, FunctionInput, FunctionOutput, FunctionVisibility,
     InputType, InterventionSummary, LoopEdgeTemplate, MemoryInclusions, PlanningConfig, RunSummary,
     StructuralConstraints, TaskOutcome, TaskTemplate, TraceFunction, TraceMemoryConfig,
 };
-use workgraph::function_memory;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::plan_validator::{self, ValidationError};
+use worksgood::function_memory;
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::plan_validator::{self, ValidationError};
 
 // ===========================================================================
 // Helpers

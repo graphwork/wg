@@ -11,14 +11,14 @@ use std::thread;
 
 use tempfile::TempDir;
 
-use workgraph::config::{
+use worksgood::config::{
     CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
     EndpointConfig, EndpointsConfig, ModelRoutingConfig, RoleModelConfig,
 };
-use workgraph::executor::native::client::AnthropicClient;
-use workgraph::executor::native::openai_client::OpenAiClient;
-use workgraph::executor::native::provider::{create_provider, create_provider_ext};
-use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
+use worksgood::executor::native::client::AnthropicClient;
+use worksgood::executor::native::openai_client::OpenAiClient;
+use worksgood::executor::native::provider::{create_provider, create_provider_ext};
+use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
 
 // ── Mock HTTP helpers ───────────────────────────────────────────────────
 
@@ -129,8 +129,8 @@ fn start_recording_mock_server(
 fn setup_workgraph_dir() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     tmp
 }
 
@@ -147,13 +147,13 @@ fn test_bare_model_routes_to_anthropic() {
         .with_base_url(&base_url);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let request = workgraph::executor::native::client::MessagesRequest {
+    let request = worksgood::executor::native::client::MessagesRequest {
         model: "claude-sonnet-4-6".to_string(),
         max_tokens: 100,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![workgraph::executor::native::client::ContentBlock::Text {
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
+            content: vec![worksgood::executor::native::client::ContentBlock::Text {
                 text: "hello".to_string(),
             }],
         }],
@@ -180,13 +180,13 @@ fn test_prefixed_model_routes_to_openai() {
         OpenAiClient::new("test-key".to_string(), "openai/gpt-4o", Some(&base_url)).unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let request = workgraph::executor::native::client::MessagesRequest {
+    let request = worksgood::executor::native::client::MessagesRequest {
         model: "openai/gpt-4o".to_string(),
         max_tokens: 100,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![workgraph::executor::native::client::ContentBlock::Text {
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
+            content: vec![worksgood::executor::native::client::ContentBlock::Text {
                 text: "hello".to_string(),
             }],
         }],
@@ -194,7 +194,7 @@ fn test_prefixed_model_routes_to_openai() {
         stream: false,
     };
 
-    use workgraph::executor::native::provider::Provider;
+    use worksgood::executor::native::provider::Provider;
     let response = rt.block_on(client.send(&request)).unwrap();
     assert_eq!(response.id, "chatcmpl-mock");
     assert_eq!(
@@ -514,13 +514,13 @@ model = "openai:gpt-4o-mini"
 
     // Verify they actually hit different API endpoints
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let request = workgraph::executor::native::client::MessagesRequest {
+    let request = worksgood::executor::native::client::MessagesRequest {
         model: "test".to_string(),
         max_tokens: 100,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![workgraph::executor::native::client::ContentBlock::Text {
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
+            content: vec![worksgood::executor::native::client::ContentBlock::Text {
                 text: "test".to_string(),
             }],
         }],
@@ -530,12 +530,12 @@ model = "openai:gpt-4o-mini"
 
     let resp = rt.block_on(eval_provider.send(&request)).unwrap();
     assert!(resp.content.iter().any(|b| matches!(b,
-        workgraph::executor::native::client::ContentBlock::Text { text } if text.contains("claude-sonnet")
+        worksgood::executor::native::client::ContentBlock::Text { text } if text.contains("claude-sonnet")
     )));
 
     let resp = rt.block_on(triage_provider.send(&request)).unwrap();
     assert!(resp.content.iter().any(|b| matches!(b,
-        workgraph::executor::native::client::ContentBlock::Text { text } if text.contains("gpt-4o")
+        worksgood::executor::native::client::ContentBlock::Text { text } if text.contains("gpt-4o")
     )));
 }
 
@@ -718,14 +718,14 @@ async fn test_anthropic_provider_send_via_mock() {
         .unwrap()
         .with_base_url(&base_url);
 
-    use workgraph::executor::native::provider::Provider;
-    let request = workgraph::executor::native::client::MessagesRequest {
+    use worksgood::executor::native::provider::Provider;
+    let request = worksgood::executor::native::client::MessagesRequest {
         model: "claude-haiku-4-5".to_string(),
         max_tokens: 100,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![workgraph::executor::native::client::ContentBlock::Text {
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
+            content: vec![worksgood::executor::native::client::ContentBlock::Text {
                 text: "test".to_string(),
             }],
         }],
@@ -746,14 +746,14 @@ async fn test_openai_provider_send_via_mock() {
 
     let client = OpenAiClient::new("mock-key".to_string(), "gpt-4o-mini", Some(&base_url)).unwrap();
 
-    use workgraph::executor::native::provider::Provider;
-    let request = workgraph::executor::native::client::MessagesRequest {
+    use worksgood::executor::native::provider::Provider;
+    let request = worksgood::executor::native::client::MessagesRequest {
         model: "gpt-4o-mini".to_string(),
         max_tokens: 100,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![workgraph::executor::native::client::ContentBlock::Text {
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
+            content: vec![worksgood::executor::native::client::ContentBlock::Text {
                 text: "test".to_string(),
             }],
         }],

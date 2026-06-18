@@ -6,7 +6,7 @@
 use std::fs;
 use tempfile::TempDir;
 
-use workgraph::agency;
+use worksgood::agency;
 
 /// Helper: create a valid role YAML file in the given directory.
 /// Uses `name` as a fake outcome_id to produce distinct content hashes.

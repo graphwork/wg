@@ -139,8 +139,8 @@ pub fn run_install() -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

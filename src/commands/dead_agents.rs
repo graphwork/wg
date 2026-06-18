@@ -15,10 +15,10 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
-use workgraph::service::{AgentRegistry, AgentStatus};
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
+use worksgood::service::{AgentRegistry, AgentStatus};
 
 use super::graph_path;
 
@@ -159,7 +159,7 @@ pub fn run_cleanup(
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: None,
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Task unclaimed: agent '{}' (PID {}) detected as dead (no heartbeat for {} seconds)",
                             dead_agent.agent_id,
@@ -454,8 +454,8 @@ pub fn run_check_processes(dir: &Path, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

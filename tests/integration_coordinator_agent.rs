@@ -531,7 +531,7 @@ fn coordinator_agent_cursor_tracking() {
     let guard = CoordinatorDaemonGuard::start(&wg_dir, &mock);
 
     guard.chat_ok("cursor test one", 15);
-    let responses1 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
+    let responses1 = worksgood::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert!(
         responses1.len() >= 1,
         "Coordinator should write at least one response after first message, got {}",
@@ -539,7 +539,7 @@ fn coordinator_agent_cursor_tracking() {
     );
 
     guard.chat_ok("cursor test two", 15);
-    let responses2 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
+    let responses2 = worksgood::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert!(
         responses2.len() > responses1.len(),
         "Coordinator should append a new response without reprocessing old messages: {} -> {}",
@@ -755,13 +755,13 @@ fn coordinator_agent_storage_consistency() {
     guard.chat_ok("storage consistency test", 15);
 
     // Verify inbox
-    let inbox = workgraph::chat::read_inbox(&wg_dir).unwrap();
+    let inbox = worksgood::chat::read_inbox(&wg_dir).unwrap();
     assert_eq!(inbox.len(), 1, "Expected 1 inbox message");
     assert_eq!(inbox[0].role, "user");
     assert_eq!(inbox[0].content, "storage consistency test");
 
     // Verify outbox
-    let outbox = workgraph::chat::read_outbox_since(&wg_dir, 0).unwrap();
+    let outbox = worksgood::chat::read_outbox_since(&wg_dir, 0).unwrap();
     assert_eq!(outbox.len(), 1, "Expected 1 outbox message");
     assert_eq!(outbox[0].role, "coordinator");
 

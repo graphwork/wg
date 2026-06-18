@@ -12,11 +12,11 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::config::Config;
-use workgraph::context_scope::{ContextScope, resolve_context_scope};
-use workgraph::graph::{Node, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::service::executor::{
+use worksgood::config::Config;
+use worksgood::context_scope::{ContextScope, resolve_context_scope};
+use worksgood::graph::{Node, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::service::executor::{
     ScopeContext, TemplateVars, build_prompt, description_has_pattern_keywords,
 };
 
@@ -54,7 +54,7 @@ fn test_add_with_context_scope_clean() {
     setup_workgraph(wg_dir, vec![]);
 
     // Use the add command with --context-scope clean
-    let result = workgraph::graph::Node::Task(Task {
+    let result = worksgood::graph::Node::Task(Task {
         id: "scoped-task".to_string(),
         title: "Scoped task".to_string(),
         context_scope: Some("clean".to_string()),

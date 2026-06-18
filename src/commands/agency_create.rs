@@ -8,11 +8,11 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, AgencyStore, LocalStore, StoreCounts, load_role, load_tradeoff,
     render_identity_prompt_rich, resolve_all_components, resolve_outcome,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 /// Build the creator prompt that instructs the LLM to propose new primitives.
 fn build_creator_prompt(
@@ -364,7 +364,7 @@ pub fn run(dir: &Path, model: Option<&str>, dry_run: bool, json: bool) -> Result
         .map(std::string::ToString::to_string)
         .unwrap_or_else(|| {
             config
-                .resolve_model_for_role(workgraph::config::DispatchRole::Creator)
+                .resolve_model_for_role(worksgood::config::DispatchRole::Creator)
                 .model
         });
 

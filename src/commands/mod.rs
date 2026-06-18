@@ -79,11 +79,11 @@ pub mod model_cmd;
 pub mod models;
 pub mod msg;
 pub mod native_exec;
-pub use workgraph::nex;
+pub use worksgood::nex;
 pub mod next;
-pub mod opencode_handler;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
+pub mod opencode_handler;
 pub mod openrouter;
 pub mod pause;
 pub mod peer;
@@ -149,11 +149,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 /// Load the WG task graph (immutable) from the given directory.
 /// Returns the graph and the path to the graph file (needed for save_graph).
-pub fn load_workgraph(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBuf)> {
+pub fn load_workgraph(dir: &Path) -> Result<(worksgood::graph::WorkGraph, PathBuf)> {
     let path = graph_path(dir);
     if !path.exists() {
         anyhow::bail!("WG not initialized. Run 'wg init' first.");
@@ -164,11 +164,11 @@ pub fn load_workgraph(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBu
 
 /// Load the WG task graph (mutable) from the given directory.
 /// Returns the graph and the path to the graph file (needed for save_graph).
-pub fn load_workgraph_mut(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBuf)> {
+pub fn load_workgraph_mut(dir: &Path) -> Result<(worksgood::graph::WorkGraph, PathBuf)> {
     load_workgraph(dir)
 }
 
-pub use workgraph::service::{is_process_alive, kill_process_force, kill_process_graceful};
+pub use worksgood::service::{is_process_alive, kill_process_force, kill_process_graceful};
 
 pub fn graph_path(dir: &Path) -> std::path::PathBuf {
     dir.join("graph.jsonl")
@@ -243,9 +243,9 @@ pub fn print_service_hint(dir: &Path) -> bool {
 mod provenance_coverage_tests {
     use std::path::Path;
     use tempfile::TempDir;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
-    use workgraph::provenance::read_all_operations;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
+    use worksgood::provenance::read_all_operations;
 
     fn setup_dir() -> TempDir {
         let tmp = TempDir::new().unwrap();
@@ -257,7 +257,7 @@ mod provenance_coverage_tests {
         tmp
     }
 
-    fn ops_with_type(dir: &Path, op: &str) -> Vec<workgraph::provenance::OperationEntry> {
+    fn ops_with_type(dir: &Path, op: &str) -> Vec<worksgood::provenance::OperationEntry> {
         read_all_operations(dir)
             .unwrap()
             .into_iter()

@@ -1,9 +1,9 @@
-use workgraph::graph::{CycleAnalysis, Node, Status, WorkGraph};
-use workgraph::query::ready_tasks_cycle_aware;
+use worksgood::graph::{CycleAnalysis, Node, Status, WorkGraph};
+use worksgood::query::ready_tasks_cycle_aware;
 
 // Helper function to create a task
-fn make_task(id: &str, title: &str) -> workgraph::graph::Task {
-    workgraph::graph::Task {
+fn make_task(id: &str, title: &str) -> worksgood::graph::Task {
+    worksgood::graph::Task {
         id: id.to_string(),
         title: title.to_string(),
         ..Default::default()
@@ -78,7 +78,7 @@ fn test_configured_cycle_unaffected() {
     task_a.after = vec!["c".to_string()];
     task_a.status = Status::Open;
     // Add cycle config to make this a configured cycle
-    task_a.cycle_config = Some(workgraph::graph::CycleConfig {
+    task_a.cycle_config = Some(worksgood::graph::CycleConfig {
         max_iterations: 3,
         guard: None,
         delay: None,
@@ -123,7 +123,7 @@ fn test_mixed_configured_unconfigured_cycles() {
     let mut task_a = make_task("a", "Task A");
     task_a.after = vec!["b".to_string()];
     task_a.status = Status::Open;
-    task_a.cycle_config = Some(workgraph::graph::CycleConfig {
+    task_a.cycle_config = Some(worksgood::graph::CycleConfig {
         max_iterations: 3,
         guard: None,
         delay: None,

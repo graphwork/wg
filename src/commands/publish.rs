@@ -191,7 +191,7 @@ pub fn run_add(
     }
     if let Some(expr) = schedule {
         // Validate the cron expression up front.
-        workgraph::cron::parse_cron_expression(expr)
+        worksgood::cron::parse_cron_expression(expr)
             .with_context(|| format!("invalid cron expression: {}", expr))?;
     }
 
@@ -509,13 +509,13 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
                 workgraph_dir.display()
             );
         }
-        let graph = workgraph::parser::load_graph(&graph_path)
+        let graph = worksgood::parser::load_graph(&graph_path)
             .with_context(|| "failed to load graph for html publish")?;
-        workgraph::html::render_site(
+        worksgood::html::render_site(
             &graph,
             workgraph_dir,
             &out_dir,
-            workgraph::html::RenderOptions {
+            worksgood::html::RenderOptions {
                 show_all,
                 since: dep.since.clone(),
                 include_chat,
@@ -574,9 +574,9 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
 pub fn resolve_deployment_meta(
     workgraph_dir: &Path,
     dep: &Deployment,
-) -> workgraph::html::ProjectMeta {
+) -> worksgood::html::ProjectMeta {
     // Project-level cascade (config + about.md). Provides the base layer.
-    let mut meta = workgraph::html::resolve_project_meta(workgraph_dir);
+    let mut meta = worksgood::html::resolve_project_meta(workgraph_dir);
 
     // Per-deployment overrides win over the project-level cascade.
     if let Some(t) = dep.title.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -720,8 +720,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Initialize a minimal graph so `add::run` succeeds.
         let graph_path = tmp.path().join("graph.jsonl");
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
         // Disable agency scaffolding so add does not create extra blockers.
         std::fs::write(
             tmp.path().join("config.toml"),
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(d.schedule.as_deref(), Some("*/15 * * * *"));
         assert_eq!(d.schedule_task_id.as_deref(), Some(".html-publish-site"));
 
-        let graph = workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         assert!(
             graph.tasks().any(|t| t.id == ".html-publish-site"),
             "expected scheduled task .html-publish-site to exist"
@@ -887,13 +887,13 @@ mod tests {
         let cfg = load_config(tmp.path()).unwrap();
         assert!(cfg.deployments.is_empty());
 
-        let graph = workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         let task = graph
             .tasks()
             .find(|t| t.id == ".html-publish-site")
             .expect("scheduling task should still exist as abandoned");
         assert!(
-            matches!(task.status, workgraph::graph::Status::Abandoned),
+            matches!(task.status, worksgood::graph::Status::Abandoned),
             "expected abandoned, got {:?}",
             task.status
         );
@@ -1416,7 +1416,7 @@ mod tests {
             !html.contains("class=\"project-header\""),
             "project-header must be omitted when no metadata is configured (got the empty block)"
         );
-        let source_title = workgraph::html::source_title_for_workgraph_dir(tmp.path());
+        let source_title = worksgood::html::source_title_for_workgraph_dir(tmp.path());
         assert!(
             html.contains(&format!("<title>{source_title} — all tasks</title>")),
             "browser title should identify the source WG directory; got: {html}"

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
-use workgraph::service::AgentRegistry;
+use worksgood::service::AgentRegistry;
 
 /// Update an agent's last_heartbeat timestamp
 ///
@@ -50,7 +50,7 @@ pub fn run_check_agents(dir: &Path, threshold_minutes: u64, json: bool) -> Resul
 
     for agent in registry.list_agents() {
         // Already marked as dead
-        if agent.status == workgraph::service::AgentStatus::Dead {
+        if agent.status == worksgood::service::AgentStatus::Dead {
             dead_agents.push((
                 agent.id.clone(),
                 agent.task_id.clone(),
@@ -166,8 +166,8 @@ pub fn run_check_agents(dir: &Path, threshold_minutes: u64, json: bool) -> Resul
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn setup_with_agent() -> TempDir {
         let temp_dir = TempDir::new().unwrap();

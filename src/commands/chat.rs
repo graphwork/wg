@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use workgraph::chat::{self, Attachment};
+use worksgood::chat::{self, Attachment};
 
 use super::service;
 
@@ -260,12 +260,12 @@ pub fn run_history(
     history_depth: Option<usize>,
 ) -> Result<()> {
     let chat_ref = coordinator_id.to_string();
-    let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
-    let config = workgraph::config::Config::load_or_default(dir);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    let config = worksgood::config::Config::load_or_default(dir);
     let executor = config.coordinator.effective_executor();
 
-    if let Some(hist) = workgraph::vendor_history::locate(&executor, dir, &chat_ref, &chat_dir) {
-        let turns = workgraph::vendor_history::read_turns(&hist)?;
+    if let Some(hist) = worksgood::vendor_history::locate(&executor, dir, &chat_ref, &chat_dir) {
+        let turns = worksgood::vendor_history::read_turns(&hist)?;
         print_vendor_turns(&turns, &executor, hist.path(), json, history_depth)?;
         return Ok(());
     }
@@ -330,7 +330,7 @@ pub fn run_history(
 }
 
 fn print_vendor_turns(
-    turns: &[workgraph::vendor_history::Turn],
+    turns: &[worksgood::vendor_history::Turn],
     executor: &str,
     path: &std::path::Path,
     json: bool,
@@ -436,7 +436,7 @@ pub fn run_share(dir: &Path, from_id: u32, to_id: u32) -> Result<()> {
     // Look up coordinator label from graph
     let graph_path = dir.join("graph.jsonl");
     let from_label = if graph_path.exists() {
-        let graph = workgraph::parser::load_graph(&graph_path)?;
+        let graph = worksgood::parser::load_graph(&graph_path)?;
         coordinator_label_from_graph(&graph, from_id)
     } else {
         None
@@ -456,8 +456,8 @@ pub fn run_share(dir: &Path, from_id: u32, to_id: u32) -> Result<()> {
 }
 
 /// Resolve chat agent label from the graph (accepts both `.chat-N` and `.coordinator-N`).
-fn coordinator_label_from_graph(graph: &workgraph::graph::WorkGraph, cid: u32) -> Option<String> {
-    if let Some(t) = workgraph::chat_id::find_chat_task(graph, cid) {
+fn coordinator_label_from_graph(graph: &worksgood::graph::WorkGraph, cid: u32) -> Option<String> {
+    if let Some(t) = worksgood::chat_id::find_chat_task(graph, cid) {
         return Some(t.title.clone());
     }
     if cid == 0
@@ -469,7 +469,7 @@ fn coordinator_label_from_graph(graph: &workgraph::graph::WorkGraph, cid: u32) -
 }
 
 pub fn run_compact(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    use workgraph::service::chat_compactor;
+    use worksgood::service::chat_compactor;
 
     let output_path = chat_compactor::run_chat_compaction(dir, coordinator_id)?;
 

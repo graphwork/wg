@@ -9,9 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{CycleConfig, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::{is_time_ready, ready_tasks};
+use worksgood::graph::{CycleConfig, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::{is_time_ready, ready_tasks};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -339,7 +339,7 @@ fn edit_not_before_with_past_makes_ready() {
 fn cycle_delay_sets_ready_after_on_reactivation() {
     // This test verifies that when a cycle iterates with a delay configured,
     // the cycle header gets ready_after set.
-    use workgraph::graph::evaluate_cycle_iteration;
+    use worksgood::graph::evaluate_cycle_iteration;
 
     let mut a = make_task_with_status("a", "Cycle head", Status::Done);
     a.after = vec!["b".to_string()];
@@ -401,7 +401,7 @@ fn cycle_delay_sets_ready_after_on_reactivation() {
 #[test]
 fn cycle_no_delay_no_ready_after() {
     // When cycle has no delay, ready_after should NOT be set
-    use workgraph::graph::evaluate_cycle_iteration;
+    use worksgood::graph::evaluate_cycle_iteration;
 
     let mut a = make_task_with_status("a", "No delay head", Status::Done);
     a.after = vec!["b".to_string()];

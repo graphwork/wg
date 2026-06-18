@@ -3,19 +3,19 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use workgraph::agency;
-use workgraph::function::{
+use worksgood::agency;
+use worksgood::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
     LoopEdgeTemplate, PlanningConfig, StructuralConstraints, TaskTemplate, TraceFunction,
 };
-use workgraph::graph::{LoopGuard, Status, Task, WorkGraph};
-use workgraph::provenance;
+use worksgood::graph::{LoopGuard, Status, Task, WorkGraph};
+use worksgood::provenance;
 
 /// Check whether a task is coordinator-generated infrastructure noise
 /// (evaluation tasks, assignment tasks) that should be excluded from extraction.
 fn is_coordinator_noise(task: &Task) -> bool {
     // System tasks (dot-prefixed) are always coordinator noise
-    if workgraph::graph::is_system_task(&task.id) {
+    if worksgood::graph::is_system_task(&task.id) {
         return true;
     }
     // Legacy prefixes (pre-dot-prefix era)
@@ -234,7 +234,7 @@ pub fn run(
 
 /// Collect the subgraph rooted at a task: the task itself plus all tasks
 /// that are (transitively) blocked by it.
-fn collect_subgraph<'a>(root_id: &str, graph: &'a workgraph::graph::WorkGraph) -> Vec<&'a Task> {
+fn collect_subgraph<'a>(root_id: &str, graph: &'a worksgood::graph::WorkGraph) -> Vec<&'a Task> {
     let mut result = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = vec![root_id.to_string()];
@@ -467,7 +467,7 @@ fn extract_json_from_response(response: &str) -> String {
 ///   2. Rewrite descriptions to be role-based rather than instance-specific
 ///   3. Identify which {{input.*}} placeholders to create
 fn generalize_with_executor(dir: &Path, func: &TraceFunction) -> Result<TraceFunction> {
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let executor = config.coordinator.effective_executor();
 
     if executor != "claude" {
@@ -1599,8 +1599,8 @@ fn title_case(s: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -2191,7 +2191,7 @@ mod tests {
 
     #[test]
     fn test_build_template_captures_cycle_config() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
 

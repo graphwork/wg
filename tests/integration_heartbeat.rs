@@ -10,14 +10,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::tools::ToolRegistry;
-use workgraph::executor::native::tools::bash::register_bash_tool;
-use workgraph::stream_event::{StreamEvent, read_stream_events};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::tools::bash::register_bash_tool;
+use worksgood::stream_event::{StreamEvent, read_stream_events};
 
 // ── Mock provider that triggers a bash tool call ────────────────────────
 
@@ -171,7 +171,7 @@ async fn test_heartbeat_during_long_bash() {
 /// heartbeat events for liveness detection.
 #[test]
 fn test_coordinator_reads_heartbeat_for_liveness() {
-    use workgraph::stream_event::{AgentStreamState, now_ms};
+    use worksgood::stream_event::{AgentStreamState, now_ms};
 
     let mut state = AgentStreamState::default();
 

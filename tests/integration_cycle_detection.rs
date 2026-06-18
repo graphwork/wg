@@ -12,13 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{
+use worksgood::graph::{
     CycleConfig, FailureClass, LoopGuard, Node, Status, Task, WorkGraph,
     evaluate_all_cycle_failure_restarts, evaluate_all_cycle_iterations, evaluate_cycle_iteration,
     evaluate_cycle_on_failure,
 };
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::{blocked_open_cycle_diagnostics, ready_tasks, ready_tasks_cycle_aware};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks, ready_tasks_cycle_aware};
 
 // ===========================================================================
 // Helpers
@@ -6517,7 +6517,7 @@ fn test_shell_checker_cycle_logs_preserved() {
     let mut shell_task = make_task_with_status("run-batch", "Run Batch", Status::Done);
     shell_task.exec = Some("python3 run.py".to_string());
     shell_task.after = vec!["check-batch".to_string()];
-    shell_task.log = vec![workgraph::graph::LogEntry {
+    shell_task.log = vec![worksgood::graph::LogEntry {
         timestamp: "2026-04-07T12:00:00Z".to_string(),
         message: "Attempt 1: completed with 3 errors".to_string(),
         actor: None,
@@ -6534,7 +6534,7 @@ fn test_shell_checker_cycle_logs_preserved() {
         restart_on_failure: true,
         max_failure_restarts: None,
     });
-    checker.log = vec![workgraph::graph::LogEntry {
+    checker.log = vec![worksgood::graph::LogEntry {
         timestamp: "2026-04-07T12:05:00Z".to_string(),
         message: "Attempt 1: 3 errors found, requesting retry".to_string(),
         actor: None,
@@ -6686,7 +6686,7 @@ fn test_cli_add_with_exec_and_timeout() {
 
 fn make_chat_task(id: &str) -> Task {
     let mut t = make_task(id, id);
-    t.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+    t.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
     t.cycle_config = Some(CycleConfig {
         max_iterations: 0, // unlimited — like real chat tasks
         guard: None,
@@ -6734,7 +6734,7 @@ fn test_legacy_coordinator_loop_tag_also_skipped() {
     // pre-rename naming. Without this, projects with un-migrated graphs
     // would still spawn-loop on the legacy chat tasks.
     let mut chat = make_task(".coordinator-3", ".coordinator-3");
-    chat.tags = vec![workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()];
+    chat.tags = vec![worksgood::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()];
     chat.cycle_config = Some(CycleConfig {
         max_iterations: 0,
         guard: None,

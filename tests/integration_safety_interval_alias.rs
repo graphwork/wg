@@ -3,7 +3,7 @@
 //! that `detect_deprecated_keys` surfaces it for a one-shot daemon-side
 //! deprecation warning.
 
-use workgraph::config::{Config, detect_deprecated_keys};
+use worksgood::config::{Config, detect_deprecated_keys};
 
 #[test]
 fn legacy_poll_interval_still_loads() {

@@ -7,7 +7,8 @@
 //!
 //! Use `create_provider()` to route a model string to the appropriate backend:
 //! - Bare name (`claude-sonnet-4-6`) → Anthropic native API
-//! - Prefixed (`openai/gpt-4o`, `deepseek/deepseek-chat`) → OpenAI-compatible
+//! - Bare `vendor/model` with no endpoint or configured provider → OpenRouter
+//! - Explicit provider prefixes/config (`openai:...`, `[native_executor].provider`) → that provider
 
 use std::path::Path;
 
@@ -102,11 +103,23 @@ fn build_inline_url_client(
     // base_url must include the `/v1` path segment.
     let base = normalize_oai_compat_base_url(url);
     let key = api_key_override.map(String::from).unwrap_or_default();
-    let client = OpenAiClient::new(key, model, None)
+    let mut client = OpenAiClient::new(key.clone(), model, None)
         .context("initialize oai-compat client for inline URL")?
         .with_provider_hint("oai-compat")
         .with_endpoint_name(url)
         .with_base_url(&base);
+    // Zero-config path (e.g. `wg nex -e http://localhost:8088`): probe the
+    // server for its runtime context window so the tool-output channeling
+    // budget matches reality (a llama.cpp `-c 8192` server should not be
+    // treated as if it had a 128k window). Falls back to the client default
+    // when the endpoint can't be probed.
+    let context_window = super::context_probe::resolve_context_window(
+        None,
+        || super::context_probe::probe_context_window_blocking(&base, &key, model, "oai-compat"),
+        None,
+        super::context_probe::DEFAULT_FALLBACK_CONTEXT_WINDOW,
+    );
+    client = client.with_context_window(context_window);
     Ok(client)
 }
 
@@ -296,19 +309,26 @@ pub fn create_provider_ext_with_config(
         )?));
     }
 
-    // A bare `vendor/model` route with NO endpoint is an OpenRouter route
+    let native_cfg = config_val.and_then(|v| v.get("native_executor"));
+    let native_provider = native_cfg
+        .and_then(|c| c.get("provider"))
+        .and_then(|v| v.as_str());
+
+    // A bare `vendor/model` route with NO endpoint and NO explicit provider is
+    // an OpenRouter route.
     // (nex-optional-openrouter-endpoint): `wg nex -m minimax/minimax-m3`
     // should reach OpenRouter, not the bare-name oai-compat/local default.
     // Normalize to `openrouter:<route>` so provider resolution below targets
-    // OpenRouter directly. Skipped when an endpoint is given — that endpoint's
-    // provider dictates the route, so the model stays verbatim.
+    // OpenRouter directly. Skipped when an endpoint or provider is given — that
+    // explicit route dictates the provider, so the model stays verbatim.
     let openrouter_normalized: String;
-    let model = if endpoint_name.is_none() {
-        openrouter_normalized = crate::config::normalize_bare_openrouter_route(model);
-        openrouter_normalized.as_str()
-    } else {
-        model
-    };
+    let model =
+        if endpoint_name.is_none() && provider_override.is_none() && native_provider.is_none() {
+            openrouter_normalized = crate::config::normalize_bare_openrouter_route(model);
+            openrouter_normalized.as_str()
+        } else {
+            model
+        };
 
     // Endpoint-in-model shorthand — see `parse_endpoint_model_shorthand`.
     let (endpoint_name_owned, effective_model_str) =
@@ -343,8 +363,6 @@ pub fn create_provider_ext_with_config(
                 .or_else(|| config.llm_endpoints.find_by_name(name))
         })
         .map(|ep| crate::config::provider_to_native_provider(&ep.provider).to_string());
-
-    let native_cfg = config_val.and_then(|v| v.get("native_executor"));
 
     // Parse unified provider:model spec (e.g. "openrouter:deepseek/deepseek-v3.2").
     // When a known provider prefix is present, it takes priority over all other
@@ -386,10 +404,7 @@ pub fn create_provider_ext_with_config(
             // explicit `provider_override` path above. The match arm below
             // accepts both the canonical "oai-compat" tag and the legacy
             // "openai" alias, so verbatim preservation does not affect routing.
-            native_cfg
-                .and_then(|c| c.get("provider"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
+            native_provider.map(String::from)
         })
         .or_else(|| {
             // Legacy heuristic takes precedence over env var for explicit model prefixes
@@ -442,7 +457,10 @@ pub fn create_provider_ext_with_config(
     let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);
     let endpoint_name_owned: Option<String> = endpoint.map(|ep| ep.name.clone());
 
-    // Resolve context window: endpoint config > model registry > provider default
+    // Context-window inputs. Final resolution (config > live probe > registry >
+    // configurable fallback) happens at the OAI-compat client site below, where
+    // the resolved base URL, model, and provider hint are known — the probe
+    // needs all three. See `context_probe::resolve_context_window`.
     let registry_context_window = config
         .effective_registry()
         .into_iter()
@@ -454,7 +472,6 @@ pub fn create_provider_ext_with_config(
                 None
             }
         });
-    let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
     // Base URL resolution: endpoint config > legacy [native_executor] api_base.
     // Per the WG credential contract, env vars (WG_ENDPOINT_URL,
@@ -472,6 +489,16 @@ pub fn create_provider_ext_with_config(
         .and_then(|v| v.as_integer())
         .map(|v| v as u32);
 
+    // Configurable fallback context window for the tool-output channeling
+    // budget when nothing else resolves (plain OpenAI, unreachable local
+    // server). No hardcoded small constant: defaults to a generous 128k.
+    let fallback_context_window = native_cfg
+        .and_then(|c| c.get("fallback_context_window"))
+        .and_then(|v| v.as_integer())
+        .filter(|&v| v > 0)
+        .map(|v| v as usize)
+        .unwrap_or(super::context_probe::DEFAULT_FALLBACK_CONTEXT_WINDOW);
+
     match provider_name.as_str() {
         "oai-compat" | "openai" | "openrouter" | "local" => {
             // Resolve API key from CONFIG ONLY:
@@ -488,6 +515,9 @@ pub fn create_provider_ext_with_config(
             // path bailing with "No Anthropic API key found" before any
             // HTTP call when no env var was set.
             let resolved_key = api_key_override.map(String::from).or(endpoint_key);
+            // Keep a copy for the context-window probe (the original is moved
+            // into the client below). Empty string => probe sends no auth header.
+            let probe_api_key = resolved_key.clone().unwrap_or_default();
 
             let mut client = OpenAiClient::new(resolved_key.unwrap_or_default(), model, None)
                 .context("Failed to initialize OpenAI-compatible client")?;
@@ -521,9 +551,25 @@ pub fn create_provider_ext_with_config(
             if let Some(mt) = max_tokens {
                 client = client.with_max_tokens(mt);
             }
-            if let Some(cw) = resolved_context_window {
-                client = client.with_context_window(cw as usize);
-            }
+            // Resolve the context window: explicit config > live endpoint probe
+            // (llama.cpp /props n_ctx, vLLM /v1/models max_model_len) > model
+            // registry > configurable fallback. The probe runs only for the
+            // local-ish family and is cached per (base_url, model). This drives
+            // the tool-output channeling budget (see channel.rs).
+            let context_window = super::context_probe::resolve_context_window(
+                endpoint_context_window.map(|v| v as usize),
+                || {
+                    super::context_probe::probe_context_window_blocking(
+                        client.base_url(),
+                        &probe_api_key,
+                        client.model(),
+                        &provider_name,
+                    )
+                },
+                registry_context_window.map(|v| v as usize),
+                fallback_context_window,
+            );
+            client = client.with_context_window(context_window);
             // Validate model against cached OpenRouter model list (openrouter only)
             if provider_name == "openrouter" {
                 let validation =
@@ -778,6 +824,52 @@ mod tests {
             Some("my-openrouter"),
             "configured openrouter endpoint should win over the local default"
         );
+    }
+
+    #[test]
+    fn native_executor_provider_keeps_bare_vendor_model_off_openrouter() {
+        // An explicit legacy provider config is stronger than the bare
+        // vendor/model OpenRouter convenience. The model stays unprefixed and
+        // routes through the configured OpenAI-compatible provider.
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![EndpointConfig {
+                name: "test-openai".to_string(),
+                provider: "openai".to_string(),
+                url: Some("https://example.com/v1".to_string()),
+                model: None,
+                api_key: Some("test-key".to_string()),
+                api_key_env: None,
+                api_key_ref: None,
+                api_key_file: None,
+                is_default: true,
+                context_window: None,
+            }],
+        };
+        let config_val: toml::Value = toml::from_str(
+            r#"
+[native_executor]
+provider = "openai"
+"#,
+        )
+        .unwrap();
+
+        let client = create_provider_ext_with_config(
+            dir.path(),
+            &config,
+            Some(&config_val),
+            "deepseek/deepseek-chat",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(client.name(), "openai");
+        assert_eq!(client.model(), "deepseek/deepseek-chat");
+        assert_eq!(client.endpoint_name(), Some("test-openai"));
     }
 
     #[test]

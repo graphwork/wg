@@ -20,8 +20,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{self, Evaluation};
-use workgraph::config::Config;
+use worksgood::agency::{self, Evaluation};
+use worksgood::config::Config;
 
 pub use strategy::Strategy;
 
@@ -149,7 +149,7 @@ pub fn run(
         .map(std::string::ToString::to_string)
         .unwrap_or_else(|| {
             config
-                .resolve_model_for_role(workgraph::config::DispatchRole::Evolver)
+                .resolve_model_for_role(worksgood::config::DispatchRole::Evolver)
                 .model
         });
 
@@ -418,7 +418,7 @@ pub fn run(
                 capabilities: vec![],
                 rate: None,
                 capacity: None,
-                trust_level: workgraph::graph::TrustLevel::Provisional,
+                trust_level: worksgood::graph::TrustLevel::Provisional,
                 contact: None,
                 executor: "claude".to_string(),
                 preferred_model: None,
@@ -570,7 +570,7 @@ mod tests {
     use super::prompt::{build_analyzer_prompt, build_evolver_prompt, build_performance_summary};
     use super::strategy::{EvolverOperation, EvolverOutput};
     use super::*;
-    use workgraph::agency::{AccessControl, Lineage, PerformanceRecord, Role, TradeoffConfig};
+    use worksgood::agency::{AccessControl, Lineage, PerformanceRecord, Role, TradeoffConfig};
 
     #[test]
     fn test_strategy_from_str() {
@@ -2922,7 +2922,7 @@ Let me know if you'd like me to adjust anything."#;
                 capabilities: vec![],
                 rate: None,
                 capacity: None,
-                trust_level: workgraph::graph::TrustLevel::Provisional,
+                trust_level: worksgood::graph::TrustLevel::Provisional,
                 contact: None,
                 executor: "claude".to_string(),
                 preferred_model: None,
@@ -2960,7 +2960,7 @@ Let me know if you'd like me to adjust anything."#;
             capabilities: vec![],
             rate: None,
             capacity: None,
-            trust_level: workgraph::graph::TrustLevel::Provisional,
+            trust_level: worksgood::graph::TrustLevel::Provisional,
             contact: None,
             executor: "claude".into(),
             preferred_model: None,

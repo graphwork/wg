@@ -12,11 +12,11 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks;
-use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::ready_tasks;
+use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -849,7 +849,7 @@ model = "claude:sonnet"
     for (task_id, task_title) in &tasks_needing_eval {
         let eval_task_id = format!("evaluate-{}", task_id);
         let resolved_model =
-            config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
+            config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
         let eval_task = Task {
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),
@@ -1759,7 +1759,7 @@ fn test_burst_addition_complex_dependency_chain() {
 /// Verify that the cycle-aware ready_tasks variant also blocks on dangling deps.
 #[test]
 fn test_cycle_aware_ready_tasks_blocks_dangling() {
-    use workgraph::query::ready_tasks_with_peers_cycle_aware;
+    use worksgood::query::ready_tasks_with_peers_cycle_aware;
 
     let tmp = TempDir::new().unwrap();
     let (wg_dir, graph_path) = setup_workgraph(&tmp);
@@ -1789,7 +1789,7 @@ fn test_cycle_aware_ready_tasks_blocks_dangling() {
 #[cfg(target_os = "linux")]
 fn test_pid_reuse_detection_current_process() {
     // Current process should pass identity verification
-    use workgraph::service::{read_proc_start_time_secs, verify_process_identity};
+    use worksgood::service::{read_proc_start_time_secs, verify_process_identity};
 
     let current_pid = std::process::id();
     let proc_start = read_proc_start_time_secs(current_pid);
@@ -1809,7 +1809,7 @@ fn test_pid_reuse_detection_current_process() {
 #[test]
 #[cfg(target_os = "linux")]
 fn test_pid_reuse_detection_nonexistent_pid() {
-    use workgraph::service::read_proc_start_time_secs;
+    use worksgood::service::read_proc_start_time_secs;
 
     // PID 999999999 should not exist
     let result = read_proc_start_time_secs(999999999);
@@ -1819,7 +1819,7 @@ fn test_pid_reuse_detection_nonexistent_pid() {
 #[test]
 #[cfg(target_os = "linux")]
 fn test_pid_reuse_detection_old_start_time() {
-    use workgraph::service::verify_process_identity;
+    use worksgood::service::verify_process_identity;
 
     let current_pid = std::process::id();
     // Pretend the agent was registered far in the past — the process (us) was
@@ -1833,7 +1833,7 @@ fn test_pid_reuse_detection_old_start_time() {
 
 #[test]
 fn test_pid_reuse_detection_nonexistent_returns_true() {
-    use workgraph::service::verify_process_identity;
+    use worksgood::service::verify_process_identity;
 
     // Non-existent PID: verify_process_identity should return true
     // (conservative fallback when /proc is unavailable)
@@ -1878,7 +1878,7 @@ fn test_dead_agent_detection_after_daemon_restart() {
         "Agent should still show as alive in registry"
     );
     assert!(
-        !workgraph::service::is_process_alive(agent.pid),
+        !worksgood::service::is_process_alive(agent.pid),
         "PID 999999999 should not be alive"
     );
 }

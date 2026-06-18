@@ -20,8 +20,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("could not get current exe path");
@@ -187,7 +187,7 @@ fn test_dep_unblocks_after_eval_pass() {
 
     // Snapshot 1: A is still PendingEval → B blocked.
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready_before = workgraph::query::ready_tasks(&graph);
+    let ready_before = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready_before.iter().map(|t| t.id.as_str()).collect();
     assert!(
         !ready_ids.contains(&"b"),
@@ -197,7 +197,7 @@ fn test_dep_unblocks_after_eval_pass() {
 
     // Promote PendingEval → Done in the graph (simulating the dispatcher
     // phase 2.46 resolution path).
-    workgraph::parser::modify_graph(&wg_dir.join("graph.jsonl"), |g| {
+    worksgood::parser::modify_graph(&wg_dir.join("graph.jsonl"), |g| {
         // Reuse the same logic the dispatcher runs by calling its public test
         // hook via direct status flip — the function is private so we model
         // the post-resolution graph state directly.
@@ -210,7 +210,7 @@ fn test_dep_unblocks_after_eval_pass() {
 
     // Snapshot 2: A is Done → B becomes ready.
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready_after = workgraph::query::ready_tasks(&graph);
+    let ready_after = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready_after.iter().map(|t| t.id.as_str()).collect();
     assert!(
         ready_ids.contains(&"b"),
@@ -231,7 +231,7 @@ fn test_pending_eval_blocks_downstream_directly() {
     let wg_dir = setup_workgraph(&tmp, vec![a, b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         !ready_ids.contains(&"b"),
@@ -266,7 +266,7 @@ fn test_dep_stays_blocked_on_eval_fail() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(
-        !workgraph::query::is_eval_gate_pending("a", &graph),
+        !worksgood::query::is_eval_gate_pending("a", &graph),
         "Eval gate is no longer pending once .evaluate-a is terminal"
     );
 
@@ -287,7 +287,7 @@ fn test_max_eval_rescues_caps_to_failed() {
     // rescue_count >= cap, the failed task stays Failed and no further
     // rescue is spawned. Verified by the data-shape test below; the actual
     // LLM evaluator path is exercised in integration_agency_loop.
-    use workgraph::config::Config;
+    use worksgood::config::Config;
 
     let mut config = Config::default();
     config.coordinator.max_verify_failures = 3;
@@ -360,7 +360,7 @@ fn test_legacy_done_tasks_unchanged() {
     graph.add_node(Node::Task(existing));
 
     // Run the legacy migration (idempotent on Done tasks).
-    let migrated = workgraph::lifecycle::migrate_pending_validation_tasks(&mut graph);
+    let migrated = worksgood::lifecycle::migrate_pending_validation_tasks(&mut graph);
     assert!(migrated.is_empty(), "no Done task should be migrated");
 
     let task = graph.get_task("legacy-done").unwrap();
@@ -391,7 +391,7 @@ fn test_system_dependents_unblock_on_pending_eval_source() {
     let wg_dir = setup_workgraph(&tmp, vec![a, eval_a, flip_a, b]);
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    let ready = workgraph::query::ready_tasks(&graph);
+    let ready = worksgood::query::ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
         ready_ids.contains(&".evaluate-a"),

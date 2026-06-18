@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use workgraph::graph::Status;
+use worksgood::graph::Status;
 
 /// Parse a duration string like "24h", "7d", "30m" into a chrono Duration.
 fn parse_duration(s: &str) -> Result<Duration> {
@@ -111,7 +111,7 @@ pub fn run(dir: &Path, since: Option<&str>, with_artifacts: bool, json: bool) ->
     }
 
     // Group by tag for display
-    let mut by_tag: BTreeMap<String, Vec<&workgraph::graph::Task>> = BTreeMap::new();
+    let mut by_tag: BTreeMap<String, Vec<&worksgood::graph::Task>> = BTreeMap::new();
     let mut untagged = Vec::new();
 
     for task in &recent_tasks {
@@ -159,7 +159,7 @@ pub fn run(dir: &Path, since: Option<&str>, with_artifacts: bool, json: bool) ->
     Ok(())
 }
 
-fn print_task(task: &workgraph::graph::Task, with_artifacts: bool) {
+fn print_task(task: &worksgood::graph::Task, with_artifacts: bool) {
     let completed = task
         .completed_at
         .as_ref()
@@ -194,7 +194,7 @@ fn format_relative(ts: DateTime<Utc>) -> String {
         return ts.format("%H:%M").to_string();
     }
     let secs = (now - ts).num_seconds();
-    workgraph::format_duration(secs, false) + " ago"
+    worksgood::format_duration(secs, false) + " ago"
 }
 
 #[cfg(test)]
@@ -202,8 +202,8 @@ mod tests {
     use super::*;
     use chrono::Duration as ChronoDuration;
     use tempfile::TempDir;
-    use workgraph::graph::{LogEntry, Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{LogEntry, Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_done_task(id: &str, title: &str, hours_ago: i64) -> Task {
         let completed = Utc::now() - ChronoDuration::hours(hours_ago);
@@ -279,7 +279,7 @@ mod tests {
         task.log = vec![LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Done!".to_string(),
         }];
         setup_graph(dir, vec![task]);

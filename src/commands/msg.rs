@@ -4,11 +4,11 @@ use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
 
-use workgraph::graph::{
+use worksgood::graph::{
     Node, create_user_board_task, is_user_board, next_user_board_seq, resolve_user_board_alias,
 };
-use workgraph::messages;
-use workgraph::parser::modify_graph;
+use worksgood::messages;
+use worksgood::parser::modify_graph;
 
 /// Status icon for CLI display.
 fn status_icon_for(status: &messages::DeliveryStatus) -> &'static str {
@@ -242,8 +242,8 @@ pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

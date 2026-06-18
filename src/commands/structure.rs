@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::Status;
+use worksgood::graph::Status;
 
 /// Information about a dead end task
 struct DeadEndInfo {
@@ -227,8 +227,8 @@ fn output_text(entry_points: &[&str], dead_ends: &[DeadEndInfo], high_impact: &[
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

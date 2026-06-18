@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
-use workgraph::format_hours;
-use workgraph::graph::{Status, Task, WorkGraph};
+use worksgood::format_hours;
+use worksgood::graph::{Status, Task, WorkGraph};
 
 pub(crate) fn generate_dot(
     graph: &WorkGraph,
@@ -339,7 +339,7 @@ pub(crate) fn render_dot(dot_content: &str, output_path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Estimate, Node, Task};
+    use worksgood::graph::{Estimate, Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

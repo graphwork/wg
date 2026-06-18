@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
-use workgraph::query::{ProjectSummary, project_summary, tasks_within_budget, tasks_within_hours};
+use worksgood::query::{ProjectSummary, project_summary, tasks_within_budget, tasks_within_hours};
 
 /// JSON output for plan command
 #[derive(Debug, Serialize)]
@@ -205,8 +205,8 @@ fn print_human_output(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Estimate, Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Estimate, Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

@@ -15,8 +15,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::Status;
-use workgraph::parser::load_graph;
+use worksgood::graph::Status;
+use worksgood::parser::load_graph;
 
 fn wg_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("current exe path");

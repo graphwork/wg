@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use workgraph::agency::{Evaluation, Role, TradeoffConfig};
-use workgraph::config::{Config, DispatchRole, Tier};
-use workgraph::graph::{CycleConfig, Node, Status, Task};
-use workgraph::parser::{load_graph, modify_graph};
+use worksgood::agency::{Evaluation, Role, TradeoffConfig};
+use worksgood::config::{Config, DispatchRole, Tier};
+use worksgood::graph::{CycleConfig, Node, Status, Task};
+use worksgood::parser::{load_graph, modify_graph};
 
 use super::partition::{self, AnalyzerSlice};
 use super::prompt::{build_analyzer_prompt, load_evolver_skills};
@@ -496,8 +496,8 @@ Evaluate the results of the evolution run.
         // Re-apply all nodes we created
         for node in graph_snapshot.nodes() {
             let nid = match node {
-                workgraph::graph::Node::Task(t) => t.id.clone(),
-                workgraph::graph::Node::Resource(r) => r.id.clone(),
+                worksgood::graph::Node::Task(t) => t.id.clone(),
+                worksgood::graph::Node::Resource(r) => r.id.clone(),
             };
             if existing_graph.get_node(&nid).is_none() {
                 existing_graph.add_node(node.clone());
@@ -741,9 +741,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use workgraph::agency::{AccessControl, Lineage, PerformanceRecord};
-    use workgraph::graph::WorkGraph;
-    use workgraph::parser::save_graph;
+    use worksgood::agency::{AccessControl, Lineage, PerformanceRecord};
+    use worksgood::graph::WorkGraph;
+    use worksgood::parser::save_graph;
 
     fn setup_test_env() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();

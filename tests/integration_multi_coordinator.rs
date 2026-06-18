@@ -223,7 +223,7 @@ fn multi_coordinator_message_isolation() {
     );
 
     // Verify coordinator 0's inbox only has its message
-    let inbox_0 = workgraph::chat::read_inbox_for(&wg_dir, 0).unwrap();
+    let inbox_0 = worksgood::chat::read_inbox_for(&wg_dir, 0).unwrap();
     assert_eq!(
         inbox_0.len(),
         1,
@@ -232,7 +232,7 @@ fn multi_coordinator_message_isolation() {
     assert_eq!(inbox_0[0].content, "message for coordinator zero");
 
     // Verify coordinator 1's inbox only has its message
-    let inbox_1 = workgraph::chat::read_inbox_for(&wg_dir, 1).unwrap();
+    let inbox_1 = worksgood::chat::read_inbox_for(&wg_dir, 1).unwrap();
     assert_eq!(
         inbox_1.len(),
         1,
@@ -241,7 +241,7 @@ fn multi_coordinator_message_isolation() {
     assert_eq!(inbox_1[0].content, "message for coordinator one");
 
     // Verify outboxes are also isolated
-    let outbox_0 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
+    let outbox_0 = worksgood::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert_eq!(
         outbox_0.len(),
         1,
@@ -253,7 +253,7 @@ fn multi_coordinator_message_isolation() {
         outbox_0[0].content
     );
 
-    let outbox_1 = workgraph::chat::read_outbox_since_for(&wg_dir, 1, 0).unwrap();
+    let outbox_1 = worksgood::chat::read_outbox_since_for(&wg_dir, 1, 0).unwrap();
     assert_eq!(
         outbox_1.len(),
         1,
@@ -377,11 +377,11 @@ fn multi_coordinator_clear_isolation() {
     wg_ok(&wg_dir, &["chat", "--clear", "--coordinator", "0"]);
 
     // Coordinator 0 should be empty
-    let inbox_0 = workgraph::chat::read_inbox_for(&wg_dir, 0).unwrap();
+    let inbox_0 = worksgood::chat::read_inbox_for(&wg_dir, 0).unwrap();
     assert!(inbox_0.is_empty(), "Coordinator 0 inbox should be cleared");
 
     // Coordinator 1 should still have its message
-    let inbox_1 = workgraph::chat::read_inbox_for(&wg_dir, 1).unwrap();
+    let inbox_1 = worksgood::chat::read_inbox_for(&wg_dir, 1).unwrap();
     assert_eq!(
         inbox_1.len(),
         1,
@@ -458,7 +458,7 @@ fn multi_coordinator_multiple_messages_same_coordinator() {
     }
 
     // Coordinator 1 should have 3 inbox messages
-    let inbox_1 = workgraph::chat::read_inbox_for(&wg_dir, 1).unwrap();
+    let inbox_1 = worksgood::chat::read_inbox_for(&wg_dir, 1).unwrap();
     assert_eq!(
         inbox_1.len(),
         3,
@@ -467,7 +467,7 @@ fn multi_coordinator_multiple_messages_same_coordinator() {
     );
 
     // Coordinator 0 should have no messages
-    let inbox_0 = workgraph::chat::read_inbox_for(&wg_dir, 0).unwrap();
+    let inbox_0 = worksgood::chat::read_inbox_for(&wg_dir, 0).unwrap();
     assert!(
         inbox_0.is_empty(),
         "Coordinator 0 should have no messages, got {}",
@@ -475,7 +475,7 @@ fn multi_coordinator_multiple_messages_same_coordinator() {
     );
 
     // Coordinator 1 should have 3 outbox responses
-    let outbox_1 = workgraph::chat::read_outbox_since_for(&wg_dir, 1, 0).unwrap();
+    let outbox_1 = worksgood::chat::read_outbox_since_for(&wg_dir, 1, 0).unwrap();
     assert_eq!(
         outbox_1.len(),
         3,
@@ -503,11 +503,11 @@ fn multi_coordinator_default_is_zero() {
     assert!(output.status.success());
 
     // Should go to coordinator 0
-    let inbox_0 = workgraph::chat::read_inbox_for(&wg_dir, 0).unwrap();
+    let inbox_0 = worksgood::chat::read_inbox_for(&wg_dir, 0).unwrap();
     assert_eq!(inbox_0.len(), 1);
     assert_eq!(inbox_0[0].content, "default coordinator message");
 
     // Coordinator 1 should be empty
-    let inbox_1 = workgraph::chat::read_inbox_for(&wg_dir, 1).unwrap();
+    let inbox_1 = worksgood::chat::read_inbox_for(&wg_dir, 1).unwrap();
     assert!(inbox_1.is_empty());
 }

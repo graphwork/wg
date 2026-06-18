@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -238,7 +238,7 @@ fn test_runs_restore_provenance() {
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
     // Check provenance for "restore" entry
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let restore_ops: Vec<_> = ops.iter().filter(|o| o.op == "restore").collect();
     assert!(
         !restore_ops.is_empty(),
@@ -565,7 +565,7 @@ fn test_concurrent_replay_safety() {
     );
 
     // Run IDs should be distinct
-    let runs = workgraph::runs::list_runs(&wg_dir).unwrap();
+    let runs = worksgood::runs::list_runs(&wg_dir).unwrap();
     let unique: std::collections::HashSet<_> = runs.iter().collect();
     assert_eq!(
         runs.len(),
@@ -859,13 +859,13 @@ fn test_restore_safety_snapshot_distinct() {
     // Restore from run-001, should create run-002 as safety snapshot
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    let runs = workgraph::runs::list_runs(&wg_dir).unwrap();
+    let runs = worksgood::runs::list_runs(&wg_dir).unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0], "run-001");
     assert_eq!(runs[1], "run-002");
 
     // Verify run-002 metadata mentions safety
-    let meta = workgraph::runs::load_run_meta(&wg_dir, "run-002").unwrap();
+    let meta = worksgood::runs::load_run_meta(&wg_dir, "run-002").unwrap();
     assert!(
         meta.filter.as_ref().unwrap().contains("safety"),
         "safety snapshot filter should mention 'safety': {:?}",
@@ -892,7 +892,7 @@ fn test_multiple_restores_incrementing_ids() {
     // Second restore: creates safety run-003
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
-    let runs = workgraph::runs::list_runs(&wg_dir).unwrap();
+    let runs = worksgood::runs::list_runs(&wg_dir).unwrap();
     assert_eq!(runs.len(), 3);
     assert_eq!(runs[2], "run-003");
 }
@@ -1047,7 +1047,7 @@ fn test_snapshot_without_graph_jsonl() {
     // Create a valid graph first, then snapshot manually without graph.jsonl
     // We test via the runs API directly since the CLI requires a valid graph to operate
     let run_id = "run-001";
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: run_id.to_string(),
         timestamp: "2026-02-19T10:00:00Z".to_string(),
         model: None,
@@ -1057,7 +1057,7 @@ fn test_snapshot_without_graph_jsonl() {
     };
 
     // No graph.jsonl exists — snapshot should still succeed (creates meta.json only)
-    let snap_path = workgraph::runs::snapshot(&wg_dir, run_id, &meta).unwrap();
+    let snap_path = worksgood::runs::snapshot(&wg_dir, run_id, &meta).unwrap();
     assert!(
         snap_path.join("meta.json").exists(),
         "meta.json should be created"
@@ -1096,11 +1096,11 @@ fn test_run_id_above_999() {
     fs::create_dir_all(runs.join("run-999")).unwrap();
 
     // next_run_id should return "run-1000"
-    let next = workgraph::runs::next_run_id(&wg_dir);
+    let next = worksgood::runs::next_run_id(&wg_dir);
     assert_eq!(next, "run-1000", "next run ID after 999 should be run-1000");
 
     // Create run-1000 with valid metadata and verify it appears in list
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-1000".to_string(),
         timestamp: "2026-02-19T10:00:00Z".to_string(),
         model: None,
@@ -1108,10 +1108,10 @@ fn test_run_id_above_999() {
         preserved_tasks: vec![],
         filter: Some("test".to_string()),
     };
-    workgraph::runs::snapshot(&wg_dir, "run-1000", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-1000", &meta).unwrap();
 
     // list_runs should include "run-1000"
-    let ids = workgraph::runs::list_runs(&wg_dir).unwrap();
+    let ids = worksgood::runs::list_runs(&wg_dir).unwrap();
     assert!(
         ids.contains(&"run-1000".to_string()),
         "list_runs should include run-1000: {:?}",
@@ -1230,7 +1230,7 @@ fn test_trace_after_restore() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance so trace has operations to show
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("tr1"),
@@ -1386,7 +1386,7 @@ fn test_next_run_id_with_non_numeric_suffix() {
     fs::create_dir_all(runs.join("run-003")).unwrap();
 
     // next_run_id should return "run-004" (max of parseable IDs is 3)
-    let next = workgraph::runs::next_run_id(&wg_dir);
+    let next = worksgood::runs::next_run_id(&wg_dir);
     assert_eq!(
         next, "run-004",
         "next_run_id should ignore non-numeric suffixes and use max parseable ID + 1"

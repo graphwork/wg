@@ -7,12 +7,12 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::executor::native::bundle::{
+use worksgood::executor::native::bundle::{
     Bundle, ensure_default_bundles, load_all_bundles, resolve_bundle,
 };
-use workgraph::executor::native::tools::ToolRegistry;
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::executor::native::tools::ToolRegistry;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 fn setup_workgraph(dir: &Path) -> std::path::PathBuf {
     let graph_path = dir.join("graph.jsonl");
@@ -215,7 +215,7 @@ fn test_native_executor_in_registry() {
     let tmp = TempDir::new().unwrap();
     setup_workgraph(tmp.path());
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(tmp.path());
+    let registry = worksgood::service::executor::ExecutorRegistry::new(tmp.path());
     let config = registry.load_config("native").unwrap();
     assert_eq!(config.executor.executor_type, "native");
     assert_eq!(config.executor.command, "wg");
@@ -226,7 +226,7 @@ fn test_native_executor_default_config() {
     let tmp = TempDir::new().unwrap();
     setup_workgraph(tmp.path());
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(tmp.path());
+    let registry = worksgood::service::executor::ExecutorRegistry::new(tmp.path());
     let config = registry.load_config("native").unwrap();
 
     assert_eq!(config.executor.executor_type, "native");
@@ -254,7 +254,7 @@ model = "claude-haiku-3-5-20241022"
 "#;
     fs::write(executors_dir.join("native.toml"), toml_content).unwrap();
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(tmp.path());
+    let registry = worksgood::service::executor::ExecutorRegistry::new(tmp.path());
     let config = registry.load_config("native").unwrap();
     assert_eq!(config.executor.executor_type, "native");
     assert_eq!(
@@ -273,9 +273,9 @@ model = "claude-haiku-3-5-20241022"
 #[cfg(feature = "llm-tests")]
 mod llm_tests {
     use super::*;
-    use workgraph::executor::native::agent::AgentLoop;
-    use workgraph::executor::native::client::AnthropicClient;
-    use workgraph::graph::{Node, Status, Task};
+    use worksgood::executor::native::agent::AgentLoop;
+    use worksgood::executor::native::client::AnthropicClient;
+    use worksgood::graph::{Node, Status, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -297,7 +297,7 @@ mod llm_tests {
         let test_file = test_file_dir.join("test_input.txt");
         fs::write(&test_file, "This file contains the answer: 42.").unwrap();
 
-        let mut graph = workgraph::parser::load_graph(&graph_path).unwrap();
+        let mut graph = worksgood::parser::load_graph(&graph_path).unwrap();
         let mut task = make_task("test-native", "Read file and report answer");
         task.description = Some(format!(
             "Read the file at {} and report what number the answer is. \
@@ -337,7 +337,7 @@ mod llm_tests {
         );
 
         // Verify the task was marked done
-        let graph = workgraph::parser::load_graph(&graph_path).unwrap();
+        let graph = worksgood::parser::load_graph(&graph_path).unwrap();
         let task = graph.get_task("test-native").unwrap();
         assert_eq!(
             task.status,

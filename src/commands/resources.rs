@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{Resource, Status, WorkGraph};
+use worksgood::graph::{Resource, Status, WorkGraph};
 
 /// Resource utilization data
 #[derive(Debug, Clone, Serialize)]
@@ -204,7 +204,7 @@ fn print_human_output(utilizations: &[ResourceUtilization]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Estimate, Node, Resource, Status, Task};
+    use worksgood::graph::{Estimate, Node, Resource, Status, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

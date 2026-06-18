@@ -251,7 +251,7 @@ fn native_coordinator_model_registry_has_openrouter_models() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
 
-    let registry = workgraph::models::ModelRegistry::load(&wg_dir).unwrap();
+    let registry = worksgood::models::ModelRegistry::load(&wg_dir).unwrap();
 
     // Check that key OpenRouter models are present
     assert!(
@@ -283,7 +283,7 @@ fn native_coordinator_config_parsing() {
     let wg_dir = init_workgraph(&tmp);
     configure_native_coordinator(&wg_dir, "openrouter:deepseek/deepseek-chat");
 
-    let config = workgraph::config::Config::load(&wg_dir).unwrap();
+    let config = worksgood::config::Config::load(&wg_dir).unwrap();
     assert_eq!(config.coordinator.executor.as_deref(), Some("native"));
     assert_eq!(
         config.coordinator.model.as_deref(),
@@ -299,7 +299,7 @@ fn native_coordinator_executor_registry() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
 
-    let registry = workgraph::service::executor::ExecutorRegistry::new(&wg_dir);
+    let registry = worksgood::service::executor::ExecutorRegistry::new(&wg_dir);
     let config = registry.load_config("native").unwrap();
     assert_eq!(config.executor.executor_type, "native");
     assert_eq!(config.executor.command, "wg");
@@ -315,7 +315,7 @@ fn native_coordinator_provider_routing_openrouter() {
 
     // deepseek/deepseek-chat is an OpenRouter model. Use explicit provider
     // override to test the openai path (avoids env var interference from WG_LLM_PROVIDER).
-    let result = workgraph::executor::native::provider::create_provider_ext(
+    let result = worksgood::executor::native::provider::create_provider_ext(
         &wg_dir,
         "deepseek/deepseek-chat",
         Some("openai"),
@@ -342,7 +342,7 @@ fn native_coordinator_provider_routing_anthropic() {
     let wg_dir = init_workgraph(&tmp);
 
     // bare model name (no slash) → routes to Anthropic provider
-    let result = workgraph::executor::native::provider::create_provider_ext(
+    let result = worksgood::executor::native::provider::create_provider_ext(
         &wg_dir,
         "claude-sonnet-4-5-20250514",
         Some("anthropic"),
@@ -369,7 +369,7 @@ fn native_coordinator_provider_routing_explicit_override() {
     let wg_dir = init_workgraph(&tmp);
 
     // Force openai provider even for an anthropic-looking model
-    let result = workgraph::executor::native::provider::create_provider_ext(
+    let result = worksgood::executor::native::provider::create_provider_ext(
         &wg_dir,
         "anthropic/claude-sonnet-4-6",
         Some("openai"),
@@ -396,7 +396,7 @@ provider = "openai"
 "#;
     fs::write(wg_dir.join("config.toml"), config).unwrap();
 
-    let result = workgraph::executor::native::provider::create_provider_ext(
+    let result = worksgood::executor::native::provider::create_provider_ext(
         &wg_dir,
         "deepseek/deepseek-chat",
         None,
@@ -426,7 +426,7 @@ provider = "openai"
 mod per_provider_key_resolution {
     use super::*;
     use serial_test::serial;
-    use workgraph::executor::native::provider::create_provider_ext;
+    use worksgood::executor::native::provider::create_provider_ext;
 
     /// Snapshot the relevant env vars and unset them, returning a guard
     /// that restores the originals on drop. Lets each test run as if
@@ -712,8 +712,8 @@ mod credential_wire_contract {
     use std::io::Read;
     use std::net::TcpListener;
     use std::sync::mpsc;
-    use workgraph::executor::native::client::{Message, MessagesRequest, Role};
-    use workgraph::executor::native::provider::create_provider_ext;
+    use worksgood::executor::native::client::{Message, MessagesRequest, Role};
+    use worksgood::executor::native::provider::create_provider_ext;
 
     /// Spawn a minimal OAI-compat-shaped server. Captures the first
     /// request's headers + body, replies with `status_code` and
@@ -1027,7 +1027,7 @@ api_base = "https://openrouter.ai/api/v1"
 
     // The provider should be created with the custom base URL.
     // We can't easily inspect the base URL, but creating the provider should succeed.
-    let result = workgraph::executor::native::provider::create_provider_ext(
+    let result = worksgood::executor::native::provider::create_provider_ext(
         &wg_dir,
         "deepseek/deepseek-chat",
         None,
@@ -1044,10 +1044,10 @@ api_base = "https://openrouter.ai/api/v1"
 // 2. Mock provider tests (native coordinator loop internals)
 // ===========================================================================
 
-use workgraph::executor::native::client::{
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::provider::Provider;
+use worksgood::executor::native::provider::Provider;
 
 /// Mock provider simulating an OpenRouter endpoint for a cheap model.
 struct MockNativeProvider {
@@ -1153,15 +1153,15 @@ impl Provider for MockNativeProvider {
 /// End-to-end agent loop with a mock OpenRouter provider — simple text response.
 #[tokio::test]
 async fn native_coordinator_agent_loop_simple_text() {
-    use workgraph::executor::native::agent::AgentLoop;
-    use workgraph::executor::native::tools::ToolRegistry;
+    use worksgood::executor::native::agent::AgentLoop;
+    use worksgood::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let provider = MockNativeProvider::simple_text("deepseek/deepseek-chat", "Hello from native!");
 
@@ -1184,15 +1184,15 @@ async fn native_coordinator_agent_loop_simple_text() {
 /// Agent loop with mock OpenRouter provider — tool call flow (bash).
 #[tokio::test]
 async fn native_coordinator_agent_loop_with_tool_call() {
-    use workgraph::executor::native::agent::AgentLoop;
-    use workgraph::executor::native::tools::ToolRegistry;
+    use worksgood::executor::native::agent::AgentLoop;
+    use worksgood::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let provider = MockNativeProvider::with_tool_call(
         "deepseek/deepseek-chat",
@@ -1225,19 +1225,19 @@ async fn native_coordinator_agent_loop_with_tool_call() {
 /// Verify that the agent loop produces a valid journal when using an OpenRouter model.
 #[tokio::test]
 async fn native_coordinator_journal_with_openrouter_model() {
-    use workgraph::executor::native::agent::AgentLoop;
-    use workgraph::executor::native::journal::{Journal, JournalEntryKind};
-    use workgraph::executor::native::tools::ToolRegistry;
+    use worksgood::executor::native::agent::AgentLoop;
+    use worksgood::executor::native::journal::{Journal, JournalEntryKind};
+    use worksgood::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let task_id = "native-journal-test";
-    let j_path = workgraph::executor::native::journal::journal_path(&wg_dir, task_id);
+    let j_path = worksgood::executor::native::journal::journal_path(&wg_dir, task_id);
 
     let provider = MockNativeProvider::with_tool_call(
         "deepseek/deepseek-chat",
@@ -1739,7 +1739,7 @@ fn wg_init_qwen3_with_endpoint_is_sufficient() {
     );
 
     // Verify the config has a complete [[llm_endpoints.endpoints]] block
-    let config = workgraph::config::Config::load(&wg_dir).unwrap();
+    let config = worksgood::config::Config::load(&wg_dir).unwrap();
     let eps = &config.llm_endpoints.endpoints;
     let default_ep = eps
         .iter()

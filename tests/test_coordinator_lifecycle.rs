@@ -1,6 +1,6 @@
 use tempfile::TempDir;
-use workgraph::graph::{Status, Task, WorkGraph};
-use workgraph::parser;
+use worksgood::graph::{Status, Task, WorkGraph};
+use worksgood::parser;
 
 /// Test that coordinator ID allocation correctly skips archived coordinators
 #[test]
@@ -19,7 +19,7 @@ fn test_coordinator_id_allocation_skips_archived() {
         tags: vec!["archived".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator_0));
+    graph.add_node(worksgood::graph::Node::Task(coordinator_0));
 
     // Add coordinator-1 (abandoned with coordinator-loop tag)
     let coordinator_1 = Task {
@@ -29,7 +29,7 @@ fn test_coordinator_id_allocation_skips_archived() {
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator_1));
+    graph.add_node(worksgood::graph::Node::Task(coordinator_1));
 
     // Add coordinator-2 (active)
     let coordinator_2 = Task {
@@ -39,7 +39,7 @@ fn test_coordinator_id_allocation_skips_archived() {
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator_2));
+    graph.add_node(worksgood::graph::Node::Task(coordinator_2));
 
     // Save the graph
     parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
@@ -124,7 +124,7 @@ fn test_coordinator_archiving_sets_correct_state() {
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator));
+    graph.add_node(worksgood::graph::Node::Task(coordinator));
     parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
     // Simulate the archive process (from handle_archive_coordinator in ipc.rs)
@@ -171,7 +171,7 @@ fn test_coordinator_context_isolation() {
         title: "Old Coordinator".to_string(),
         status: Status::Done,
         tags: vec!["archived".to_string()],
-        log: vec![workgraph::graph::LogEntry {
+        log: vec![worksgood::graph::LogEntry {
             timestamp: "2026-04-11T10:00:00Z".to_string(),
             actor: Some("daemon".to_string()),
             user: Some("test".to_string()),
@@ -180,7 +180,7 @@ fn test_coordinator_context_isolation() {
         created_at: Some("2026-04-11T10:00:00Z".to_string()),
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator_old));
+    graph.add_node(worksgood::graph::Node::Task(coordinator_old));
 
     // Create new coordinator (simulating fresh creation)
     let coordinator_new = Task {
@@ -188,7 +188,7 @@ fn test_coordinator_context_isolation() {
         title: "New Coordinator".to_string(),
         status: Status::InProgress,
         tags: vec!["coordinator-loop".to_string()],
-        log: vec![workgraph::graph::LogEntry {
+        log: vec![worksgood::graph::LogEntry {
             timestamp: "2026-04-11T12:00:00Z".to_string(),
             actor: Some("daemon".to_string()),
             user: Some("test".to_string()),
@@ -197,7 +197,7 @@ fn test_coordinator_context_isolation() {
         created_at: Some("2026-04-11T12:00:00Z".to_string()),
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator_new));
+    graph.add_node(worksgood::graph::Node::Task(coordinator_new));
 
     // Verify isolation
     let old_task = graph.get_task(".coordinator-10").unwrap();
@@ -239,7 +239,7 @@ fn test_archive_then_create_flow() {
         title: "Initial Coordinator".to_string(),
         status: Status::InProgress,
         tags: vec!["coordinator-loop".to_string()],
-        log: vec![workgraph::graph::LogEntry {
+        log: vec![worksgood::graph::LogEntry {
             timestamp: "2026-04-11T10:00:00Z".to_string(),
             actor: Some("daemon".to_string()),
             user: Some("test".to_string()),
@@ -248,7 +248,7 @@ fn test_archive_then_create_flow() {
         created_at: Some("2026-04-11T10:00:00Z".to_string()),
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coordinator));
+    graph.add_node(worksgood::graph::Node::Task(coordinator));
     parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
     // Test the coordinator slot availability function
@@ -289,7 +289,7 @@ fn test_archive_then_create_flow() {
     if !task.tags.contains(&"archived".to_string()) {
         task.tags.push("archived".to_string());
     }
-    task.log.push(workgraph::graph::LogEntry {
+    task.log.push(worksgood::graph::LogEntry {
         timestamp: "2026-04-11T11:00:00Z".to_string(),
         actor: Some("daemon".to_string()),
         user: Some("test".to_string()),
@@ -338,7 +338,7 @@ fn test_no_id_reuse_with_gaps() {
         tags: vec!["archived".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coord_0));
+    graph.add_node(worksgood::graph::Node::Task(coord_0));
 
     // coordinator-2: archived (gap at 1)
     let coord_2 = Task {
@@ -348,7 +348,7 @@ fn test_no_id_reuse_with_gaps() {
         tags: vec!["archived".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coord_2));
+    graph.add_node(worksgood::graph::Node::Task(coord_2));
 
     // coordinator-4: active (gap at 3)
     let coord_4 = Task {
@@ -358,7 +358,7 @@ fn test_no_id_reuse_with_gaps() {
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(coord_4));
+    graph.add_node(worksgood::graph::Node::Task(coord_4));
 
     parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
@@ -431,7 +431,7 @@ fn test_orphan_chat_dir_not_resurrected() {
     let wg = temp_dir.path();
 
     // Create a legitimate coordinator session via the registry
-    let _uuid = workgraph::chat_sessions::register_coordinator_session(wg, 0).unwrap();
+    let _uuid = worksgood::chat_sessions::register_coordinator_session(wg, 0).unwrap();
 
     // Create an orphan chat dir that has NO sessions.json entry —
     // simulates a stale dir left behind after `wg abandon + wg gc`
@@ -446,7 +446,7 @@ fn test_orphan_chat_dir_not_resurrected() {
 
     // list_coordinator_ids should ONLY return coordinator 0 (from sessions.json)
     // and must NOT include 4 or 7 (orphan dirs with no registry entry)
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert_eq!(
         ids,
         vec![0],
@@ -455,12 +455,12 @@ fn test_orphan_chat_dir_not_resurrected() {
     );
 
     // Verify the orphan detection helper agrees
-    assert!(workgraph::chat_sessions::is_orphan_chat_dir(
+    assert!(worksgood::chat_sessions::is_orphan_chat_dir(
         wg,
         "coordinator-4"
     ));
-    assert!(workgraph::chat_sessions::is_orphan_chat_dir(wg, "7"));
-    assert!(!workgraph::chat_sessions::is_orphan_chat_dir(
+    assert!(worksgood::chat_sessions::is_orphan_chat_dir(wg, "7"));
+    assert!(!worksgood::chat_sessions::is_orphan_chat_dir(
         wg,
         "coordinator-0"
     ));
@@ -473,18 +473,18 @@ fn test_archived_coordinator_hidden_from_list() {
     let wg = temp_dir.path();
 
     // Register two coordinators
-    workgraph::chat_sessions::register_coordinator_session(wg, 0).unwrap();
-    workgraph::chat_sessions::register_coordinator_session(wg, 1).unwrap();
+    worksgood::chat_sessions::register_coordinator_session(wg, 0).unwrap();
+    worksgood::chat_sessions::register_coordinator_session(wg, 1).unwrap();
 
     // Both should appear
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert_eq!(ids, vec![0, 1]);
 
     // Archive coordinator 1
-    workgraph::chat_sessions::archive_session(wg, "coordinator-1").unwrap();
+    worksgood::chat_sessions::archive_session(wg, "coordinator-1").unwrap();
 
     // Now only coordinator 0 should appear
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert_eq!(
         ids,
         vec![0],
@@ -492,10 +492,10 @@ fn test_archived_coordinator_hidden_from_list() {
     );
 
     // Restore it
-    workgraph::chat_sessions::restore_session(wg, "coordinator-1").unwrap();
+    worksgood::chat_sessions::restore_session(wg, "coordinator-1").unwrap();
 
     // Both should appear again
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert_eq!(ids, vec![0, 1]);
 }
 
@@ -508,27 +508,27 @@ fn test_archive_survives_restart() {
     let wg = temp_dir.path();
 
     // Setup: register coordinator-3 and write chat data
-    workgraph::chat_sessions::register_coordinator_session(wg, 3).unwrap();
-    let chat_dir = workgraph::chat::chat_dir_for_ref(wg, "coordinator-3");
+    worksgood::chat_sessions::register_coordinator_session(wg, 3).unwrap();
+    let chat_dir = worksgood::chat::chat_dir_for_ref(wg, "coordinator-3");
     fs::create_dir_all(&chat_dir).unwrap();
     fs::write(chat_dir.join("inbox.jsonl"), "chat history\n").unwrap();
 
     // Archive it
-    workgraph::chat_sessions::archive_session(wg, "coordinator-3").unwrap();
+    worksgood::chat_sessions::archive_session(wg, "coordinator-3").unwrap();
 
     // Simulate daemon restart: list_coordinator_ids is called
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert!(
         !ids.contains(&3),
         "Archived coordinator must NOT appear after simulated restart"
     );
 
     // Chat data is preserved in .archive/
-    let archived_sessions = workgraph::chat_sessions::list_archived(wg).unwrap();
+    let archived_sessions = worksgood::chat_sessions::list_archived(wg).unwrap();
     assert_eq!(archived_sessions.len(), 1);
     let (uuid, _) = &archived_sessions[0];
     let archived_data = fs::read_to_string(
-        workgraph::chat_sessions::archive_dir(wg)
+        worksgood::chat_sessions::archive_dir(wg)
             .join(uuid)
             .join("inbox.jsonl"),
     )
@@ -536,8 +536,8 @@ fn test_archive_survives_restart() {
     assert_eq!(archived_data, "chat history\n");
 
     // Restore brings it back
-    workgraph::chat_sessions::restore_session(wg, "coordinator-3").unwrap();
-    let ids = workgraph::chat::list_coordinator_ids(wg);
+    worksgood::chat_sessions::restore_session(wg, "coordinator-3").unwrap();
+    let ids = worksgood::chat::list_coordinator_ids(wg);
     assert!(
         ids.contains(&3),
         "Restored coordinator should be visible again"

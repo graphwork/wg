@@ -2,7 +2,7 @@
 // callers (like `wg nex`'s terminal surface) can share the parser.
 // Re-export here so existing `crate::tui::markdown::...` call
 // sites keep working.
-pub use workgraph::markdown;
-pub use workgraph::syntect_convert;
+pub use worksgood::markdown;
+pub use worksgood::syntect_convert;
 pub mod pty_pane;
 pub mod viz_viewer;

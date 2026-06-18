@@ -2,8 +2,8 @@ use anyhow::Result;
 use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
-use workgraph::config::Config;
-use workgraph::service::{
+use worksgood::config::Config;
+use worksgood::service::{
     ProviderErrorKind, ProviderHealth, ProviderHealthStatus, classify_error, extract_provider_id,
 };
 

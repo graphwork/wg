@@ -16,7 +16,7 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::path::{Path, PathBuf};
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 mod cli;
 mod commands;
@@ -389,8 +389,8 @@ mod resolver_tests {
 
 /// Print custom help output with usage-based ordering
 fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
-    use workgraph::config::Config;
-    use workgraph::usage::{self, MAX_HELP_COMMANDS};
+    use worksgood::config::Config;
+    use worksgood::usage::{self, MAX_HELP_COMMANDS};
 
     // Get subcommand definitions from clap
     let cmd = Cli::command();
@@ -528,7 +528,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
 
 /// Print commands using the curated default ordering, with remaining commands shown alphabetically.
 fn print_curated_help(subcommands: &[(String, String)], show_all: bool) {
-    use workgraph::usage::{self, MAX_HELP_COMMANDS};
+    use worksgood::usage::{self, MAX_HELP_COMMANDS};
 
     let mut shown = std::collections::HashSet::new();
     let mut count = 0;
@@ -764,15 +764,15 @@ fn main() -> Result<()> {
     // is intentionally write-free, including command telemetry in the target WG dir.
     let skip_usage_log = matches!(&command, Commands::Upgrade { dry_run: true, .. });
     if !skip_usage_log {
-        workgraph::usage::append_usage_log(&workgraph_dir, command_name(&command));
+        worksgood::usage::append_usage_log(&workgraph_dir, command_name(&command));
     }
 
     match command {
         Commands::Executors { all } => {
             let entries = if all {
-                workgraph::executor_discovery::discover()
+                worksgood::executor_discovery::discover()
             } else {
-                workgraph::executor_discovery::available()
+                worksgood::executor_discovery::available()
             };
             for e in &entries {
                 let status = if e.available {
@@ -1229,9 +1229,20 @@ fn main() -> Result<()> {
         Commands::Unclaim { id } => commands::claim::unclaim(&workgraph_dir, &id),
         Commands::Pause { id } => commands::pause::run(&workgraph_dir, &id),
         Commands::Resume { id, only } => commands::resume::run(&workgraph_dir, &id, only),
-        Commands::Publish { id, only, wcc } => {
-            commands::resume::publish(&workgraph_dir, &id, only, wcc)
-        }
+        Commands::Publish {
+            id,
+            only,
+            wcc,
+            profile,
+            no_release,
+        } => commands::resume::publish(
+            &workgraph_dir,
+            &id,
+            only,
+            wcc,
+            profile.as_deref(),
+            no_release,
+        ),
         Commands::Wait {
             id,
             until,
@@ -2914,7 +2925,7 @@ fn main() -> Result<()> {
                 let show_all_tasks = !public_only;
                 let include_chat = chat;
                 let all_chats = chat && all;
-                workgraph::html::run(
+                worksgood::html::run(
                     &workgraph_dir,
                     &out,
                     show_all_tasks,
@@ -3690,8 +3701,8 @@ fn main() -> Result<()> {
 }
 
 /// Parse a kebab-case failure class string from `wg fail --class`.
-fn parse_failure_class(s: &str) -> Option<workgraph::graph::FailureClass> {
-    use workgraph::graph::FailureClass;
+fn parse_failure_class(s: &str) -> Option<worksgood::graph::FailureClass> {
+    use worksgood::graph::FailureClass;
     match s.trim() {
         "api-error-400-document" => Some(FailureClass::ApiError400Document),
         "api-error-429-rate-limit" => Some(FailureClass::ApiError429RateLimit),
@@ -3708,8 +3719,8 @@ fn parse_failure_class(s: &str) -> Option<workgraph::graph::FailureClass> {
 fn parse_iteration_config(
     propagation: Option<&str>,
     retry_strategy: Option<&str>,
-) -> Option<workgraph::agency::IterationConfig> {
-    use workgraph::agency::{IterationConfig, PropagationPolicy, RetryStrategy};
+) -> Option<worksgood::agency::IterationConfig> {
+    use worksgood::agency::{IterationConfig, PropagationPolicy, RetryStrategy};
 
     let prop = propagation.map(|p| {
         let p = p.trim().to_lowercase();

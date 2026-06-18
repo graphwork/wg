@@ -4,14 +4,14 @@
 //! Any change to prompt construction fails the test until explicitly approved
 //! via `cargo insta review`.
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig, render_evaluator_prompt,
     render_identity_prompt,
 };
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
-use workgraph::context_scope::ContextScope;
-use workgraph::graph::LogEntry;
-use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::context_scope::ContextScope;
+use worksgood::graph::LogEntry;
+use worksgood::service::executor::{ScopeContext, TemplateVars, build_prompt};
 
 // ---------------------------------------------------------------------------
 // Test data builders

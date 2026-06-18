@@ -27,7 +27,7 @@ pub enum CronError {
 ///
 /// # Examples
 /// ```
-/// use workgraph::cron::parse_cron_expression;
+/// use worksgood::cron::parse_cron_expression;
 ///
 /// let schedule1 = parse_cron_expression("0 2 * * *").unwrap();    // 5-field: daily at 2 AM
 /// let schedule2 = parse_cron_expression("0 0 2 * * *").unwrap();  // 6-field: daily at 2 AM
@@ -66,7 +66,7 @@ pub fn parse_cron_expression(expr: &str) -> Result<Schedule, CronError> {
 ///
 /// # Examples
 /// ```
-/// use workgraph::cron::{parse_cron_expression, calculate_next_fire};
+/// use worksgood::cron::{parse_cron_expression, calculate_next_fire};
 /// use chrono::Utc;
 ///
 /// let schedule = parse_cron_expression("0 0 2 * * *").unwrap(); // Daily at 2 AM
@@ -194,8 +194,8 @@ pub fn reset_cron_task(task: &mut Task) -> bool {
 ///
 /// # Examples
 /// ```
-/// use workgraph::cron::is_cron_due;
-/// use workgraph::graph::Task;
+/// use worksgood::cron::is_cron_due;
+/// use worksgood::graph::Task;
 /// use chrono::Utc;
 ///
 /// let task = Task {

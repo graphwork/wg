@@ -19,10 +19,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use tempfile::TempDir;
-use workgraph::executor::native::client::{ContentBlock, Role};
-use workgraph::executor::native::journal::{Journal, JournalEntryKind};
-use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
-use workgraph::executor::native::tools::truncate_output;
+use worksgood::executor::native::client::{ContentBlock, Role};
+use worksgood::executor::native::journal::{Journal, JournalEntryKind};
+use worksgood::executor::native::resume::{ResumeConfig, load_resume_data};
+use worksgood::executor::native::tools::truncate_output;
 
 // ---------------------------------------------------------------------------
 // Helpers

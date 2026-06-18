@@ -675,9 +675,30 @@ owners = [
     "polish-nex-queued",
     "tune-nex-follow",
     "add-compact-nex",
+    "fix-nex-chat-2",
+    "show-live-thinking",
+    "fix-nex-working",
     "smoke-gate-is",
 ]
-description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts normal follow-up prompts stay plain `>`, compact working indicators appear only while busy with safe no-color fallback, a bash tool call does not get preceded by misleading prompt text, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
+description = "Drives standalone `nex` and `wg nex` through a real PTY with terminal echo disabled against a local OpenAI-compatible server. Asserts idle follow-up prompts render as `> `, the compact working indicator swaps IN PLACE of the `>` glyph (`↯ ` / no-color `* `, same width + trailing space) only while busy with safe no-color fallback, the live `thinking… N tokens` status hint appears while streaming with a climbing token count and clears cleanly at idle (suppressed on dumb terminals), a bash tool call does not get preceded by misleading prompt text, and queued input typed while streaming is visibly marked, delivered once, and associated with its assistant turn."
+timeout_seconds = 120
+
+[[scenario]]
+name = "nex_think_collapse_pty"
+script = "scenarios/nex_think_collapse_pty.sh"
+owners = [
+    "collapse-toggle-think",
+]
+description = "Drives `nex` and `wg nex` through a real PTY against a local mock OpenAI-compatible server that streams a reasoning `<think>…</think>` block (both tags fragmented across SSE deltas, Qwen3/DeepSeek-style) then the answer. Asserts: DEFAULT collapses reasoning — raw `<think>` content and tags never reach the terminal, the answer is shown clean, and a one-line `✓ thought for N tokens` marker appears; the `/think on` REPL command flips display so the next turn reveals raw reasoning verbatim; and `WG_NEX_THINK=1` reveals raw reasoning on the first turn (the documented env default)."
+timeout_seconds = 120
+
+[[scenario]]
+name = "nex_progressive_markdown_pty"
+script = "scenarios/nex_progressive_markdown_pty.sh"
+owners = [
+    "progressive-streaming-markdown",
+]
+description = "Drives standalone `nex` through a real PTY against a local mock OpenAI-compatible server that streams a MARKDOWN answer whose tokens are fragmented across SSE deltas (heading split mid-word, `**bold**` and an inline `code` span split across deltas, a ```python fence whose marker is split, and a bullet list). Asserts the user-visible behavior of progressive-streaming-markdown: on the TTY direct path (WG_NEX_LIVE_INPUT=0, color on) the answer renders as styled markdown — a tiny VT100 emulator reconstructs the FINAL screen and confirms heading/bold/inline-code/list/`│` code-bar render formatted, the raw `#`/`**`/backtick punctuation is consumed, ANSI styling is present, and the in-place erase control (ESC[0J) appears (proof the render is progressive, not buffer-then-print); and on the PLAIN fallback (stderr piped, non-tty) the SAME answer streams as RAW markdown — punctuation preserved verbatim and none of the renderer's `•`/`│` glyphs appear. Unit + virtual-terminal coverage (BlockSplitter chunking-invariance + CursorRenderer no-garble == one-shot render) lives in src/executor/native/streaming_markdown.rs."
 timeout_seconds = 120
 
 [[scenario]]
@@ -1335,6 +1356,15 @@ description = "Pins fix-nex-agent: real `wg nex --eval-mode` CLI invocations aga
 timeout_seconds = 60
 
 [[scenario]]
+name = "nex_minimal_tools_auto_default"
+script = "scenarios/nex_minimal_tools_auto_default.sh"
+owners = [
+    "wg-nex-probe",
+]
+description = "Pins wg-nex-probe: against a fake OAI-compatible endpoint advertising a small context window (n_ctx=8192 <= 32k threshold), `wg nex` with no tool flag auto-enables the lean tool surface (no web_fetch/web_search), --full-tools forces the full surface despite the small window, --minimal-tools forces lean, and a non-eval interactive run prints the discoverability banner on stderr naming `/tools full`."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_new_chat_focus_sticks"
 script = "scenarios/tui_new_chat_focus_sticks.sh"
 owners = [
@@ -1378,3 +1408,30 @@ owners = [
 ]
 description = "Pins fix-nex-chat23-eof-resume: a Nex/OpenRouter chat (blank endpoint → OpenRouter default) created against an isolated daemon must come up with a LIVE inbox-driven handler and stay alive — no session_end reason=eof at turns=0 from a stale .handler.release-requested marker. `wg chat show` and `wg session status` must agree on the live handler, and `wg chat resume <id>` must succeed from saved executor/model metadata without the internal 'at least one of --executor or --model' error. Credential-free: the inbox handler blocks without calling the model."
 timeout_seconds = 90
+
+[[scenario]]
+name = "publish_profile_propagates_wcc"
+script = "scenarios/publish_profile_propagates_wcc.sh"
+owners = [
+    "implement-wg-publish",
+]
+description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
+timeout_seconds = 60
+
+[[scenario]]
+name = "nex_resume_hint_on_exit"
+script = "scenarios/nex_resume_hint_on_exit.sh"
+owners = [
+    "print-resume-command",
+]
+description = "Pins print-resume-command: on a clean INTERACTIVE exit (Ctrl-D/EOF, /quit), `wg nex` prints a one-line `Resume this session with:  wg nex --resume <id>` hint using the REAL resolved session id — proven real by copy-pasting it back and asserting the resume lands in the SAME conversation.jsonl (both turns present). Chat-bound sessions (--chat) exited via `wg session release` print the chat-aware `wg nex --chat <ref> --resume` form instead. Non-interactive contracts stay clean: piped/non-tty output and --eval-mode (stdout JSON summary intact) never emit the banner. Live PTY human-flow harness against a local fake OpenAI server; credential-free."
+timeout_seconds = 120
+
+[[scenario]]
+name = "nex_yolo_banner_and_precedence"
+script = "scenarios/nex_yolo_banner_and_precedence.sh"
+owners = [
+    "add-yolo-mode",
+]
+description = "Pins add-yolo-mode: `wg nex --yolo` prints a loud 'YOLO MODE' startup banner announcing the workspace write sandbox is disabled (write_file/edit_file may write outside cwd, no confirmation), and the --yolo + --read-only conflict resolves in favor of read-only (warning 'read-only wins', 'yolo mode is OFF', active YOLO banner suppressed, read-only banner shown). Credential-free: the banner is emitted before any model round-trip, so a bogus endpoint suffices."
+timeout_seconds = 60

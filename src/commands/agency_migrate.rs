@@ -3,14 +3,14 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use workgraph::agency::{
+use worksgood::agency::{
     self, AccessControl, Agent, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
     PerformanceRecord, Role, RoleComponent, TradeoffConfig, content_hash_agent,
     content_hash_component, content_hash_outcome, content_hash_role, content_hash_tradeoff,
     load_all_agents, load_all_components, load_all_outcomes, load_all_roles, load_all_tradeoffs,
     save_agent, save_component, save_outcome, save_role, save_tradeoff, short_hash,
 };
-use workgraph::graph::TrustLevel;
+use worksgood::graph::TrustLevel;
 
 const HASH_CUTOVER_SCHEMA_VERSION: &str = "agency-hash-v1.2.4-description-only";
 

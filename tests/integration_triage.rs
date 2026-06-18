@@ -11,9 +11,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
-use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks;
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::ready_tasks;
 
 fn make_task(id: &str, title: &str) -> Task {
     Task {
@@ -331,7 +331,7 @@ fn test_triage_count_resets_on_cycle_reactivation() {
     task_c.status = Status::Done;
     task_c.triage_count = 2;
     task_c.after = vec!["task-d".to_string()]; // back-edge: c depends on d
-    task_c.cycle_config = Some(workgraph::graph::CycleConfig {
+    task_c.cycle_config = Some(worksgood::graph::CycleConfig {
         max_iterations: 3,
         guard: None,
         delay: None,
@@ -354,7 +354,7 @@ fn test_triage_count_resets_on_cycle_reactivation() {
     // Evaluate cycles
     let mut graph = load_graph(&path).unwrap();
     let cycle_analysis = graph.compute_cycle_analysis();
-    workgraph::graph::evaluate_all_cycle_iterations(&mut graph, &cycle_analysis);
+    worksgood::graph::evaluate_all_cycle_iterations(&mut graph, &cycle_analysis);
 
     // triage_count should be reset to 0
     assert_eq!(graph.get_task("task-c").unwrap().triage_count, 0);

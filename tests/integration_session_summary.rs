@@ -4,15 +4,15 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::{AgentLoop, DEFAULT_SUMMARY_INTERVAL_TURNS};
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::{AgentLoop, DEFAULT_SUMMARY_INTERVAL_TURNS};
+use worksgood::executor::native::client::{
     ContentBlock, Message, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
 };
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::resume::{
     extract_session_summary, load_session_summary, store_session_summary,
 };
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::tools::ToolRegistry;
 
 /// A mock provider that returns a configurable sequence of responses.
 struct MockProvider {

@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::graph::Status;
-use workgraph::parser::modify_graph;
+use worksgood::graph::Status;
+use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
@@ -21,7 +21,7 @@ const INTERNAL_PREFIXES: &[&str] = &[
 /// For done tasks, uses completed_at. For failed/abandoned, uses the last log
 /// entry timestamp (which is when fail/abandon was called), then falls back to
 /// started_at, then created_at.
-fn terminal_timestamp(task: &workgraph::graph::Task) -> Option<DateTime<chrono::FixedOffset>> {
+fn terminal_timestamp(task: &worksgood::graph::Task) -> Option<DateTime<chrono::FixedOffset>> {
     // Done tasks have completed_at set by the done command
     if let Some(ref s) = task.completed_at
         && let Ok(ts) = DateTime::parse_from_rfc3339(s)
@@ -40,7 +40,7 @@ fn terminal_timestamp(task: &workgraph::graph::Task) -> Option<DateTime<chrono::
 }
 
 /// Check if a task is old enough to gc based on the --older filter.
-fn is_old_enough(task: &workgraph::graph::Task, min_age: &chrono::Duration) -> bool {
+fn is_old_enough(task: &worksgood::graph::Task, min_age: &chrono::Duration) -> bool {
     if let Some(ts) = terminal_timestamp(task) {
         let age = Utc::now().signed_duration_since(ts);
         age > *min_age
@@ -242,8 +242,8 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "gc",
         None,
@@ -265,15 +265,15 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use tempfile::tempdir;
-    use workgraph::graph::{LogEntry, Node, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{LogEntry, Node, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
-    fn make_task(id: &str, title: &str, status: Status) -> workgraph::graph::Task {
-        workgraph::graph::Task {
+    fn make_task(id: &str, title: &str, status: Status) -> worksgood::graph::Task {
+        worksgood::graph::Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         }
     }
 
@@ -282,13 +282,13 @@ mod tests {
         title: &str,
         status: Status,
         completed_at: Option<&str>,
-    ) -> workgraph::graph::Task {
-        workgraph::graph::Task {
+    ) -> worksgood::graph::Task {
+        worksgood::graph::Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
             completed_at: completed_at.map(String::from),
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         }
     }
 
@@ -297,13 +297,13 @@ mod tests {
         title: &str,
         status: Status,
         after: Vec<&str>,
-    ) -> workgraph::graph::Task {
-        workgraph::graph::Task {
+    ) -> worksgood::graph::Task {
+        worksgood::graph::Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
             after: after.into_iter().map(String::from).collect(),
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         }
     }
 
@@ -313,18 +313,18 @@ mod tests {
         status: Status,
         after: Vec<&str>,
         completed_at: Option<&str>,
-    ) -> workgraph::graph::Task {
-        workgraph::graph::Task {
+    ) -> worksgood::graph::Task {
+        worksgood::graph::Task {
             id: id.to_string(),
             title: title.to_string(),
             status,
             after: after.into_iter().map(String::from).collect(),
             completed_at: completed_at.map(String::from),
-            ..workgraph::graph::Task::default()
+            ..worksgood::graph::Task::default()
         }
     }
 
-    fn setup_graph(dir: &Path, tasks: Vec<workgraph::graph::Task>) {
+    fn setup_graph(dir: &Path, tasks: Vec<worksgood::graph::Task>) {
         std::fs::create_dir_all(dir).unwrap();
         let graph_file = dir.join("graph.jsonl");
         let mut graph = WorkGraph::new();
@@ -676,7 +676,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: old,
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Task marked as failed".to_string(),
         });
         setup_graph(wg_dir, vec![task]);
@@ -699,7 +699,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: recent,
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Task marked as failed".to_string(),
         });
         setup_graph(wg_dir, vec![task]);

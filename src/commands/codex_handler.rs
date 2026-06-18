@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use workgraph::chat;
-use workgraph::session_lock::{HandlerKind, SessionLock};
+use worksgood::chat;
+use worksgood::session_lock::{HandlerKind, SessionLock};
 
 const INBOX_POLL: Duration = Duration::from_millis(200);
 
@@ -47,7 +47,7 @@ pub fn run(
 
     // Route through the session registry so aliases resolve to the
     // UUID-backed storage dir — see `chat::chat_dir_for_ref`.
-    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 
@@ -405,7 +405,7 @@ fn run_codex_turn(
     }
 
     if let Some(m) = model {
-        let spec = workgraph::config::parse_model_spec(m);
+        let spec = worksgood::config::parse_model_spec(m);
         cmd.arg("--model").arg(&spec.model_id);
     }
     cmd.current_dir(workgraph_dir.parent().unwrap_or(workgraph_dir));

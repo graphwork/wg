@@ -8,9 +8,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use workgraph::notify::NotificationChannel;
-use workgraph::notify::config::NotifyConfig;
-use workgraph::notify::telegram::{TelegramChannel, TelegramConfig};
+use worksgood::notify::NotificationChannel;
+use worksgood::notify::config::NotifyConfig;
+use worksgood::notify::telegram::{TelegramChannel, TelegramConfig};
 
 /// Run the Telegram listener.
 ///
@@ -43,7 +43,7 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
         let workgraph_dir = dir.to_path_buf();
         while let Some(msg) = rx.recv().await {
             // Try to parse as a command
-            if let Some(cmd) = workgraph::telegram_commands::parse(&msg.body) {
+            if let Some(cmd) = worksgood::telegram_commands::parse(&msg.body) {
                 println!(
                     "[{}] Command from {}: {}",
                     chrono::Utc::now().format("%H:%M:%S"),
@@ -52,7 +52,7 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
                 );
 
                 let response =
-                    workgraph::telegram_commands::execute(&workgraph_dir, &cmd, &msg.sender);
+                    worksgood::telegram_commands::execute(&workgraph_dir, &cmd, &msg.sender);
 
                 // Send response back
                 if let Err(e) = channel.send_text(&effective_chat_id, &response).await {
@@ -156,14 +156,14 @@ fn handle_action(workgraph_dir: &Path, action_id: &str, sender: &str) -> String 
     let (action, task_id) = (parts[0], parts[1]);
     match action {
         "approve" | "claim" => {
-            workgraph::matrix_commands::execute_claim(workgraph_dir, task_id, Some(sender))
+            worksgood::matrix_commands::execute_claim(workgraph_dir, task_id, Some(sender))
         }
-        "reject" | "fail" => workgraph::matrix_commands::execute_fail(
+        "reject" | "fail" => worksgood::matrix_commands::execute_fail(
             workgraph_dir,
             task_id,
             Some("rejected via Telegram"),
         ),
-        "done" => workgraph::matrix_commands::execute_done(workgraph_dir, task_id),
+        "done" => worksgood::matrix_commands::execute_done(workgraph_dir, task_id),
         _ => format!("Unknown action: {action}"),
     }
 }
@@ -312,7 +312,7 @@ async fn poll_once(
     offset: i64,
     target_chat_id: &str,
     timeout: u32,
-) -> Result<Option<(workgraph::notify::IncomingMessage, i64)>> {
+) -> Result<Option<(worksgood::notify::IncomingMessage, i64)>> {
     let body = serde_json::json!({
         "offset": offset,
         "timeout": timeout,
@@ -365,9 +365,9 @@ async fn poll_once(
                     .get("message")
                     .and_then(|m| m.get("message_id"))
                     .and_then(|m| m.as_i64())
-                    .map(|mid| workgraph::notify::MessageId(mid.to_string()));
+                    .map(|mid| worksgood::notify::MessageId(mid.to_string()));
 
-                let msg = workgraph::notify::IncomingMessage {
+                let msg = worksgood::notify::IncomingMessage {
                     channel: "telegram".to_string(),
                     sender: sender.to_string(),
                     body: action_id.clone(),
@@ -404,9 +404,9 @@ async fn poll_once(
                     .get("reply_to_message")
                     .and_then(|r| r.get("message_id"))
                     .and_then(|m| m.as_i64())
-                    .map(|mid| workgraph::notify::MessageId(mid.to_string()));
+                    .map(|mid| worksgood::notify::MessageId(mid.to_string()));
 
-                let msg = workgraph::notify::IncomingMessage {
+                let msg = worksgood::notify::IncomingMessage {
                     channel: "telegram".to_string(),
                     sender: sender.to_string(),
                     body,

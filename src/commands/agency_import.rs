@@ -2,11 +2,11 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
-use workgraph::agency::{
+use worksgood::agency::{
     self, AccessControl, AccessPolicy, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
     PerformanceRecord, RoleComponent, TradeoffConfig,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 /// Counts of primitives imported from a CSV file.
 #[derive(Debug, Clone, Default)]
@@ -569,17 +569,17 @@ fn read_existing_name_scope(kind: &str, path: &Path) -> (Option<String>, Option<
     };
     match kind {
         "component" => {
-            if let Ok(c) = serde_yaml::from_str::<workgraph::agency::RoleComponent>(&text) {
+            if let Ok(c) = serde_yaml::from_str::<worksgood::agency::RoleComponent>(&text) {
                 return (Some(c.name), c.scope);
             }
         }
         "outcome" => {
-            if let Ok(o) = serde_yaml::from_str::<workgraph::agency::DesiredOutcome>(&text) {
+            if let Ok(o) = serde_yaml::from_str::<worksgood::agency::DesiredOutcome>(&text) {
                 return (Some(o.name), o.scope);
             }
         }
         "tradeoff" => {
-            if let Ok(t) = serde_yaml::from_str::<workgraph::agency::TradeoffConfig>(&text) {
+            if let Ok(t) = serde_yaml::from_str::<worksgood::agency::TradeoffConfig>(&text) {
                 return (Some(t.name), t.scope);
             }
         }

@@ -1,5 +1,5 @@
 [package]
-name = "workgraph"
+name = "worksgood"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight wg coordination graph for humans and AI agents"
@@ -122,4 +122,4 @@ libc = "0.2"
 tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
-workgraph = { path = ".", features = ["test-support"] }
+worksgood = { path = ".", features = ["test-support"] }

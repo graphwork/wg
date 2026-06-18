@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::provenance::{self, OperationEntry};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::provenance::{self, OperationEntry};
 
 // ---------------------------------------------------------------------------
 // Helpers

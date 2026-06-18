@@ -2,11 +2,11 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::config::Config;
-use workgraph::dispatch::ExecutorKind;
-use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
-use workgraph::profile;
-use workgraph::profile::named as named_profile;
+use worksgood::config::Config;
+use worksgood::dispatch::ExecutorKind;
+use worksgood::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
+use worksgood::profile;
+use worksgood::profile::named as named_profile;
 
 struct ProfileUseTarget {
     profile_name: String,
@@ -41,7 +41,7 @@ fn parse_profile_use_target(name: &str) -> Result<ProfileUseTarget> {
         }
     }
 
-    let spec = workgraph::config::parse_model_spec_strict(name).map_err(|e| {
+    let spec = worksgood::config::parse_model_spec_strict(name).map_err(|e| {
         anyhow::anyhow!(
             "Profile '{}' was parsed as a model-qualified profile activation, but the model spec is invalid: {}",
             name,
@@ -739,10 +739,10 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     let prof = named_profile::load(profile_name)?;
 
     // Pre-flight: check that any api_key_ref in the profile's endpoints are reachable.
-    let secrets_cfg = workgraph::secret::SecretsConfig::load_global();
+    let secrets_cfg = worksgood::secret::SecretsConfig::load_global();
     for ep in &prof.config.llm_endpoints.endpoints {
         if let Some(ref r) = ep.api_key_ref {
-            match workgraph::secret::check_ref_reachable(r, &secrets_cfg) {
+            match worksgood::secret::check_ref_reachable(r, &secrets_cfg) {
                 Ok(true) => {}
                 Ok(false) => {
                     let hint = if let Some(n) = r.strip_prefix("keyring:") {
@@ -826,7 +826,7 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
 fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::{self, ServiceState};
-    use workgraph::service::is_process_alive;
+    use worksgood::service::is_process_alive;
 
     let running = match ServiceState::load(dir) {
         Ok(Some(state)) => is_process_alive(state.pid),

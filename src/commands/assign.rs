@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::agency;
-use workgraph::agency::composition_rules::{
+use worksgood::agency;
+use worksgood::agency::composition_rules::{
     CompositionRulesOverlay, default_overlay_path, load_composition_rules,
 };
-use workgraph::config::Config;
-use workgraph::parser::{load_graph, modify_graph};
+use worksgood::config::Config;
+use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;
 
@@ -344,7 +344,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
 
     // Record operation
     let config = Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "assign",
         Some(task_id),
@@ -445,8 +445,8 @@ fn run_clear(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "assign",
         Some(task_id),
@@ -486,9 +486,9 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::agency::{Lineage, PerformanceRecord};
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::agency::{Lineage, PerformanceRecord};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

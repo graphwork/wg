@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::graph::CycleAnalysis;
+use worksgood::graph::CycleAnalysis;
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
@@ -15,7 +15,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_json(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) -> Result<()> {
+fn print_json(analysis: &CycleAnalysis, graph: &worksgood::graph::WorkGraph) -> Result<()> {
     let cycles_output: Vec<_> = analysis
         .cycles
         .iter()
@@ -58,7 +58,7 @@ fn print_json(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) -> 
     Ok(())
 }
 
-fn print_human(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) {
+fn print_human(analysis: &CycleAnalysis, graph: &worksgood::graph::WorkGraph) {
     if analysis.cycles.is_empty() {
         println!("No cycles detected in after edges.");
         return;
@@ -135,8 +135,8 @@ fn print_human(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

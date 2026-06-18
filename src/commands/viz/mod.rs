@@ -5,8 +5,8 @@ mod graph;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_live_cached};
-use workgraph::messages::message_stats_pair_cached;
+use worksgood::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_live_cached};
+use worksgood::messages::message_stats_pair_cached;
 
 // Re-export public API
 pub use graph::{generate_graph, generate_graph_with_overrides};
@@ -163,7 +163,7 @@ fn is_internal_task(task: &Task) -> bool {
     }) {
         return false;
     }
-    workgraph::graph::is_system_task(&task.id)
+    worksgood::graph::is_system_task(&task.id)
         || task
             .tags
             .iter()
@@ -185,7 +185,7 @@ pub(crate) fn is_chat_agent_task(task: &Task) -> bool {
 
 /// Returns true if the task is a legacy coordinator (`.coordinator-N` prefix).
 pub(crate) fn is_legacy_coordinator_task(task: &Task) -> bool {
-    workgraph::chat_id::is_legacy_coordinator_id(&task.id)
+    worksgood::chat_id::is_legacy_coordinator_id(&task.id)
 }
 
 /// Returns true if a pipeline task is actively running (not just existing/pending).
@@ -604,10 +604,10 @@ pub fn generate_viz_output_from_graph(
         for task in &tasks_to_show {
             for dep in &task.after {
                 if let Some((peer_name, remote_task_id)) =
-                    workgraph::federation::parse_remote_ref(dep)
+                    worksgood::federation::parse_remote_ref(dep)
                     && seen.insert(dep.clone())
                 {
-                    let remote = workgraph::federation::resolve_remote_task_status(
+                    let remote = worksgood::federation::resolve_remote_task_status(
                         peer_name,
                         remote_task_id,
                         dir,
@@ -740,8 +740,8 @@ pub fn generate_viz_output_from_graph(
     // over each task's `messages/<task>.jsonl` file. The combined function
     // halves disk-I/O vs the previous double-read pattern, and the (path,
     // mtime, assigned_agent) cache makes a no-op refresh free.
-    let mut message_stats: HashMap<String, workgraph::messages::MessageStats> = HashMap::new();
-    let mut coordinator_status: HashMap<String, workgraph::messages::CoordinatorMessageStatus> =
+    let mut message_stats: HashMap<String, worksgood::messages::MessageStats> = HashMap::new();
+    let mut coordinator_status: HashMap<String, worksgood::messages::CoordinatorMessageStatus> =
         HashMap::new();
     for t in &tasks_to_show {
         let (stats, coord) = message_stats_pair_cached(dir, &t.id, t.assigned.as_deref());
@@ -993,8 +993,8 @@ fn calc_longest_path<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::format_hours;
-    use workgraph::graph::{Estimate, Node, Task};
+    use worksgood::format_hours;
+    use worksgood::graph::{Estimate, Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -1304,7 +1304,7 @@ mod tests {
     fn test_coordinator_task_not_internal() {
         // Coordinator tasks (tagged coordinator-loop) should NOT be filtered as internal,
         // even though they have system task IDs (starting with '.').
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
         let coordinator = Task {
             id: ".coordinator".to_string(),
             title: "Coordinator".to_string(),
@@ -1386,7 +1386,7 @@ mod tests {
     #[test]
     fn test_coordinator_visible_in_filter() {
         // Coordinator tasks should pass through filter_internal_tasks
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
         let mut graph = WorkGraph::new();
 
         let coordinator = Task {

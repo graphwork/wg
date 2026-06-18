@@ -4,11 +4,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, Evaluation, Role, TradeoffConfig, render_identity_prompt_rich, resolve_all_components,
     resolve_outcome,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 use super::strategy::Strategy;
 

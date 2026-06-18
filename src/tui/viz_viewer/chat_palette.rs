@@ -94,7 +94,7 @@ pub fn attachment_style() -> Style {
 /// - `.chat-N` (current) → use `state_color` as-is (caller supplies blue/yellow/gray/red)
 /// - `.coordinator-N` (legacy) → always muted gray, ignoring state color
 pub fn chat_task_label_color(task_id: &str, state_color: Color) -> Color {
-    if workgraph::chat_id::is_legacy_coordinator_id(task_id) {
+    if worksgood::chat_id::is_legacy_coordinator_id(task_id) {
         Color::Rgb(110, 110, 110)
     } else {
         state_color

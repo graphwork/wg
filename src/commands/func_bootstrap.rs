@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 
-use workgraph::function::{
+use worksgood::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
     PlanningConfig, StructuralConstraints, TaskTemplate, TraceFunction,
 };
@@ -206,12 +206,12 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::function;
+    use worksgood::function;
 
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, dir.join("graph.jsonl")).unwrap();
     }
 
     #[test]

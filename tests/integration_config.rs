@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::WorkGraph;
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers

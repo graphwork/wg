@@ -6,11 +6,11 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
-use workgraph::config::Config;
-use workgraph::graph::{Status, Task};
-use workgraph::parser::modify_graph;
-use workgraph::runs::{self, RunMeta};
+use worksgood::agency::{Evaluation, load_all_evaluations_or_warn};
+use worksgood::config::Config;
+use worksgood::graph::{Status, Task};
+use worksgood::parser::modify_graph;
+use worksgood::runs::{self, RunMeta};
 
 /// Options controlling which tasks to reset.
 pub struct ReplayOptions {
@@ -225,7 +225,7 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Phase 7: Record provenance
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "replay",
         None,
@@ -281,7 +281,7 @@ fn reset_task(task: &mut Task) {
 }
 
 /// Build a reverse dependency index: task_id -> list of tasks that depend on it.
-fn build_reverse_index(graph: &workgraph::graph::WorkGraph) -> HashMap<String, Vec<String>> {
+fn build_reverse_index(graph: &worksgood::graph::WorkGraph) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
     for task in graph.tasks() {
         for dep in &task.after {
@@ -305,7 +305,7 @@ fn build_score_map(evaluations: &[Evaluation]) -> HashMap<String, f64> {
 
 /// Collect all task IDs in the subgraph rooted at `root_id` (including root).
 /// Follows `blocks` edges forward (root blocks children).
-fn collect_subgraph(graph: &workgraph::graph::WorkGraph, root_id: &str) -> Result<HashSet<String>> {
+fn collect_subgraph(graph: &worksgood::graph::WorkGraph, root_id: &str) -> Result<HashSet<String>> {
     let _ = graph
         .get_task_or_err(root_id)
         .context("Subgraph root task not found")?;
@@ -356,7 +356,7 @@ fn build_filter_desc(opts: &ReplayOptions) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::test_helpers::{make_task, make_task_with_status, setup_workgraph};
+    use worksgood::test_helpers::{make_task, make_task_with_status, setup_workgraph};
 
     fn make_dir() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();

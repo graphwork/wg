@@ -5,12 +5,12 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use workgraph::current_user;
-use workgraph::graph::{
+use worksgood::current_user;
+use worksgood::graph::{
     Node, create_user_board_task, is_user_board, next_user_board_seq, resolve_user_board_alias,
     user_board_handle, user_board_seq,
 };
-use workgraph::parser::modify_graph;
+use worksgood::parser::modify_graph;
 
 /// `wg user init [NAME]` — create a user board (idempotent).
 ///
@@ -143,8 +143,8 @@ pub fn run_archive(dir: &Path, name: Option<&str>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Status, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Status, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn setup_wg_dir() -> TempDir {
         let tmp = TempDir::new().unwrap();

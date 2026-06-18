@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::commands::service::{ServiceState, is_service_alive};
-use workgraph::AgentRegistry;
+use worksgood::AgentRegistry;
 
 /// Format seconds into a compact human-readable duration.
 fn fmt_duration(secs: u64) -> String {

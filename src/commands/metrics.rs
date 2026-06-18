@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use workgraph::metrics::get_metrics_snapshot;
+use worksgood::metrics::get_metrics_snapshot;
 
 /// Run the metrics command to display cleanup monitoring statistics.
 pub fn run(_dir: &Path, json: bool) -> Result<()> {

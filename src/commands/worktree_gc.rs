@@ -19,9 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use workgraph::graph::Status;
-use workgraph::parser::load_graph;
-use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::graph::Status;
+use worksgood::parser::load_graph;
+use worksgood::service::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::graph_path;
 use super::service::worktree::{HEARTBEAT_LIVENESS_TIMEOUT_SECS, find_branch_for_worktree};
@@ -377,7 +377,7 @@ fn is_live_at(agent: &AgentEntry, now_secs: u64, heartbeat_timeout_secs: u64) ->
     if !agent.is_alive() {
         return false;
     }
-    if !workgraph::service::is_process_alive(agent.pid) {
+    if !worksgood::service::is_process_alive(agent.pid) {
         return false;
     }
     let last = match chrono::DateTime::parse_from_rfc3339(&agent.last_heartbeat) {
@@ -394,9 +394,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::service::{AgentEntry, AgentRegistry, AgentStatus};
 
     /// Build a fixture: project root with `.wg/` + `.wg-worktrees/`.
     /// Returns (workgraph_dir, project_root, worktrees_dir).

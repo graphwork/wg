@@ -15,10 +15,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashSet;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
-use workgraph::query::build_reverse_index;
-use workgraph::service::{AgentRegistry, AgentStatus};
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
+use worksgood::query::build_reverse_index;
+use worksgood::service::{AgentRegistry, AgentStatus};
 
 use super::{collect_transitive_dependents, graph_path, kill_process_force, kill_process_graceful};
 
@@ -348,7 +348,7 @@ pub fn run_tree(
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: None,
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Tree-killed: abandoned as part of cascade from '{}'",
                             task_id
@@ -430,7 +430,7 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!(
                         "Agent '{}' killed — task auto-paused (use 'wg resume' to re-enable dispatch)",
                         agent_id
@@ -440,7 +440,7 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!("Task unclaimed: agent '{}' was killed (--redispatch)", agent_id),
                 });
             }
@@ -459,9 +459,9 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
-    use workgraph::service::is_process_alive;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
+    use worksgood::service::is_process_alive;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

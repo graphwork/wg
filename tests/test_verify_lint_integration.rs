@@ -4,20 +4,20 @@
 #[test]
 fn test_verify() {
     // Test auto-correction functionality
-    let corrected = workgraph::verify_lint::auto_correct_verify_command("cargo test passes");
+    let corrected = worksgood::verify_lint::auto_correct_verify_command("cargo test passes");
     assert_eq!(corrected, Some("cargo test".to_string()));
 
     // Test other malformed commands
     let corrected2 =
-        workgraph::verify_lint::auto_correct_verify_command("cargo build succeeds without errors");
+        worksgood::verify_lint::auto_correct_verify_command("cargo build succeeds without errors");
     assert_eq!(corrected2, Some("cargo build".to_string()));
 
     // Test valid commands are left unchanged
-    let unchanged = workgraph::verify_lint::auto_correct_verify_command("cargo test");
+    let unchanged = worksgood::verify_lint::auto_correct_verify_command("cargo test");
     assert_eq!(unchanged, None);
 
     let unchanged2 =
-        workgraph::verify_lint::auto_correct_verify_command("cargo test specific_test");
+        worksgood::verify_lint::auto_correct_verify_command("cargo test specific_test");
     assert_eq!(unchanged2, None);
 }
 
@@ -41,7 +41,7 @@ fn test_verify_pattern_stripping() {
     ];
 
     for (input, expected) in test_cases {
-        let result = workgraph::verify_lint::auto_correct_verify_command(input);
+        let result = worksgood::verify_lint::auto_correct_verify_command(input);
         assert_eq!(
             result,
             expected.map(String::from),
@@ -54,7 +54,7 @@ fn test_verify_pattern_stripping() {
 /// Test bash syntax validation
 #[test]
 fn test_verify_bash_syntax_validation() {
-    use workgraph::verify_lint::auto_correct_verify_command;
+    use worksgood::verify_lint::auto_correct_verify_command;
 
     // These should be detected as syntax errors and potentially corrected
     let syntax_error_cases = vec![

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::agency;
-use workgraph::graph::TrustLevel;
+use worksgood::agency;
+use worksgood::graph::TrustLevel;
 
 /// Match result for an agent
 #[derive(Debug, Serialize)]
@@ -52,7 +52,7 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
             // Check if agent is currently working on something
             let available = !graph.tasks().any(|t| {
                 t.agent.as_ref() == Some(&agent.id)
-                    && t.status == workgraph::graph::Status::InProgress
+                    && t.status == worksgood::graph::Status::InProgress
             });
 
             MatchResult {
@@ -140,9 +140,9 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::{Agent, Lineage, PerformanceRecord};
-    use workgraph::graph::{Node, Task, TrustLevel, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::agency::{Agent, Lineage, PerformanceRecord};
+    use worksgood::graph::{Node, Task, TrustLevel, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

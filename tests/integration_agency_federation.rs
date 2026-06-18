@@ -8,15 +8,15 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, AgencyStore, Agent, Evaluation, EvaluationRef, Lineage, LocalStore, PerformanceRecord,
     Role, TradeoffConfig,
 };
-use workgraph::config::CLAUDE_OPUS_MODEL_ID;
-use workgraph::federation::{
+use worksgood::config::CLAUDE_OPUS_MODEL_ID;
+use worksgood::federation::{
     self, EntityFilter, FederationConfig, Remote, TransferOptions, TransferSummary,
 };
-use workgraph::graph::TrustLevel;
+use worksgood::graph::TrustLevel;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,7 +57,7 @@ fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
         unacceptable_tradeoffs: Vec::new(),
         performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
-        access_control: workgraph::agency::AccessControl::default(),
+        access_control: worksgood::agency::AccessControl::default(),
         domain_tags: vec![],
         metadata: std::collections::HashMap::new(),
         former_agents: vec![],

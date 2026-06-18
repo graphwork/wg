@@ -14,13 +14,13 @@ use async_trait::async_trait;
 use tempfile::TempDir;
 use tokio::sync::{Notify, mpsc};
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, Role, StopReason, ToolDefinition, Usage,
 };
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::surface::{ConversationSurface, UserTurn};
-use workgraph::executor::native::tools::{Tool, ToolOutput, ToolRegistry};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::surface::{ConversationSurface, UserTurn};
+use worksgood::executor::native::tools::{Tool, ToolOutput, ToolRegistry};
 
 struct EchoProvider {
     call_count: Arc<AtomicUsize>,
@@ -183,7 +183,7 @@ async fn test_nex_interactive_tool_calling() {
     });
 
     let mut tools = ToolRegistry::new();
-    workgraph::executor::native::tools::file::register_file_tools(&mut tools);
+    worksgood::executor::native::tools::file::register_file_tools(&mut tools);
 
     let mut agent = AgentLoop::new(
         provider,
@@ -434,7 +434,7 @@ async fn test_nex_interactive_parallel_tool_calls() {
     });
 
     let mut tools = ToolRegistry::new();
-    workgraph::executor::native::tools::file::register_file_tools(&mut tools);
+    worksgood::executor::native::tools::file::register_file_tools(&mut tools);
 
     let mut agent = AgentLoop::new(
         provider,
@@ -476,10 +476,10 @@ impl QueueSurface {
 }
 
 #[async_trait]
-impl workgraph::executor::native::surface::ConversationSurface for QueueSurface {
-    async fn next_user_input(&mut self) -> Option<workgraph::executor::native::surface::UserTurn> {
+impl worksgood::executor::native::surface::ConversationSurface for QueueSurface {
+    async fn next_user_input(&mut self) -> Option<worksgood::executor::native::surface::UserTurn> {
         let msg = self.messages.lock().unwrap().pop_front()?;
-        Some(workgraph::executor::native::surface::UserTurn::plain(msg))
+        Some(worksgood::executor::native::surface::UserTurn::plain(msg))
     }
 
     fn on_turn_end(&mut self) {
@@ -566,7 +566,7 @@ async fn test_nex_two_message_roundtrip() {
                 .find_map(|m| {
                     m.content.iter().find_map(|b| match b {
                         ContentBlock::Text { text }
-                            if m.role == workgraph::executor::native::client::Role::User =>
+                            if m.role == worksgood::executor::native::client::Role::User =>
                         {
                             Some(text.clone())
                         }
@@ -576,7 +576,7 @@ async fn test_nex_two_message_roundtrip() {
                 .unwrap_or_else(|| "no input".to_string());
 
             // Verify message structure: no consecutive user messages
-            let mut prev_role: Option<workgraph::executor::native::client::Role> = None;
+            let mut prev_role: Option<worksgood::executor::native::client::Role> = None;
             for msg in &req.messages {
                 if let Some(prev) = prev_role {
                     // Consecutive user messages are invalid in OAI format.
@@ -584,13 +584,13 @@ async fn test_nex_two_message_roundtrip() {
                     // follow an assistant tool_use, but two text-only user messages
                     // back-to-back should never happen.
                     let is_tool_result = msg.role
-                        == workgraph::executor::native::client::Role::User
+                        == worksgood::executor::native::client::Role::User
                         && msg
                             .content
                             .iter()
                             .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
-                    if prev == workgraph::executor::native::client::Role::User
-                        && msg.role == workgraph::executor::native::client::Role::User
+                    if prev == worksgood::executor::native::client::Role::User
+                        && msg.role == worksgood::executor::native::client::Role::User
                         && !is_tool_result
                     {
                         return Err(anyhow::anyhow!(
@@ -698,16 +698,16 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
 
             // Validate: no consecutive user text messages
-            let mut prev_role: Option<workgraph::executor::native::client::Role> = None;
+            let mut prev_role: Option<worksgood::executor::native::client::Role> = None;
             for msg in &req.messages {
-                let is_tool_result = msg.role == workgraph::executor::native::client::Role::User
+                let is_tool_result = msg.role == worksgood::executor::native::client::Role::User
                     && msg
                         .content
                         .iter()
                         .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
                 if let Some(prev) = prev_role {
-                    if prev == workgraph::executor::native::client::Role::User
-                        && msg.role == workgraph::executor::native::client::Role::User
+                    if prev == worksgood::executor::native::client::Role::User
+                        && msg.role == worksgood::executor::native::client::Role::User
                         && !is_tool_result
                     {
                         return Err(anyhow::anyhow!(
@@ -805,7 +805,7 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
     let turns_completed = surface.turns_completed.clone();
 
     let mut tools = ToolRegistry::new();
-    workgraph::executor::native::tools::file::register_file_tools(&mut tools);
+    worksgood::executor::native::tools::file::register_file_tools(&mut tools);
 
     let mut agent = AgentLoop::new(
         provider,
@@ -1346,15 +1346,15 @@ fn start_recording_oai_stub(num_requests: usize) -> (String, Arc<std::sync::Mute
 async fn test_nex_inline_url_strips_local_provider_prefix() {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let (base_url, bodies) = start_recording_oai_stub(1);
 
     // This is exactly what `wg nex -e <url> -m local:qwen3-coder` does:
     // pass the full provider-prefixed model string and an inline URL
     // through to create_provider_ext.
-    let provider = workgraph::executor::native::provider::create_provider_ext(
+    let provider = worksgood::executor::native::provider::create_provider_ext(
         tmp.path(),
         "local:qwen3-coder",
         None,
@@ -1370,8 +1370,8 @@ async fn test_nex_inline_url_strips_local_provider_prefix() {
         model: provider.model().to_string(),
         max_tokens: 64,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],
@@ -1415,12 +1415,12 @@ async fn test_nex_inline_url_strips_local_provider_prefix() {
 async fn test_nex_inline_url_strips_oai_compat_provider_prefix() {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let (base_url, bodies) = start_recording_oai_stub(1);
 
-    let provider = workgraph::executor::native::provider::create_provider_ext(
+    let provider = worksgood::executor::native::provider::create_provider_ext(
         tmp.path(),
         "oai-compat:llama-3-70b",
         None,
@@ -1433,8 +1433,8 @@ async fn test_nex_inline_url_strips_oai_compat_provider_prefix() {
         model: provider.model().to_string(),
         max_tokens: 64,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],
@@ -1465,12 +1465,12 @@ async fn test_nex_inline_url_strips_oai_compat_provider_prefix() {
 async fn test_nex_inline_url_passes_bare_model_through() {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let (base_url, bodies) = start_recording_oai_stub(1);
 
-    let provider = workgraph::executor::native::provider::create_provider_ext(
+    let provider = worksgood::executor::native::provider::create_provider_ext(
         tmp.path(),
         "qwen3-coder-30b",
         None,
@@ -1483,8 +1483,8 @@ async fn test_nex_inline_url_passes_bare_model_through() {
         model: provider.model().to_string(),
         max_tokens: 64,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],
@@ -1628,8 +1628,8 @@ fn start_recording_oai_stub_with_paths(
 async fn test_named_endpoint_url_gets_v1_path_appended() {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let (base_url, captured) = start_recording_oai_stub_with_paths(1);
 
@@ -1650,7 +1650,7 @@ url = "{}"
     // Mirror what `wg spawn-task .coordinator-N` does: pass model only
     // (no endpoint override). The provider must be resolved via the
     // named-endpoint config we just wrote.
-    let provider = workgraph::executor::native::provider::create_provider_ext(
+    let provider = worksgood::executor::native::provider::create_provider_ext(
         tmp.path(),
         "local:qwen3-coder",
         None,
@@ -1663,8 +1663,8 @@ url = "{}"
         model: provider.model().to_string(),
         max_tokens: 64,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],
@@ -1707,8 +1707,8 @@ url = "{}"
 async fn test_named_endpoint_url_with_v1_is_not_doubled() {
     let tmp = TempDir::new().unwrap();
     let graph_path = tmp.path().join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     let (base_url, captured) = start_recording_oai_stub_with_paths(1);
 
@@ -1724,7 +1724,7 @@ url = "{}/v1"
     );
     std::fs::write(tmp.path().join("config.toml"), config_toml).unwrap();
 
-    let provider = workgraph::executor::native::provider::create_provider_ext(
+    let provider = worksgood::executor::native::provider::create_provider_ext(
         tmp.path(),
         "local:qwen3-coder",
         None,
@@ -1737,8 +1737,8 @@ url = "{}/v1"
         model: provider.model().to_string(),
         max_tokens: 64,
         system: None,
-        messages: vec![workgraph::executor::native::client::Message {
-            role: workgraph::executor::native::client::Role::User,
+        messages: vec![worksgood::executor::native::client::Message {
+            role: worksgood::executor::native::client::Role::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_string(),
             }],

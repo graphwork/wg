@@ -14,14 +14,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::openai_client::ApiError;
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{ContextBudget, ContextPressureAction};
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::openai_client::ApiError;
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::resume::{ContextBudget, ContextPressureAction};
+use worksgood::executor::native::tools::ToolRegistry;
 
 // ── Mock providers ──────────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ struct InspectingProvider {
     context_window: usize,
     call_count: Arc<AtomicUsize>,
     /// Messages seen in each call.
-    seen_messages: Arc<Mutex<Vec<Vec<workgraph::executor::native::client::Message>>>>,
+    seen_messages: Arc<Mutex<Vec<Vec<worksgood::executor::native::client::Message>>>>,
     responses: Arc<Mutex<Vec<MessagesResponse>>>,
 }
 
@@ -334,8 +334,8 @@ fn test_context_pressure_exactly_at_80_percent() {
     // Window: 1000 tokens (<64k → small tier: compact=0.65, hard=0.85).
     // 80% = 800 tokens = 3200 chars. 0.65 < 0.80 < 0.85 → EmergencyCompaction.
     let budget = ContextBudget::with_window_size(1000);
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3200), // exactly 800 tokens = 80%
         }],
@@ -351,8 +351,8 @@ fn test_context_pressure_at_79_9_percent() {
     // 79.9% should be EmergencyCompaction (above 0.65 compact threshold for small window)
     let budget = ContextBudget::with_window_size(1000);
     // 79.9% of 1000 = 799 tokens = 3196 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3196),
         }],
@@ -369,8 +369,8 @@ fn test_context_pressure_at_90_percent() {
     // 90% > 0.85 → CleanExit.
     let budget = ContextBudget::with_window_size(1000);
     // 90% = 900 tokens = 3600 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3600),
         }],
@@ -387,8 +387,8 @@ fn test_context_pressure_at_89_9_percent() {
     // 89.9% > 0.85 → CleanExit.
     let budget = ContextBudget::with_window_size(1000);
     // 89.9% of 1000 = 899 tokens = 3596 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3596),
         }],
@@ -403,8 +403,8 @@ fn test_context_pressure_at_89_9_percent() {
 fn test_context_pressure_at_95_percent() {
     let budget = ContextBudget::with_window_size(1000);
     // 95% = 950 tokens = 3800 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3800),
         }],
@@ -419,8 +419,8 @@ fn test_context_pressure_at_95_percent() {
 fn test_context_pressure_at_95_1_percent() {
     let budget = ContextBudget::with_window_size(1000);
     // 95.1% = 951 tokens = 3804 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3804),
         }],
@@ -435,8 +435,8 @@ fn test_context_pressure_at_95_1_percent() {
 fn test_context_pressure_at_100_percent() {
     let budget = ContextBudget::with_window_size(1000);
     // 100% = 1000 tokens = 4000 chars
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(4000),
         }],
@@ -450,8 +450,8 @@ fn test_context_pressure_at_100_percent() {
 #[test]
 fn test_context_pressure_well_below_thresholds() {
     let budget = ContextBudget::with_window_size(200_000);
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "hello".to_string(),
         }],
@@ -464,8 +464,8 @@ fn test_context_budget_small_window_32k() {
     // Simulate Qwen3-32B with 32K context window
     let budget = ContextBudget::with_window_size(32_000);
     // 80% of 32000 = 25600 tokens = 102400 chars (now triggers EmergencyCompaction, above 75%)
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(102_400),
         }],
@@ -479,8 +479,8 @@ fn test_context_budget_small_window_32k() {
 #[test]
 fn test_warning_message_contains_useful_info() {
     let budget = ContextBudget::with_window_size(1000);
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(3400), // 850 tokens = 85%
         }],
@@ -493,7 +493,7 @@ fn test_warning_message_contains_useful_info() {
 
 #[test]
 fn test_emergency_compact_strips_old_tool_results() {
-    use workgraph::executor::native::client::{Message, Role};
+    use worksgood::executor::native::client::{Message, Role};
 
     let messages = vec![
         // Old tool use
@@ -550,7 +550,7 @@ fn test_emergency_compact_strips_old_tool_results() {
 
 #[test]
 fn test_emergency_compact_preserves_small_tool_results() {
-    use workgraph::executor::native::client::{Message, Role};
+    use worksgood::executor::native::client::{Message, Role};
 
     let messages = vec![
         Message {
@@ -595,7 +595,7 @@ fn test_emergency_compact_preserves_small_tool_results() {
 
 #[test]
 fn test_emergency_compact_no_change_when_few_messages() {
-    use workgraph::executor::native::client::{Message, Role};
+    use worksgood::executor::native::client::{Message, Role};
 
     let messages = vec![
         Message {
@@ -618,7 +618,7 @@ fn test_emergency_compact_no_change_when_few_messages() {
 
 #[test]
 fn test_estimate_tokens_multi_content() {
-    use workgraph::executor::native::client::{Message, Role};
+    use worksgood::executor::native::client::{Message, Role};
 
     let budget = ContextBudget::with_window_size(1000);
     let msgs = vec![
@@ -832,7 +832,7 @@ async fn test_agent_loop_injects_warning_at_threshold() {
     let second_call_msgs = &seen[1];
     // Find any user message containing the context pressure warning
     let has_warning = second_call_msgs.iter().any(|m| {
-        m.role == workgraph::executor::native::client::Role::User
+        m.role == worksgood::executor::native::client::Role::User
             && m.content.iter().any(|b| match b {
                 ContentBlock::Text { text } => text.contains("CONTEXT PRESSURE"),
                 _ => false,
@@ -937,7 +937,7 @@ async fn test_agent_loop_compacts_at_90_percent() {
 
 #[test]
 fn test_is_context_too_long_413() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err: anyhow::Error = ApiError {
         status: 413,
@@ -950,7 +950,7 @@ fn test_is_context_too_long_413() {
 
 #[test]
 fn test_is_context_too_long_400_with_context_message() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err: anyhow::Error = ApiError {
         status: 400,
@@ -963,7 +963,7 @@ fn test_is_context_too_long_400_with_context_message() {
 
 #[test]
 fn test_is_context_too_long_400_with_prompt_too_long() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err: anyhow::Error = ApiError {
         status: 400,
@@ -976,7 +976,7 @@ fn test_is_context_too_long_400_with_prompt_too_long() {
 
 #[test]
 fn test_is_context_too_long_400_unrelated() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err: anyhow::Error = ApiError {
         status: 400,
@@ -989,7 +989,7 @@ fn test_is_context_too_long_400_unrelated() {
 
 #[test]
 fn test_is_context_too_long_401() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err: anyhow::Error = ApiError {
         status: 401,
@@ -1002,7 +1002,7 @@ fn test_is_context_too_long_401() {
 
 #[test]
 fn test_is_context_too_long_non_api_error() {
-    use workgraph::executor::native::openai_client::is_context_too_long;
+    use worksgood::executor::native::openai_client::is_context_too_long;
 
     let err = anyhow::anyhow!("network timeout");
     assert!(!is_context_too_long(&err));
@@ -1013,15 +1013,15 @@ fn test_is_context_too_long_non_api_error() {
 #[test]
 fn test_estimate_tokens_empty_messages() {
     let budget = ContextBudget::with_window_size(1000);
-    let msgs: Vec<workgraph::executor::native::client::Message> = vec![];
+    let msgs: Vec<worksgood::executor::native::client::Message> = vec![];
     assert_eq!(budget.estimate_tokens(&msgs), 0);
 }
 
 #[test]
 fn test_estimate_tokens_empty_content() {
     let budget = ContextBudget::with_window_size(1000);
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![],
     }];
     assert_eq!(budget.estimate_tokens(&msgs), 0);
@@ -1033,11 +1033,11 @@ fn test_pressure_with_multiple_small_messages() {
     let budget = ContextBudget::with_window_size(1000);
     // 20 messages of 160 chars each = 3200 chars = 800 tokens = 80% (now EmergencyCompaction, above 75%)
     let msgs: Vec<_> = (0..20)
-        .map(|i| workgraph::executor::native::client::Message {
+        .map(|i| worksgood::executor::native::client::Message {
             role: if i % 2 == 0 {
-                workgraph::executor::native::client::Role::User
+                worksgood::executor::native::client::Role::User
             } else {
-                workgraph::executor::native::client::Role::Assistant
+                worksgood::executor::native::client::Role::Assistant
             },
             content: vec![ContentBlock::Text {
                 text: "x".repeat(160),
@@ -1057,8 +1057,8 @@ fn test_no_hardcoded_context_budget() {
     let large = ContextBudget::with_window_size(200_000);
 
     // Same message should trigger different pressures on different windows
-    let msgs = vec![workgraph::executor::native::client::Message {
-        role: workgraph::executor::native::client::Role::User,
+    let msgs = vec![worksgood::executor::native::client::Message {
+        role: worksgood::executor::native::client::Role::User,
         content: vec![ContentBlock::Text {
             text: "x".repeat(120_000), // 30000 tokens
         }],

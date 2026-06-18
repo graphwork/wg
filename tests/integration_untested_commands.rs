@@ -8,8 +8,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Estimate, Node, Resource, Status, Task, WorkGraph};
-use workgraph::parser::save_graph;
+use worksgood::graph::{Estimate, Node, Resource, Status, Task, WorkGraph};
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -670,7 +670,7 @@ fn test_func_show_not_found() {
 
 fn setup_agency_store(base: &Path, name: &str) -> PathBuf {
     let store_dir = base.join(name).join("agency");
-    workgraph::agency::init(&store_dir).unwrap();
+    worksgood::agency::init(&store_dir).unwrap();
     store_dir
 }
 

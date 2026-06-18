@@ -19,6 +19,7 @@
 //! benchmark harnesses) and are documented inline. The regression lock
 //! lives in `tests/integration_handler_stdout_pristine.rs`.
 
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -61,6 +62,7 @@ pub fn run_args_with_runtime(
         args.chatty,
         args.verbose,
         args.read_only,
+        args.yolo,
         args.resume.as_deref(),
         args.role.as_deref(),
         args.chat_id,
@@ -70,6 +72,7 @@ pub fn run_args_with_runtime(
         args.eval_mode,
         args.idle_timeout_secs,
         args.minimal_tools,
+        args.full_tools,
     )
 }
 
@@ -85,6 +88,7 @@ pub fn run(
     chatty: bool,
     verbose: bool,
     read_only: bool,
+    yolo: bool,
     resume: Option<&str>,
     role: Option<&str>,
     chat_id: Option<u32>,
@@ -94,6 +98,7 @@ pub fn run(
     eval_mode: bool,
     idle_timeout_secs: Option<u64>,
     minimal_tools: bool,
+    full_tools: bool,
 ) -> Result<()> {
     let runtime = crate::nex_runtime::resolve_wg_integrated(workgraph_dir);
     run_inner(
@@ -108,6 +113,7 @@ pub fn run(
         chatty,
         verbose,
         read_only,
+        yolo,
         resume,
         role,
         chat_id,
@@ -117,6 +123,7 @@ pub fn run(
         eval_mode,
         idle_timeout_secs,
         minimal_tools,
+        full_tools,
     )
 }
 
@@ -133,6 +140,7 @@ fn run_inner(
     chatty: bool,
     verbose: bool,
     read_only: bool,
+    yolo: bool,
     resume: Option<&str>,
     role: Option<&str>,
     chat_id: Option<u32>,
@@ -142,6 +150,7 @@ fn run_inner(
     eval_mode: bool,
     idle_timeout_secs: Option<u64>,
     minimal_tools: bool,
+    full_tools: bool,
 ) -> Result<()> {
     let diagnostic_prefix = format!("[{}]", display_name);
     let state_dir = runtime.state_root.as_path();
@@ -159,6 +168,38 @@ fn run_inner(
     let autonomous = autonomous || eval_mode;
     // --minimal-tools implies --no-mcp (minimal surface excludes all MCP tools)
     let no_mcp = no_mcp || eval_mode || minimal_tools;
+
+    // --yolo: disable the workspace write sandbox so write_file/edit_file
+    // can touch paths outside the cwd subtree. Requested via the flag OR
+    // the WG_NEX_YOLO env var (1/true/yes/on). nex has no interactive
+    // approval gate to suppress — tools already run autonomously — so the
+    // only safety boundary yolo relaxes is the cwd-confinement sandbox in
+    // the file tools (bash is already unconfined).
+    //
+    // Conflict: --yolo + --read-only is contradictory. Read-only wins
+    // (the conservative choice — a request to NOT modify state must never
+    // be silently overridden by a request to modify it recklessly). We
+    // warn and ignore yolo in that case.
+    let yolo_requested = yolo || yolo_env_truthy();
+    let yolo_active = yolo_requested && !read_only;
+    if yolo_requested && read_only && !eval_mode {
+        eprintln!(
+            "\x1b[33m{} Warning: --yolo and --read-only are contradictory; read-only wins. \
+             yolo mode is OFF.\x1b[0m",
+            diagnostic_prefix
+        );
+    }
+    // Normalize WG_NEX_YOLO to a definite 1/0 so the file tools (which
+    // read this env var via `yolo_enabled()`) see exactly the effective
+    // decision — including when read-only forces yolo OFF despite a
+    // truthy env var inherited from a parent process. Mirrors the
+    // WG_STREAM_IDLE_TIMEOUT_SECS env-relay pattern below.
+    //
+    // SAFETY: single-threaded CLI setup before any threads spawn; this is
+    // process-wide config the agent loop / tools read shortly after.
+    unsafe {
+        std::env::set_var("WG_NEX_YOLO", if yolo_active { "1" } else { "0" });
+    }
 
     // Set the idle timeout via env var if provided via flag (flag takes precedence over
     // existing env var). The agent loop reads WG_STREAM_IDLE_TIMEOUT_SECS; we set it
@@ -224,26 +265,20 @@ fn run_inner(
     // registry to `AgentLoop`.
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
+    // Build the FULL registry once. The minimal tool surface is NOT
+    // applied here destructively — it is decided after the provider is
+    // created (so we can read the resolved context window) and installed
+    // as a non-destructive active-allowlist view. That keeps the surface
+    // toggleable live via `/tools` without rebuilding the registry or
+    // re-running MCP discovery. `read_only` is a separate, orthogonal
+    // safety axis (it removes mutating tools) and stays a hard filter.
     let mut registry = {
-        let mut reg = ToolRegistry::default_all_with_config_and_routing(
+        let reg = ToolRegistry::default_all_with_config_and_routing(
             state_dir,
             &working_dir,
             &config.native_executor,
             HelperRouting::new(Some(&effective_model), None, endpoint, api_key),
         );
-        if minimal_tools {
-            // Minimal tool surface: keep only the canonical local-dev set.
-            // Dramatically reduces prefill cost for small local models.
-            reg.keep_only_tools(&[
-                "read_file",
-                "edit_file",
-                "write_file",
-                "bash",
-                "grep",
-                "glob",
-                "todo_write",
-            ]);
-        }
         if read_only {
             reg.filter_read_only()
         } else {
@@ -341,14 +376,11 @@ fn run_inner(
         None
     };
 
-    let now = chrono::Local::now();
-    let default_system = build_default_system_prompt(&working_dir, now, minimal_tools);
-    let system_with_role = if let Some(ref addendum) = role_prompt_addendum {
-        format!("{}\n\n## Role\n\n{}", default_system, addendum)
-    } else {
-        default_system.clone()
-    };
-    let system = system_prompt.unwrap_or(&system_with_role);
+    // The system prompt is built later, after the provider is created and
+    // the effective tool surface (full vs minimal) is decided — the
+    // minimal-tools system-prompt variant must match the surface the model
+    // actually sees, and the surface decision depends on the resolved
+    // context window which is only known once the client exists.
 
     // Every nex session — CLI, coordinator, task-agent — lives under
     // `<wg-dir>/chat/<ref>/`. Pick the reference:
@@ -485,13 +517,54 @@ fn run_inner(
         api_key,
     )?;
 
+    // Decide the effective tool surface now that the provider has resolved
+    // the context window (explicit config > live probe > model registry >
+    // fallback). The lean surface is a CONDITIONAL, probe-driven default:
+    // auto-enabled only when no explicit flag was passed and the window is
+    // at or below the configured threshold. Explicit --minimal-tools /
+    // --full-tools always win. We install it as a non-destructive
+    // active-allowlist view so `/tools` can widen/narrow it live.
+    let resolved_ctx = client.context_window();
+    let surface = resolve_tool_surface(
+        minimal_tools,
+        full_tools,
+        resolved_ctx,
+        config.native_executor.minimal_tools_context_threshold,
+    );
+    if surface.minimal {
+        registry.set_active_allowlist(crate::executor::native::tools::MINIMAL_TOOL_NAMES);
+    }
+    // One-line discoverability banner when the AUTO path fired (non-eval):
+    // a capability-reducing default must never be silent. Explicit flags
+    // are the user's own choice and need no banner.
+    if surface.auto && !eval_mode {
+        eprintln!(
+            "\x1b[2m{} minimal tool surface ({} context detected ≤ {} threshold); /tools full to expand\x1b[0m",
+            diagnostic_prefix,
+            fmt_context_window(resolved_ctx),
+            fmt_context_window(config.native_executor.minimal_tools_context_threshold),
+        );
+    }
+
+    // Build the system prompt to match the surface the model will actually
+    // see: an auto-minimized small model gets the minimal-variant prompt
+    // (web tools gone → use bash+curl) so it is not left blind.
+    let now = chrono::Local::now();
+    let default_system = build_default_system_prompt(&working_dir, now, surface.minimal);
+    let system_with_role = if let Some(ref addendum) = role_prompt_addendum {
+        format!("{}\n\n## Role\n\n{}", default_system, addendum)
+    } else {
+        default_system
+    };
+    let system: String = system_prompt.map(String::from).unwrap_or(system_with_role);
+
     let model_registry = crate::nex_runtime::load_model_registry(runtime);
     let supports_tools = model_registry.supports_tool_use(&effective_model);
 
     let mut agent = AgentLoop::with_tool_support(
         client,
         registry,
-        system.to_string(),
+        system,
         max_turns,
         output_log,
         supports_tools,
@@ -542,6 +615,18 @@ fn run_inner(
                 "\x1b[1;32m{}\x1b[0m \x1b[33m[read-only]\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
                 display_name, effective_model
             );
+        } else if yolo_active {
+            // Loud, hard-to-miss banner: yolo mode lifts the workspace
+            // write sandbox, so the agent can modify files anywhere on
+            // disk with no confirmation. Make sure the human sees it.
+            eprintln!(
+                "\x1b[1;41;97m  YOLO MODE  \x1b[0m \x1b[1;31m{}\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+                display_name, effective_model
+            );
+            eprintln!(
+                "\x1b[1;31m⚠ All safety gating disabled: write_file/edit_file can write OUTSIDE the \
+                 working directory and no action requires confirmation.\x1b[0m"
+            );
         } else {
             eprintln!(
                 "\x1b[1;32m{}\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
@@ -575,6 +660,42 @@ fn run_inner(
         eprintln!(
             "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
             result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
+        );
+    }
+
+    // On a clean interactive exit (EOF/Ctrl-D, /quit, /exit, or a
+    // normal end-of-turn) tell the human exactly how to resume THIS
+    // session. The hint uses the resolved `session_ref` — the same
+    // alias/uuid that `--resume <pattern>` matches — never a
+    // placeholder. Chat-bound sessions (`--chat` / `--chat-id`) print
+    // the chat-aware form so the resumed conversation lands on the
+    // same `chat/<ref>/conversation.jsonl`.
+    //
+    // Gated to genuine interactive use so non-interactive contracts
+    // stay clean:
+    //   * eval-mode reserves stdout for its JSON summary and keeps
+    //     stderr pristine for the harness — never emit the banner.
+    //   * autonomous one-shot runs are supervised by the daemon, not a
+    //     human at a terminal — no banner.
+    //   * piped/scripted stdin or a non-tty stderr means no human is
+    //     watching live — no banner (mirrors how the live-input editor
+    //     in agent.rs gates on `stdin()/stderr().is_terminal()`).
+    //   * abnormal exits (max_turns, context_limit, release_requested)
+    //     are not clean resumes — only emit on `terminated_cleanly()`.
+    if !eval_mode
+        && !autonomous
+        && result.terminated_cleanly()
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        let resume_cmd = if chat_ref.is_some() || chat_id.is_some() {
+            format!("{} --chat {} --resume", display_name, session_ref)
+        } else {
+            format!("{} --resume {}", display_name, session_ref)
+        };
+        eprintln!(
+            "\x1b[2mResume this session with:\x1b[0m  \x1b[1m{}\x1b[0m",
+            resume_cmd
         );
     }
 
@@ -649,6 +770,73 @@ fn uses_standalone_nex_env(mode: NexRuntimeMode) -> bool {
     matches!(mode, NexRuntimeMode::Standalone | NexRuntimeMode::Eval)
 }
 
+/// Outcome of the probe-driven tool-surface decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ToolSurfaceDecision {
+    /// Whether the lean (minimal) surface is active.
+    minimal: bool,
+    /// Whether the lean surface was chosen by the probe-driven auto-path
+    /// (i.e. no explicit `--minimal-tools`/`--full-tools` flag). Drives the
+    /// discoverability banner — explicit choices need no banner.
+    auto: bool,
+}
+
+/// Decide whether the lean tool surface should be active.
+///
+/// Precedence: an explicit `--minimal-tools` or `--full-tools` flag always
+/// wins over the probe-driven default (if both are passed — contradictory —
+/// `minimal` wins, the conservative lean choice). Otherwise the lean surface
+/// auto-enables iff the resolved `context_window` is known (`> 0`) and at or
+/// below `threshold`. A `threshold` of `0` disables the auto default
+/// entirely, making the lean surface pure opt-in.
+fn resolve_tool_surface(
+    minimal_flag: bool,
+    full_flag: bool,
+    context_window: usize,
+    threshold: usize,
+) -> ToolSurfaceDecision {
+    if minimal_flag {
+        return ToolSurfaceDecision {
+            minimal: true,
+            auto: false,
+        };
+    }
+    if full_flag {
+        return ToolSurfaceDecision {
+            minimal: false,
+            auto: false,
+        };
+    }
+    let auto = threshold > 0 && context_window > 0 && context_window <= threshold;
+    ToolSurfaceDecision {
+        minimal: auto,
+        auto,
+    }
+}
+
+/// Compact a token count for the banner (e.g. `8192` → `8k`, `200000` →
+/// `200k`). Values under 1000 are shown verbatim.
+fn fmt_context_window(tokens: usize) -> String {
+    if tokens >= 1000 {
+        format!("{}k", tokens / 1000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Whether the `WG_NEX_YOLO` env var requests yolo mode. Truthy values
+/// are `1` / `true` / `yes` / `on` (case-insensitive); anything else
+/// (including unset, empty, `0`, `false`) is falsey. Mirrors the truthy
+/// parsing used elsewhere for nex env flags.
+fn yolo_env_truthy() -> bool {
+    std::env::var("WG_NEX_YOLO").ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 fn build_default_system_prompt(
     working_dir: &Path,
     now: chrono::DateTime<chrono::Local>,
@@ -663,8 +851,32 @@ fn build_default_system_prompt(
          and fetching from the web, and summarizing or delegating work."
     };
 
+    // Escape-hatch / capability notes. These stop small models — including
+    // ones auto-minimized by the probe-driven default — from concluding a
+    // task is impossible when the higher-level tools don't cover it.
+    // See docs/triage-wg-nex-small-model-reports-2026-04-27.md §3.
+    let escape_hatches = if minimal_tools {
+        "Capability notes for this minimal mode: there is no web_fetch/web_search here — use \
+         `bash curl -fsSL <url>` for HTTP, `curl -o <file> <url>` to download binaries (GRIB, \
+         images, archives, ...), and `curl -u user:pass` or `-H 'Authorization: ...'` for \
+         authenticated APIs. For data-format work the built-in tools don't do natively, write a \
+         short script and run it with `bash python3 -c '...'` (or write it to a file first), then \
+         read the output. bash is your escape hatch — reach for it before declaring something \
+         impossible."
+    } else {
+        "Capability notes: web_fetch SAVES binary responses (GRIB, images, archives, ...) to a \
+         file artifact instead of inlining them — fetch the URL, then read the saved path. For \
+         authenticated or custom-header HTTP that web_fetch's schema doesn't expose, drop to \
+         `bash curl -u user:pass` / `-H 'Authorization: ...'` (add `-o <file>` to save). For \
+         data-format conversion or parsing the tools don't do natively, write a short script and \
+         run it via `bash python3 -c '...'`, then read the result. bash is the escape hatch — \
+         reach for it before declaring something impossible."
+    };
+
     format!(
         "You are an AI assistant in an interactive terminal session. {tool_summary}\n\
+         \n\
+         {escape_hatches}\n\
          \n\
          Working directory: {}\n\
          Current date: {} ({})\n\
@@ -799,6 +1011,11 @@ mod tests {
         assert!(prompt.contains("curl https://wttr.in/<location>"));
         assert!(prompt.contains("Do not write code or prose that fabricates current data"));
         assert!(prompt.contains("Current date: 2026-05-04"));
+        // Small-model prompt hardening: the full prompt names the
+        // web_fetch-saves-binaries behavior and the bash escape hatches.
+        assert!(prompt.contains("web_fetch SAVES binary responses"));
+        assert!(prompt.contains("bash python3 -c"));
+        assert!(prompt.contains("Authorization"));
     }
 
     #[test]
@@ -812,6 +1029,12 @@ mod tests {
         assert!(prompt.contains("web_search and web_fetch are not available"));
         assert!(prompt.contains("use bash with curl or wget for HTTP requests"));
         assert!(prompt.contains("If you cannot fetch live data with the available tools"));
+        // Small-model prompt hardening: an auto-minimized model is told
+        // about the bash curl -o / python3 escape hatches so it is not
+        // left blind when web tools are gone.
+        assert!(prompt.contains("download binaries"));
+        assert!(prompt.contains("bash python3 -c"));
+        assert!(prompt.contains("-o <file>"));
     }
 
     #[test]
@@ -831,17 +1054,10 @@ mod tests {
 
     #[test]
     fn test_nex_minimal_tool_surface_keeps_bash_without_web_fetch() {
+        use crate::executor::native::tools::MINIMAL_TOOL_NAMES;
         let tmp = TempDir::new().unwrap();
         let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
-        registry.keep_only_tools(&[
-            "read_file",
-            "edit_file",
-            "write_file",
-            "bash",
-            "grep",
-            "glob",
-            "todo_write",
-        ]);
+        registry.keep_only_tools(MINIMAL_TOOL_NAMES);
         let names: Vec<String> = registry
             .definitions()
             .into_iter()
@@ -849,7 +1065,70 @@ mod tests {
             .collect();
 
         assert!(names.contains(&"bash".to_string()));
+        // todo_write is a real tool now, so the minimal allowlist actually
+        // keeps it instead of silently filtering to a phantom name.
+        assert!(names.contains(&"todo_write".to_string()));
+        // Every kept name resolves to a registered tool — no phantoms slip
+        // through the minimal surface.
+        for kept in MINIMAL_TOOL_NAMES {
+            assert!(
+                names.contains(&kept.to_string()),
+                "minimal surface dropped {kept:?} — it is not a registered tool"
+            );
+        }
         assert!(!names.contains(&"web_fetch".to_string()));
         assert!(!names.contains(&"web_search".to_string()));
+    }
+
+    #[test]
+    fn resolve_tool_surface_auto_minimizes_only_for_small_windows() {
+        const THRESHOLD: usize = 32_000;
+
+        // No explicit flag + small window → auto lean.
+        let small = resolve_tool_surface(false, false, 8_192, THRESHOLD);
+        assert!(small.minimal && small.auto, "8k window auto-minimizes");
+
+        // Exactly at the threshold is inclusive (≤).
+        let boundary = resolve_tool_surface(false, false, 32_000, THRESHOLD);
+        assert!(boundary.minimal && boundary.auto, "32k boundary is lean");
+
+        // No explicit flag + large window → full, not auto.
+        let large = resolve_tool_surface(false, false, 128_000, THRESHOLD);
+        assert!(!large.minimal && !large.auto, "128k window stays full");
+
+        // Unknown window (probe returned 0) is treated as capable → full.
+        let unknown = resolve_tool_surface(false, false, 0, THRESHOLD);
+        assert!(!unknown.minimal, "unknown window does not auto-minimize");
+
+        // threshold == 0 disables the auto default entirely.
+        let disabled = resolve_tool_surface(false, false, 8_192, 0);
+        assert!(!disabled.minimal, "threshold 0 disables auto-minimal");
+    }
+
+    #[test]
+    fn resolve_tool_surface_explicit_flags_override_both_directions() {
+        const THRESHOLD: usize = 32_000;
+
+        // --minimal-tools forces lean even on a huge window.
+        let forced_min = resolve_tool_surface(true, false, 1_000_000, THRESHOLD);
+        assert!(forced_min.minimal, "--minimal-tools wins upward");
+        assert!(!forced_min.auto, "explicit choice is not an auto-fire");
+
+        // --full-tools forces full even on a tiny window.
+        let forced_full = resolve_tool_surface(false, true, 4_096, THRESHOLD);
+        assert!(!forced_full.minimal, "--full-tools wins downward");
+        assert!(!forced_full.auto);
+
+        // Contradictory flags: minimal wins (conservative lean choice).
+        let both = resolve_tool_surface(true, true, 128_000, THRESHOLD);
+        assert!(both.minimal && !both.auto, "minimal wins when both passed");
+    }
+
+    #[test]
+    fn fmt_context_window_compacts_to_k() {
+        assert_eq!(fmt_context_window(8_192), "8k");
+        assert_eq!(fmt_context_window(32_000), "32k");
+        assert_eq!(fmt_context_window(200_000), "200k");
+        assert_eq!(fmt_context_window(512), "512");
     }
 }

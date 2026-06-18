@@ -16,8 +16,8 @@ use std::path::Path;
 
 use chrono::Utc;
 
-use workgraph::graph::{LogEntry, Status, WorkGraph};
-use workgraph::service::registry::{AgentRegistry, AgentStatus};
+use worksgood::graph::{LogEntry, Status, WorkGraph};
+use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
 use super::is_process_alive;
 
@@ -53,7 +53,7 @@ pub fn compute_closure(
     let mut visited: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = seeds
         .iter()
-        .filter(|s| !workgraph::graph::is_system_task(s))
+        .filter(|s| !worksgood::graph::is_system_task(s))
         .cloned()
         .collect();
 
@@ -75,7 +75,7 @@ pub fn compute_closure(
             }
         };
         for nid in next_ids {
-            if !visited.contains(&nid) && !workgraph::graph::is_system_task(&nid) {
+            if !visited.contains(&nid) && !worksgood::graph::is_system_task(&nid) {
                 stack.push(nid);
             }
         }
@@ -132,7 +132,7 @@ pub fn clear_stale_downstream_claims(
     seed_for_log: &str,
 ) -> ClearedDownstream {
     let now = Utc::now().to_rfc3339();
-    let user = workgraph::current_user();
+    let user = worksgood::current_user();
 
     // Compute the forward closure starting from seed's neighbours.
     // We use `seed` as the closure entry point but exclude it from the
@@ -199,9 +199,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
-    use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
+    use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
     fn make_task(id: &str, status: Status) -> Task {
         Task {

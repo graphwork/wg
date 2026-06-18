@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,31 +136,31 @@ fn test_trace_no_agent_runs_output_content() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance entries
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("t1"),
         None,
         serde_json::json!({"title": "Manual task"}),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "claim",
         Some("t1"),
         Some("human"),
         serde_json::Value::Null,
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "done",
         Some("t1"),
         None,
         serde_json::Value::Null,
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
 
@@ -233,13 +233,13 @@ fn test_trace_json_structure_validation() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("t1"),
         None,
         serde_json::json!({"title": "Full task"}),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
 
@@ -345,22 +345,22 @@ fn test_trace_ops_only_excludes_agent_runs() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("t1"),
         None,
         serde_json::json!({"title": "Ops only task"}),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "done",
         Some("t1"),
         None,
         serde_json::Value::Null,
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
 
@@ -699,7 +699,7 @@ fn test_replay_field_clearing_and_preservation() {
     t1.before = vec!["child".to_string()];
     t1.tags = vec!["rust".to_string(), "test".to_string()];
     t1.skills = vec!["implementation".to_string()];
-    t1.log = vec![workgraph::graph::LogEntry {
+    t1.log = vec![worksgood::graph::LogEntry {
         timestamp: "2026-02-18T10:00:00+00:00".to_string(),
         actor: None,
         user: None,
@@ -1011,7 +1011,7 @@ fn test_runs_restore_provenance() {
     wg_ok(&wg_dir, &["runs", "restore", "run-001"]);
 
     // Check provenance
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let restore_ops: Vec<_> = ops.iter().filter(|o| o.op == "restore").collect();
     assert!(
         !restore_ops.is_empty(),
@@ -1045,7 +1045,7 @@ fn test_runs_diff_with_status_change_added_removed() {
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     // Create a snapshot manually
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-001".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -1053,7 +1053,7 @@ fn test_runs_diff_with_status_change_added_removed() {
         preserved_tasks: vec!["t1".to_string(), "t2".to_string()],
         filter: None,
     };
-    workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     // Modify graph: change t2 status, remove t1 (well, we'll rebuild), add t3
     let mut new_t2 = make_task("t2", "Task 2", Status::Open);
@@ -1097,7 +1097,7 @@ fn test_runs_diff_no_changes() {
     let t1 = make_task("t1", "Task 1", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-001".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -1105,7 +1105,7 @@ fn test_runs_diff_no_changes() {
         preserved_tasks: vec!["t1".to_string()],
         filter: None,
     };
-    workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
     assert!(
@@ -1123,7 +1123,7 @@ fn test_runs_diff_json_output() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Snapshot, then modify
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-001".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -1131,7 +1131,7 @@ fn test_runs_diff_json_output() {
         preserved_tasks: vec!["t1".to_string()],
         filter: None,
     };
-    workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     // Change t1 to Open
     let mut graph = load_wg_graph(&wg_dir);
@@ -1486,7 +1486,7 @@ fn test_runs_diff_removed_task() {
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     // Snapshot
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-001".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -1494,7 +1494,7 @@ fn test_runs_diff_removed_task() {
         preserved_tasks: vec!["t1".to_string(), "t2".to_string()],
         filter: None,
     };
-    workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     // Remove t2 from graph
     let mut graph = load_wg_graph(&wg_dir);
@@ -1515,7 +1515,7 @@ fn test_runs_diff_added_task() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Snapshot
-    let meta = workgraph::runs::RunMeta {
+    let meta = worksgood::runs::RunMeta {
         id: "run-001".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -1523,7 +1523,7 @@ fn test_runs_diff_added_task() {
         preserved_tasks: vec!["t1".to_string()],
         filter: None,
     };
-    workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
+    worksgood::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     // Add t2
     let mut graph = load_wg_graph(&wg_dir);
@@ -1588,13 +1588,13 @@ fn test_trace_json_overrides_full_and_ops_only() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("t1"),
         None,
         serde_json::json!({"title": "Override test"}),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
 
@@ -1701,22 +1701,22 @@ fn test_trace_operation_detail_truncation() {
     let short_detail = "Short detail under 120 chars";
     let long_detail = "x".repeat(200);
 
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "short_op",
         Some("t1"),
         None,
         serde_json::json!(short_detail),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "long_op",
         Some("t1"),
         None,
         serde_json::json!(long_detail),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
 
@@ -2453,13 +2453,13 @@ fn test_trace_after_restore() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance and create agent archive
-    workgraph::provenance::record(
+    worksgood::provenance::record(
         &wg_dir,
         "add_task",
         Some("t1"),
         None,
         serde_json::json!({"title": "Task"}),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     )
     .unwrap();
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
@@ -2668,7 +2668,7 @@ fn test_replay_plan_only_no_side_effects() {
     }
 
     // No provenance entries for "replay"
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
     assert!(
         replay_ops.is_empty(),
@@ -2708,7 +2708,7 @@ fn test_replay_records_provenance_entry() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     // Check provenance for "replay" entry
-    let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
+    let ops = worksgood::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
     assert!(
         !replay_ops.is_empty(),

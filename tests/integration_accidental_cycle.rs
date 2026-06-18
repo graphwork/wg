@@ -11,9 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{CycleAnalysis, CycleConfig, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks_cycle_aware;
+use worksgood::graph::{CycleAnalysis, CycleConfig, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::ready_tasks_cycle_aware;
 
 /// Helper to create a basic task
 fn make_task(id: &str, title: &str, status: Status) -> Task {

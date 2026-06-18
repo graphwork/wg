@@ -490,6 +490,14 @@ pub struct Task {
     /// Named endpoint for this task (matches a name in [llm_endpoints])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Named profile pinned to this task's subgraph (see `wg publish --profile`).
+    /// When set, dispatch resolves `{executor, model, endpoint}` from this
+    /// profile's complete `Config` snapshot instead of the globally-active
+    /// profile. Propagated across the weakly-connected component at publish
+    /// time and inherited by tasks attached later. `None` ⇒ use the global
+    /// active profile (backward-compatible default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Chat pane command argv. For chat-loop tasks this is the concrete
     /// command that the TUI runs inside the persistent PTY/tmux pane.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -716,6 +724,7 @@ impl Default for Task {
             model: None,
             provider: None,
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -1582,6 +1591,8 @@ struct TaskHelper {
     #[serde(default)]
     endpoint: Option<String>,
     #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
     command_argv: Vec<String>,
     #[serde(default)]
     working_dir: Option<String>,
@@ -1744,6 +1755,7 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             provider: helper.provider,
             endpoint: helper.endpoint,
+            profile: helper.profile,
             command_argv: helper.command_argv,
             working_dir: helper.working_dir,
             executor_preset_name: helper.executor_preset_name,

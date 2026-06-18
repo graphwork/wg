@@ -5,9 +5,9 @@
 
 use chrono::Utc;
 use tempfile::TempDir;
-use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks;
+use worksgood::graph::{LogEntry, Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::ready_tasks;
 
 /// Helper: create a minimal open task.
 fn make_task(id: &str, title: &str) -> Task {

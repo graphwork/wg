@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::config::{
+use worksgood::config::{
     CLAUDE_OPUS_MODEL_ID, Config, KNOWN_PROVIDERS, RoleModelConfig, parse_model_spec,
     parse_model_spec_strict,
 };
-use workgraph::graph::WorkGraph;
-use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
-use workgraph::parser::save_graph;
+use worksgood::graph::WorkGraph;
+use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
+use worksgood::parser::save_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1013,7 +1013,7 @@ fn default_agent_model_has_provider_prefix() {
 #[test]
 fn load_model_choices_all_use_provider_prefix() {
     let tmp = TempDir::new().unwrap();
-    let choices = workgraph::models::load_model_choices(tmp.path());
+    let choices = worksgood::models::load_model_choices(tmp.path());
     assert!(!choices.is_empty(), "Should have at least one model choice");
     for choice in &choices {
         parse_model_spec_strict(choice).unwrap_or_else(|e| {
@@ -1028,7 +1028,7 @@ fn load_model_choices_all_use_provider_prefix() {
 #[test]
 fn load_model_choices_with_descriptions_fallback() {
     let tmp = TempDir::new().unwrap();
-    let choices = workgraph::models::load_model_choices_with_descriptions(tmp.path());
+    let choices = worksgood::models::load_model_choices_with_descriptions(tmp.path());
     for (spec, _desc) in &choices {
         assert!(
             spec.contains(':'),

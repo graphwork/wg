@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::parser::{load_graph, save_graph};
 
 /// Approve a task that is pending validation, transitioning it to Done.
 pub fn run(dir: &Path, id: &str) -> Result<()> {
@@ -41,7 +41,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: std::env::var("WG_AGENT_ID").ok(),
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Task approved by validator".to_string(),
         });
 
@@ -56,8 +56,8 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(dir);
+    let _ = worksgood::provenance::record(
         dir,
         "approve",
         Some(id),
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
+    use worksgood::graph::{Node, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::config::CLAUDE_HAIKU_MODEL_ID;
+use worksgood::config::CLAUDE_HAIKU_MODEL_ID;
 
 /// The cheap/fast model to use for integration tests.
 const HAIKU_MODEL: &str = CLAUDE_HAIKU_MODEL_ID;
@@ -476,7 +476,7 @@ Respond with ONLY a JSON object:
     let raw_output = String::from_utf8_lossy(&output.stdout);
 
     // Try to extract JSON from the output
-    let json_str = workgraph::json_extract::extract_json(&raw_output);
+    let json_str = worksgood::json_extract::extract_json(&raw_output);
     assert!(
         json_str.is_some(),
         "Haiku should produce extractable JSON. Raw output:\n{}",

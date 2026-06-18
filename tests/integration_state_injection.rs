@@ -13,13 +13,13 @@ use std::sync::{Arc, Mutex};
 
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, Message, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::journal::{self, Journal};
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::journal::{self, Journal};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::tools::ToolRegistry;
 
 /// A mock provider that captures the messages sent to it.
 struct CapturingProvider {

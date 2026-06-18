@@ -14,11 +14,11 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::check::{OrphanRef, check_orphans};
-use workgraph::graph::{CycleAnalysis, Status};
-use workgraph::parser::load_graph;
-use workgraph::query::ready_tasks;
-use workgraph::service::{AgentRegistry, AgentStatus};
+use worksgood::check::{OrphanRef, check_orphans};
+use worksgood::graph::{CycleAnalysis, Status};
+use worksgood::parser::load_graph;
+use worksgood::query::ready_tasks;
+use worksgood::service::{AgentRegistry, AgentStatus};
 
 use super::dead_agents::is_process_alive;
 use super::graph_path;
@@ -183,7 +183,7 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
                 .map(|started| {
                     let now = chrono::Utc::now();
                     let duration = now.signed_duration_since(started);
-                    workgraph::format_duration(duration.num_seconds(), false)
+                    worksgood::format_duration(duration.num_seconds(), false)
                 })
                 .ok();
 
@@ -215,7 +215,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     }
 
     // Fall back to config file
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
         executor: config.coordinator.effective_executor(),
@@ -453,7 +453,7 @@ fn gather_cycle_timing(dir: &Path) -> Vec<CycleTimingInfo> {
             let delay_secs = cc
                 .delay
                 .as_ref()
-                .and_then(|d| workgraph::graph::parse_delay(d))?;
+                .and_then(|d| worksgood::graph::parse_delay(d))?;
             let last_ts = last_completed.as_ref()?.parse::<DateTime<Utc>>().ok()?;
             let next = last_ts + chrono::Duration::seconds(delay_secs as i64);
             if next > now {
@@ -605,7 +605,7 @@ fn print_status(status: &StatusOutput) {
                 Some(ref ts) => {
                     if let Ok(parsed) = ts.parse::<DateTime<Utc>>() {
                         let ago = Utc::now().signed_duration_since(parsed).num_seconds();
-                        format!("last: {} ago", workgraph::format_duration(ago, true))
+                        format!("last: {} ago", worksgood::format_duration(ago, true))
                     } else {
                         "last: unknown".to_string()
                     }
@@ -619,7 +619,7 @@ fn print_status(status: &StatusOutput) {
                         let now = Utc::now();
                         if parsed > now {
                             let secs = (parsed - now).num_seconds();
-                            format!("next: in {}", workgraph::format_duration(secs, true))
+                            format!("next: in {}", worksgood::format_duration(secs, true))
                         } else {
                             "next: ready".to_string()
                         }
@@ -695,8 +695,8 @@ fn print_status(status: &StatusOutput) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

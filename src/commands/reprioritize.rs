@@ -1,16 +1,16 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use workgraph::graph::{
+use worksgood::graph::{
     PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW,
 };
-use workgraph::parser::modify_graph;
+use worksgood::parser::modify_graph;
 
 use super::add::parse_priority;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, priority: &str) -> Result<()> {
     let path = super::graph_path(dir);
@@ -63,8 +63,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

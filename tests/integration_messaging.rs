@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::Status;
-use workgraph::messages;
-use workgraph::parser::load_graph;
+use worksgood::graph::Status;
+use worksgood::messages;
+use worksgood::parser::load_graph;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -529,14 +529,14 @@ fn adapter_claude_writes_notification_file() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Adapter test", "--id", "adapt-1"]);
 
-    let agent = workgraph::service::registry::AgentEntry {
+    let agent = worksgood::service::registry::AgentEntry {
         id: "agent-claude-1".to_string(),
         pid: 99999,
         task_id: "adapt-1".to_string(),
         executor: "claude".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/output.log".to_string(),
         model: None,
         completed_at: None,
@@ -584,14 +584,14 @@ fn adapter_shell_writes_notification_file() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Shell test", "--id", "shell-1"]);
 
-    let agent = workgraph::service::registry::AgentEntry {
+    let agent = worksgood::service::registry::AgentEntry {
         id: "agent-shell-1".to_string(),
         pid: 77777,
         task_id: "shell-1".to_string(),
         executor: "shell".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/output.log".to_string(),
         model: None,
         completed_at: None,
@@ -647,14 +647,14 @@ fn adapter_notification_accumulates_multiple_messages() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Accumulate", "--id", "accum-1"]);
 
-    let agent = workgraph::service::registry::AgentEntry {
+    let agent = worksgood::service::registry::AgentEntry {
         id: "agent-accum".to_string(),
         pid: 66666,
         task_id: "accum-1".to_string(),
         executor: "claude".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/output.log".to_string(),
         model: None,
         completed_at: None,
@@ -892,14 +892,14 @@ fn coordinator_deliver_message_stores_and_notifies() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Coord test", "--id", "coord-1"]);
 
-    let agent = workgraph::service::registry::AgentEntry {
+    let agent = worksgood::service::registry::AgentEntry {
         id: "coord-agent".to_string(),
         pid: 55555,
         task_id: "coord-1".to_string(),
         executor: "claude".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/output.log".to_string(),
         model: None,
         completed_at: None,
@@ -940,28 +940,28 @@ fn coordinator_multiple_deliveries_across_tasks() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "multi-a"]);
     wg_ok(&wg_dir, &["add", "Task B", "--id", "multi-b"]);
 
-    let agent_a = workgraph::service::registry::AgentEntry {
+    let agent_a = worksgood::service::registry::AgentEntry {
         id: "agent-a".to_string(),
         pid: 11111,
         task_id: "multi-a".to_string(),
         executor: "claude".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/a.log".to_string(),
         model: None,
         completed_at: None,
         worktree_path: None,
     };
 
-    let agent_b = workgraph::service::registry::AgentEntry {
+    let agent_b = worksgood::service::registry::AgentEntry {
         id: "agent-b".to_string(),
         pid: 22222,
         task_id: "multi-b".to_string(),
         executor: "codex".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
+        status: worksgood::service::registry::AgentStatus::Working,
         output_file: "/tmp/b.log".to_string(),
         model: None,
         completed_at: None,
@@ -1204,9 +1204,9 @@ fn smoke_test_multi_task_messaging() {
 
 #[test]
 fn prompt_context_includes_queued_messages_section() {
-    use workgraph::context_scope::ContextScope;
-    use workgraph::graph::Task;
-    use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
+    use worksgood::context_scope::ContextScope;
+    use worksgood::graph::Task;
+    use worksgood::service::executor::{ScopeContext, TemplateVars, build_prompt};
 
     let task = Task {
         id: "test-1".to_string(),
@@ -1231,9 +1231,9 @@ fn prompt_context_includes_queued_messages_section() {
 
 #[test]
 fn prompt_context_excludes_empty_queued_messages() {
-    use workgraph::context_scope::ContextScope;
-    use workgraph::graph::Task;
-    use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
+    use worksgood::context_scope::ContextScope;
+    use worksgood::graph::Task;
+    use worksgood::service::executor::{ScopeContext, TemplateVars, build_prompt};
 
     let task = Task {
         id: "test-2".to_string(),

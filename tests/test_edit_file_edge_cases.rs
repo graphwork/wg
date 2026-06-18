@@ -22,12 +22,12 @@
 use std::fs;
 use tempfile::{Builder, TempDir};
 
-use workgraph::executor::native::tools::{ToolOutput, ToolRegistry};
+use worksgood::executor::native::tools::{ToolOutput, ToolRegistry};
 
 /// Helper to create a ToolRegistry with file tools registered
 fn make_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
-    workgraph::executor::native::tools::file::register_file_tools(&mut registry);
+    worksgood::executor::native::tools::file::register_file_tools(&mut registry);
     registry
 }
 

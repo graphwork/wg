@@ -53,8 +53,8 @@ use std::path::Path;
 use anyhow::Result;
 use chrono::Utc;
 
-use workgraph::graph::{LogEntry, Status, WorkGraph};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status, WorkGraph};
+use worksgood::parser::modify_graph;
 
 /// Edge direction to follow when computing the closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +191,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     let mut stripped_count = 0usize;
 
     let _ = modify_graph(&path, |graph| {
-        let user = workgraph::current_user();
+        let user = worksgood::current_user();
         let now = Utc::now().to_rfc3339();
 
         // Reset the closure tasks.
@@ -252,7 +252,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
     });
 
     // Cross-cutting audit entry.
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "reset",
         None,
@@ -265,7 +265,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
             "reset_count": reset_count,
             "stripped_count": stripped_count,
         }),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     );
 
     super::notify_graph_changed(dir);
@@ -297,7 +297,7 @@ fn compute_closure(graph: &WorkGraph, seeds: &[String], direction: Direction) ->
     let mut visited: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = seeds
         .iter()
-        .filter(|s| !workgraph::graph::is_system_task(s))
+        .filter(|s| !worksgood::graph::is_system_task(s))
         .cloned()
         .collect();
 
@@ -319,7 +319,7 @@ fn compute_closure(graph: &WorkGraph, seeds: &[String], direction: Direction) ->
             }
         };
         for nid in next_ids {
-            if !visited.contains(&nid) && !workgraph::graph::is_system_task(&nid) {
+            if !visited.contains(&nid) && !worksgood::graph::is_system_task(&nid) {
                 stack.push(nid);
             }
         }
@@ -334,7 +334,7 @@ fn compute_closure(graph: &WorkGraph, seeds: &[String], direction: Direction) ->
 fn find_meta_attached_to_closure(graph: &WorkGraph, closure: &HashSet<String>) -> HashSet<String> {
     graph
         .tasks()
-        .filter(|t| workgraph::graph::is_system_task(&t.id))
+        .filter(|t| worksgood::graph::is_system_task(&t.id))
         .filter(|t| {
             t.after.iter().any(|a| closure.contains(a))
                 || t.before.iter().any(|b| closure.contains(b))
@@ -347,9 +347,9 @@ fn find_meta_attached_to_closure(graph: &WorkGraph, closure: &HashSet<String>) -
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::graph::Task;
-    use workgraph::parser::load_graph;
-    use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+    use worksgood::graph::Task;
+    use worksgood::parser::load_graph;
+    use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
     fn make(id: &str, status: Status) -> Task {
         make_task_with_status(id, id, status)
@@ -583,7 +583,7 @@ mod tests {
             t.assigned = Some("agent-dead".to_string());
             t.started_at = Some("2026-04-27T00:00:00Z".to_string());
         }
-        workgraph::parser::save_graph(&g, &path).unwrap();
+        worksgood::parser::save_graph(&g, &path).unwrap();
 
         let _ = run(
             dir.path(),

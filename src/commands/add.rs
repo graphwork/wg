@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::cron::{calculate_next_fire, parse_cron_expression};
-use workgraph::graph::{
+use worksgood::cron::{calculate_next_fire, parse_cron_expression};
+use worksgood::graph::{
     CycleConfig, Estimate, Node, PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE,
     PRIORITY_LOW, PRIORITY_NORMAL, Priority, Status, Task, boost_priority, parse_delay,
 };
-use workgraph::parser::modify_graph;
+use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
@@ -23,7 +23,7 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     // executor expects it. Keep it intact so dispatch can atomically select
     // executor=opencode and normalize the inner model.
     if let Some((executor, inner)) = model.split_once(':')
-        && workgraph::dispatch::ExecutorKind::from_str(executor)
+        && worksgood::dispatch::ExecutorKind::from_str(executor)
             .is_some_and(|kind| kind.is_external_cli())
         && !inner.trim().is_empty()
     {
@@ -31,17 +31,17 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     }
 
     // If it already passes strict validation, it's fine
-    if workgraph::config::parse_model_spec_strict(model).is_ok() {
+    if worksgood::config::parse_model_spec_strict(model).is_ok() {
         return Ok(model.to_string());
     }
 
     // Check config model_registry before falling back to OpenRouter catalog.
-    if let Ok(config) = workgraph::config::Config::load_merged(workgraph_dir)
+    if let Ok(config) = worksgood::config::Config::load_merged(workgraph_dir)
         && let Some(entry) = config.registry_lookup(model)
     {
-        let prefix = workgraph::config::native_provider_to_prefix(&entry.provider);
+        let prefix = worksgood::config::native_provider_to_prefix(&entry.provider);
         let full_spec = format!("{}:{}", prefix, entry.model);
-        if workgraph::config::parse_model_spec_strict(&full_spec).is_ok() {
+        if worksgood::config::parse_model_spec_strict(&full_spec).is_ok() {
             eprintln!(
                 "Resolved model '{}' → '{}' (from model_registry)",
                 model, full_spec
@@ -51,12 +51,12 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     }
 
     // Check if it has a `/` but no recognized provider prefix → assume OpenRouter format
-    let spec = workgraph::config::parse_model_spec(model);
+    let spec = worksgood::config::parse_model_spec(model);
     if spec.provider.is_none() && model.contains('/') {
         // Looks like "provider/model" format (e.g., "minimax/minimax-m2.7")
         let candidate = format!("openrouter:{}", model);
         // Validate that this parses correctly
-        if workgraph::config::parse_model_spec_strict(&candidate).is_ok() {
+        if worksgood::config::parse_model_spec_strict(&candidate).is_ok() {
             eprintln!("Resolved model '{}' → '{}'", model, candidate);
             return Ok(candidate);
         }
@@ -64,7 +64,7 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
 
     // Bare short name — try to resolve against the model cache
     let resolution =
-        workgraph::executor::native::openai_client::resolve_short_model_name(model, workgraph_dir);
+        worksgood::executor::native::openai_client::resolve_short_model_name(model, workgraph_dir);
 
     if let Some(resolved_id) = resolution.resolved {
         let full_spec = format!("openrouter:{}", resolved_id);
@@ -90,7 +90,7 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     }
 
     // No cache or no suggestions — fall back to strict validation error message
-    if let Err(e) = workgraph::config::parse_model_spec_strict(model) {
+    if let Err(e) = worksgood::config::parse_model_spec_strict(model) {
         anyhow::bail!(
             "Invalid --model format: {}\n  \
              Hint: run `wg models fetch` to populate the model cache for short-name resolution.",
@@ -151,10 +151,10 @@ pub fn calculate_final_priority(base_priority: Priority, tags: &[String]) -> Pri
 
 /// Parse a guard expression string into a LoopGuard.
 /// Formats: 'task:<id>=<status>' or 'always'
-pub fn parse_guard_expr(expr: &str) -> Result<workgraph::graph::LoopGuard> {
+pub fn parse_guard_expr(expr: &str) -> Result<worksgood::graph::LoopGuard> {
     let expr = expr.trim();
     if expr.eq_ignore_ascii_case("always") {
-        return Ok(workgraph::graph::LoopGuard::Always);
+        return Ok(worksgood::graph::LoopGuard::Always);
     }
     if let Some(rest) = expr.strip_prefix("task:") {
         if let Some((task_id, status_str)) = rest.split_once('=') {
@@ -168,7 +168,7 @@ pub fn parse_guard_expr(expr: &str) -> Result<workgraph::graph::LoopGuard> {
                 "pending-review" => Status::Done, // pending-review is deprecated, maps to done
                 _ => anyhow::bail!("Unknown status '{}' in guard expression", status_str),
             };
-            return Ok(workgraph::graph::LoopGuard::TaskStatus {
+            return Ok(worksgood::graph::LoopGuard::TaskStatus {
                 task: task_id.to_string(),
                 status,
             });
@@ -226,7 +226,7 @@ pub fn run(
     allow_phantom: bool,
     independent: bool,
     no_tier_escalation: bool,
-    iteration_config: Option<workgraph::agency::IterationConfig>,
+    iteration_config: Option<worksgood::agency::IterationConfig>,
     priority: Option<&str>,
     cron: Option<&str>,
     subtask: bool,
@@ -260,7 +260,7 @@ pub fn run(
     // Validate context_scope if provided
     if let Some(scope) = context_scope {
         scope
-            .parse::<workgraph::context_scope::ContextScope>()
+            .parse::<worksgood::context_scope::ContextScope>()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
@@ -280,7 +280,7 @@ pub fn run(
 
     // Validate exec_mode if provided
     if let Some(mode) = effective_exec_mode {
-        mode.parse::<workgraph::config::ExecMode>()
+        mode.parse::<worksgood::config::ExecMode>()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
@@ -306,8 +306,8 @@ pub fn run(
 
     // Record model override in launcher history
     if let Some(m) = model {
-        let _ = workgraph::launcher_history::record_use(
-            &workgraph::launcher_history::HistoryEntry::new("claude", Some(m), None, "cli"),
+        let _ = worksgood::launcher_history::record_use(
+            &worksgood::launcher_history::HistoryEntry::new("claude", Some(m), None, "cli"),
         );
     }
 
@@ -317,7 +317,7 @@ pub fn run(
     }
 
     // --- Autopoietic guardrails ---
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let guardrails = &config.guardrails;
 
     // 1. Per-agent task creation limit (only enforced in agent context)
@@ -434,10 +434,10 @@ pub fn run(
     let validator_model: Option<&str> = None;
 
     let log = if paused {
-        vec![workgraph::graph::LogEntry {
+        vec![worksgood::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: "Task paused".to_string(),
         }]
     } else {
@@ -498,7 +498,7 @@ pub fn run(
             error = Some(anyhow::anyhow!("Task '{}' cannot block itself", task_id));
             return false;
         }
-        if workgraph::federation::parse_remote_ref(blocker_id).is_some() {
+        if worksgood::federation::parse_remote_ref(blocker_id).is_some() {
             // Cross-repo dependency — validated at resolution time, not here
         } else if graph.get_node(blocker_id).is_none() {
             if paused || allow_phantom {
@@ -510,7 +510,7 @@ pub fn run(
                 );
                 let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
                 if let Some((suggestion, _)) =
-                    workgraph::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
+                    worksgood::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
                 {
                     eprintln!("  → Did you mean '{}'?", suggestion);
                 }
@@ -519,7 +519,7 @@ pub fn run(
                 let mut msg = format!("Dependency '{}' does not exist.", blocker_id);
                 let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
                 if let Some((suggestion, _)) =
-                    workgraph::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
+                    worksgood::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
                 {
                     msg.push_str(&format!("\n  → Did you mean '{}'?", suggestion));
                 }
@@ -548,6 +548,13 @@ pub fn run(
     } else {
         (None, false, None)
     };
+
+    // Inherit-on-attach: a task linked into a component that already carries a
+    // WCC profile (via `wg publish --profile`) inherits that profile, so a
+    // profiled subgraph keeps its routing as agents grow it
+    // (`wg add 'subtask' --after $WG_TASK_ID`). Tie-break is deterministic
+    // (lexicographically smallest neighbor profile). See `dispatch::profile`.
+    let inherited_profile = inherit_profile_from_neighbors(graph, &effective_after);
 
     let task = Task {
         id: task_id.clone(),
@@ -580,6 +587,7 @@ pub fn run(
         model: model.map(String::from),
         provider: provider.map(String::from),
         endpoint: None,
+        profile: inherited_profile,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,
@@ -641,7 +649,7 @@ pub fn run(
     // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
     // (skip cross-repo refs — those live in a different graph)
     for dep in &effective_after {
-        if workgraph::federation::parse_remote_ref(dep).is_some() {
+        if worksgood::federation::parse_remote_ref(dep).is_some() {
             continue; // Cross-repo dep; can't update remote graph's blocks field
         }
         if let Some(blocker) = graph.get_task_mut(dep)
@@ -656,7 +664,7 @@ pub fn run(
     // forming a structural cycle that the SCC detector will find.
     if max_iterations.is_some() && !effective_after.is_empty() {
         for dep_id in &effective_after {
-            if workgraph::federation::parse_remote_ref(dep_id).is_some() {
+            if worksgood::federation::parse_remote_ref(dep_id).is_some() {
                 continue; // Skip cross-repo deps
             }
             if let Some(dep_task) = graph.get_task_mut(dep_id)
@@ -717,7 +725,7 @@ pub fn run(
     if let Some(ref aid) = agent_id {
         detail["agent_id"] = serde_json::Value::String(aid.clone());
     }
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "add_task",
         Some(&task_id),
@@ -753,20 +761,20 @@ pub fn run(
 
             let parent = graph.get_task_mut(&parent_id).expect("verified above");
             parent.status = Status::Waiting;
-            parent.wait_condition = Some(workgraph::graph::WaitSpec::Any(vec![
-                workgraph::graph::WaitCondition::TaskStatus {
+            parent.wait_condition = Some(worksgood::graph::WaitSpec::Any(vec![
+                worksgood::graph::WaitCondition::TaskStatus {
                     task_id: child_id.clone(),
                     status: Status::Done,
                 },
-                workgraph::graph::WaitCondition::TaskStatus {
+                worksgood::graph::WaitCondition::TaskStatus {
                     task_id: child_id.clone(),
                     status: Status::Failed,
                 },
             ]));
-            parent.log.push(workgraph::graph::LogEntry {
+            parent.log.push(worksgood::graph::LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: parent.assigned.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "Agent parked. Waiting for subtask '{}' to complete.",
                     child_id
@@ -782,10 +790,10 @@ pub fn run(
         }
 
         // Update agent status to Parked if there's an assigned agent
-        if let Ok(mut registry) = workgraph::service::registry::AgentRegistry::load_locked(dir) {
+        if let Ok(mut registry) = worksgood::service::registry::AgentRegistry::load_locked(dir) {
             for agent in registry.registry.agents.values_mut() {
                 if agent.task_id == parent_id && agent.is_alive() {
-                    agent.status = workgraph::service::registry::AgentStatus::Parked;
+                    agent.status = worksgood::service::registry::AgentStatus::Parked;
                     if agent.completed_at.is_none() {
                         agent.completed_at = Some(Utc::now().to_rfc3339());
                     }
@@ -844,7 +852,7 @@ pub fn run_remote(
     verify_timeout: Option<&str>,
     cron: Option<&str>,
 ) -> Result<()> {
-    use workgraph::federation::{check_peer_service, resolve_peer};
+    use worksgood::federation::{check_peer_service, resolve_peer};
 
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -972,8 +980,8 @@ fn add_task_directly(
     cron: Option<&str>,
     origin: &str,
 ) -> Result<String> {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::parser::modify_graph as modify_graph_inner;
+    use worksgood::graph::{Node, Status, Task};
+    use worksgood::parser::modify_graph as modify_graph_inner;
 
     let graph_path = super::graph_path(peer_workgraph_dir);
     if !graph_path.exists() {
@@ -1055,6 +1063,7 @@ fn add_task_directly(
             model: model.map(String::from),
             provider: provider.map(String::from),
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -1133,8 +1142,8 @@ fn add_task_directly(
     let task_id = task_id_out;
 
     // Record provenance in the peer's WG project
-    let config = workgraph::config::Config::load_or_default(peer_workgraph_dir);
-    let _ = workgraph::provenance::record(
+    let config = worksgood::config::Config::load_or_default(peer_workgraph_dir);
+    let _ = worksgood::provenance::record(
         peer_workgraph_dir,
         "add_task",
         Some(&task_id),
@@ -1149,7 +1158,7 @@ fn add_task_directly(
 /// Count how many tasks the given agent has created, by scanning the provenance log
 /// for `add_task` operations with a matching `agent_id` in the detail.
 fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
-    let entries = match workgraph::provenance::read_all_operations(dir) {
+    let entries = match worksgood::provenance::read_all_operations(dir) {
         Ok(entries) => entries,
         Err(_) => return 0,
     };
@@ -1162,7 +1171,30 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
         .count() as u32
 }
 
-fn default_parent_after(graph: &workgraph::WorkGraph, after: &[String]) -> Vec<String> {
+/// Inherit-on-attach: when a new task is linked into a component that already
+/// carries a WCC profile (stamped by `wg publish --profile`), it inherits that
+/// profile so the profiled subgraph keeps its routing as it grows. Looks only
+/// at the new task's `after`-neighbors (its only existing edges at creation).
+///
+/// Tie-break is deterministic: if neighbors carry different profiles, the
+/// lexicographically smallest profile name wins (and the caller could warn,
+/// though in practice a single component carries at most one profile).
+/// Returns `None` when no neighbor is profiled — the task stays on the global
+/// active profile (backward-compatible default).
+fn inherit_profile_from_neighbors(
+    graph: &worksgood::WorkGraph,
+    after: &[String],
+) -> Option<String> {
+    let mut profiles: Vec<String> = after
+        .iter()
+        .filter_map(|id| graph.get_task(id).and_then(|t| t.profile.clone()))
+        .collect();
+    profiles.sort();
+    profiles.dedup();
+    profiles.into_iter().next()
+}
+
+fn default_parent_after(graph: &worksgood::WorkGraph, after: &[String]) -> Vec<String> {
     if !after.is_empty() {
         return after.to_vec();
     }
@@ -1179,7 +1211,7 @@ fn default_parent_after(graph: &workgraph::WorkGraph, after: &[String]) -> Vec<S
     }
 }
 
-fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
+fn generate_id(title: &str, graph: &worksgood::WorkGraph) -> String {
     // Generate a slug from the title: take up to 3 non-numeric words,
     // plus any trailing numeric tokens (so "task 1" -> "task-1", not "task").
     let normalized: String = title
@@ -1242,9 +1274,9 @@ fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
-    use workgraph::WorkGraph;
-    use workgraph::graph::{LoopGuard, Node, Status, Task};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::WorkGraph;
+    use worksgood::graph::{LoopGuard, Node, Status, Task};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1607,7 +1639,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(
             dir_path,
@@ -1666,7 +1698,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(
             dir_path,
@@ -1725,7 +1757,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         let result = run(
             dir_path,
@@ -1790,7 +1822,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Should fail by default — strict validation rejects phantom dependencies
         let result = run(
@@ -1853,7 +1885,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Should succeed with --allow-phantom
         let result = run(
@@ -1912,7 +1944,7 @@ mod tests {
         std::fs::create_dir_all(dir_path).unwrap();
         let path = super::graph_path(dir_path);
         let graph = WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Should succeed with paused=true (deferred validation)
         let result = run(
@@ -1975,7 +2007,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(stub_task("blocker-a")));
         graph.add_node(Node::Task(stub_task("blocker-b")));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
+        worksgood::parser::save_graph(&graph, &path).unwrap();
 
         // Add a new task blocked by both blockers
         let result = run(
@@ -2693,7 +2725,7 @@ tier = "standard"
         assert_eq!(parent.status, Status::Waiting);
         assert!(parent.wait_condition.is_some());
 
-        use workgraph::graph::{WaitCondition, WaitSpec};
+        use worksgood::graph::{WaitCondition, WaitSpec};
         match parent.wait_condition.as_ref().unwrap() {
             WaitSpec::Any(conditions) => {
                 assert_eq!(conditions.len(), 2);
@@ -2778,6 +2810,66 @@ tier = "standard"
         assert!(
             result.unwrap_err().to_string().contains("in-progress"),
             "Should fail when parent is not in-progress"
+        );
+    }
+
+    // ---- inherit-on-attach (WCC profile propagation) ----
+
+    #[test]
+    fn inherit_profile_from_neighbors_picks_profiled_neighbor() {
+        let mut graph = WorkGraph::new();
+        let mut parent = stub_task("parent");
+        parent.profile = Some("burn".to_string());
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(stub_task("unprofiled")));
+
+        // Neighbor carries a profile → inherit it.
+        assert_eq!(
+            inherit_profile_from_neighbors(&graph, &["parent".to_string()]),
+            Some("burn".to_string())
+        );
+        // No profiled neighbor → None (stays on global active profile).
+        assert_eq!(
+            inherit_profile_from_neighbors(&graph, &["unprofiled".to_string()]),
+            None
+        );
+        // Deterministic tie-break: lexicographically smallest profile wins.
+        let mut g2 = WorkGraph::new();
+        let mut a = stub_task("a");
+        a.profile = Some("zeta".to_string());
+        let mut b = stub_task("b");
+        b.profile = Some("alpha".to_string());
+        g2.add_node(Node::Task(a));
+        g2.add_node(Node::Task(b));
+        assert_eq!(
+            inherit_profile_from_neighbors(&g2, &["a".to_string(), "b".to_string()]),
+            Some("alpha".to_string())
+        );
+    }
+
+    /// `wg add 'child' --after <profiled-parent>` makes the child inherit the
+    /// parent's WCC profile — the mechanism by which tasks added to a profiled
+    /// component later honor the profile.
+    #[test]
+    fn add_child_inherits_parent_profile() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe { std::env::remove_var("WG_TASK_ID") };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = super::graph_path(dir.path());
+        let mut graph = WorkGraph::new();
+        let mut parent = stub_task("parent");
+        parent.profile = Some("burn".to_string());
+        graph.add_node(Node::Task(parent));
+        save_graph(&graph, &path).unwrap();
+
+        add_minimal_task(dir.path(), "Child", "child", &["parent".to_string()]).unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        assert_eq!(
+            graph.get_task("child").unwrap().profile.as_deref(),
+            Some("burn"),
+            "child added --after a profiled parent must inherit the profile"
         );
     }
 }

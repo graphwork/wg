@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-use workgraph::model_benchmarks::{
+use worksgood::model_benchmarks::{
     self, BenchmarkPricing, BenchmarkRegistry, Benchmarks, Fitness, FitnessComponents,
     ModelBenchmark, Popularity, RegistrySource,
 };
@@ -341,7 +341,7 @@ fn smoke_fresh_repo_short_name_resolution() {
     );
 
     // Verify the task was created with the resolved model.
-    let graph = workgraph::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let graph = worksgood::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("hello-world").unwrap();
     assert!(
         task.model
@@ -414,7 +414,7 @@ fn smoke_no_silent_claude_fallback_on_add() {
         ],
     );
 
-    let graph = workgraph::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let graph = worksgood::parser::load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("non-claude-task").unwrap();
 
     // Model should NOT be a claude model.
@@ -728,7 +728,7 @@ fn smoke_curated_benchmarks_populate_scores() {
 /// Short name resolution: unit test for `resolve_short_model_name`.
 #[test]
 fn smoke_short_name_resolution_unit() {
-    use workgraph::executor::native::openai_client::resolve_short_model_name;
+    use worksgood::executor::native::openai_client::resolve_short_model_name;
 
     let tmp = TempDir::new().unwrap();
 
@@ -778,7 +778,7 @@ fn smoke_short_name_resolution_unit() {
 /// Short name resolution: no cache file → graceful failure (no panic).
 #[test]
 fn smoke_short_name_resolution_no_cache() {
-    use workgraph::executor::native::openai_client::resolve_short_model_name;
+    use worksgood::executor::native::openai_client::resolve_short_model_name;
 
     let tmp = TempDir::new().unwrap();
     // No model_cache.json written.

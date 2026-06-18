@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use workgraph::graph::TokenUsage;
-use workgraph::parser::modify_graph;
+use worksgood::graph::TokenUsage;
+use worksgood::parser::modify_graph;
 
 /// Set or accumulate token usage on a task from a JSON string.
 ///
@@ -45,8 +45,8 @@ pub fn run(dir: &Path, task_id: &str, json: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn setup_dir_with_task(task_id: &str) -> TempDir {
         let tmp = TempDir::new().unwrap();

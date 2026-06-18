@@ -12,10 +12,10 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::collapsible_else_if)]
 
-// Self-alias so `use workgraph::` paths in #[path]-included command modules
+// Self-alias so `use worksgood::` paths in #[path]-included command modules
 // resolve correctly when compiled as part of the library crate.
 #[cfg(feature = "test-support")]
-extern crate self as workgraph;
+extern crate self as worksgood;
 
 pub mod agency;
 pub mod atomic_file;

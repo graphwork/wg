@@ -10,14 +10,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::journal::{self, Journal, JournalEntryKind};
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::journal::{self, Journal, JournalEntryKind};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::resume::{ResumeConfig, load_resume_data};
+use worksgood::executor::native::tools::ToolRegistry;
 
 /// A mock provider that returns pre-scripted responses.
 struct MockProvider {
@@ -119,8 +119,8 @@ impl Provider for MockProvider {
 fn setup_workgraph(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let graph_path = dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 }
 
 /// Helper: run an agent to completion, simulating a first session.
@@ -184,7 +184,7 @@ async fn test_agent_resumes_from_journal() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
+                role: worksgood::executor::native::client::Role::User,
                 content: vec![ContentBlock::Text {
                     text: "Start the task.".to_string(),
                 }],
@@ -195,7 +195,7 @@ async fn test_agent_resumes_from_journal() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::Assistant,
+                role: worksgood::executor::native::client::Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "I'll start by reading the code...".to_string(),
                 }],
@@ -245,7 +245,7 @@ async fn test_agent_resumes_from_journal() {
     // The resume user message should mention "RESUMED"
     let resume_msg = entries.iter().find(|e| {
         if let JournalEntryKind::Message { role, content, .. } = &e.kind {
-            *role == workgraph::executor::native::client::Role::User
+            *role == worksgood::executor::native::client::Role::User
                 && content.iter().any(|b| match b {
                     ContentBlock::Text { text } => text.contains("RESUMED"),
                     _ => false,
@@ -289,7 +289,7 @@ async fn test_large_journal_compacted_on_resume() {
             let large_text = format!("Message {} with lots of content: {}", i, "x".repeat(5000));
             journal
                 .append(JournalEntryKind::Message {
-                    role: workgraph::executor::native::client::Role::User,
+                    role: worksgood::executor::native::client::Role::User,
                     content: vec![ContentBlock::Text {
                         text: large_text.clone(),
                     }],
@@ -300,7 +300,7 @@ async fn test_large_journal_compacted_on_resume() {
                 .unwrap();
             journal
                 .append(JournalEntryKind::Message {
-                    role: workgraph::executor::native::client::Role::Assistant,
+                    role: worksgood::executor::native::client::Role::Assistant,
                     content: vec![ContentBlock::Text { text: large_text }],
                     usage: Some(Usage {
                         input_tokens: 1000,
@@ -413,7 +413,7 @@ async fn test_stale_tool_results_detected() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
+                role: worksgood::executor::native::client::Role::User,
                 content: vec![ContentBlock::Text {
                     text: "Read the file.".to_string(),
                 }],
@@ -424,7 +424,7 @@ async fn test_stale_tool_results_detected() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::Assistant,
+                role: worksgood::executor::native::client::Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
                     id: "tu-1".to_string(),
                     name: "read_file".to_string(),
@@ -451,7 +451,7 @@ async fn test_stale_tool_results_detected() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
+                role: worksgood::executor::native::client::Role::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "tu-1".to_string(),
                     content: "fn original() {}".to_string(),
@@ -554,7 +554,7 @@ async fn test_no_resume_flag_fresh_start() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
+                role: worksgood::executor::native::client::Role::User,
                 content: vec![ContentBlock::Text {
                     text: "Prior session message.".to_string(),
                 }],
@@ -565,7 +565,7 @@ async fn test_no_resume_flag_fresh_start() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::Assistant,
+                role: worksgood::executor::native::client::Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "Prior session response.".to_string(),
                 }],
@@ -812,7 +812,7 @@ async fn test_resume_provider_agnostic() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
+                role: worksgood::executor::native::client::Role::User,
                 content: vec![ContentBlock::Text {
                     text: "Hello from OpenAI session.".to_string(),
                 }],
@@ -823,7 +823,7 @@ async fn test_resume_provider_agnostic() {
             .unwrap();
         journal
             .append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::Assistant,
+                role: worksgood::executor::native::client::Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "Working on it...".to_string(),
                 }],

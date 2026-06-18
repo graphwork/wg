@@ -92,7 +92,7 @@ pub fn infer(
         // but the supervisor is still streaming. The disk file is
         // authoritative for "tokens currently being written."
     }
-    if !workgraph::chat::read_streaming(workgraph_dir, cid).is_empty() {
+    if !worksgood::chat::read_streaming(workgraph_dir, cid).is_empty() {
         return ChatTabState::Responding;
     }
     ChatTabState::Idle
@@ -154,7 +154,7 @@ mod tests {
     fn responding_when_streaming_file_nonempty() {
         let tmp = tmp_dir();
         // Write a streaming partial response to disk.
-        workgraph::chat::write_streaming(tmp.path(), 3, "partial reply tokens").unwrap();
+        worksgood::chat::write_streaming(tmp.path(), 3, "partial reply tokens").unwrap();
         let state = infer(tmp.path(), 3, true, None);
         assert_eq!(state, ChatTabState::Responding);
         assert_eq!(state.color(), Color::Yellow);
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn streaming_file_only_affects_matching_cid() {
         let tmp = tmp_dir();
-        workgraph::chat::write_streaming(tmp.path(), 5, "tokens for 5").unwrap();
+        worksgood::chat::write_streaming(tmp.path(), 5, "tokens for 5").unwrap();
         // cid 7 has no streaming file — should be Idle.
         let state_other = infer(tmp.path(), 7, true, None);
         assert_eq!(state_other, ChatTabState::Idle);

@@ -19,15 +19,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
-use workgraph::config::CLAUDE_SONNET_MODEL_ID;
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::config::CLAUDE_SONNET_MODEL_ID;
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
 };
-use workgraph::executor::native::journal::{self, Journal, JournalEntryKind};
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::journal::{self, Journal, JournalEntryKind};
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::resume::{ResumeConfig, load_resume_data};
+use worksgood::executor::native::tools::ToolRegistry;
 
 // ── Mock providers ──────────────────────────────────────────────────────
 
@@ -236,13 +236,13 @@ impl Provider for MockAnthropicProvider {
 fn setup_workgraph(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let graph_path = dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 }
 
 /// Extract all entries of a specific kind from a journal for comparison.
 fn extract_entry_types(
-    entries: &[workgraph::executor::native::journal::JournalEntry],
+    entries: &[worksgood::executor::native::journal::JournalEntry],
 ) -> Vec<&str> {
     entries
         .iter()

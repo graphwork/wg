@@ -6,9 +6,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::config::Config;
-use workgraph::parser::load_graph;
-use workgraph::runs::{self, RunMeta};
+use worksgood::config::Config;
+use worksgood::parser::load_graph;
+use worksgood::runs::{self, RunMeta};
 
 /// List all run snapshots.
 pub fn run_list(dir: &Path, json: bool) -> Result<()> {
@@ -107,7 +107,7 @@ pub fn run_restore(dir: &Path, run_id: &str, json: bool) -> Result<()> {
 
     // Record provenance
     let config = Config::load_or_default(dir);
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "restore",
         None,
@@ -260,9 +260,9 @@ pub fn run_diff(dir: &Path, run_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::Status;
-    use workgraph::parser::save_graph;
-    use workgraph::test_helpers::{make_task, make_task_with_status, setup_workgraph};
+    use worksgood::graph::Status;
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::{make_task, make_task_with_status, setup_workgraph};
 
     fn make_dir() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();

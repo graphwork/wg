@@ -7,11 +7,11 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::chat_id::{
+use worksgood::chat_id::{
     CHAT_LOOP_TAG, CHAT_PREFIX, LEGACY_COORDINATOR_LOOP_TAG, LEGACY_COORDINATOR_PREFIX,
 };
-use workgraph::graph::LogEntry;
-use workgraph::parser::modify_graph;
+use worksgood::graph::LogEntry;
+use worksgood::parser::modify_graph;
 
 use super::graph_path;
 
@@ -61,7 +61,7 @@ pub fn run_chat_rename(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
 
     if dry_run {
-        let graph = workgraph::parser::load_graph(&graph_path)?;
+        let graph = worksgood::parser::load_graph(&graph_path)?;
         for task in graph.tasks() {
             if task.id.starts_with(LEGACY_COORDINATOR_PREFIX) {
                 let suffix = &task.id[LEGACY_COORDINATOR_PREFIX.len()..];
@@ -139,7 +139,7 @@ pub fn run_chat_rename(dir: &Path, dry_run: bool, json: bool) -> Result<()> {
                         t.log.push(LogEntry {
                             timestamp: now.clone(),
                             actor: Some("migration".to_string()),
-                            user: Some(workgraph::current_user()),
+                            user: Some(worksgood::current_user()),
                             message: format!(
                                 "wg migrate chat-rename: renamed task id {} -> {}",
                                 old_id, new_id
@@ -218,10 +218,10 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
     let mut result = RetireCompactArchiveResult::default();
 
     if dry_run {
-        let graph = workgraph::parser::load_graph(&graph_path)?;
+        let graph = worksgood::parser::load_graph(&graph_path)?;
         for task in graph.tasks() {
             if (task.id.starts_with(".compact-") || task.id.starts_with(".archive-"))
-                && task.status != workgraph::graph::Status::Abandoned
+                && task.status != worksgood::graph::Status::Abandoned
             {
                 result.abandoned_ids.push(task.id.clone());
             }
@@ -234,25 +234,25 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
             }
         }
     } else {
-        workgraph::parser::modify_graph(&graph_path, |graph| {
+        worksgood::parser::modify_graph(&graph_path, |graph| {
             let all_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
             for tid in &all_ids {
                 let is_target = tid.starts_with(".compact-") || tid.starts_with(".archive-");
                 let already_abandoned = graph
                     .get_task(tid)
-                    .map(|t| t.status == workgraph::graph::Status::Abandoned)
+                    .map(|t| t.status == worksgood::graph::Status::Abandoned)
                     .unwrap_or(false);
                 if is_target
                     && !already_abandoned
                     && let Some(t) = graph.get_task_mut(tid)
                 {
-                    t.status = workgraph::graph::Status::Abandoned;
+                    t.status = worksgood::graph::Status::Abandoned;
                     t.completed_at.get_or_insert_with(|| now.clone());
                     t.cycle_config = None;
                     t.log.push(LogEntry {
                         timestamp: now.clone(),
                         actor: Some("migration".to_string()),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message:
                             "wg migrate retire-compact-archive: retired .compact-N/.archive-N \
                              cycle scaffolding"
@@ -306,7 +306,7 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Status, Task, WorkGraph};
+    use worksgood::graph::{Status, Task, WorkGraph};
 
     fn write_graph(dir: &Path, tasks: Vec<Task>) {
         let workgraph_dir = dir.join(".wg");
@@ -314,9 +314,9 @@ mod tests {
         let graph_path = workgraph_dir.join("graph.jsonl");
         let mut graph = WorkGraph::new();
         for t in tasks {
-            graph.add_node(workgraph::graph::Node::Task(t));
+            graph.add_node(worksgood::graph::Node::Task(t));
         }
-        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
 
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
-        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
 
         // .chat-3 exists with renamed title and tag
         let migrated = graph.get_task(".chat-3").expect("chat-3 should exist");
@@ -374,7 +374,7 @@ mod tests {
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
-        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert!(graph.get_task(".chat-0").is_some());
         assert!(graph.get_task(".coordinator-0").is_none());
     }
@@ -412,7 +412,7 @@ mod tests {
 
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
-        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -444,7 +444,7 @@ mod tests {
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
-        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -466,7 +466,7 @@ mod tests {
 
         run_chat_rename(&dir.join(".wg"), true, true).unwrap();
 
-        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         // Legacy id still present, no chat- yet
         assert!(graph.get_task(".coordinator-1").is_some());
         assert!(graph.get_task(".chat-1").is_none());
@@ -519,7 +519,7 @@ pub fn run_config_migrate(
     dry_run: bool,
     json: bool,
 ) -> Result<()> {
-    let global_path = workgraph::config::Config::global_config_path()?;
+    let global_path = worksgood::config::Config::global_config_path()?;
     let local_path = workgraph_dir.join("config.toml");
 
     let mut results = Vec::new();
@@ -881,7 +881,7 @@ fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, S
         // <deprecated> is in `deprecated_provider_prefix_replacement`.
         if let Some((prefix, rest)) = s.split_once(':')
             && let Some(replacement) =
-                workgraph::config::deprecated_provider_prefix_replacement(prefix)
+                worksgood::config::deprecated_provider_prefix_replacement(prefix)
         {
             let new_str = format!("{}:{}", replacement, rest);
             rewritten.push((path.to_string(), s.clone(), new_str.clone()));

@@ -42,11 +42,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use chrono::{DateTime, Utc};
 
-use workgraph::agency;
-use workgraph::atomic_file::{quarantine_corrupt_file, write_atomic};
-use workgraph::config::Config;
-use workgraph::parser::load_graph;
-use workgraph::service::registry::AgentRegistry;
+use worksgood::agency;
+use worksgood::atomic_file::{quarantine_corrupt_file, write_atomic};
+use worksgood::config::Config;
+use worksgood::parser::load_graph;
+use worksgood::service::registry::AgentRegistry;
 
 use super::{graph_path, is_process_alive, kill_process_force, kill_process_graceful};
 
@@ -65,7 +65,7 @@ pub(crate) const PURGE_ACTIVE_THRESHOLD: Duration = Duration::from_secs(60);
 /// Does NOT consider `WG_CHAT_REF` or any env-based hint (callers wire that
 /// in separately as the higher-priority self-protection check).
 pub(crate) fn is_chat_active_on_disk(dir: &Path, chat_id: u32) -> bool {
-    !workgraph::chat::chat_session_is_idle(dir, chat_id, PURGE_ACTIVE_THRESHOLD)
+    !worksgood::chat::chat_session_is_idle(dir, chat_id, PURGE_ACTIVE_THRESHOLD)
 }
 
 /// Best-effort: parse the chat ID the calling `wg` invocation thinks it is
@@ -80,7 +80,7 @@ pub(crate) fn detect_caller_chat_id_from_env() -> Option<u32> {
     let raw = std::env::var("WG_CHAT_REF")
         .ok()
         .or_else(|| std::env::var("WG_CHAT_ID").ok())?;
-    if let Some(id) = workgraph::chat_id::parse_chat_task_id(&raw) {
+    if let Some(id) = worksgood::chat_id::parse_chat_task_id(&raw) {
         return Some(id);
     }
     if let Some(rest) = raw.strip_prefix("coordinator-")
@@ -112,11 +112,11 @@ fn resolve_service_coordinator_settings(
     // Preflight native provider for coordinator agent when using native executor
     if effective_executor == "native" {
         let resolved = if let Some(raw_model) = explicit_model.clone() {
-            let spec = workgraph::config::parse_model_spec(&raw_model);
+            let spec = worksgood::config::parse_model_spec(&raw_model);
             let provider = spec
                 .provider
                 .as_deref()
-                .map(workgraph::config::provider_to_native_provider)
+                .map(worksgood::config::provider_to_native_provider)
                 .map(String::from)
                 .or_else(|| config.coordinator.provider.clone());
             let endpoint = config
@@ -124,7 +124,7 @@ fn resolve_service_coordinator_settings(
                 .and_then(|entry| entry.endpoint.clone());
             (spec.model_id, provider, endpoint)
         } else {
-            let resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Default);
+            let resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Default);
             let provider = resolved
                 .provider
                 .or_else(|| config.coordinator.provider.clone());
@@ -136,7 +136,7 @@ fn resolve_service_coordinator_settings(
             (resolved.model, provider, endpoint)
         };
 
-        workgraph::executor::native::provider::create_provider_ext(
+        worksgood::executor::native::provider::create_provider_ext(
             dir,
             &resolved.0,
             resolved.1.as_deref(),
@@ -581,7 +581,7 @@ pub struct SessionCostTracking {
     /// Last OpenRouter key status check
     pub last_key_check: Option<chrono::DateTime<chrono::Utc>>,
     /// Cached key status from last check
-    pub key_status: Option<workgraph::executor::native::openai_client::OpenRouterKeyStatus>,
+    pub key_status: Option<worksgood::executor::native::openai_client::OpenRouterKeyStatus>,
 }
 
 impl Default for SessionCostTracking {
@@ -609,7 +609,7 @@ impl SessionCostTracking {
     /// Update the cached key status
     pub fn update_key_status(
         &mut self,
-        status: workgraph::executor::native::openai_client::OpenRouterKeyStatus,
+        status: worksgood::executor::native::openai_client::OpenRouterKeyStatus,
     ) {
         self.last_key_check = Some(chrono::Utc::now());
         self.key_status = Some(status);
@@ -1413,8 +1413,8 @@ fn route_chat_to_agent(
         return Ok(0);
     }
 
-    let inbox_cursor = workgraph::chat::read_coordinator_cursor_for(dir, coordinator_id)?;
-    let new_messages = workgraph::chat::read_inbox_since_for(dir, coordinator_id, inbox_cursor)?;
+    let inbox_cursor = worksgood::chat::read_coordinator_cursor_for(dir, coordinator_id)?;
+    let new_messages = worksgood::chat::read_inbox_since_for(dir, coordinator_id, inbox_cursor)?;
 
     if new_messages.is_empty() {
         return Ok(0);
@@ -1436,7 +1436,7 @@ fn route_chat_to_agent(
                 coordinator_id, e
             ));
             // Write an error response so the user isn't left hanging
-            let _ = workgraph::chat::append_outbox_for(
+            let _ = worksgood::chat::append_outbox_for(
                 dir,
                 coordinator_id,
                 "The chat agent is not available. Please try again.",
@@ -1450,7 +1450,7 @@ fn route_chat_to_agent(
 
     // Advance the coordinator cursor past these messages
     if let Some(last) = new_messages.last() {
-        workgraph::chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)?;
+        worksgood::chat::write_coordinator_cursor_for(dir, coordinator_id, last.id)?;
     }
 
     Ok(count)
@@ -1519,7 +1519,7 @@ fn record_tick_events(
 
         for task in graph.tasks() {
             match task.status {
-                workgraph::graph::Status::Done => {
+                worksgood::graph::Status::Done => {
                     if let Some(ref completed_at) = task.completed_at
                         && let Ok(dt) = completed_at.parse::<DateTime<Utc>>()
                         && dt > recent_cutoff
@@ -1530,7 +1530,7 @@ fn record_tick_events(
                         });
                     }
                 }
-                workgraph::graph::Status::Failed => {
+                worksgood::graph::Status::Failed => {
                     // Check the last log entry for recency
                     if let Some(last_log) = task.log.last()
                         && let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>()
@@ -1560,10 +1560,10 @@ fn record_tick_events(
 /// notifications through the configured [`NotificationRouter`]. This is called
 /// after each coordinator tick.
 fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
-    use workgraph::notify::NotificationRouter;
-    use workgraph::notify::config::NotifyConfig;
-    use workgraph::notify::dispatch::{TaskEvent, TaskEventKind};
-    use workgraph::notify::webhook::WebhookChannel;
+    use worksgood::notify::NotificationRouter;
+    use worksgood::notify::config::NotifyConfig;
+    use worksgood::notify::dispatch::{TaskEvent, TaskEventKind};
+    use worksgood::notify::webhook::WebhookChannel;
 
     // Load notification config — if not present, notifications are disabled.
     let config = match NotifyConfig::load(Some(dir)) {
@@ -1584,7 +1584,7 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 
     // Build channels from config. Each channel type is constructed if its
     // config section exists.
-    let mut channels: Vec<Box<dyn workgraph::notify::NotificationChannel>> = Vec::new();
+    let mut channels: Vec<Box<dyn worksgood::notify::NotificationChannel>> = Vec::new();
 
     // Webhook channel (always available, no external runtime deps)
     if config.has_channel_config("webhook")
@@ -1592,7 +1592,7 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
     {
         match val
             .clone()
-            .try_into::<workgraph::notify::webhook::WebhookConfig>()
+            .try_into::<worksgood::notify::webhook::WebhookConfig>()
         {
             Ok(wh_config) => {
                 channels.push(Box::new(WebhookChannel::new(wh_config)));
@@ -1605,9 +1605,9 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 
     // Telegram channel (if configured)
     if config.has_channel_config("telegram") {
-        match workgraph::notify::telegram::TelegramConfig::from_notify_config(&config) {
+        match worksgood::notify::telegram::TelegramConfig::from_notify_config(&config) {
             Ok(tg_config) => {
-                channels.push(Box::new(workgraph::notify::telegram::TelegramChannel::new(
+                channels.push(Box::new(worksgood::notify::telegram::TelegramChannel::new(
                     tg_config,
                 )));
             }
@@ -1635,7 +1635,7 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 
     for task in graph.tasks() {
         match task.status {
-            workgraph::graph::Status::Failed => {
+            worksgood::graph::Status::Failed => {
                 if let Some(last_log) = task.log.last()
                     && let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>()
                     && dt > recent_cutoff
@@ -1648,7 +1648,7 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
                     });
                 }
             }
-            workgraph::graph::Status::Blocked => {
+            worksgood::graph::Status::Blocked => {
                 if let Some(last_log) = task.log.last()
                     && let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>()
                     && dt > recent_cutoff
@@ -1684,7 +1684,7 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
     for event in &events {
         // Use task_id as the routing target (webhook will parse it)
         let target = &event.task_id;
-        match rt.block_on(workgraph::notify::dispatch::dispatch_event(
+        match rt.block_on(worksgood::notify::dispatch::dispatch_event(
             &router, target, event,
         )) {
             Ok(Some((ch, _mid))) => {
@@ -1732,7 +1732,7 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
             || task.id.starts_with(".registry-refresh-")
             || task.id.starts_with(".user-")
             || task.id.starts_with(".compact-");
-        if is_legacy && task.status != workgraph::graph::Status::Abandoned {
+        if is_legacy && task.status != worksgood::graph::Status::Abandoned {
             stale_ids.push(task.id.clone());
         }
     }
@@ -1745,11 +1745,11 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     let has_compact_or_archive = stale_ids
         .iter()
         .any(|id| id.starts_with(".compact-") || id.starts_with(".archive-"));
-    match workgraph::parser::modify_graph(&gp, |graph| {
+    match worksgood::parser::modify_graph(&gp, |graph| {
         let mut changed = false;
         for task_id in &stale_ids {
             if let Some(task) = graph.get_task_mut(task_id) {
-                task.status = workgraph::graph::Status::Abandoned;
+                task.status = worksgood::graph::Status::Abandoned;
                 task.completed_at
                     .get_or_insert_with(|| Utc::now().to_rfc3339());
                 task.cycle_config = None;
@@ -1761,10 +1761,10 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
                     "Superseded by native coordinator control plane; no longer graph-managed"
                         .to_string()
                 };
-                task.log.push(workgraph::graph::LogEntry {
+                task.log.push(worksgood::graph::LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: msg,
                 });
                 // Also drop dependencies on .compact-* / .archive-* tasks from
@@ -1799,20 +1799,20 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
 
 /// Run per-coordinator chat compaction when the message threshold is exceeded.
 fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
-    for coordinator_id in workgraph::chat::list_coordinator_ids(dir) {
-        if !workgraph::service::chat_compactor::should_compact(dir, coordinator_id) {
+    for coordinator_id in worksgood::chat::list_coordinator_ids(dir) {
+        if !worksgood::service::chat_compactor::should_compact(dir, coordinator_id) {
             continue;
         }
 
         // Capture state before compaction for the event log
         let state_before =
-            workgraph::service::chat_compactor::ChatCompactorState::load(dir, coordinator_id);
+            worksgood::service::chat_compactor::ChatCompactorState::load(dir, coordinator_id);
         let msgs_before = state_before.last_message_count;
 
-        match workgraph::service::chat_compactor::run_chat_compaction(dir, coordinator_id) {
+        match worksgood::service::chat_compactor::run_chat_compaction(dir, coordinator_id) {
             Ok(path) => {
                 // Record compaction event to operations.jsonl so the TUI can show it
-                let state_after = workgraph::service::chat_compactor::ChatCompactorState::load(
+                let state_after = worksgood::service::chat_compactor::ChatCompactorState::load(
                     dir,
                     coordinator_id,
                 );
@@ -1824,7 +1824,7 @@ fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
                     "compaction_count_before": state_before.compaction_count,
                     "compaction_count_after": state_after.compaction_count,
                 });
-                let _ = workgraph::provenance::record(
+                let _ = worksgood::provenance::record(
                     dir,
                     "compact",
                     None,
@@ -1851,7 +1851,7 @@ fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
 
 /// Run automatic archival directly from the daemon without graph control tasks.
 fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &DaemonLogger) {
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let retention_days = config.coordinator.archive_retention_days;
 
     match crate::commands::archive::run_automatic(dir, retention_days) {
@@ -1911,7 +1911,7 @@ const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from
 /// state in-memory so a fresh daemon process always retries once before
 /// re-tripping.
 fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &DaemonLogger) {
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let interval = config.coordinator.registry_refresh_interval;
     if interval == 0 {
         return; // Disabled
@@ -1929,7 +1929,7 @@ fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &D
 
     // Time gate: check if enough time has elapsed since the last fetch.
     {
-        if let Ok(Some(existing)) = workgraph::model_benchmarks::BenchmarkRegistry::load(dir)
+        if let Ok(Some(existing)) = worksgood::model_benchmarks::BenchmarkRegistry::load(dir)
             && let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at)
         {
             let age = chrono::Utc::now().signed_duration_since(fetched);
@@ -1992,10 +1992,10 @@ pub(crate) fn record_registry_refresh_outcome(
 /// Execute the actual registry refresh: fetch from OpenRouter, diff, save.
 /// Returns a human-readable summary string on success.
 fn do_registry_refresh(dir: &Path) -> Result<String> {
-    use workgraph::executor::native::openai_client::{
+    use worksgood::executor::native::openai_client::{
         fetch_openrouter_models_blocking, resolve_openai_api_key_from_dir,
     };
-    use workgraph::model_benchmarks::{self, BenchmarkRegistry, diff_registries, format_changes};
+    use worksgood::model_benchmarks::{self, BenchmarkRegistry, diff_registries, format_changes};
 
     // Load existing registry (if any) for diffing.
     let old_registry = BenchmarkRegistry::load(dir)?;
@@ -2143,7 +2143,7 @@ pub fn run_daemon(
         .and_then(|p| Config::load_toml_value(&p).ok());
     let legacy_local = Config::load_toml_value(&dir.join("config.toml")).ok();
     for raw in [legacy_global, legacy_local].into_iter().flatten() {
-        for dep in workgraph::config::detect_deprecated_keys(&raw) {
+        for dep in worksgood::config::detect_deprecated_keys(&raw) {
             logger.warn(&format!(
                 "Deprecated config key '{}' is still accepted; please rename to '{}'",
                 dep.path, dep.replacement,
@@ -2203,7 +2203,7 @@ pub fn run_daemon(
     ));
 
     // Aggregate usage stats on startup
-    match workgraph::usage::aggregate_usage_stats(&dir) {
+    match worksgood::usage::aggregate_usage_stats(&dir) {
         Ok(count) if count > 0 => {
             logger.info(&format!(
                 "Aggregated {} usage log entries on startup",
@@ -2243,7 +2243,7 @@ pub fn run_daemon(
 
     // Record executor/model combo in launcher history
     if let Err(e) =
-        workgraph::launcher_history::record_use(&workgraph::launcher_history::HistoryEntry::new(
+        worksgood::launcher_history::record_use(&worksgood::launcher_history::HistoryEntry::new(
             &daemon_cfg.executor,
             daemon_cfg.model.as_deref(),
             None,
@@ -2300,7 +2300,7 @@ pub fn run_daemon(
         coordinator_agent::CoordinatorAgent,
     > = std::collections::HashMap::new();
     if enable_coordinator_agent {
-        let to_spawn = workgraph::service::enumerate_chat_supervisors_for_boot(&dir);
+        let to_spawn = worksgood::service::enumerate_chat_supervisors_for_boot(&dir);
         if to_spawn.is_empty() {
             logger.info(
                 "No chat-loop tasks in graph — no chat supervisors spawned at boot. \
@@ -2412,7 +2412,7 @@ pub fn run_daemon(
         }
     };
 
-    let _graph_watcher: Option<workgraph::service::graph_watcher::GraphWatcher> = if config
+    let _graph_watcher: Option<worksgood::service::graph_watcher::GraphWatcher> = if config
         .coordinator
         .graph_watch_enabled
         && graph_pipe_write_fd >= 0
@@ -2420,7 +2420,7 @@ pub fn run_daemon(
         let debounce_ms = config.coordinator.graph_watch_debounce_ms;
         let graph_file = super::graph_path(&dir);
         let pipe_w = graph_pipe_write_fd;
-        match workgraph::service::graph_watcher::GraphWatcher::start(
+        match worksgood::service::graph_watcher::GraphWatcher::start(
             &graph_file,
             Duration::from_millis(debounce_ms),
             move || {
@@ -2797,7 +2797,7 @@ pub fn run_daemon(
             self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
 
             // Aggregate usage stats periodically
-            match workgraph::usage::aggregate_usage_stats(&dir) {
+            match worksgood::usage::aggregate_usage_stats(&dir) {
                 Ok(count) if count > 0 => {
                     logger.info(&format!("Aggregated {} usage log entries", count));
                 }
@@ -3241,7 +3241,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         .map(|started| {
             let now = chrono::Utc::now();
             let duration = now.signed_duration_since(started);
-            workgraph::format_duration(duration.num_seconds(), false)
+            worksgood::format_duration(duration.num_seconds(), false)
         })
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -3502,7 +3502,7 @@ pub fn run_pause(_dir: &Path, _json: bool) -> Result<()> {
 #[cfg(unix)]
 pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
     // Clear provider health pause state before resuming coordinator
-    match workgraph::service::ProviderHealth::load(dir) {
+    match worksgood::service::ProviderHealth::load(dir) {
         Ok(mut provider_health) => {
             let was_paused = provider_health.service_paused;
             let paused_providers: Vec<_> = provider_health
@@ -3976,7 +3976,7 @@ pub fn run_purge_chats(dir: &Path, json: bool, include_active: bool) -> Result<(
             if !skipped.is_empty() {
                 let formatted: Vec<String> = skipped
                     .iter()
-                    .map(|id| workgraph::chat_id::format_chat_task_id(*id))
+                    .map(|id| worksgood::chat_id::format_chat_task_id(*id))
                     .collect();
                 print!(
                     ", skipped {} active chat(s) ({})",
@@ -4015,7 +4015,7 @@ fn print_purge_summary(data: &serde_json::Value, include_active: bool) {
             let reason = entry.get("reason").and_then(|r| r.as_str()).unwrap_or("");
             if reason == "active" || reason == "caller chat" {
                 if let Some(id) = entry.get("chat_id").and_then(|v| v.as_u64()) {
-                    skipped_active.push(workgraph::chat_id::format_chat_task_id(id as u32));
+                    skipped_active.push(worksgood::chat_id::format_chat_task_id(id as u32));
                 }
             } else {
                 skipped_already += 1;
@@ -4063,20 +4063,20 @@ fn direct_purge_chats(
 ) -> Result<DirectPurgeResult> {
     let graph_path = crate::commands::graph_path(dir);
     let mut result = DirectPurgeResult::default();
-    workgraph::parser::modify_graph(&graph_path, |graph| {
+    worksgood::parser::modify_graph(&graph_path, |graph| {
         let mut chat_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         for task in graph.tasks() {
             let has_chat_tag = task
                 .tags
                 .iter()
-                .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+                .any(|t| worksgood::chat_id::is_chat_loop_tag(t));
             if !has_chat_tag {
                 continue;
             }
             if task.tags.iter().any(|t| t == "archived") {
                 continue;
             }
-            if let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) {
+            if let Some(id) = worksgood::chat_id::parse_chat_task_id(&task.id) {
                 chat_ids.insert(id);
             }
         }
@@ -4096,7 +4096,7 @@ fn direct_purge_chats(
                     continue;
                 }
             }
-            let new_id = workgraph::chat_id::format_chat_task_id(*id);
+            let new_id = worksgood::chat_id::format_chat_task_id(*id);
             let legacy_id = format!(".coordinator-{}", id);
             let resolved = if graph.get_task(&new_id).is_some() {
                 Some(new_id.clone())
@@ -4107,16 +4107,16 @@ fn direct_purge_chats(
             };
             let Some(rid) = resolved else { continue };
             let task = graph.get_task_mut(&rid).unwrap();
-            task.status = workgraph::graph::Status::Done;
+            task.status = worksgood::graph::Status::Done;
             task.tags
-                .retain(|t| !workgraph::chat_id::is_chat_loop_tag(t));
+                .retain(|t| !worksgood::chat_id::is_chat_loop_tag(t));
             if !task.tags.contains(&"archived".to_string()) {
                 task.tags.push("archived".to_string());
             }
-            task.log.push(workgraph::graph::LogEntry {
+            task.log.push(worksgood::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("wg service purge-chats".to_string()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Chat {} purged (daemon offline)", id),
             });
             result.purged.push(*id);
@@ -4669,13 +4669,13 @@ mod tests {
 
     #[test]
     fn test_cleanup_legacy_daemon_tasks_preserves_coordinator_tasks() {
-        use workgraph::graph::{Node, Status, Task};
+        use worksgood::graph::{Node, Status, Task};
 
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
         let gp = dir.join("graph.jsonl");
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         // .compact-* and .archive-* are now retired and should be abandoned on boot.
         for id in [
             ".coordinator-0",
@@ -4697,7 +4697,7 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &gp).unwrap();
+        worksgood::parser::save_graph(&graph, &gp).unwrap();
 
         let logger = DaemonLogger::open(dir).unwrap();
         cleanup_legacy_daemon_tasks(dir, &logger);
@@ -4727,8 +4727,8 @@ mod tests {
         let dir = temp_dir.path();
         let gp = dir.join("graph.jsonl");
 
-        let graph = workgraph::graph::WorkGraph::new();
-        workgraph::parser::save_graph(&graph, &gp).unwrap();
+        let graph = worksgood::graph::WorkGraph::new();
+        worksgood::parser::save_graph(&graph, &gp).unwrap();
 
         let logger = DaemonLogger::open(dir).unwrap();
         cleanup_legacy_daemon_tasks(dir, &logger);
@@ -5408,22 +5408,22 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-0".to_string(),
             title: "Chat 0".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["chat-loop".to_string()],
             ..Default::default()
         }));
-        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
             id: ".chat-1".to_string(),
             title: "Chat 1".to_string(),
-            status: workgraph::graph::Status::InProgress,
+            status: worksgood::graph::Status::InProgress,
             tags: vec!["chat-loop".to_string()],
             ..Default::default()
         }));
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Per-coord state files should be removed by purge.
         CoordinatorState {
@@ -5444,12 +5444,12 @@ mod tests {
         assert!(result.skipped_active.is_empty());
 
         // Graph: both chats archived.
-        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let t0 = g.get_task(".chat-0").unwrap();
-        assert_eq!(t0.status, workgraph::graph::Status::Done);
+        assert_eq!(t0.status, worksgood::graph::Status::Done);
         assert!(t0.tags.contains(&"archived".to_string()));
         let t1 = g.get_task(".chat-1").unwrap();
-        assert_eq!(t1.status, workgraph::graph::Status::Done);
+        assert_eq!(t1.status, worksgood::graph::Status::Done);
         assert!(t1.tags.contains(&"archived".to_string()));
 
         // State files: gone.
@@ -5473,21 +5473,21 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [5u32, 6, 7] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Mark .chat-5 as active by writing a fresh consumer cursor.
         // .chat-6 and .chat-7 stay idle (no cursor file, no inbox traffic).
-        workgraph::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
+        worksgood::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
 
         let result = direct_purge_chats(dir, false, None).expect("direct_purge_chats");
         assert_eq!(
@@ -5502,7 +5502,7 @@ mod tests {
         );
 
         // Verify graph state: .chat-5 still chat-loop tagged, others archived.
-        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let g = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let t5 = g.get_task(".chat-5").unwrap();
         assert!(
             t5.tags.iter().any(|t| t == "chat-loop"),
@@ -5525,20 +5525,20 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [5u32, 6] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // .chat-5 is active (fresh cursor); --include-active overrides.
-        workgraph::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
+        worksgood::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
 
         let result = direct_purge_chats(dir, true, None).expect("direct_purge_chats");
         assert_eq!(
@@ -5558,17 +5558,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [3u32, 4] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // No on-disk activity for either chat; pass caller_chat_id=3 via env hint.
         let result = direct_purge_chats(dir, false, Some(3)).expect("direct_purge_chats");
@@ -5584,17 +5584,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         for id in [10u32, 11, 12] {
-            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
-                id: workgraph::chat_id::format_chat_task_id(id),
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: worksgood::chat_id::format_chat_task_id(id),
                 title: format!("Chat {}", id),
-                status: workgraph::graph::Status::InProgress,
+                status: worksgood::graph::Status::InProgress,
                 tags: vec!["chat-loop".to_string()],
                 ..Default::default()
             }));
         }
-        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // No cursor files, no inbox messages — all idle.
         let result = direct_purge_chats(dir, false, None).expect("direct_purge_chats");

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
-use workgraph::agency::{
+use worksgood::agency::{
     AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, RoleComponent,
     composition_rules::{CompositionRule, CompositionRulesOverlay, load_composition_rules},
     filter_components_by_required_scope, required_scope_for_task,
@@ -225,7 +225,7 @@ fn test_composition_rules_reload_after_edit() {
     )
     .unwrap();
 
-    let mut watcher = workgraph::agency::composition_rules::CompositionRulesWatcher::new(&csv_path);
+    let mut watcher = worksgood::agency::composition_rules::CompositionRulesWatcher::new(&csv_path);
 
     let v1 = watcher.current().clone();
     assert_eq!(
@@ -258,7 +258,7 @@ fn test_composition_rules_watcher_picks_up_new_file() {
     let dir = tempdir().unwrap();
     let csv_path = dir.path().join("composition-rules.csv");
 
-    let mut watcher = workgraph::agency::composition_rules::CompositionRulesWatcher::new(&csv_path);
+    let mut watcher = worksgood::agency::composition_rules::CompositionRulesWatcher::new(&csv_path);
     assert!(watcher.current().rules.is_empty());
 
     fs::write(

@@ -114,14 +114,14 @@ fn test_quickstart_no_validation_flag() {
 /// of task descriptions, read by the agency evaluator.
 #[test]
 fn test_executor_prompt_no_validation_flag() {
-    let guide = workgraph::service::executor::DEFAULT_WG_GUIDE;
+    let guide = worksgood::service::executor::DEFAULT_WG_GUIDE;
     assert!(
         !guide.contains("--validation"),
         "DEFAULT_WG_GUIDE must not contain --validation flag, got:\n{}",
         guide
     );
 
-    let guidance = workgraph::service::executor::build_decomposition_guidance(
+    let guidance = worksgood::service::executor::build_decomposition_guidance(
         "multi-step task",
         "task-1",
         10,

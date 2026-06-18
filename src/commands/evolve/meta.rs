@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::Path;
 
-use workgraph::agency::{self, AccessControl, Lineage, PerformanceRecord, Role};
-use workgraph::config::Config;
+use worksgood::agency::{self, AccessControl, Lineage, PerformanceRecord, Role};
+use worksgood::config::Config;
 
 use super::deferred::{defer_operation, should_defer};
 use super::operations::parse_category;
@@ -166,7 +166,7 @@ pub(crate) fn apply_random_compose_agent(
         capabilities: vec![],
         rate: None,
         capacity: None,
-        trust_level: workgraph::graph::TrustLevel::Provisional,
+        trust_level: worksgood::graph::TrustLevel::Provisional,
         contact: None,
         executor: "claude".to_string(),
         preferred_model: None,
@@ -594,7 +594,7 @@ pub(crate) fn apply_meta_compose_agent(
             capabilities: vec![],
             rate: None,
             capacity: None,
-            trust_level: workgraph::graph::TrustLevel::Provisional,
+            trust_level: worksgood::graph::TrustLevel::Provisional,
             contact: None,
             executor: "claude".to_string(),
             preferred_model: None,

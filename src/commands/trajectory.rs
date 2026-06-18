@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{Status, Task, WorkGraph};
+use worksgood::graph::{Status, Task, WorkGraph};
 
 /// A task in the trajectory with context flow info
 #[derive(Debug, Serialize, Clone)]
@@ -274,8 +274,8 @@ pub fn suggest_for_actor(dir: &Path, actor_id: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::Node;
-    use workgraph::parser::save_graph;
+    use worksgood::graph::Node;
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

@@ -3,17 +3,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, Evaluation, EvaluatorInput, FlipComparisonInput, FlipInferenceInput, eval_source,
     load_all_evaluations_or_warn, load_role, load_tradeoff, record_evaluation,
     record_evaluation_with_inference, render_evaluator_prompt, render_flip_comparison_prompt,
     render_flip_inference_prompt, render_identity_prompt_rich, resolve_all_components_for_scope,
     resolve_outcome,
 };
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status, TokenUsage};
-use workgraph::parser::load_graph;
-use workgraph::provenance;
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Status, TokenUsage};
+use worksgood::parser::load_graph;
+use worksgood::provenance;
 
 /// Extract the model from a task's spawn log entry.
 ///
@@ -105,7 +105,7 @@ fn compute_artifact_diff(artifacts: &[String], started_at: Option<&str>) -> Opti
 /// Heuristic: look at the coordinator chat inbox for messages sent shortly
 /// before the task's `created_at` timestamp. Falls back to scanning the
 /// task's own log entries for context clues.
-fn find_originating_user_message(dir: &Path, task: &workgraph::graph::Task) -> Option<String> {
+fn find_originating_user_message(dir: &Path, task: &worksgood::graph::Task) -> Option<String> {
     let created_at = task.created_at.as_deref()?;
     let created_ts: chrono::DateTime<chrono::Utc> = created_at.parse().ok()?;
 
@@ -123,7 +123,7 @@ fn find_originating_user_message(dir: &Path, task: &workgraph::graph::Task) -> O
                 }
                 if let Ok(contents) = std::fs::read_to_string(&inbox_path) {
                     for line in contents.lines() {
-                        if let Ok(msg) = serde_json::from_str::<workgraph::chat::ChatMessage>(line)
+                        if let Ok(msg) = serde_json::from_str::<worksgood::chat::ChatMessage>(line)
                         {
                             if msg.role != "user" {
                                 continue;
@@ -271,8 +271,19 @@ pub fn run(
     // Step 3.5: Compute git diff of artifacts (R5 — ground truth for evaluator)
     let artifact_diff = compute_artifact_diff(artifacts, task.started_at.as_deref());
 
-    // Step 3.6: Resolve evaluator agent identity (if configured)
-    let config = Config::load_or_default(dir);
+    // Step 3.6: Resolve evaluator agent identity (if configured).
+    //
+    // Per-WCC profile: if the task was published under a profile
+    // (`wg publish --profile`), load THAT profile's complete config so the
+    // evaluator role resolves through the profile's `[models.evaluator]` (or
+    // tier) instead of the global default claude:haiku pin. `None` ⇒ global
+    // config unchanged. This is the dispatch-time resolution point for the
+    // `.evaluate-*` satellite, since `run_lightweight_llm_call` re-resolves
+    // the model from this config by role.
+    let config = worksgood::dispatch::effective_config_owned(
+        task.profile.as_deref(),
+        Config::load_or_default(dir),
+    );
     let evaluator_identity = config
         .agency
         .evaluator_agent
@@ -367,7 +378,7 @@ pub fn run(
     let cf_result = if let Some(desc) = task.description.as_deref() {
         let user_message = find_originating_user_message(dir, task);
         Some(
-            workgraph::agency::constraint_fidelity::lint_task_description(
+            worksgood::agency::constraint_fidelity::lint_task_description(
                 desc,
                 user_message.as_deref(),
             ),
@@ -420,7 +431,7 @@ pub fn run(
         .map(std::string::ToString::to_string)
         .unwrap_or_else(|| {
             config
-                .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
+                .resolve_model_for_role(worksgood::config::DispatchRole::Evaluator)
                 .model
         });
 
@@ -464,9 +475,9 @@ pub fn run(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let eval_result = workgraph::service::llm::run_lightweight_llm_call(
+            let eval_result = worksgood::service::llm::run_lightweight_llm_call(
                 &config,
-                workgraph::config::DispatchRole::Evaluator,
+                worksgood::config::DispatchRole::Evaluator,
                 &prompt,
                 timeout_secs,
             )
@@ -640,7 +651,7 @@ pub fn run(
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
         let usage_clone = usage.clone();
-        let _ = workgraph::parser::modify_graph(&graph_path, |graph| {
+        let _ = worksgood::parser::modify_graph(&graph_path, |graph| {
             if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
                 eval_task.token_usage = Some(usage_clone.clone());
                 true
@@ -671,7 +682,7 @@ pub fn run(
     if !rejected && is_llm_gated {
         // Re-load to see current state (check_eval_gate may have mutated).
         let path = super::graph_path(dir);
-        let graph2 = workgraph::parser::load_graph(&path).ok();
+        let graph2 = worksgood::parser::load_graph(&path).ok();
         let still_pending = graph2
             .as_ref()
             .and_then(|g| g.get_task(task_id))
@@ -795,8 +806,13 @@ pub fn run_flip(
         }
     }
 
-    // Check FLIP is enabled or task is tagged
-    let config = Config::load_or_default(dir);
+    // Check FLIP is enabled or task is tagged.
+    // Per-WCC profile: resolve through the task's pinned profile (if any) so
+    // FLIP inference/comparison roles route through the profile's models.
+    let config = worksgood::dispatch::effective_config_owned(
+        task.profile.as_deref(),
+        Config::load_or_default(dir),
+    );
     let flip_enabled = config.agency.flip_enabled || task.tags.iter().any(|t| t == "flip-eval");
     if !flip_enabled {
         bail!(
@@ -869,7 +885,7 @@ pub fn run_flip(
     } else {
         (
             config
-                .resolve_model_for_role(workgraph::config::DispatchRole::FlipInference)
+                .resolve_model_for_role(worksgood::config::DispatchRole::FlipInference)
                 .model,
             "config",
         )
@@ -882,7 +898,7 @@ pub fn run_flip(
     } else {
         (
             config
-                .resolve_model_for_role(workgraph::config::DispatchRole::FlipComparison)
+                .resolve_model_for_role(worksgood::config::DispatchRole::FlipComparison)
                 .model,
             "config",
         )
@@ -935,9 +951,9 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let inference_result = workgraph::service::llm::run_lightweight_llm_call(
+            let inference_result = worksgood::service::llm::run_lightweight_llm_call(
                 &config,
-                workgraph::config::DispatchRole::FlipInference,
+                worksgood::config::DispatchRole::FlipInference,
                 &inference_prompt,
                 flip_timeout,
             )
@@ -992,9 +1008,9 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
+            let comparison_result = worksgood::service::llm::run_lightweight_llm_call(
                 &config,
-                workgraph::config::DispatchRole::FlipComparison,
+                worksgood::config::DispatchRole::FlipComparison,
                 &comparison_prompt,
                 flip_timeout,
             )
@@ -1152,7 +1168,7 @@ pub fn run_flip(
         let eval_task_id = format!(".flip-{}", task_id);
         let graph_path = super::graph_path(dir);
         let usage_clone = usage.clone();
-        let _ = workgraph::parser::modify_graph(&graph_path, |graph| {
+        let _ = worksgood::parser::modify_graph(&graph_path, |graph| {
             if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
                 eval_task.token_usage = Some(usage_clone.clone());
                 true
@@ -1575,12 +1591,12 @@ fn check_eval_gate(
     // Warn about in-progress dependents before rejecting
     let graph_path = super::graph_path(dir);
     if graph_path.exists() {
-        let graph = workgraph::parser::load_graph(&graph_path)?;
+        let graph = worksgood::parser::load_graph(&graph_path)?;
         let in_progress_dependents: Vec<_> = graph
             .tasks()
             .filter(|t| {
                 t.after.contains(&task_id.to_string())
-                    && t.status == workgraph::graph::Status::InProgress
+                    && t.status == worksgood::graph::Status::InProgress
             })
             .map(|t| t.id.clone())
             .collect();
@@ -1618,7 +1634,7 @@ fn check_eval_gate(
     if config.agency.auto_rescue_on_eval_fail {
         let max_rescues = config.coordinator.max_verify_failures;
         let path = super::graph_path(dir);
-        let prior_rescue_count = workgraph::parser::load_graph(&path)
+        let prior_rescue_count = worksgood::parser::load_graph(&path)
             .ok()
             .and_then(|g| g.get_task(task_id).map(|t| t.rescue_count))
             .unwrap_or(0);
@@ -1642,12 +1658,12 @@ fn check_eval_gate(
                 "Auto-rescue cap reached ({}/{}); no further in-place iteration",
                 prior_rescue_count, max_rescues
             );
-            let _ = workgraph::parser::modify_graph(&path, |graph| {
+            let _ = worksgood::parser::modify_graph(&path, |graph| {
                 if let Some(task) = graph.get_task_mut(task_id) {
-                    task.log.push(workgraph::graph::LogEntry {
+                    task.log.push(worksgood::graph::LogEntry {
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         actor: None,
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: cap_msg.clone(),
                     });
                     return true;
@@ -1669,16 +1685,16 @@ fn check_eval_gate(
              Evaluator notes: {}",
             next_count, max_rescues, evaluation.score, threshold, evaluation.notes
         );
-        let mutated = workgraph::parser::modify_graph(&path, |graph| {
+        let mutated = worksgood::parser::modify_graph(&path, |graph| {
             if let Some(task) = graph.get_task_mut(task_id) {
-                task.status = workgraph::graph::Status::Open;
+                task.status = worksgood::graph::Status::Open;
                 task.rescue_count = next_count;
                 task.assigned = None;
                 task.failure_reason = None;
-                task.log.push(workgraph::graph::LogEntry {
+                task.log.push(worksgood::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("evaluator".to_string()),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: log_msg.clone(),
                 });
                 return true;
@@ -1818,7 +1834,7 @@ pub fn apply_gate_decision(
     let mut is_pending = false;
     let mut attempts_now: u32 = 0;
     let mut validation_is_llm = false;
-    let _ = workgraph::parser::modify_graph(&path, |graph| {
+    let _ = worksgood::parser::modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(task_id) {
             Some(t) => t,
             None => return false,
@@ -1835,7 +1851,7 @@ pub fn apply_gate_decision(
         task.log.push(LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: None,
-            user: Some(workgraph::current_user()),
+            user: Some(worksgood::current_user()),
             message: format!(
                 "LLM gate decision: {} (confidence {:.2}, attempts {}/{}). {}",
                 verdict,
@@ -2035,8 +2051,8 @@ mod tests {
 
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn setup_gate_fixture(dir: &Path, validation: Option<&str>) -> std::path::PathBuf {
         fs::create_dir_all(dir).unwrap();

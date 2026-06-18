@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
-use workgraph::graph::{
+use worksgood::graph::{
     PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display,
 };
 
@@ -633,7 +633,7 @@ fn upgrade_connector(existing: char, from_above: bool, to_below: bool) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Node, Task};
+    use worksgood::graph::{Node, Task};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_generate_graph_loop_annotation() {
-        use workgraph::graph::CycleConfig;
+        use worksgood::graph::CycleConfig;
 
         let mut graph = WorkGraph::new();
         let mut src = make_task("src", "Source");

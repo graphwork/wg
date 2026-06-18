@@ -18,10 +18,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{
+use worksgood::graph::{
     CycleConfig, Node, Status, Task, WorkGraph, evaluate_cycle_iteration, evaluate_cycle_on_failure,
 };
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ===========================================================================
 // Helpers
@@ -505,7 +505,7 @@ fn test_shell_retry_loop_max_iterations_safety_net() {
         loop_iteration: 4,
         ..Task::default()
     };
-    shell_task.log.push(workgraph::graph::LogEntry {
+    shell_task.log.push(worksgood::graph::LogEntry {
         timestamp: "2026-04-07T12:00:00Z".to_string(),
         message: "Iteration 4 completed".to_string(),
         actor: None,
@@ -528,7 +528,7 @@ fn test_shell_retry_loop_max_iterations_safety_net() {
         restart_on_failure: true,
         max_failure_restarts: None,
     });
-    checker.log.push(workgraph::graph::LogEntry {
+    checker.log.push(worksgood::graph::LogEntry {
         timestamp: "2026-04-07T12:05:00Z".to_string(),
         message: "Iteration 4 checked".to_string(),
         actor: None,
@@ -574,7 +574,7 @@ fn test_shell_retry_loop_continues_below_max() {
         loop_iteration: 2,
         ..Task::default()
     };
-    shell_task.log.push(workgraph::graph::LogEntry {
+    shell_task.log.push(worksgood::graph::LogEntry {
         timestamp: "2026-04-07T12:00:00Z".to_string(),
         message: "Attempt 3 log".to_string(),
         actor: None,

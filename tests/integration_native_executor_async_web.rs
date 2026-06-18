@@ -16,14 +16,14 @@ use std::time::Duration;
 use serde_json::json;
 use tempfile::TempDir;
 
-use workgraph::config::NativeExecutorConfig;
-use workgraph::executor::native::bundle::{Bundle, resolve_bundle};
-use workgraph::executor::native::tools::delegate::DelegateTool;
-use workgraph::executor::native::tools::helper_routing::HelperRouting;
-use workgraph::executor::native::tools::summarize::SummarizeTool;
-use workgraph::executor::native::tools::{Tool, ToolRegistry};
-use workgraph::graph::{Node, Status, Task, WaitCondition, WaitSpec, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
+use worksgood::config::NativeExecutorConfig;
+use worksgood::executor::native::bundle::{Bundle, resolve_bundle};
+use worksgood::executor::native::tools::delegate::DelegateTool;
+use worksgood::executor::native::tools::helper_routing::HelperRouting;
+use worksgood::executor::native::tools::summarize::SummarizeTool;
+use worksgood::executor::native::tools::{Tool, ToolRegistry};
+use worksgood::graph::{Node, Status, Task, WaitCondition, WaitSpec, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ async fn web_fetch_error_on_empty_url() {
 #[tokio::test]
 async fn web_fetch_custom_config_applies() {
     let config = NativeExecutorConfig {
-        web: workgraph::config::NativeWebConfig {
+        web: worksgood::config::NativeWebConfig {
             fetch_max_chars: 100,
             fetch_timeout_secs: 5,
             ..Default::default()
@@ -338,7 +338,7 @@ async fn bg_tool_kill_stops_running_job() {
 
 #[tokio::test]
 async fn bg_state_injection_reports_completion() {
-    use workgraph::executor::native::state_injection::StateInjector;
+    use worksgood::executor::native::state_injection::StateInjector;
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path();
@@ -386,7 +386,7 @@ async fn bg_state_injection_reports_completion() {
 
 #[tokio::test]
 async fn delegate_tool_simple_text_response() {
-    use workgraph::executor::native::tools::delegate;
+    use worksgood::executor::native::tools::delegate;
 
     let tmp = TempDir::new().unwrap();
     let working = std::env::current_dir().unwrap();
@@ -413,7 +413,7 @@ async fn delegate_tool_simple_text_response() {
 
 #[tokio::test]
 async fn delegate_child_registry_full_mode() {
-    use workgraph::executor::native::tools::delegate;
+    use worksgood::executor::native::tools::delegate;
 
     let tmp = TempDir::new().unwrap();
     let working = std::env::current_dir().unwrap();
@@ -504,7 +504,7 @@ async fn delegate_tool_registered_in_default_registry() {
 #[tokio::test]
 async fn delegate_tool_with_custom_config() {
     let config = NativeExecutorConfig {
-        delegate: workgraph::config::NativeDelegateConfig {
+        delegate: worksgood::config::NativeDelegateConfig {
             delegate_max_turns: 15,
             delegate_model: "custom-model".to_string(),
         },
@@ -1025,12 +1025,12 @@ fn native_executor_config_defaults_are_sane() {
 #[test]
 fn native_executor_config_propagates_to_registry() {
     let config = NativeExecutorConfig {
-        web: workgraph::config::NativeWebConfig {
+        web: worksgood::config::NativeWebConfig {
             fetch_max_chars: 5000,
             fetch_timeout_secs: 10,
             ..Default::default()
         },
-        delegate: workgraph::config::NativeDelegateConfig {
+        delegate: worksgood::config::NativeDelegateConfig {
             delegate_max_turns: 3,
             delegate_model: "custom-model-v1".to_string(),
         },

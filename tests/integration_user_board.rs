@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::graph::{
+use worksgood::graph::{
     Node, Status, WorkGraph, create_user_board_task, is_user_board, resolve_user_board_alias,
 };
-use workgraph::parser::{load_graph, modify_graph, save_graph};
+use worksgood::parser::{load_graph, modify_graph, save_graph};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -288,7 +288,7 @@ fn test_ensure_user_board_creates_on_empty_graph() {
     let dir = tmp.path();
     let path = dir.join("graph.jsonl");
 
-    let handle = workgraph::current_user();
+    let handle = worksgood::current_user();
 
     // Graph starts empty — no user boards
     let graph = graph_at(dir);
@@ -303,7 +303,7 @@ fn test_ensure_user_board_creates_on_empty_graph() {
         .any(|t| is_user_board(&t.id) && t.id.starts_with(&prefix) && !t.status.is_terminal());
     assert!(!has_active);
 
-    let seq = workgraph::graph::next_user_board_seq(&graph, &handle);
+    let seq = worksgood::graph::next_user_board_seq(&graph, &handle);
     assert_eq!(seq, 0);
 
     let task = create_user_board_task(&handle, seq);
@@ -328,7 +328,7 @@ fn test_ensure_user_board_idempotent_when_active() {
     let dir = tmp.path();
     let path = dir.join("graph.jsonl");
 
-    let handle = workgraph::current_user();
+    let handle = worksgood::current_user();
 
     // Pre-create a user board
     let task = create_user_board_task(&handle, 0);
@@ -358,7 +358,7 @@ fn test_chat_message_forwarded_to_user_board() {
     let dir = tmp.path();
     let path = dir.join("graph.jsonl");
 
-    let handle = workgraph::current_user();
+    let handle = worksgood::current_user();
 
     // Create user board
     let task = create_user_board_task(&handle, 0);
@@ -370,11 +370,11 @@ fn test_chat_message_forwarded_to_user_board() {
     .unwrap();
 
     // Send a message to the user board (simulating what forward_chat_to_user_board does)
-    workgraph::messages::send_message(dir, &board_id, "Hello from chat!", "user", "normal")
+    worksgood::messages::send_message(dir, &board_id, "Hello from chat!", "user", "normal")
         .unwrap();
 
     // Verify message was stored
-    let msgs = workgraph::messages::list_messages(dir, &board_id).unwrap();
+    let msgs = worksgood::messages::list_messages(dir, &board_id).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].body, "Hello from chat!");
     assert_eq!(msgs[0].sender, "user");
@@ -388,7 +388,7 @@ fn test_user_board_persists_across_restarts() {
     let dir = tmp.path();
     let path = dir.join("graph.jsonl");
 
-    let handle = workgraph::current_user();
+    let handle = worksgood::current_user();
 
     // Create user board and send messages
     let task = create_user_board_task(&handle, 0);
@@ -399,8 +399,8 @@ fn test_user_board_persists_across_restarts() {
     })
     .unwrap();
 
-    workgraph::messages::send_message(dir, &board_id, "Message 1", "user", "normal").unwrap();
-    workgraph::messages::send_message(dir, &board_id, "Message 2", "coordinator", "normal")
+    worksgood::messages::send_message(dir, &board_id, "Message 1", "user", "normal").unwrap();
+    worksgood::messages::send_message(dir, &board_id, "Message 2", "coordinator", "normal")
         .unwrap();
 
     // Simulate restart: reload graph from disk
@@ -410,7 +410,7 @@ fn test_user_board_persists_across_restarts() {
     assert!(board.tags.contains(&"user-board".to_string()));
 
     // Messages persist (stored in separate .wg/messages/ files)
-    let msgs = workgraph::messages::list_messages(dir, &board_id).unwrap();
+    let msgs = worksgood::messages::list_messages(dir, &board_id).unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].body, "Message 1");
     assert_eq!(msgs[1].body, "Message 2");
@@ -434,10 +434,10 @@ fn test_full_lifecycle_start_chat_stop_start_see_history() {
     let dir = tmp.path();
     let path = dir.join("graph.jsonl");
 
-    let handle = workgraph::current_user();
+    let handle = worksgood::current_user();
 
     // Phase 1: "Start" — auto-create user board (simulating ensure_user_board)
-    let seq = workgraph::graph::next_user_board_seq(&graph_at(dir), &handle);
+    let seq = worksgood::graph::next_user_board_seq(&graph_at(dir), &handle);
     let task = create_user_board_task(&handle, seq);
     let board_id = task.id.clone();
     modify_graph(&path, |fresh| {
@@ -447,9 +447,9 @@ fn test_full_lifecycle_start_chat_stop_start_see_history() {
     .unwrap();
 
     // Phase 2: "Chat" — send several messages
-    workgraph::messages::send_message(dir, &board_id, "What tasks are running?", "user", "normal")
+    worksgood::messages::send_message(dir, &board_id, "What tasks are running?", "user", "normal")
         .unwrap();
-    workgraph::messages::send_message(
+    worksgood::messages::send_message(
         dir,
         &board_id,
         "There are 3 tasks in progress.",
@@ -457,7 +457,7 @@ fn test_full_lifecycle_start_chat_stop_start_see_history() {
         "normal",
     )
     .unwrap();
-    workgraph::messages::send_message(dir, &board_id, "Add a new test task", "user", "normal")
+    worksgood::messages::send_message(dir, &board_id, "Add a new test task", "user", "normal")
         .unwrap();
 
     // Phase 3: "Stop" — verify board state before simulated shutdown
@@ -472,7 +472,7 @@ fn test_full_lifecycle_start_chat_stop_start_see_history() {
     assert_eq!(resolved, board_id, "Alias should resolve to active board");
 
     // Messages preserved
-    let msgs = workgraph::messages::list_messages(dir, &board_id).unwrap();
+    let msgs = worksgood::messages::list_messages(dir, &board_id).unwrap();
     assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0].body, "What tasks are running?");
     assert_eq!(msgs[1].body, "There are 3 tasks in progress.");

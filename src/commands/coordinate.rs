@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::graph::{Status, Task};
-use workgraph::query::ready_tasks;
+use worksgood::graph::{Status, Task};
+use worksgood::query::ready_tasks;
 
 /// Coordination status for JSON output
 #[derive(Debug, serde::Serialize)]
@@ -63,7 +63,7 @@ impl BlockedTaskSummary {
 }
 
 /// Get coordination status from the graph
-pub fn get_coordination_status(graph: &workgraph::graph::WorkGraph) -> CoordinationStatus {
+pub fn get_coordination_status(graph: &worksgood::graph::WorkGraph) -> CoordinationStatus {
     let ready: Vec<_> = ready_tasks(graph)
         .iter()
         .map(|t| TaskSummary::from_task(t))
@@ -201,7 +201,7 @@ fn print_human_status(status: &CoordinationStatus, max_parallel: Option<usize>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Estimate, Node, WorkGraph};
+    use worksgood::graph::{Estimate, Node, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn test_run_empty_graph() {
         use tempfile::TempDir;
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("graph.jsonl");
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn test_run_json_output() {
         use tempfile::TempDir;
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("graph.jsonl");
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn test_run_with_max_parallel() {
         use tempfile::TempDir;
-        use workgraph::parser::save_graph;
+        use worksgood::parser::save_graph;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("graph.jsonl");

@@ -6,7 +6,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -180,6 +180,15 @@ pub struct AgentLoop {
     /// still reach it after `run_interactive` has taken the surface
     /// into a local variable. `None` when no chat surface is installed.
     chat_session_ref: Option<String>,
+
+    /// Whether raw reasoning (`<think>…</think>` and the OpenAI-compatible
+    /// reasoning channel) is displayed during/after streaming. Default
+    /// **off** — reasoning is suppressed live and collapsed to a one-line
+    /// `✓ thought for N tokens` marker. Initialized from `WG_NEX_THINK`
+    /// and flipped live by the `/think` REPL command. Shared via `Arc`
+    /// so the per-turn streaming callback (which is `move`d) can read it
+    /// after `/think` toggles it between turns.
+    show_reasoning: Arc<AtomicBool>,
 }
 
 /// Runtime state for the chat-file surface. Owns the inbox reader and
@@ -372,27 +381,112 @@ enum LiveReadlineEvent {
 }
 
 const NEX_IDLE_PROMPT: &str = "> ";
-const NEX_WORKING_PROMPT_RAW: &str = "*>"; // Same display width as `> `.
+const NEX_WORKING_PROMPT_RAW: &str = "* "; // Same display width as `> `.
 const NEX_WORKING_GLYPH: &str = "↯";
 const NEX_WORKING_FALLBACK: &str = "*";
+
+/// Live, per-turn generation progress shared between the streaming text
+/// callback (which increments it as output-text deltas arrive) and the
+/// rustyline prompt hinter (which reads it on each repaint to render
+/// `thinking… N tokens`). Reset to 0 at the start of each model call so
+/// the count restarts and the prefill phase is shown again before the
+/// first token streams.
+///
+/// This deliberately rides on the EXISTING in-place working glyph
+/// (`↯ ` / `* ` / fix-nex-chat-2) rather than competing with it: the
+/// glyph stays the fixed-width prompt prefix (input column never
+/// shifts) and the running token count is rendered as a trailing
+/// rustyline hint. The hint is recomputed inside rustyline's
+/// `refresh_line`, which fires on every keystroke AND every
+/// `ExternalPrinter::print` — so the count advances live as streamed
+/// text flushes, with no extra timer thread and no added render
+/// contention (the original throbber complaint).
+#[derive(Clone, Default)]
+struct LiveProgress {
+    tokens: Arc<AtomicU64>,
+}
+
+impl LiveProgress {
+    /// Clear the count at the start of a model call so the next turn's
+    /// `thinking…` indicator restarts from the prefill phase.
+    fn reset(&self) {
+        self.tokens.store(0, Ordering::Relaxed);
+    }
+
+    /// Accumulate generated output tokens for this turn.
+    fn add_tokens(&self, n: u64) {
+        self.tokens.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn tokens(&self) -> u64 {
+        self.tokens.load(Ordering::Relaxed)
+    }
+}
+
+/// Per-turn reasoning bookkeeping shared between the streaming callback
+/// (which observes inline `<think>…</think>` reasoning live) and the
+/// post-stream summary that prints the `✓ thought for N tokens` marker.
+///
+/// `saw` flips the first time a `<think>` block is seen so the
+/// post-stream step knows inline reasoning was already handled live (vs.
+/// the OpenAI-compatible reasoning channel, which never streams through
+/// the content callback and is summarized from the assembled response
+/// instead). `collapsed` guards the marker so it prints exactly once —
+/// at the think→answer transition when there is an answer, or in the
+/// post-stream flush when reasoning was the whole turn. `tokens`
+/// accumulates inline reasoning tokens for the marker text.
+#[derive(Default)]
+struct ReasoningTurn {
+    saw: AtomicBool,
+    collapsed: AtomicBool,
+    tokens: AtomicU64,
+}
+
+/// A non-completable status hint. Unlike `String` (whose `completion()`
+/// returns the text), this returns `None` so a stray Right-arrow / End
+/// keystroke at the prompt never inserts the live status into the
+/// user's input line.
+struct NexStatusHint(String);
+
+impl rustyline::hint::Hint for NexStatusHint {
+    fn display(&self) -> &str {
+        &self.0
+    }
+
+    fn completion(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Format the live working-status hint shown after the prompt glyph.
+/// `prefilling…` until the first output token streams (useful for slow
+/// local models that spend seconds on prompt processing), then
+/// `thinking… N tokens` with the running generated-token count.
+fn render_nex_thinking_hint(tokens: u64) -> String {
+    if tokens == 0 {
+        "prefilling…".to_string()
+    } else {
+        format!("thinking… {} tokens", tokens)
+    }
+}
 
 #[derive(Clone)]
 struct NexPromptState {
     waiting_for_input: Arc<AtomicBool>,
     color_enabled: bool,
     working_indicator: &'static str,
-    color_tick: Arc<AtomicUsize>,
+    progress: LiveProgress,
 }
 
 impl NexPromptState {
-    fn new(waiting_for_input: Arc<AtomicBool>) -> Self {
+    fn new(waiting_for_input: Arc<AtomicBool>, progress: LiveProgress) -> Self {
         let color_enabled = nex_prompt_color_enabled();
         let working_indicator = nex_working_prompt_indicator(color_enabled);
         Self {
             waiting_for_input,
             color_enabled,
             working_indicator,
-            color_tick: Arc::new(AtomicUsize::new(0)),
+            progress,
         }
     }
 
@@ -401,8 +495,22 @@ impl NexPromptState {
             self.waiting_for_input.load(Ordering::SeqCst),
             self.color_enabled,
             self.working_indicator,
-            self.color_tick.fetch_add(1, Ordering::Relaxed),
         )
+    }
+
+    /// The trailing status hint shown after the prompt glyph while the
+    /// model is working. Returns `None` at idle (so the ready prompt is
+    /// a clean `> `) and whenever the user has started composing a line
+    /// (so a queued message is never cluttered by the status), leaving
+    /// the lightning glyph as the sole busy indicator in that case.
+    fn hint(&self, line: &str) -> Option<String> {
+        if self.waiting_for_input.load(Ordering::SeqCst) {
+            return None;
+        }
+        if !line.is_empty() {
+            return None;
+        }
+        Some(render_nex_thinking_hint(self.progress.tokens()))
     }
 }
 
@@ -427,7 +535,16 @@ impl rustyline::completion::Completer for NexReadlineHelper {
 }
 
 impl rustyline::hint::Hinter for NexReadlineHelper {
-    type Hint = String;
+    type Hint = NexStatusHint;
+
+    fn hint(
+        &self,
+        line: &str,
+        _pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> Option<NexStatusHint> {
+        self.prompt.hint(line).map(NexStatusHint)
+    }
 }
 
 impl rustyline::validate::Validator for NexReadlineHelper {}
@@ -444,29 +561,47 @@ impl rustyline::highlight::Highlighter for NexReadlineHelper {
             std::borrow::Cow::Borrowed(prompt)
         }
     }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+        // Dim the trailing `thinking… N tokens` status so it reads as a
+        // status annotation, not as editable input. Matches the dim grey
+        // (244) used elsewhere in the nex REPL. No-color/dumb terminals
+        // get the plain text so nothing leaks raw escape codes.
+        if self.prompt.color_enabled {
+            std::borrow::Cow::Owned(format!("\x1b[2;38;5;244m{}\x1b[0m", hint))
+        } else {
+            std::borrow::Cow::Borrowed(hint)
+        }
+    }
 }
 
 fn render_nex_prompt(
     waiting_for_input: bool,
     color_enabled: bool,
     working_indicator: &str,
-    tick: usize,
 ) -> String {
     if waiting_for_input {
+        // Idle / ready: greater-than glyph + one trailing space.
         if color_enabled {
-            format!("\x1b[1;36m>\x1b[0m ")
+            "\x1b[1;36m>\x1b[0m ".to_string()
         } else {
             NEX_IDLE_PROMPT.to_string()
         }
     } else if color_enabled {
-        const COLORS: [u8; 5] = [196, 214, 46, 33, 129];
-        let color = COLORS[tick % COLORS.len()];
-        format!(
-            "\x1b[1;38;5;{}m{}\x1b[0m\x1b[1;36m>\x1b[0m",
-            color, working_indicator
-        )
+        // Working: the lightning glyph is swapped IN PLACE of the `>` (not
+        // prepended), keeping the same 2-cell width and the trailing space
+        // so the input column never shifts. Fixed color, NOT animated:
+        // rustyline repaints the prompt on every keystroke and every
+        // ExternalPrinter::print, so a tick-driven color cycle would only
+        // advance while output streams (frozen during quiet tool calls) and
+        // would re-emit a new color on each keystroke — read as input lag.
+        // Reliable animation would need a timer forcing repaints, which
+        // rustyline cannot do without emitting output (added contention).
+        // See fix-nex-chat-2 for the full root-cause note.
+        format!("\x1b[1;38;5;214m{}\x1b[0m ", working_indicator)
     } else {
-        format!("{}>", working_indicator)
+        // No-color / dumb terminal: ASCII star fallback + trailing space.
+        format!("{} ", working_indicator)
     }
 }
 
@@ -568,6 +703,7 @@ struct LiveTerminalInput {
     rx: tokio::sync::mpsc::UnboundedReceiver<LiveReadlineEvent>,
     output: LiveTerminalOutput,
     waiting_for_input: Arc<AtomicBool>,
+    progress: LiveProgress,
 }
 
 impl LiveTerminalInput {
@@ -587,7 +723,8 @@ impl LiveTerminalInput {
         }
 
         let waiting_for_input = Arc::new(AtomicBool::new(initially_waiting_for_input));
-        let prompt_state = NexPromptState::new(waiting_for_input.clone());
+        let progress = LiveProgress::default();
+        let prompt_state = NexPromptState::new(waiting_for_input.clone(), progress.clone());
         let mut editor =
             match rustyline::Editor::<NexReadlineHelper, rustyline::history::DefaultHistory>::new()
             {
@@ -681,11 +818,19 @@ impl LiveTerminalInput {
             rx,
             output,
             waiting_for_input,
+            progress,
         })
     }
 
     fn output(&self) -> LiveTerminalOutput {
         self.output.clone()
+    }
+
+    /// Handle to the live per-turn token counter, shared with the
+    /// rustyline hinter. The streaming callback increments it; the
+    /// hinter renders it as `thinking… N tokens`.
+    fn progress(&self) -> LiveProgress {
+        self.progress.clone()
     }
 
     fn set_waiting_for_input(&self, waiting: bool) {
@@ -914,6 +1059,9 @@ impl AgentLoop {
             nex_repl_mode: false,
             surface: None,
             chat_session_ref: None,
+            show_reasoning: Arc::new(AtomicBool::new(
+                super::think_filter::reasoning_shown_by_default(),
+            )),
         }
     }
 
@@ -933,6 +1081,16 @@ impl AgentLoop {
     /// false. Use `--chatty` / `-c` on `wg nex` to turn on.
     pub fn with_nex_chatty(mut self, chatty: bool) -> Self {
         self.nex_chatty = chatty;
+        self
+    }
+
+    /// Show raw reasoning by default for this session (the `/think on`
+    /// state, also settable via `WG_NEX_THINK`). When false (default),
+    /// reasoning is suppressed live and collapsed to a one-line
+    /// `✓ thought for N tokens` marker. Overrides the env-derived
+    /// default; `/think` still toggles it live afterwards.
+    pub fn with_reasoning_shown(self, shown: bool) -> Self {
+        self.show_reasoning.store(shown, Ordering::SeqCst);
         self
     }
 
@@ -1631,6 +1789,11 @@ impl AgentLoop {
             None
         };
         let live_output = live_terminal.as_ref().map(|terminal| terminal.output());
+        // Shared per-turn token counter feeding the live `thinking… N
+        // tokens` hint. `Some` only in the interactive TTY path (the same
+        // gate as `live_terminal`), so the indicator is automatically
+        // absent under --autonomous / --eval-mode / piped output.
+        let live_progress = live_terminal.as_ref().map(|terminal| terminal.progress());
 
         if !self.autonomous && live_terminal.is_none() {
             let _ = editor.load_history(&history_path);
@@ -2065,6 +2228,13 @@ impl AgentLoop {
                 stream: false,
             };
 
+            // Restart the live token counter for this model call so the
+            // `thinking…` hint counts up from the prefill phase rather
+            // than carrying over the previous turn's total.
+            if let Some(ref progress) = live_progress {
+                progress.reset();
+            }
+
             if !self.autonomous
                 && surface.is_none()
                 && let Some(label) =
@@ -2105,38 +2275,183 @@ impl AgentLoop {
             let chat_text_sink = surface.as_ref().map(|s| s.stream_sink());
             let live_stream_printer = live_output.clone().map(LiveStreamPrinter::new);
             let live_stream_for_sink = live_stream_printer.clone();
-            let on_text = move |text: String| {
-                if is_autonomous {
-                    if let Some(ref sw) = stream_writer_clone {
-                        sw.write_text_chunk(&text);
-                    }
-                    if let Some(ref path) = streaming_file {
-                        let mut accumulated = std::fs::read_to_string(path).unwrap_or_default();
-                        accumulated.push_str(&text);
-                        let _ = std::fs::write(path, &accumulated);
-                    }
+            // Progressive (streaming) markdown render for the direct-stderr
+            // TTY path. When no rustyline live-input layer owns the screen,
+            // nex owns the cursor and can render markdown token-by-token —
+            // committing finished blocks permanently and redrawing the
+            // in-progress block in place — instead of streaming plain text
+            // and re-rendering the whole turn at EndTurn. Disabled for
+            // autonomous/eval (raw text flows to the stream sinks), for
+            // non-TTY / piped stderr (plain passthrough), and when color is
+            // off. The rustyline live-input path keeps its plain live stream
+            // because its ExternalPrinter is append-only and cannot host an
+            // in-place redraw.
+            let cursor_md: Option<Arc<Mutex<super::streaming_markdown::CursorRenderer>>> =
+                if !is_autonomous
+                    && live_output.is_none()
+                    && stderr_is_tty()
+                    && nex_prompt_color_enabled()
+                {
+                    Some(Arc::new(Mutex::new(
+                        super::streaming_markdown::CursorRenderer::new(stderr_cols().max(20)),
+                    )))
                 } else {
-                    // First-chunk handoff retained for the legacy
-                    // spinner guard tests. The live prompt indicator
-                    // initializes this flag to true, so this branch
-                    // does not delay normal streaming.
-                    if !spinner_first_chunk_sink.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        // Give the legacy spinner a moment to clear if
-                        // a future caller opts it back in.
-                        std::thread::sleep(std::time::Duration::from_millis(90));
+                    None
+                };
+            let cursor_md_for_sink = cursor_md.clone();
+            // Per-chunk generated-token accounting for the live
+            // `thinking… N tokens` hint. Uses nex's existing tokenizer
+            // (falls back to chars/4 when no BPE matches the model), so
+            // the running count tracks the same accounting verbose mode
+            // reports. `Some` only in the interactive path; absent under
+            // autonomous/eval/piped, where the hint is not shown anyway.
+            let live_progress_for_sink = live_progress.clone();
+            let tokenizer_model = self.client.model().to_string();
+            // Streaming reasoning handling: split inline `<think>…</think>`
+            // out of the content channel so raw reasoning is never dumped
+            // to the terminal. Shared (via `Arc`) with the post-stream
+            // flush so a partial tag held back at end of stream is still
+            // emitted, and so the collapsed-reasoning marker prints once.
+            let think_splitter = Arc::new(Mutex::new(super::think_filter::ThinkSplitter::new()));
+            let think_splitter_for_sink = think_splitter.clone();
+            let reasoning_turn = Arc::new(ReasoningTurn::default());
+            let reasoning_turn_for_sink = reasoning_turn.clone();
+            let show_reasoning_for_sink = self.show_reasoning.clone();
+            let live_output_for_marker = live_output.clone();
+            let marker_color = nex_prompt_color_enabled();
+            // Route one classified piece (answer vs reasoning) to the
+            // display + persistence sinks. Shared via `Arc` so the
+            // streaming callback and the post-stream flush use identical
+            // routing without duplicating the logic.
+            let route_piece: Arc<dyn Fn(super::think_filter::ThinkPiece) + Send + Sync> =
+                Arc::new(move |piece: super::think_filter::ThinkPiece| {
+                    use super::think_filter::ThinkPiece;
+                    match piece {
+                        ThinkPiece::Reasoning(rtext) => {
+                            // Count reasoning tokens and advance the live
+                            // `thinking… N tokens` hint so the indicator moves
+                            // while the model reasons.
+                            reasoning_turn_for_sink
+                                .saw
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            let n = super::tokenizer::count_tokens(&rtext, &tokenizer_model) as u64;
+                            reasoning_turn_for_sink
+                                .tokens
+                                .fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+                            if let Some(ref progress) = live_progress_for_sink {
+                                progress.add_tokens(n);
+                            }
+                            // Default: suppress raw reasoning. With `/think on`
+                            // (or `WG_NEX_THINK=1`) stream it live so the user
+                            // can watch the chain-of-thought. Never persisted
+                            // to chat/stream sinks — only the interactive view.
+                            if !is_autonomous
+                                && show_reasoning_for_sink.load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.push(&rtext);
+                                } else {
+                                    eprint!("{}", rtext);
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                        }
+                        ThinkPiece::Answer(atext) => {
+                            // The first answer byte after a reasoning block:
+                            // collapse the hidden reasoning to a one-line
+                            // marker, placed just before the answer.
+                            if !is_autonomous
+                                && reasoning_turn_for_sink
+                                    .saw
+                                    .load(std::sync::atomic::Ordering::SeqCst)
+                                && !reasoning_turn_for_sink
+                                    .collapsed
+                                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                            {
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.flush();
+                                }
+                                let tokens = reasoning_turn_for_sink
+                                    .tokens
+                                    .load(std::sync::atomic::Ordering::SeqCst);
+                                terminal_line(
+                                    live_output_for_marker.as_ref(),
+                                    super::think_filter::render_collapsed_thought(
+                                        tokens,
+                                        marker_color,
+                                    ),
+                                );
+                            }
+                            if is_autonomous {
+                                if let Some(ref sw) = stream_writer_clone {
+                                    sw.write_text_chunk(&atext);
+                                }
+                                if let Some(ref path) = streaming_file {
+                                    let mut accumulated =
+                                        std::fs::read_to_string(path).unwrap_or_default();
+                                    accumulated.push_str(&atext);
+                                    let _ = std::fs::write(path, &accumulated);
+                                }
+                            } else {
+                                // First-chunk handoff retained for the legacy
+                                // spinner guard tests. The live prompt indicator
+                                // initializes this flag to true, so this branch
+                                // does not delay normal streaming.
+                                if !spinner_first_chunk_sink
+                                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                                {
+                                    // Give the legacy spinner a moment to clear
+                                    // if a future caller opts it back in.
+                                    std::thread::sleep(std::time::Duration::from_millis(90));
+                                }
+                                if let Ok(mut b) = turn_buf_for_sink.lock() {
+                                    b.push_str(&atext);
+                                }
+                                // Advance the live token count before flushing
+                                // the text: the flush triggers rustyline's
+                                // refresh, which re-reads this counter for the
+                                // `thinking… N tokens` hint, so the displayed
+                                // total reflects the chunk about to appear.
+                                if let Some(ref progress) = live_progress_for_sink {
+                                    let n = super::tokenizer::count_tokens(&atext, &tokenizer_model)
+                                        as u64;
+                                    progress.add_tokens(n);
+                                }
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.push(&atext);
+                                } else if let Some(ref cm) = cursor_md_for_sink {
+                                    // Progressive markdown: feed the delta and
+                                    // write the cursor-control + ANSI bytes it
+                                    // returns (commit of finished blocks +
+                                    // in-place redraw of the live block).
+                                    let bytes =
+                                        cm.lock().unwrap_or_else(|e| e.into_inner()).push(&atext);
+                                    if !bytes.is_empty() {
+                                        let mut err = std::io::stderr().lock();
+                                        let _ = err.write_all(bytes.as_bytes());
+                                        let _ = err.flush();
+                                    }
+                                } else {
+                                    eprint!("{}", atext);
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            if let Some(ref sink) = chat_text_sink {
+                                sink(&atext);
+                            }
+                        }
                     }
-                    if let Ok(mut b) = turn_buf_for_sink.lock() {
-                        b.push_str(&text);
-                    }
-                    if let Some(ref printer) = live_stream_for_sink {
-                        printer.push(&text);
-                    } else {
-                        eprint!("{}", text);
-                        let _ = std::io::stderr().flush();
-                    }
-                }
-                if let Some(ref sink) = chat_text_sink {
-                    sink(&text);
+                });
+            let route_for_closure = route_piece.clone();
+            let on_text = move |text: String| {
+                let pieces = {
+                    let mut sp = think_splitter_for_sink
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    sp.push(&text)
+                };
+                for piece in pieces {
+                    route_for_closure(piece);
                 }
             };
 
@@ -2540,6 +2855,103 @@ impl AgentLoop {
                 }
             };
 
+            // Flush any partial `<think>`/`</think>` tag the splitter held
+            // back at end of stream (rare: only when the final content
+            // delta ended mid-tag). Routes through the same sinks so no
+            // answer byte is lost from the live view, transcript, or
+            // markdown re-render buffer.
+            {
+                let trailing = {
+                    let mut sp = think_splitter.lock().unwrap_or_else(|e| e.into_inner());
+                    sp.finish()
+                };
+                for piece in trailing {
+                    route_piece(piece);
+                }
+            }
+
+            // Flush the progressive markdown renderer: commit the final
+            // in-progress block and drop the cursor onto a fresh line so the
+            // collapsed-reasoning marker / next prompt start cleanly.
+            if let Some(ref cm) = cursor_md {
+                let bytes = cm.lock().unwrap_or_else(|e| e.into_inner()).finish();
+                if !bytes.is_empty() {
+                    let mut err = std::io::stderr().lock();
+                    let _ = err.write_all(bytes.as_bytes());
+                    let _ = err.flush();
+                }
+            }
+
+            // Reasoning was the entire turn (think-only, or an unclosed
+            // `<think>` with no answer text): print the collapsed marker
+            // now since the think→answer transition never fired.
+            if !self.autonomous
+                && reasoning_turn.saw.load(std::sync::atomic::Ordering::SeqCst)
+                && !reasoning_turn
+                    .collapsed
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                if let Some(ref printer) = live_stream_printer {
+                    printer.flush();
+                }
+                let tokens = reasoning_turn
+                    .tokens
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                terminal_line(
+                    live_output.as_ref(),
+                    super::think_filter::render_collapsed_thought(
+                        tokens,
+                        nex_prompt_color_enabled(),
+                    ),
+                );
+            }
+
+            // OpenAI-compatible reasoning channel (`reasoning` /
+            // `reasoning_content`, used by OpenRouter and vLLM): this never
+            // streams through the content callback — it is assembled into a
+            // `Thinking` block on the response. When no inline `<think>`
+            // reasoning was shown live, summarize it here so the field
+            // channel collapses to the same `✓ thought for N tokens` marker
+            // (and is revealed raw under `/think on`).
+            if !self.autonomous && !reasoning_turn.saw.load(std::sync::atomic::Ordering::SeqCst) {
+                let thinking_text: String = response
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !thinking_text.trim().is_empty() {
+                    let color = nex_prompt_color_enabled();
+                    let tokens = response
+                        .usage
+                        .reasoning_tokens
+                        .map(u64::from)
+                        .unwrap_or_else(|| {
+                            super::tokenizer::count_tokens(&thinking_text, self.client.model())
+                                as u64
+                        });
+                    if let Some(ref printer) = live_stream_printer {
+                        printer.flush();
+                    }
+                    if self
+                        .show_reasoning
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        terminal_line(
+                            live_output.as_ref(),
+                            super::think_filter::render_reasoning_reveal(&thinking_text, color),
+                        );
+                    }
+                    terminal_line(
+                        live_output.as_ref(),
+                        super::think_filter::render_collapsed_thought(tokens, color),
+                    );
+                }
+            }
+
             if let Some(ref printer) = live_stream_printer {
                 printer.flush();
             }
@@ -2678,7 +3090,13 @@ impl AgentLoop {
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner()),
                             );
-                            if live_output.is_none() && !buffer.trim().is_empty() && stderr_is_tty()
+                            // Skip the buffer-then-rerender when the
+                            // progressive renderer already rendered this turn
+                            // markdown incrementally (cursor_md active).
+                            if cursor_md.is_none()
+                                && live_output.is_none()
+                                && !buffer.trim().is_empty()
+                                && stderr_is_tty()
                             {
                                 rerender_markdown_on_stderr(&buffer);
                             }
@@ -3689,8 +4107,9 @@ impl AgentLoop {
     /// - `/bg kill <id>`           — terminate a background job
     /// - `/bg delete <id>`         — remove a terminated job from the registry
     /// - `/cancel <id>`            — alias for `/bg kill <id>`
+    /// - `/think [on|off]`         — show or collapse raw model reasoning (default off)
     async fn handle_nex_slash_command(
-        &self,
+        &mut self,
         input: &str,
         messages: &mut Vec<Message>,
         total_usage: &Usage,
@@ -3850,6 +4269,8 @@ impl AgentLoop {
                      \x1b[1;36m  /bg delete <id>\x1b[0m              — remove terminated job from registry\n\
                      \x1b[1;36m  /cancel <id>\x1b[0m                 — alias for /bg kill <id>\n\
                      \x1b[1;36m  /compact\x1b[0m                      — manually compact context (hard L2)\n\
+                     \x1b[1;36m  /tools [minimal|full]\x1b[0m         — show or switch the tool surface (lean vs full)\n\
+                     \x1b[1;36m  /think [on|off]\x1b[0m              — show or collapse raw model reasoning (default off)\n\
                      \x1b[1;36m  /status\x1b[0m                       — show agent state (context, tokens, paths)\n\
                      \x1b[1;36m  /resume, /sessions\x1b[0m            — list all chat sessions with resume hints\n\
                      \x1b[1;36m  /fork [alias]\x1b[0m                 — fork this session (copy journal) to explore a different branch\n\
@@ -4101,9 +4522,48 @@ impl AgentLoop {
                     eprintln!("  Journal:       {}", jp.display());
                 }
                 eprintln!(
-                    "  Tools:         {} registered",
-                    self.tools.definitions().len()
+                    "  Tools:         {} active / {} registered",
+                    self.tools.active_tool_names().len(),
+                    self.tools.all_tool_names().len()
                 );
+                NexSlashResult::Continue
+            }
+
+            "/tools" => {
+                // Inspect or switch the tool surface live. The registry's
+                // active-allowlist view is non-destructive, so `/tools full`
+                // restores every tool (including any MCP tools discovered at
+                // startup) without rebuilding the registry.
+                let msg = render_tools_command(&mut self.tools, arg);
+                eprintln!("\x1b[2m[nex] {}\x1b[0m", msg);
+                NexSlashResult::Continue
+            }
+
+            "/think" => {
+                // Toggle live display of model reasoning
+                // (`<think>…</think>` blocks and the OpenAI-compatible
+                // reasoning channel). Default OFF: reasoning is hidden
+                // behind the `✓ thought for N tokens` marker. `/think on`
+                // reveals raw reasoning; bare `/think` flips the state.
+                let current = self
+                    .show_reasoning
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let next = match super::think_filter::parse_think_arg(arg) {
+                    super::think_filter::ThinkToggle::On => true,
+                    super::think_filter::ThinkToggle::Off => false,
+                    super::think_filter::ThinkToggle::Toggle => !current,
+                };
+                self.show_reasoning
+                    .store(next, std::sync::atomic::Ordering::SeqCst);
+                if next {
+                    eprintln!(
+                        "\x1b[2m[nex] reasoning display ON — raw <think> reasoning will be shown\x1b[0m"
+                    );
+                } else {
+                    eprintln!(
+                        "\x1b[2m[nex] reasoning display OFF — reasoning collapses to '✓ thought for N tokens'\x1b[0m"
+                    );
+                }
                 NexSlashResult::Continue
             }
 
@@ -4115,6 +4575,55 @@ impl AgentLoop {
                 NexSlashResult::Continue
             }
         }
+    }
+}
+
+/// Apply a `/tools` REPL command to `registry`, returning the status line
+/// to print on stderr. `arg` is one of:
+///   - `""` / `show` / `status` — report the current surface (mode, count,
+///     active tool names) plus the usage hint,
+///   - `minimal` / `min` / `lean` — install the lean local-dev view,
+///   - `full` / `all` — restore the full surface.
+/// Unknown args report usage. The registry is mutated in place through its
+/// non-destructive active-allowlist view, so the switch is live and
+/// reversible (no rebuild, no lost MCP discovery). Factored out as a free
+/// function so it can be unit-tested without standing up an `AgentLoop`.
+fn render_tools_command(registry: &mut ToolRegistry, arg: &str) -> String {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "min" | "lean" => {
+            registry.set_active_allowlist(super::tools::MINIMAL_TOOL_NAMES);
+            format!(
+                "tool surface → minimal ({} of {} tools active): {}",
+                registry.active_tool_names().len(),
+                registry.all_tool_names().len(),
+                registry.active_tool_names().join(", ")
+            )
+        }
+        "full" | "all" => {
+            registry.clear_active_allowlist();
+            format!(
+                "tool surface → full ({} tools active)",
+                registry.active_tool_names().len()
+            )
+        }
+        "" | "show" | "status" => {
+            let mode = if registry.is_minimal_view_active() {
+                "minimal"
+            } else {
+                "full"
+            };
+            format!(
+                "tool surface: {} ({} of {} tools active): {}\n\
+                 \x20 /tools minimal — lean local-dev set    /tools full — all tools",
+                mode,
+                registry.active_tool_names().len(),
+                registry.all_tool_names().len(),
+                registry.active_tool_names().join(", ")
+            )
+        }
+        other => format!(
+            "unknown /tools argument {other:?} — use `/tools`, `/tools minimal`, or `/tools full`"
+        ),
     }
 }
 
@@ -4243,7 +4752,12 @@ fn stderr_cols() -> usize {
 
 #[cfg(test)]
 mod prompt_indicator_tests {
-    use super::{NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, render_nex_prompt};
+    use super::{
+        LiveProgress, NEX_WORKING_FALLBACK, NEX_WORKING_GLYPH, NexPromptState, NexStatusHint,
+        render_nex_prompt, render_nex_thinking_hint,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use unicode_width::UnicodeWidthStr;
 
     fn strip_ansi(input: &str) -> String {
@@ -4267,32 +4781,148 @@ mod prompt_indicator_tests {
 
     #[test]
     fn compact_prompt_keeps_input_column_stable() {
-        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK, 0);
-        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK, 0);
+        let idle = render_nex_prompt(true, false, NEX_WORKING_FALLBACK);
+        let working = render_nex_prompt(false, false, NEX_WORKING_FALLBACK);
 
+        // Idle and working share the same 2-cell width and trailing space —
+        // the glyph swaps in place so the input column never shifts.
         assert_eq!(idle, "> ");
-        assert_eq!(working, "*>");
+        assert_eq!(working, "* ");
         assert_eq!(UnicodeWidthStr::width(idle.as_str()), 2);
         assert_eq!(UnicodeWidthStr::width(working.as_str()), 2);
     }
 
     #[test]
-    fn colored_working_prompt_is_single_cell_indicator_plus_prompt() {
-        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH, 2);
+    fn colored_working_prompt_swaps_glyph_in_place_with_trailing_space() {
+        let rendered = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
         let plain = strip_ansi(&rendered);
 
-        assert_eq!(plain, format!("{}>", NEX_WORKING_GLYPH));
+        // Lightning glyph REPLACES the `>` in place (no prepended `>`),
+        // followed by exactly one trailing space — same 2-cell width as the
+        // idle `> ` prompt.
+        assert_eq!(plain, format!("{} ", NEX_WORKING_GLYPH));
+        assert!(!plain.contains('>'), "working prompt must not keep a `>`");
         assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
         assert!(rendered.contains("\x1b[1;38;5;"));
     }
 
     #[test]
+    fn working_prompt_with_thinking_hint_never_reintroduces_caret() {
+        // fix-nex-working: while the agent is busy the caret is REPLACED by
+        // the lightning glyph (`↯ `), and the live `thinking… N tokens` hint
+        // that rides after it must never reintroduce a `>` — the composed
+        // busy line is `↯ thinking… N tokens`, never `↯>` or any `>`-bearing
+        // form. When the turn finishes the prompt swaps cleanly back to the
+        // idle `> ` caret with no leftover glyph or hint.
+        let progress = LiveProgress::default();
+        // `waiting_for_input == false` == the agent is working.
+        let waiting = Arc::new(AtomicBool::new(false));
+        let state = NexPromptState::new(waiting.clone(), progress.clone());
+
+        progress.add_tokens(7);
+        let prompt = strip_ansi(&state.render());
+        let hint = state
+            .hint("")
+            .expect("busy + empty input line shows the live thinking hint");
+        let composed = format!("{}{}", prompt, hint);
+
+        // Caret swapped in place: glyph + exactly one trailing space, no `>`.
+        assert_eq!(prompt, format!("{} ", NEX_WORKING_GLYPH));
+        assert!(
+            prompt.ends_with(' '),
+            "working prompt must keep the trailing space"
+        );
+        assert!(
+            !composed.contains('>'),
+            "composed busy line must not contain any `>`: {composed:?}"
+        );
+        assert!(
+            !composed.contains("↯>"),
+            "lightning must never be prepended to a caret: {composed:?}"
+        );
+        assert_eq!(composed, "↯ thinking… 7 tokens");
+
+        // Turn finishes -> idle: caret swaps back to a clean `> `, with no
+        // leftover working glyph and no trailing hint.
+        waiting.store(true, Ordering::SeqCst);
+        let idle = strip_ansi(&state.render());
+        assert_eq!(idle, "> ");
+        assert!(!idle.contains('↯'), "no leftover working glyph at idle");
+        assert_eq!(state.hint(""), None, "no trailing hint at idle");
+    }
+
+    #[test]
+    fn colored_working_prompt_is_fixed_color_across_repaints() {
+        // The prompt must be stable across repeated renders — no per-render
+        // color cycling that would flicker on every keystroke (fix-nex-chat-2).
+        let first = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        let second = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        let third = render_nex_prompt(false, true, NEX_WORKING_GLYPH);
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
+
+    #[test]
     fn colored_idle_prompt_renders_plain_prompt_text() {
-        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH, 0);
+        let rendered = render_nex_prompt(true, true, NEX_WORKING_GLYPH);
         let plain = strip_ansi(&rendered);
 
         assert_eq!(plain, "> ");
         assert_eq!(UnicodeWidthStr::width(plain.as_str()), 2);
+    }
+
+    #[test]
+    fn thinking_hint_shows_prefill_before_first_token() {
+        // Zero generated tokens = still prefilling (prompt processing on
+        // a slow local model); once tokens stream the running count shows.
+        assert_eq!(render_nex_thinking_hint(0), "prefilling…");
+        assert_eq!(render_nex_thinking_hint(1), "thinking… 1 tokens");
+        assert_eq!(render_nex_thinking_hint(1234), "thinking… 1234 tokens");
+    }
+
+    #[test]
+    fn hint_counts_up_as_tokens_accumulate() {
+        let waiting = Arc::new(AtomicBool::new(false));
+        let progress = LiveProgress::default();
+        let state = NexPromptState::new(waiting, progress.clone());
+
+        // Working + empty input line: the live status is shown.
+        assert_eq!(state.hint("").as_deref(), Some("prefilling…"));
+        progress.add_tokens(10);
+        assert_eq!(state.hint("").as_deref(), Some("thinking… 10 tokens"));
+        progress.add_tokens(5);
+        assert_eq!(state.hint("").as_deref(), Some("thinking… 15 tokens"));
+        // Reset (next turn) drops back to the prefill phase.
+        progress.reset();
+        assert_eq!(state.hint("").as_deref(), Some("prefilling…"));
+    }
+
+    #[test]
+    fn hint_suppressed_at_idle_and_while_composing() {
+        let progress = LiveProgress::default();
+        progress.add_tokens(42);
+
+        // Idle (waiting for input) — the ready prompt must stay a clean
+        // `> ` with no trailing status.
+        let idle = NexPromptState::new(Arc::new(AtomicBool::new(true)), progress.clone());
+        assert_eq!(idle.hint(""), None);
+
+        // Working, but the user has started typing a queued line — the
+        // status must not clutter their input; the glyph alone signals busy.
+        let working = NexPromptState::new(Arc::new(AtomicBool::new(false)), progress);
+        assert_eq!(working.hint("draft a follow-up"), None);
+        // …and reappears the moment the line is empty again.
+        assert_eq!(working.hint("").as_deref(), Some("thinking… 42 tokens"));
+    }
+
+    #[test]
+    fn status_hint_is_not_completable() {
+        use rustyline::hint::Hint;
+        // A stray Right-arrow / End keystroke must never insert the live
+        // status into the user's input line, so completion() is None.
+        let hint = NexStatusHint("thinking… 99 tokens".to_string());
+        assert_eq!(hint.display(), "thinking… 99 tokens");
+        assert_eq!(hint.completion(), None);
     }
 }
 
@@ -4514,5 +5144,60 @@ mod rerender_tests {
         assert!(stop.load(Ordering::SeqCst));
         drop(SpinnerGuard::spawn(stop.clone()));
         assert!(stop.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod tools_command_tests {
+    use super::*;
+    use crate::executor::native::tools::MINIMAL_TOOL_NAMES;
+    use tempfile::TempDir;
+
+    /// `/tools show` reports the current surface; `/tools minimal` and
+    /// `/tools full` switch it live and reversibly through the registry's
+    /// non-destructive active-allowlist view.
+    #[test]
+    fn tools_command_shows_and_switches_surface_live() {
+        let tmp = TempDir::new().unwrap();
+        let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+        let full_count = registry.all_tool_names().len();
+
+        // Default surface is full; `show` reports it with the usage hint.
+        let shown = render_tools_command(&mut registry, "");
+        assert!(shown.contains("tool surface: full"), "show: {shown}");
+        assert!(
+            shown.contains("/tools minimal"),
+            "show includes hint: {shown}"
+        );
+        assert!(!registry.is_minimal_view_active());
+
+        // Switch to minimal — live, names limited to the lean allowlist.
+        let to_min = render_tools_command(&mut registry, "minimal");
+        assert!(to_min.contains("→ minimal"), "switch msg: {to_min}");
+        assert!(registry.is_minimal_view_active());
+        assert_eq!(registry.active_tool_names().len(), MINIMAL_TOOL_NAMES.len());
+        assert!(
+            !registry
+                .active_tool_names()
+                .contains(&"web_fetch".to_string())
+        );
+
+        // `show` now reflects minimal mode.
+        let shown_min = render_tools_command(&mut registry, "show");
+        assert!(
+            shown_min.contains("tool surface: minimal"),
+            "show: {shown_min}"
+        );
+
+        // Switch back to full — every tool restored without a rebuild.
+        let to_full = render_tools_command(&mut registry, "full");
+        assert!(to_full.contains("→ full"), "switch msg: {to_full}");
+        assert!(!registry.is_minimal_view_active());
+        assert_eq!(registry.active_tool_names().len(), full_count);
+
+        // Unknown arg reports usage without mutating the surface.
+        let bad = render_tools_command(&mut registry, "wat");
+        assert!(bad.contains("unknown /tools argument"), "usage: {bad}");
+        assert_eq!(registry.active_tool_names().len(), full_count);
     }
 }

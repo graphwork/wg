@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
-use workgraph::graph::{LogEntry, Status, parse_token_usage, parse_wg_tokens};
-use workgraph::parser::modify_graph;
-use workgraph::service::registry::AgentRegistry;
+use worksgood::graph::{LogEntry, Status, parse_token_usage, parse_wg_tokens};
+use worksgood::parser::modify_graph;
+use worksgood::service::registry::AgentRegistry;
 
 pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
     {
@@ -37,7 +37,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
     });
 
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = worksgood::config::Config::load_or_default(dir);
     let max_incomplete_retries = config.coordinator.max_incomplete_retries;
     let escalate_on_retry = config.coordinator.escalate_on_retry;
     let retry_delay = &config.coordinator.incomplete_retry_delay;
@@ -92,7 +92,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: agent_id_for_archive.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: log_message,
             });
         } else {
@@ -106,7 +106,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
             // Tier escalation on retry: bump fast→standard→premium
             if escalate_on_retry && !task.no_tier_escalation {
-                use workgraph::config::Tier;
+                use worksgood::config::Tier;
                 let current_tier: Tier = task
                     .tier
                     .as_deref()
@@ -118,7 +118,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: agent_id_for_archive.clone(),
-                        user: Some(workgraph::current_user()),
+                        user: Some(worksgood::current_user()),
                         message: format!(
                             "Tier escalated on retry: {} → {}",
                             current_tier, next_tier
@@ -146,7 +146,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: agent_id_for_archive.clone(),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: log_message,
             });
         }
@@ -170,7 +170,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
 
     if let Ok(mut locked_registry) = AgentRegistry::load_locked(dir) {
         if let Some(agent) = locked_registry.get_agent_by_task_mut(id) {
-            use workgraph::service::registry::AgentStatus;
+            use worksgood::service::registry::AgentStatus;
             agent.status = AgentStatus::Done;
             if agent.completed_at.is_none() {
                 agent.completed_at = Some(Utc::now().to_rfc3339());
@@ -190,7 +190,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             "final_status": final_status.to_string(),
         }),
     };
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "incomplete",
         Some(id),
@@ -278,8 +278,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

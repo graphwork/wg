@@ -14,13 +14,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
-use workgraph::executor::native::agent::AgentLoop;
-use workgraph::executor::native::client::{
+use worksgood::executor::native::agent::AgentLoop;
+use worksgood::executor::native::client::{
     ContentBlock, Message, MessagesRequest, MessagesResponse, StopReason, Usage,
 };
-use workgraph::executor::native::openai_client::ApiError;
-use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::tools::ToolRegistry;
+use worksgood::executor::native::openai_client::ApiError;
+use worksgood::executor::native::provider::Provider;
+use worksgood::executor::native::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
 // Mock provider that can inject errors at specific call indices
@@ -122,8 +122,8 @@ impl Provider for ErrorInjectingProvider {
 fn setup_workgraph(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     let graph_path = dir.join("graph.jsonl");
-    let graph = workgraph::graph::WorkGraph::new();
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    let graph = worksgood::graph::WorkGraph::new();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 }
 
 // ---------------------------------------------------------------------------

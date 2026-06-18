@@ -114,8 +114,10 @@ struct OaiResponseMessage {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OaiToolCall>>,
-    /// Plaintext reasoning/thinking content (OpenRouter unified field).
-    #[serde(default)]
+    /// Plaintext reasoning/thinking content. `reasoning` is the
+    /// OpenRouter unified field; `reasoning_content` is the
+    /// vLLM/SGLang/DeepSeek OpenAI-compatible spelling.
+    #[serde(default, alias = "reasoning_content")]
     reasoning: Option<String>,
     /// Structured reasoning details (OpenRouter unified field).
     /// Passed back verbatim in subsequent requests to preserve reasoning context.
@@ -216,8 +218,11 @@ struct OaiStreamDelta {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OaiStreamToolCall>>,
-    /// Reasoning/thinking content delta (OpenRouter streaming).
-    #[serde(default)]
+    /// Reasoning/thinking content delta. `reasoning` is the OpenRouter
+    /// unified field; `reasoning_content` is the vLLM / SGLang / DeepSeek
+    /// OpenAI-compatible spelling — accept both so reasoning is captured
+    /// (and kept out of the answer stream) regardless of server flavor.
+    #[serde(default, alias = "reasoning_content")]
     reasoning: Option<String>,
     /// Structured reasoning details delta (OpenRouter streaming).
     #[serde(default)]
@@ -3636,6 +3641,31 @@ mod tests {
         assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("stop"));
         assert_eq!(chunk.usage.as_ref().unwrap().prompt_tokens, 10);
         assert_eq!(chunk.usage.as_ref().unwrap().completion_tokens, 5);
+    }
+
+    #[test]
+    fn test_stream_chunk_reasoning_field_openrouter() {
+        // OpenRouter spells the reasoning channel `reasoning`.
+        let json = r#"{"id":"gen-1","choices":[{"index":0,"delta":{"reasoning":"let me think"},"finish_reason":null}]}"#;
+        let chunk: OaiStreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            chunk.choices[0].delta.reasoning.as_deref(),
+            Some("let me think")
+        );
+        assert!(chunk.choices[0].delta.content.is_none());
+    }
+
+    #[test]
+    fn test_stream_chunk_reasoning_content_alias_vllm() {
+        // vLLM / SGLang / DeepSeek spell the same channel
+        // `reasoning_content`; the serde alias maps it onto `reasoning`
+        // so it is captured (and kept out of the answer stream) too.
+        let json = r#"{"id":"gen-2","choices":[{"index":0,"delta":{"reasoning_content":"hidden CoT"},"finish_reason":null}]}"#;
+        let chunk: OaiStreamChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            chunk.choices[0].delta.reasoning.as_deref(),
+            Some("hidden CoT")
+        );
     }
 
     #[test]

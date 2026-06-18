@@ -1,11 +1,11 @@
 use anyhow::Result;
 use std::path::Path;
-use workgraph::query::after;
+use worksgood::query::after;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use worksgood::parser::load_graph;
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
@@ -48,8 +48,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
-use workgraph::check::check_all;
+use worksgood::check::check_all;
 
 #[derive(Serialize)]
 struct CycleInfo {
@@ -14,9 +14,9 @@ struct CycleInfo {
 struct CheckJsonOutput {
     ok: bool,
     cycles: Vec<Vec<String>>,
-    orphan_refs: Vec<workgraph::check::OrphanRef>,
-    stale_assignments: Vec<workgraph::check::StaleAssignment>,
-    stuck_blocked: Vec<workgraph::check::StuckBlocked>,
+    orphan_refs: Vec<worksgood::check::OrphanRef>,
+    stale_assignments: Vec<worksgood::check::StaleAssignment>,
+    stuck_blocked: Vec<worksgood::check::StuckBlocked>,
     node_count: usize,
     structural_cycles: Vec<CycleInfo>,
     warnings: usize,
@@ -111,7 +111,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                     let elapsed = chrono::Utc::now().signed_duration_since(created);
                     format!(
                         " (task created {})",
-                        workgraph::format_duration(elapsed.num_seconds(), false)
+                        worksgood::format_duration(elapsed.num_seconds(), false)
                     )
                 })
                 .unwrap_or_default();
@@ -123,7 +123,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
             // Fuzzy match suggestion
             if let Some((suggestion, _dist)) =
-                workgraph::check::fuzzy_match_task_id(&orphan.to, all_task_ids.iter().copied(), 3)
+                worksgood::check::fuzzy_match_task_id(&orphan.to, all_task_ids.iter().copied(), 3)
             {
                 eprintln!("    → Did you mean '{}'?", suggestion);
             }
@@ -173,8 +173,8 @@ mod tests {
     use super::super::graph_path;
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {
@@ -184,7 +184,7 @@ mod tests {
         }
     }
 
-    fn setup_graph(dir: &Path, graph: &workgraph::graph::WorkGraph) {
+    fn setup_graph(dir: &Path, graph: &worksgood::graph::WorkGraph) {
         std::fs::create_dir_all(dir).unwrap();
         let path = graph_path(dir);
         save_graph(graph, &path).unwrap();
@@ -195,7 +195,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".wg");
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         graph.add_node(Node::Task(make_task("t2", "Task 2")));
         setup_graph(&dir, &graph);
@@ -209,7 +209,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".wg");
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
         t1.after = vec!["nonexistent".to_string()];
         graph.add_node(Node::Task(t1));
@@ -228,7 +228,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".wg");
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
         t1.after = vec!["t2".to_string()];
         let mut t2 = make_task("t2", "Task 2");
@@ -263,7 +263,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".wg");
 
-        let mut graph = workgraph::graph::WorkGraph::new();
+        let mut graph = worksgood::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
         t1.assigned = Some("agent-dead".to_string());
         graph.add_node(Node::Task(t1));

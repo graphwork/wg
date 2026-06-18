@@ -360,6 +360,67 @@ mod tests {
     }
 
     #[test]
+    fn test_budget_decision_at_boundary() {
+        // The inline-vs-file decision is `content.len() <= threshold`.
+        // Exercise both sides of the boundary at a fixed threshold.
+        let tmp = TempDir::new().unwrap();
+        let threshold = 1000;
+        let channeler = ToolOutputChanneler::with_threshold(tmp.path().to_path_buf(), threshold);
+
+        // Exactly at the threshold: delivered inline, untouched, no file written.
+        let at = "a".repeat(threshold);
+        assert_eq!(channeler.maybe_channel("bash", &at), at);
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "at-threshold output must not be channeled to disk"
+        );
+
+        // One byte over: channeled to a file with explicit parse guidance.
+        let over = "b".repeat(threshold + 1);
+        let handle = channeler.maybe_channel("bash", &over);
+        assert_ne!(handle, over, "over-threshold output must be channeled");
+        assert!(handle.contains("CHANNELED OUTPUT"));
+        assert!(handle.contains("head -n"));
+        assert!(handle.contains("sed -n"));
+        assert!(handle.contains("grep -n"));
+        // Full content preserved on disk.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(std::fs::read_to_string(entries[0].path()).unwrap(), over);
+    }
+
+    #[test]
+    fn test_budget_decision_tracks_context_window() {
+        // End-to-end: a small-context model channels a 40 KiB output, while a
+        // large-context model delivers the same output inline — proving the
+        // threshold is derived from the resolved context window.
+        let tmp = TempDir::new().unwrap();
+        let small = ToolOutputChanneler::for_context_window(
+            tmp.path().join("small"),
+            8_192, // llama.cpp `-c 8192`: budget clamps to 32 KiB floor
+        );
+        let large = ToolOutputChanneler::for_context_window(
+            tmp.path().join("large"),
+            1_000_000, // budget clamps to 128 KiB ceiling
+        );
+        let payload = "x".repeat(40 * 1024);
+
+        let small_out = small.maybe_channel("bash", &payload);
+        assert!(
+            small_out.contains("CHANNELED OUTPUT"),
+            "40 KiB should exceed the 32 KiB budget of an 8k-context model"
+        );
+        assert_eq!(
+            large.maybe_channel("bash", &payload),
+            payload,
+            "40 KiB fits inline under a large-context model's 128 KiB budget"
+        );
+    }
+
+    #[test]
     fn test_threshold_scales_with_context_window() {
         assert_eq!(threshold_for_context_window(32_768), 32 * 1024);
         assert_eq!(threshold_for_context_window(200_000), 64_000);

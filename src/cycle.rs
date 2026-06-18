@@ -66,7 +66,7 @@ pub struct Scc {
 ///
 /// # Example
 /// ```
-/// use workgraph::cycle::tarjan_scc;
+/// use worksgood::cycle::tarjan_scc;
 ///
 /// // Graph: 0 → 1 → 2 → 0 (a 3-node cycle)
 /// let adj = vec![vec![1], vec![2], vec![0]];
@@ -254,7 +254,7 @@ pub struct LoopNestingForest {
 ///
 /// # Example
 /// ```
-/// use workgraph::cycle::build_loop_nesting_forest;
+/// use worksgood::cycle::build_loop_nesting_forest;
 ///
 /// // Graph: 0 → 1 → 2 → 1 (loop: 1→2→1, entry via 0)
 /// let adj = vec![vec![1], vec![2], vec![1]];
@@ -501,7 +501,7 @@ pub enum EdgeAddResult {
 ///
 /// # Example
 /// ```
-/// use workgraph::cycle::{check_edge_addition, EdgeAddResult};
+/// use worksgood::cycle::{check_edge_addition, EdgeAddResult};
 ///
 /// // Graph: 0 → 1 → 2 (no cycles)
 /// let adj = vec![vec![1], vec![2], vec![]];
@@ -832,7 +832,7 @@ pub struct CycleIterationConfig {
 ///
 /// # Example
 /// ```
-/// use workgraph::cycle::{find_cycles, extract_cycle_metadata};
+/// use worksgood::cycle::{find_cycles, extract_cycle_metadata};
 ///
 /// // Graph: 0 → 1 → 2 → 0, with 3 → 0 (external entry)
 /// let adj = vec![vec![1], vec![2], vec![0], vec![0]];

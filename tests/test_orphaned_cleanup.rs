@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
 const WORKTREES_DIR: &str = ".wg-worktrees";
 

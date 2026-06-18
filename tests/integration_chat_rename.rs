@@ -8,8 +8,8 @@
 //! - IPC accepts both create_chat and legacy create_coordinator commands
 
 use tempfile::TempDir;
-use workgraph::chat_id::{CHAT_LOOP_TAG, format_chat_task_id, is_chat_task_id, parse_chat_task_id};
-use workgraph::graph::{Status, Task, WorkGraph};
+use worksgood::chat_id::{CHAT_LOOP_TAG, format_chat_task_id, is_chat_task_id, parse_chat_task_id};
+use worksgood::graph::{Status, Task, WorkGraph};
 
 #[test]
 fn test_chat_task_uses_chat_prefix() {
@@ -46,9 +46,9 @@ fn test_legacy_coordinator_prefix_still_loaded() {
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     };
-    graph.add_node(workgraph::graph::Node::Task(legacy));
+    graph.add_node(worksgood::graph::Node::Task(legacy));
 
-    let found = workgraph::chat_id::find_chat_task(&graph, 3);
+    let found = worksgood::chat_id::find_chat_task(&graph, 3);
     assert!(
         found.is_some(),
         "find_chat_task must find legacy .coordinator-3"
@@ -65,7 +65,7 @@ fn test_config_legacy_coordinator_section_accepted_with_warning() {
 max_agents = 8
 executor = "claude"
 "#;
-    let cfg: workgraph::config::Config = toml::from_str(new_toml).expect("[dispatcher] must parse");
+    let cfg: worksgood::config::Config = toml::from_str(new_toml).expect("[dispatcher] must parse");
     assert_eq!(cfg.coordinator.max_agents, 8);
     assert_eq!(cfg.coordinator.effective_executor(), "claude");
 
@@ -74,7 +74,7 @@ executor = "claude"
 max_agents = 5
 executor = "native"
 "#;
-    let legacy_cfg: workgraph::config::Config =
+    let legacy_cfg: worksgood::config::Config =
         toml::from_str(legacy_toml).expect("legacy [coordinator] must still parse");
     assert_eq!(legacy_cfg.coordinator.max_agents, 5);
     assert_eq!(legacy_cfg.coordinator.effective_executor(), "native");
@@ -85,7 +85,7 @@ fn test_config_new_canonical_section_writes_dispatcher() {
     // When we serialize a Config back to TOML, the canonical key is [dispatcher],
     // not [coordinator]. (We don't ship a write-back path that uses serde here,
     // but if any consumer does serialize Config directly, it must use the new key.)
-    let cfg = workgraph::config::Config::default();
+    let cfg = worksgood::config::Config::default();
     let serialized = toml::to_string(&cfg).expect("Config must serialize");
     assert!(
         serialized.contains("[dispatcher]"),
@@ -128,9 +128,9 @@ fn test_chat_loop_tag_constant_is_chat_dash_loop() {
     assert_eq!(CHAT_LOOP_TAG, "chat-loop");
 
     // is_chat_loop_tag matches both forms
-    assert!(workgraph::chat_id::is_chat_loop_tag("chat-loop"));
-    assert!(workgraph::chat_id::is_chat_loop_tag("coordinator-loop"));
-    assert!(!workgraph::chat_id::is_chat_loop_tag("compact-loop"));
+    assert!(worksgood::chat_id::is_chat_loop_tag("chat-loop"));
+    assert!(worksgood::chat_id::is_chat_loop_tag("coordinator-loop"));
+    assert!(!worksgood::chat_id::is_chat_loop_tag("compact-loop"));
 }
 
 #[test]
@@ -191,27 +191,27 @@ fn test_migration_chat_rename_renames_legacy_ids() {
 
     // Build a graph with one legacy chat task and one dependent task.
     let mut graph = WorkGraph::new();
-    graph.add_node(workgraph::graph::Node::Task(Task {
+    graph.add_node(worksgood::graph::Node::Task(Task {
         id: ".coordinator-2".to_string(),
         title: "Coordinator: bob".to_string(),
         status: Status::InProgress,
         tags: vec!["coordinator-loop".to_string()],
         ..Default::default()
     }));
-    graph.add_node(workgraph::graph::Node::Task(Task {
+    graph.add_node(worksgood::graph::Node::Task(Task {
         id: "child-task".to_string(),
         title: "Some child".to_string(),
         status: Status::Open,
         after: vec![".coordinator-2".to_string()],
         ..Default::default()
     }));
-    workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    worksgood::parser::save_graph(&graph, &graph_path).unwrap();
 
     // Run migration via the binary's command function. We can't import the
     // bin's `commands::migrate` here, so instead we directly do what the
     // command does using the public chat_id helpers and parser API,
     // mimicking the rewrite logic for an integration-level smoke test.
-    workgraph::parser::modify_graph(&graph_path, |g| {
+    worksgood::parser::modify_graph(&graph_path, |g| {
         let renames: Vec<(String, String)> = g
             .tasks()
             .filter_map(|t| {
@@ -251,7 +251,7 @@ fn test_migration_chat_rename_renames_legacy_ids() {
     })
     .unwrap();
 
-    let migrated = workgraph::parser::load_graph(&graph_path).unwrap();
+    let migrated = worksgood::parser::load_graph(&graph_path).unwrap();
     let task = migrated
         .get_task(".chat-2")
         .expect("must find migrated .chat-2");

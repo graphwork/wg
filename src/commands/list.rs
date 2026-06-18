@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::graph::{
+use worksgood::graph::{
     PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW,
     PRIORITY_NORMAL, Priority, Status,
 };
@@ -223,8 +223,8 @@ mod tests {
     use chrono::Duration;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {

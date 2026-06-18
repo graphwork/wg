@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-use workgraph::graph::{Node, Resource};
+use worksgood::graph::{Node, Resource};
 
 pub fn run_add(
     dir: &Path,
@@ -86,7 +86,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use workgraph::parser::load_graph;
+    use worksgood::parser::load_graph;
 
     fn setup_workgraph() -> TempDir {
         let temp_dir = TempDir::new().unwrap();

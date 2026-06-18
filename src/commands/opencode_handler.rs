@@ -32,8 +32,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use workgraph::chat;
-use workgraph::session_lock::{HandlerKind, SessionLock};
+use worksgood::chat;
+use worksgood::session_lock::{HandlerKind, SessionLock};
 
 const INBOX_POLL: Duration = Duration::from_millis(200);
 
@@ -59,7 +59,7 @@ pub fn run(
 
     // Route through the session registry so aliases resolve to the
     // UUID-backed storage dir — see `chat::chat_dir_for_ref`.
-    let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
         .with_context(|| format!("create chat dir {:?}", chat_dir))?;
 
@@ -132,8 +132,13 @@ pub fn run(
 
             let streaming_path = chat::streaming_path_ref(workgraph_dir, chat_ref);
             let prompt_file = chat_dir.join("opencode-prompt.txt");
-            let reply = match run_opencode_turn(&prompt, model, workgraph_dir, &prompt_file, &logger)
-            {
+            let reply = match run_opencode_turn(
+                &prompt,
+                model,
+                workgraph_dir,
+                &prompt_file,
+                &logger,
+            ) {
                 Ok(t) => t,
                 Err(e) => {
                     logger.error(&format!("opencode turn failed: {}", e));
@@ -277,7 +282,7 @@ fn opencode_model_arg(model: Option<&str>) -> Option<String> {
     let m = match raw.split_once(':') {
         Some((prefix, rest))
             if !rest.trim().is_empty()
-                && workgraph::dispatch::ExecutorKind::from_str(prefix)
+                && worksgood::dispatch::ExecutorKind::from_str(prefix)
                     .is_some_and(|k| k.is_external_cli()) =>
         {
             rest.trim()
@@ -290,7 +295,7 @@ fn opencode_model_arg(model: Option<&str>) -> Option<String> {
     // `minimax/minimax-m3`, which must become `openrouter/minimax/minimax-m3`
     // rather than being passed through (OpenCode can't resolve provider
     // `minimax` and silently falls back to its default model).
-    workgraph::chat_command::opencode_model_arg(m)
+    worksgood::chat_command::opencode_model_arg(m)
 }
 
 /// Build the argv (excluding the `opencode` binary itself) for one
@@ -393,11 +398,7 @@ fn extract_export_reply(export_json: &str) -> Option<String> {
 /// Run `opencode export <session_id>` and extract the assistant reply.
 /// Returns `None` (with a logged warning) on any failure so the caller can
 /// fall back to parsing the run stdout directly.
-fn fetch_reply_via_export(
-    session_id: &str,
-    cwd: &Path,
-    logger: &HandlerLogger,
-) -> Option<String> {
+fn fetch_reply_via_export(session_id: &str, cwd: &Path, logger: &HandlerLogger) -> Option<String> {
     let mut cmd = Command::new("opencode");
     cmd.args(["export", session_id]);
     cmd.current_dir(cwd);
@@ -616,7 +617,10 @@ mod tests {
         let args = opencode_run_args(Some("opencode:openrouter/stepfun/step-3.7-flash"), &pf)
             .expect("model resolves");
         // `--model` flag present with the openrouter slash spelling.
-        let idx = args.iter().position(|a| a == "--model").expect("--model present");
+        let idx = args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model present");
         assert_eq!(args[idx + 1], "openrouter/stepfun/step-3.7-flash");
         assert!(args.contains(&"run".to_string()));
     }
@@ -632,7 +636,10 @@ mod tests {
             .iter()
             .position(|a| a.starts_with("Respond to the attached"))
             .expect("positional message present");
-        let file_idx = args.iter().position(|a| a == "--file").expect("--file present");
+        let file_idx = args
+            .iter()
+            .position(|a| a == "--file")
+            .expect("--file present");
         assert!(
             msg_idx < file_idx,
             "positional message must come before --file (else --file swallows it): {:?}",
@@ -678,7 +685,10 @@ mod tests {
             {"info": {"role": "user"}, "parts": [{"type":"text","text":"middle"}]},
             {"info": {"role": "assistant"}, "parts": [{"type":"text","text":"final answer"}]}
         ]}"#;
-        assert_eq!(extract_export_reply(export).as_deref(), Some("final answer"));
+        assert_eq!(
+            extract_export_reply(export).as_deref(),
+            Some("final answer")
+        );
         assert_eq!(extract_export_reply("garbage"), None);
         assert_eq!(extract_export_reply(r#"{"messages":[]}"#), None);
     }

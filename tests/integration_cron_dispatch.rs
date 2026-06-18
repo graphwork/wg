@@ -9,10 +9,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-use workgraph::cron::reset_cron_task;
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::{is_time_ready, ready_tasks};
+use worksgood::cron::reset_cron_task;
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::{is_time_ready, ready_tasks};
 
 // ── helpers ──────────────────────────────────────────────────────────────
 

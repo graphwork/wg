@@ -7,7 +7,7 @@
 //! interference from the user's global config during tests.
 
 use tempfile::TempDir;
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 /// Create a temp WG dir with a minimal config.
 fn setup_workgraph_dir() -> TempDir {

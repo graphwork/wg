@@ -160,9 +160,9 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
-    use workgraph::service::registry::AgentRegistry;
+    use worksgood::graph::{Node, Status, Task, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::service::registry::AgentRegistry;
 
     /// Isolate WG's machine-global config + active-profile from this test by
     /// pointing `WG_GLOBAL_DIR` at a fresh empty tempdir. `spawn_agent_inner`
@@ -450,7 +450,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify task was claimed
-        let graph = workgraph::parser::load_graph(graph_path(&workgraph_dir)).unwrap();
+        let graph = worksgood::parser::load_graph(graph_path(&workgraph_dir)).unwrap();
         let task = graph.get_task(&task_id).unwrap();
         assert_eq!(task.status, Status::InProgress);
 

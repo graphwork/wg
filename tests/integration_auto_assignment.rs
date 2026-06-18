@@ -15,12 +15,12 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
-use workgraph::config::Config;
-use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph};
-use workgraph::parser::{load_graph, save_graph};
-use workgraph::query::ready_tasks;
-use workgraph::service::executor::TemplateVars;
+use worksgood::agency::{self, Agent, Lineage, PerformanceRecord};
+use worksgood::config::Config;
+use worksgood::graph::{Node, PRIORITY_DEFAULT, Status, Task, WorkGraph};
+use worksgood::parser::{load_graph, save_graph};
+use worksgood::query::ready_tasks;
+use worksgood::service::executor::TemplateVars;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -256,6 +256,7 @@ fn build_assign_subgraph(dir: &Path) {
             model: None,
             provider: None,
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -1209,6 +1210,7 @@ Begin working on the task now.
             model: None,
             provider: None,
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,
@@ -1342,7 +1344,7 @@ Begin working on the task now.
         task.status = Status::Done;
         task.started_at = Some(chrono::Utc::now().to_rfc3339());
         task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-        task.log = vec![workgraph::graph::LogEntry {
+        task.log = vec![worksgood::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("agent-1".to_string()),
             user: None,

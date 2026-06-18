@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
-use workgraph::graph::{Status, Task, WorkGraph};
-use workgraph::provenance::{self, OperationEntry};
-use workgraph::query::build_reverse_index;
+use worksgood::graph::{Status, Task, WorkGraph};
+use worksgood::provenance::{self, OperationEntry};
+use worksgood::query::build_reverse_index;
 
 /// Output mode for the trace command
 pub enum TraceMode {
@@ -274,7 +274,7 @@ pub fn run(dir: &Path, id: &str, mode: TraceMode) -> Result<()> {
 }
 
 fn build_summary(
-    task: &workgraph::graph::Task,
+    task: &worksgood::graph::Task,
     ops: &[OperationEntry],
     agent_runs: &[AgentRun],
 ) -> TraceSummary {
@@ -323,7 +323,7 @@ fn build_summary(
     }
 }
 
-fn print_header(task: &workgraph::graph::Task) {
+fn print_header(task: &worksgood::graph::Task) {
     println!("Trace: {} ({})", task.id, task.status);
     println!("Title: {}", task.title);
     if let Some(ref assigned) = task.assigned {
@@ -1463,8 +1463,8 @@ pub fn reconstruct_temporal(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

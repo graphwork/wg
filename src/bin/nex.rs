@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
-use workgraph::nex_cli::NexArgs;
+use worksgood::nex_cli::NexArgs;
 
 #[derive(Parser, Debug)]
 #[command(name = "nex")]
@@ -26,30 +26,30 @@ fn main() -> Result<()> {
 
     let cli = NexCli::parse();
     let runtime = if cli.dir.is_some() || cli.wg {
-        let workgraph_dir = workgraph::workgraph_dir::resolve_workgraph_dir(
+        let workgraph_dir = worksgood::workgraph_dir::resolve_workgraph_dir(
             cli.dir.clone(),
             std::env::var_os("WG_DIR").map(PathBuf::from),
             std::env::current_dir().ok(),
             dirs::home_dir(),
         );
-        workgraph::nex_runtime::resolve_legacy_wg_compat(
+        worksgood::nex_runtime::resolve_legacy_wg_compat(
             workgraph_dir.canonicalize().unwrap_or(workgraph_dir),
             dirs::home_dir(),
         )
     } else if cli.args.eval_mode {
         resolve_standalone_eval(&standalone_input(&cli.args))
     } else {
-        workgraph::nex_runtime::resolve_standalone(&standalone_input(&cli.args))
+        worksgood::nex_runtime::resolve_standalone(&standalone_input(&cli.args))
     };
 
     if runtime.state_root.exists() {
-        workgraph::usage::append_usage_log(&runtime.state_root, "nex");
+        worksgood::usage::append_usage_log(&runtime.state_root, "nex");
     }
-    workgraph::nex::run_args_with_runtime(&runtime, &cli.args, "nex")
+    worksgood::nex::run_args_with_runtime(&runtime, &cli.args, "nex")
 }
 
-fn standalone_input(args: &NexArgs) -> workgraph::nex_runtime::NexRuntimeResolveInput {
-    workgraph::nex_runtime::NexRuntimeResolveInput {
+fn standalone_input(args: &NexArgs) -> worksgood::nex_runtime::NexRuntimeResolveInput {
+    worksgood::nex_runtime::NexRuntimeResolveInput {
         cwd: std::env::current_dir().ok(),
         home_dir: dirs::home_dir(),
         cli_nex_dir: args.nex_dir.clone(),
@@ -63,10 +63,10 @@ fn standalone_input(args: &NexArgs) -> workgraph::nex_runtime::NexRuntimeResolve
 }
 
 fn resolve_standalone_eval(
-    input: &workgraph::nex_runtime::NexRuntimeResolveInput,
-) -> workgraph::nex_runtime::NexRuntime {
-    let mut runtime = workgraph::nex_runtime::resolve_eval(input);
-    let standalone = workgraph::nex_runtime::resolve_standalone(input);
+    input: &worksgood::nex_runtime::NexRuntimeResolveInput,
+) -> worksgood::nex_runtime::NexRuntime {
+    let mut runtime = worksgood::nex_runtime::resolve_eval(input);
+    let standalone = worksgood::nex_runtime::resolve_standalone(input);
 
     runtime.config_paths = merge_unique_paths(standalone.config_paths, runtime.config_paths);
     runtime.model_registry_paths = merge_unique_paths(

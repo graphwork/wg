@@ -11,12 +11,12 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{
+use worksgood::agency::{
     self, Agent, Evaluation, Lineage, PerformanceRecord, content_hash_agent, load_agent, load_role,
     load_tradeoff, record_evaluation, render_identity_prompt_rich, resolve_all_components,
     resolve_outcome, save_agent, seed_starters, special_agent_roles, special_agent_tradeoffs,
 };
-use workgraph::config::Config;
+use worksgood::config::Config;
 
 // ---------------------------------------------------------------------------
 // Helper: bootstrap a fresh agency directory with special agents + config

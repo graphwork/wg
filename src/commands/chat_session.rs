@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use workgraph::chat_sessions::SessionKind;
+use worksgood::chat_sessions::SessionKind;
 
 use crate::cli::{SessionAliasCommands, SessionCommands};
 
@@ -24,7 +24,7 @@ pub fn run(workgraph_dir: &Path, cmd: SessionCommands) -> Result<()> {
         SessionCommands::Fork { source, alias } => run_fork(workgraph_dir, &source, alias),
         SessionCommands::Alias { command } => match command {
             SessionAliasCommands::Add { session, alias } => {
-                workgraph::chat_sessions::add_alias(workgraph_dir, &session, &alias)?;
+                worksgood::chat_sessions::add_alias(workgraph_dir, &session, &alias)?;
                 eprintln!(
                     "\x1b[32m[wg session]\x1b[0m added alias {:?} → {}",
                     alias, session
@@ -32,14 +32,14 @@ pub fn run(workgraph_dir: &Path, cmd: SessionCommands) -> Result<()> {
                 Ok(())
             }
             SessionAliasCommands::Rm { alias } => {
-                workgraph::chat_sessions::remove_alias(workgraph_dir, &alias)?;
+                worksgood::chat_sessions::remove_alias(workgraph_dir, &alias)?;
                 eprintln!("\x1b[32m[wg session]\x1b[0m removed alias {:?}", alias);
                 Ok(())
             }
         },
         SessionCommands::Rm { session } => {
-            let uuid = workgraph::chat_sessions::resolve_ref(workgraph_dir, &session)?;
-            workgraph::chat_sessions::delete_session(workgraph_dir, &session)?;
+            let uuid = worksgood::chat_sessions::resolve_ref(workgraph_dir, &session)?;
+            worksgood::chat_sessions::delete_session(workgraph_dir, &session)?;
             eprintln!("\x1b[32m[wg session]\x1b[0m removed session {}", uuid);
             Ok(())
         }
@@ -73,7 +73,7 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
         return Ok(());
     }
 
-    let reg = workgraph::chat_sessions::load(workgraph_dir).unwrap_or_default();
+    let reg = worksgood::chat_sessions::load(workgraph_dir).unwrap_or_default();
     let registered: HashSet<String> = reg.sessions.keys().cloned().collect();
 
     // 36-char canonical UUID; we don't want to require uuid crate parse
@@ -152,7 +152,7 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
         if !dir.is_dir() {
             continue;
         }
-        if let Ok(Some(info)) = workgraph::session_lock::read_holder(&dir)
+        if let Ok(Some(info)) = worksgood::session_lock::read_holder(&dir)
             && !info.alive
         {
             println!(
@@ -163,7 +163,7 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
             );
             issues += 1;
             if fix {
-                let lock_path = workgraph::session_lock::SessionLock::lock_path(&dir);
+                let lock_path = worksgood::session_lock::SessionLock::lock_path(&dir);
                 if std::fs::remove_file(&lock_path).is_ok() {
                     fixed += 1;
                     println!(
@@ -221,8 +221,8 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
             }
             // Trigger re-registration by resolving the alias; the
             // alias_symlink path does the merge+remove dance.
-            if let Ok(uuid) = workgraph::chat_sessions::resolve_ref(workgraph_dir, &name) {
-                if workgraph::chat_sessions::add_alias(workgraph_dir, &uuid, &name).is_ok() {
+            if let Ok(uuid) = worksgood::chat_sessions::resolve_ref(workgraph_dir, &name) {
+                if worksgood::chat_sessions::add_alias(workgraph_dir, &uuid, &name).is_ok() {
                     fixed += 1;
                     println!(
                         "  \x1b[32m✓\x1b[0m cleaned legacy alias path {}",
@@ -255,7 +255,7 @@ fn run_check(workgraph_dir: &Path, fix: bool) -> Result<()> {
 /// registered via `ensure_session` (e.g., raw `wg nex --chat foo`
 /// invocations).
 fn resolve_chat_dir(workgraph_dir: &Path, session: &str) -> Result<std::path::PathBuf> {
-    if let Ok(uuid) = workgraph::chat_sessions::resolve_ref(workgraph_dir, session) {
+    if let Ok(uuid) = worksgood::chat_sessions::resolve_ref(workgraph_dir, session) {
         return Ok(workgraph_dir.join("chat").join(uuid));
     }
     let direct = workgraph_dir.join("chat").join(session);
@@ -270,7 +270,7 @@ fn resolve_chat_dir(workgraph_dir: &Path, session: &str) -> Result<std::path::Pa
 
 fn run_release(workgraph_dir: &Path, session: &str, wait_secs: u64) -> Result<()> {
     let chat_dir = resolve_chat_dir(workgraph_dir, session)?;
-    match workgraph::session_lock::read_holder(&chat_dir)? {
+    match worksgood::session_lock::read_holder(&chat_dir)? {
         None => {
             eprintln!(
                 "\x1b[2m[wg session]\x1b[0m {} has no live handler — nothing to release",
@@ -285,7 +285,7 @@ fn run_release(workgraph_dir: &Path, session: &str, wait_secs: u64) -> Result<()
             );
             // Stale lock — just remove it.
             let _ =
-                std::fs::remove_file(workgraph::session_lock::SessionLock::lock_path(&chat_dir));
+                std::fs::remove_file(worksgood::session_lock::SessionLock::lock_path(&chat_dir));
             return Ok(());
         }
         Some(info) => {
@@ -295,14 +295,14 @@ fn run_release(workgraph_dir: &Path, session: &str, wait_secs: u64) -> Result<()
                 info.kind.map(|k| k.label()).unwrap_or("unknown"),
                 session
             );
-            workgraph::session_lock::request_release(&chat_dir)?;
+            worksgood::session_lock::request_release(&chat_dir)?;
         }
     }
     if wait_secs == 0 {
         eprintln!("\x1b[2m[wg session]\x1b[0m release requested (not waiting for completion)");
         return Ok(());
     }
-    match workgraph::session_lock::wait_for_release(
+    match worksgood::session_lock::wait_for_release(
         &chat_dir,
         std::time::Duration::from_secs(wait_secs),
     ) {
@@ -325,7 +325,7 @@ fn run_release(workgraph_dir: &Path, session: &str, wait_secs: u64) -> Result<()
 
 fn run_status(workgraph_dir: &Path, session: &str) -> Result<()> {
     let chat_dir = resolve_chat_dir(workgraph_dir, session)?;
-    match workgraph::session_lock::read_holder(&chat_dir)? {
+    match worksgood::session_lock::read_holder(&chat_dir)? {
         None => {
             println!("{}: no handler", session);
         }
@@ -345,7 +345,7 @@ fn run_status(workgraph_dir: &Path, session: &str) -> Result<()> {
 }
 
 fn run_list(workgraph_dir: &Path, json: bool, short: bool) -> Result<()> {
-    let sessions = workgraph::chat_sessions::list(workgraph_dir)?;
+    let sessions = worksgood::chat_sessions::list(workgraph_dir)?;
     if json {
         let value: Vec<_> = sessions
             .iter()
@@ -403,8 +403,8 @@ fn run_list(workgraph_dir: &Path, json: bool, short: bool) -> Result<()> {
 }
 
 fn run_fork(workgraph_dir: &Path, source: &str, alias: Option<String>) -> Result<()> {
-    let fork_uuid = workgraph::chat_sessions::fork_session(workgraph_dir, source, alias.clone())?;
-    let reg = workgraph::chat_sessions::load(workgraph_dir)?;
+    let fork_uuid = worksgood::chat_sessions::fork_session(workgraph_dir, source, alias.clone())?;
+    let reg = worksgood::chat_sessions::load(workgraph_dir)?;
     let meta = reg
         .sessions
         .get(&fork_uuid)
@@ -424,7 +424,7 @@ fn run_fork(workgraph_dir: &Path, source: &str, alias: Option<String>) -> Result
 }
 
 fn run_new(workgraph_dir: &Path, alias: &str, label: Option<String>) -> Result<()> {
-    let uuid = workgraph::chat_sessions::create_session(
+    let uuid = worksgood::chat_sessions::create_session(
         workgraph_dir,
         SessionKind::Other,
         &[alias.to_string()],
@@ -526,7 +526,7 @@ fn run_attach(workgraph_dir: &Path, session_ref: &str) -> Result<()> {
                 let _ = f.seek(SeekFrom::Start(outbox_pos));
                 let reader = BufReader::new(f);
                 for line in reader.lines().map_while(Result::ok) {
-                    if let Ok(msg) = serde_json::from_str::<workgraph::chat::ChatMessage>(&line) {
+                    if let Ok(msg) = serde_json::from_str::<worksgood::chat::ChatMessage>(&line) {
                         eprintln!("\x1b[1;36m↳ {}\x1b[0m {}", msg.request_id, msg.content);
                         last_streaming.clear();
                     }

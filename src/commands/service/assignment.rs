@@ -4,9 +4,9 @@
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{self, Agent, short_hash};
-use workgraph::config::{Config, DispatchRole};
-use workgraph::graph::{Task, TokenUsage, WorkGraph, is_system_task};
+use worksgood::agency::{self, Agent, short_hash};
+use worksgood::config::{Config, DispatchRole};
+use worksgood::graph::{Task, TokenUsage, WorkGraph, is_system_task};
 
 /// Placement decision: dependency edges to add to the source task.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -189,7 +189,7 @@ If no placement changes are needed, set `placement` to null.
             .to_string()
     };
 
-    let valid_modes = workgraph::config::ExecMode::valid_for_executor(executor_type);
+    let valid_modes = worksgood::config::ExecMode::valid_for_executor(executor_type);
     let valid_modes_str: Vec<String> = valid_modes.iter().map(|m| m.to_string()).collect();
     let valid_modes_list = valid_modes_str.join(", ");
     let valid_modes_pipe = valid_modes_str.join("|");
@@ -197,16 +197,16 @@ If no placement changes are needed, set `placement` to null.
     let exec_mode_descriptions: String = valid_modes
         .iter()
         .map(|m| match m {
-            workgraph::config::ExecMode::Shell => {
+            worksgood::config::ExecMode::Shell => {
                 "- **shell**: Task has exec command, no LLM needed."
             }
-            workgraph::config::ExecMode::Bare => {
+            worksgood::config::ExecMode::Bare => {
                 "- **bare**: Pure reasoning, synthesis, no file access needed."
             }
-            workgraph::config::ExecMode::Light => {
+            worksgood::config::ExecMode::Light => {
                 "- **light**: Read-only file access (research, review, exploration)."
             }
-            workgraph::config::ExecMode::Full => {
+            worksgood::config::ExecMode::Full => {
                 "- **full**: Modifies files (implementation, debugging, refactoring, test writing). Default if unsure."
             }
         })
@@ -301,7 +301,7 @@ pub(crate) fn run_lightweight_assignment(
         &executor_type,
     );
 
-    let result = workgraph::service::llm::run_lightweight_llm_call(
+    let result = worksgood::service::llm::run_lightweight_llm_call(
         config,
         DispatchRole::Assigner,
         &prompt,
@@ -372,7 +372,7 @@ pub(crate) fn build_active_tasks_context(graph: &WorkGraph, exclude_task_id: &st
 /// Returns the validated mode string. If the mode is incompatible or invalid,
 /// overrides to the safe default for that executor and logs a warning.
 pub(crate) fn validate_exec_mode(mode: Option<&str>, executor_type: &str) -> String {
-    use workgraph::config::ExecMode;
+    use worksgood::config::ExecMode;
 
     let default = ExecMode::default_for_executor(executor_type);
 
@@ -441,7 +441,7 @@ fn extract_assignment_json(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{Status, Task};
+    use worksgood::graph::{Status, Task};
 
     #[test]
     fn test_extract_assignment_json_plain() {

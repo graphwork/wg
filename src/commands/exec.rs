@@ -3,10 +3,10 @@ use chrono::Utc;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
-use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::executor::{TemplateVars, build_prompt};
+use worksgood::config::Config;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::{load_graph, modify_graph};
+use worksgood::service::executor::{TemplateVars, build_prompt};
 
 use super::spawn::context::{
     build_scope_context, build_task_context, discover_test_files, format_test_discovery_context,
@@ -72,7 +72,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor.map(String::from),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "Started execution: {}",
                     exec_cmd_opt.as_deref().unwrap_or("")
@@ -131,7 +131,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: actor_clone.clone(),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: "Execution completed successfully".to_string(),
                 });
             } else {
@@ -141,7 +141,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: actor_clone.clone(),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: format!("Execution failed with exit code {}", exit_code),
                 });
             }
@@ -262,7 +262,7 @@ pub fn run_interactive(
     let prompt = build_prompt(&vars, scope, &scope_ctx);
 
     // Build env vars map (same as spawned agents)
-    let user = workgraph::current_user();
+    let user = worksgood::current_user();
     let agent_label = actor.unwrap_or(&user);
     let mut env_vars: Vec<(String, String)> = vec![
         ("WG_TASK_ID".into(), task_id.to_string()),
@@ -301,12 +301,12 @@ pub fn run_interactive(
                 if let Some(ref a) = actor_s {
                     t.assigned = Some(a.clone());
                 } else {
-                    t.assigned = Some(format!("exec-{}", workgraph::current_user()));
+                    t.assigned = Some(format!("exec-{}", worksgood::current_user()));
                 }
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: actor_s.clone(),
-                    user: Some(workgraph::current_user()),
+                    user: Some(worksgood::current_user()),
                     message: "Started interactive exec session".to_string(),
                 });
                 true
@@ -349,7 +349,7 @@ pub fn run_interactive(
             t.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor.map(String::from),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "Interactive exec session started. Prompt: {}",
                     prompt_file.display()
@@ -413,7 +413,7 @@ pub fn run_interactive(
             t.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor.map(String::from),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!("Interactive exec session ended (exit code: {})", exit_code),
             });
             true
@@ -443,7 +443,7 @@ pub fn run_interactive(
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
                             actor: actor.map(String::from),
-                            user: Some(workgraph::current_user()),
+                            user: Some(worksgood::current_user()),
                             message: "Marked done via interactive exec session".to_string(),
                         });
                         true
@@ -477,7 +477,7 @@ pub fn run_interactive(
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
                             actor: actor.map(String::from),
-                            user: Some(workgraph::current_user()),
+                            user: Some(worksgood::current_user()),
                             message: format!(
                                 "Marked failed via interactive exec session{}",
                                 reason_opt
@@ -582,8 +582,8 @@ pub fn clear_exec(dir: &Path, task_id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

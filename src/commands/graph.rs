@@ -3,8 +3,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::load_graph;
+use worksgood::graph::{Node, Status, Task};
+use worksgood::parser::load_graph;
 
 use super::graph_path;
 
@@ -240,8 +240,8 @@ pub fn run(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::{Node, Resource, Status, Task, WorkGraph};
-    use workgraph::parser::save_graph;
+    use worksgood::graph::{Node, Resource, Status, Task, WorkGraph};
+    use worksgood::parser::save_graph;
 
     fn make_task(id: &str, title: &str) -> Task {
         Task {

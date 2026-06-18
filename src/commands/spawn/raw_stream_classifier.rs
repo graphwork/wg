@@ -4,7 +4,7 @@
 //! `wg classify-failure` which shells out to this logic.
 
 use std::path::Path;
-use workgraph::graph::FailureClass;
+use worksgood::graph::FailureClass;
 
 /// Maximum bytes to read from the tail of raw_stream.jsonl when scanning for
 /// api_error_status. The relevant event is always near the end of the stream.

@@ -6,15 +6,15 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::MatrixConfig;
-use workgraph::graph::{Status, Task};
-use workgraph::parser::load_graph;
+use worksgood::MatrixConfig;
+use worksgood::graph::{Status, Task};
+use worksgood::parser::load_graph;
 
 // Use the appropriate Matrix client based on the enabled feature
 #[cfg(feature = "matrix")]
-use workgraph::MatrixClient;
+use worksgood::MatrixClient;
 #[cfg(all(feature = "matrix-lite", not(feature = "matrix")))]
-use workgraph::MatrixClientLite as MatrixClient;
+use worksgood::MatrixClientLite as MatrixClient;
 
 use super::graph_path;
 
@@ -317,7 +317,7 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::graph::{PRIORITY_DEFAULT, Task};
+    use worksgood::graph::{PRIORITY_DEFAULT, Task};
 
     fn make_test_task() -> Task {
         Task {
@@ -351,6 +351,7 @@ mod tests {
             model: None,
             provider: None,
             endpoint: None,
+            profile: None,
             command_argv: vec![],
             working_dir: None,
             executor_preset_name: None,

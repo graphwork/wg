@@ -708,7 +708,11 @@ mod tests {
             ExecutorKind::Crush,
             ExecutorKind::Amplifier,
         ] {
-            assert!(kind.is_external_cli(), "{} is an external CLI", kind.as_str());
+            assert!(
+                kind.is_external_cli(),
+                "{} is an external CLI",
+                kind.as_str()
+            );
             assert!(
                 kind.is_worker_only_external(),
                 "{} is still worker-only (no live chat handler)",
@@ -950,7 +954,10 @@ mod tests {
         // OpenRouter spec and MUST NOT carry the local is_default endpoint.
         let mut config = Config::default();
         config.coordinator.executor = Some("native".to_string());
-        config.llm_endpoints.endpoints.push(local_default_endpoint());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(local_default_endpoint());
 
         let task = nex_chat_task("minimax/minimax-m3");
         let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
@@ -978,7 +985,10 @@ mod tests {
         // default configured → no local fallback.
         let mut config = Config::default();
         config.coordinator.executor = Some("native".to_string());
-        config.llm_endpoints.endpoints.push(local_default_endpoint());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(local_default_endpoint());
 
         let task = nex_chat_task("openrouter:minimax/minimax-m3");
         let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
@@ -997,7 +1007,10 @@ mod tests {
         // openrouter model routes through it (carries URL + API key).
         let mut config = Config::default();
         config.coordinator.executor = Some("native".to_string());
-        config.llm_endpoints.endpoints.push(local_default_endpoint());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(local_default_endpoint());
         config
             .llm_endpoints
             .endpoints
@@ -1058,12 +1071,18 @@ mod tests {
         // OpenRouter route — the historical local is_default fallback stays.
         let mut config = Config::default();
         config.coordinator.executor = Some("native".to_string());
-        config.llm_endpoints.endpoints.push(local_default_endpoint());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(local_default_endpoint());
 
         let task = nex_chat_task("qwen3-coder-30b");
         let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
 
-        assert_eq!(plan.model.raw, "qwen3-coder-30b", "no slash → not rewritten");
+        assert_eq!(
+            plan.model.raw, "qwen3-coder-30b",
+            "no slash → not rewritten"
+        );
         assert_eq!(
             plan.endpoint.as_ref().map(|e| e.name.as_str()),
             Some("local-gpu"),

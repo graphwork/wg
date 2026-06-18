@@ -34,8 +34,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 
 use crate::commands::insert::{self, InsertOptions, Position};
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::modify_graph;
+use worksgood::graph::{LogEntry, Status};
+use worksgood::parser::modify_graph;
 
 /// Run `wg rescue`. Returns the new task's ID.
 pub fn run(
@@ -137,7 +137,7 @@ pub fn run(
             target.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some(actor_owned.clone()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "superseded by rescue task '{}' (from eval {})",
                     new_id_s, eval_ref
@@ -150,7 +150,7 @@ pub fn run(
             rescue.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some(actor_owned.clone()),
-                user: Some(workgraph::current_user()),
+                user: Some(worksgood::current_user()),
                 message: format!(
                     "supersedes '{}'; created from eval {}",
                     target_id_s, eval_ref
@@ -166,7 +166,7 @@ pub fn run(
     });
 
     // Audit entry in the cross-cutting operations log.
-    let _ = workgraph::provenance::record(
+    let _ = worksgood::provenance::record(
         dir,
         "rescue",
         Some(&new_task_id),
@@ -176,7 +176,7 @@ pub fn run(
             "from_eval": from_eval,
             "title": rescue_title,
         }),
-        workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
+        worksgood::provenance::DEFAULT_ROTATION_THRESHOLD,
     );
 
     // Interactive visibility — dim line so it reads as telemetry, not
@@ -197,9 +197,9 @@ pub fn run(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use workgraph::graph::Task;
-    use workgraph::parser::load_graph;
-    use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+    use worksgood::graph::Task;
+    use worksgood::parser::load_graph;
+    use worksgood::test_helpers::{make_task_with_status, setup_workgraph};
 
     fn make(id: &str, status: Status) -> Task {
         make_task_with_status(id, id, status)
@@ -345,7 +345,7 @@ mod tests {
         )
         .unwrap();
 
-        let ops_path = workgraph::provenance::operations_path(dir.path());
+        let ops_path = worksgood::provenance::operations_path(dir.path());
         assert!(ops_path.exists(), "operations.jsonl should exist");
         let content = std::fs::read_to_string(&ops_path).unwrap();
         assert!(content.contains(r#""op":"rescue""#));

@@ -31,9 +31,9 @@ use std::time::{Duration, Instant};
 
 use serial_test::serial;
 
-use workgraph::chat_id::{CHAT_LOOP_TAG, LEGACY_COORDINATOR_LOOP_TAG};
-use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::service::{ChatSupervisorBootSpec, enumerate_chat_supervisors_from_graph};
+use worksgood::chat_id::{CHAT_LOOP_TAG, LEGACY_COORDINATOR_LOOP_TAG};
+use worksgood::graph::{Node, Status, Task, WorkGraph};
+use worksgood::service::{ChatSupervisorBootSpec, enumerate_chat_supervisors_from_graph};
 
 // ---------------------------------------------------------------------------
 // Pure-function tests — exercise the helper directly. These are the load-bearing
@@ -193,7 +193,7 @@ fn wg_init(tmp_root: &Path) -> PathBuf {
 
 fn append_chat_task_to_graph(wg_dir: &Path, task_id: &str, tag: &str) {
     let gp = wg_dir.join("graph.jsonl");
-    let g = workgraph::parser::load_graph(&gp).expect("load graph");
+    let g = worksgood::parser::load_graph(&gp).expect("load graph");
     let mut g = g;
     g.add_node(Node::Task(Task {
         id: task_id.to_string(),
@@ -202,7 +202,7 @@ fn append_chat_task_to_graph(wg_dir: &Path, task_id: &str, tag: &str) {
         tags: vec![tag.to_string()],
         ..Default::default()
     }));
-    workgraph::parser::save_graph(&g, &gp).expect("save graph");
+    worksgood::parser::save_graph(&g, &gp).expect("save graph");
 }
 
 fn stop_service(wg_dir: &Path) {

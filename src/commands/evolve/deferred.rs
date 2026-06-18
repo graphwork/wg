@@ -3,9 +3,9 @@ use chrono::Utc;
 use std::fs;
 use std::path::Path;
 
-use workgraph::agency;
-use workgraph::graph::{Node, PRIORITY_DEFAULT, Status, Task};
-use workgraph::modify_graph;
+use worksgood::agency;
+use worksgood::graph::{Node, PRIORITY_DEFAULT, Status, Task};
+use worksgood::modify_graph;
 
 use super::operations::apply_operation;
 use super::strategy::EvolverOperation;
@@ -118,6 +118,7 @@ pub(crate) fn defer_self_mutation(
         model: None,
         provider: None,
         endpoint: None,
+        profile: None,
         command_argv: vec![],
         working_dir: None,
         executor_preset_name: None,

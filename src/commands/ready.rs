@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use workgraph::graph::{PRIORITY_DEFAULT, Status};
-use workgraph::query::{blocked_open_cycle_diagnostics, ready_tasks_cycle_aware};
+use worksgood::graph::{PRIORITY_DEFAULT, Status};
+use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_cycle_aware};
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
@@ -101,7 +101,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_readiness_diagnostics(diagnostics: &[workgraph::query::BlockedOpenCycleDiagnostic]) {
+fn print_readiness_diagnostics(diagnostics: &[worksgood::query::BlockedOpenCycleDiagnostic]) {
     if diagnostics.is_empty() {
         return;
     }
@@ -122,7 +122,7 @@ fn format_countdown(timestamp: &str) -> String {
         return "(elapsed)".to_string();
     }
     let secs = (ts - now).num_seconds();
-    format!("(ready in {})", workgraph::format_duration(secs, false))
+    format!("(ready in {})", worksgood::format_duration(secs, false))
 }
 
 #[cfg(test)]
@@ -132,8 +132,8 @@ mod tests {
     use chrono::Duration;
     use std::fs;
     use tempfile::tempdir;
-    use workgraph::graph::{Node, Task, WorkGraph};
-    use workgraph::parser::{load_graph, save_graph};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
 
     fn make_task(id: &str, title: &str, status: Status) -> Task {
         Task {
