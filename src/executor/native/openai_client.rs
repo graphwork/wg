@@ -639,7 +639,14 @@ impl OpenAiClient {
                         }
                     }
 
-                    let content = if text_parts.is_empty() {
+                    let content = if text_parts.is_empty() && tool_calls.is_empty() {
+                        // OpenAI-compatible servers reject assistant history
+                        // messages that contain only provider-specific hidden
+                        // reasoning fields. Preserve the turn with an empty
+                        // visible message instead of emitting neither
+                        // `content` nor `tool_calls`.
+                        Some(String::new())
+                    } else if text_parts.is_empty() {
                         None
                     } else {
                         Some(text_parts.join("\n"))
@@ -3352,6 +3359,42 @@ mod tests {
         assert_eq!(oai_msgs[1].role, "assistant");
         assert_eq!(oai_msgs[1].content.as_deref(), Some("Hi there!"));
         assert_eq!(oai_msgs[2].role, "user");
+    }
+
+    #[test]
+    fn test_translate_messages_thinking_only_assistant_keeps_empty_content() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "exercise the system".to_string(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Thinking {
+                    thinking: "long hidden reasoning with no visible answer".to_string(),
+                    reasoning_details: None,
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "try again".to_string(),
+                }],
+            },
+        ];
+
+        let oai_msgs = OpenAiClient::translate_messages(&None, &messages);
+
+        assert_eq!(oai_msgs.len(), 3);
+        assert_eq!(oai_msgs[1].role, "assistant");
+        assert_eq!(oai_msgs[1].content.as_deref(), Some(""));
+        assert!(oai_msgs[1].tool_calls.is_none());
+
+        let json = serde_json::to_value(&oai_msgs[1]).unwrap();
+        assert_eq!(json["content"], "");
+        assert!(json.get("tool_calls").is_none());
     }
 
     #[test]
