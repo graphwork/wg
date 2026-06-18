@@ -881,6 +881,14 @@ fn build_default_system_prompt(
          Working directory: {}\n\
          Current date: {} ({})\n\
          \n\
+         Editing files: to change an existing file, make targeted edits with \
+         edit_file (old_string → new_string) — do NOT rewrite the whole file with \
+         write_file. edit_file matching tolerates whitespace, indentation, and \
+         line-ending differences, so you don't need a byte-perfect old_string; if an \
+         edit doesn't match, it returns the closest line so you can fix old_string and \
+         retry. Reserve write_file for creating new files. After a failed build, fix \
+         each error with a focused edit_file call rather than regenerating the file.\n\
+         \n\
          Use bash to run `wg` CLI commands when you need WG task management.\n\
          \n\
          When asked to produce content that requires current real-world data \

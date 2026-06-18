@@ -10,6 +10,7 @@ pub mod deep_research;
 pub mod delegate;
 pub mod file;
 pub mod file_cache;
+pub mod fuzzy_match;
 pub mod helper_routing;
 pub mod map;
 pub mod progress;
