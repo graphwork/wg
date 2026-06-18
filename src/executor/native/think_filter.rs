@@ -253,8 +253,7 @@ mod tests {
 
     #[test]
     fn single_block_in_one_delta() {
-        let (answer, reasoning, _) =
-            drive(&["<think>plan the steps</think>the answer"]);
+        let (answer, reasoning, _) = drive(&["<think>plan the steps</think>the answer"]);
         assert_eq!(answer, "the answer");
         assert_eq!(reasoning, "plan the steps");
     }
@@ -262,7 +261,12 @@ mod tests {
     #[test]
     fn block_then_answer_separate_deltas() {
         let (answer, reasoning, _) = drive(&[
-            "<think>", "reason ", "more reason", "</think>", "final ", "answer",
+            "<think>",
+            "reason ",
+            "more reason",
+            "</think>",
+            "final ",
+            "answer",
         ]);
         assert_eq!(answer, "final answer");
         assert_eq!(reasoning, "reason more reason");
@@ -302,8 +306,7 @@ mod tests {
 
     #[test]
     fn multiple_blocks() {
-        let (answer, reasoning, _) =
-            drive(&["a<think>r1</think>b<think>r2</think>c"]);
+        let (answer, reasoning, _) = drive(&["a<think>r1</think>b<think>r2</think>c"]);
         assert_eq!(answer, "abc");
         assert_eq!(reasoning, "r1r2");
     }
@@ -346,7 +349,10 @@ mod tests {
 
     #[test]
     fn collapsed_marker_formatting() {
-        assert_eq!(render_collapsed_thought(42, false), "✓ thought for 42 tokens");
+        assert_eq!(
+            render_collapsed_thought(42, false),
+            "✓ thought for 42 tokens"
+        );
         assert_eq!(
             render_collapsed_thought(42, true),
             "\x1b[2;38;5;244m✓ thought for 42 tokens\x1b[0m"
@@ -356,7 +362,10 @@ mod tests {
     #[test]
     fn reveal_dim_only_with_color() {
         assert_eq!(render_reasoning_reveal("r", false), "r");
-        assert_eq!(render_reasoning_reveal("r", true), "\x1b[2;38;5;244mr\x1b[0m");
+        assert_eq!(
+            render_reasoning_reveal("r", true),
+            "\x1b[2;38;5;244mr\x1b[0m"
+        );
     }
 
     #[test]
@@ -407,8 +416,14 @@ mod tests {
             answer,
             "The capital of France is **Paris**. It has been the capital since 987 AD."
         );
-        assert!(!answer.contains("<think>"), "answer must not contain open tag");
-        assert!(!answer.contains("</think>"), "answer must not contain close tag");
+        assert!(
+            !answer.contains("<think>"),
+            "answer must not contain open tag"
+        );
+        assert!(
+            !answer.contains("</think>"),
+            "answer must not contain close tag"
+        );
         // The reasoning was captured (for the collapse marker / `/think`
         // reveal) and contains the chain-of-thought, not the answer.
         assert!(reasoning.contains("capital of France"));

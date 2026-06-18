@@ -2325,120 +2325,123 @@ impl AgentLoop {
             // routing without duplicating the logic.
             let route_piece: Arc<dyn Fn(super::think_filter::ThinkPiece) + Send + Sync> =
                 Arc::new(move |piece: super::think_filter::ThinkPiece| {
-                use super::think_filter::ThinkPiece;
-                match piece {
-                    ThinkPiece::Reasoning(rtext) => {
-                        // Count reasoning tokens and advance the live
-                        // `thinking… N tokens` hint so the indicator moves
-                        // while the model reasons.
-                        reasoning_turn_for_sink
-                            .saw
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                        let n = super::tokenizer::count_tokens(&rtext, &tokenizer_model) as u64;
-                        reasoning_turn_for_sink
-                            .tokens
-                            .fetch_add(n, std::sync::atomic::Ordering::SeqCst);
-                        if let Some(ref progress) = live_progress_for_sink {
-                            progress.add_tokens(n);
-                        }
-                        // Default: suppress raw reasoning. With `/think on`
-                        // (or `WG_NEX_THINK=1`) stream it live so the user
-                        // can watch the chain-of-thought. Never persisted
-                        // to chat/stream sinks — only the interactive view.
-                        if !is_autonomous
-                            && show_reasoning_for_sink.load(std::sync::atomic::Ordering::SeqCst)
-                        {
-                            if let Some(ref printer) = live_stream_for_sink {
-                                printer.push(&rtext);
-                            } else {
-                                eprint!("{}", rtext);
-                                let _ = std::io::stderr().flush();
-                            }
-                        }
-                    }
-                    ThinkPiece::Answer(atext) => {
-                        // The first answer byte after a reasoning block:
-                        // collapse the hidden reasoning to a one-line
-                        // marker, placed just before the answer.
-                        if !is_autonomous
-                            && reasoning_turn_for_sink
+                    use super::think_filter::ThinkPiece;
+                    match piece {
+                        ThinkPiece::Reasoning(rtext) => {
+                            // Count reasoning tokens and advance the live
+                            // `thinking… N tokens` hint so the indicator moves
+                            // while the model reasons.
+                            reasoning_turn_for_sink
                                 .saw
-                                .load(std::sync::atomic::Ordering::SeqCst)
-                            && !reasoning_turn_for_sink
-                                .collapsed
-                                .swap(true, std::sync::atomic::Ordering::SeqCst)
-                        {
-                            if let Some(ref printer) = live_stream_for_sink {
-                                printer.flush();
-                            }
-                            let tokens = reasoning_turn_for_sink
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            let n = super::tokenizer::count_tokens(&rtext, &tokenizer_model) as u64;
+                            reasoning_turn_for_sink
                                 .tokens
-                                .load(std::sync::atomic::Ordering::SeqCst);
-                            terminal_line(
-                                live_output_for_marker.as_ref(),
-                                super::think_filter::render_collapsed_thought(tokens, marker_color),
-                            );
-                        }
-                        if is_autonomous {
-                            if let Some(ref sw) = stream_writer_clone {
-                                sw.write_text_chunk(&atext);
-                            }
-                            if let Some(ref path) = streaming_file {
-                                let mut accumulated =
-                                    std::fs::read_to_string(path).unwrap_or_default();
-                                accumulated.push_str(&atext);
-                                let _ = std::fs::write(path, &accumulated);
-                            }
-                        } else {
-                            // First-chunk handoff retained for the legacy
-                            // spinner guard tests. The live prompt indicator
-                            // initializes this flag to true, so this branch
-                            // does not delay normal streaming.
-                            if !spinner_first_chunk_sink
-                                .swap(true, std::sync::atomic::Ordering::SeqCst)
-                            {
-                                // Give the legacy spinner a moment to clear
-                                // if a future caller opts it back in.
-                                std::thread::sleep(std::time::Duration::from_millis(90));
-                            }
-                            if let Ok(mut b) = turn_buf_for_sink.lock() {
-                                b.push_str(&atext);
-                            }
-                            // Advance the live token count before flushing
-                            // the text: the flush triggers rustyline's
-                            // refresh, which re-reads this counter for the
-                            // `thinking… N tokens` hint, so the displayed
-                            // total reflects the chunk about to appear.
+                                .fetch_add(n, std::sync::atomic::Ordering::SeqCst);
                             if let Some(ref progress) = live_progress_for_sink {
-                                let n =
-                                    super::tokenizer::count_tokens(&atext, &tokenizer_model) as u64;
                                 progress.add_tokens(n);
                             }
-                            if let Some(ref printer) = live_stream_for_sink {
-                                printer.push(&atext);
-                            } else if let Some(ref cm) = cursor_md_for_sink {
-                                // Progressive markdown: feed the delta and
-                                // write the cursor-control + ANSI bytes it
-                                // returns (commit of finished blocks +
-                                // in-place redraw of the live block).
-                                let bytes =
-                                    cm.lock().unwrap_or_else(|e| e.into_inner()).push(&atext);
-                                if !bytes.is_empty() {
-                                    let mut err = std::io::stderr().lock();
-                                    let _ = err.write_all(bytes.as_bytes());
-                                    let _ = err.flush();
+                            // Default: suppress raw reasoning. With `/think on`
+                            // (or `WG_NEX_THINK=1`) stream it live so the user
+                            // can watch the chain-of-thought. Never persisted
+                            // to chat/stream sinks — only the interactive view.
+                            if !is_autonomous
+                                && show_reasoning_for_sink.load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.push(&rtext);
+                                } else {
+                                    eprint!("{}", rtext);
+                                    let _ = std::io::stderr().flush();
                                 }
-                            } else {
-                                eprint!("{}", atext);
-                                let _ = std::io::stderr().flush();
                             }
                         }
-                        if let Some(ref sink) = chat_text_sink {
-                            sink(&atext);
+                        ThinkPiece::Answer(atext) => {
+                            // The first answer byte after a reasoning block:
+                            // collapse the hidden reasoning to a one-line
+                            // marker, placed just before the answer.
+                            if !is_autonomous
+                                && reasoning_turn_for_sink
+                                    .saw
+                                    .load(std::sync::atomic::Ordering::SeqCst)
+                                && !reasoning_turn_for_sink
+                                    .collapsed
+                                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                            {
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.flush();
+                                }
+                                let tokens = reasoning_turn_for_sink
+                                    .tokens
+                                    .load(std::sync::atomic::Ordering::SeqCst);
+                                terminal_line(
+                                    live_output_for_marker.as_ref(),
+                                    super::think_filter::render_collapsed_thought(
+                                        tokens,
+                                        marker_color,
+                                    ),
+                                );
+                            }
+                            if is_autonomous {
+                                if let Some(ref sw) = stream_writer_clone {
+                                    sw.write_text_chunk(&atext);
+                                }
+                                if let Some(ref path) = streaming_file {
+                                    let mut accumulated =
+                                        std::fs::read_to_string(path).unwrap_or_default();
+                                    accumulated.push_str(&atext);
+                                    let _ = std::fs::write(path, &accumulated);
+                                }
+                            } else {
+                                // First-chunk handoff retained for the legacy
+                                // spinner guard tests. The live prompt indicator
+                                // initializes this flag to true, so this branch
+                                // does not delay normal streaming.
+                                if !spinner_first_chunk_sink
+                                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                                {
+                                    // Give the legacy spinner a moment to clear
+                                    // if a future caller opts it back in.
+                                    std::thread::sleep(std::time::Duration::from_millis(90));
+                                }
+                                if let Ok(mut b) = turn_buf_for_sink.lock() {
+                                    b.push_str(&atext);
+                                }
+                                // Advance the live token count before flushing
+                                // the text: the flush triggers rustyline's
+                                // refresh, which re-reads this counter for the
+                                // `thinking… N tokens` hint, so the displayed
+                                // total reflects the chunk about to appear.
+                                if let Some(ref progress) = live_progress_for_sink {
+                                    let n = super::tokenizer::count_tokens(&atext, &tokenizer_model)
+                                        as u64;
+                                    progress.add_tokens(n);
+                                }
+                                if let Some(ref printer) = live_stream_for_sink {
+                                    printer.push(&atext);
+                                } else if let Some(ref cm) = cursor_md_for_sink {
+                                    // Progressive markdown: feed the delta and
+                                    // write the cursor-control + ANSI bytes it
+                                    // returns (commit of finished blocks +
+                                    // in-place redraw of the live block).
+                                    let bytes =
+                                        cm.lock().unwrap_or_else(|e| e.into_inner()).push(&atext);
+                                    if !bytes.is_empty() {
+                                        let mut err = std::io::stderr().lock();
+                                        let _ = err.write_all(bytes.as_bytes());
+                                        let _ = err.flush();
+                                    }
+                                } else {
+                                    eprint!("{}", atext);
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            if let Some(ref sink) = chat_text_sink {
+                                sink(&atext);
+                            }
                         }
                     }
-                }
-            });
+                });
             let route_for_closure = route_piece.clone();
             let on_text = move |text: String| {
                 let pieces = {
@@ -2891,7 +2894,9 @@ impl AgentLoop {
                 if let Some(ref printer) = live_stream_printer {
                     printer.flush();
                 }
-                let tokens = reasoning_turn.tokens.load(std::sync::atomic::Ordering::SeqCst);
+                let tokens = reasoning_turn
+                    .tokens
+                    .load(std::sync::atomic::Ordering::SeqCst);
                 terminal_line(
                     live_output.as_ref(),
                     super::think_filter::render_collapsed_thought(
@@ -2908,9 +2913,7 @@ impl AgentLoop {
             // reasoning was shown live, summarize it here so the field
             // channel collapses to the same `✓ thought for N tokens` marker
             // (and is revealed raw under `/think on`).
-            if !self.autonomous
-                && !reasoning_turn.saw.load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if !self.autonomous && !reasoning_turn.saw.load(std::sync::atomic::Ordering::SeqCst) {
                 let thinking_text: String = response
                     .content
                     .iter()
@@ -2922,13 +2925,21 @@ impl AgentLoop {
                     .join("\n");
                 if !thinking_text.trim().is_empty() {
                     let color = nex_prompt_color_enabled();
-                    let tokens = response.usage.reasoning_tokens.map(u64::from).unwrap_or_else(
-                        || super::tokenizer::count_tokens(&thinking_text, self.client.model()) as u64,
-                    );
+                    let tokens = response
+                        .usage
+                        .reasoning_tokens
+                        .map(u64::from)
+                        .unwrap_or_else(|| {
+                            super::tokenizer::count_tokens(&thinking_text, self.client.model())
+                                as u64
+                        });
                     if let Some(ref printer) = live_stream_printer {
                         printer.flush();
                     }
-                    if self.show_reasoning.load(std::sync::atomic::Ordering::SeqCst) {
+                    if self
+                        .show_reasoning
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
                         terminal_line(
                             live_output.as_ref(),
                             super::think_filter::render_reasoning_reveal(&thinking_text, color),
