@@ -17,7 +17,15 @@ one of two ways while streaming:
 default — there is no flag you must pass to get it.
 
 - While reasoning streams, the existing live prompt hint advances
-  (`thinking… N tokens`).
+  (`thinking… N tokens`). This indicator repaints on a fixed ~100ms timer
+  (the `↯` glyph pulses and the count refreshes ≈10× per second), so it
+  animates smoothly and never freezes during prefill or a long quiet
+  think — even when no new tokens have arrived since the last paint. The
+  cadence is overridable: `WG_NEX_SPINNER_MS=150 wg nex` slows it down,
+  and `WG_NEX_SPINNER_MS=off` (or `0`) disables the timer entirely,
+  falling back to repaint-on-token-flush only. The default is 100ms
+  (values below 16ms are clamped). The timer adds no input latency: it
+  goes quiet at idle prompts and while you are composing a queued line.
 - When reasoning ends, it collapses to a single dim line:
 
   ```
