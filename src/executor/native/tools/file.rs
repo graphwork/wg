@@ -11,6 +11,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use super::file_cache::FileCache;
+use super::fuzzy_match::{FuzzyOutcome, MatchLevel, fuzzy_replace};
 use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 
@@ -254,12 +255,15 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".to_string(),
-            description: "Save content to a file on disk at the given path. Writes are \
-                          restricted to the current working directory tree — paths outside \
-                          cwd are rejected. Use this when the user explicitly asks to save, \
-                          store, create, or modify a file. Do NOT use this to display or \
-                          return content to the user — include it in your text response \
-                          instead."
+            description: "Save content to a file on disk at the given path, replacing the \
+                          entire file. Best for CREATING a new file or a full rewrite. To \
+                          CHANGE an existing file, prefer edit_file with a targeted \
+                          old_string/new_string replacement instead of rewriting the whole \
+                          file — repeatedly rewriting a file to fix small errors is wasteful \
+                          and reintroduces bugs. Writes are restricted to the current working \
+                          directory tree — paths outside cwd are rejected. Do NOT use this to \
+                          display or return content to the user — include it in your text \
+                          response instead."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -326,7 +330,18 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".to_string(),
-            description: "Perform a string replacement in a file. The old_string must appear exactly once in the file. Optional normalization flags can help match strings with whitespace or line ending differences.".to_string(),
+            description: "PREFERRED way to change an existing file: make a small, targeted \
+                          string replacement instead of rewriting the whole file with \
+                          write_file. Replaces old_string with new_string. Matching is \
+                          robust — whitespace, indentation, and line endings (\\n vs \\r\\n) \
+                          are matched leniently, and the replacement is re-indented to the \
+                          file's actual indentation, so you do NOT need byte-perfect old_string. \
+                          old_string must identify a unique location; include a few surrounding \
+                          lines for context if it would otherwise be ambiguous. If it can't be \
+                          matched you get a near-miss diagnostic showing the closest line — fix \
+                          old_string and retry rather than falling back to a full rewrite. After \
+                          a failed build, fix each error with a focused edit_file call."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -336,19 +351,19 @@ impl Tool for EditFileTool {
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "The exact text to find and replace"
+                        "description": "The text to find and replace. Whitespace/indentation/line-ending differences are tolerated; it must identify a unique location (add surrounding context lines if needed)."
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "The replacement text"
+                        "description": "The replacement text. It is automatically re-indented to match the file when indentation is the only difference."
                     },
                     "normalize_whitespace": {
                         "type": "boolean",
-                        "description": "Normalize whitespace (spaces, tabs) before matching. When enabled, sequences of whitespace characters are treated as equivalent. Default: false"
+                        "description": "Opt-in: also collapse runs of interior whitespace when matching (e.g. treat 'a  b' and 'a b' as equal). Off by default to avoid over-matching. Leading/trailing whitespace, indentation, and line endings are ALREADY tolerated without this flag."
                     },
                     "normalize_line_endings": {
                         "type": "boolean",
-                        "description": "Treat \\n and \\r\\n as equivalent when matching. When enabled, both Windows and Unix line endings are treated as the same. Default: false"
+                        "description": "Deprecated/no-op: \\n and \\r\\n are always treated as equivalent now. Accepted for backward compatibility."
                     }
                 },
                 "required": ["path", "old_string", "new_string"]
@@ -369,14 +384,16 @@ impl Tool for EditFileTool {
             Some(s) => s,
             None => return ToolOutput::error("Missing required parameter: new_string".to_string()),
         };
-        let normalize_whitespace = input
+        // `normalize_whitespace` is an opt-in to ALSO collapse interior
+        // whitespace (the most aggressive level). Leading/trailing whitespace,
+        // indentation, and line endings are tolerated automatically without
+        // any flag. `normalize_line_endings` is now a no-op (always on) and is
+        // read only to stay backward-compatible with callers that set it.
+        let allow_collapse = input
             .get("normalize_whitespace")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let normalize_line_endings = input
-            .get("normalize_line_endings")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let _ = input.get("normalize_line_endings");
 
         let safe_path = match resolve_inside_cwd(path_input, yolo_enabled()) {
             Ok(p) => p,
@@ -390,182 +407,30 @@ impl Tool for EditFileTool {
             Err(e) => return ToolOutput::error(format!("Failed to read file '{}': {}", path, e)),
         };
 
-        // Determine the normalized versions of content and old_string for matching
-        let (normalized_content, normalized_old) = if normalize_whitespace || normalize_line_endings
-        {
-            let content_normalized = if normalize_line_endings {
-                normalize_line_endings_str(&content)
-            } else {
-                content.clone()
-            };
-            let old_normalized = if normalize_line_endings {
-                normalize_line_endings_str(old_string)
-            } else {
-                old_string.to_string()
-            };
-
-            // Apply whitespace normalization if requested
-            let content_normalized = if normalize_whitespace {
-                normalize_whitespace_str(&content_normalized)
-            } else {
-                content_normalized
-            };
-            let old_normalized = if normalize_whitespace {
-                normalize_whitespace_str(&old_normalized)
-            } else {
-                old_normalized
-            };
-
-            (content_normalized, old_normalized)
-        } else {
-            (content.clone(), old_string.to_string())
-        };
-
-        let count = normalized_content.matches(&normalized_old).count();
-        if count == 0 {
-            return ToolOutput::error(format!(
-                "old_string not found in '{}'. Make sure the string matches exactly.",
-                path
-            ));
-        }
-        if count > 1 {
-            return ToolOutput::error(format!(
-                "old_string found {} times in '{}'. It must be unique. Provide more context.",
-                count, path
-            ));
-        }
-
-        // Find the actual position in the original (non-normalized) content
-        let start_pos = match normalized_content.find(&normalized_old) {
-            Some(pos) => pos,
-            None => {
-                return ToolOutput::error(format!(
-                    "old_string not found in '{}'. Make sure the string matches exactly.",
-                    path
-                ));
-            }
-        };
-
-        // Calculate the end position in the normalized string
-        let end_pos = start_pos + normalized_old.len();
-
-        // Now find the corresponding positions in the original content
-        let original_start = if normalize_whitespace || normalize_line_endings {
-            find_original_position(
-                &content,
-                &normalized_content,
-                start_pos,
-                normalize_whitespace,
-                normalize_line_endings,
-            )
-        } else {
-            start_pos
-        };
-        let original_end = if normalize_whitespace || normalize_line_endings {
-            find_original_position(
-                &content,
-                &normalized_content,
-                end_pos,
-                normalize_whitespace,
-                normalize_line_endings,
-            )
-        } else {
-            end_pos
-        };
-
-        // Perform the replacement using the original positions
-        let mut new_content = content[..original_start].to_string();
-        new_content.push_str(new_string);
-        new_content.push_str(&content[original_end..]);
-
-        match fs::write(path, &new_content) {
-            Ok(()) => ToolOutput::success(format!("Successfully edited {}", path)),
-            Err(e) => ToolOutput::error(format!("Failed to write file '{}': {}", path, e)),
-        }
-    }
-}
-
-/// Normalize line endings: convert \r\n to \n
-fn normalize_line_endings_str(s: &str) -> String {
-    s.replace("\r\n", "\n")
-}
-
-/// Normalize whitespace: collapse multiple whitespace to single space
-fn normalize_whitespace_str(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_whitespace = false;
-    for c in s.chars() {
-        if c.is_whitespace() {
-            if !last_was_whitespace {
-                result.push(' ');
-                last_was_whitespace = true;
-            }
-        } else {
-            result.push(c);
-            last_was_whitespace = false;
-        }
-    }
-    result
-}
-
-/// Find the corresponding position in the original string for a position in the normalized string.
-/// This is needed because normalization can change string length.
-fn find_original_position(
-    original: &str,
-    normalized: &str,
-    normalized_pos: usize,
-    normalize_ws: bool,
-    normalize_le: bool,
-) -> usize {
-    if !normalize_ws && !normalize_le {
-        return normalized_pos;
-    }
-
-    let mut orig_pos = 0;
-    let mut norm_pos = 0;
-    let mut orig_chars = original.chars().peekable();
-    let mut norm_chars = normalized.chars().peekable();
-
-    while norm_pos < normalized_pos {
-        let norm_char = match norm_chars.next() {
-            Some(c) => c,
-            None => break,
-        };
-
-        // Advance through original to find matching position
-        if normalize_le && norm_char == '\n' {
-            // In normalized string, \n represents both \n and \r\n
-            let remaining: String = orig_chars.clone().collect();
-            if remaining.starts_with("\r\n") {
-                orig_chars.next();
-                orig_chars.next();
-                orig_pos += 2;
-            } else if remaining.starts_with('\n') {
-                orig_chars.next();
-                orig_pos += 1;
-            }
-            norm_pos += 1;
-        } else if normalize_ws && norm_char == ' ' {
-            // Skip all whitespace in original
-            while let Some(&c) = orig_chars.peek() {
-                if c.is_whitespace() {
-                    orig_chars.next();
-                    orig_pos += c.len_utf8();
-                } else {
-                    break;
+        match fuzzy_replace(&content, old_string, new_string, allow_collapse) {
+            FuzzyOutcome::Unique { new_content, level } => match fs::write(path, &new_content) {
+                Ok(()) => {
+                    let note = if level == MatchLevel::Exact {
+                        format!("Successfully edited {}", path)
+                    } else {
+                        format!("Successfully edited {} ({} match)", path, level.label())
+                    };
+                    ToolOutput::success(note)
                 }
+                Err(e) => ToolOutput::error(format!("Failed to write file '{}': {}", path, e)),
+            },
+            FuzzyOutcome::Ambiguous { count, level } => ToolOutput::error(format!(
+                "old_string found {} times in '{}' ({} match). It must be unique — \
+                 provide more surrounding context so it identifies a single location.",
+                count,
+                path,
+                level.label()
+            )),
+            FuzzyOutcome::NoMatch { diagnostic } => {
+                ToolOutput::error(format!("{} in '{}'", diagnostic, path))
             }
-            norm_pos += 1;
-        } else {
-            // Regular character - consume one from original
-            if let Some(c) = orig_chars.next() {
-                orig_pos += c.len_utf8();
-            }
-            norm_pos += 1;
         }
     }
-
-    orig_pos
 }
 
 // ── glob ────────────────────────────────────────────────────────────────
