@@ -376,6 +376,12 @@ launcher that can't pass flags is in play. Otherwise skip it — the `--mode`/`-
 + piped-stdio wrapper carries zero upstream dependency, which is the preferred
 posture (executor-research §4.1).
 
+**Prepared (P5):** the PR is staged and verified in
+[`upstream-patch/`](upstream-patch/README.md) — unified diff against the real
+upstream `packages/coding-agent/src/main.ts`, PR description, and a passing
+truth-table test. It is **prepared but unsubmitted**; opening the PR is the
+human, Shape-B-scoped decision behind the `.flip` gate.
+
 ---
 
 ## 4. Assessment (NOT a commitment): rebase WG's default around pi

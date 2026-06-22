@@ -1,0 +1,18 @@
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index f66040b..7094203 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -96,6 +96,13 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
+ }
+ 
+ function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean): AppMode {
++	// Default-off escape hatch: let a supervising harness force non-interactive
++	// even when pi is launched under a PTY (both fds are TTYs). Inert unless
++	// PI_NO_TUI is set to a truthy value; an explicit --mode rpc/json or
++	// -p/--print still wins (the guard only fires when no mode was requested).
++	if (isTruthyEnvFlag(process.env.PI_NO_TUI) && parsed.mode === undefined && !parsed.print) {
++		return "print";
++	}
+ 	if (parsed.mode === "rpc") {
+ 		return "rpc";
+ 	}
