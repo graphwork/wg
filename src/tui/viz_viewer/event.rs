@@ -1946,7 +1946,6 @@ fn handle_task_form_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
 fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
-    use crossterm::event::KeyEvent;
     let in_edit_mode = app.chat.editing_index.is_some();
     match code {
         KeyCode::Esc => {
@@ -2024,22 +2023,18 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
         _ => {}
     }
-    if code == KeyCode::Enter
-        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
-    {
-        app.editor_handler.on_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut app.chat.editor,
-        );
+    if is_composer_newline_key(code, modifiers) {
+        insert_editor_newline(&mut app.editor_handler, &mut app.chat.editor);
         return;
     }
-    app.editor_handler
-        .on_key_event(KeyEvent::new(code, modifiers), &mut app.chat.editor);
+    app.editor_handler.on_key_event(
+        crossterm::event::KeyEvent::new(code, modifiers),
+        &mut app.chat.editor,
+    );
 }
 
 fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
-    use crossterm::event::KeyEvent;
     match code {
         KeyCode::Esc => {
             // Save draft on exit so it persists across panel/task switches.
@@ -2099,18 +2094,26 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         _ => {}
     }
-    if code == KeyCode::Enter
-        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
-    {
-        app.editor_handler.on_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut app.messages_panel.editor,
-        );
+    if is_composer_newline_key(code, modifiers) {
+        insert_editor_newline(&mut app.editor_handler, &mut app.messages_panel.editor);
         return;
     }
     app.editor_handler.on_key_event(
-        KeyEvent::new(code, modifiers),
+        crossterm::event::KeyEvent::new(code, modifiers),
         &mut app.messages_panel.editor,
+    );
+}
+
+fn is_composer_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Enter)
+        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
+        || matches!(code, KeyCode::Char('j' | 'J')) && modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn insert_editor_newline(handler: &mut edtui::EditorEventHandler, editor: &mut edtui::EditorState) {
+    handler.on_key_event(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        editor,
     );
 }
 
@@ -9875,6 +9878,67 @@ mod chat_tab_navigation_tests {
         assert_ne!(
             after, before,
             "TUI chat PTY Enter must bump last_interaction_at for the active chat task"
+        );
+    }
+
+    #[test]
+    fn chat_composer_modified_enter_inserts_newline_plain_enter_sends() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::ChatInput;
+
+        for c in "first".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        for c in "second".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        for c in "third".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        for c in "fourth".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+
+        assert_eq!(
+            super::super::state::editor_text(&app.chat.editor),
+            "first\nsecond\nthird\nfourth",
+            "Shift+Enter, Alt+Enter, and Ctrl+J must insert literal newlines"
+        );
+
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(
+            super::super::state::editor_text(&app.chat.editor),
+            "",
+            "plain Enter must keep its submit-and-clear behavior"
+        );
+    }
+
+    #[test]
+    fn message_composer_ctrl_j_fallback_inserts_newline() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Messages;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::MessageInput;
+        app.messages_panel.task_id = Some("regular-task".to_string());
+
+        for c in "alpha".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        for c in "beta".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+
+        assert_eq!(
+            super::super::state::editor_text(&app.messages_panel.editor),
+            "alpha\nbeta",
+            "Ctrl+J fallback must insert a literal newline in message composer"
         );
     }
 

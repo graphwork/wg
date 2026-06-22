@@ -7924,6 +7924,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     ("Esc", "cancel"),
                     ("↑↓", "history"),
                     ("S-Enter", "newline"),
+                    ("Alt-Enter/C-j", "newline"),
                 ],
             )
         }
@@ -7934,6 +7935,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             vec![
                 ("Enter", "send"),
                 ("S-Enter", "newline"),
+                ("Alt-Enter/C-j", "newline"),
                 ("Ctrl+K/Y", "kill/yank"),
                 ("Esc", "exit"),
             ],
