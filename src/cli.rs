@@ -724,6 +724,9 @@ pub enum Commands {
     },
 
     /// Publish a draft task (validates dependencies, then resumes entire subgraph)
+    #[command(
+        after_help = "Recovery workflow:\n  wg publish <TASK> --profile codex --no-release --wcc\n      Reload/stamp a named profile across TASK's weakly-connected component\n      without publishing, resuming, unpausing, or changing task statuses. Use\n      this after switching profiles when existing open/failed/done tasks still\n      carry stale explicit model pins."
+    )]
     Publish {
         /// Task ID to publish
         #[arg(value_name = "TASK")]
@@ -745,8 +748,10 @@ pub enum Commands {
         /// unless `--only` narrows it. Omit to use the globally-active profile.
         #[arg(long, value_name = "NAME")]
         profile: Option<String>,
-        /// Stamp the profile WITHOUT unpausing — annotate a staged subgraph
-        /// for later release. Only meaningful together with `--profile`.
+        /// Stamp the profile WITHOUT unpausing or changing task status.
+        /// Together with `--profile <name> --wcc`, this reloads that profile
+        /// across an existing component even when tasks are open, failed, or
+        /// done, and clears stale per-task route pins so the profile wins.
         #[arg(long)]
         no_release: bool,
     },

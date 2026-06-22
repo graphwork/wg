@@ -93,7 +93,9 @@ fn run_inner(
     let mut stamped: usize = 0;
 
     let _graph = modify_graph(&path, |graph| {
-        // Verify seed task exists and is paused
+        // Verify seed task exists. Normal resume/publish still releases a
+        // paused draft, but `publish --profile --no-release` is metadata-only
+        // and is allowed over already-open/failed/done components.
         let task = match graph.get_task(id) {
             Some(t) => t,
             None => {
@@ -101,7 +103,7 @@ fn run_inner(
                 return false;
             }
         };
-        if !task.paused {
+        if !no_release && !task.paused {
             error = Some(anyhow::anyhow!("Task '{}' is not paused", id));
             return false;
         }
@@ -508,22 +510,36 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     });
 }
 
-/// Stamp `profile` onto every task in `members`. Idempotent: a task already
-/// carrying that exact profile is left untouched (no duplicate log entry).
+/// Stamp `profile` onto every task in `members`.
+///
+/// A profile stamp is an authoritative routing reset: stale per-task
+/// `model`/`provider`/`endpoint` overrides would otherwise beat the profile at
+/// dispatch time, which is exactly the failed-task recovery case this command
+/// supports.
+///
+/// Idempotent: a task already carrying that exact profile with no explicit
+/// route override is left untouched (no duplicate log entry).
 /// Returns the number of tasks whose profile was set or changed.
 fn stamp_profile(graph: &mut WorkGraph, members: &[String], profile: &str) -> usize {
     let mut changed = 0;
     for task_id in members {
         if let Some(task) = graph.get_task_mut(task_id) {
-            if task.profile.as_deref() == Some(profile) {
+            let route_already_profiled = task.profile.as_deref() == Some(profile)
+                && task.model.is_none()
+                && task.provider.is_none()
+                && task.endpoint.is_none();
+            if route_already_profiled {
                 continue;
             }
             task.profile = Some(profile.to_string());
+            task.model = None;
+            task.provider = None;
+            task.endpoint = None;
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
                 user: Some(worksgood::current_user()),
-                message: format!("Profile pinned: {}", profile),
+                message: format!("Profile pinned: {} (route overrides cleared)", profile),
             });
             changed += 1;
         }
@@ -616,6 +632,7 @@ fn record_provenance(dir: &Path, id: &str, is_publish: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::tempdir;
     use worksgood::graph::{CycleConfig, Node, Status, Task, WorkGraph};
@@ -639,6 +656,35 @@ mod tests {
         }
         save_graph(&graph, &path).unwrap();
         path
+    }
+
+    struct GlobalDirGuard {
+        saved: Option<String>,
+    }
+
+    impl GlobalDirGuard {
+        fn set(path: &Path) -> Self {
+            let saved = std::env::var("WG_GLOBAL_DIR").ok();
+            unsafe { std::env::set_var("WG_GLOBAL_DIR", path) };
+            Self { saved }
+        }
+    }
+
+    impl Drop for GlobalDirGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.saved.take() {
+                    Some(v) => std::env::set_var("WG_GLOBAL_DIR", v),
+                    None => std::env::remove_var("WG_GLOBAL_DIR"),
+                }
+            }
+        }
+    }
+
+    fn write_profile(global_dir: &Path, name: &str, toml: &str) {
+        let profiles = global_dir.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        fs::write(profiles.join(format!("{name}.toml")), toml).unwrap();
     }
 
     // --- Single-task (--only) tests ---
@@ -1383,7 +1429,7 @@ mod tests {
     fn test_topo_sort_subset_orders_deps_before_dependents() {
         // Direct unit test on the helper: deps come strictly before
         // dependents in the result order.
-        let mut a = make_task("a", "A", Status::Open);
+        let a = make_task("a", "A", Status::Open);
         let mut b = make_task("b", "B", Status::Open);
         b.after = vec!["a".to_string()];
         let mut c = make_task("c", "C", Status::Open);
@@ -1392,7 +1438,6 @@ mod tests {
         for t in [a.clone(), b.clone(), c.clone()] {
             graph.add_node(worksgood::graph::Node::Task(t));
         }
-        let _ = (a, b, c); // silence unused-mut lints from clones above
         let sorted = topo_sort_subset(&graph, &["c".to_string(), "b".to_string(), "a".to_string()]);
         assert_eq!(
             sorted,
@@ -1402,18 +1447,16 @@ mod tests {
 
     #[test]
     fn test_discover_wcc_isolates_components() {
-        let mut a = make_task("a", "A", Status::Open);
+        let a = make_task("a", "A", Status::Open);
         let mut b = make_task("b", "B", Status::Open);
         b.after = vec!["a".to_string()];
-        let mut x = make_task("x", "X", Status::Open);
+        let x = make_task("x", "X", Status::Open);
         let mut y = make_task("y", "Y", Status::Open);
         y.after = vec!["x".to_string()];
         let mut graph = WorkGraph::new();
         for t in [a.clone(), b.clone(), x.clone(), y.clone()] {
             graph.add_node(worksgood::graph::Node::Task(t));
         }
-        let _ = (a, b, x, y);
-
         let comp_a = discover_wcc(&graph, "a");
         assert_eq!(comp_a, vec!["a".to_string(), "b".to_string()]);
         let comp_y = discover_wcc(&graph, "y");
@@ -1519,6 +1562,153 @@ mod tests {
                 id
             );
         }
+    }
+
+    /// Recovery path: after switching profiles, an existing component may
+    /// contain open/failed/paused/done tasks and agency satellites with stale
+    /// explicit Claude route pins. `publish --profile codex --no-release
+    /// --wcc` must reload the component metadata without touching status.
+    #[test]
+    #[serial]
+    fn test_publish_profile_no_release_wcc_stamps_non_paused_and_clears_stale_routes() {
+        let global_dir = tempdir().unwrap();
+        let _guard = GlobalDirGuard::set(global_dir.path());
+        write_profile(
+            global_dir.path(),
+            "codex",
+            r#"
+[coordinator]
+model = "codex:gpt-5.5"
+
+[models.task_agent]
+model = "codex:gpt-5.5"
+
+[models.assigner]
+model = "codex:gpt-5.5-mini"
+
+[models.evaluator]
+model = "codex:gpt-5.5-mini"
+
+[models.verification]
+model = "codex:gpt-5.5"
+"#,
+        );
+
+        let dir = tempdir().unwrap();
+
+        let mut root = make_task("root", "Root", Status::Open);
+        root.model = Some("claude:opus".to_string());
+        root.provider = Some("claude".to_string());
+        root.endpoint = Some("anthropic".to_string());
+        root.after = vec![".assign-root".to_string()];
+
+        let mut failed = make_task("failed", "Failed", Status::Failed);
+        failed.model = Some("claude:opus".to_string());
+        failed.after = vec!["root".to_string()];
+
+        let mut paused = make_task("paused", "Paused", Status::Open);
+        paused.paused = true;
+        paused.model = Some("claude:opus".to_string());
+        paused.after = vec!["failed".to_string()];
+
+        let mut done = make_task("done", "Done", Status::Done);
+        done.model = Some("claude:opus".to_string());
+        done.after = vec!["paused".to_string()];
+
+        let mut assign = make_task(".assign-root", "Assign Root", Status::Open);
+        assign.before = vec!["root".to_string()];
+        assign.tags = vec!["assignment".to_string(), "agency".to_string()];
+        assign.model = Some("claude:haiku".to_string());
+
+        let mut flip = make_task(".flip-root", "FLIP Root", Status::Open);
+        flip.after = vec!["root".to_string()];
+        flip.tags = vec!["flip".to_string(), "agency".to_string()];
+        flip.model = Some("claude:haiku".to_string());
+
+        let mut evaluate = make_task(".evaluate-root", "Evaluate Root", Status::Open);
+        evaluate.after = vec![".flip-root".to_string()];
+        evaluate.tags = vec!["evaluation".to_string(), "agency".to_string()];
+        evaluate.model = Some("claude:haiku".to_string());
+
+        let mut verify = make_task(".verify-root", "Verify Root", Status::Open);
+        verify.after = vec!["failed".to_string()];
+        verify.tags = vec!["verification".to_string(), "agency".to_string()];
+        verify.model = Some("claude:haiku".to_string());
+
+        setup_workgraph(
+            dir.path(),
+            vec![root, failed, paused, done, assign, flip, evaluate, verify],
+        );
+
+        publish(dir.path(), "root", false, true, Some("codex"), true)
+            .expect("metadata-only WCC profile reload should accept a non-paused root");
+
+        let graph = load_graph(graph_path(dir.path())).unwrap();
+        for (id, status, paused_flag) in [
+            ("root", Status::Open, false),
+            ("failed", Status::Failed, false),
+            ("paused", Status::Open, true),
+            ("done", Status::Done, false),
+            (".assign-root", Status::Open, false),
+            (".flip-root", Status::Open, false),
+            (".evaluate-root", Status::Open, false),
+            (".verify-root", Status::Open, false),
+        ] {
+            let task = graph.get_task(id).unwrap();
+            assert_eq!(task.status, status, "{id} status must be unchanged");
+            assert_eq!(
+                task.paused, paused_flag,
+                "{id} paused flag must be unchanged"
+            );
+            assert_eq!(task.profile.as_deref(), Some("codex"), "{id} profile");
+            assert_eq!(
+                task.model, None,
+                "{id} stale model override must be cleared"
+            );
+            assert_eq!(
+                task.provider, None,
+                "{id} stale provider override must be cleared"
+            );
+            assert_eq!(
+                task.endpoint, None,
+                "{id} stale endpoint override must be cleared"
+            );
+        }
+
+        let global = worksgood::config::Config::default();
+        let mut cache = worksgood::dispatch::ProfileCache::new();
+        let work = graph.get_task("root").unwrap();
+        let eff = worksgood::dispatch::effective_config_for_task(work, &global, &mut cache);
+        let task_model = eff
+            .resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent)
+            .spawn_model_spec();
+        let plan =
+            worksgood::dispatch::plan_spawn(work, eff.as_ref(), None, Some(&task_model)).unwrap();
+        assert_eq!(plan.executor, worksgood::dispatch::ExecutorKind::Codex);
+        assert_eq!(plan.model.raw, "codex:gpt-5.5");
+        assert_ne!(plan.model.raw, "claude:opus");
+
+        let assign_dispatch = worksgood::service::llm::resolve_agency_dispatch(
+            eff.as_ref(),
+            worksgood::config::DispatchRole::Assigner,
+        );
+        assert_eq!(
+            assign_dispatch.handler,
+            worksgood::dispatch::ExecutorKind::Codex
+        );
+        assert_eq!(assign_dispatch.raw_spec, "codex:gpt-5.5-mini");
+        assert_ne!(assign_dispatch.raw_spec, "claude:haiku");
+
+        let eval_dispatch = worksgood::service::llm::resolve_agency_dispatch(
+            eff.as_ref(),
+            worksgood::config::DispatchRole::Evaluator,
+        );
+        assert_eq!(
+            eval_dispatch.handler,
+            worksgood::dispatch::ExecutorKind::Codex
+        );
+        assert_eq!(eval_dispatch.raw_spec, "codex:gpt-5.5-mini");
+        assert_ne!(eval_dispatch.raw_spec, "claude:haiku");
     }
 
     /// No `--profile` ⇒ behavior unchanged: tasks keep `profile = None`.
