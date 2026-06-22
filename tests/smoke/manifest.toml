@@ -1492,3 +1492,12 @@ owners = [
 ]
 description = "Pins bug-tui-keymap-fix (docs/bugs/tui-keymap-routing.md): in the real wg TUI, with a focused custom-command chat PTY, bare printables (`+`, `a`) must be forwarded to the child and must not open the add-chat launcher; Ctrl+T must be forwarded to the child for executor thinking-toggle conventions; Ctrl+O is the host PTY focus / command-mode toggle. Credential-free: the child is a local Python stdin recorder, driven through tmux and asserted by raw bytes."
 timeout_seconds = 75
+
+[[scenario]]
+name = "tui_warns_tmux_extended_keys_off"
+script = "scenarios/tui_warns_tmux_extended_keys_off.sh"
+owners = [
+    "feat-wg-detect-extkeys",
+]
+description = "Pins feat-wg-detect-extkeys: the real `wg tui` running inside an isolated tmux server prints the actionable extended-keys warning exactly when tmux global `extended-keys` is off, includes `set -g extended-keys on` plus `tmux kill-server`, and stays silent when extended-keys is on. SKIPs when tmux is missing or too old to expose the option."
+timeout_seconds = 45
