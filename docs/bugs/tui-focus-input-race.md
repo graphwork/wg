@@ -1,6 +1,7 @@
 # Bug: wg TUI leaks first keystrokes to tmux after OS focus-in
 
-**Status:** diagnosed (investigation-only; no code changes in this task)
+**Status:** FIXED in `bug-tui-focus-fix` (see "Fix applied" at the bottom).
+Diagnosis below is preserved as the historical record.
 **Component:** `wg tui` own input grab (`src/tui/viz_viewer`)
 **Task:** `bug-tui-focus-diagnose` → fix tracked by `bug-tui-focus-fix`
 
@@ -287,3 +288,79 @@ input path:
 - `crossterm-0.29.0/src/event/sys/unix/parse.rs:170-171` — `\x1b[I`/`\x1b[O` → `FocusGained`/`FocusLost` parsed unconditionally
 - `crossterm-0.29.0/src/terminal/sys/unix.rs:213-267` — keyboard-enhancement query (`\x1b[?u\x1b[c`), shows the kitty negotiation is a query/response dance over the tmux channel
 - `docs/pi-integration/terminal-host-research.md` — *adjacent* layer (wg **hosting** child terminals); confirms the team's model of tmux/kitty/DA mode mediation, but the bug here is wg's **own** TUI input grab, not the PTY-host path.
+
+---
+
+## Fix applied (`bug-tui-focus-fix`)
+
+General, emulator-agnostic — no WezTerm/kitty special-casing. Both diagnosed
+defects are closed at wg's own layer:
+
+1. **Subscribe to focus (Defect 2).** `src/tui/viz_viewer/mod.rs::run` now emits
+   `EnableFocusChange` (DECSET 1004) alongside the existing startup setup, and
+   `restore_terminal()` emits `DisableFocusChange`. With tmux `focus-events on`,
+   the outer terminal's `\x1b[I`/`\x1b[O` are forwarded into wg's pane. Terminals
+   that don't report focus are unaffected (identical to before).
+
+2. **Re-assert the grab on focus-in (Defect 1).** A single shared
+   `assert_input_grab()` helper (`src/tui/viz_viewer/event.rs`) re-emits, as one
+   buffered `write_all` + `flush`, the modes wg owns: raw mode (idempotent
+   `enable_raw_mode()`), kitty disambiguation, bracketed paste (`\x1b[?2004h`),
+   and mouse capture. **Both** startup (`run_event_loop`) and the new
+   `Event::FocusGained` arm in `dispatch_event` call it, so the two paths cannot
+   drift. `Event::FocusLost` is an explicit no-op.
+
+3. **Idempotent + stack-safe.** Kitty flags are re-asserted with the **set**
+   form (`CSI = 1 ; 1 u`, i.e. `\x1b[=1;1u`), never another
+   `PushKeyboardEnhancementFlags`, so repeated focus-ins don't grow the
+   terminal's flag stack (teardown still pops exactly once). Modes are only ever
+   asserted **on**; nothing is toggled off→on, so an in-flight paste can't be
+   split. The byte payload is built by the pure, unit-tested `input_grab_bytes()`
+   so `assert_input_grab()` (which does real terminal I/O) is never driven from a
+   unit test.
+
+A focus event is treated as a terminal control signal, **not** user input: the
+`FocusGained` arm only re-asserts the grab — it never bumps interaction tracking
+and is never forwarded to an embedded chat PTY child (that child negotiates modes
+against the in-process emulator in `src/tui/pty_pane.rs`, a separate terminal, so
+wg's outer re-assert can't clobber it).
+
+### Known limitation
+
+The re-assert fires only when wg actually *receives* a focus-in, which requires
+`set -g focus-events on` in the user's tmux. With focus-events off, tmux won't
+forward focus-in and wg can't re-assert — this is strictly no worse than before
+and still general (it regresses nothing). If it ever proves insufficient, a
+*also-general* follow-up is a debounced "re-assert once on the first input after
+an idle gap" (higher paste/double-input risk — only if needed).
+
+### Tests / regression cover
+
+- Unit: `input_grab_tests` in `src/tui/viz_viewer/event.rs` pins the exact re-grab
+  byte payload (kitty *set* not push; paste + mouse re-asserted; mouse-off path;
+  any-motion mode 1003; paste never disabled).
+- Smoke (human-flow): `tests/smoke/scenarios/tui_focus_in_reasserts_input_grab.sh`
+  (owned by `bug-tui-focus-fix`, `bug-tui-focus-verify`) drives the **real**
+  `wg tui` under a PTY and asserts, in the raw output stream, that startup
+  enables DECSET 1004 and that an injected focus-in (`\x1b[I`) re-emits the grab
+  burst (`\x1b[?2004h` + `\x1b[?1002h`) before the next key. Verified to **fail on
+  pre-fix `main`** (no `\x1b[?1004h`; no post-focus-in re-assert) and **pass after
+  the fix**.
+
+### Manual repro checklist (confirm on your machine)
+
+Environment: WezTerm → SSH → tmux → `wg tui`, with `set -g focus-events on` in
+tmux (`tmux show -g focus-events` to check; add to `~/.tmux.conf` if unset).
+
+1. Start `wg tui` inside a tmux pane in your WezTerm+SSH session.
+2. Alt-tab (or click) **away** from the WezTerm window to another app.
+3. Alt-tab (or click) **back** to the WezTerm window.
+4. **Immediately** type a normal key (e.g. `j`/`k` to move the selection, or `s`
+   to cycle sort) — do *not* wait and do *not* press an arrow first.
+5. Expected (fixed): the keystroke is handled by wg; the tmux session selector
+   (`choose-tree`) does **not** pop and no key is swallowed.
+6. Repeat a few times, and also try refocusing by **clicking** into the pane
+   (exercises the SGR mouse-report path).
+7. Regression sanity in the same session: bracketed paste still works (paste a
+   multi-line block into a chat/launcher field — it arrives as one paste, not
+   split), normal typing is unaffected, and focus-out has no visible effect.
