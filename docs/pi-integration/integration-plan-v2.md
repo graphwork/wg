@@ -33,6 +33,12 @@ orthogonal takeover-fix and other-tools path. It is the v2 the
   generic terminal-host (managed PTY) **or** a pi headless mode
   (`PI_NO_TUI`/`--mode`). Treat **plugin = integration channel** and
   **terminal-host-or-headless = takeover fix** as **orthogonal, both required**.
+- Design context on the **tmux extended-keys passthrough chain** (queued to this
+  task, 2026-06-22 — §3.1.1): a managed PTY alone does not deliver modified keys
+  to a hosted tool; the kitty/CSI-u + tmux `extended-keys on` chain must hold end
+  to end or Shift/Ctrl/Alt+Enter get flattened. WG should configure the tmux
+  session it owns and detect+warn (the way pi already does) for the outer tmux it
+  does not. Same keyboard-protocol layer as the focus-in / keymap bugs.
 
 **WG code anchors (verified this branch):**
 - `src/dispatch/plan.rs` — `ExecutorKind` (`:48`), `EXTERNAL_CLIS` (`:90`),
@@ -211,7 +217,9 @@ owns a `HostedChild` spec + `TerminalProfile` (declarative per-tool data) + a
 
 pi's `TerminalProfile`: `alt_screen=false`, `needs_capability_replies=true` (for
 an embedded pi), `rpc_capable=true`, `headless_flag=["--mode","rpc"]` or `["-p"]`,
-`exits_on_error_headless=true`.
+`exits_on_error_headless=true`, **`needs_modified_keys=true`** (pi reads
+Shift/Ctrl/Alt+Enter — see §3.1.1: an embedded/managed-PTY pi requires the
+extended-keys passthrough chain or those chords get flattened).
 
 **This is the fallback and the other-tools path** (the task's explicit
 requirement, `terminal-host-research.md` §5.1/§5.2):
@@ -231,6 +239,68 @@ The genuinely-new piece is the **transient handoff take-back** (mode c):
 running the child on the real terminal with `Stdio::inherit`, then restoring the
 TUI. The **capability-query responder** becomes a host guarantee keyed on
 `profile.needs_capability_replies` (`terminal-host-research.md` §4.3/§4.4).
+
+#### 3.1.1 Keyboard-protocol passthrough chain (kitty/CSI-u + tmux extended-keys)
+
+*(Design context queued to this task, 2026-06-22 — same keyboard-protocol layer
+as the focus-in and keymap bugs: `bug-tui-focus-diagnose`,
+`bug-tui-keymap-audit`.)*
+
+Giving a hosted tool a **managed PTY** (modes a/e — pi embedded in a WG pane, or
+filling the window via `spawn_via_tmux`) does not by itself deliver modified keys
+to the guest. Modified-key chords (Shift/Ctrl/Alt+Enter, and the rest of the
+CSI-u set pi reads) only survive if **every hop** in the chain advertises and
+forwards the kitty/CSI-u + `modifyOtherKeys` encoding:
+
+```
+outer terminal (WezTerm: extended keys ✓)
+  └─ tmux pane (spawn_via_tmux)  ← FLATTENS modified keys unless:
+       set -g extended-keys on
+       set -as terminal-features ',*:extkeys'   (or terminal-overrides ',*:Ms=...')
+       └─ WG-managed PTY / capability responder
+            └─ guest (pi: reads Shift/Ctrl/Alt+Enter, already DETECTS+warns when flattened)
+```
+
+tmux is the lossy hop: with `extended-keys off` (the default) it collapses
+`Ctrl+Enter`/`Shift+Enter` down to a bare `Enter` before the guest ever sees them,
+so an embedded pi silently loses its multi-line / accept-vs-newline chords. This
+is the **same keyboard-protocol layer** as the two TUI bugs already fixed
+(`bug-tui-focus-diagnose` — first-keystroke leak after OS focus-in;
+`bug-tui-keymap-audit` — keymap/input routing): focus-in events, the kitty
+keyboard push (`viz_viewer/mod.rs:90-165`), the PTY capability responder
+(`pty_pane.rs:243-249`, answers CPR/kitty/OSC10/DA), and now extended-keys are all
+the **one** modified-key / terminal-capability negotiation surface. The
+terminal-host must own this hop as a host guarantee, not leave it to ambient tmux
+config.
+
+**Two host-side obligations the terminal-host trait must carry:**
+
+1. **Configure the chain it owns.** When the host spawns the guest *through* tmux
+   (`PtyPane::spawn_via_tmux`) and `profile.needs_modified_keys`, it must set
+   `extended-keys on` + `terminal-features ',*:extkeys'` on that managed session
+   (the WG-created tmux session is ours to configure — same place
+   `spawn_via_tmux` already disables the status bar and mouse mode), so the chord
+   reaches the guest. For mode e (standalone PTY host) the host emits/pushes the
+   kitty progressive-enhancement sequence itself, paralleling the existing
+   `viz_viewer/mod.rs` push. Backed by: `pty_pane.rs:388 spawn_via_tmux` +
+   `pty_pane.rs:243-249` responder.
+2. **Detect + warn + document the chain it does *not* own (mirror pi).** When WG
+   itself runs *inside* a user's pre-existing tmux (the outer host is not ours to
+   reconfigure), WG should detect `extended-keys off` and emit the same kind of
+   one-line warning pi already does — "tmux extended-keys is off; modified keys
+   (Shift/Ctrl/Alt+Enter) will be flattened. Run `tmux set -g extended-keys on`
+   (+ `set -as terminal-features ',*:extkeys'`)" — and document the requirement
+   in `pi.toml`/`wg quickstart` the way the focus-in fix documented its terminal
+   prerequisites. This is **not pi-specific**: any hosted tool that reads modified
+   keys (claude/codex TUIs, aider) benefits, so the detect+warn helper lives in
+   the generic terminal-host, gated by `profile.needs_modified_keys`, not in the
+   pi handler.
+
+**Detection** is a cheap `tmux show -gv @extended-keys` / `tmux show -Av
+extended-keys` probe (analogous to the `tmux_available()` shell-out at
+`pty_pane.rs:1005`), run once at host start when `$TMUX` is set. Warn-only,
+never hard-fail — a missing capability degrades chords, it does not break the
+session.
 
 > **Scoping note:** the full generic terminal-host port-out (port-embed,
 > port-headless, the standalone full handoff) is owned by
@@ -292,7 +362,13 @@ staged PR stays **prepared but unsubmitted** (the human, Shape-B/Topology-C-scop
   (loads in rpc/tui/print; wg tools callable; `/wg` works; `model_select`
   write-back; graph widget renders) and **keep the takeover-regression guard**
   (headless pi never enters raw mode — guards direction 2, which the plugin does
-  *not* fix). `tests/smoke/scenarios/`, `tests/smoke/manifest.toml`.
+  *not* fix). For an **embedded/managed-PTY pi (mode a/e)** add a keyboard-protocol
+  scenario per §3.1.1: drive a Shift/Ctrl/Alt+Enter chord through the WG-created
+  tmux session (a real human-flow PTY reproducer per CLAUDE.md, not a CLI
+  substitute) and assert the guest receives the CSI-u-encoded chord — i.e. the
+  host set `extended-keys on`; it fails on a session left at the tmux default.
+  Plus a unit check that the detect-and-warn helper fires when
+  `extended-keys off`. `tests/smoke/scenarios/`, `tests/smoke/manifest.toml`.
 
 ---
 
@@ -367,6 +443,13 @@ Each task is "implement directly — do not decompose further", carries a
 guard, the smoke scenarios) requires a live PTY/tmux human-flow reproducer per
 CLAUDE.md, not a CLI substitute.
 
+The **keyboard-protocol passthrough chain (§3.1.1)** lands across two of these
+tasks: the generic **detect+warn helper** (gated on `profile.needs_modified_keys`)
+is built in `pi-plugin-impl-terminal-host-trait`, and the **host-side tmux
+`extended-keys on` configuration** + the embedded-pi keyboard scenario land in
+`pi-plugin-impl-pi-takeover-fix` (it already owns `src/terminal_host/` and the pi
+`TerminalProfile`). Both carry the live Shift/Ctrl/Alt+Enter PTY reproducer.
+
 **Out of scope here (owned elsewhere):** the full generic terminal-host
 port-out (`terminal-host-port-embed`, `terminal-host-handoff`,
 `terminal-host-port-headless`) is `terminal-host-research.md` §6's own track —
@@ -395,6 +478,13 @@ the trait foundation + the pi consumer on the pi critical path.
 6. **Promotion gate.** pi stays in `EXPERIMENTAL_EXTERNAL_EXECUTORS` until
    `pi-plugin-impl-live-validation` is green (credentialed RPC streaming, resume,
    large output, plugin-in-the-loop).
+7. **Extended-keys: configure vs only-warn (§3.1.1).** For the tmux session WG
+   *creates* (`spawn_via_tmux`), should the host silently set `extended-keys on`
+   itself (recommended — it owns that session), or only warn? And for the user's
+   *outer* tmux that WG cannot reconfigure, is a one-line warn-once on startup the
+   right touch, or should it also be surfaced in `wg quickstart`/`pi.toml` docs
+   (mirroring how pi warns and how `bug-tui-focus-diagnose` documented its
+   terminal prerequisites)?
 
 ---
 
@@ -416,6 +506,12 @@ the trait foundation + the pi consumer on the pi critical path.
 - Revised user guidance on `pi-impl-p5` (queued to `pi-plugin-replan`,
   2026-06-22): plugin = integration channel and terminal-host-or-headless =
   takeover fix are orthogonal, both required.
+- Design context on the tmux extended-keys passthrough chain (queued to
+  `pi-plugin-replan`, 2026-06-22, §3.1.1): hosting interactive tools through tmux
+  needs `extended-keys on` + `terminal-features extkeys` or modified keys are
+  flattened; same keyboard-protocol layer as `bug-tui-focus-diagnose` /
+  `bug-tui-keymap-audit`; WG should configure the session it owns and detect+warn
+  like pi for the outer tmux it does not.
 - WG code anchors enumerated in the header (verified this branch).
 </content>
 </invoke>
