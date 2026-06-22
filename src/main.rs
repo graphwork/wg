@@ -20,6 +20,7 @@ use worksgood::config::Config;
 
 mod cli;
 mod commands;
+mod terminal_host;
 mod tui;
 
 use cli::*;
