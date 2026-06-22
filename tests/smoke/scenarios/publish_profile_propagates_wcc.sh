@@ -44,6 +44,71 @@ except Exception:
     print('')"
 }
 
+task_field() {
+    local id="$1"
+    local field="$2"
+    run_wg show "$id" --json 2>/dev/null \
+        | python3 -c 'import json, sys
+field = sys.argv[1]
+try:
+    value = json.load(sys.stdin).get(field)
+except Exception:
+    value = None
+if value is None and field == "paused":
+    value = False
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif value is None:
+    print("")
+else:
+    print(value)
+' "$field"
+}
+
+set_task_status() {
+    local id="$1"
+    local status="$2"
+    python3 - "$wgdir/graph.jsonl" "$id" "$status" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+task_id = sys.argv[2]
+status = sys.argv[3]
+rows = []
+found = False
+for line in path.read_text().splitlines():
+    row = json.loads(line)
+    if row.get("id") == task_id:
+        row["status"] = status
+        found = True
+    rows.append(row)
+if not found:
+    raise SystemExit(f"task {task_id!r} not found")
+path.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+PY
+}
+
+set_task_paused() {
+    local id="$1"
+    local paused="$2"
+    python3 - "$wgdir/graph.jsonl" "$id" "$paused" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+task_id = sys.argv[2]
+paused = sys.argv[3] == "true"
+rows = []
+found = False
+for line in path.read_text().splitlines():
+    row = json.loads(line)
+    if row.get("id") == task_id:
+        row["paused"] = paused
+        found = True
+    rows.append(row)
+if not found:
+    raise SystemExit(f"task {task_id!r} not found")
+path.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+PY
+}
+
 if ! run_wg init >"$scratch/init.log" 2>&1; then
     loud_fail "wg init failed: $(tail -10 "$scratch/init.log")"
 fi
@@ -109,5 +174,73 @@ got="$(task_profile solo)"
 if [[ -n "$got" ]]; then
     loud_fail "publish without --profile should leave profile unset, got '$got'"
 fi
+
+# (6) Recovery workflow: reload/stamp a named profile over an already-created
+# mixed-status WCC without releasing anything. This pins fix-profile-wcc-reload:
+# the root is not paused, members include failed/paused/done, and all carry
+# stale explicit Claude model pins that must be cleared so the codex profile
+# becomes authoritative.
+if ! run_wg publish --help 2>&1 | grep -q "wg publish <TASK> --profile codex --no-release --wcc"; then
+    loud_fail "wg publish --help should advertise the profile reload recovery workflow"
+fi
+
+if ! run_wg add 'Assign Recover Root' --id .assign-recover-root --model claude:haiku >"$scratch/add-recover-assign.log" 2>&1; then
+    loud_fail "wg add .assign-recover-root failed: $(tail -10 "$scratch/add-recover-assign.log")"
+fi
+if ! run_wg add 'Recover Root' --id recover-root --after .assign-recover-root --allow-phantom --model claude:opus >"$scratch/add-recover-root.log" 2>&1; then
+    loud_fail "wg add recover-root failed: $(tail -10 "$scratch/add-recover-root.log")"
+fi
+if ! run_wg add 'Recover Failed' --id recover-failed --after recover-root --model claude:opus >"$scratch/add-recover-failed.log" 2>&1; then
+    loud_fail "wg add recover-failed failed: $(tail -10 "$scratch/add-recover-failed.log")"
+fi
+if ! run_wg add 'Recover Paused' --id recover-paused --after recover-failed --paused --model claude:opus >"$scratch/add-recover-paused.log" 2>&1; then
+    loud_fail "wg add recover-paused failed: $(tail -10 "$scratch/add-recover-paused.log")"
+fi
+if ! run_wg add 'Recover Done' --id recover-done --after recover-paused --model claude:opus >"$scratch/add-recover-done.log" 2>&1; then
+    loud_fail "wg add recover-done failed: $(tail -10 "$scratch/add-recover-done.log")"
+fi
+if ! run_wg add 'FLIP Recover Root' --id .flip-recover-root --after recover-root --model claude:haiku >"$scratch/add-recover-flip.log" 2>&1; then
+    loud_fail "wg add .flip-recover-root failed: $(tail -10 "$scratch/add-recover-flip.log")"
+fi
+if ! run_wg add 'Evaluate Recover Root' --id .evaluate-recover-root --after .flip-recover-root --model claude:haiku >"$scratch/add-recover-eval.log" 2>&1; then
+    loud_fail "wg add .evaluate-recover-root failed: $(tail -10 "$scratch/add-recover-eval.log")"
+fi
+if ! run_wg add 'Verify Recover Root' --id .verify-recover-root --after recover-failed --model claude:haiku >"$scratch/add-recover-verify.log" 2>&1; then
+    loud_fail "wg add .verify-recover-root failed: $(tail -10 "$scratch/add-recover-verify.log")"
+fi
+set_task_status recover-failed failed
+set_task_status recover-done done
+for id in recover-root recover-failed recover-done .assign-recover-root .flip-recover-root .evaluate-recover-root .verify-recover-root; do
+    set_task_paused "$id" false
+done
+set_task_paused recover-paused true
+
+if ! run_wg publish recover-root --profile codex --no-release --wcc >"$scratch/reload-codex.log" 2>&1; then
+    loud_fail "wg publish recover-root --profile codex --no-release --wcc failed: $(tail -20 "$scratch/reload-codex.log")"
+fi
+
+for id in recover-root recover-failed recover-paused recover-done .assign-recover-root .flip-recover-root .evaluate-recover-root .verify-recover-root; do
+    got="$(task_profile "$id")"
+    if [[ "$got" != "codex" ]]; then
+        loud_fail "recovery task '$id' should have profile 'codex', got '$got'"
+    fi
+    model="$(task_field "$id" model)"
+    if [[ -n "$model" ]]; then
+        loud_fail "recovery task '$id' should have stale model cleared, got '$model'"
+    fi
+done
+
+for spec in \
+    "recover-root:open:false" \
+    "recover-failed:failed:false" \
+    "recover-paused:open:true" \
+    "recover-done:done:false"; do
+    id="${spec%%:*}"; rest="${spec#*:}"; want_status="${rest%%:*}"; want_paused="${rest#*:}"
+    got_status="$(task_field "$id" status)"
+    got_paused="$(task_field "$id" paused)"
+    if [[ "$got_status" != "$want_status" || "$got_paused" != "$want_paused" ]]; then
+        loud_fail "recovery task '$id' status/paused changed: got status=$got_status paused=$got_paused, want status=$want_status paused=$want_paused"
+    fi
+done
 
 echo "PASS: publish_profile_propagates_wcc"

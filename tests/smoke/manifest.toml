@@ -1423,8 +1423,9 @@ name = "publish_profile_propagates_wcc"
 script = "scenarios/publish_profile_propagates_wcc.sh"
 owners = [
     "implement-wg-publish",
+    "fix-profile-wcc-reload",
 ]
-description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
+description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible). Pins fix-profile-wcc-reload: `wg publish <task> --profile codex --no-release --wcc` reloads/stamps an existing non-paused mixed-status WCC, clears stale explicit Claude model pins from work tasks and agency satellites, and leaves statuses/paused flags unchanged."
 timeout_seconds = 60
 
 [[scenario]]
