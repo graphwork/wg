@@ -150,6 +150,136 @@ const EXECUTORS: &[ExecutorSpec] = &[
     },
 ];
 
+// --- pi: route satisfiability (Topology A `pi` binary OR Topology B Node host) -
+
+/// The Node-host backing for a `pi:` route (Topology B): WG spawns
+/// `node <host_script>`, which loads the built plugin bundle in-process.
+/// All three pieces must be present for the route to be satisfiable this way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PiNodeHost {
+    /// Absolute path to the `node` binary.
+    pub node: PathBuf,
+    /// Absolute path to `pi-plugin/host/wg-pi-host.mjs`.
+    pub host_script: PathBuf,
+    /// Absolute path to the built plugin bundle `pi-plugin/dist/index.js`.
+    pub plugin_bundle: PathBuf,
+}
+
+/// Which transports can satisfy a `pi:` route on this system.
+///
+/// A `pi:` route is satisfiable by **either** a `pi` binary on PATH
+/// (Topology A — `pi --mode rpc`) **or** Node + the `wg-pi-host.mjs` SDK
+/// host + the built plugin bundle (Topology B — `node wg-pi-host.mjs`).
+/// `wg config lint` rejects a configured `pi:` route when neither is present
+/// (`integration-plan-v2.md` §4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PiRouteAvailability {
+    /// Absolute path to the `pi` binary, if found (Topology A).
+    pub pi_binary: Option<PathBuf>,
+    /// The Node-host triple, if all three pieces are present (Topology B).
+    pub node_host: Option<PiNodeHost>,
+}
+
+impl PiRouteAvailability {
+    /// True when at least one transport (A or B) can run a `pi:` route.
+    pub fn satisfiable(&self) -> bool {
+        self.pi_binary.is_some() || self.node_host.is_some()
+    }
+}
+
+/// Probe a fixed set of PATH dirs for the first matching candidate binary.
+/// Split out from [`which_on_path`] so tests can inject a synthetic PATH.
+fn which_in_dirs(dirs: &[PathBuf], candidates: &[&str]) -> Option<PathBuf> {
+    for dir in dirs {
+        for name in candidates {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Locate a plugin root that holds BOTH the SDK host script and the built
+/// bundle. Returns `(host_script, plugin_bundle)` for the first candidate dir
+/// where `host/wg-pi-host.mjs` and `dist/index.js` both exist.
+fn locate_pi_node_host(plugin_dirs: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
+    for dir in plugin_dirs {
+        let host_script = dir.join("host").join("wg-pi-host.mjs");
+        let plugin_bundle = dir.join("dist").join("index.js");
+        if host_script.is_file() && plugin_bundle.is_file() {
+            return Some((host_script, plugin_bundle));
+        }
+    }
+    None
+}
+
+/// Pure satisfiability check over injected inputs — the testable core of
+/// [`pi_route_availability`]. `path_dirs` are PATH entries to probe for the
+/// `pi` and `node` binaries; `plugin_dirs` are candidate plugin roots probed
+/// for the host script + built bundle.
+pub fn pi_route_availability_in(
+    path_dirs: &[PathBuf],
+    plugin_dirs: &[PathBuf],
+) -> PiRouteAvailability {
+    let pi_binary = which_in_dirs(path_dirs, &["pi"]);
+    let node_host = match (
+        which_in_dirs(path_dirs, &["node"]),
+        locate_pi_node_host(plugin_dirs),
+    ) {
+        (Some(node), Some((host_script, plugin_bundle))) => Some(PiNodeHost {
+            node,
+            host_script,
+            plugin_bundle,
+        }),
+        _ => None,
+    };
+    PiRouteAvailability {
+        pi_binary,
+        node_host,
+    }
+}
+
+/// Candidate `pi-plugin/` roots to probe for the Node-host bundle, in
+/// precedence order: explicit `WG_PI_PLUGIN_DIR`, the in-repo source tree
+/// (dev builds), next to the running binary, then the global pi-extension
+/// install (`~/.pi/agent/extensions/wg-pi-plugin`).
+pub fn pi_plugin_candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(explicit) = std::env::var_os("WG_PI_PLUGIN_DIR") {
+        dirs.push(PathBuf::from(explicit));
+    }
+    // In-repo source tree (dev): <crate>/pi-plugin.
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pi-plugin"));
+    // Alongside the installed binary: <exe_dir>/pi-plugin.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.push(parent.join("pi-plugin"));
+    }
+    // Global pi-extension install.
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(
+            PathBuf::from(home)
+                .join(".pi")
+                .join("agent")
+                .join("extensions")
+                .join("wg-pi-plugin"),
+        );
+    }
+    dirs
+}
+
+/// Determine, from the live environment, whether a `pi:` route is satisfiable
+/// (Topology A `pi` binary OR Topology B Node host + bundle).
+pub fn pi_route_availability() -> PiRouteAvailability {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    pi_route_availability_in(&path_dirs, &pi_plugin_candidate_dirs())
+}
+
 /// Look up each candidate on PATH via `which`-style lookup. Returns
 /// the absolute path of the first hit, or `None`.
 fn which_probes(candidates: &[&str]) -> Option<PathBuf> {
@@ -251,6 +381,90 @@ mod tests {
         assert!(usable.iter().all(|e| e.available));
         // native should always be in the list.
         assert!(usable.iter().any(|e| e.name == "native"));
+    }
+
+    /// Create a fake executable file at `dir/name` (0o755 on unix).
+    fn touch_exe(dir: &std::path::Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn pi_route_satisfiable_via_fake_pi_binary() {
+        let bin = tempfile::TempDir::new().unwrap();
+        touch_exe(bin.path(), "pi");
+        // No plugin dirs at all → only the pi binary can satisfy the route.
+        let avail =
+            pi_route_availability_in(&[bin.path().to_path_buf()], &[] as &[std::path::PathBuf]);
+        assert!(avail.satisfiable(), "a `pi` binary alone must satisfy pi:");
+        assert!(avail.pi_binary.is_some());
+        assert!(avail.node_host.is_none());
+    }
+
+    #[test]
+    fn pi_route_satisfiable_via_fake_node_host_bundle() {
+        let bin = tempfile::TempDir::new().unwrap();
+        touch_exe(bin.path(), "node"); // node present, but NO pi binary
+        let plugin = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(plugin.path().join("host")).unwrap();
+        std::fs::create_dir_all(plugin.path().join("dist")).unwrap();
+        std::fs::write(plugin.path().join("host").join("wg-pi-host.mjs"), b"//host").unwrap();
+        std::fs::write(plugin.path().join("dist").join("index.js"), b"//bundle").unwrap();
+
+        let avail =
+            pi_route_availability_in(&[bin.path().to_path_buf()], &[plugin.path().to_path_buf()]);
+        assert!(
+            avail.satisfiable(),
+            "node + wg-pi-host.mjs + dist/index.js must satisfy pi:"
+        );
+        assert!(avail.pi_binary.is_none(), "no pi binary in this scenario");
+        let host = avail.node_host.expect("node host triple present");
+        assert!(host.host_script.ends_with("wg-pi-host.mjs"));
+        assert!(host.plugin_bundle.ends_with("index.js"));
+    }
+
+    #[test]
+    fn pi_route_rejected_when_neither_present() {
+        // node exists but the bundle does NOT, and there is no pi binary.
+        let bin = tempfile::TempDir::new().unwrap();
+        touch_exe(bin.path(), "node");
+        let empty_plugin = tempfile::TempDir::new().unwrap(); // no host/ or dist/
+        let avail = pi_route_availability_in(
+            &[bin.path().to_path_buf()],
+            &[empty_plugin.path().to_path_buf()],
+        );
+        assert!(
+            !avail.satisfiable(),
+            "node alone (no host script / bundle, no pi binary) must NOT satisfy pi:"
+        );
+
+        // And the fully-empty case (no binaries, no plugin dirs).
+        let nothing =
+            pi_route_availability_in(&[] as &[std::path::PathBuf], &[] as &[std::path::PathBuf]);
+        assert!(!nothing.satisfiable());
+    }
+
+    #[test]
+    fn pi_route_node_host_needs_node_binary_too() {
+        // A complete bundle but NO node binary on PATH → Topology B unusable.
+        let bin = tempfile::TempDir::new().unwrap(); // empty PATH dir
+        let plugin = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(plugin.path().join("host")).unwrap();
+        std::fs::create_dir_all(plugin.path().join("dist")).unwrap();
+        std::fs::write(plugin.path().join("host").join("wg-pi-host.mjs"), b"//host").unwrap();
+        std::fs::write(plugin.path().join("dist").join("index.js"), b"//bundle").unwrap();
+        let avail =
+            pi_route_availability_in(&[bin.path().to_path_buf()], &[plugin.path().to_path_buf()]);
+        assert!(
+            !avail.satisfiable(),
+            "bundle without a node binary cannot run Topology B"
+        );
     }
 
     #[test]

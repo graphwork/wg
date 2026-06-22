@@ -2463,6 +2463,32 @@ pub enum Commands {
         model: Option<String>,
     },
 
+    /// Bridge pi.dev (pi-coding-agent) output ↔ chat/<ref>/*.jsonl,
+    /// routed THROUGH the wg-pi-plugin (not prompt-munging).
+    ///
+    /// Peer of `wg opencode-handler` for the `pi` executor. Topology A
+    /// spawns a long-lived `pi --mode rpc` (piped stdio ⇒ headless, no
+    /// terminal takeover) and drives it over the JSONL RPC protocol;
+    /// Topology B spawns `node pi-plugin/host/wg-pi-host.mjs`. The
+    /// transport is auto-selected from what's installed (`WG_PI_TOPOLOGY`
+    /// forces `rpc`/`node`). ALWAYS passes the resolved model explicitly
+    /// via `--provider`/`--model`; credentials are read from the
+    /// environment (never `--api-key`).
+    #[command(name = "pi-handler")]
+    PiHandler {
+        #[arg(long = "chat")]
+        chat: String,
+
+        #[arg(long)]
+        resume: bool,
+
+        #[arg(long)]
+        role: Option<String>,
+
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
     /// Print the WG directory that `wg` would use from here,
     /// and show which resolver step won (CLI flag / env / walk-up /
     /// home / default). Useful when you're confused about which graph
@@ -5235,6 +5261,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::OpenCodeHandler { .. } => "opencode-handler",
+        Commands::PiHandler { .. } => "pi-handler",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",

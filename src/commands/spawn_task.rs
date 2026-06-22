@@ -59,6 +59,10 @@ pub enum HandlerSpec {
         chat_ref: String,
         model: Option<String>,
     },
+    Pi {
+        chat_ref: String,
+        model: Option<String>,
+    },
     Gemini {
         chat_ref: String,
     },
@@ -106,6 +110,13 @@ impl HandlerSpec {
             }
             Self::OpenCode { chat_ref, model } => {
                 let mut s = format!("wg opencode-handler --chat {}", chat_ref);
+                if let Some(m) = model {
+                    s.push_str(&format!(" -m {}", m));
+                }
+                s
+            }
+            Self::Pi { chat_ref, model } => {
+                let mut s = format!("wg pi-handler --chat {}", chat_ref);
                 if let Some(m) = model {
                     s.push_str(&format!(" -m {}", m));
                 }
@@ -278,15 +289,7 @@ pub fn resolve_handler(
                 plan.executor.as_str()
             ));
         }
-        ExecutorKind::Pi => {
-            // Pi (pi.dev) is registered as a chat-capable external CLI (P0
-            // foundation), but the `wg pi-handler` spawn-task/RPC handler is a
-            // later phase (P1a; docs/pi-integration/integration-plan.md §5).
-            return Err(anyhow!(
-                "executor 'pi' is registered but its handler is not wired yet; \
-                 the `wg pi-handler` spawn-task/RPC path lands in a later phase"
-            ));
-        }
+        ExecutorKind::Pi => HandlerSpec::Pi { chat_ref, model },
         ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \
@@ -340,6 +343,9 @@ fn dispatch(spec: &HandlerSpec, workgraph_dir: &Path) -> Result<()> {
         HandlerSpec::OpenCode { chat_ref, model } => {
             dispatch_opencode(chat_ref, model.as_deref(), workgraph_dir)
         }
+        HandlerSpec::Pi { chat_ref, model } => {
+            dispatch_pi(chat_ref, model.as_deref(), workgraph_dir)
+        }
         HandlerSpec::Gemini { .. } => Err(anyhow!(
             "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
@@ -384,6 +390,30 @@ fn dispatch_opencode(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) 
         }
         let err = cmd.exec();
         Err(anyhow!("exec wg opencode-handler failed: {}", err))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (chat_ref, model, workgraph_dir);
+        Err(anyhow!(
+            "spawn-task dispatch not yet supported on this platform"
+        ))
+    }
+}
+
+fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let self_exe =
+            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("pi-handler").arg("--chat").arg(chat_ref);
+        cmd.env("WG_DIR", workgraph_dir);
+        if let Some(m) = model {
+            cmd.arg("-m").arg(m);
+        }
+        let err = cmd.exec();
+        Err(anyhow!("exec wg pi-handler failed: {}", err))
     }
     #[cfg(not(unix))]
     {
@@ -733,6 +763,7 @@ mod tests {
                 HandlerSpec::Claude { model, .. } => ("claude", model),
                 HandlerSpec::Codex { model, .. } => ("codex", model),
                 HandlerSpec::OpenCode { model, .. } => ("opencode", model),
+                HandlerSpec::Pi { model, .. } => ("pi", model),
                 HandlerSpec::Native { model, .. } => ("native", model),
                 HandlerSpec::Gemini { .. } => ("gemini", None),
             };
@@ -886,6 +917,7 @@ mod tests {
                     HandlerSpec::OpenCode { model, .. } => {
                         format!("OpenCode {{ model: {:?} }}", model)
                     }
+                    HandlerSpec::Pi { model, .. } => format!("Pi {{ model: {:?} }}", model),
                     HandlerSpec::Gemini { .. } => "Gemini".to_string(),
                 }
             ),

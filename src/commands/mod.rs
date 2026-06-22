@@ -87,6 +87,7 @@ pub mod opencode_handler;
 pub mod openrouter;
 pub mod pause;
 pub mod peer;
+pub mod pi_handler;
 pub mod placement;
 pub mod plan;
 pub mod profile_cmd;
