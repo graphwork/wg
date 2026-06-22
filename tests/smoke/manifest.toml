@@ -1453,3 +1453,13 @@ owners = [
 ]
 description = "Pins diagnose-fix-nex: the nex (OpenAI-compatible) streaming client must ride out a long, slow-but-healthy generation instead of failing with '[openai-client] Stream interrupted after ~N chunks: error decoding response body'. Root cause: reqwest 0.12 bytes_stream() collapses EVERY body error to Kind::Decode ('error decoding response body'), so the old 300s TOTAL request timeout cut a healthy long stream around the cap (~6300 tokens at a steady local rate). Fix: per-read (idle) timeout that resets on each frame (no total cap on streaming), plus a raw-byte SSE buffer so multi-byte UTF-8 split across chunk boundaries is not corrupted to U+FFFD. Drives the REAL OpenAiClient::send_streaming path over a TCP socket with chunked SSE (in-process mock llama.cpp): total-timeout reproduces the exact symptom + is_timeout cause; fixed client completes a slow 3s stream; read-timeout still aborts a genuinely stalled stream; a mid-stream connection drop recovers via retry; split multi-byte UTF-8 reassembles intact."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_focus_in_reasserts_input_grab"
+script = "scenarios/tui_focus_in_reasserts_input_grab.sh"
+owners = [
+    "bug-tui-focus-fix",
+    "bug-tui-focus-verify",
+]
+description = "Pins bug-tui-focus-fix (docs/bugs/tui-focus-input-race.md): returning OS focus to the wg TUI must never leave a window in which the user's first keystroke leaks to tmux (popping choose-tree). Drives the REAL `wg tui` under a PTY and asserts both halves of the general, emulator-agnostic fix in the raw output stream: (1) startup enables DECSET 1004 focus reporting (\\x1b[?1004h) so tmux forwards focus-in into the pane — absent on pre-fix main, which has no EnableFocusChange; (2) on receiving a focus-in report (\\x1b[I) wg re-asserts its own input grab as one burst — bracketed paste (\\x1b[?2004h) + mouse capture (\\x1b[?1002h) — before the next key, where pre-fix main drops Event::FocusGained via a catch-all and re-asserts nothing. Idle ratatui repaints never emit DECSET mode-sets, so the post-focus-in \\x1b[?2004h is an unambiguous re-assert signal. Fails on main, passes after the fix; credential-free, no tmux/daemon required."
+timeout_seconds = 60

@@ -210,6 +210,75 @@ fn set_mouse_capture(enabled: bool, any_motion: bool) -> Result<()> {
     Ok(())
 }
 
+/// Build the byte burst that re-asserts wg's *own* input grab.
+///
+/// Pure (no I/O) so the exact payload can be unit-tested; `assert_input_grab`
+/// writes + flushes it. Covers every mode wg owns at the outer-terminal
+/// boundary, except raw mode (a termios call, not a byte sequence — handled in
+/// `assert_input_grab`):
+///
+/// * kitty keyboard disambiguation — emitted with the **set** form
+///   (`CSI = 1 ; 1 u`), NOT `PushKeyboardEnhancementFlags`. Re-pushing on every
+///   focus-in would grow the terminal's flag stack while teardown pops only
+///   once, leaving stale flags after exit. The set form replaces the single
+///   stack entry mod.rs pushed at startup, so the stack depth never changes.
+/// * bracketed paste (`?2004h`) — idempotent when already on; we only ever
+///   assert "on", never toggle off→on (toggling could split an in-flight paste
+///   into raw keystrokes, the very leak class `handle_paste` guards against).
+/// * mouse capture — byte-for-byte identical to `set_mouse_capture` so the
+///   grab re-assert and the `m` toggle can never disagree on the mode set.
+fn input_grab_bytes(
+    has_keyboard_enhancement: bool,
+    mouse_enabled: bool,
+    any_motion: bool,
+) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::with_capacity(32);
+    if has_keyboard_enhancement {
+        buf.extend_from_slice(b"\x1b[=1;1u");
+    }
+    buf.extend_from_slice(b"\x1b[?2004h");
+    if mouse_enabled {
+        buf.extend_from_slice(b"\x1b[?1002h\x1b[?1006h");
+        if any_motion {
+            buf.extend_from_slice(b"\x1b[?1003h");
+        }
+    } else {
+        buf.extend_from_slice(b"\x1b[?1003l\x1b[?1006l\x1b[?1002l");
+    }
+    buf
+}
+
+/// Re-assert wg's own terminal input grab as a single contiguous burst.
+///
+/// Both startup (`run_event_loop`) and `Event::FocusGained` call this, so the
+/// initial grab and the focus-in re-assert can never drift. On an OS
+/// focus-out/in cycle, tmux re-mirrors the active pane's modes onto the outer
+/// terminal lazily; for a brief window the pane's grab is not yet re-applied and
+/// the user's first keystroke is parsed by tmux instead of wg (e.g. popping
+/// `choose-tree`). Re-asserting here closes that window deterministically,
+/// before the next key, on every focus-in — no reliance on time or a sacrificial
+/// arrow key.
+///
+/// Scoped to wg's *own* outer-terminal modes only; it never touches an embedded
+/// chat PTY child's mode negotiation (that child runs against the in-process
+/// emulator in `pty_pane.rs`, a separate terminal). All writes go out in one
+/// `write_all` + `flush` so they land before any user key can interleave.
+fn assert_input_grab(app: &VizApp) -> Result<()> {
+    use io::Write;
+    // Raw mode is idempotent — crossterm captures the original termios once, so
+    // this just re-applies tcsetattr(RAW) if a layer below us reset it.
+    let _ = crossterm::terminal::enable_raw_mode();
+    let bytes = input_grab_bytes(
+        app.has_keyboard_enhancement,
+        app.mouse_enabled,
+        app.any_motion_mouse,
+    );
+    let mut stdout = io::stdout();
+    stdout.write_all(&bytes)?;
+    stdout.flush()?;
+    Ok(())
+}
+
 /// Returns true when mode 1003 (any-event tracking) should be enabled.
 /// Only enabled in Termux (without mosh), where touch drag events may lack
 /// the button-held flag. Enabling 1003 globally causes the outer terminal
@@ -224,8 +293,10 @@ pub fn run_event_loop(
     app: &mut VizApp,
     shared_screen: &super::screen_dump::SharedScreen,
 ) -> Result<()> {
-    // Set initial mouse capture state
-    set_mouse_capture(app.mouse_enabled, app.any_motion_mouse)?;
+    // Establish wg's full input grab (mouse + bracketed paste + kitty/raw
+    // re-assert). Uses the same helper `Event::FocusGained` calls so the startup
+    // grab and the focus-in re-assert can never drift.
+    assert_input_grab(app)?;
 
     let result = run_event_loop_inner(terminal, app, shared_screen);
 
@@ -404,6 +475,18 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             handle_mouse(app, mouse.kind, mouse.row, mouse.column);
         }
         Event::Resize(_, _) => {} // handled by next redraw
+        Event::FocusGained => {
+            // OS focus returned to wg's window. tmux re-mirrors the active
+            // pane's modes onto the outer terminal lazily, leaving a brief
+            // window in which the user's first keystroke can be parsed by tmux
+            // instead of wg (popping choose-tree, etc.). Re-assert wg's own
+            // grab immediately so that window is closed before the next key.
+            //
+            // A focus event is NOT user input: it must not bump interaction
+            // tracking and is never forwarded to an embedded chat PTY child.
+            let _ = assert_input_grab(app);
+        }
+        Event::FocusLost => {} // wg keeps its grab while unfocused; nothing to do
         _ => {}
     }
 }
@@ -5772,6 +5855,86 @@ fn is_agency_task_id(id: &str) -> bool {
 // ══════════════════════════════════════════════════════════════════════════════
 // Tests for scrollbar click and drag behavior
 // ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod input_grab_tests {
+    use super::*;
+
+    // The literal escape sequences the re-grab burst must (re-)assert. Kept as
+    // bytes so a regression that changes the wire format fails loudly here.
+    //
+    // NOTE: these are pure-payload tests of `input_grab_bytes`. The live
+    // focus-in → re-assert path (which performs real terminal I/O, including
+    // enable_raw_mode) is exercised end-to-end by the smoke scenario
+    // tests/smoke/scenarios/tui_focus_in_reasserts_input_grab.sh — we
+    // deliberately do NOT drive `assert_input_grab` from a unit test, since it
+    // would flip a developer's real terminal into raw mode.
+    const KITTY_SET: &[u8] = b"\x1b[=1;1u";
+    const KITTY_PUSH_PREFIX: &[u8] = b"\x1b[>";
+    const BRACKETED_PASTE_ON: &[u8] = b"\x1b[?2004h";
+    const BRACKETED_PASTE_OFF: &[u8] = b"\x1b[?2004l";
+    const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+    const MOUSE_ANY_MOTION_ON: &[u8] = b"\x1b[?1003h";
+    const MOUSE_OFF: &[u8] = b"\x1b[?1003l\x1b[?1006l\x1b[?1002l";
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn input_grab_reasserts_paste_and_mouse_when_enabled() {
+        let bytes = input_grab_bytes(true, true, false);
+        // Kitty re-asserted with the SET form, never a second push (a push on
+        // every focus-in would grow the terminal's flag stack vs. one teardown
+        // pop, leaving stale flags after exit).
+        assert!(contains(&bytes, KITTY_SET), "must emit kitty set form");
+        assert!(
+            !contains(&bytes, KITTY_PUSH_PREFIX),
+            "must NOT push kitty flags on re-assert"
+        );
+        assert!(contains(&bytes, BRACKETED_PASTE_ON), "must re-assert paste");
+        assert!(contains(&bytes, MOUSE_ON), "must re-assert mouse capture");
+        // Only ever assert paste "on" — never a disable that could split a paste.
+        assert!(
+            !contains(&bytes, BRACKETED_PASTE_OFF),
+            "must not disable paste"
+        );
+    }
+
+    #[test]
+    fn input_grab_omits_kitty_when_unsupported() {
+        let bytes = input_grab_bytes(false, true, false);
+        assert!(
+            !contains(&bytes, KITTY_SET),
+            "no kitty bytes without support"
+        );
+        // Paste + mouse are still re-asserted regardless of kitty support.
+        assert!(contains(&bytes, BRACKETED_PASTE_ON));
+        assert!(contains(&bytes, MOUSE_ON));
+    }
+
+    #[test]
+    fn input_grab_any_motion_adds_mode_1003() {
+        let without = input_grab_bytes(false, true, false);
+        let with = input_grab_bytes(false, true, true);
+        assert!(!contains(&without, MOUSE_ANY_MOTION_ON));
+        assert!(contains(&with, MOUSE_ANY_MOTION_ON));
+    }
+
+    #[test]
+    fn input_grab_disables_mouse_when_off() {
+        // Matches set_mouse_capture(false, _): the re-assert tracks the live
+        // mouse state instead of force-enabling mouse the user turned off.
+        let bytes = input_grab_bytes(false, false, false);
+        assert!(
+            contains(&bytes, MOUSE_OFF),
+            "mouse-off path must emit disable seq"
+        );
+        assert!(!contains(&bytes, MOUSE_ON));
+        // Paste is still re-asserted — it is not gated on mouse.
+        assert!(contains(&bytes, BRACKETED_PASTE_ON));
+    }
+}
+
 #[cfg(test)]
 mod scrollbar_tests {
     use super::*;

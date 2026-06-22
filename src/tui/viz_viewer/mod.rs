@@ -25,8 +25,8 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result};
 use crossterm::{
     event::{
-        DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -85,7 +85,17 @@ pub fn run(
         "failed to enable raw mode — is this an interactive terminal?\n\
          Hint: `wg tui` requires a real terminal (not a pipe or agent context)",
     )?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    // EnableFocusChange (DECSET 1004) makes tmux forward the outer terminal's
+    // focus-in/out reports into wg's pane (when `focus-events on`). That focus-in
+    // signal is what the event loop needs to re-assert its input grab and close
+    // the post-focus-in keystroke-leak window (the user's first key being parsed
+    // by tmux instead of wg). Harmless on terminals that don't report focus.
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
 
     // Enable kitty keyboard protocol if supported — this lets us distinguish
     // Shift+Enter from Enter (and other modified special keys).
@@ -164,7 +174,12 @@ fn restore_terminal() -> Result<()> {
     let r2 = io::stdout().write_all(b"\x1b[?1003l\x1b[?1006l\x1b[?1002l");
     // Pop kitty keyboard enhancement (no-op if it wasn't pushed).
     let r3 = execute!(io::stdout(), PopKeyboardEnhancementFlags);
-    let r4 = execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste);
+    let r4 = execute!(
+        io::stdout(),
+        DisableFocusChange,
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    );
     r1?;
     r2?;
     let _ = r3; // Ignore error — may not have been pushed.
