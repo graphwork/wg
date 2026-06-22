@@ -84,6 +84,14 @@ pub struct AgentResult {
     pub exit_reason: String,
 }
 
+pub struct TurnModelRefresh {
+    pub client: Box<dyn Provider>,
+    pub supports_tools: bool,
+    pub registry_entry: Option<crate::config::ModelRegistryEntry>,
+}
+
+type ModelRefreshFn = dyn Fn(&str) -> Result<Option<TurnModelRefresh>> + Send + Sync;
+
 impl AgentResult {
     /// True when the loop terminated cleanly (model said done, user quit,
     /// stdin closed). False for context_limit / max_turns / any other
@@ -130,6 +138,8 @@ pub struct AgentLoop {
     state_injector: Option<StateInjector>,
     /// Registry entry for cost estimation (populated from spawn path).
     registry_entry: Option<crate::config::ModelRegistryEntry>,
+    /// Optional per-turn model refresh hook for warm chat model swaps.
+    model_refresh: Option<Box<ModelRefreshFn>>,
     /// Channels oversized tool outputs to disk so the message vec can never
     /// be exploded by a single large tool call. The agent retrieves full
     /// content via `bash` (cat/head/tail/sed/grep) on the handle path.
@@ -1228,6 +1238,7 @@ impl AgentLoop {
             context_budget,
             state_injector: None,
             registry_entry: None,
+            model_refresh: None,
             tool_output_channeler,
             nex_verbose: false,
             nex_chatty: false,
@@ -1290,6 +1301,14 @@ impl AgentLoop {
     /// Set the registry entry for cost estimation.
     pub fn with_registry_entry(mut self, entry: crate::config::ModelRegistryEntry) -> Self {
         self.registry_entry = Some(entry);
+        self
+    }
+
+    pub fn with_model_refresh<F>(mut self, refresh: F) -> Self
+    where
+        F: Fn(&str) -> Result<Option<TurnModelRefresh>> + Send + Sync + 'static,
+    {
+        self.model_refresh = Some(Box::new(refresh));
         self
     }
 
@@ -1643,6 +1662,37 @@ impl AgentLoop {
                 println!("{}", json);
             }
         }
+    }
+
+    fn refresh_model_for_turn(&mut self) -> Result<()> {
+        let Some(refresh) = self.model_refresh.as_ref() else {
+            return Ok(());
+        };
+        let current_model = self.client.model().to_string();
+        let Some(next) = refresh(&current_model)? else {
+            return Ok(());
+        };
+
+        let tool_defs = self.tools.definitions();
+        let overhead = estimate_agent_overhead(
+            &self.system_prompt,
+            &tool_defs,
+            next.client.max_tokens(),
+            4.0,
+        );
+        self.context_budget = ContextBudget::with_window_size(next.client.context_window())
+            .with_overhead(overhead)
+            .with_model(next.client.model());
+        self.tool_output_channeler = self.output_log.parent().map(|agent_dir| {
+            super::channel::ToolOutputChanneler::for_context_window(
+                agent_dir.join("tool-outputs"),
+                next.client.context_window(),
+            )
+        });
+        self.supports_tools = next.supports_tools;
+        self.registry_entry = next.registry_entry;
+        self.client = next.client;
+        Ok(())
     }
 
     // ── Context window monitoring ───────────────────────────────────────────
@@ -2390,6 +2440,8 @@ impl AgentLoop {
 
             // Inject context warnings for OpenRouter models before API call
             let request_messages = self.inject_context_warnings(request_messages);
+
+            self.refresh_model_for_turn()?;
 
             let request = MessagesRequest {
                 model: self.client.model().to_string(),

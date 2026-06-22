@@ -25,7 +25,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::config::{Config, DispatchRole};
-use crate::executor::native::agent::AgentLoop;
+use crate::executor::native::agent::{AgentLoop, TurnModelRefresh};
 use crate::executor::native::provider::create_provider_ext_with_config;
 use crate::executor::native::tools::ToolRegistry;
 use crate::executor::native::tools::helper_routing::HelperRouting;
@@ -596,6 +596,41 @@ fn run_inner(
         && (chat_ref.is_some() || chat_id.is_some() || (autonomous && !eval_mode));
     if mount_chat_surface {
         agent = agent.with_chat_ref(state_dir.to_path_buf(), session_ref.clone(), resume_enabled);
+        let refresh_state_dir = state_dir.to_path_buf();
+        let refresh_session_ref = session_ref.clone();
+        let refresh_config = config.clone();
+        let refresh_config_val = config_val.clone();
+        let refresh_endpoint = endpoint_owned.clone();
+        let refresh_api_key = api_key.map(String::from);
+        let refresh_model_registry = model_registry.clone();
+        agent = agent.with_model_refresh(move |current_model| {
+            let Some(next_model) = crate::nex_runtime::chat_model_override_for_session(
+                &refresh_state_dir,
+                &refresh_session_ref,
+            ) else {
+                return Ok(None);
+            };
+            let next_model_id = crate::config::parse_model_spec(&next_model).model_id;
+            if next_model == current_model || next_model_id == current_model {
+                return Ok(None);
+            }
+            let client = create_provider_ext_with_config(
+                &refresh_state_dir,
+                &refresh_config,
+                refresh_config_val.as_ref(),
+                &next_model,
+                None,
+                refresh_endpoint.as_deref(),
+                refresh_api_key.as_deref(),
+            )?;
+            let supports_tools = refresh_model_registry.supports_tool_use(&next_model);
+            let registry_entry = refresh_config.registry_lookup(&next_model);
+            Ok(Some(TurnModelRefresh {
+                client,
+                supports_tools,
+                registry_entry,
+            }))
+        });
     }
     if autonomous {
         agent = agent.with_autonomous(true);

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NexRuntimeMode {
@@ -274,6 +275,41 @@ pub fn load_model_registry(runtime: &NexRuntime) -> crate::models::ModelRegistry
         }
     }
     merged
+}
+
+pub fn chat_id_from_session_ref(session_ref: &str) -> Option<u32> {
+    session_ref
+        .strip_prefix("chat-")
+        .or_else(|| session_ref.strip_prefix("coordinator-"))
+        .unwrap_or(session_ref)
+        .parse()
+        .ok()
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCoordinatorState {
+    #[serde(default)]
+    model_override: Option<String>,
+}
+
+pub fn chat_model_override_for_session(state_root: &Path, session_ref: &str) -> Option<String> {
+    let chat_id = chat_id_from_session_ref(session_ref)?;
+    let per_id_path = state_root
+        .join("service")
+        .join(format!("coordinator-state-{}.json", chat_id));
+    let legacy_path = state_root.join("service").join("coordinator-state.json");
+    let path = if per_id_path.exists() {
+        per_id_path
+    } else if chat_id == 0 && legacy_path.exists() {
+        legacy_path
+    } else {
+        return None;
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ChatCoordinatorState>(&raw).ok())
+        .and_then(|state| state.model_override)
+        .filter(|model| !model.trim().is_empty())
 }
 
 pub fn session_dir_for_ref(runtime: &NexRuntime, session_ref: &str) -> PathBuf {

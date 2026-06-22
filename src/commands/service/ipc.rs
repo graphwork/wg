@@ -11,10 +11,11 @@ use std::os::unix::net::UnixStream;
 
 use worksgood::config::Config;
 use worksgood::cron::{calculate_next_fire, parse_cron_expression};
-use worksgood::dispatch::ExecutorKind;
+use worksgood::dispatch::{ExecutorKind, handler_for_model};
 use worksgood::graph::{Node, PRIORITY_DEFAULT, PRIORITY_HIGH, Status, Task};
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::registry::AgentRegistry;
+use worksgood::session_lock::HandlerKind;
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
 use crate::commands::graph_path;
@@ -1919,6 +1920,7 @@ fn handle_set_coordinator_executor(
         return IpcResponse::error(&msg);
     }
 
+    let previous_state = super::CoordinatorState::load_or_default_for(dir, coordinator_id);
     let mut state = super::CoordinatorState::load_or_default_for(dir, coordinator_id);
     if let Some(e) = executor {
         state.executor_override = Some(e.to_string());
@@ -1930,17 +1932,21 @@ fn handle_set_coordinator_executor(
 
     // Signal the live handler to exit so the supervisor respawns
     // with the new executor_override in effect.
-    let chat_dir = dir
-        .join("chat")
-        .join(format!("coordinator-{}", coordinator_id));
+    let chat_ref = worksgood::chat_id::format_chat_session_ref(coordinator_id);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
     let mut handler_pid: Option<u32> = None;
+    let mut warm_swap = false;
     if let Ok(Some(info)) = worksgood::session_lock::read_holder(&chat_dir)
         && info.alive
     {
-        handler_pid = Some(info.pid);
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(info.pid as i32, libc::SIGTERM);
+        warm_swap =
+            should_warm_swap_chat_executor(info.kind, &previous_state, &state, executor, model);
+        if !warm_swap {
+            handler_pid = Some(info.pid);
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(info.pid as i32, libc::SIGTERM);
+            }
         }
     }
 
@@ -1949,8 +1955,55 @@ fn handle_set_coordinator_executor(
         "executor": executor,
         "model": model,
         "signaled_pid": handler_pid,
-        "note": "supervisor will respawn the handler with the new settings",
+        "warm_swap": warm_swap,
+        "note": if warm_swap {
+            "live nex handler will pick up the model override on its next turn"
+        } else {
+            "supervisor will respawn the handler with the new settings"
+        },
     }))
+}
+
+fn should_warm_swap_chat_executor(
+    live_handler_kind: Option<HandlerKind>,
+    previous_state: &CoordinatorState,
+    next_state: &CoordinatorState,
+    requested_executor: Option<&str>,
+    requested_model: Option<&str>,
+) -> bool {
+    let old_kind = live_handler_kind
+        .and_then(executor_kind_for_handler_kind)
+        .or_else(|| {
+            chat_executor_kind(
+                previous_state.executor_override.as_deref(),
+                previous_state.model_override.as_deref(),
+            )
+        });
+    let next_kind = requested_executor
+        .and_then(ExecutorKind::from_str)
+        .or_else(|| requested_model.map(handler_for_model))
+        .or_else(|| {
+            chat_executor_kind(
+                next_state.executor_override.as_deref(),
+                next_state.model_override.as_deref(),
+            )
+        });
+    old_kind == Some(ExecutorKind::Native) && next_kind == Some(ExecutorKind::Native)
+}
+
+fn executor_kind_for_handler_kind(kind: HandlerKind) -> Option<ExecutorKind> {
+    match kind {
+        HandlerKind::InteractiveNex | HandlerKind::AutonomousNex | HandlerKind::ChatNex => {
+            Some(ExecutorKind::Native)
+        }
+        HandlerKind::Adapter | HandlerKind::TuiPty => None,
+    }
+}
+
+fn chat_executor_kind(executor: Option<&str>, model: Option<&str>) -> Option<ExecutorKind> {
+    executor
+        .and_then(ExecutorKind::from_str)
+        .or_else(|| model.map(handler_for_model))
 }
 
 fn worker_only_live_chat_executor_error(executor: Option<&str>) -> Option<String> {
@@ -2091,6 +2144,56 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_nex_warm_swap_skips_sigterm_same_kind() {
+        let previous = CoordinatorState {
+            executor_override: Some("native".to_string()),
+            model_override: Some("nex:qwen3-coder".to_string()),
+            ..Default::default()
+        };
+        let next_nex = CoordinatorState {
+            executor_override: Some("native".to_string()),
+            model_override: Some("nex:deepseek-coder".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            should_warm_swap_chat_executor(
+                Some(HandlerKind::ChatNex),
+                &previous,
+                &next_nex,
+                Some("native"),
+                Some("nex:deepseek-coder"),
+            ),
+            "nex-to-nex model switches should stay warm and skip SIGTERM"
+        );
+
+        let next_claude = CoordinatorState {
+            executor_override: Some("claude".to_string()),
+            model_override: Some("claude:opus".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !should_warm_swap_chat_executor(
+                Some(HandlerKind::ChatNex),
+                &previous,
+                &next_claude,
+                Some("claude"),
+                Some("claude:opus"),
+            ),
+            "nex-to-claude changes must cold-respawn the live handler"
+        );
+        assert!(
+            !should_warm_swap_chat_executor(
+                Some(HandlerKind::ChatNex),
+                &previous,
+                &next_claude,
+                None,
+                Some("claude:opus"),
+            ),
+            "model-only nex-to-claude changes must still cold-respawn"
+        );
+    }
 
     #[test]
     fn test_ipc_request_serialization() {
