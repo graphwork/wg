@@ -3429,6 +3429,25 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
+    if app.chat_model_picker.is_some() {
+        let full = frame.area();
+        let width = full.width.saturating_sub(4).clamp(44, 96).min(full.width);
+        let height = full.height.saturating_sub(2).clamp(12, 20).min(full.height);
+        let mx = full.x + full.width.saturating_sub(width) / 2;
+        let my = full.y + full.height.saturating_sub(height) / 2;
+        let modal = Rect::new(mx, my, width, height);
+        frame.render_widget(Clear, modal);
+        let block = Block::default().borders(Borders::ALL).border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+        let inner = block.inner(modal);
+        frame.render_widget(block, modal);
+        draw_chat_model_picker(frame, app, inner);
+        return;
+    }
+
     let msg_area = Rect {
         x: area.x,
         y: area.y + tab_bar_height,
@@ -7474,6 +7493,114 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
     frame.render_widget(paragraph, area);
 }
 
+pub(crate) fn draw_chat_model_picker(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let is_light = app.is_light_theme;
+    let (query, executor, selected, suggestions, applying, last_error) =
+        match app.chat_model_picker.as_ref() {
+            Some(picker) => (
+                picker.query.clone(),
+                picker.executor.clone(),
+                picker.selected,
+                picker.filtered_suggestions(),
+                picker.applying,
+                picker.last_error.clone(),
+            ),
+            None => return,
+        };
+
+    let mut lines: Vec<Line> = Vec::new();
+    let title = if applying {
+        "  Applying /model..."
+    } else {
+        "  /model"
+    };
+    lines.push(Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Chat {}  executor: {}",
+            app.active_coordinator_id, executor
+        ),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    if let Some(err) = last_error {
+        let max = area.width.saturating_sub(6) as usize;
+        let truncated: String = err.chars().take(max.max(20)).collect();
+        lines.push(Line::from(Span::styled(
+            format!("  Error: {}", truncated),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    let cursor = if applying { "" } else { "\u{2588}" };
+    let query_text = if query.is_empty() {
+        cursor.to_string()
+    } else {
+        format!("{}{}", query, cursor)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Search: ", Style::default().fg(text_primary(is_light))),
+        Span::styled(query_text, Style::default().fg(Color::Yellow)),
+    ]));
+    lines.push(Line::from(""));
+
+    if suggestions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching models",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let max_rows = area.height.saturating_sub(7).max(1) as usize;
+        let sel = selected.min(suggestions.len().saturating_sub(1));
+        let start = if sel >= max_rows {
+            sel + 1 - max_rows
+        } else {
+            0
+        };
+        let end = (start + max_rows).min(suggestions.len());
+        for (i, sug) in suggestions[start..end].iter().enumerate() {
+            let idx = start + i;
+            let is_sel = idx == sel;
+            let bullet = if is_sel { "\u{25c9}" } else { "\u{25cb}" };
+            let row_style = if is_sel {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_primary(is_light))
+            };
+            let mut row = vec![
+                Span::styled(format!("  {} ", bullet), row_style),
+                Span::styled(sug.id.clone(), row_style),
+            ];
+            let mut detail = String::new();
+            if !sug.provider.is_empty() {
+                detail.push_str(&format!("  ({})", sug.provider));
+            }
+            if !sug.source.is_empty() {
+                detail.push_str(&format!("  [{}]", sug.source));
+            }
+            if !detail.is_empty() {
+                row.push(Span::styled(detail, Style::default().fg(Color::DarkGray)));
+            }
+            lines.push(Line::from(row));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter apply  ·  ↑↓ pick  ·  type to filter  ·  Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 /// Draw a text prompt overlay (fail reason, message, edit description).
 /// Returns the overlay area for mouse hit-testing.
 fn draw_text_prompt(
@@ -7907,6 +8034,17 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 ("Enter", "accept"),
                 ("Esc", "cancel"),
                 ("C-a", "all history"),
+            ],
+        ),
+        InputMode::ChatModelPicker => (
+            "0:Chat",
+            "MODEL",
+            Color::Cyan,
+            vec![
+                ("↑↓", "pick"),
+                ("Enter", "apply"),
+                ("type", "filter"),
+                ("Esc", "cancel"),
             ],
         ),
         InputMode::ChatInput => {

@@ -184,6 +184,15 @@ description = "Live PTY guard for pi Axis-2 hosting: a fake pi launched directly
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_chat_model_picker_pty"
+script = "scenarios/tui_chat_model_picker_pty.sh"
+owners = [
+    "pi-plugin-impl-tui-model-picker",
+]
+description = "Live PTY guard for the WG-native chat `/model` picker: drives `wg tui` in tmux, types `/model`, filters and selects a model, and asserts the SetChatExecutor-backed `wg chat model` path writes per-chat CoordinatorState."
+timeout_seconds = 60
+
+[[scenario]]
 name = "executor_arena_surfaces"
 script = "scenarios/executor_arena_surfaces.sh"
 owners = [

@@ -841,6 +841,8 @@ pub enum InputMode {
     SettingsEdit,
     /// Chat search mode (/ key in chat tab). Keys go to chat search input.
     ChatSearch,
+    /// Chat-scoped model picker opened by typing `/model` in the chat pane.
+    ChatModelPicker,
     /// Full-pane coordinator launcher (replaces chat view area).
     Launcher,
     /// Scroll mode on the active chat PTY pane (Ctrl+] toggle).
@@ -1331,6 +1333,69 @@ pub struct ModelSuggestion {
     /// Short source/tier label shown as secondary detail
     /// ("frontier", "mid", "budget", "recent", "endpoint", "curated").
     pub source: String,
+}
+
+/// Chat-scoped `/model` picker.
+///
+/// This reuses the launcher's model suggestion source but always normalizes
+/// against the active chat's current executor. Accepting a row dispatches
+/// `wg chat model <chat> <spec>`, which is the same SetChatExecutor-backed
+/// path as the CLI `chat model` verb.
+#[derive(Clone, Debug)]
+pub struct ChatModelPickerState {
+    pub query: String,
+    pub suggestions: Vec<ModelSuggestion>,
+    pub selected: usize,
+    pub executor: String,
+    pub applying: bool,
+    pub last_error: Option<String>,
+}
+
+impl ChatModelPickerState {
+    pub fn filtered_suggestions(&self) -> Vec<ModelSuggestion> {
+        let q = self.query.trim();
+        let mut scored: Vec<(i64, usize, ModelSuggestion)> = self
+            .suggestions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let hay = format!("{} {} {}", s.id, s.provider, s.source);
+                let base = fuzzy_match_score(&hay, q)?;
+                Some((
+                    base + executor_model_boost(&s.provider, &self.executor),
+                    i,
+                    s.clone(),
+                ))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, s)| s).collect()
+    }
+
+    pub fn highlighted_suggestion(&self) -> Option<ModelSuggestion> {
+        let filtered = self.filtered_suggestions();
+        if filtered.is_empty() {
+            return None;
+        }
+        filtered
+            .get(self.selected.min(filtered.len().saturating_sub(1)))
+            .cloned()
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = self.filtered_suggestions().len();
+        if len == 0 {
+            self.selected = 0;
+            return;
+        }
+        let cur = self.selected.min(len.saturating_sub(1)) as isize;
+        self.selected = (cur + delta).clamp(0, len as isize - 1) as usize;
+    }
+
+    pub fn highlighted_model_spec(&self) -> Option<String> {
+        self.highlighted_suggestion()
+            .map(|s| normalize_model_for_executor(&s.id, &s.provider, &self.executor))
+    }
 }
 
 /// A curated, network-free set of popular OpenRouter model routes used to
@@ -5546,6 +5611,8 @@ pub enum CommandEffect {
     InterruptCoordinator(u32),
     /// An endpoint connectivity test completed. String is the endpoint name.
     EndpointTest(String),
+    /// A chat model switch completed. Tuple is `(chat_id, model_spec)`.
+    SetChatModel(u32, String),
 }
 
 /// Text prompt state (shared input buffer for fail reason, message, etc.)
@@ -5977,6 +6044,8 @@ pub struct VizApp {
     // ── Coordinator launcher ──
     /// Full-pane launcher state (replaces chat view when Some).
     pub launcher: Option<LauncherState>,
+    /// Chat-scoped `/model` picker state.
+    pub chat_model_picker: Option<ChatModelPickerState>,
     /// The full launcher pane area from the last render frame (for mouse hit-test).
     pub last_launcher_area: Rect,
     /// Hit area for the launcher's Name field (single line).
@@ -6565,6 +6634,7 @@ impl VizApp {
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
             chat_manager: None,
+            chat_model_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -11331,6 +11401,7 @@ impl VizApp {
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
             chat_manager: None,
+            chat_model_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -12095,6 +12166,32 @@ impl VizApp {
                         self.config_panel
                             .endpoint_test_results
                             .insert(ep_name, EndpointTestStatus::Error(err_msg));
+                    }
+                }
+                CommandEffect::SetChatModel(cid, model) => {
+                    if result.success {
+                        self.chat_model_picker = None;
+                        self.input_mode = InputMode::Normal;
+                        self.force_refresh();
+                        self.push_toast(
+                            format!("Chat {} model set to {}", cid, model),
+                            ToastSeverity::Info,
+                        );
+                    } else {
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if let Some(picker) = self.chat_model_picker.as_mut() {
+                            picker.applying = false;
+                            picker.last_error = Some(err.clone());
+                        }
+                        self.push_toast(
+                            format!("Failed to set chat model: {}", err),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
             }
@@ -15604,6 +15701,78 @@ impl VizApp {
     /// Close the launcher pane without creating a coordinator.
     pub fn close_launcher(&mut self) {
         self.launcher = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Open the chat-scoped `/model` picker for the active WG-native chat pane.
+    pub fn open_chat_model_picker(&mut self) {
+        if self.right_panel_tab != RightPanelTab::Chat {
+            return;
+        }
+
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let (executor, _) = resolve_chat_pty_executor_and_model(
+            &self.workgraph_dir,
+            &config,
+            self.active_coordinator_id,
+        );
+        if executor == "pi" {
+            self.push_toast(
+                "Use pi /model in pi-native panes".to_string(),
+                ToastSeverity::Info,
+            );
+            return;
+        }
+
+        let registry =
+            worksgood::models::ModelRegistry::load(&self.workgraph_dir).unwrap_or_default();
+        let recent_models = worksgood::launcher_history::recent_models(20).unwrap_or_default();
+        let suggestions = build_model_suggestions(&config, &registry, &recent_models);
+
+        self.chat_model_picker = Some(ChatModelPickerState {
+            query: String::new(),
+            suggestions,
+            selected: 0,
+            executor,
+            applying: false,
+            last_error: None,
+        });
+        self.input_mode = InputMode::ChatModelPicker;
+    }
+
+    /// Apply the highlighted `/model` picker row through `wg chat model`.
+    pub fn apply_chat_model_picker(&mut self) {
+        let cid = self.active_coordinator_id;
+        let Some(spec) = self
+            .chat_model_picker
+            .as_ref()
+            .and_then(|picker| picker.highlighted_model_spec())
+        else {
+            if let Some(picker) = self.chat_model_picker.as_mut() {
+                picker.last_error = Some("No matching model".to_string());
+            }
+            return;
+        };
+
+        if let Some(picker) = self.chat_model_picker.as_mut() {
+            picker.applying = true;
+            picker.last_error = None;
+        }
+
+        self.exec_command(
+            vec![
+                "chat".to_string(),
+                "model".to_string(),
+                cid.to_string(),
+                spec.clone(),
+                "--json".to_string(),
+            ],
+            CommandEffect::SetChatModel(cid, spec),
+        );
+    }
+
+    pub fn close_chat_model_picker(&mut self) {
+        self.chat_model_picker = None;
         self.input_mode = InputMode::Normal;
     }
 

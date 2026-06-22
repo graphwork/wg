@@ -867,6 +867,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::CoordinatorPicker => handle_coordinator_picker_input(app, code),
         InputMode::ChatManager => handle_chat_manager_input(app, code, modifiers),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
+        InputMode::ChatModelPicker => handle_chat_model_picker_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
         InputMode::SettingsEdit => handle_settings_edit_input(app, code, modifiers),
@@ -1010,6 +1011,16 @@ fn handle_paste(app: &mut VizApp, text: &str) {
                 }
             }
         }
+        InputMode::ChatModelPicker => {
+            let clean: String = text
+                .chars()
+                .filter(|c| is_safe_launcher_field_char(*c))
+                .collect();
+            if let Some(picker) = app.chat_model_picker.as_mut() {
+                picker.query.push_str(&clean);
+                picker.selected = 0;
+            }
+        }
         _ => {} // Normal/Confirm modes: ignore paste
     }
 }
@@ -1074,9 +1085,14 @@ fn handle_chat_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Enter => {
-            // Accept search — keep highlights, return to normal mode.
-            // n/N will still navigate matches.
-            app.input_mode = InputMode::Normal;
+            if app.chat.search.query.trim() == "model" {
+                app.clear_chat_search();
+                app.open_chat_model_picker();
+            } else {
+                // Accept search — keep highlights, return to normal mode.
+                // n/N will still navigate matches.
+                app.input_mode = InputMode::Normal;
+            }
         }
         KeyCode::Backspace | KeyCode::Delete => {
             app.chat.search.query.pop();
@@ -2037,7 +2053,11 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 let text = editor_text(&app.chat.editor);
                 editor_clear(&mut app.chat.editor);
                 if !text.trim().is_empty() {
-                    app.send_chat_message(text);
+                    if text.trim() == "/model" {
+                        app.open_chat_model_picker();
+                    } else {
+                        app.send_chat_message(text);
+                    }
                 }
             }
             return;
@@ -2100,6 +2120,34 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         crossterm::event::KeyEvent::new(code, modifiers),
         &mut app.chat.editor,
     );
+}
+
+fn handle_chat_model_picker_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    let Some(picker) = app.chat_model_picker.as_mut() else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    if picker.applying {
+        return;
+    }
+
+    match code {
+        KeyCode::Esc => app.close_chat_model_picker(),
+        KeyCode::Up | KeyCode::Char('k') => picker.move_selection(-1),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_selection(1),
+        KeyCode::Enter => app.apply_chat_model_picker(),
+        KeyCode::Backspace => {
+            picker.query.pop();
+            picker.selected = 0;
+        }
+        KeyCode::Char(c)
+            if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
+        {
+            picker.query.push(c);
+            picker.selected = 0;
+        }
+        _ => {}
+    }
 }
 
 fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
@@ -2195,6 +2243,16 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // docs/bugs/tui-keymap-routing.md §6 Option A).
     if is_ctrl_chord(code, modifiers, 'o') && app.right_panel_tab == RightPanelTab::Chat {
         toggle_chat_pty_mode(app);
+        return;
+    }
+    if code == KeyCode::Char('/')
+        && modifiers.is_empty()
+        && app.right_panel_tab == RightPanelTab::Chat
+    {
+        app.input_mode = InputMode::ChatSearch;
+        app.chat.search.query.clear();
+        app.chat.search.current_match = None;
+        app.chat.search.matches.clear();
         return;
     }
     // Global chat-tab navigation: works regardless of focused_panel so
