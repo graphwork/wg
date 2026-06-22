@@ -1868,6 +1868,19 @@ fn main() -> Result<()> {
                     ChatCommands::Send { chat, message } => {
                         commands::chat_cmd::run_send(&workgraph_dir, &chat, &message, cli.json)
                     }
+                    ChatCommands::Model {
+                        chat,
+                        spec,
+                        cycle,
+                        warm_pi_writeback,
+                    } => commands::chat_cmd::run_model(
+                        &workgraph_dir,
+                        &chat,
+                        spec.as_deref(),
+                        cycle,
+                        warm_pi_writeback,
+                        cli.json,
+                    ),
                     ChatCommands::Stop { chat } => {
                         commands::chat_cmd::run_stop(&workgraph_dir, &chat, cli.json)
                     }

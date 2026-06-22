@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use worksgood::chat_id;
+use worksgood::dispatch::{ExecutorKind, handler_for_model};
 use worksgood::graph::{Status, WorkGraph};
 
 use crate::commands::graph_path;
@@ -522,6 +523,180 @@ pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Resul
 }
 
 // ============================================================================
+// Subcommand: model
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatModelSwitchAction {
+    /// Route through the existing SetChatExecutor IPC. This is the normal
+    /// cold-switch path: persist overrides, signal the handler, supervisor
+    /// respawns through spawn-task. History lives in inbox/outbox JSONL.
+    SetChatExecutor {
+        chat_id: u32,
+        executor: String,
+        model: String,
+    },
+    /// Pi's plugin has already performed a warm in-process `setModel`; WG only
+    /// records the new identity so a future respawn resumes on the same route.
+    WarmPiWriteBack {
+        chat_id: u32,
+        executor: String,
+        model: String,
+    },
+}
+
+fn current_chat_executor_kind(dir: &Path, graph: &WorkGraph, cid: u32) -> Option<ExecutorKind> {
+    let state = crate::commands::service::CoordinatorState::load_for(dir, cid);
+    if let Some(kind) = state
+        .as_ref()
+        .and_then(|s| s.executor_override.as_deref())
+        .and_then(ExecutorKind::from_str)
+    {
+        return Some(kind);
+    }
+
+    let task = chat_id::find_chat_task(graph, cid)?;
+    if let Some(kind) = task
+        .executor_preset_name
+        .as_deref()
+        .and_then(ExecutorKind::from_str)
+    {
+        return Some(kind);
+    }
+
+    state
+        .as_ref()
+        .and_then(|s| s.model_override.as_deref())
+        .or(task.model.as_deref())
+        .map(handler_for_model)
+}
+
+pub(crate) fn plan_chat_model_switch(
+    dir: &Path,
+    graph: &WorkGraph,
+    cid: u32,
+    spec: &str,
+    warm_pi_writeback: bool,
+) -> ChatModelSwitchAction {
+    let next_kind = handler_for_model(spec);
+    let executor = next_kind.as_str().to_string();
+    let current_kind = current_chat_executor_kind(dir, graph, cid);
+    if warm_pi_writeback && current_kind == Some(ExecutorKind::Pi) && next_kind == ExecutorKind::Pi
+    {
+        ChatModelSwitchAction::WarmPiWriteBack {
+            chat_id: cid,
+            executor,
+            model: spec.to_string(),
+        }
+    } else {
+        ChatModelSwitchAction::SetChatExecutor {
+            chat_id: cid,
+            executor,
+            model: spec.to_string(),
+        }
+    }
+}
+
+fn persist_chat_model_override(dir: &Path, cid: u32, executor: &str, model: &str) {
+    let mut state = crate::commands::service::CoordinatorState::load_or_default_for(dir, cid);
+    state.executor_override = Some(executor.to_string());
+    state.model_override = Some(model.to_string());
+    state.save_for(dir, cid);
+}
+
+/// `wg chat model <ref> <spec>` — switch both model and implied handler.
+///
+/// Cold swaps reuse the existing SetChatExecutor IPC. For Pi plugin
+/// `model_select` write-backs, pi has already performed a native in-session
+/// `setModel`, so WG records the override without killing the live handler.
+pub fn run_model(
+    dir: &Path,
+    reference: &str,
+    spec: Option<&str>,
+    cycle: bool,
+    warm_pi_writeback: bool,
+    json: bool,
+) -> Result<()> {
+    let graph =
+        worksgood::parser::load_graph(graph_path(dir)).with_context(|| "Failed to load graph")?;
+    let cid = resolve_chat_id(&graph, reference)
+        .with_context(|| format!("No chat matching '{}'", reference))?;
+    let spec = if cycle {
+        anyhow::bail!(
+            "wg chat model --cycle requires a configured chat model rotation list; \
+             pass an explicit model spec for now"
+        );
+    } else {
+        spec.with_context(|| "missing model spec; usage: wg chat model <chat> <spec>")?
+    };
+    if spec.trim().is_empty() {
+        anyhow::bail!("model spec must not be empty");
+    }
+
+    match plan_chat_model_switch(dir, &graph, cid, spec, warm_pi_writeback) {
+        ChatModelSwitchAction::WarmPiWriteBack {
+            chat_id,
+            executor,
+            model,
+        } => {
+            persist_chat_model_override(dir, chat_id, &executor, &model);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "chat_id": chat_id,
+                        "executor": executor,
+                        "model": model,
+                        "warm": true,
+                        "note": "pi plugin setModel already updated the live session; override recorded for future respawns",
+                    }))?
+                );
+            } else {
+                println!(
+                    "Chat {} model recorded for warm pi session.\n  executor = {}\n  model    = {}",
+                    chat_id, executor, model
+                );
+            }
+        }
+        ChatModelSwitchAction::SetChatExecutor {
+            chat_id,
+            executor,
+            model,
+        } => {
+            if service_is_running(dir) {
+                crate::commands::service::run_set_coordinator_executor(
+                    dir,
+                    chat_id,
+                    Some(&executor),
+                    Some(&model),
+                    json,
+                )?;
+            } else {
+                persist_chat_model_override(dir, chat_id, &executor, &model);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "chat_id": chat_id,
+                            "executor": executor,
+                            "model": model,
+                            "service_running": false,
+                            "note": "service is stopped; override recorded and will apply on next supervisor start",
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "Chat {} model override recorded. Service is stopped; it will apply on next start.\n  executor = {}\n  model    = {}",
+                        chat_id, executor, model
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
 // Subcommand: stop / resume / archive / delete
 // ============================================================================
 
@@ -995,6 +1170,112 @@ mod tests {
             contents.contains("hi from test"),
             "inbox.jsonl should contain the message: {}",
             contents
+        );
+    }
+
+    #[test]
+    fn test_chat_model_sets_both_overrides() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(dir, Some("bot"), None, None, None, None, true).unwrap();
+
+        run_model(dir, "0", Some("codex:gpt-5.5"), false, false, true).unwrap();
+
+        let state = crate::commands::service::CoordinatorState::load_for(dir, 0)
+            .expect("chat model should persist per-chat coordinator state");
+        assert_eq!(state.executor_override.as_deref(), Some("codex"));
+        assert_eq!(state.model_override.as_deref(), Some("codex:gpt-5.5"));
+    }
+
+    #[test]
+    fn chat_model_preserves_inbox_and_outbox_jsonl() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(dir, Some("bot"), None, None, None, None, true).unwrap();
+        let chat_dir = worksgood::chat::chat_dir_for_ref(dir, "0");
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        let inbox = chat_dir.join("inbox.jsonl");
+        let outbox = chat_dir.join("outbox.jsonl");
+        std::fs::write(&inbox, "{\"content\":\"hello\"}\n").unwrap();
+        std::fs::write(&outbox, "{\"content\":\"hi\"}\n").unwrap();
+
+        run_model(dir, "0", Some("codex:gpt-5.5"), false, false, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&inbox).unwrap(),
+            "{\"content\":\"hello\"}\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outbox).unwrap(),
+            "{\"content\":\"hi\"}\n"
+        );
+    }
+
+    #[test]
+    fn chat_model_pi_to_pi_ordinary_cli_uses_set_chat_executor_branch() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-4".to_string(),
+            title: "Chat 4".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
+            executor_preset_name: Some("pi".to_string()),
+            model: Some("pi:openrouter/anthropic/claude-3.5-haiku".to_string()),
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+
+        let action = plan_chat_model_switch(
+            dir,
+            &graph,
+            4,
+            "pi:openrouter/anthropic/claude-opus-4-7",
+            false,
+        );
+
+        assert_eq!(
+            action,
+            ChatModelSwitchAction::SetChatExecutor {
+                chat_id: 4,
+                executor: "pi".to_string(),
+                model: "pi:openrouter/anthropic/claude-opus-4-7".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn chat_model_pi_plugin_writeback_uses_warm_branch() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-4".to_string(),
+            title: "Chat 4".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![chat_id::CHAT_LOOP_TAG.to_string()],
+            executor_preset_name: Some("pi".to_string()),
+            model: Some("pi:openrouter/anthropic/claude-3.5-haiku".to_string()),
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &graph_path(dir)).unwrap();
+
+        let action = plan_chat_model_switch(
+            dir,
+            &graph,
+            4,
+            "pi:openrouter/anthropic/claude-opus-4-7",
+            true,
+        );
+
+        assert_eq!(
+            action,
+            ChatModelSwitchAction::WarmPiWriteBack {
+                chat_id: 4,
+                executor: "pi".to_string(),
+                model: "pi:openrouter/anthropic/claude-opus-4-7".to_string(),
+            }
         );
     }
 

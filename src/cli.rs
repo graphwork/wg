@@ -4197,6 +4197,23 @@ pub enum ChatCommands {
         message: String,
     },
 
+    /// Switch a chat to a model spec, deriving the handler from the model prefix.
+    Model {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+        /// New model spec (e.g. `codex:gpt-5.5`,
+        /// `pi:openrouter/anthropic/claude-3.5-haiku`).
+        spec: Option<String>,
+        /// Rotate to the next configured model. Reserved for the Pi-style
+        /// cycle-model UX; requires a configured model list.
+        #[arg(long, conflicts_with = "spec")]
+        cycle: bool,
+        /// Internal: record a pi plugin model_select write-back after pi has
+        /// already performed a warm setModel.
+        #[arg(long = "warm-pi-writeback", hide = true)]
+        warm_pi_writeback: bool,
+    },
+
     /// SIGTERM the live handler (chat entity stays in graph). Reversible
     /// via `wg chat resume`. Requires the service daemon.
     Stop {
