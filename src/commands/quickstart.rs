@@ -909,8 +909,8 @@ fn json_output() -> serde_json::Value {
             "create": "wg profile create <name>",
             "edit": "wg profile edit <name>",
             "diff": "wg profile diff <a> <b>",
-            "init_starters": "wg profile init-starters (writes built-in starters: claude, codex, nex)",
-            "starters": ["claude (opus worker)", "codex (gpt-5.5)", "nex (in-process endpoint)"]
+            "init_starters": "wg profile init-starters (writes built-in starters: claude, codex, nex, opencode, pi)",
+            "starters": ["claude (opus worker)", "codex (gpt-5.5)", "nex (in-process endpoint)", "opencode (openrouter workers)", "pi (pi coding agent)"]
         },
         "secrets": {
             "description": "Manage credentials in a backend (keyring | keystore | plaintext) plus passthrough URI schemes (op:// pass: env: literal:).",

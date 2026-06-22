@@ -1,0 +1,78 @@
+description = "Pi Coding Agent: openrouter/anthropic/claude-3.5-haiku workers, claude-sonnet-4 premium tier, claude:haiku for agency meta-tasks"
+
+# Pi routes for worker/chat roles. The verified-working default is
+# `pi:openrouter/anthropic/claude-3.5-haiku` (the only id confirmed live in the
+# prior pi-as-executor evals); the `premium` tier escalates to claude-sonnet-4
+# for complex-reasoning / verification spawns (WG_TIER=premium).
+
+[agent]
+model = "pi:openrouter/anthropic/claude-3.5-haiku"
+
+[dispatcher]
+model = "pi:openrouter/anthropic/claude-3.5-haiku"
+max_agents = 8
+
+[tiers]
+fast = "pi:openrouter/anthropic/claude-3.5-haiku"
+standard = "pi:openrouter/anthropic/claude-3.5-haiku"
+premium = "pi:openrouter/anthropic/claude-sonnet-4"
+
+[models.default]
+model = "pi:openrouter/anthropic/claude-3.5-haiku"
+
+[models.task_agent]
+model = "pi:openrouter/anthropic/claude-3.5-haiku"
+
+# NOTE: agency tasks (.evaluate-*, .flip-*, .assign-*) are short one-shot LLM
+# calls pinned to claude:haiku by design (see CLAUDE.md "Agency tasks run on
+# claude CLI"). Pi is a worker/chat external handler and does NOT serve the
+# agency one-shot path, so these roles stay on the claude CLI handler.
+[models.evaluator]
+model = "claude:haiku"
+
+[models.assigner]
+model = "claude:haiku"
+
+[models.flip_inference]
+model = "claude:haiku"
+
+[models.flip_comparison]
+model = "claude:haiku"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLUGIN INSTALL / PLACEMENT (wg-pi-plugin)
+# ─────────────────────────────────────────────────────────────────────────────
+# Routing a `pi:` model spec to the pi handler is only half the integration:
+# pi gains its WG tools (`wg_ready`/`wg_show`/`wg_add`/`wg_done`/… and the `/wg`
+# command) from the `@worksgood/wg-pi-plugin` extension, which must be present in
+# the pi process WG spawns. There are three placement options (see
+# docs/pi-integration/integration-plan-v2.md §2.1 + §4):
+#
+# 1. GLOBAL extensions dir (Topology A — recommended, ship-first):
+#      ~/.pi/agent/extensions/
+#    Drop (or symlink) the built plugin bundle here and pi auto-loads it for
+#    every session. Global placement SIDESTEPS pi's project trust gate — no
+#    per-repo prompt — which is what we want for unattended WG-spawned workers.
+#    Equivalent ad-hoc forms: `pi -e <plugin>` on the spawn command line, or a
+#    `packages` entry in pi settings.
+#
+# 2. PROJECT extensions dir (per-repo, trust-gated):
+#      <repo>/.pi/extensions
+#    Pi only loads project-local extensions when the project is trusted
+#    (`project_trust`). Use this when you want the plugin version-locked to a
+#    checkout, but note the trust gate must be satisfied first or the plugin is
+#    silently skipped — avoid for headless workers that cannot answer a prompt.
+#
+# 3. NODE-HOST BUNDLE (Topology B — default for unattended workers/chat):
+#    WG spawns `node wg-pi-host.mjs` instead of the `pi` binary; the host loads
+#    the plugin in-process as a JS object via
+#      DefaultResourceLoader({ extensionFactories: [wgPlugin], eventBus })
+#    so there is no extensions-dir lookup and no terminal at all. This is the
+#    deterministic-version path (the bundle ships alongside the wg binary at
+#    pi-plugin/) and the clean event-bus ↔ WG-IPC bridge. Discovery accepts a
+#    `pi:` route satisfied by EITHER a `pi` binary (Topology A/C) OR Node +
+#    wg-pi-host + the plugin bundle (Topology B); see src/executor_discovery.rs.
+#
+# Topology C (attended front-end: a human runs `pi` directly and it drives WG)
+# relies on the SAME global auto-discovered plugin from option 1.
+# ─────────────────────────────────────────────────────────────────────────────
