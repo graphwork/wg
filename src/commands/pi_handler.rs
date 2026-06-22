@@ -43,6 +43,15 @@
 //! from this file or anything it transitively calls — diagnostics go to stderr
 //! or `handler.log`, and replies go to the chat outbox (file-based, like
 //! opencode). The child's stdout is captured via a pipe; its stderr inherits.
+//!
+//! ## `PI_NO_TUI`
+//!
+//! `PI_NO_TUI=1` remains a useful belt-and-suspenders upstream guard when a
+//! patched pi build is available, but WG does not rely on it for unattended
+//! workers. The Axis-2 fix here is structural: WG-spawned pi is hosted through
+//! terminal-host mode d (piped stdio, `--mode rpc`, no PTY), while explicit
+//! embedding uses terminal-host mode a/e so any raw-mode grab is contained in a
+//! private WG-owned PTY.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -56,6 +65,8 @@ use anyhow::{Context, Result};
 use worksgood::chat;
 use worksgood::executor_discovery::{self, PiNodeHost, PiRouteAvailability};
 use worksgood::session_lock::{HandlerKind, SessionLock};
+
+use crate::terminal_host::{HostedChild, PtyTerminalHost, TerminalHost, TerminalProfile};
 
 const INBOX_POLL: Duration = Duration::from_millis(200);
 /// How long to wait for the FIRST byte of a Node-host turn before giving up.
@@ -314,8 +325,9 @@ struct RpcTransport {
 }
 
 impl RpcTransport {
-    /// Spawn `pi --mode rpc` with the resolved provider/model and a per-chat
-    /// session dir (so a crash/restart resumes the same `--session-id`).
+    /// Spawn `pi --mode rpc` through [`PtyTerminalHost::open_protocol`] with
+    /// the resolved provider/model and a per-chat session dir (so a
+    /// crash/restart resumes the same `--session-id`).
     fn spawn(
         pi_binary: &Path,
         marg: &PiModelArg,
@@ -330,24 +342,22 @@ impl RpcTransport {
             pi_binary.display(),
             args.join(" ")
         ));
-        let mut cmd = Command::new(pi_binary);
-        cmd.args(&args);
-        // Piped stdio defeats the terminal takeover (Axis 2 (b)); stderr
-        // inherits so pi diagnostics reach our stderr / handler.log.
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::inherit());
-        // Credentials by env only — never --api-key. The provider key is
-        // expected to already be in the environment.
-        cmd.env("PI_CODING_AGENT_SESSION_DIR", session_dir);
-
-        let mut child = cmd.spawn().context("spawn `pi --mode rpc`")?;
-        let stdin = child.stdin.take().context("pi rpc stdin")?;
-        let stdout = child.stdout.take().context("pi rpc stdout")?;
+        let child = HostedChild::new(pi_binary.to_string_lossy().to_string())
+            .args(args)
+            // Credentials by env only — never --api-key. The provider key is
+            // expected to already be in the inherited environment.
+            .env([(
+                "PI_CODING_AGENT_SESSION_DIR",
+                session_dir.to_string_lossy().to_string(),
+            )]);
+        let mut host = PtyTerminalHost::new();
+        let channel = host
+            .open_protocol(child, &TerminalProfile::pi())
+            .context("spawn `pi --mode rpc` through terminal host")?;
         Ok(Self {
-            child,
-            stdin,
-            reader: BufReader::new(stdout),
+            child: channel.child,
+            stdin: channel.stdin,
+            reader: BufReader::new(channel.stdout),
             req_counter: 0,
             logger: logger.clone(),
         })

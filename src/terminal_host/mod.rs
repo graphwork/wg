@@ -34,6 +34,7 @@
 //! tasks flesh out.
 
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use portable_pty::PtySize;
 
@@ -211,9 +212,14 @@ pub struct CaptureSpec {}
 ///
 /// **Foundation placeholder.** Mirrors the worker-spawn result (pid, run dir,
 /// exit polling); fleshed out by `terminal-host-port-headless`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct DetachedHandle {}
+pub struct DetachedHandle {
+    /// The detached child process. Callers that need lifecycle supervision can
+    /// poll or terminate this handle; stdio has already been routed away from
+    /// WG's controlling terminal.
+    pub child: Child,
+}
 
 /// A framed JSONL/RPC channel to a piped child from
 /// [`TerminalHost::open_protocol`] (mode d).
@@ -221,9 +227,16 @@ pub struct DetachedHandle {}
 /// **Foundation placeholder.** The framing (LF-delimited `read_until`, reply
 /// extraction) is owned by `terminal-host-port-headless`; today's behavior
 /// lives in `opencode_handler.rs`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct RpcChannel {}
+pub struct RpcChannel {
+    /// The protocol child process.
+    pub child: Child,
+    /// Piped stdin for JSONL/RPC commands.
+    pub stdin: ChildStdin,
+    /// Piped stdout for JSONL/RPC events.
+    pub stdout: ChildStdout,
+}
 
 /// WG's outer terminal state, saved/restored around a [`TerminalHost::handoff`]
 /// (mode c).
@@ -303,7 +316,78 @@ impl PtyTerminalHost {
     pub fn new() -> Self {
         Self
     }
+
+    fn headless_child(&self, child: HostedChild, profile: &TerminalProfile) -> HostedChild {
+        let Some(flag) = profile.headless_flag.as_ref() else {
+            return child;
+        };
+        if flag.is_empty() || args_contain_sequence(&child.args, flag) {
+            return child;
+        }
+        let mut args = flag.clone();
+        args.extend(child.args);
+        HostedChild { args, ..child }
+    }
+
+    fn command_for(&self, child: &HostedChild) -> Command {
+        let (program, args, env, cwd) = child.spawn_args();
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd
+    }
 }
+
+fn args_contain_sequence(args: &[String], needle: &[String]) -> bool {
+    !needle.is_empty()
+        && args
+            .windows(needle.len())
+            .any(|window| window.iter().zip(needle).all(|(a, b)| a == b))
+}
+
+#[cfg(unix)]
+fn detach_command(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // The child must not share WG's process group. `setsid` is the desired
+    // headless shape; if it fails in an unusual launcher, the spawn fails
+    // rather than silently inheriting the interactive terminal.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_command(_cmd: &mut Command) {}
+
+#[cfg(target_os = "linux")]
+fn terminate_with_parent(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // Protocol children are long-lived. If WG is SIGTERM'd, Rust destructors do
+    // not run, so arrange for the kernel to terminate the child as well.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn terminate_with_parent(_cmd: &mut Command) {}
 
 impl TerminalHost for PtyTerminalHost {
     fn embed(
@@ -330,11 +414,18 @@ impl TerminalHost for PtyTerminalHost {
 
     fn run_headless(
         &mut self,
-        _child: HostedChild,
-        _profile: &TerminalProfile,
+        child: HostedChild,
+        profile: &TerminalProfile,
         _capture: CaptureSpec,
     ) -> Result<DetachedHandle, HostError> {
-        Err(HostError::Unsupported("run_headless (mode b)"))
+        let child = self.headless_child(child, profile);
+        let mut cmd = self.command_for(&child);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        detach_command(&mut cmd);
+        let child = cmd.spawn().map_err(|e| HostError::Spawn(e.into()))?;
+        Ok(DetachedHandle { child })
     }
 
     fn handoff(
@@ -348,10 +439,34 @@ impl TerminalHost for PtyTerminalHost {
 
     fn open_protocol(
         &mut self,
-        _child: HostedChild,
-        _profile: &TerminalProfile,
+        child: HostedChild,
+        profile: &TerminalProfile,
     ) -> Result<RpcChannel, HostError> {
-        Err(HostError::Unsupported("open_protocol (mode d)"))
+        if !profile.rpc_capable {
+            return Err(HostError::Unsupported(
+                "open_protocol (mode d) requires an RPC-capable profile",
+            ));
+        }
+        let child = self.headless_child(child, profile);
+        let mut cmd = self.command_for(&child);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::inherit());
+        terminate_with_parent(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| HostError::Spawn(e.into()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HostError::Spawn(anyhow::anyhow!("protocol child stdin missing")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| HostError::Spawn(anyhow::anyhow!("protocol child stdout missing")))?;
+        Ok(RpcChannel {
+            child,
+            stdin,
+            stdout,
+        })
     }
 
     fn host_fullscreen(
@@ -478,23 +593,15 @@ mod tests {
         assert!(!pi.sync_mode_repaints);
     }
 
-    /// The trait carries one method per mode; in the foundation only `embed`
-    /// is wired. The other four are explicit, well-typed `Unsupported` stubs
-    /// (owned by the §6 port-out track) — never silently no-op.
+    /// The trait carries one method per mode; this task wires the pi consumer's
+    /// headless/protocol modes while the unrelated terminal handoff/fullscreen
+    /// modes remain explicit, well-typed `Unsupported` stubs.
     #[test]
-    fn test_nonembed_modes_are_unsupported_in_foundation() {
+    fn test_modes_not_used_by_pi_remain_unsupported() {
         let mut host = PtyTerminalHost::new();
         let profile = TerminalProfile::pi();
         let spec = || HostedChild::new("/bin/true");
 
-        assert!(matches!(
-            host.run_headless(spec(), &profile, CaptureSpec::default()),
-            Err(HostError::Unsupported(_))
-        ));
-        assert!(matches!(
-            host.open_protocol(spec(), &profile),
-            Err(HostError::Unsupported(_))
-        ));
         let mut term = OuterTerminal::default();
         assert!(matches!(
             host.handoff(spec(), &profile, &mut term),
@@ -504,6 +611,110 @@ mod tests {
             host.host_fullscreen(spec(), &profile),
             Err(HostError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn test_arg_sequence_detection_for_headless_flag() {
+        let args = vec![
+            "--provider".to_string(),
+            "openrouter".to_string(),
+            "--mode".to_string(),
+            "rpc".to_string(),
+        ];
+        let flag = vec!["--mode".to_string(), "rpc".to_string()];
+        assert!(args_contain_sequence(&args, &flag));
+        assert!(!args_contain_sequence(&args, &["-p".to_string()]));
+    }
+
+    #[test]
+    fn test_headless_child_prepends_profile_flag_once() {
+        let host = PtyTerminalHost::new();
+        let profile = TerminalProfile::pi();
+        let child = host.headless_child(
+            HostedChild::new("pi").args(["--provider", "openrouter"]),
+            &profile,
+        );
+        assert_eq!(
+            child.args,
+            vec![
+                "--mode".to_string(),
+                "rpc".to_string(),
+                "--provider".to_string(),
+                "openrouter".to_string()
+            ]
+        );
+
+        let already_headless = host.headless_child(
+            HostedChild::new("pi").args(["--provider", "openrouter", "--mode", "rpc"]),
+            &profile,
+        );
+        assert_eq!(
+            already_headless.args,
+            vec![
+                "--provider".to_string(),
+                "openrouter".to_string(),
+                "--mode".to_string(),
+                "rpc".to_string()
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_open_protocol_pipes_stdio_and_adds_headless_flag() {
+        use std::io::Read;
+
+        let mut host = PtyTerminalHost::new();
+        let child = HostedChild::new("/bin/sh").args([
+            "-c",
+            "printf 'stdin_tty=%s stdout_tty=%s args=%s\\n' \
+             \"$([ -t 0 ] && echo yes || echo no)\" \
+             \"$([ -t 1 ] && echo yes || echo no)\" \"$*\"",
+            "sh",
+            "--mode",
+            "rpc",
+        ]);
+        let mut channel = host
+            .open_protocol(child, &TerminalProfile::pi())
+            .expect("open protocol should spawn with piped stdio");
+        drop(channel.stdin);
+        let mut output = String::new();
+        channel
+            .stdout
+            .read_to_string(&mut output)
+            .expect("read protocol output");
+        let status = channel.child.wait().expect("wait protocol child");
+        assert!(status.success(), "protocol child failed: {status:?}");
+        assert!(output.contains("stdin_tty=no"), "{output:?}");
+        assert!(output.contains("stdout_tty=no"), "{output:?}");
+        assert!(output.contains("args=--mode rpc"), "{output:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_headless_uses_null_stdio_and_headless_flag() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("headless.txt");
+        let script = format!(
+            "printf 'stdin_tty=%s stdout_tty=%s args=%s\\n' \
+             \"$([ -t 0 ] && echo yes || echo no)\" \
+             \"$([ -t 1 ] && echo yes || echo no)\" \"$*\" > {}",
+            marker.display()
+        );
+        let mut host = PtyTerminalHost::new();
+        let mut handle = host
+            .run_headless(
+                HostedChild::new("/bin/sh").args(["-c", &script, "sh", "--mode", "rpc"]),
+                &TerminalProfile::pi(),
+                CaptureSpec::default(),
+            )
+            .expect("run_headless should spawn");
+        let status = handle.child.wait().expect("wait headless child");
+        assert!(status.success(), "headless child failed: {status:?}");
+        let output = std::fs::read_to_string(marker).expect("marker");
+        assert!(output.contains("stdin_tty=no"), "{output:?}");
+        assert!(output.contains("stdout_tty=no"), "{output:?}");
+        assert!(output.contains("args=--mode rpc"), "{output:?}");
     }
 
     /// `HostedChild` builders compose to the expected spec.

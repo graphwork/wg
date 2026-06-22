@@ -175,6 +175,15 @@ description = "Live human-flow guard for verify-opencode-chat: `wg opencode-hand
 timeout_seconds = 120
 
 [[scenario]]
+name = "pi_handler_terminal_host_no_takeover"
+script = "scenarios/pi_handler_terminal_host_no_takeover.sh"
+owners = [
+    "pi-plugin-impl-pi-takeover-fix",
+]
+description = "Live PTY guard for pi Axis-2 hosting: a fake pi launched directly with both stdin/stdout as a PTY and no headless flag records a raw-mode takeover, while `wg pi-handler` launched from a PTY must spawn pi through terminal-host protocol mode with piped stdio + `--mode rpc`, avoid the takeover marker, and let the child exit after SIGTERM closes the pipe."
+timeout_seconds = 30
+
+[[scenario]]
 name = "executor_arena_surfaces"
 script = "scenarios/executor_arena_surfaces.sh"
 owners = [
