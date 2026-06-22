@@ -92,11 +92,11 @@ echo "before retire: ${initial} chat tabs visible"
 # Move focus to the right panel and ensure we're on the Chat tab — the
 # Ctrl+W binding only fires when right_panel_tab == Chat. The TUI
 # typically lands on Chat by default, but we send '0' (Chat tab index)
-# to be explicit. Ctrl+T puts focus inside the PTY (claude/shell), which
+# to be explicit. Ctrl+O puts focus inside the PTY (claude/shell), which
 # is the worst-case scenario the fix is meant to cover.
 tmux send-keys -t "$session" "0"
 sleep 0.3
-tmux send-keys -t "$session" "C-t"
+tmux send-keys -t "$session" "C-o"
 sleep 0.5
 
 # Ctrl+W: should break out of PTY forwarding AND open the

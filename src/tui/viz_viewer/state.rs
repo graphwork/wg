@@ -6051,7 +6051,7 @@ pub struct VizApp {
 
     /// When true, the Chat tab renders PTY output for the active
     /// coordinator's task instead of the file-tailing ChatMessage
-    /// widgets. Toggle with Ctrl+T in the Chat tab.
+    /// widgets. Toggle with Ctrl+O in the Chat tab.
     pub chat_pty_mode: bool,
 
     /// When in PTY mode, whether the pane is a read-only observer
@@ -14596,7 +14596,7 @@ impl VizApp {
     /// of the subscription.
     ///
     /// Falls through to the file-tailing chat path silently if the
-    /// vendor CLI isn't on PATH or the spawn fails. Ctrl+T still toggles
+    /// vendor CLI isn't on PATH or the spawn fails. Ctrl+O still toggles
     /// manually. Idempotent: no-op when a live pane already exists.
     pub fn maybe_auto_enable_chat_pty(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
@@ -15087,7 +15087,7 @@ impl VizApp {
         self.chat_pty_mode = true;
         self.chat_pty_forwards_stdin = true;
         // Shift focus into the right panel so keystrokes route
-        // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
+        // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+O).
         // Without this, the graph panel owns keys and hotkeys
         // like 'e' fire graph-side dialogs instead of reaching
         // `wg nex` inside the pane.

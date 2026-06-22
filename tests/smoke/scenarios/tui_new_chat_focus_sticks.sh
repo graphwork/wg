@@ -146,7 +146,7 @@ echo "initial active coordinator_id=${old_cid}"
 # The custom-command chat starts in PTY mode. Toggle back to command mode so
 # the launcher hotkey is handled by the TUI instead of being sent to `cat`.
 if tui_text | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$session" "C-t"
+    tmux send-keys -t "$session" "C-o"
     sleep 0.5
 fi
 
