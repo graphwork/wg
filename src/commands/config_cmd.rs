@@ -2611,6 +2611,69 @@ pub enum LintTarget {
     Merged,
 }
 
+/// Does this model spec route to `ExecutorKind::Pi`? `pi` is an executor name
+/// (not a provider prefix), so a `pi:` prefixed spec maps to the pi handler.
+fn spec_routes_to_pi(spec: &str) -> bool {
+    spec.split_once(':')
+        .map(|(prefix, _)| prefix)
+        .and_then(worksgood::dispatch::ExecutorKind::from_str)
+        == Some(worksgood::dispatch::ExecutorKind::Pi)
+}
+
+/// Whether the merged config pins a `pi:` route anywhere it matters (the agent
+/// model, the coordinator model, or any `[models]` role). Best-effort scan of
+/// the primary route fields — enough to decide whether the pi satisfiability
+/// lint applies.
+fn config_has_pi_route(config: &Config) -> bool {
+    let mut specs: Vec<&str> = vec![config.agent.model.as_str()];
+    if let Some(m) = config.coordinator.model.as_deref() {
+        specs.push(m);
+    }
+    let mr = &config.models;
+    for rc in [
+        mr.default.as_ref(),
+        mr.task_agent.as_ref(),
+        mr.evaluator.as_ref(),
+        mr.flip_inference.as_ref(),
+        mr.flip_comparison.as_ref(),
+        mr.assigner.as_ref(),
+        mr.evolver.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(m) = rc.model.as_deref() {
+            specs.push(m);
+        }
+    }
+    specs.iter().any(|s| spec_routes_to_pi(s))
+}
+
+/// Pi-route satisfiability lint. A `pi:` route is satisfiable by EITHER a `pi`
+/// binary (Topology A) OR Node + `wg-pi-host.mjs` + the built plugin bundle
+/// (Topology B). When the config pins a `pi:` route but neither transport is
+/// present, the route can never run — return a warning string
+/// (`integration-plan-v2.md` §4). Pure over the injected availability so it is
+/// unit-testable without the live environment.
+fn pi_route_lint(
+    config: &Config,
+    avail: &worksgood::executor_discovery::PiRouteAvailability,
+) -> Option<String> {
+    if !config_has_pi_route(config) {
+        return None;
+    }
+    if avail.satisfiable() {
+        return None;
+    }
+    Some(
+        "warning: a configured model route targets the `pi` executor, but neither a `pi` \
+         binary nor the Node host bundle (node + wg-pi-host.mjs + dist/index.js) is available \
+         — this `pi:` route cannot run. Install pi (`pi`) or build the wg-pi-plugin bundle \
+         (`npm --prefix pi-plugin run build`), or repoint the route to an available executor."
+            .to_string(),
+    )
+}
+
 /// Walk the chosen config file(s) and report everything `wg migrate config`
 /// would change, without rewriting. This is the "what's stale?" exploration
 /// step before committing to a migration.
@@ -2638,20 +2701,29 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         }
     }
 
+    // Pi-route satisfiability: an unrunnable `pi:` route is a config defect the
+    // same way a stale key is, so surface it alongside the migrate findings.
+    let merged = Config::load_or_default(workgraph_dir);
+    let pi_warning = pi_route_lint(
+        &merged,
+        &worksgood::executor_discovery::pi_route_availability(),
+    );
+
     if json {
-        let payload: Vec<serde_json::Value> = results
-            .iter()
-            .map(|r| {
-                serde_json::json!({
+        let payload = serde_json::json!({
+            "files": results
+                .iter()
+                .map(|r| serde_json::json!({
                     "path": r.path.display().to_string(),
                     "existed": r.existed,
                     "removed_keys": r.removed_keys,
                     "renamed_keys": r.renamed_keys,
                     "rewritten_values": r.rewritten_values,
                     "clean": r.is_noop(),
-                })
-            })
-            .collect();
+                }))
+                .collect::<Vec<_>>(),
+            "pi_route_warning": pi_warning,
+        });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
@@ -2660,6 +2732,12 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     for r in &results {
         print_lint_one(r);
         total_findings += r.removed_keys.len() + r.renamed_keys.len() + r.rewritten_values.len();
+    }
+
+    if let Some(warning) = &pi_warning {
+        println!();
+        println!("{}", warning);
+        total_findings += 1;
     }
 
     if total_findings == 0 {
@@ -2727,6 +2805,61 @@ mod tests {
         // Show should work (local scope)
         let result = show(temp_dir.path(), Some(ConfigScope::Local), false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_pi_route_lint_rejects_when_neither_transport_present() {
+        use worksgood::executor_discovery::{PiNodeHost, PiRouteAvailability};
+
+        let mut config = Config::default();
+        config.agent.model = "pi:openrouter/anthropic/claude-3.5-haiku".to_string();
+        assert!(config_has_pi_route(&config));
+
+        // Neither a pi binary nor a node host → the route can't run → warn.
+        let none = PiRouteAvailability::default();
+        assert!(
+            pi_route_lint(&config, &none).is_some(),
+            "unsatisfiable pi: route must produce a lint warning"
+        );
+
+        // A pi binary satisfies it (Topology A) → no warning.
+        let with_pi = PiRouteAvailability {
+            pi_binary: Some("/usr/bin/pi".into()),
+            node_host: None,
+        };
+        assert!(pi_route_lint(&config, &with_pi).is_none());
+
+        // The node host satisfies it (Topology B) → no warning.
+        let with_host = PiRouteAvailability {
+            pi_binary: None,
+            node_host: Some(PiNodeHost {
+                node: "/usr/bin/node".into(),
+                host_script: "/p/host/wg-pi-host.mjs".into(),
+                plugin_bundle: "/p/dist/index.js".into(),
+            }),
+        };
+        assert!(pi_route_lint(&config, &with_host).is_none());
+    }
+
+    #[test]
+    fn test_pi_route_lint_silent_without_a_pi_route() {
+        use worksgood::executor_discovery::PiRouteAvailability;
+        // The default config pins no pi: route → no warning even when nothing
+        // pi-related is installed.
+        let config = Config::default();
+        assert!(!config_has_pi_route(&config));
+        assert!(pi_route_lint(&config, &PiRouteAvailability::default()).is_none());
+    }
+
+    #[test]
+    fn test_spec_routes_to_pi() {
+        assert!(spec_routes_to_pi(
+            "pi:openrouter/anthropic/claude-3.5-haiku"
+        ));
+        assert!(spec_routes_to_pi("pi:anything"));
+        assert!(!spec_routes_to_pi("claude:opus"));
+        assert!(!spec_routes_to_pi("openrouter:minimax/minimax-m3"));
+        assert!(!spec_routes_to_pi("opus"));
     }
 
     #[test]

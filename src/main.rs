@@ -3599,6 +3599,18 @@ fn main() -> Result<()> {
             role.as_deref(),
             model.as_deref(),
         ),
+        Commands::PiHandler {
+            chat,
+            resume,
+            role,
+            model,
+        } => commands::pi_handler::run(
+            &workgraph_dir,
+            &chat,
+            resume,
+            role.as_deref(),
+            model.as_deref(),
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,
