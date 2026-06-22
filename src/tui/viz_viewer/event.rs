@@ -10579,7 +10579,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_typing_filters_and_resets_highlight() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
         // Move highlight off the top first so we can prove typing resets it.
         key(&mut app, KeyCode::Down);
         assert_eq!(app.launcher.as_ref().unwrap().model_suggestion_selected, 1);
@@ -10599,7 +10599,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_tab_accepts_suggestion_normalized_for_opencode_and_advances() {
-        let (mut app, _tmp) = launcher_on_model_field(2); // opencode
+        let (mut app, _tmp) = launcher_on_model_field(3); // opencode (claude=0, codex=1, pi=2, opencode=3)
         for c in "minimax m3".chars() {
             key(&mut app, KeyCode::Char(c));
         }

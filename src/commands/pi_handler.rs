@@ -462,8 +462,10 @@ impl RpcTransport {
         // env (WG_API_KEY, WG_ENDPOINT_URL, WG_PI_API_KEY, WG_PI_BASE_URL,
         // OPENROUTER_API_KEY, …). Credentials by env ONLY — never argv, never
         // logged.
-        let mut env_pairs: Vec<(String, String)> =
-            vec![("PI_CODING_AGENT_SESSION_DIR".to_string(), session_dir.to_string_lossy().to_string())];
+        let mut env_pairs: Vec<(String, String)> = vec![(
+            "PI_CODING_AGENT_SESSION_DIR".to_string(),
+            session_dir.to_string_lossy().to_string(),
+        )];
         env_pairs.extend(secret_env.iter().cloned());
         let child = HostedChild::new(pi_binary.to_string_lossy().to_string())
             .args(args)

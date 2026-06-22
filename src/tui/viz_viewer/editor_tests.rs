@@ -1381,7 +1381,7 @@ mod tui_editor_tests {
         {
             let l = app.launcher.as_mut().unwrap();
             l.enter_add_new();
-            l.add_executor_idx = 3; // nex (now at index 3 after opencode insertion)
+            l.add_executor_idx = 4; // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
             l.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
         }
 
@@ -1408,7 +1408,7 @@ mod tui_editor_tests {
         {
             let l = app.launcher.as_mut().unwrap();
             l.enter_add_new();
-            l.add_executor_idx = 2; // opencode
+            l.add_executor_idx = 3; // opencode (claude=0, codex=1, pi=2, opencode=3)
             l.active_section = LauncherSection::AddNew(AddNewField::Model);
         }
 

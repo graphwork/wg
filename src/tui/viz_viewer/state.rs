@@ -1159,6 +1159,12 @@ pub struct AddNewExecutorChoice {
 }
 
 /// The executor options offered in Add-new mode.
+///
+/// Order is user-visible in the new-chat radio: `claude`, `codex`, `pi`,
+/// then the remaining executors. Pi is intentionally third (after Claude
+/// and Codex, before Nex) per fix-tui-new-chat-pi-executor — this makes the
+/// implemented `wg pi-handler` path reachable from the normal create-chat
+/// flow instead of only via `--executor pi` on the CLI.
 pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     AddNewExecutorChoice {
         label: "claude",
@@ -1169,6 +1175,13 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
         internal_executor: "codex",
     },
     AddNewExecutorChoice {
+        label: "pi",
+        internal_executor: "pi",
+    },
+    // External chat-capable CLIs prototyped after the established executors so
+    // their addition does not shift the core indices the launcher tests pin
+    // (claude=0, codex=1, pi=2) — prototype-octomind-dexto-chat.
+    AddNewExecutorChoice {
         label: "opencode",
         internal_executor: "opencode",
     },
@@ -1176,9 +1189,6 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
         label: "nex",
         internal_executor: "native",
     },
-    // External chat-capable CLIs prototyped after the established executors so
-    // their addition does not shift the indices the launcher tests pin
-    // (claude=0, codex=1, opencode=2, nex=3) — prototype-octomind-dexto-chat.
     AddNewExecutorChoice {
         label: "octomind",
         internal_executor: "octomind",
@@ -1401,6 +1411,9 @@ pub fn executor_uses_child_scroll_keys(executor: &str) -> bool {
 /// - `nex`/`native` → a WG model spec: `openrouter:<vendor>/<model>` for an
 ///   OpenRouter/vendor-route model, else `nex:<model>` for a bare id,
 /// - `claude` → `claude:<short>`, `codex` → `codex:<short>`,
+/// - `pi` → `openrouter:<vendor>/<model>` (the Pi handler resolves provider +
+///   model from this WG spec via [`pi_model_arg`]; same spelling as `nex`
+///   OpenRouter routes so the Pi OpenRouter route is preserved),
 /// - anything else (e.g. `command`) → the id unchanged.
 pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) -> String {
     let id = id.trim();
@@ -1416,6 +1429,20 @@ pub fn normalize_model_for_executor(id: &str, provider: &str, executor: &str) ->
         "dexto" => {
             // Dexto drives OpenRouter via a generated agent YAML; persist the
             // canonical WG model spec so the YAML and any display agree.
+            if provider == "openrouter" || id.contains('/') {
+                format!(
+                    "openrouter:{}",
+                    id.strip_prefix("openrouter/").unwrap_or(id)
+                )
+            } else {
+                id.to_string()
+            }
+        }
+        "pi" => {
+            // Pi handler resolves provider + model from a WG `provider:route`
+            // spec via `pi_model_arg`. Persist the canonical OpenRouter route
+            // (`openrouter:<vendor>/<model>`) so the Pi OpenRouter route is
+            // preserved across launcher history and CoordinatorState round-trips.
             if provider == "openrouter" || id.contains('/') {
                 format!(
                     "openrouter:{}",

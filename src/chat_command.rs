@@ -307,6 +307,26 @@ pub fn argv_for_preset(
                 "--auto-approve".to_string(),
             ]
         }
+        "pi" => {
+            // Pi (pi.dev) is a chat-capable external CLI dispatched via the
+            // `wg pi-handler` RPC/worker bridge (peer of claude-handler /
+            // codex-handler / opencode-handler). The handler resolves the
+            // provider + model from the WG `openrouter:<vendor>/<model>` spec
+            // via `pi_model_arg`; credentials are injected from WG config
+            // (never via argv). `--chat <ref>` is the per-session inbox alias
+            // (`chat-<N>`); `-m` carries the model so pi never falls back to
+            // its own default (explicit-model contract, pi_handler.rs §).
+            let mut argv = vec![wg_bin.to_string(), "pi-handler".to_string()];
+            argv.push("--chat".to_string());
+            // The caller (TUI launcher / `wg chat create`) substitutes the
+            // real chat alias; the pure builder emits the conventional token.
+            argv.push("chat".to_string());
+            if let Some(m) = model.filter(|m| !m.is_empty()) {
+                argv.push("-m".to_string());
+                argv.push(m.to_string());
+            }
+            argv
+        }
         _ => {
             let mut argv = vec![
                 "claude".to_string(),
