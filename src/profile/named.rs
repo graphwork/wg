@@ -24,9 +24,10 @@ pub const STARTER_CLAUDE: &str = include_str!("templates/claude.toml");
 pub const STARTER_CODEX: &str = include_str!("templates/codex.toml");
 pub const STARTER_NEX: &str = include_str!("templates/nex.toml");
 pub const STARTER_OPENCODE: &str = include_str!("templates/opencode.toml");
+pub const STARTER_PI: &str = include_str!("templates/pi.toml");
 
 /// The built-in starter profile names.
-pub const STARTER_NAMES: &[&str] = &["claude", "codex", "nex", "opencode"];
+pub const STARTER_NAMES: &[&str] = &["claude", "codex", "nex", "opencode", "pi"];
 
 /// Legacy starter name retired in favour of the canonical `nex` name (matching
 /// the `wg nex` subcommand). Recognised by `load()` and `init_starters()` so
@@ -41,6 +42,7 @@ pub fn starter_template(name: &str) -> Option<&'static str> {
         "codex" => Some(STARTER_CODEX),
         "nex" => Some(STARTER_NEX),
         "opencode" => Some(STARTER_OPENCODE),
+        "pi" => Some(STARTER_PI),
         _ => None,
     }
 }
@@ -164,7 +166,7 @@ pub fn load(name: &str) -> Result<NamedProfile> {
     }
     if !path.exists() {
         // Built-in starter fallback: a starter profile (`claude`, `codex`,
-        // `nex`, `opencode`) is usable via `wg profile use <name>` even when it
+        // `nex`, `opencode`, `pi`) is usable via `wg profile use <name>` even when it
         // has not been materialized to `~/.wg/profiles/<name>.toml` yet — the
         // canonical snapshot ships in the binary. This is strictly additive:
         // it only fires where `load()` previously errored (missing file), and
@@ -307,7 +309,7 @@ pub fn profile_path(name: &str) -> Result<PathBuf> {
 pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
     let src = profile_path(name)?;
     if !src.exists() {
-        // Built-in starter self-bootstrap: `wg profile use opencode` (and the
+        // Built-in starter self-bootstrap: `wg profile use pi` (and the
         // other starters) should work out of the box without a prior
         // `wg profile init-starters`. Materialize the in-binary snapshot to
         // `~/.wg/profiles/<name>.toml` so the byte-for-byte copy below has a
@@ -740,6 +742,87 @@ is_default = true
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
             Some("claude:haiku")
+        );
+    }
+
+    #[test]
+    fn test_pi_starter_has_pi_worker_and_claude_agency_models() {
+        // The pi starter pins worker roles to pi: routes while keeping the
+        // agency one-shot roles on claude:haiku, per CLAUDE.md "Agency tasks
+        // run on claude CLI" — pi is a worker/chat external handler and does
+        // not serve the agency one-shot path. Models mirror opencode.toml.
+        let prof = parse_profile(STARTER_PI, Path::new("pi.toml"), "pi").unwrap();
+        let worker = "pi:openrouter/anthropic/claude-3.5-haiku";
+        let premium = "pi:openrouter/anthropic/claude-sonnet-4";
+        assert_eq!(prof.config.agent.model, worker);
+        assert_eq!(prof.config.coordinator.model.as_deref(), Some(worker));
+        assert_eq!(prof.config.tiers.fast.as_deref(), Some(worker));
+        assert_eq!(prof.config.tiers.standard.as_deref(), Some(worker));
+        // Premium tier escalates to the sonnet-4 route.
+        assert_eq!(prof.config.tiers.premium.as_deref(), Some(premium));
+        assert_eq!(
+            prof.config
+                .models
+                .default
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some(worker)
+        );
+        assert_eq!(
+            prof.config
+                .models
+                .task_agent
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some(worker)
+        );
+        // Agency meta-roles stay on claude:haiku — pi is worker-only and does
+        // not serve the agency one-shot LLM path.
+        for role in [
+            prof.config.models.evaluator.as_ref(),
+            prof.config.models.assigner.as_ref(),
+            prof.config.models.flip_inference.as_ref(),
+            prof.config.models.flip_comparison.as_ref(),
+        ] {
+            assert_eq!(
+                role.and_then(|m| m.model.as_deref()),
+                Some("claude:haiku"),
+                "all agency meta-roles must be pinned to claude:haiku"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pi_starter_documents_plugin_placement() {
+        // The pi.toml comment block must document plugin install/placement so a
+        // user activating the profile knows the plugin must be present in the pi
+        // process (task validation: "pi.toml documents the plugin
+        // install/placement in a comment block").
+        let tmpl = starter_template("pi").unwrap();
+        assert!(
+            tmpl.contains("~/.pi/agent/extensions/"),
+            "pi.toml must document the global extensions dir (sidesteps the project trust gate)"
+        );
+        assert!(
+            tmpl.contains(".pi/extensions") && tmpl.contains("project_trust"),
+            "pi.toml must document the project extensions dir + its project_trust gate"
+        );
+        assert!(
+            tmpl.contains("wg-pi-host.mjs"),
+            "pi.toml must document the Topology-B Node-host bundle path"
+        );
+    }
+
+    #[test]
+    fn test_pi_in_starter_names() {
+        assert!(
+            STARTER_NAMES.contains(&"pi"),
+            "STARTER_NAMES must include 'pi'; got {:?}",
+            STARTER_NAMES
+        );
+        assert!(
+            starter_template("pi").is_some(),
+            "starter_template(\"pi\") must return the template"
         );
     }
 
