@@ -933,6 +933,7 @@ fn executor_uses_auto_prompt(executor_type: &str) -> bool {
             | "amplifier"
             | "octomind"
             | "dexto"
+            | "pi"
     )
 }
 

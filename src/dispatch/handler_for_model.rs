@@ -181,6 +181,24 @@ mod tests {
     }
 
     #[test]
+    fn test_pi_prefix_routes_to_pi_handler() {
+        // `pi` is a chat-capable external CLI (in EXTERNAL_CLIS, NOT
+        // WORKER_ONLY_EXTERNALS — like OpenCode). The external-CLI prefix
+        // interception routes `pi:<route>` to the Pi handler with NO new
+        // match arm; `parse_executor_model_route` normalizes the inner
+        // `openrouter/<vendor>/<model>` shorthand on the spawn path.
+        assert_eq!(
+            handler_for_model("pi:openrouter/anthropic/claude-3.5-haiku"),
+            ExecutorKind::Pi
+        );
+
+        // Pi is an external CLI but, like OpenCode, is chat-capable —
+        // it must NOT be classified worker-only.
+        assert!(ExecutorKind::Pi.is_external_cli());
+        assert!(!ExecutorKind::Pi.is_worker_only_external());
+    }
+
+    #[test]
     fn test_unknown_prefix_treated_as_bare_name() {
         // `foobar:baz` has an unknown prefix, so parse_model_spec treats the
         // whole string as a bare name → claude. This matches the lenient
