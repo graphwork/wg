@@ -709,9 +709,10 @@ is_default = true
 mod credential_wire_contract {
     use super::*;
     use serial_test::serial;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use std::time::{Duration, Instant};
     use worksgood::executor::native::client::{Message, MessagesRequest, Role};
     use worksgood::executor::native::provider::create_provider_ext;
 
@@ -727,29 +728,109 @@ mod credential_wire_contract {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{}", addr);
         let (tx, rx) = mpsc::channel::<String>();
-        let body = response_body.to_string();
+        let chat_body = response_body.to_string();
         let status_line = match status_code {
             200 => "HTTP/1.1 200 OK",
             401 => "HTTP/1.1 401 Unauthorized",
             403 => "HTTP/1.1 403 Forbidden",
             _ => "HTTP/1.1 500 Internal Server Error",
         };
-        let resp = format!(
-            "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            status_line,
-            body.len(),
-            body,
-        );
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 16384];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let captured = String::from_utf8_lossy(&buf[..n]).to_string();
-                let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
-                let _ = tx.send(captured);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let captured = read_http_request(&mut stream);
+                let response_body = if is_chat_completion_request(&captured) {
+                    &chat_body
+                } else if is_models_request(&captured) {
+                    r#"{"data":[{"id":"qwen3-coder","context_length":8192}]}"#
+                } else {
+                    r#"{"n_ctx":8192}"#
+                };
+                let response_status = if is_chat_completion_request(&captured) {
+                    status_line
+                } else {
+                    "HTTP/1.1 200 OK"
+                };
+                let resp = format!(
+                    "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_status,
+                    response_body.len(),
+                    response_body,
+                );
+                let _ = Write::write_all(&mut stream, resp.as_bytes());
+                let _ = stream.flush();
+                if is_chat_completion_request(&captured) {
+                    let _ = tx.send(captured);
+                    break;
+                }
             }
         });
         (url, rx)
+    }
+
+    fn is_chat_completion_request(request: &str) -> bool {
+        request
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("/chat/completions"))
+    }
+
+    fn is_models_request(request: &str) -> bool {
+        request
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("/models"))
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    request.extend_from_slice(&chunk[..n]);
+                    if request_complete(&request) {
+                        break;
+                    }
+                }
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+
+        String::from_utf8_lossy(&request).to_string()
+    }
+
+    fn request_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn request_complete(buf: &[u8]) -> bool {
+        let Some(header_end) = request_header_end(buf) else {
+            return false;
+        };
+        let headers = String::from_utf8_lossy(&buf[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("content-length:")
+                    .or_else(|| line.strip_prefix("Content-Length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        buf.len() >= header_end + 4 + content_length
     }
 
     fn make_wg_dir(tmp: &TempDir, config_toml: &str) -> std::path::PathBuf {
