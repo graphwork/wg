@@ -976,7 +976,7 @@ impl ExternalCliModelArgs {
 fn external_cli_model_style(executor_type: &str) -> Option<ExternalCliModelStyle> {
     match executor_type {
         "opencode" | "aider" | "crush" => Some(ExternalCliModelStyle::ProviderSlashModel),
-        "goose" | "cline" => Some(ExternalCliModelStyle::ProviderFlagAndModel),
+        "goose" | "cline" | "pi" => Some(ExternalCliModelStyle::ProviderFlagAndModel),
         "qwen" | "qwen-code" | "qwen_code" => Some(ExternalCliModelStyle::BareOpenRouterModel),
         // Octomind's `-m` takes WG's `openrouter:<vendor>/<model>` spelling.
         // (Dexto is intentionally absent: its CLI rejects provider/model
@@ -1620,6 +1620,13 @@ fn build_inner_command(
             effective_model,
             effective_provider,
             ExternalPromptDelivery::Stdin,
+        )?,
+        "pi" => external_prompt_command(
+            settings,
+            output_dir,
+            effective_model,
+            effective_provider,
+            ExternalPromptDelivery::QwenPromptAndStdin,
         )?,
         "amplifier" => external_prompt_command(
             settings,

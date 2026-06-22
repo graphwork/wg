@@ -1686,13 +1686,15 @@ impl ExecutorRegistry {
                     executor_type: "pi".to_string(),
                     command: "pi".to_string(),
                     // Pi's non-interactive worker surface (`--mode json`, piped
-                    // stdio defeats the terminal takeover; see executor-research
-                    // §1/§4). This default config exists so the registry can
-                    // enumerate the executor (P0 foundation); the real argv —
-                    // long-lived `--mode rpc` for chat, one-shot `-p`/`--mode
-                    // json` for worker — is assembled by the `wg pi-handler`
-                    // landing in a later phase (docs/pi-integration §5).
-                    args: vec!["--mode".to_string(), "json".to_string()],
+                    // stdio avoids terminal takeover). Long-lived chat sessions
+                    // use `wg pi-handler --mode rpc`; task workers use this
+                    // one-shot argv through the spawn adapter.
+                    args: vec![
+                        "--mode".to_string(),
+                        "json".to_string(),
+                        "-p".to_string(),
+                        "Complete the WG task prompt supplied on stdin.".to_string(),
+                    ],
                     env: {
                         let mut env = HashMap::new();
                         env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
