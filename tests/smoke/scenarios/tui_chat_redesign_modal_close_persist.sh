@@ -6,7 +6,7 @@
 # regression bar for the redesign:
 #
 #   (1) MODAL TOGGLE — the chat tab is modal. Default is PTY mode (status
-#       bar shows `[PTY]`). Ctrl+T toggles to command mode (status bar
+#       bar shows `[PTY]`). Ctrl+O toggles to command mode (status bar
 #       shows `[CMD]`). The whole point of the redesign was to stop
 #       intercepting in-PTY keystrokes (Ctrl+N, Ctrl+W, plain letters)
 #       as global hotkeys — the user couldn't type 'n' or 'w' inside
@@ -230,7 +230,7 @@ sleep 0.5
 
 # ── Invariant (1): MODAL TOGGLE ────────────────────────────────────────
 # The status bar must show either [PTY] or [CMD] when chat is active.
-# Pressing Ctrl+T must flip from one to the other. Wait up to ~10s for
+# Pressing Ctrl+O must flip from one to the other. Wait up to ~10s for
 # the claude CLI inside the PTY to come up and the indicator to render.
 saw_pty_first=0
 text_a=""
@@ -242,7 +242,7 @@ for _ in $(seq 1 20); do
     fi
     if printf '%s' "$text_a" | grep -q '\[CMD\]'; then
         # Toggling into PTY mode is the test target — try once.
-        tmux send-keys -t "$session" "C-t"
+        tmux send-keys -t "$session" "C-o"
         sleep 0.5
         text_a=$(tui_text)
         if printf '%s' "$text_a" | grep -q '\[PTY\]'; then
@@ -264,8 +264,8 @@ if [[ "$saw_pty_first" -ne 1 ]]; then
 fi
 echo "phase 1: [PTY] indicator visible (claude PTY pane is live)"
 
-# Toggle modal state with Ctrl+T → expect [CMD].
-tmux send-keys -t "$session" "C-t"
+# Toggle modal state with Ctrl+O → expect [CMD].
+tmux send-keys -t "$session" "C-o"
 sleep 0.5
 
 saw_cmd_after=0
@@ -280,9 +280,9 @@ for _ in $(seq 1 6); do
 done
 
 if [[ "$saw_cmd_after" -ne 1 ]]; then
-    loud_fail "Ctrl+T did NOT switch to [CMD] modal — indicator stayed stuck in PTY (or disappeared entirely). The modal toggle handler is broken — the user has no way to break out of PTY focus to the command-mode keybindings (n/w/?). text head: $(printf '%s' "$text_b" | head -c 200)"
+    loud_fail "Ctrl+O did NOT switch to [CMD] modal — indicator stayed stuck in PTY (or disappeared entirely). The modal toggle handler is broken — the user has no way to break out of PTY focus to the command-mode keybindings (n/w/?). text head: $(printf '%s' "$text_b" | head -c 200)"
 fi
-echo "PASS invariant (1): Ctrl+T toggles [PTY] → [CMD]"
+echo "PASS invariant (1): Ctrl+O toggles [PTY] → [CMD]"
 
 # We're now in command mode (focus Graph), which is required for the
 # next phase's plain-key Ctrl+W send to NOT be intercepted by the PTY.
@@ -423,7 +423,7 @@ echo "PASS invariant (3): TUI restart preserves active coordinator id"
 
 echo ""
 echo "ALL THREE INVARIANTS PASS:"
-echo "  (1) modal toggle: Ctrl+T flips PTY ⇄ CMD"
+echo "  (1) modal toggle: Ctrl+O flips PTY ⇄ CMD"
 echo "  (2) close non-destructive: visible tabs ${visible_before_close} → ${visible_after_close}; graph statuses unchanged"
 echo "  (3) persistence: relaunch restored active_coordinator_id=${restored_cid}"
 exit 0

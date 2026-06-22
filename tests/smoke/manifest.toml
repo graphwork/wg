@@ -568,7 +568,7 @@ owners = [
     "tui-cannot-retire",
     "smoke-gate-is",
 ]
-description = "Pins user-reported tui-cannot-retire regression: 'man why can't we retire the .chat-4 ???'. The embedded vendor CLI (claude --resume) shows a session-resume modal that swallows Esc/digit keys, so the user has no way to reach wg's Archive/Stop/Abandon dialog. Ctrl+W must be a global escape hatch that breaks out of PTY forwarding AND opens the retire dialog. Drives a real `wg tui` with three live chats, sends Ctrl+T (focus PTY) → Ctrl+W → 'x' (Abandon hotkey), and asserts the visible chat-tab count drops AND graph.jsonl shows ≥1 abandoned task."
+description = "Pins user-reported tui-cannot-retire regression: 'man why can't we retire the .chat-4 ???'. The embedded vendor CLI (claude --resume) shows a session-resume modal that swallows Esc/digit keys, so the user has no way to reach wg's Archive/Stop/Abandon dialog. Ctrl+W must be a global escape hatch that breaks out of PTY forwarding AND opens the retire dialog. Drives a real `wg tui` with three live chats, sends Ctrl+O (focus PTY) → Ctrl+W → 'x' (Abandon hotkey), and asserts the visible chat-tab count drops AND graph.jsonl shows ≥1 abandoned task."
 timeout_seconds = 90
 
 [[scenario]]
@@ -612,7 +612,7 @@ owners = [
     "implement-tui-tab",
     "smoke-gate-is",
 ]
-description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+T flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+T / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
+description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+O flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+O / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
 timeout_seconds = 120
 
 [[scenario]]
@@ -1463,3 +1463,13 @@ owners = [
 ]
 description = "Pins bug-tui-focus-fix (docs/bugs/tui-focus-input-race.md): returning OS focus to the wg TUI must never leave a window in which the user's first keystroke leaks to tmux (popping choose-tree). Drives the REAL `wg tui` under a PTY and asserts both halves of the general, emulator-agnostic fix in the raw output stream: (1) startup enables DECSET 1004 focus reporting (\\x1b[?1004h) so tmux forwards focus-in into the pane — absent on pre-fix main, which has no EnableFocusChange; (2) on receiving a focus-in report (\\x1b[I) wg re-asserts its own input grab as one burst — bracketed paste (\\x1b[?2004h) + mouse capture (\\x1b[?1002h) — before the next key, where pre-fix main drops Event::FocusGained via a catch-all and re-asserts nothing. Idle ratatui repaints never emit DECSET mode-sets, so the post-focus-in \\x1b[?2004h is an unambiguous re-assert signal. Fails on main, passes after the fix; credential-free, no tmux/daemon required."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_keymap_printables_and_ctrl_t"
+script = "scenarios/tui_keymap_printables_and_ctrl_t.sh"
+owners = [
+    "bug-tui-keymap-fix",
+    "bug-tui-keymap-verify",
+]
+description = "Pins bug-tui-keymap-fix (docs/bugs/tui-keymap-routing.md): in the real wg TUI, with a focused custom-command chat PTY, bare printables (`+`, `a`) must be forwarded to the child and must not open the add-chat launcher; Ctrl+T must be forwarded to the child for executor thinking-toggle conventions; Ctrl+O is the host PTY focus / command-mode toggle. Credential-free: the child is a local Python stdin recorder, driven through tmux and asserted by raw bytes."
+timeout_seconds = 75

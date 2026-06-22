@@ -38,8 +38,8 @@
 # (a) The TUI auto-spawns a PTY pane for the default coordinator on
 #     launch (claude/codex/native — anything that has an entry in
 #     `maybe_auto_enable_chat_pty`). The PTY captures every keystroke
-#     except Ctrl+T (the documented modal-toggle escape hatch). To
-#     drive the launcher dialog, the smoke MUST first send Ctrl+T to
+#     except Ctrl+O (the documented modal-toggle escape hatch). To
+#     drive the launcher dialog, the smoke MUST first send Ctrl+O to
 #     flip to [CMD] mode (focused_panel→Graph) so plain 'n' and the
 #     subsequent navigation keys are interpreted by the TUI command
 #     system rather than being typed into the embedded vendor CLI.
@@ -193,12 +193,12 @@ echo "phase 0: default chat auto-spawned (visible chat tabs: ${default_chat_coun
 
 # ── Step 2: escape PTY mode if needed, then open the launcher ──────────
 # See implementation note (a): the PTY pane swallows every key except
-# Ctrl+T. Send Ctrl+T to flip to [CMD] mode (focused_panel→Graph) so
+# Ctrl+O. Send Ctrl+O to flip to [CMD] mode (focused_panel→Graph) so
 # plain 'n' opens the launcher rather than being typed into the
 # embedded claude CLI.
 text_at_launch=$(tui_text)
 if printf '%s' "$text_at_launch" | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$session" "C-t"
+    tmux send-keys -t "$session" "C-o"
     sleep 0.5
     saw_cmd=0
     for _ in $(seq 1 12); do
@@ -212,8 +212,8 @@ if printf '%s' "$text_at_launch" | grep -q '\[PTY\]'; then
     if [[ "$saw_cmd" -ne 1 ]]; then
         # No [CMD] indicator means either the PTY pane was never live
         # (so we never were in [PTY] in the first place — fall through)
-        # or Ctrl+T failed to toggle. Try once more, then fall through.
-        tmux send-keys -t "$session" "C-t"
+        # or Ctrl+O failed to toggle. Try once more, then fall through.
+        tmux send-keys -t "$session" "C-o"
         sleep 0.5
     fi
 fi
@@ -344,11 +344,11 @@ echo "phase 4: TUI active coordinator switched to cid=${new_cid}"
 # the live model and replies on stdout, which the TUI renders into the
 # chat pane.
 #
-# Send Ctrl+T once to ensure we are in [PTY] mode (focused_panel=
+# Send Ctrl+O once to ensure we are in [PTY] mode (focused_panel=
 # RightPanel) so keystrokes route to the nex subprocess.
 text_pre_chat=$(tui_text)
 if printf '%s' "$text_pre_chat" | grep -q '\[CMD\]'; then
-    tmux send-keys -t "$session" "C-t"
+    tmux send-keys -t "$session" "C-o"
     sleep 0.5
 fi
 
