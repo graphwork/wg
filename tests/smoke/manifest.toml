@@ -1538,3 +1538,12 @@ owners = [
 ]
 description = "Credentialed live-provider guard for pi plugin-in-the-loop: with OPENROUTER_API_KEY and a real pi binary, loads the repo plugin into pi RPC mode, asserts streamed text through agent_end plus non-empty get_last_assistant_text, forces wg_ready tool execution, kills and resumes the same --session-id with the plugin re-attached, and verifies large tool output exposes details.fullOutputPath. Loud SKIP without pi/OpenRouter credentials."
 timeout_seconds = 420
+
+[[scenario]]
+name = "tui_new_chat_launcher_pi_executor"
+script = "scenarios/tui_new_chat_launcher_pi_executor.sh"
+owners = [
+    "fix-tui-new-chat-pi-executor",
+]
+description = "Pins fix-tui-new-chat-pi-executor: the wg tui new-chat launcher (+) MUST visibly include a `pi` executor radio option, ordered third (after claude and codex, before nex/opencode). Selecting pi + entering model openrouter/z-ai/glm-5.2 creates a .chat-N task with executor resolving to pi and model preserving the OpenRouter route. Drives a real wg tui inside tmux; metadata assertions suffice (no live model call). Fails if the Pi option is absent or ordered incorrectly."
+timeout_seconds = 90
