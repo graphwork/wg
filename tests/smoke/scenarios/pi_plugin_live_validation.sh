@@ -21,8 +21,38 @@ command -v npm >/dev/null 2>&1 || \
 command -v node >/dev/null 2>&1 || \
     loud_skip "MISSING NODE" "node is required to build/load the WG pi plugin"
 
-if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    loud_skip "MISSING OPENROUTER CREDENTIALS" "OPENROUTER_API_KEY is required for credentialed pi RPC validation"
+# Resolve OpenRouter credentials from WG endpoint/secret config. The WG
+# contract: a configured WG endpoint/key is sufficient — no separate
+# OPENROUTER_API_KEY export required. We only SKIP when WG cannot resolve a
+# usable OpenRouter key.
+_wg_openrouter_key=""
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    _wg_openrouter_key="$OPENROUTER_API_KEY"
+fi
+if [ -z "$_wg_openrouter_key" ]; then
+    # Try resolving from WG config: `wg secret list` / `wg endpoints list`.
+    _wg_scratch_home="$(mktemp -d)"
+    _wg_test_dir="$_wg_scratch_home/wg-test"
+    mkdir -p "$_wg_test_dir"
+    if (cd "$_wg_test_dir" && HOME="$_wg_scratch_home" wg init --no-agency >/dev/null 2>&1); then
+        _wg_resolved="$(cd "$_wg_test_dir" && HOME="$_wg_scratch_home" wg endpoints list 2>/dev/null | grep -i 'openrouter' | head -1)"
+        if [ -n "$_wg_resolved" ]; then
+            # WG has an openrouter endpoint configured; resolve its key via
+            # `wg secret list` (keystore-backed). The key is exported into the
+            # child env so the pi process (which reads OPENROUTER_API_KEY)
+            # receives it via WG's env injection.
+            _wg_key_val="$(cd "$_wg_test_dir" && HOME="$_wg_scratch_home" wg secret get openrouter 2>/dev/null || true)"
+            if [ -n "$_wg_key_val" ]; then
+                _wg_openrouter_key="$_wg_key_val"
+                export OPENROUTER_API_KEY="$_wg_openrouter_key"
+            fi
+        fi
+    fi
+    rm -rf "$_wg_scratch_home"
+fi
+if [ -z "$_wg_openrouter_key" ]; then
+    loud_skip "NO WG-RESOLVABLE OPENROUTER CREDENTIALS" \
+        "WG could not resolve an OpenRouter key from endpoint/secret config, and OPENROUTER_API_KEY is not set. Configure a WG openrouter endpoint (wg endpoint add + wg key set) to run the credentialed pi RPC smoke."
 fi
 
 repo="$(cd "$HERE/../../.." && pwd)"

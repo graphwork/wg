@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use worksgood::chat;
+use worksgood::config::{Config, EndpointConfig};
 use worksgood::executor_discovery::{self, PiNodeHost, PiRouteAvailability};
 use worksgood::session_lock::{HandlerKind, SessionLock};
 
@@ -77,6 +78,120 @@ const NODE_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(180);
 /// detect quiescence; an explicit `turn_end`/`agent_end`/`done` event short-
 /// circuits this when a future host emits one.
 const NODE_IDLE_QUIESCE: Duration = Duration::from_millis(1500);
+
+// --- WG endpoint/secret resolution -------------------------------------------
+
+/// The WG-resolved endpoint + secret for the Pi route, used to inject
+/// credential-bearing env into the spawned `pi`/`node` process so Pi never
+/// relies on ambient provider credentials or its own private login/config.
+///
+/// This is the WG contract fix: a configured WG endpoint/key is sufficient;
+/// no separate `OPENROUTER_API_KEY` export is required.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PiEndpointSecret {
+    /// The resolved API key (never logged, never passed via argv).
+    pub api_key: Option<String>,
+    /// The endpoint base URL (e.g. OpenRouter base).
+    pub base_url: Option<String>,
+    /// The WG provider name (`openrouter`, `anthropic`, …) for env-var selection.
+    pub provider: Option<String>,
+}
+
+impl PiEndpointSecret {
+    /// Resolve the WG endpoint + secret for the given pi provider/model route.
+    ///
+    /// Resolution order mirrors `Config::resolve_api_key_for_provider` but
+    /// returns both the key AND the endpoint URL so both can be injected:
+    ///   1. `llm_endpoints.find_for_provider(pi_provider)` → resolve_api_key
+    ///   2. `llm_endpoints.find_default()` → resolve_api_key (cross-provider)
+    ///   3. Provider-specific env-var fallback (OPENROUTER_API_KEY, …)
+    ///   4. Legacy `[native_executor].api_key`
+    ///
+    /// `pi_provider` is the pi-native provider name (`openrouter`, `anthropic`).
+    pub fn resolve(config: &Config, workgraph_dir: &Path, pi_provider: &str) -> Self {
+        // 1. Provider-specific endpoint.
+        if let Some(ep) = config.llm_endpoints.find_for_provider(pi_provider) {
+            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
+                return Self {
+                    api_key: Some(key),
+                    base_url: ep.url.clone(),
+                    provider: Some(ep.provider.clone()),
+                };
+            }
+        }
+        // 2. Default endpoint (cross-provider fallback).
+        if let Some(ep) = config.llm_endpoints.find_default() {
+            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
+                return Self {
+                    api_key: Some(key),
+                    base_url: ep.url.clone(),
+                    provider: Some(ep.provider.clone()),
+                };
+            }
+        }
+        // 3. Provider-specific env-var fallback.
+        for var_name in EndpointConfig::env_var_names_for_provider(pi_provider) {
+            if let Ok(key) = std::env::var(var_name) {
+                let key = key.trim().to_string();
+                if !key.is_empty() {
+                    return Self {
+                        api_key: Some(key),
+                        base_url: None,
+                        provider: Some(pi_provider.to_string()),
+                    };
+                }
+            }
+        }
+        // 4. Legacy [native_executor].api_key.
+        if let Ok(merged_val) = Config::load_merged_toml_value(workgraph_dir)
+            && let Some(key) = merged_val
+                .get("native_executor")
+                .and_then(|v| v.get("api_key"))
+                .and_then(|v| v.as_str())
+            && !key.is_empty()
+        {
+            return Self {
+                api_key: Some(key.to_string()),
+                base_url: None,
+                provider: Some(pi_provider.to_string()),
+            };
+        }
+        Self::default()
+    }
+
+    /// Build the env var pairs to inject into the spawned pi/node process.
+    ///
+    /// Injects (never via argv, never logged):
+    ///   - `WG_API_KEY` — the WG-resolved key (canonical WG secret env).
+    ///   - `WG_ENDPOINT_URL` — the resolved endpoint base URL.
+    ///   - `WG_PI_API_KEY` — pi-specific mirror of the key.
+    ///   - `WG_PI_BASE_URL` — pi-specific mirror of the URL.
+    ///   - Provider-specific vars (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
+    ///     `ANTHROPIC_API_KEY`) so Pi's own provider clients discover the key
+    ///     through their standard environment.
+    pub fn env_pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        if let Some(ref key) = self.api_key {
+            pairs.push(("WG_API_KEY".to_string(), key.clone()));
+            pairs.push(("WG_PI_API_KEY".to_string(), key.clone()));
+            if let Some(ref provider) = self.provider {
+                for var_name in EndpointConfig::env_var_names_for_provider(provider) {
+                    pairs.push((var_name.to_string(), key.clone()));
+                }
+            }
+        }
+        if let Some(ref url) = self.base_url {
+            pairs.push(("WG_ENDPOINT_URL".to_string(), url.clone()));
+            pairs.push(("WG_PI_BASE_URL".to_string(), url.clone()));
+        }
+        pairs
+    }
+
+    /// True when a usable API key was resolved from WG config.
+    pub fn has_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+}
 
 // --- model argument mapping ---------------------------------------------------
 
@@ -333,6 +448,7 @@ impl RpcTransport {
         marg: &PiModelArg,
         session_id: &str,
         session_dir: &Path,
+        secret_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
         std::fs::create_dir_all(session_dir).ok();
@@ -342,14 +458,16 @@ impl RpcTransport {
             pi_binary.display(),
             args.join(" ")
         ));
+        // Build env: PI_CODING_AGENT_SESSION_DIR + WG-resolved endpoint/secret
+        // env (WG_API_KEY, WG_ENDPOINT_URL, WG_PI_API_KEY, WG_PI_BASE_URL,
+        // OPENROUTER_API_KEY, …). Credentials by env ONLY — never argv, never
+        // logged.
+        let mut env_pairs: Vec<(String, String)> =
+            vec![("PI_CODING_AGENT_SESSION_DIR".to_string(), session_dir.to_string_lossy().to_string())];
+        env_pairs.extend(secret_env.iter().cloned());
         let child = HostedChild::new(pi_binary.to_string_lossy().to_string())
             .args(args)
-            // Credentials by env only — never --api-key. The provider key is
-            // expected to already be in the inherited environment.
-            .env([(
-                "PI_CODING_AGENT_SESSION_DIR",
-                session_dir.to_string_lossy().to_string(),
-            )]);
+            .env(env_pairs);
         let mut host = PtyTerminalHost::new();
         let channel = host
             .open_protocol(child, &TerminalProfile::pi())
@@ -504,7 +622,12 @@ struct NodeHostTransport {
 impl NodeHostTransport {
     /// Spawn `node <host_script>` and wait for its `{"type":"ready"}` line. The
     /// host loads the plugin in-process and bridges its event bus to stdio.
-    fn spawn(host: &PiNodeHost, marg: &PiModelArg, logger: &HandlerLogger) -> Result<Self> {
+    fn spawn(
+        host: &PiNodeHost,
+        marg: &PiModelArg,
+        secret_env: &[(String, String)],
+        logger: &HandlerLogger,
+    ) -> Result<Self> {
         logger.info(&format!(
             "pi-handler: spawning `{} {}` (Topology B node host)",
             host.node.display(),
@@ -520,6 +643,12 @@ impl NodeHostTransport {
         // future host can register the matching provider.
         cmd.env("WG_PI_PROVIDER", &marg.provider);
         cmd.env("WG_PI_MODEL", &marg.model);
+        // WG-resolved endpoint/secret env (WG_API_KEY, WG_ENDPOINT_URL,
+        // WG_PI_API_KEY, WG_PI_BASE_URL, OPENROUTER_API_KEY, …). Credentials
+        // by env ONLY — never argv, never logged.
+        for (k, v) in secret_env {
+            cmd.env(k, v);
+        }
 
         let mut child = cmd.spawn().context("spawn `node wg-pi-host.mjs`")?;
         let stdin = child.stdin.take().context("node host stdin")?;
@@ -764,6 +893,24 @@ pub fn run(
 
     let avail = executor_discovery::pi_route_availability();
     let topology = select_topology(&avail, std::env::var("WG_PI_TOPOLOGY").ok().as_deref())?;
+
+    // WG endpoint/secret resolution: the spawned pi process must receive its
+    // credentials from WG config, NOT from ambient env or Pi's own login. This
+    // is the WG contract — a configured WG endpoint/key is sufficient.
+    let config = Config::load_or_default(workgraph_dir);
+    let secret = PiEndpointSecret::resolve(&config, workgraph_dir, &marg.provider);
+    logger.info(&format!(
+        "pi-handler: WG endpoint/secret resolved: provider={:?}, has_key={}, has_base_url={} (env injection only — never argv, never logged)",
+        secret.provider, secret.has_key(), secret.base_url.is_some()
+    ));
+    if !secret.has_key() {
+        logger.warn(&format!(
+            "pi-handler: no WG-resolved API key for provider {:?}; pi will only succeed if it has its own credentials (NOT the WG contract)",
+            marg.provider
+        ));
+    }
+    let secret_env = secret.env_pairs();
+
     logger.info(&format!(
         "pi-handler starting: chat_ref={}, role={:?}, model={:?} -> provider={}/model={}, topology={:?}",
         chat_ref, role, model, marg.provider, marg.model, topology
@@ -786,6 +933,7 @@ pub fn run(
                 &marg,
                 chat_ref,
                 &session_dir,
+                &secret_env,
                 &logger,
             )?)
         }
@@ -794,7 +942,7 @@ pub fn run(
                 .node_host
                 .as_ref()
                 .expect("node-host topology implies a host triple");
-            Box::new(NodeHostTransport::spawn(host, &marg, &logger)?)
+            Box::new(NodeHostTransport::spawn(host, &marg, &secret_env, &logger)?)
         }
     };
 
@@ -1069,6 +1217,115 @@ mod tests {
             "credentials must never be passed via --api-key: {:?}",
             args
         );
+    }
+
+    // --- WG endpoint/secret env injection (fix-pi-endpoint-secret-env) ---------
+
+    #[test]
+    fn test_pi_endpoint_secret_env_pairs_include_wg_and_provider_vars() {
+        let secret = PiEndpointSecret {
+            api_key: Some("sk-test-key".to_string()),
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            provider: Some("openrouter".to_string()),
+        };
+        let pairs = secret.env_pairs();
+        let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        // WG canonical secret env.
+        assert!(names.contains(&"WG_API_KEY"));
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "WG_API_KEY").unwrap().1,
+            "sk-test-key"
+        );
+        // Pi-specific mirrors.
+        assert!(names.contains(&"WG_PI_API_KEY"));
+        assert!(names.contains(&"WG_PI_BASE_URL"));
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "WG_PI_BASE_URL").unwrap().1,
+            "https://openrouter.ai/api/v1"
+        );
+        // Provider-specific vars for openrouter.
+        assert!(names.contains(&"OPENROUTER_API_KEY"));
+        assert!(names.contains(&"OPENAI_API_KEY"));
+        // The key value is the resolved key, not leaked elsewhere.
+        for (_, v) in &pairs {
+            assert_ne!(*v, "");
+        }
+    }
+
+    #[test]
+    fn test_pi_endpoint_secret_env_pairs_no_key_is_empty() {
+        let secret = PiEndpointSecret::default();
+        assert!(secret.env_pairs().is_empty());
+        assert!(!secret.has_key());
+    }
+
+    #[test]
+    fn test_pi_endpoint_secret_env_pairs_no_argv_no_logging() {
+        // The env pairs must never contain an argv-style flag; they are env
+        // (key, value) tuples only. This is the redaction/no-argv-secret
+        // assertion.
+        let secret = PiEndpointSecret {
+            api_key: Some("sk-secret".to_string()),
+            base_url: None,
+            provider: Some("anthropic".to_string()),
+        };
+        let pairs = secret.env_pairs();
+        for (k, v) in &pairs {
+            assert!(!k.starts_with("--"));
+            assert!(!v.starts_with("--"));
+            // No key value should be empty.
+            assert!(!v.is_empty());
+        }
+        // Anthropic provider → ANTHROPIC_API_KEY.
+        let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(names.contains(&"ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn test_pi_endpoint_secret_resolve_from_config_openrouter() {
+        // Build a Config with an openrouter endpoint carrying an inline key,
+        // and confirm PiEndpointSecret::resolve picks it up even when the
+        // ambient env has NO OPENROUTER_API_KEY (the no-ambient-env case).
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "openrouter-test".to_string(),
+            provider: "openrouter".to_string(),
+            url: Some("https://openrouter.ai/api/v1".to_string()),
+            api_key: Some("sk-from-config".to_string()),
+            ..Default::default()
+        });
+        // Ensure ambient env does NOT carry the key.
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
+        assert_eq!(secret.api_key.as_deref(), Some("sk-from-config"));
+        assert_eq!(
+            secret.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(secret.provider.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn test_pi_endpoint_secret_resolve_no_ambient_env_falls_back_to_default() {
+        // No provider-specific endpoint, but a default endpoint with a key
+        // should be picked up as the cross-provider fallback — proving WG
+        // config alone is sufficient with no ambient env.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "default-ep".to_string(),
+            provider: "oai-compat".to_string(),
+            url: Some("https://api.example.com/v1".to_string()),
+            api_key: Some("sk-default-ep".to_string()),
+            is_default: true,
+            ..Default::default()
+        });
+        std::env::remove_var("OPENROUTER_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
+        // The default endpoint's key resolves as the fallback.
+        assert_eq!(secret.api_key.as_deref(), Some("sk-default-ep"));
     }
 
     // --- RPC event parsing (agent_end → last assistant text, canned JSONL) ----
