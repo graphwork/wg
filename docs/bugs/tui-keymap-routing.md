@@ -479,6 +479,44 @@ the reproducers must drive the real keystroke path (not a CLI/unit substitute):
 
 ---
 
+## 9. tmux extended-keys requirement for modified Enter
+
+Modified special keys such as `Shift+Enter`, `Ctrl+Enter`, and `Alt+Enter`
+only reach `wg tui` when the full terminal chain preserves the kitty keyboard /
+CSI-u extended-key protocol:
+
+```
+outer terminal (for example WezTerm extended keys)
+  -> tmux with extended-keys on/always
+  -> wg tui keyboard enhancement / CSI-u handling
+```
+
+tmux is the lossy hop. When `extended-keys` is `off`, tmux flattens modified
+special keys before `wg tui` can see them, so modified Enter chords look like a
+plain Enter and silently miss their intended action. Configure tmux with:
+
+```tmux
+set -g extended-keys on
+```
+
+Then restart tmux so the global option applies to new panes:
+
+```bash
+tmux kill-server
+```
+
+`wg tui` detects this startup case when it is running inside tmux and prints a
+one-time warning if `extended-keys` is explicitly off. Query failures, older tmux
+versions, or non-tmux sessions stay silent because this is a degraded-keyboard
+warning, not a hard prerequisite.
+
+This belongs to the same terminal-capability surface as focus-in re-grab and
+the keyboard enhancement push. The broader terminal-host plan tracks folding the
+check into a reusable capability layer; this TUI startup probe is the first
+small instance of that direction.
+
+---
+
 ## Appendix: key file/line index
 
 | Symbol | Location |

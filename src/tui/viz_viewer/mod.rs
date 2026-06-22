@@ -19,6 +19,7 @@ mod scroll_mode_tests;
 
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -40,9 +41,68 @@ use ratatui::backend::CrosstermBackend;
 use self::state::VizApp;
 use crate::commands::viz::VizOptions;
 
+const TMUX_EXTENDED_KEYS_WARNING: &str = "Warning: tmux extended-keys is off — modified keys \
+    (Shift/Ctrl/Alt+Enter) may not work in the wg TUI. Add `set -g extended-keys on` to \
+    ~/.tmux.conf and restart tmux (tmux kill-server).";
+
+static TMUX_EXTENDED_KEYS_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+
 /// Returns true when running inside an asciinema recording session.
 fn detect_asciinema() -> bool {
     std::env::var_os("ASCIINEMA_REC").is_some()
+}
+
+fn tmux_extended_keys_enabled(value: &str) -> Option<bool> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("extended-keys")
+        .map(str::trim_start)
+        .unwrap_or(value);
+    match value {
+        "on" | "always" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn tmux_extended_keys_are_enabled() -> Option<bool> {
+    std::env::var_os("TMUX")?;
+
+    let output = Command::new("tmux")
+        .args(["show-options", "-gqv", "extended-keys"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let value = String::from_utf8_lossy(&output.stdout);
+        return tmux_extended_keys_enabled(&value);
+    }
+
+    let output = Command::new("tmux")
+        .args(["show-options", "-g", "extended-keys"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout);
+    tmux_extended_keys_enabled(&value)
+}
+
+fn warn_tmux_extended_keys_if_needed() {
+    if !matches!(tmux_extended_keys_are_enabled(), Some(false)) {
+        return;
+    }
+    if TMUX_EXTENDED_KEYS_WARNING_EMITTED
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        eprintln!("{TMUX_EXTENDED_KEYS_WARNING}");
+    }
 }
 
 /// Run the viz viewer TUI.
@@ -80,6 +140,8 @@ pub fn run(
         let _ = restore_terminal();
         original_hook(panic_info);
     }));
+
+    warn_tmux_extended_keys_if_needed();
 
     enable_raw_mode().context(
         "failed to enable raw mode — is this an interactive terminal?\n\
@@ -185,4 +247,36 @@ fn restore_terminal() -> Result<()> {
     let _ = r3; // Ignore error — may not have been pushed.
     r4?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tmux_extended_keys_enabled;
+
+    #[test]
+    fn tmux_extended_keys_parse_enabled_values() {
+        assert_eq!(tmux_extended_keys_enabled("on\n"), Some(true));
+        assert_eq!(tmux_extended_keys_enabled("always\n"), Some(true));
+        assert_eq!(tmux_extended_keys_enabled("extended-keys on\n"), Some(true));
+        assert_eq!(
+            tmux_extended_keys_enabled("extended-keys always\n"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn tmux_extended_keys_parse_off_value() {
+        assert_eq!(tmux_extended_keys_enabled("off\n"), Some(false));
+        assert_eq!(
+            tmux_extended_keys_enabled("extended-keys off\n"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn tmux_extended_keys_parse_unknown_as_inconclusive() {
+        assert_eq!(tmux_extended_keys_enabled(""), None);
+        assert_eq!(tmux_extended_keys_enabled("not-a-value\n"), None);
+        assert_eq!(tmux_extended_keys_enabled("extended-keys maybe\n"), None);
+    }
 }
