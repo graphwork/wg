@@ -23,6 +23,44 @@ fn is_safe_launcher_field_char(c: char) -> bool {
         || c == '\u{2029}')
 }
 
+/// True when `code`/`modifiers` represent a *bare printable* character — a
+/// `KeyCode::Char` with none of Ctrl/Alt/Meta held (Shift is allowed; it only
+/// selects the uppercase/symbol glyph).
+///
+/// Keymap policy (docs/bugs/tui-keymap-routing.md §5 P1): a bare printable is
+/// always TEXT. It must reach the focused text input / embedded child and must
+/// NEVER be consumed as a global host action. This helper is the single
+/// definition of "printable" that the input-routing layer keys off, so the
+/// rule cannot drift between call sites. The `+`-opens-launcher bug was exactly
+/// a bare printable being stolen from a focused child; `debug_assert`s in the
+/// PTY-forward path use this to prevent the class of bug from recurring.
+fn is_bare_printable(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char(c) if !c.is_control())
+        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META)
+}
+
+fn ctrl_char_for(c: char) -> Option<char> {
+    let lower = c.to_ascii_lowercase();
+    match lower {
+        'a'..='z' => char::from_u32((lower as u32) - ('a' as u32) + 1),
+        '[' => Some('\u{1b}'),
+        '\\' => Some('\u{1c}'),
+        ']' => Some('\u{1d}'),
+        '^' => Some('\u{1e}'),
+        '_' => Some('\u{1f}'),
+        _ => None,
+    }
+}
+
+fn is_ctrl_chord(code: KeyCode, modifiers: KeyModifiers, key: char) -> bool {
+    let explicit_ctrl = modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&key));
+    let raw_ctrl_byte = !modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META)
+        && matches!((code, ctrl_char_for(key)), (KeyCode::Char(c), Some(ctrl)) if c == ctrl);
+    explicit_ctrl || raw_ctrl_byte
+}
+
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
     ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, NavEntry, ResponsiveBreakpoint,
@@ -210,6 +248,75 @@ fn set_mouse_capture(enabled: bool, any_motion: bool) -> Result<()> {
     Ok(())
 }
 
+/// Build the byte burst that re-asserts wg's *own* input grab.
+///
+/// Pure (no I/O) so the exact payload can be unit-tested; `assert_input_grab`
+/// writes + flushes it. Covers every mode wg owns at the outer-terminal
+/// boundary, except raw mode (a termios call, not a byte sequence — handled in
+/// `assert_input_grab`):
+///
+/// * kitty keyboard disambiguation — emitted with the **set** form
+///   (`CSI = 1 ; 1 u`), NOT `PushKeyboardEnhancementFlags`. Re-pushing on every
+///   focus-in would grow the terminal's flag stack while teardown pops only
+///   once, leaving stale flags after exit. The set form replaces the single
+///   stack entry mod.rs pushed at startup, so the stack depth never changes.
+/// * bracketed paste (`?2004h`) — idempotent when already on; we only ever
+///   assert "on", never toggle off→on (toggling could split an in-flight paste
+///   into raw keystrokes, the very leak class `handle_paste` guards against).
+/// * mouse capture — byte-for-byte identical to `set_mouse_capture` so the
+///   grab re-assert and the `m` toggle can never disagree on the mode set.
+fn input_grab_bytes(
+    has_keyboard_enhancement: bool,
+    mouse_enabled: bool,
+    any_motion: bool,
+) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::with_capacity(32);
+    if has_keyboard_enhancement {
+        buf.extend_from_slice(b"\x1b[=1;1u");
+    }
+    buf.extend_from_slice(b"\x1b[?2004h");
+    if mouse_enabled {
+        buf.extend_from_slice(b"\x1b[?1002h\x1b[?1006h");
+        if any_motion {
+            buf.extend_from_slice(b"\x1b[?1003h");
+        }
+    } else {
+        buf.extend_from_slice(b"\x1b[?1003l\x1b[?1006l\x1b[?1002l");
+    }
+    buf
+}
+
+/// Re-assert wg's own terminal input grab as a single contiguous burst.
+///
+/// Both startup (`run_event_loop`) and `Event::FocusGained` call this, so the
+/// initial grab and the focus-in re-assert can never drift. On an OS
+/// focus-out/in cycle, tmux re-mirrors the active pane's modes onto the outer
+/// terminal lazily; for a brief window the pane's grab is not yet re-applied and
+/// the user's first keystroke is parsed by tmux instead of wg (e.g. popping
+/// `choose-tree`). Re-asserting here closes that window deterministically,
+/// before the next key, on every focus-in — no reliance on time or a sacrificial
+/// arrow key.
+///
+/// Scoped to wg's *own* outer-terminal modes only; it never touches an embedded
+/// chat PTY child's mode negotiation (that child runs against the in-process
+/// emulator in `pty_pane.rs`, a separate terminal). All writes go out in one
+/// `write_all` + `flush` so they land before any user key can interleave.
+fn assert_input_grab(app: &VizApp) -> Result<()> {
+    use io::Write;
+    // Raw mode is idempotent — crossterm captures the original termios once, so
+    // this just re-applies tcsetattr(RAW) if a layer below us reset it.
+    let _ = crossterm::terminal::enable_raw_mode();
+    let bytes = input_grab_bytes(
+        app.has_keyboard_enhancement,
+        app.mouse_enabled,
+        app.any_motion_mouse,
+    );
+    let mut stdout = io::stdout();
+    stdout.write_all(&bytes)?;
+    stdout.flush()?;
+    Ok(())
+}
+
 /// Returns true when mode 1003 (any-event tracking) should be enabled.
 /// Only enabled in Termux (without mosh), where touch drag events may lack
 /// the button-held flag. Enabling 1003 globally causes the outer terminal
@@ -224,8 +331,10 @@ pub fn run_event_loop(
     app: &mut VizApp,
     shared_screen: &super::screen_dump::SharedScreen,
 ) -> Result<()> {
-    // Set initial mouse capture state
-    set_mouse_capture(app.mouse_enabled, app.any_motion_mouse)?;
+    // Establish wg's full input grab (mouse + bracketed paste + kitty/raw
+    // re-assert). Uses the same helper `Event::FocusGained` calls so the startup
+    // grab and the focus-in re-assert can never drift.
+    assert_input_grab(app)?;
 
     let result = run_event_loop_inner(terminal, app, shared_screen);
 
@@ -404,6 +513,18 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             handle_mouse(app, mouse.kind, mouse.row, mouse.column);
         }
         Event::Resize(_, _) => {} // handled by next redraw
+        Event::FocusGained => {
+            // OS focus returned to wg's window. tmux re-mirrors the active
+            // pane's modes onto the outer terminal lazily, leaving a brief
+            // window in which the user's first keystroke can be parsed by tmux
+            // instead of wg (popping choose-tree, etc.). Re-assert wg's own
+            // grab immediately so that window is closed before the next key.
+            //
+            // A focus event is NOT user input: it must not bump interaction
+            // tracking and is never forwarded to an embedded chat PTY child.
+            let _ = assert_input_grab(app);
+        }
+        Event::FocusLost => {} // wg keeps its grab while unfocused; nothing to do
         _ => {}
     }
 }
@@ -518,13 +639,10 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             // fall through to normal key handling below
         } else {
             let is_exit = matches!(code, KeyCode::Esc | KeyCode::Char('q'))
-                || (matches!(code, KeyCode::Char(']'))
-                    && modifiers.contains(KeyModifiers::CONTROL));
+                || is_ctrl_chord(code, modifiers, ']');
             if is_exit {
                 app.input_mode = InputMode::Normal;
-            } else if matches!(code, KeyCode::Char('c'))
-                && modifiers.contains(KeyModifiers::CONTROL)
-            {
+            } else if is_ctrl_chord(code, modifiers, 'c') {
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     let _ = pane.interrupt_foreground();
                     app.bump_active_chat_pty_interaction(false);
@@ -565,19 +683,20 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // composer and the CLI never hears the user.
     //
     // Scoping: only fires on the Chat tab when the forward flag is set
-    // (matches interactive-REPL executors). Escape hatch: Ctrl+T
-    // toggles PTY mode off so the user can use TUI graph/tabs again.
-    // Everything else — letters, digits, Enter, arrows, Ctrl-C,
-    // Ctrl-Q (user's tmux prefix, often), Ctrl-whatever — goes to
-    // the vendor CLI so slash commands, readline editing, vendor
-    // hotkeys, user's own tmux prefix binding, etc. all work
-    // naturally. If you really want to exit the host TUI, Ctrl-T
-    // out of PTY mode first, then use the normal `q` quit.
+    // (matches interactive-REPL executors). Escape hatch: Ctrl+O
+    // toggles command-mode focus off so the user can use TUI
+    // graph/tabs again. Everything else — letters, digits, Enter,
+    // arrows, Ctrl-C, Ctrl-T (vendor thinking-toggle), Ctrl-Q (user's
+    // tmux prefix, often), Ctrl-whatever — goes to the vendor CLI so
+    // slash commands, readline editing, vendor hotkeys, user's own
+    // tmux prefix binding, etc. all work naturally. If you really want
+    // to exit the host TUI, Ctrl-O out of PTY focus first, then use the
+    // normal `q` quit.
     // Focus gating: only forward keys to the PTY when the right
     // panel is actually focused. A mouse click on the graph panel
     // shifts focused_panel to Graph, naturally "escaping" the PTY
-    // without needing Ctrl-T — matches pane-focus behavior users
-    // expect from tmux/vim splits. Ctrl-T still works as the
+    // without needing Ctrl-O — matches pane-focus behavior users
+    // expect from tmux/vim splits. Ctrl-O still works as the
     // keyboard escape hatch (handled below).
     //
     // Modal gating (fix-new-chat-2): when ANY non-Normal input mode
@@ -592,50 +711,77 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // Death-panel gating (fix-chat-died): when the embedded child has
     // exited and the death panel is showing, `chat_pty_mode` stays true
     // (so render still goes through the PTY path) but the pane has
-    // been removed from `task_panes`. Without this guard the keystroke
-    // would be "forwarded" to a missing pane and silently dropped via
-    // the unconditional `return`, leaving R/E/X unreachable. Letting
-    // keys fall through here lets `handle_normal_key` route them to
-    // the death-panel recovery branch.
-    let vendor_pty_active = app.chat_pty_mode
+    // usually been removed from `task_panes`. Without this guard the
+    // keystroke would be "forwarded" to a missing pane and silently
+    // dropped via the unconditional `return`, leaving R/E/X unreachable.
+    //
+    // Keymap-routing refinement: death metadata alone must not steal a
+    // focused live PTY's input. Custom-command chats can have status/death
+    // metadata while their pane is still alive; in that state the focused
+    // child owns bare printables (not the launcher or death-panel globals).
+    // So the death panel only gets first claim when no live pane exists.
+    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let focused_chat_pty = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer
-        && matches!(app.input_mode, InputMode::Normal)
-        && !app
-            .chat_agent_death
-            .contains_key(&app.active_coordinator_id);
+        && matches!(app.input_mode, InputMode::Normal);
+    let active_chat_has_death = app
+        .chat_agent_death
+        .contains_key(&app.active_coordinator_id);
+    let vendor_pty_pane_alive = focused_chat_pty
+        && app
+            .task_panes
+            .get_mut(&task_id)
+            .map(|pane| pane.is_alive())
+            .unwrap_or(false);
+    let vendor_pty_active = focused_chat_pty && (vendor_pty_pane_alive || !active_chat_has_death);
     if vendor_pty_active {
-        // Modal contract (implement-tui-modal): when chat PTY has focus, most
-        // keystrokes flow to the embedded REPL. Two host-TUI escapes remain:
-        // Ctrl+T toggles command mode, and `+` opens the new-chat launcher
-        // because the visible Chat tab advertises `[+]` as the add-chat path.
-        // Other letters, digits, Enter, Ctrl+N, Ctrl+W, Ctrl+anything still
-        // go to the embedded REPL. Use Ctrl+T to enter command mode, then
-        // `n`/`w` for the command-mode aliases (see implement-tui-command).
-        let is_toggle =
-            matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
-        let is_plus_launcher = matches!(code, KeyCode::Char('+'))
-            && !modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META);
-        if is_plus_launcher {
-            app.open_launcher();
-            return;
-        }
-        let is_scroll_toggle =
-            matches!(code, KeyCode::Char(']')) && modifiers.contains(KeyModifiers::CONTROL);
-        if is_scroll_toggle {
-            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
-            app.input_mode = InputMode::ScrollMode { task_id };
-            return;
-        }
+        // KEYMAP POLICY (docs/bugs/tui-keymap-routing.md §5) — while the
+        // embedded REPL owns focus the host forwards EVERYTHING to the child
+        // (letters, digits, Enter, arrows, Ctrl+N, Ctrl+W, Ctrl+anything, the
+        // user's tmux prefix, …) EXCEPT a small, explicit set of NON-printable
+        // host-escape chords computed below. The governing rules:
+        //
+        //   P1. A *bare printable* (`Char(c)` with no Ctrl/Alt/Meta) is TEXT —
+        //       always forwarded, never consumed as a host action. This is the
+        //       invariant the old `+`-opens-launcher interception violated; the
+        //       fix is simply that `+` is no longer in the escape set, so it
+        //       reaches the child like any other character. The `[+]` add-chat
+        //       affordance stays reachable by mouse click and by `+` in command
+        //       mode (where no input/child is focused).
+        //   P3. Vendor-reserved chords pass through to the child. In particular
+        //       Ctrl+T (codex/pi "toggle thinking blocks") is NOT special-cased
+        //       here anymore — it forwards like any other Ctrl chord.
+        //   P4. The host keeps ONE keyboard escape into command mode: Ctrl+O
+        //       (non-printable; not a readline editing key; not a vendor
+        //       thinking/interrupt/EOF chord; not a common tmux prefix — see
+        //       audit §6 Option A). Plus Ctrl+] (scrollback) and bare
+        //       PageUp/PageDown/Home/End (scroll the host's view).
+        let is_command_mode_toggle = is_ctrl_chord(code, modifiers, 'o');
+        let is_scroll_toggle = is_ctrl_chord(code, modifiers, ']');
         let is_scroll = matches!(
             code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
         ) && modifiers.is_empty();
+
+        // Policy invariant (P1): every host-escape chord is non-printable. If a
+        // future edit ever adds a bare-printable interception here, this fires
+        // in debug/test builds before it can ship as another `+`-style bug.
+        debug_assert!(
+            !(is_command_mode_toggle || is_scroll_toggle || is_scroll)
+                || !is_bare_printable(code, modifiers),
+            "keymap policy violation: a bare printable is being intercepted as a \
+             host escape while the embedded REPL has focus — bare printables must \
+             always forward to the child (docs/bugs/tui-keymap-routing.md §5 P1)"
+        );
+
+        if is_scroll_toggle {
+            app.input_mode = InputMode::ScrollMode { task_id };
+            return;
+        }
         if is_scroll {
-            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
                 let page = (app.last_right_content_area.height as usize).max(10);
                 match code {
@@ -648,10 +794,9 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 return;
             }
         }
-        if !is_toggle {
-            let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        if !is_command_mode_toggle {
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
-                if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
+                if is_ctrl_chord(code, modifiers, 'c') {
                     let _ = pane.interrupt_foreground();
                 } else {
                     let key_event = crossterm::event::KeyEvent::new(code, modifiers);
@@ -665,7 +810,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             // explicitly removes.
             return;
         }
-        // Ctrl+T falls through to the toggle handler in handle_normal_key.
+        // Ctrl+O falls through to the command-mode toggle in handle_normal_key.
     }
 
     // Global Ctrl+N: open the launcher (only fires when NOT in PTY focus —
@@ -752,17 +897,24 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     // pasted a URL into the dialog, the URL appeared in the background
     // chat tab). When ANY non-Normal input mode is active, paste belongs
     // to the focused dialog widget — never the underlying PTY.
-    let vendor_pty_active = app.chat_pty_mode
+    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let focused_chat_pty = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer
-        && matches!(app.input_mode, InputMode::Normal)
-        && !app
-            .chat_agent_death
-            .contains_key(&app.active_coordinator_id);
+        && matches!(app.input_mode, InputMode::Normal);
+    let active_chat_has_death = app
+        .chat_agent_death
+        .contains_key(&app.active_coordinator_id);
+    let vendor_pty_pane_alive = focused_chat_pty
+        && app
+            .task_panes
+            .get_mut(&task_id)
+            .map(|pane| pane.is_alive())
+            .unwrap_or(false);
+    let vendor_pty_active = focused_chat_pty && (vendor_pty_pane_alive || !active_chat_has_death);
     if vendor_pty_active {
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.send_text(text);
             return;
@@ -1863,7 +2015,6 @@ fn handle_task_form_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
 fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
-    use crossterm::event::KeyEvent;
     let in_edit_mode = app.chat.editing_index.is_some();
     match code {
         KeyCode::Esc => {
@@ -1941,22 +2092,18 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
         _ => {}
     }
-    if code == KeyCode::Enter
-        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
-    {
-        app.editor_handler.on_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut app.chat.editor,
-        );
+    if is_composer_newline_key(code, modifiers) {
+        insert_editor_newline(&mut app.editor_handler, &mut app.chat.editor);
         return;
     }
-    app.editor_handler
-        .on_key_event(KeyEvent::new(code, modifiers), &mut app.chat.editor);
+    app.editor_handler.on_key_event(
+        crossterm::event::KeyEvent::new(code, modifiers),
+        &mut app.chat.editor,
+    );
 }
 
 fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
-    use crossterm::event::KeyEvent;
     match code {
         KeyCode::Esc => {
             // Save draft on exit so it persists across panel/task switches.
@@ -2016,29 +2163,37 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         _ => {}
     }
-    if code == KeyCode::Enter
-        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
-    {
-        app.editor_handler.on_key_event(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut app.messages_panel.editor,
-        );
+    if is_composer_newline_key(code, modifiers) {
+        insert_editor_newline(&mut app.editor_handler, &mut app.messages_panel.editor);
         return;
     }
     app.editor_handler.on_key_event(
-        KeyEvent::new(code, modifiers),
+        crossterm::event::KeyEvent::new(code, modifiers),
         &mut app.messages_panel.editor,
     );
 }
 
+fn is_composer_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Enter)
+        && (modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT))
+        || matches!(code, KeyCode::Char('j' | 'J')) && modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn insert_editor_newline(handler: &mut edtui::EditorEventHandler, editor: &mut edtui::EditorState) {
+    handler.on_key_event(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        editor,
+    );
+}
+
 fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    // Global Ctrl+T: shift focus between graph and PTY pane (or
+    // Global Ctrl+O: shift focus between graph and PTY pane (or
     // respawn a dead PTY). `toggle_chat_pty_mode` sets
-    // `focused_panel` itself — don't re-override here.
-    if modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(code, KeyCode::Char('t'))
-        && app.right_panel_tab == RightPanelTab::Chat
-    {
+    // `focused_panel` itself — don't re-override here. Ctrl+O is the
+    // command-mode escape chord (was Ctrl+T, freed for the embedded
+    // executor's thinking-toggle convention — see
+    // docs/bugs/tui-keymap-routing.md §6 Option A).
+    if is_ctrl_chord(code, modifiers, 'o') && app.right_panel_tab == RightPanelTab::Chat {
         toggle_chat_pty_mode(app);
         return;
     }
@@ -2306,6 +2461,19 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
         KeyCode::Char('N') => app.prev_match(),
+
+        // '+' opens the new-chat launcher in command mode (Chat tab, graph
+        // focus). This is the keyboard counterpart of clicking the rendered
+        // `[+]` button. It is a legitimate host binding under keymap policy
+        // P1 (docs/bugs/tui-keymap-routing.md §5) because in command mode no
+        // text input / embedded child is focused — the printable is NOT being
+        // stolen from anyone. While the embedded REPL has focus, `+` instead
+        // forwards to the child (see the `vendor_pty_active` branch). Mirrors
+        // `handle_right_panel_key`'s `Char('+')` arm so `+` adds a chat from
+        // either command-mode focus.
+        KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
+            app.open_launcher();
+        }
 
         // Alt+Up/Down: toggle focus between graph and right panel
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
@@ -2732,13 +2900,13 @@ fn handle_history_browser_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyMo
 }
 
 fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    // Chat tab OWNER PTY mode: forward ALL keys (except Ctrl+T and
+    // Chat tab OWNER PTY mode: forward ALL keys (except Ctrl+O and
     // a few escape hatches) to the embedded handler's stdin BEFORE
     // any global key handling. The user has indicated "this is the
     // live terminal" by toggling on; they expect `q`, `/`, Enter,
     // arrow keys etc. to reach the embedded nex, not close the TUI
     // or open search. Escape hatches that keep the TUI usable:
-    //   * Ctrl+T: toggle PTY mode off (already handled in
+    //   * Ctrl+O: toggle PTY focus off (already handled in
     //     `handle_normal_key`'s global branch)
     //   * Ctrl+Q: reserved for future "force quit TUI"
     //
@@ -3201,13 +3369,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Chat tab: '[' / ']' cycle between coordinator tabs
-        // Chat tab: Ctrl+T toggles PTY-backed rendering for the active
+        // Chat tab: Ctrl+O toggles PTY-backed rendering for the active
         // coordinator's task. Lazy-spawns `wg spawn-task <task-id>`
         // on first toggle-on; tears down cleanly on toggle-off or
         // when the embedded handler exits. Phase 3a of
-        // docs/design/sessions-as-identity-rollout.md.
-        KeyCode::Char('t')
-            if modifiers.contains(KeyModifiers::CONTROL)
+        // docs/design/sessions-as-identity-rollout.md. (Rebound from
+        // Ctrl+T to free that chord for the embedded executor's
+        // thinking-toggle — docs/bugs/tui-keymap-routing.md §6.)
+        KeyCode::Char(_)
+            if is_ctrl_chord(code, modifiers, 'o')
                 && app.right_panel_tab == RightPanelTab::Chat =>
         {
             toggle_chat_pty_mode(app);
@@ -3465,13 +3635,13 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
         .map(|p| p.is_alive())
         .unwrap_or(false);
 
-    // Ctrl-T is the keyboard escape/re-enter. When the pane is
+    // Ctrl-O is the keyboard escape/re-enter. When the pane is
     // live, shift `focused_panel` — that's the gate on key
     // forwarding (vendor_pty_active). Unlike the old "flip
     // chat_pty_mode off" behavior, the PTY stays rendered (just
     // dimmed) — the file-tailing chat view shown when
     // chat_pty_mode was false was stale/irrelevant for claude and
-    // codex (they don't write inbox/outbox), which made Ctrl-T
+    // codex (they don't write inbox/outbox), which made the toggle
     // feel broken.
     if app.chat_pty_mode && pane_live {
         app.focused_panel = if app.focused_panel == FocusedPanel::RightPanel {
@@ -5772,6 +5942,86 @@ fn is_agency_task_id(id: &str) -> bool {
 // ══════════════════════════════════════════════════════════════════════════════
 // Tests for scrollbar click and drag behavior
 // ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod input_grab_tests {
+    use super::*;
+
+    // The literal escape sequences the re-grab burst must (re-)assert. Kept as
+    // bytes so a regression that changes the wire format fails loudly here.
+    //
+    // NOTE: these are pure-payload tests of `input_grab_bytes`. The live
+    // focus-in → re-assert path (which performs real terminal I/O, including
+    // enable_raw_mode) is exercised end-to-end by the smoke scenario
+    // tests/smoke/scenarios/tui_focus_in_reasserts_input_grab.sh — we
+    // deliberately do NOT drive `assert_input_grab` from a unit test, since it
+    // would flip a developer's real terminal into raw mode.
+    const KITTY_SET: &[u8] = b"\x1b[=1;1u";
+    const KITTY_PUSH_PREFIX: &[u8] = b"\x1b[>";
+    const BRACKETED_PASTE_ON: &[u8] = b"\x1b[?2004h";
+    const BRACKETED_PASTE_OFF: &[u8] = b"\x1b[?2004l";
+    const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+    const MOUSE_ANY_MOTION_ON: &[u8] = b"\x1b[?1003h";
+    const MOUSE_OFF: &[u8] = b"\x1b[?1003l\x1b[?1006l\x1b[?1002l";
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn input_grab_reasserts_paste_and_mouse_when_enabled() {
+        let bytes = input_grab_bytes(true, true, false);
+        // Kitty re-asserted with the SET form, never a second push (a push on
+        // every focus-in would grow the terminal's flag stack vs. one teardown
+        // pop, leaving stale flags after exit).
+        assert!(contains(&bytes, KITTY_SET), "must emit kitty set form");
+        assert!(
+            !contains(&bytes, KITTY_PUSH_PREFIX),
+            "must NOT push kitty flags on re-assert"
+        );
+        assert!(contains(&bytes, BRACKETED_PASTE_ON), "must re-assert paste");
+        assert!(contains(&bytes, MOUSE_ON), "must re-assert mouse capture");
+        // Only ever assert paste "on" — never a disable that could split a paste.
+        assert!(
+            !contains(&bytes, BRACKETED_PASTE_OFF),
+            "must not disable paste"
+        );
+    }
+
+    #[test]
+    fn input_grab_omits_kitty_when_unsupported() {
+        let bytes = input_grab_bytes(false, true, false);
+        assert!(
+            !contains(&bytes, KITTY_SET),
+            "no kitty bytes without support"
+        );
+        // Paste + mouse are still re-asserted regardless of kitty support.
+        assert!(contains(&bytes, BRACKETED_PASTE_ON));
+        assert!(contains(&bytes, MOUSE_ON));
+    }
+
+    #[test]
+    fn input_grab_any_motion_adds_mode_1003() {
+        let without = input_grab_bytes(false, true, false);
+        let with = input_grab_bytes(false, true, true);
+        assert!(!contains(&without, MOUSE_ANY_MOTION_ON));
+        assert!(contains(&with, MOUSE_ANY_MOTION_ON));
+    }
+
+    #[test]
+    fn input_grab_disables_mouse_when_off() {
+        // Matches set_mouse_capture(false, _): the re-assert tracks the live
+        // mouse state instead of force-enabling mouse the user turned off.
+        let bytes = input_grab_bytes(false, false, false);
+        assert!(
+            contains(&bytes, MOUSE_OFF),
+            "mouse-off path must emit disable seq"
+        );
+        assert!(!contains(&bytes, MOUSE_ON));
+        // Paste is still re-asserted — it is not gated on mouse.
+        assert!(contains(&bytes, BRACKETED_PASTE_ON));
+    }
+}
+
 #[cfg(test)]
 mod scrollbar_tests {
     use super::*;
@@ -8779,13 +9029,14 @@ mod chat_tab_navigation_tests {
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
     }
 
-    /// `Ctrl+W` does NOT escape PTY mode — only `Ctrl+T` is allowed to
-    /// break out (see implement-tui-modal). When the chat PTY has focus,
-    /// Ctrl+W is forwarded to the embedded editor (e.g. readline's kill-word).
-    /// The user must press `Ctrl+T` to enter command mode, then `Ctrl+W`
-    /// (or the `w` single-key binding from implement-tui-command) to close
-    /// the tab. This supersedes the prior behavior where Ctrl+W from inside
-    /// PTY also closed the tab — that contradicted the modal contract.
+    /// `Ctrl+W` does NOT escape PTY mode — only `Ctrl+O` is allowed to
+    /// break out (see implement-tui-modal + docs/bugs/tui-keymap-routing.md).
+    /// When the chat PTY has focus, Ctrl+W is forwarded to the embedded editor
+    /// (e.g. readline's kill-word). The user must press `Ctrl+O` to enter
+    /// command mode, then `Ctrl+W` (or the `w` single-key binding from
+    /// implement-tui-command) to close the tab. This supersedes the prior
+    /// behavior where Ctrl+W from inside PTY also closed the tab — that
+    /// contradicted the modal contract.
     #[test]
     fn pty_mode_passes_ctrl_w_to_editor() {
         let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
@@ -8817,10 +9068,13 @@ mod chat_tab_navigation_tests {
         );
     }
 
-    /// Modal contract: Ctrl+T toggles between PTY-focused and
-    /// command-mode focused (focused_panel = RightPanel ⇄ Graph).
+    /// Keymap policy P4 (docs/bugs/tui-keymap-routing.md §6, Option A):
+    /// `Ctrl+O` is the single command-mode escape chord. It toggles between
+    /// PTY-focused and command-mode focused (focused_panel = RightPanel ⇄
+    /// Graph). This replaces the old `Ctrl+T` binding, which is now freed for
+    /// the embedded executor's thinking-toggle convention.
     #[test]
-    fn ctrl_t_toggles_pty_modal_state() {
+    fn ctrl_o_toggles_pty_modal_state() {
         let (mut app, _tmp) = build_app_with_chats(&[0]);
         app.right_panel_tab = RightPanelTab::Chat;
         app.focused_panel = FocusedPanel::RightPanel;
@@ -8845,20 +9099,83 @@ mod chat_tab_navigation_tests {
             return;
         }
 
-        // Ctrl+T from PTY focus → command mode (focused_panel becomes Graph).
-        super::handle_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        // Ctrl+O from PTY focus → command mode (focused_panel becomes Graph).
+        super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(
             app.focused_panel,
             FocusedPanel::Graph,
-            "Ctrl+T from PTY mode must move focus to graph (command mode)"
+            "Ctrl+O from PTY mode must move focus to graph (command mode)"
         );
 
-        // Ctrl+T from command mode → back into PTY focus.
-        super::handle_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        // Ctrl+O from command mode → back into PTY focus.
+        super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(
             app.focused_panel,
             FocusedPanel::RightPanel,
-            "Ctrl+T from command mode must return focus to chat PTY"
+            "Ctrl+O from command mode must return focus to chat PTY"
+        );
+
+        // Real terminals/tmux may deliver Ctrl+O as the raw control byte
+        // (SI, 0x0f) with no modifier bit. Treat it as the same chord.
+        super::handle_key(&mut app, KeyCode::Char('\u{0f}'), KeyModifiers::NONE);
+        assert_eq!(
+            app.focused_panel,
+            FocusedPanel::Graph,
+            "raw Ctrl+O byte from PTY mode must move focus to graph"
+        );
+        super::handle_key(&mut app, KeyCode::Char('\u{0f}'), KeyModifiers::NONE);
+        assert_eq!(
+            app.focused_panel,
+            FocusedPanel::RightPanel,
+            "raw Ctrl+O byte from command mode must return focus to chat PTY"
+        );
+    }
+
+    /// Keymap policy P3 (docs/bugs/tui-keymap-routing.md): while the embedded
+    /// REPL has focus, `Ctrl+T` is a vendor-reserved chord (codex/pi "toggle
+    /// thinking blocks"). It must be FORWARDED to the child's stdin and must
+    /// NOT flip focus / enter command mode. Regression lock for Symptom 2 — wg
+    /// used to steal Ctrl+T for its own command-mode toggle.
+    #[test]
+    fn pty_mode_ctrl_t_forwards_to_child_not_command_mode() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        // `cat` echoes nothing useful but keeps the child alive and lets us
+        // observe that bytes were written to its stdin.
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            // No /bin/sh or no PTY support — skip silently.
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        super::handle_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+        assert_eq!(
+            app.focused_panel,
+            FocusedPanel::RightPanel,
+            "Ctrl+T in PTY mode must NOT flip focus — it belongs to the child \
+             (vendor thinking-toggle), not the host command-mode escape"
+        );
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.child_input_bytes_written() > bytes_before,
+            "Ctrl+T in PTY mode must be forwarded to the child's stdin \
+             (bytes written must advance from {})",
+            bytes_before
         );
     }
 
@@ -9099,6 +9416,26 @@ mod chat_tab_navigation_tests {
         assert_eq!(app.input_mode, InputMode::Launcher);
     }
 
+    /// '+' in command mode (Chat tab, graph focus) opens the launcher — the
+    /// keyboard counterpart of clicking the `[+]` button. This is the correct
+    /// home for `+`-opens-launcher under keymap policy P1: no input/child is
+    /// focused in command mode, so the printable is not stolen from anyone.
+    /// (Contrast `pty_mode_plus_forwards_to_child_not_launcher`, which pins
+    /// that `+` forwards to the child while the REPL has focus.)
+    #[test]
+    fn test_command_mode_plus_opens_launcher() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+        super::handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::NONE);
+        assert!(
+            app.launcher.is_some(),
+            "'+' in command mode (graph focus, Chat tab) must open the launcher"
+        );
+        assert_eq!(app.input_mode, InputMode::Launcher);
+    }
+
     /// 'n' with active search matches navigates to the next match instead of opening launcher.
     #[test]
     fn test_command_mode_n_next_match_when_fuzzy_active() {
@@ -9234,23 +9571,152 @@ mod chat_tab_navigation_tests {
         );
     }
 
-    /// The visible Chat tab advertises `[+]` as the add-chat affordance.
-    /// It must work even when the embedded chat PTY currently owns focus.
+    /// Keymap policy P1 (docs/bugs/tui-keymap-routing.md §5): a bare `+`
+    /// typed while the embedded chat PTY owns focus is TEXT — it must be
+    /// forwarded to the child's stdin and must NOT open the new-chat launcher.
+    /// Regression lock for Symptom 1 — wg used to steal `+` for `open_launcher`
+    /// (the `is_plus_launcher` interception), so a `+` typed to claude/codex
+    /// popped the add-chat dialog instead of reaching the prompt.
+    ///
+    /// The `[+]` add-chat affordance stays reachable two correct ways that do
+    /// NOT steal a focused printable: by mouse click on the rendered `[+]`
+    /// (see `clicking_plus_button_on_coordinator_bar_opens_launcher`) and by
+    /// `+` in command mode, when no child/input is focused (see
+    /// `handle_right_panel_key`'s `Char('+')` arm).
     #[test]
-    fn pty_mode_plus_opens_launcher() {
+    fn pty_mode_plus_forwards_to_child_not_launcher() {
         let (mut app, _tmp) = build_app_with_chats(&[0]);
         app.right_panel_tab = RightPanelTab::Chat;
         app.focused_panel = FocusedPanel::RightPanel;
         app.chat_pty_mode = true;
         app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            // No /bin/sh or no PTY support: still assert the host-side
+            // invariant (launcher must NOT open) even without a child.
+            super::handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::NONE);
+            assert!(
+                app.launcher.is_none(),
+                "'+' in PTY mode must NOT open the launcher"
+            );
+            assert_eq!(app.input_mode, super::super::state::InputMode::Normal);
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
 
         super::handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::NONE);
 
         assert!(
-            app.launcher.is_some(),
-            "'+' in PTY mode must open the new-chat launcher"
+            app.launcher.is_none(),
+            "'+' in PTY mode must NOT open the launcher — it is text for the child"
         );
-        assert_eq!(app.input_mode, super::super::state::InputMode::Launcher);
+        assert_eq!(
+            app.input_mode,
+            super::super::state::InputMode::Normal,
+            "'+' must not change input mode while the child is focused"
+        );
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.child_input_bytes_written() > bytes_before,
+            "'+' in PTY mode must be forwarded to the child's stdin \
+             (bytes written must advance from {})",
+            bytes_before
+        );
+    }
+
+    /// Keymap policy P1, generalized (docs/bugs/tui-keymap-routing.md §5): the
+    /// `+` bug was a *class* of bug — a bare printable consumed as a global
+    /// host action while a child/input is focused. This test pins the whole
+    /// class: every bare printable (letters, digits, and every symbol that
+    /// also has a host binding in command mode — `+ - = / [ ] ~ \\ . < * q n
+    /// w t`) MUST forward to the child and MUST NOT trigger any host action
+    /// (no launcher, no focus flip, no input-mode change). If a future edit
+    /// reintroduces a bare-printable interception in the PTY-forward path,
+    /// this fails.
+    #[test]
+    fn pty_mode_all_bare_printables_forward_to_child() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            // No PTY: at minimum assert no host action fires for each key.
+            for c in "+-=/[]~\\.<*qnwtT1aZ".chars() {
+                super::handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+                assert!(
+                    app.launcher.is_none() && app.focused_panel == FocusedPanel::RightPanel,
+                    "bare '{}' in PTY mode must not trigger a host action",
+                    c
+                );
+                assert_eq!(app.input_mode, super::super::state::InputMode::Normal);
+            }
+            return;
+        };
+        app.task_panes.insert(task_id.clone(), pane);
+
+        // Every char that ALSO has a host binding somewhere (command mode,
+        // graph keys, etc.) plus a couple of plain alnum keys. None may be
+        // intercepted while the child is focused.
+        for c in "+-=/[]~\\.<*qnwtT1aZ".chars() {
+            let before = app
+                .task_panes
+                .get(&task_id)
+                .unwrap()
+                .child_input_bytes_written();
+            super::handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+
+            assert!(
+                app.launcher.is_none(),
+                "bare '{}' in PTY mode must NOT open the launcher",
+                c
+            );
+            assert_eq!(
+                app.focused_panel,
+                FocusedPanel::RightPanel,
+                "bare '{}' in PTY mode must NOT change focus",
+                c
+            );
+            assert_eq!(
+                app.input_mode,
+                super::super::state::InputMode::Normal,
+                "bare '{}' in PTY mode must NOT change input mode",
+                c
+            );
+            let after = app
+                .task_panes
+                .get(&task_id)
+                .unwrap()
+                .child_input_bytes_written();
+            assert!(
+                after > before,
+                "bare '{}' in PTY mode must be forwarded to the child's stdin \
+                 (bytes {} -> {})",
+                c,
+                before,
+                after
+            );
+        }
     }
 
     /// fix-new-chat-2 regression lock: while the new-chat launcher (or
@@ -9712,6 +10178,67 @@ mod chat_tab_navigation_tests {
         assert_ne!(
             after, before,
             "TUI chat PTY Enter must bump last_interaction_at for the active chat task"
+        );
+    }
+
+    #[test]
+    fn chat_composer_modified_enter_inserts_newline_plain_enter_sends() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::ChatInput;
+
+        for c in "first".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        for c in "second".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        for c in "third".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        for c in "fourth".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+
+        assert_eq!(
+            super::super::state::editor_text(&app.chat.editor),
+            "first\nsecond\nthird\nfourth",
+            "Shift+Enter, Alt+Enter, and Ctrl+J must insert literal newlines"
+        );
+
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(
+            super::super::state::editor_text(&app.chat.editor),
+            "",
+            "plain Enter must keep its submit-and-clear behavior"
+        );
+    }
+
+    #[test]
+    fn message_composer_ctrl_j_fallback_inserts_newline() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Messages;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::MessageInput;
+        app.messages_panel.task_id = Some("regular-task".to_string());
+
+        for c in "alpha".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        handle_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        for c in "beta".chars() {
+            handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+
+        assert_eq!(
+            super::super::state::editor_text(&app.messages_panel.editor),
+            "alpha\nbeta",
+            "Ctrl+J fallback must insert a literal newline in message composer"
         );
     }
 

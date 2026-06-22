@@ -1681,6 +1681,31 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "pi" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "pi".to_string(),
+                    command: "pi".to_string(),
+                    // Pi's non-interactive worker surface (`--mode json`, piped
+                    // stdio avoids terminal takeover). Long-lived chat sessions
+                    // use `wg pi-handler --mode rpc`; task workers use this
+                    // one-shot argv through the spawn adapter.
+                    args: vec![
+                        "--mode".to_string(),
+                        "json".to_string(),
+                        "-p".to_string(),
+                        "Complete the WG task prompt supplied on stdin.".to_string(),
+                    ],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "shell" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "shell".to_string(),
@@ -1811,7 +1836,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, codex, native, shell, opencode, aider, crush, amplifier, goose, qwen, cline, default",
+                "Unknown executor '{}'. Available: claude, codex, native, shell, opencode, aider, crush, amplifier, goose, qwen, cline, pi, default",
                 name,
             )),
         }

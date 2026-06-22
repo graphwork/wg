@@ -4995,7 +4995,9 @@ mod prompt_indicator_tests {
         let progress = LiveProgress::default();
         // `waiting_for_input == false` == the agent is working.
         let waiting = Arc::new(AtomicBool::new(false));
-        let state = NexPromptState::new(waiting.clone(), progress.clone());
+        let mut state = NexPromptState::new(waiting.clone(), progress.clone());
+        state.color_enabled = true;
+        state.working_indicator = NEX_WORKING_GLYPH;
 
         progress.add_tokens(7);
         let prompt = strip_ansi(&state.render());

@@ -77,8 +77,8 @@ tmux new-session -d -s "$session" -x 200 -y 60 \
 sleep 4
 
 # Open the Log tab. The TUI starts in Chat PTY focus, whose documented
-# command-mode escape hatch is Ctrl+T; plain Escape is forwarded to the PTY.
-tmux send-keys -t "$session" C-t
+# command-mode escape hatch is Ctrl+O; plain Escape is forwarded to the PTY.
+tmux send-keys -t "$session" C-o
 sleep 0.5
 tmux send-keys -t "$session" 4
 sleep 2

@@ -129,6 +129,15 @@ description = "Pins fix-last-interaction: typing and sending in a real wg tui ch
 timeout_seconds = 45
 
 [[scenario]]
+name = "tui_chat_composer_newlines_pty"
+script = "scenarios/tui_chat_composer_newlines_pty.sh"
+owners = [
+    "bug-wg-tui",
+]
+description = "Pins bug-wg-tui: drives the real wg tui chat composer through a PTY that positively answers the Kitty keyboard-enhancement query, sends CSI-u Shift+Enter plus Ctrl+J, asserts neither chord submits early, then presses plain Enter and verifies exactly one persisted chat message contains the embedded newlines. Credential-free cat chat; no live LLM endpoint required."
+timeout_seconds = 45
+
+[[scenario]]
 name = "preset_shortcuts_still_work"
 script = "scenarios/preset_shortcuts_still_work.sh"
 owners = [
@@ -164,6 +173,16 @@ owners = [
 ]
 description = "Live human-flow guard for verify-opencode-chat: `wg opencode-handler --chat` must produce a genuine model reply in the outbox, NOT the 'encountered an error running opencode' fallback. Catches the two opencode>=1.16 live-path bugs that shipped green from routing-only tests: (1) `--file` is variadic and swallowed the trailing positional message ('File not found', exit 1) — the message must precede `--file`; (2) `run --format json` does not stream assistant text on stdout (only step_start) — the reply is recovered via `opencode export <sessionID>`. SKIPs (exit 77) without the opencode binary or OpenRouter creds."
 timeout_seconds = 120
+
+[[scenario]]
+name = "pi_handler_terminal_host_no_takeover"
+script = "scenarios/pi_handler_terminal_host_no_takeover.sh"
+owners = [
+    "pi-plugin-impl-pi-takeover-fix",
+    "pi-plugin-impl-smoke",
+]
+description = "Live PTY guard for pi Axis-2 hosting: a fake pi launched directly with both stdin/stdout as a PTY and no headless flag records a raw-mode takeover, while `wg pi-handler` launched from a PTY must spawn pi through terminal-host protocol mode with piped stdio + `--mode rpc`, avoid the takeover marker, and let the child exit after SIGTERM closes the pipe."
+timeout_seconds = 30
 
 [[scenario]]
 name = "executor_arena_surfaces"
@@ -568,7 +587,7 @@ owners = [
     "tui-cannot-retire",
     "smoke-gate-is",
 ]
-description = "Pins user-reported tui-cannot-retire regression: 'man why can't we retire the .chat-4 ???'. The embedded vendor CLI (claude --resume) shows a session-resume modal that swallows Esc/digit keys, so the user has no way to reach wg's Archive/Stop/Abandon dialog. Ctrl+W must be a global escape hatch that breaks out of PTY forwarding AND opens the retire dialog. Drives a real `wg tui` with three live chats, sends Ctrl+T (focus PTY) → Ctrl+W → 'x' (Abandon hotkey), and asserts the visible chat-tab count drops AND graph.jsonl shows ≥1 abandoned task."
+description = "Pins user-reported tui-cannot-retire regression: 'man why can't we retire the .chat-4 ???'. The embedded vendor CLI (claude --resume) shows a session-resume modal that swallows Esc/digit keys, so the user has no way to reach wg's Archive/Stop/Abandon dialog. Ctrl+W must be a global escape hatch that breaks out of PTY forwarding AND opens the retire dialog. Drives a real `wg tui` with three live chats, sends Ctrl+O (focus PTY) → Ctrl+W → 'x' (Abandon hotkey), and asserts the visible chat-tab count drops AND graph.jsonl shows ≥1 abandoned task."
 timeout_seconds = 90
 
 [[scenario]]
@@ -612,7 +631,7 @@ owners = [
     "implement-tui-tab",
     "smoke-gate-is",
 ]
-description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+T flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+T / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
+description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+O flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+O / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
 timeout_seconds = 120
 
 [[scenario]]
@@ -1423,8 +1442,9 @@ name = "publish_profile_propagates_wcc"
 script = "scenarios/publish_profile_propagates_wcc.sh"
 owners = [
     "implement-wg-publish",
+    "fix-profile-wcc-reload",
 ]
-description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible)."
+description = "Pins implement-wg-publish: `wg publish <seed> --profile <name>` stamps the profile onto every work task in the seed's weakly-connected component AND each work task's agency satellites (.assign-*/.evaluate-*), `wg show` renders the Profile line, a task added --after a profiled member inherits the profile (inherit-on-attach), and publishing without --profile leaves the profile unset (backward-compatible). Pins fix-profile-wcc-reload: `wg publish <task> --profile codex --no-release --wcc` reloads/stamps an existing non-paused mixed-status WCC, clears stale explicit Claude model pins from work tasks and agency satellites, and leaves statuses/paused flags unchanged."
 timeout_seconds = 60
 
 [[scenario]]
@@ -1453,3 +1473,68 @@ owners = [
 ]
 description = "Pins diagnose-fix-nex: the nex (OpenAI-compatible) streaming client must ride out a long, slow-but-healthy generation instead of failing with '[openai-client] Stream interrupted after ~N chunks: error decoding response body'. Root cause: reqwest 0.12 bytes_stream() collapses EVERY body error to Kind::Decode ('error decoding response body'), so the old 300s TOTAL request timeout cut a healthy long stream around the cap (~6300 tokens at a steady local rate). Fix: per-read (idle) timeout that resets on each frame (no total cap on streaming), plus a raw-byte SSE buffer so multi-byte UTF-8 split across chunk boundaries is not corrupted to U+FFFD. Drives the REAL OpenAiClient::send_streaming path over a TCP socket with chunked SSE (in-process mock llama.cpp): total-timeout reproduces the exact symptom + is_timeout cause; fixed client completes a slow 3s stream; read-timeout still aborts a genuinely stalled stream; a mid-stream connection drop recovers via retry; split multi-byte UTF-8 reassembles intact."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_focus_in_reasserts_input_grab"
+script = "scenarios/tui_focus_in_reasserts_input_grab.sh"
+owners = [
+    "bug-tui-focus-fix",
+    "bug-tui-focus-verify",
+]
+description = "Pins bug-tui-focus-fix (docs/bugs/tui-focus-input-race.md): returning OS focus to the wg TUI must never leave a window in which the user's first keystroke leaks to tmux (popping choose-tree). Drives the REAL `wg tui` under a PTY and asserts both halves of the general, emulator-agnostic fix in the raw output stream: (1) startup enables DECSET 1004 focus reporting (\\x1b[?1004h) so tmux forwards focus-in into the pane — absent on pre-fix main, which has no EnableFocusChange; (2) on receiving a focus-in report (\\x1b[I) wg re-asserts its own input grab as one burst — bracketed paste (\\x1b[?2004h) + mouse capture (\\x1b[?1002h) — before the next key, where pre-fix main drops Event::FocusGained via a catch-all and re-asserts nothing. Idle ratatui repaints never emit DECSET mode-sets, so the post-focus-in \\x1b[?2004h is an unambiguous re-assert signal. Fails on main, passes after the fix; credential-free, no tmux/daemon required."
+timeout_seconds = 60
+
+[[scenario]]
+name = "tui_keymap_printables_and_ctrl_t"
+script = "scenarios/tui_keymap_printables_and_ctrl_t.sh"
+owners = [
+    "bug-tui-keymap-fix",
+    "bug-tui-keymap-verify",
+]
+description = "Pins bug-tui-keymap-fix (docs/bugs/tui-keymap-routing.md): in the real wg TUI, with a focused custom-command chat PTY, bare printables (`+`, `a`) must be forwarded to the child and must not open the add-chat launcher; Ctrl+T must be forwarded to the child for executor thinking-toggle conventions; Ctrl+O is the host PTY focus / command-mode toggle. Credential-free: the child is a local Python stdin recorder, driven through tmux and asserted by raw bytes."
+timeout_seconds = 75
+
+[[scenario]]
+name = "pi_plugin_load_contract"
+script = "scenarios/pi_plugin_load_contract.sh"
+owners = [
+    "pi-plugin-impl-smoke",
+]
+description = "Pins the plugin-first pi package contract: the built @worksgood/wg-pi-plugin registers the full wg tool family, /wg and /wg-model commands, lifecycle/model_select hooks, model_select write-back to CoordinatorState.model_override, and a task-graph widget render; the host selftest verifies the plugin bundle loads through the Topology-B Node host. The smoke instantiates the plugin in fake rpc/tui/print mode contexts so registration remains mode-independent."
+timeout_seconds = 180
+
+[[scenario]]
+name = "pi_handler_plugin_transports"
+script = "scenarios/pi_handler_plugin_transports.sh"
+owners = [
+    "pi-plugin-impl-smoke",
+]
+description = "Pins plugin-first pi handler transports without live credentials: a fake `pi --mode rpc` transport receives piped stdio plus explicit provider/model and writes an inbox-driven reply, and a fake Node-host plugin bundle receives WG_PI_PROVIDER/WG_PI_MODEL and writes an inbox-driven reply. Guards the RPC and Node-host plugin-in-loop load paths."
+timeout_seconds = 45
+
+[[scenario]]
+name = "pi_config_lint_rejects_unsatisfied_route"
+script = "scenarios/pi_config_lint_rejects_unsatisfied_route.sh"
+owners = [
+    "pi-plugin-impl-smoke",
+]
+description = "Pins pi config lint: a project configured with a pi: route warns/rejects when PATH has neither a pi binary nor node and WG_PI_PLUGIN_DIR points at no Node-host bundle, so an unsatisfiable pi route cannot silently pass configuration audit."
+timeout_seconds = 30
+
+[[scenario]]
+name = "pi_worker_one_shot_prompt_and_cred_error"
+script = "scenarios/pi_worker_one_shot_prompt_and_cred_error.sh"
+owners = [
+    "pi-plugin-impl-smoke",
+]
+description = "Pins the pi one-shot worker path: WG spawns `pi --mode json -p ... --provider openrouter --model ...` headlessly, pipes the assembled WG prompt on stdin, surfaces a fake credential error, and marks the task failed on the nonzero exit. This guards the worker side of the `-p`/print-mode contract separate from the chat handler."
+timeout_seconds = 45
+
+[[scenario]]
+name = "pi_plugin_live_validation"
+script = "scenarios/pi_plugin_live_validation.sh"
+owners = [
+    "pi-plugin-impl-live-validation",
+]
+description = "Credentialed live-provider guard for pi plugin-in-the-loop: with OPENROUTER_API_KEY and a real pi binary, loads the repo plugin into pi RPC mode, asserts streamed text through agent_end plus non-empty get_last_assistant_text, forces wg_ready tool execution, kills and resumes the same --session-id with the plugin re-attached, and verifies large tool output exposes details.fullOutputPath. Loud SKIP without pi/OpenRouter credentials."
+timeout_seconds = 420

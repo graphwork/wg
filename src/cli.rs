@@ -724,6 +724,9 @@ pub enum Commands {
     },
 
     /// Publish a draft task (validates dependencies, then resumes entire subgraph)
+    #[command(
+        after_help = "Recovery workflow:\n  wg publish <TASK> --profile codex --no-release --wcc\n      Reload/stamp a named profile across TASK's weakly-connected component\n      without publishing, resuming, unpausing, or changing task statuses. Use\n      this after switching profiles when existing open/failed/done tasks still\n      carry stale explicit model pins."
+    )]
     Publish {
         /// Task ID to publish
         #[arg(value_name = "TASK")]
@@ -745,8 +748,10 @@ pub enum Commands {
         /// unless `--only` narrows it. Omit to use the globally-active profile.
         #[arg(long, value_name = "NAME")]
         profile: Option<String>,
-        /// Stamp the profile WITHOUT unpausing — annotate a staged subgraph
-        /// for later release. Only meaningful together with `--profile`.
+        /// Stamp the profile WITHOUT unpausing or changing task status.
+        /// Together with `--profile <name> --wcc`, this reloads that profile
+        /// across an existing component even when tasks are open, failed, or
+        /// done, and clears stale per-task route pins so the profile wins.
         #[arg(long)]
         no_release: bool,
     },
@@ -2450,6 +2455,32 @@ pub enum Commands {
     /// explicitly via `--model`; refuses to start without one.
     #[command(name = "opencode-handler")]
     OpenCodeHandler {
+        #[arg(long = "chat")]
+        chat: String,
+
+        #[arg(long)]
+        resume: bool,
+
+        #[arg(long)]
+        role: Option<String>,
+
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
+    /// Bridge pi.dev (pi-coding-agent) output ↔ chat/<ref>/*.jsonl,
+    /// routed THROUGH the wg-pi-plugin (not prompt-munging).
+    ///
+    /// Peer of `wg opencode-handler` for the `pi` executor. Topology A
+    /// spawns a long-lived `pi --mode rpc` (piped stdio ⇒ headless, no
+    /// terminal takeover) and drives it over the JSONL RPC protocol;
+    /// Topology B spawns `node pi-plugin/host/wg-pi-host.mjs`. The
+    /// transport is auto-selected from what's installed (`WG_PI_TOPOLOGY`
+    /// forces `rpc`/`node`). ALWAYS passes the resolved model explicitly
+    /// via `--provider`/`--model`; credentials are read from the
+    /// environment (never `--api-key`).
+    #[command(name = "pi-handler")]
+    PiHandler {
         #[arg(long = "chat")]
         chat: String,
 
@@ -5235,6 +5266,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::OpenCodeHandler { .. } => "opencode-handler",
+        Commands::PiHandler { .. } => "pi-handler",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",

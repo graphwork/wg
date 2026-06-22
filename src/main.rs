@@ -20,6 +20,7 @@ use worksgood::config::Config;
 
 mod cli;
 mod commands;
+mod terminal_host;
 mod tui;
 
 use cli::*;
@@ -3592,6 +3593,18 @@ fn main() -> Result<()> {
             role,
             model,
         } => commands::opencode_handler::run(
+            &workgraph_dir,
+            &chat,
+            resume,
+            role.as_deref(),
+            model.as_deref(),
+        ),
+        Commands::PiHandler {
+            chat,
+            resume,
+            role,
+            model,
+        } => commands::pi_handler::run(
             &workgraph_dir,
             &chat,
             resume,

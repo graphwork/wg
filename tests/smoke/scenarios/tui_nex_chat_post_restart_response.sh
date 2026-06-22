@@ -185,10 +185,10 @@ fi
 default_chat_count=$(count_visible_chat_tabs)
 echo "phase 0: default chat auto-spawned (visible: ${default_chat_count})"
 
-# ── Step 2: open the launcher (Ctrl+T to escape PTY mode, then 'n') ─
+# ── Step 2: open the launcher (Ctrl+O to escape PTY mode, then 'n') ─
 text_at_launch=$(tui_dump_text)
 if printf '%s' "$text_at_launch" | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$session" "C-t"
+    tmux send-keys -t "$session" "C-o"
     sleep 0.5
 fi
 
@@ -268,7 +268,7 @@ echo "phase 4: TUI active coordinator switched to cid=${new_cid}"
 # Toggle back into PTY mode so keystrokes route to the nex subprocess.
 text_pre_chat=$(tui_dump_text)
 if printf '%s' "$text_pre_chat" | grep -q '\[CMD\]'; then
-    tmux send-keys -t "$session" "C-t"
+    tmux send-keys -t "$session" "C-o"
     sleep 0.5
 fi
 

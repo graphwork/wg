@@ -184,7 +184,8 @@ pub fn run_lightweight_llm_call(
             | ExecutorKind::Crush
             | ExecutorKind::Amplifier
             | ExecutorKind::Octomind
-            | ExecutorKind::Dexto => {
+            | ExecutorKind::Dexto
+            | ExecutorKind::Pi => {
                 // Shell and external task/chat executors do not make
                 // sense for a lightweight one-shot LLM call; degrade to the
                 // safe default (claude CLI on haiku).

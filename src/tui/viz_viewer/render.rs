@@ -3455,7 +3455,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // place of the file-tailing ChatMessage widgets. Phase 3a of
     // docs/design/sessions-as-identity-rollout.md. The input editor
     // below continues to render normally; keys route to the PTY via
-    // the Ctrl+T branch in event.rs.
+    // the vendor_pty_active branch in event.rs (Ctrl+O escapes focus).
     if app.chat_pty_mode {
         let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
         let cid = app.active_coordinator_id;
@@ -4547,12 +4547,12 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         let hint_text = if app.chat_pty_mode && app.chat_pty_forwards_stdin {
             if app.focused_panel == FocusedPanel::RightPanel {
-                " [PTY]  Ctrl+T: command mode  PgUp/Dn: scroll".to_string()
+                " [PTY]  Ctrl+O: command mode  PgUp/Dn: scroll".to_string()
             } else {
-                " [CMD]  Ctrl+T: back to chat  n: new  w: close  ←→/[]: chats  ?: help".to_string()
+                " [CMD]  Ctrl+O: back to chat  n: new  w: close  ←→/[]: chats  ?: help".to_string()
             }
         } else if app.chat_pty_mode {
-            " Enter: chat  ↑↓: scroll  Ctrl+T: focus PTY".to_string()
+            " Enter: chat  ↑↓: scroll  Ctrl+O: focus PTY".to_string()
         } else if app.chat.pending_attachments.is_empty() {
             " c: chat  \u{2191}\u{2193}: scroll".to_string()
         } else {
@@ -7924,6 +7924,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     ("Esc", "cancel"),
                     ("↑↓", "history"),
                     ("S-Enter", "newline"),
+                    ("Alt-Enter/C-j", "newline"),
                 ],
             )
         }
@@ -7934,6 +7935,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             vec![
                 ("Enter", "send"),
                 ("S-Enter", "newline"),
+                ("Alt-Enter/C-j", "newline"),
                 ("Ctrl+K/Y", "kill/yank"),
                 ("Esc", "exit"),
             ],
@@ -8094,7 +8096,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 match tab {
                     RightPanelTab::Chat if app.chat_pty_mode && app.chat_pty_forwards_stdin => {
                         // PTY-active branch: in PTY mode the only TUI hotkey
-                        // is Ctrl+T to enter command mode. Show the
+                        // is Ctrl+O to enter command mode. Show the
                         // appropriate hint depending on whether we are in
                         // PTY focus or have already broken out.
                         if matches!(app.input_mode, InputMode::ScrollMode { .. }) {
@@ -8102,10 +8104,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                             hints.push(("g/G", "top/bot"));
                             hints.push(("Ctrl+]/q/Esc", "exit scroll"));
                         } else if app.focused_panel == FocusedPanel::RightPanel {
-                            hints.push(("Ctrl+T", "command mode"));
+                            hints.push(("Ctrl+O", "command mode"));
                             hints.push(("Ctrl+]", "scroll mode"));
                         } else {
-                            hints.push(("Ctrl+T", "back to chat"));
+                            hints.push(("Ctrl+O", "back to chat"));
                             hints.push(("n", "new chat"));
                             hints.push(("w", "close tab"));
                             hints.push(("←→", "chats"));
@@ -8114,7 +8116,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     }
                     RightPanelTab::Chat if app.chat_pty_mode => {
                         hints.push(("Enter", "chat"));
-                        hints.push(("Ctrl+T", "focus PTY"));
+                        hints.push(("Ctrl+O", "focus PTY"));
                         hints.push(("↑↓", "scroll"));
                         hints.push(("←→", "chats"));
                     }
@@ -9562,7 +9564,7 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("~ / `", "Open chat picker"),
         binding("+", "Add new chat (picker)"),
         binding("-", "Close/archive chat"),
-        binding("Ctrl-T", "Toggle PTY focus / command mode"),
+        binding("Ctrl-O", "Toggle PTY focus / command mode"),
         blank(),
         heading("Search (vim-style)"),
         binding("/", "Start search"),
