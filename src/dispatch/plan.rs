@@ -75,6 +75,11 @@ pub enum ExecutorKind {
     /// Dexto CLI. Chat-capable external CLI (`dexto --agent`); currently
     /// integrated for the TUI live-chat PTY path only (no spawn-task handler).
     Dexto,
+    /// Pi CLI (pi.dev). Chat-capable external CLI — in `EXTERNAL_CLIS` but NOT
+    /// `WORKER_ONLY_EXTERNALS`, like `OpenCode`. Routing is free via
+    /// `handler_for_model`'s external-CLI interception (no new match arm); the
+    /// `wg pi-handler` RPC/worker contract is built on top in a later phase.
+    Pi,
 }
 
 impl ExecutorKind {
@@ -97,6 +102,7 @@ impl ExecutorKind {
         ExecutorKind::Amplifier,
         ExecutorKind::Octomind,
         ExecutorKind::Dexto,
+        ExecutorKind::Pi,
     ];
 
     /// The subset of [`EXTERNAL_CLIS`](Self::EXTERNAL_CLIS) that can ONLY run
@@ -105,7 +111,9 @@ impl ExecutorKind {
     /// live chat handler (`wg opencode-handler --chat`), so it is an external
     /// CLI that is *also* chat-capable. `Octomind` / `Dexto` are likewise
     /// absent: they are chat-capable external CLIs wired into the TUI
-    /// live-chat PTY path (see `prototype-octomind-dexto-chat`).
+    /// live-chat PTY path (see `prototype-octomind-dexto-chat`). `Pi` is also
+    /// absent: it is a chat-capable external CLI (`wg pi-handler` RPC; see
+    /// `docs/pi-integration/integration-plan.md`).
     pub const WORKER_ONLY_EXTERNALS: &'static [ExecutorKind] = &[
         ExecutorKind::Aider,
         ExecutorKind::Goose,
@@ -130,6 +138,7 @@ impl ExecutorKind {
             ExecutorKind::Amplifier => "amplifier",
             ExecutorKind::Octomind => "octomind",
             ExecutorKind::Dexto => "dexto",
+            ExecutorKind::Pi => "pi",
         }
     }
 
@@ -148,6 +157,7 @@ impl ExecutorKind {
             "amplifier" => Some(ExecutorKind::Amplifier),
             "octomind" => Some(ExecutorKind::Octomind),
             "dexto" => Some(ExecutorKind::Dexto),
+            "pi" => Some(ExecutorKind::Pi),
             _ => None,
         }
     }
@@ -719,6 +729,27 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn test_pi_is_external_cli_but_not_worker_only() {
+        // Pi (pi.dev) is a chat-capable external CLI: prefix-addressed
+        // (`pi:…`) and therefore in EXTERNAL_CLIS, but — like OpenCode —
+        // chat-capable, so it must NOT be in WORKER_ONLY_EXTERNALS.
+        assert_eq!(ExecutorKind::from_str("pi"), Some(ExecutorKind::Pi));
+        assert_eq!(ExecutorKind::Pi.as_str(), "pi");
+        assert!(
+            ExecutorKind::EXTERNAL_CLIS.contains(&ExecutorKind::Pi),
+            "Pi must be in EXTERNAL_CLIS"
+        );
+        assert!(ExecutorKind::Pi.is_external_cli());
+        assert!(
+            !ExecutorKind::WORKER_ONLY_EXTERNALS.contains(&ExecutorKind::Pi),
+            "Pi must NOT be in WORKER_ONLY_EXTERNALS (it is chat-capable)"
+        );
+        assert!(!ExecutorKind::Pi.is_worker_only_external());
+        // Endpoint is the external-CLI policy (handled by the adapter), not nex.
+        assert!(!ExecutorKind::Pi.needs_endpoint());
     }
 
     #[test]

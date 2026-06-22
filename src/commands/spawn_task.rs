@@ -278,6 +278,15 @@ pub fn resolve_handler(
                 plan.executor.as_str()
             ));
         }
+        ExecutorKind::Pi => {
+            // Pi (pi.dev) is registered as a chat-capable external CLI (P0
+            // foundation), but the `wg pi-handler` spawn-task/RPC handler is a
+            // later phase (P1a; docs/pi-integration/integration-plan.md §5).
+            return Err(anyhow!(
+                "executor 'pi' is registered but its handler is not wired yet; \
+                 the `wg pi-handler` spawn-task/RPC path lands in a later phase"
+            ));
+        }
         ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \

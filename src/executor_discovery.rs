@@ -14,7 +14,8 @@ use std::path::PathBuf;
 pub const CORE_EXECUTORS: &[&str] = &["native", "claude", "codex", "shell"];
 pub const STABLE_EXTERNAL_EXECUTORS: &[&str] = &["opencode", "aider", "goose", "qwen", "cline"];
 pub const PROVIDER_SPECIFIC_EXECUTORS: &[&str] = &["gemini"];
-pub const EXPERIMENTAL_EXTERNAL_EXECUTORS: &[&str] = &["octomind", "dexto", "crush", "amplifier"];
+pub const EXPERIMENTAL_EXTERNAL_EXECUTORS: &[&str] =
+    &["octomind", "dexto", "crush", "amplifier", "pi"];
 
 /// One executor, whether it's usable here, and where the backing
 /// binary lives (if applicable).
@@ -142,6 +143,11 @@ const EXECUTORS: &[ExecutorSpec] = &[
         description: "Experimental Amplifier CLI worker (`amplifier run --mode single --output-format json --bundle wg`)",
         binary_candidates: &["amplifier"],
     },
+    ExecutorSpec {
+        name: "pi",
+        description: "Experimental Pi CLI (pi.dev) chat-capable handler (`wg pi-handler`; `--mode rpc` live chat, `-p`/`--mode json` worker)",
+        binary_candidates: &["pi"],
+    },
 ];
 
 /// Look up each candidate on PATH via `which`-style lookup. Returns
@@ -218,6 +224,7 @@ mod tests {
         assert!(names.contains(&"amplifier"));
         assert!(names.contains(&"octomind"));
         assert!(names.contains(&"dexto"));
+        assert!(names.contains(&"pi"));
     }
 
     #[test]
