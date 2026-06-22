@@ -44,12 +44,17 @@ use std::path::{Path, PathBuf};
 ///                                              per-iteration subprocess
 ///                                              spawns. Both call
 ///                                              `plan_spawn`.
+/// - `src/commands/resume.rs`                 — unit tests assert profile
+///                                              reload routing resolves
+///                                              through `plan_spawn`; not a
+///                                              production spawn entry point.
 const EXPECTED_SITES: &[&str] = &[
     "src/commands/spawn_task.rs",
     "src/commands/spawn/execution.rs",
     "src/commands/service/coordinator.rs",
     "src/commands/service/ipc.rs",
     "src/commands/service/coordinator_agent.rs",
+    "src/commands/resume.rs",
 ];
 
 fn repo_src_dir() -> PathBuf {
@@ -194,6 +199,8 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
     //   - src/service/llm.rs          (one-shot lightweight LLM calls choose
     //                                  between CLI/native handlers; they do
     //                                  not spawn task agents)
+    //   - src/commands/resume.rs      (unit tests assert profile reload
+    //                                  routing through plan_spawn)
     //   - src/tui/                    (the TUI builds `wg service start` argv
     //                                  for new chats; same as above —
     //                                  daemon launch, not agent spawn)
@@ -213,6 +220,7 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
         "src/commands/service/coordinator_agent.rs",
         "src/commands/service/ipc.rs",
         "src/commands/service/mod.rs",
+        "src/commands/resume.rs",
         "src/service/llm.rs",
     ]
     .into_iter()

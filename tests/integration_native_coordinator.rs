@@ -709,16 +709,18 @@ is_default = true
 mod credential_wire_contract {
     use super::*;
     use serial_test::serial;
-    use std::io::Read;
+    use std::io::{ErrorKind, Read};
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use std::time::{Duration, Instant};
     use worksgood::executor::native::client::{Message, MessagesRequest, Role};
     use worksgood::executor::native::provider::create_provider_ext;
 
     /// Spawn a minimal OAI-compat-shaped server. Captures the first
     /// request's headers + body, replies with `status_code` and
-    /// `response_body`, then exits. Returns the bound URL and a channel
-    /// the test can read the captured request from.
+    /// `response_body`, and stays alive long enough to tolerate client
+    /// retries. Returns the bound URL and a channel the test can read the
+    /// captured request from.
     fn spawn_capturing_server(
         status_code: u16,
         response_body: &str,
@@ -735,18 +737,43 @@ mod credential_wire_contract {
             _ => "HTTP/1.1 500 Internal Server Error",
         };
         let resp = format!(
-            "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             status_line,
             body.len(),
             body,
         );
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut sent_capture = false;
+            let mut nonempty_requests = 0usize;
+
+            while Instant::now() < deadline && nonempty_requests < 8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                 let mut buf = [0u8; 16384];
-                let n = stream.read(&mut buf).unwrap_or(0);
+                let n = match stream.read(&mut buf) {
+                    Ok(n) => n,
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => 0,
+                    Err(err) if err.kind() == ErrorKind::TimedOut => 0,
+                    Err(_) => 0,
+                };
+                if n == 0 {
+                    continue;
+                }
+
+                nonempty_requests += 1;
                 let captured = String::from_utf8_lossy(&buf[..n]).to_string();
                 let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
-                let _ = tx.send(captured);
+
+                if !sent_capture {
+                    sent_capture = true;
+                    let _ = tx.send(captured);
+                }
             }
         });
         (url, rx)
