@@ -571,6 +571,24 @@ mod tests {
         f()
     }
 
+    /// Write a project-local `config.toml` into `dir` pinning a native
+    /// (`nex:`) model. Without it, `Config::load_or_default` falls back to
+    /// the built-in `[agent].model = "claude:opus"` default; the model-compat
+    /// override in `plan_spawn` then reroutes the pinned
+    /// `WG_EXECUTOR_TYPE=native` hint to the claude handler (logging
+    /// `native ... cannot run model claude:opus ... routing to claude`),
+    /// failing the `expected Native handler` assertions. Combined with
+    /// `with_env`'s empty `WG_GLOBAL_DIR`, handler resolution then depends
+    /// only on this per-test temp config — never on the machine's global
+    /// config or active profile.
+    fn pin_native_config(dir: &Path) {
+        std::fs::write(
+            dir.join("config.toml"),
+            b"[agent]\nmodel = \"nex:qwen3-coder\"\n",
+        )
+        .unwrap();
+    }
+
     // These tests pin WG_EXECUTOR_TYPE=native because role/resume are
     // Native-handler-specific concepts; the dispatcher default (Claude)
     // would route to a Claude handler with no role/resume fields. We also
@@ -583,6 +601,7 @@ mod tests {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".coordinator-0");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -599,6 +618,7 @@ mod tests {
     fn non_coordinator_task_gets_no_role() {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("my-task");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -615,6 +635,7 @@ mod tests {
     fn role_override_wins() {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".coordinator-0");
             let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
             match spec {
@@ -631,6 +652,7 @@ mod tests {
     fn resume_true_when_journal_exists() {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("have-journal");
             let chat = dir.path().join("chat").join(&task.id);
             std::fs::create_dir_all(&chat).unwrap();
@@ -648,6 +670,7 @@ mod tests {
     fn resume_false_when_fresh() {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("fresh-task");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -669,6 +692,7 @@ mod tests {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".chat-7");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
