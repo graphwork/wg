@@ -1562,8 +1562,9 @@ name = "pi_two_tier_profile"
 script = "scenarios/pi_two_tier_profile.sh"
 owners = [
     "interactive-pi-model",
+    "fix-strong-tier",
 ]
-description = "Pins the two-tier Pi profile setter (`wg profile pi`): --list surfaces the configured strong/weak models from the profile (not hardcoded); a positional `<strong> <weak>` set patches the §4.1 key-set in ~/.wg/profiles/pi.toml (preserving the plugin comment block) and echoes old → new; --show reflects the persisted tiers on a fresh process; a partial --weak leaves strong unchanged; setting on the ACTIVE pi profile re-applies to global config.toml so the next turn sees it; a lone positional is rejected as ambiguous. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
+description = "Pins the two-tier Pi profile setter (`wg profile pi`): --list surfaces the configured strong/weak models from the profile (not hardcoded); a positional `<strong> <weak>` set patches the §4.1 key-set in ~/.wg/profiles/pi.toml (preserving the plugin comment block) and echoes old → new; --show reflects the persisted tiers on a fresh process; a partial --weak leaves strong unchanged; setting on the ACTIVE pi profile re-applies to global config.toml so the next turn sees it; a lone positional is rejected as ambiguous. fix-strong-tier: the STRONG tier is normalized to a `pi:` route on write (so it dispatches through the self-authenticating pi handler — handler_for_model → ExecutorKind::Pi — needing NO wg-side OpenRouter key), while the WEAK/agency tier keeps its native openrouter: route; the scenario asserts strong persists as `pi:openrouter/...` (never a raw `openrouter:` spec) in both the profile file and the active global config.toml. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
 timeout_seconds = 60
 
 [[scenario]]

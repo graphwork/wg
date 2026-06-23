@@ -42,7 +42,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 
-use crate::config::{Config, RoleModelConfig};
+use crate::config::{Config, RoleModelConfig, pi_strong_route};
 use crate::executor::native::openai_client::{
     self, OpenRouterModel, fetch_openrouter_models_blocking,
 };
@@ -147,7 +147,16 @@ pub fn scout(dir: &Path, no_cache: bool, max_cost: Option<f64>) -> Result<Propos
     let config = Config::load_or_default(dir);
     let baseline = Baseline::from_config(&config);
 
-    let strong = select_strong(&candidates, baseline.strong_id.as_deref(), max_cost);
+    let mut strong = select_strong(&candidates, baseline.strong_id.as_deref(), max_cost);
+    // The strong tier must execute through the self-authenticating pi handler,
+    // never the in-process nex OpenRouter client (which would require a wg-side
+    // key). Rewrite the proposed/echoed/persisted strong spec to a `pi:` route.
+    // Selection + change detection above ran in `openrouter:` space and are
+    // unaffected; this only rewrites the externally-visible spec, keeping the
+    // dry-run display, the copy-pasteable apply command, and the `--apply` write
+    // all consistent and pi-routed.
+    strong.new = pi_strong_route(&strong.new);
+    strong.old = strong.old.as_deref().map(pi_strong_route);
     let weak = select_weak(&candidates, baseline.weak_id.as_deref(), max_cost);
 
     Ok(Proposal {
@@ -694,7 +703,10 @@ fn apply_proposal<'a>(dir: &Path, p: &'a Proposal) -> Result<Vec<&'a str>> {
     let mut written = Vec::new();
 
     if p.strong.changed {
-        config.pin_default_route_model(&p.strong.new);
+        // Defensive (idempotent): persist the strong tier as a pi: route so it
+        // runs through the self-authenticating pi handler even if a caller hands
+        // us a proposal that did not pass through `scout()`'s normalization.
+        config.pin_default_route_model(&pi_strong_route(&p.strong.new));
         written.push(p.strong.tier);
     }
     if p.weak.changed {
@@ -947,6 +959,76 @@ mod tests {
         assert_eq!(
             apply_command(&p),
             "wg profile pi --weak openrouter:vendor/cheap-flash"
+        );
+    }
+
+    #[test]
+    fn apply_proposal_persists_strong_as_pi_route_not_nex() {
+        // The scout's strong proposal is a raw `openrouter:` spec; persisting it
+        // verbatim would route strong-tier work through the in-process nex
+        // OpenRouter client and require a wg-side key. `apply_proposal` must
+        // write a `pi:` route so strong work runs through the self-authenticating
+        // pi handler instead. The weak/agency tier keeps its native route.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Proposal {
+            fetched: 1,
+            max_cost: None,
+            baseline_strong: None,
+            baseline_weak: None,
+            strong: TierChange {
+                tier: "strong",
+                old: None,
+                new: "openrouter:z-ai/glm-5.2".into(),
+                changed: true,
+                reason: "x".into(),
+            },
+            weak: TierChange {
+                tier: "weak",
+                old: None,
+                new: "openrouter:deepseek/deepseek-chat".into(),
+                changed: true,
+                reason: "y".into(),
+            },
+        };
+        apply_proposal(tmp.path(), &p).unwrap();
+        // Read the written local config directly (no global merge).
+        let content = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        let cfg: Config = toml::from_str(&content).unwrap();
+        assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
+        assert_eq!(
+            cfg.tiers.standard.as_deref(),
+            Some("pi:openrouter/z-ai/glm-5.2")
+        );
+        assert_eq!(
+            cfg.tiers.premium.as_deref(),
+            Some("pi:openrouter/z-ai/glm-5.2")
+        );
+        // Weak/agency tier untouched: still the native openrouter: route.
+        assert_eq!(
+            cfg.tiers.fast.as_deref(),
+            Some("openrouter:deepseek/deepseek-chat")
+        );
+        // The persisted strong spec routes to the pi handler.
+        assert_eq!(
+            crate::dispatch::handler_for_model(&cfg.agent.model),
+            crate::dispatch::ExecutorKind::Pi
+        );
+    }
+
+    #[test]
+    fn scout_normalization_keeps_select_strong_in_openrouter_space() {
+        // The pi: normalization happens in `scout()`, NOT in `select_strong`,
+        // so the selector's change detection stays in openrouter: space. A
+        // pi-form incumbent and an openrouter-form best for the SAME model must
+        // therefore compare equal (no spurious "changed").
+        let cands = catalog();
+        let change = select_strong(&cands, Some("vendor/frontier"), None);
+        assert!(!change.changed);
+        assert_eq!(change.new, "openrouter:vendor/frontier");
+        // …and the public-facing normalization turns it into a pi: route.
+        assert_eq!(
+            pi_strong_route(&change.new),
+            "pi:openrouter/vendor/frontier"
         );
     }
 }

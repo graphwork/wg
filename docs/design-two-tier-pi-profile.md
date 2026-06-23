@@ -74,6 +74,46 @@ tiers drive; `weak` drives everything the `fast` tier drives. We do **not** inve
 new config keys — we write the existing ones. `wg profile pi` is a *facade* over the
 generic tier/role machinery.
 
+### 1.2a The strong tier executes through the pi handler (not nex)
+
+**The strong tier is always persisted as a `pi:` route, so strong-tier work runs
+through the self-authenticating `pi` handler — wg never becomes the OpenRouter
+HTTP client.** This is the `fix-strong-tier` fix.
+
+The mapping that decides which subprocess executes a model is
+[`handler_for_model`](../src/dispatch/handler_for_model.rs) (the single source of
+truth). It routes a *raw* `openrouter:` spec to the **in-process nex / `native`**
+handler — which makes **wg itself** the OpenRouter HTTP client and so REQUIRES an
+OpenRouter key wired into wg config. With no key, strong-tier workers die at spawn
+with a wrapper-internal exit 1 *before any work*. By contrast a `pi:` route maps to
+`ExecutorKind::Pi`, which runs the model through pi using **pi's own login** —
+exactly like the `claude:` / `codex:` CLI handlers auth themselves. wg then needs no
+OpenRouter secret of its own.
+
+So the strong tier's spec must be a `pi:` route:
+
+| strong spec (input)                | persisted / dispatched           | handler                    |
+|------------------------------------|----------------------------------|----------------------------|
+| `openrouter:z-ai/glm-5.2`          | `pi:openrouter/z-ai/glm-5.2`     | `pi` (pi auths itself)     |
+| `z-ai/glm-5.2` (bare slash route)  | `pi:openrouter/z-ai/glm-5.2`     | `pi`                       |
+| `pi:openrouter/z-ai/glm-5.2`       | `pi:openrouter/z-ai/glm-5.2`     | `pi` (already correct)     |
+| `claude:opus` / `codex:gpt-5.5`    | unchanged                        | the CLI (auths itself)     |
+| `nex:qwen3-coder` (local)          | unchanged                        | `native` (needs endpoint)  |
+
+The normalization lives in **one** function, `config::pi_strong_route`, applied at
+*every* path that persists the strong tier so none can reintroduce a nex-routed
+strong spec: `Config::set_pi_tiers`, `profile::named::patch_pi_tiers` (the
+comment-preserving file writer), and the [model-scout](#7-the-scout-wg-profile-pi---scout)
+(`--apply` write + the copy-pasteable echo). It is idempotent (a `pi:` route in →
+the same `pi:` route out). The hand-written `pi.toml` starter already uses the `pi:`
+form, so it needs no rewrite.
+
+**The weak/agency tier is deliberately NOT routed through pi.** It keeps its native
+`openrouter:` route (e.g. `openrouter:deepseek/deepseek-chat`) and the agency
+resolver's loud keyless-native `claude:haiku` fallback (`resolve_agency_dispatch`) —
+those are short, recoverable one-shots, and the native path is faster and cheaper for
+that traffic.
+
 ### 1.3 What we are NOT building
 
 - **No `[pi]` config section / no new schema.** `strong`/`weak` are projections onto
@@ -154,7 +194,7 @@ proposed) assignment. This is non-negotiable: legibility over silent writes.
 ```
 $ wg profile pi openrouter:z-ai/glm-5.2 openrouter:deepseek/deepseek-chat
 Pi profile tiers  (profile: pi)
-  strong = openrouter:z-ai/glm-5.2              (openrouter:z-ai/glm-4.6 → openrouter:z-ai/glm-5.2)
+  strong = pi:openrouter/z-ai/glm-5.2           (pi:openrouter/z-ai/glm-4.6 → pi:openrouter/z-ai/glm-5.2)
   weak   = openrouter:deepseek/deepseek-chat    (unchanged)
 
   routing: chat, worker, evolver, creator, verification → strong
@@ -164,11 +204,17 @@ Wrote ~/.wg/profiles/pi.toml
 Daemon reloaded — next worker uses the new tiers (in-flight workers keep theirs).
 ```
 
+Note the strong tier is echoed/persisted as a `pi:` route even though the input was a
+raw `openrouter:` spec — see [§1.2a](#12a-the-strong-tier-executes-through-the-pi-handler-not-nex).
+The weak tier keeps its native `openrouter:` route.
+
 Format rules for the per-tier line:
 - `  <label> = <new spec>` left-block, then a parenthetical:
   - `(<old> → <new>)` when the value changed,
   - `(unchanged)` when this tier was not part of this update,
   - `(new)` when the profile had no prior value for that tier.
+- The strong spec is shown in its normalized `pi:` form (what gets persisted); the
+  weak spec is shown verbatim.
 - The `routing:` block is the [§4 table](#4-routing-table-tier--role) collapsed to one
   line per tier, so the user always sees what each tier actually drives.
 - The persistence/reload footer reflects what happened (see [§6](#6-persistence--reload)).
@@ -178,7 +224,7 @@ Format rules for the per-tier line:
 ```
 $ wg profile pi --weak openrouter:deepseek/deepseek-v3.1
 Pi profile tiers  (profile: pi)
-  strong = openrouter:z-ai/glm-5.2              (unchanged)
+  strong = pi:openrouter/z-ai/glm-5.2           (unchanged)
   weak   = openrouter:deepseek/deepseek-v3.1    (openrouter:deepseek/deepseek-chat → openrouter:deepseek/deepseek-v3.1)
   ...
 ```
@@ -188,7 +234,7 @@ Pi profile tiers  (profile: pi)
 ```
 $ wg profile pi --show          # or: wg profile pi
 Pi profile tiers  (profile: pi)   [active]
-  strong = openrouter:z-ai/glm-5.2
+  strong = pi:openrouter/z-ai/glm-5.2
   weak   = openrouter:deepseek/deepseek-chat
 
   routing: chat, worker, evolver, creator, verification → strong
@@ -206,11 +252,11 @@ Pi profile tiers  (profile: pi)   [active]
 $ wg profile pi --strong openrouter:qwen/qwen3-max --dry-run
 DRY RUN — no files written.
 Pi profile tiers  (profile: pi)
-  strong = openrouter:qwen/qwen3-max            (openrouter:z-ai/glm-5.2 → openrouter:qwen/qwen3-max)
+  strong = pi:openrouter/qwen/qwen3-max         (pi:openrouter/z-ai/glm-5.2 → pi:openrouter/qwen/qwen3-max)
   weak   = openrouter:deepseek/deepseek-chat    (unchanged)
 
 Apply with:
-  wg profile pi --strong openrouter:qwen/qwen3-max
+  wg profile pi --strong pi:openrouter/qwen/qwen3-max
 ```
 
 The dry-run's "Apply with:" line is the exact command (in whichever form was used)

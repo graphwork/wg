@@ -672,8 +672,14 @@ pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> R
     };
 
     if let Some(s) = strong {
+        // Strong tier must route through the self-authenticating pi handler, not
+        // the in-process nex OpenRouter client (which requires a wg-side key).
+        // Normalize an `openrouter:`/bare route to a `pi:` route before writing;
+        // CLI / pi / nex-local specs pass through unchanged. Mirrors
+        // `Config::set_pi_tiers` so the file patcher and in-memory writer agree.
+        let s = crate::config::pi_strong_route(s);
         for dotted in Config::PI_STRONG_TOML_KEYS {
-            content = set_toml_string_value(&content, dotted, s);
+            content = set_toml_string_value(&content, dotted, &s);
         }
     }
     if let Some(w) = weak {
@@ -1459,14 +1465,17 @@ assigner_agent = "local-agent"
             let content = std::fs::read_to_string(&path).unwrap();
             // Comment block survives the write.
             assert!(content.contains("PLUGIN INSTALL"));
-            // Parse and verify the full key-set via the reader.
+            // Parse and verify the full key-set via the reader. The strong tier
+            // is normalized to a pi: route on write (so it runs through the
+            // self-authenticating pi handler, not the in-process nex OpenRouter
+            // client); the weak/agency tier keeps its native openrouter: route.
             let cfg: Config = toml::from_str(&content).unwrap();
             let (strong, weak) = cfg.pi_tiers();
-            assert_eq!(strong.as_deref(), Some("openrouter:z-ai/glm-5.2"));
+            assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
             assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
             assert_eq!(
                 cfg.tiers.premium.as_deref(),
-                Some("openrouter:z-ai/glm-5.2")
+                Some("pi:openrouter/z-ai/glm-5.2")
             );
             assert_eq!(
                 cfg.models

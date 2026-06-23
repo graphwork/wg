@@ -1306,7 +1306,16 @@ pub fn pi(
     }
 
     // ── Set (or dry-run preview) ──────────────────────────────────────────────
-    let new_strong = update.strong.clone().or_else(|| cur_strong.clone());
+    // Echo the *normalized* strong route so the `old → new` line matches what is
+    // actually persisted: the strong tier is rewritten to a `pi:` route (so it
+    // runs through the self-authenticating pi handler, not the in-process nex
+    // OpenRouter client) by `patch_pi_tiers`. The weak/agency tier is shown
+    // verbatim — it keeps its native route and the keyless-native fallback.
+    let new_strong = update
+        .strong
+        .as_deref()
+        .map(worksgood::config::pi_strong_route)
+        .or_else(|| cur_strong.clone());
     let new_weak = update.weak.clone().or_else(|| cur_weak.clone());
 
     if dry_run {
@@ -1621,10 +1630,17 @@ fn pi_set_echo(e: &PiSetEcho, update: &PiUpdate, json: bool) {
 }
 
 /// Reconstruct a copy-pasteable apply command (flags form) for the dry-run.
+///
+/// The strong spec is shown in its normalized `pi:` form (what actually gets
+/// persisted), so the printed command is idempotent and matches the `strong =`
+/// line above it. The weak spec is shown verbatim — it keeps its native route.
 fn pi_apply_command(update: &PiUpdate) -> String {
     let mut cmd = String::from("wg profile pi");
     if let Some(s) = &update.strong {
-        cmd.push_str(&format!(" --strong {s}"));
+        cmd.push_str(&format!(
+            " --strong {}",
+            worksgood::config::pi_strong_route(s)
+        ));
     }
     if let Some(w) = &update.weak {
         cmd.push_str(&format!(" --weak {w}"));
@@ -1741,14 +1757,17 @@ mod tests {
 
     #[test]
     fn test_pi_apply_command_uses_flag_form() {
+        // The strong spec is normalized to its pi: route (what gets persisted),
+        // so the copy-pasteable apply command is idempotent and pi-routed.
         let u = PiUpdate {
             strong: Some(s("openrouter:qwen/qwen3-max")),
             weak: None,
         };
         assert_eq!(
             pi_apply_command(&u),
-            "wg profile pi --strong openrouter:qwen/qwen3-max"
+            "wg profile pi --strong pi:openrouter/qwen/qwen3-max"
         );
+        // A bare single-token alias has no pi mapping → echoed verbatim.
         let both = PiUpdate {
             strong: Some(s("x")),
             weak: Some(s("y")),

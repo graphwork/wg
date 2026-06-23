@@ -5,10 +5,22 @@ description = "Pi Coding Agent: GLM 5.2 workers/chat via OpenRouter, DeepSeek Ch
 #
 #   pi:openrouter/z-ai/glm-5.2
 #
+# The `pi:` prefix is load-bearing, NOT cosmetic. `handler_for_model`
+# (src/dispatch/handler_for_model.rs, the single source of truth) routes a `pi:`
+# route to the pi handler, which runs the model through pi using PI'S OWN LOGIN
+# — exactly like the claude:/codex: CLIs auth themselves — so wg needs NO
+# OpenRouter key of its own for strong-tier work. A RAW `openrouter:z-ai/glm-5.2`
+# spec would instead route to the in-process nex/native handler, making wg itself
+# the OpenRouter HTTP client and REQUIRING a wg-side OpenRouter key; absent it,
+# strong-tier workers die at spawn (wrapper-internal exit 1). `wg profile pi`
+# and the model-scout therefore normalize the strong tier to a `pi:` route on
+# write (config::pi_strong_route). See docs/design-two-tier-pi-profile.md §1.2a.
+#
 # The agency/meta roles below are intentionally explicit OpenRouter routes, not
 # `pi:` routes. They are short one-shot checks (assign/evaluate/flip/triage/etc.)
 # and do not need Pi's interactive handler; the native OpenRouter path is faster
-# and cheaper for this traffic.
+# and cheaper for this traffic (and keeps the loud keyless-native claude:haiku
+# fallback in resolve_agency_dispatch).
 
 [agent]
 model = "pi:openrouter/z-ai/glm-5.2"
