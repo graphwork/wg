@@ -1298,7 +1298,7 @@ mod tests {
             ..Default::default()
         });
         // Ensure ambient env does NOT carry the key.
-        std::env::remove_var("OPENROUTER_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
         assert_eq!(secret.api_key.as_deref(), Some("sk-from-config"));
         assert_eq!(
@@ -1323,8 +1323,8 @@ mod tests {
             is_default: true,
             ..Default::default()
         });
-        std::env::remove_var("OPENROUTER_API_KEY");
-        std::env::remove_var("OPENAI_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let secret = PiEndpointSecret::resolve(&config, tmp.path(), "openrouter");
         // The default endpoint's key resolves as the fallback.
         assert_eq!(secret.api_key.as_deref(), Some("sk-default-ep"));

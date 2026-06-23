@@ -772,7 +772,7 @@ impl Default for TuiConfig {
 }
 
 /// A configured LLM endpoint (like a WiFi network entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EndpointConfig {
     /// Display name for this endpoint
     pub name: String,
