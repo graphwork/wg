@@ -1583,3 +1583,12 @@ owners = [
 ]
 description = "Pins bug-flip-role-model-routing: when [models.flip_inference] and [models.flip_comparison] are configured to a model distinct from the task's runtime model, `wg evaluate run <task> --flip --dry-run` MUST report the configured FLIP role models (source=role/config) in stdout and the `FLIP models:` stderr line — not the task model (source=task-model). Pre-fix the recorded metadata used CLI > task-model > config, silently shadowing configured role models. Uses --dry-run so no live LLM call is needed."
 timeout_seconds = 30
+
+[[scenario]]
+name = "true_e2e_pi_glm_chat_deepseek_agency"
+script = "scenarios/true_e2e_pi_glm_chat_deepseek_agency.sh"
+owners = [
+    "true-e2e-smoke",
+]
+description = "The TRUE end-to-end smoke for the Pi/OpenRouter two-tier profile (true-e2e-smoke): drives a PTY-based Pi GLM-5.2 chat in `wg tui`, dispatches real work FROM that chat onto a Pi worker via openrouter:z-ai/glm-5.2, observes completion, and confirms the GLM-5.2-worker + DeepSeek-agency split wired by update-pi-starter is honored. Pins four things at once: (1) the Pi GLM-5.2 chat pane attaches to a live interactive `pi` PTY (a fake pi prints a unique marker) and does NOT hang on 'Booting agent...' / route through `pi --mode rpc` — the fix-tui-pi regression guard; (2) the chat-created+dispatched worker runs on the GLM-5.2 route, asserted from the fake-pi worker argv `--provider openrouter --model z-ai/glm-5.2`; (3) the agency one-shot roles resolve to openrouter:deepseek/deepseek-chat, NOT claude:haiku, asserted credential-free via `wg evaluate run --dry-run` (evaluator) and `--flip --dry-run` (inference/comparison); (4) the worker task reaches `done` and the chat pane reflects the completion. Credential-free: a fake `pi` stands in for both the interactive agent and the one-shot worker; the worker route is proven by argv and the DeepSeek route by config-resolved dry-run (a live DeepSeek agency call needs OPENROUTER_API_KEY, else fix-route-agency's safety net falls back to claude:haiku by design). Uses a PRIVATE tmux server (`tmux -L`) so the TUI inherits this scenario's isolated HOME/PATH instead of a shared tmux server's leaked env. SKIPs without tmux."
+timeout_seconds = 180
