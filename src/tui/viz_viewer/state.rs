@@ -15263,8 +15263,60 @@ impl VizApp {
                     }
                     ("opencode".to_string(), args, Some(project_root))
                 }
+                "pi" => {
+                    // Pi chat panes in the TUI MUST use the embedded PTY
+                    // path, exactly like claude / codex / opencode — NOT the
+                    // detached `wg pi-handler` / `pi --mode rpc` worker
+                    // topology. The RPC handler spawns `pi --mode rpc` on
+                    // pipes with no live PTY, so the visible pane stays stuck
+                    // on "Booting agent..." forever (fix-tui-pi regression on
+                    // .chat-39). Here we spawn the interactive `pi` binary
+                    // directly in the pane's PTY, passing the same
+                    // `--provider`/`--model`/`--session-id`/`--session-dir`
+                    // pair the RPC path uses, but WITHOUT `--mode rpc` and
+                    // WITHOUT `--no-approve` (interactive mode wants the
+                    // user's terminal for approvals, mirroring claude/codex).
+                    //
+                    // `pi_model_arg` resolves the WG `openrouter:<vendor>/<model>`
+                    // spec into pi's `--provider <p> --model <m>` pair; if it
+                    // returns `None` the explicit-model contract is violated
+                    // and we bail (same posture as the handler).
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
+                    let marg = crate::commands::pi_handler::pi_model_arg(
+                        chat_model.as_deref(),
+                    );
+                    let marg = match marg {
+                        Some(m) => m,
+                        None => {
+                            eprintln!(
+                                "[tui] pi chat pane: could not resolve a \
+                                 provider/model from {:?}; refusing to spawn \
+                                 (explicit-model contract)",
+                                chat_model
+                            );
+                            return;
+                        }
+                    };
+                    let session_dir = chat_dir.join("pi-sessions");
+                    let _ = std::fs::create_dir_all(&session_dir);
+                    let session_id = chat_ref.clone();
+                    let args = vec![
+                        "--provider".to_string(),
+                        marg.provider,
+                        "--model".to_string(),
+                        marg.model,
+                        "--session-id".to_string(),
+                        session_id,
+                        "--session-dir".to_string(),
+                        session_dir.display().to_string(),
+                    ];
+                    ("pi".to_string(), args, Some(project_root))
+                }
                 "octomind" => {
-                    // Octomind's interactive `run` REPL is line-oriented (NOT
                     // alt-screen, verified), so tmux scrollback works without
                     // the OpenCode child-scroll workaround. `-m` takes WG's
                     // `openrouter:<vendor>/<model>` spelling verbatim, and
