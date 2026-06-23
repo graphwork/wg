@@ -874,35 +874,59 @@ pub fn run_flip(
     let artifact_diff = compute_artifact_diff(artifacts, task.started_at.as_deref());
 
     // Determine models for each phase.
-    // Priority: CLI --evaluator-model > per-task model > config (DispatchRole) > tier default
+    //
+    // Priority: CLI --evaluator-model > explicitly configured FLIP role model
+    // > per-task model > tier default.
+    //
+    // Previously the per-task model took precedence over the configured role
+    // model, which silently shadowed `[models.flip_inference]` /
+    // `[models.flip_comparison]` whenever a task had a runtime model (almost
+    // always). The actual LLM calls already route through the configured role
+    // via `run_lightweight_llm_call`, so only the *recorded* metadata was wrong.
+    // Now we honor an explicitly configured role model first, preserving the
+    // task-model fallback only when no role model is configured.
     let task_model = extract_spawn_model(&task.log).or_else(|| task.model.clone());
 
-    let (inference_model, inference_source) = if let Some(m) = evaluator_model {
-        (m.to_string(), "cli-override")
-    } else if let Some(ref m) = task_model {
-        // Per-task model: FLIP should probe the same 'mind' that did the work
-        (m.clone(), "task-model")
-    } else {
-        (
-            config
-                .resolve_model_for_role(worksgood::config::DispatchRole::FlipInference)
-                .model,
-            "config",
-        )
-    };
+    /// Resolve the (model, source) for a FLIP phase.
+    ///
+    /// An explicitly configured `[models.<role>]` (with a `model` field) wins
+    /// over the task model. Otherwise we fall back to the task model so FLIP
+    /// probes the same "mind" that did the work, and finally to the resolved
+    /// role default.
+    fn resolve_flip_model(
+        config: &Config,
+        role: worksgood::config::DispatchRole,
+        evaluator_model: Option<&str>,
+        task_model: &Option<String>,
+    ) -> (String, &'static str) {
+        if let Some(m) = evaluator_model {
+            return (m.to_string(), "cli-override");
+        }
+        // Explicit per-role config (model field present) takes precedence.
+        if let Some(role_cfg) = config.models.get_role(role) {
+            if let Some(m) = &role_cfg.model {
+                return (m.clone(), "role/config");
+            }
+        }
+        if let Some(m) = task_model {
+            return (m.clone(), "task-model");
+        }
+        (config.resolve_model_for_role(role).model, "config")
+    }
 
-    let (comparison_model, comparison_source) = if let Some(m) = evaluator_model {
-        (m.to_string(), "cli-override")
-    } else if let Some(ref m) = task_model {
-        (m.clone(), "task-model")
-    } else {
-        (
-            config
-                .resolve_model_for_role(worksgood::config::DispatchRole::FlipComparison)
-                .model,
-            "config",
-        )
-    };
+    let (inference_model, inference_source) = resolve_flip_model(
+        &config,
+        worksgood::config::DispatchRole::FlipInference,
+        evaluator_model,
+        &task_model,
+    );
+
+    let (comparison_model, comparison_source) = resolve_flip_model(
+        &config,
+        worksgood::config::DispatchRole::FlipComparison,
+        evaluator_model,
+        &task_model,
+    );
 
     eprintln!(
         "FLIP models: inference='{}' ({}), comparison='{}' ({})",

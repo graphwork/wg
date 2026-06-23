@@ -1547,3 +1547,12 @@ owners = [
 ]
 description = "Pins fix-tui-new-chat-pi-executor: the wg tui new-chat launcher (+) MUST visibly include a `pi` executor radio option, ordered third (after claude and codex, before nex/opencode). Selecting pi + entering model openrouter/z-ai/glm-5.2 creates a .chat-N task with executor resolving to pi and model preserving the OpenRouter route. Drives a real wg tui inside tmux; metadata assertions suffice (no live model call). Fails if the Pi option is absent or ordered incorrectly."
 timeout_seconds = 90
+
+[[scenario]]
+name = "flip_role_model_routing_honors_config"
+script = "scenarios/flip_role_model_routing_honors_config.sh"
+owners = [
+    "bug-flip-role-model-routing",
+]
+description = "Pins bug-flip-role-model-routing: when [models.flip_inference] and [models.flip_comparison] are configured to a model distinct from the task's runtime model, `wg evaluate run <task> --flip --dry-run` MUST report the configured FLIP role models (source=role/config) in stdout and the `FLIP models:` stderr line — not the task model (source=task-model). Pre-fix the recorded metadata used CLI > task-model > config, silently shadowing configured role models. Uses --dry-run so no live LLM call is needed."
+timeout_seconds = 30
