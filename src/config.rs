@@ -4577,6 +4577,115 @@ impl Config {
         )
     }
 
+    /// Dotted TOML keys written when setting the Pi profile's **strong** tier.
+    ///
+    /// This is the `strong` half of the two-tier facade documented in
+    /// `docs/design-two-tier-pi-profile.md` §4.1. It is the single source of
+    /// truth shared by the in-memory writer ([`Config::set_pi_tiers`]) and the
+    /// comment-preserving file patcher (`profile::named::patch_pi_tiers`), so the
+    /// two cannot disagree about which keys `strong` drives.
+    pub const PI_STRONG_TOML_KEYS: &'static [&'static str] = &[
+        "agent.model",
+        "dispatcher.model",
+        "models.default.model",
+        "models.task_agent.model",
+        "tiers.standard",
+        "tiers.premium",
+    ];
+
+    /// Dotted TOML keys written when setting the Pi profile's **weak** tier.
+    ///
+    /// See [`Config::PI_STRONG_TOML_KEYS`]. The four `[models.<role>]` agency
+    /// one-shot keys are written explicitly because those roles ignore the tier
+    /// cascade today (`resolve_agency_dispatch`); `tiers.fast` covers the
+    /// remaining fast-tier roles. See design §4.1.
+    pub const PI_WEAK_TOML_KEYS: &'static [&'static str] = &[
+        "tiers.fast",
+        "models.evaluator.model",
+        "models.assigner.model",
+        "models.flip_inference.model",
+        "models.flip_comparison.model",
+    ];
+
+    /// Read the Pi profile's `(strong, weak)` tier models from this config.
+    ///
+    /// `strong` is inferred from `agent.model` (falling back to
+    /// `[models.default].model`); `weak` from `tiers.fast` (falling back to
+    /// `[models.evaluator].model`). This is the read path behind
+    /// `wg profile pi --show`/`--list` and the `old → new` echo. A profile that
+    /// has never been touched by the two-tier setter still reports correct tiers
+    /// because the hand-written `pi.toml` starter already uses this layout
+    /// (design §8: migration is recognition, not rewrite).
+    pub fn pi_tiers(&self) -> (Option<String>, Option<String>) {
+        let strong = if !self.agent.model.trim().is_empty() {
+            Some(self.agent.model.clone())
+        } else {
+            self.models
+                .default
+                .as_ref()
+                .and_then(|m| m.model.clone())
+                .filter(|m| !m.trim().is_empty())
+        };
+        let weak = self
+            .tiers
+            .fast
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| {
+                self.models
+                    .evaluator
+                    .as_ref()
+                    .and_then(|m| m.model.clone())
+                    .filter(|m| !m.trim().is_empty())
+            });
+        (strong, weak)
+    }
+
+    /// Set the Pi profile's two tiers in-memory.
+    ///
+    /// Writes the [`Config::PI_STRONG_TOML_KEYS`] /
+    /// [`Config::PI_WEAK_TOML_KEYS`] key-set for whichever tier(s) are
+    /// `Some(_)`; a `None` tier is left untouched (partial update). Explicit
+    /// `[models.<role>]` overrides outside the written key-set are preserved,
+    /// matching the design's "an explicit per-role override always wins and is
+    /// never touched by the two-tier setter" contract.
+    ///
+    /// This mutates a parsed `Config` (used for validation and tests); the
+    /// persisted, comment-preserving write goes through
+    /// `profile::named::patch_pi_tiers`, which targets the same TOML keys.
+    pub fn set_pi_tiers(&mut self, strong: Option<&str>, weak: Option<&str>) {
+        if let Some(s) = strong {
+            self.agent.model = s.to_string();
+            self.coordinator.model = Some(s.to_string());
+            let role = RoleModelConfig {
+                provider: None,
+                model: Some(s.to_string()),
+                tier: None,
+                endpoint: None,
+            };
+            self.models.default = Some(role.clone());
+            self.models.task_agent = Some(role);
+            self.tiers.standard = Some(s.to_string());
+            self.tiers.premium = Some(s.to_string());
+        }
+        if let Some(w) = weak {
+            self.tiers.fast = Some(w.to_string());
+            for role in [
+                DispatchRole::Evaluator,
+                DispatchRole::Assigner,
+                DispatchRole::FlipInference,
+                DispatchRole::FlipComparison,
+            ] {
+                *self.models.get_role_mut(role) = Some(RoleModelConfig {
+                    provider: None,
+                    model: Some(w.to_string()),
+                    tier: None,
+                    endpoint: None,
+                });
+            }
+        }
+    }
+
     /// Save configuration to the global path (~/.wg/config.toml).
     /// Creates the ~/.wg/ directory if needed.
     pub fn save_global(&self) -> anyhow::Result<()> {
@@ -8938,5 +9047,101 @@ model = "codex:gpt-5.5"
             "canonical [dispatcher].model must win over legacy [coordinator].model"
         );
         assert_eq!(cfg.coordinator.effective_executor(), "codex");
+    }
+
+    // ── Two-tier Pi profile (set_pi_tiers / pi_tiers) ────────────────────────
+
+    #[test]
+    fn test_pi_tiers_reads_strong_from_agent_and_weak_from_fast() {
+        let mut cfg = Config::default();
+        cfg.agent.model = "pi:openrouter/z-ai/glm-5.2".to_string();
+        cfg.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        let (strong, weak) = cfg.pi_tiers();
+        assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
+        assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-chat"));
+    }
+
+    #[test]
+    fn test_set_pi_tiers_writes_full_strong_keyset() {
+        let mut cfg = Config::default();
+        cfg.set_pi_tiers(Some("openrouter:z-ai/glm-5.2"), None);
+        // Every strong key is set; weak keys untouched.
+        assert_eq!(cfg.agent.model, "openrouter:z-ai/glm-5.2");
+        assert_eq!(
+            cfg.coordinator.model.as_deref(),
+            Some("openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            cfg.tiers.standard.as_deref(),
+            Some("openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            cfg.tiers.premium.as_deref(),
+            Some("openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
+            Some("openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            cfg.models
+                .task_agent
+                .as_ref()
+                .and_then(|m| m.model.as_deref()),
+            Some("openrouter:z-ai/glm-5.2")
+        );
+        // Weak tier left alone by a strong-only update.
+        assert!(cfg.tiers.fast.is_none());
+    }
+
+    #[test]
+    fn test_set_pi_tiers_weak_only_pins_agency_oneshots() {
+        let mut cfg = Config::default();
+        cfg.agent.model = "claude:opus".to_string();
+        cfg.set_pi_tiers(None, Some("openrouter:deepseek/deepseek-chat"));
+        assert_eq!(
+            cfg.tiers.fast.as_deref(),
+            Some("openrouter:deepseek/deepseek-chat")
+        );
+        for role in [
+            DispatchRole::Evaluator,
+            DispatchRole::Assigner,
+            DispatchRole::FlipInference,
+            DispatchRole::FlipComparison,
+        ] {
+            assert_eq!(
+                cfg.models.get_role(role).and_then(|m| m.model.as_deref()),
+                Some("openrouter:deepseek/deepseek-chat"),
+                "weak update must pin the {role:?} agency one-shot"
+            );
+        }
+        // Strong (chat/worker) untouched by a weak-only update.
+        assert_eq!(cfg.agent.model, "claude:opus");
+    }
+
+    #[test]
+    fn test_set_pi_tiers_roundtrips_through_read() {
+        let mut cfg = Config::default();
+        cfg.set_pi_tiers(
+            Some("openrouter:qwen/qwen3-max"),
+            Some("openrouter:deepseek/deepseek-v3.1"),
+        );
+        let (strong, weak) = cfg.pi_tiers();
+        assert_eq!(strong.as_deref(), Some("openrouter:qwen/qwen3-max"));
+        assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+    }
+
+    #[test]
+    fn test_pi_key_constants_cover_design_keyset() {
+        // Guard the §4.1 key-set the file patcher and in-memory writer share.
+        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"agent.model"));
+        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"tiers.standard"));
+        assert!(Config::PI_STRONG_TOML_KEYS.contains(&"tiers.premium"));
+        assert!(Config::PI_WEAK_TOML_KEYS.contains(&"tiers.fast"));
+        assert!(Config::PI_WEAK_TOML_KEYS.contains(&"models.evaluator.model"));
+        // Tiers must be disjoint — a key never belongs to both colors.
+        for k in Config::PI_STRONG_TOML_KEYS {
+            assert!(!Config::PI_WEAK_TOML_KEYS.contains(k), "{k} in both tiers");
+        }
     }
 }

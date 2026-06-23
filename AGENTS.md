@@ -113,6 +113,31 @@ This writes `~/.wg/active-profile` and hot-reloads the daemon.
 cover the rest of the management surface. Profiles overlay onto the
 global+local merge but never clobber project-local config.
 
+#### Picking Pi models: `wg profile pi` (two-tier strong/weak)
+
+The Pi profile splits its OpenRouter/Pi models into two stable tiers — **strong**
+(chat + workers + heavy generative roles) and **weak** (the recoverable agency
+one-shots: `.flip` / `.assign` / eval). `wg profile pi` is the "which model do you
+want?" surface; it reads/writes `~/.wg/profiles/pi.toml` and, when `pi` is the
+active profile, re-applies it as global config and hot-reloads so the next worker
+picks up the new tier:
+
+```
+wg profile pi                       # show current strong/weak + routing (no-arg default)
+wg profile pi --list                # list the models configured for the profile to pick from
+wg profile pi <strong> <weak>       # set both positionally ('-' skips a tier)
+wg profile pi --strong X --weak Y   # set both via flags (partial-update friendly)
+wg profile pi --weak Y              # set only weak (the common scout case)
+wg profile pi --strong X --dry-run  # preview; output is a copy-pasteable apply command
+```
+
+`strong`/`weak` are a 2-coloring of the existing three tiers (premium+standard →
+strong, fast → weak) projected onto the normal `[tiers]` + `[models.<role>]`
+keys — no new schema. Every set echoes the resulting assignment with `old → new`
+so a transposed invocation is caught immediately. A lone positional is rejected
+as ambiguous; explicit `[models.<role>]` overrides always win and are never
+touched. See `docs/design-two-tier-pi-profile.md`.
+
 #### Flipping the active profile and reverting (the round-trip)
 
 The active profile is global state in `~/.wg/active-profile`. The chat agent

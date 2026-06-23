@@ -15295,9 +15295,7 @@ impl VizApp {
                         .parent()
                         .unwrap_or(&self.workgraph_dir)
                         .to_path_buf();
-                    let marg = crate::commands::pi_handler::pi_model_arg(
-                        chat_model.as_deref(),
-                    );
+                    let marg = crate::commands::pi_handler::pi_model_arg(chat_model.as_deref());
                     let marg = match marg {
                         Some(m) => m,
                         None => {

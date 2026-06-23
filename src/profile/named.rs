@@ -557,6 +557,135 @@ pub fn validate_file(path: &Path) -> Result<NamedProfile> {
     )
 }
 
+// ── Two-tier Pi profile patch (`wg profile pi`) ──────────────────────────────
+
+/// Does a trimmed TOML line define the bare key `key` (i.e. `key = ...`)?
+///
+/// Matches `key = x`, `key=x`, and `key   = x`, but not `keyfoo = x` or
+/// `foo_key = x`. Quoted keys are not handled — the Pi starter uses bare keys.
+fn line_defines_key(trimmed: &str, key: &str) -> bool {
+    match trimmed.strip_prefix(key) {
+        Some(rest) => rest.trim_start().starts_with('='),
+        None => false,
+    }
+}
+
+/// Set a dotted TOML key (`table.key` / `table.sub.key`, or a bare top-level
+/// `key`) to a string value in `content`, preserving comments, ordering, blank
+/// lines, and every unrelated key.
+///
+/// The last dotted segment is the key; everything before it is the table header
+/// (`[table]` / `[table.sub]`). Behaviour:
+/// - key present under its table  → replace the value in place (keep indent);
+/// - table present, key absent    → insert `key = "value"` right after the
+///   header line;
+/// - table absent                 → append `[table]` + `key = "value"` at EOF.
+///
+/// Array-of-tables headers (`[[x]]`) reset the active-table tracking so a key in
+/// `[tiers]` is never confused with one inside an array element. This is a
+/// deliberately small line patcher (not a full TOML round-trip) precisely so the
+/// hand-written `pi.toml` comment blocks survive a write — `toml::to_string`
+/// would discard them.
+pub fn set_toml_string_value(content: &str, dotted: &str, value: &str) -> String {
+    let (table, key) = match dotted.rsplit_once('.') {
+        Some((t, k)) => (t, k),
+        None => ("", dotted),
+    };
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    let assignment = format!("{} = \"{}\"", key, escaped);
+
+    let mut out: Vec<String> = Vec::with_capacity(content.lines().count() + 2);
+    let mut in_target = table.is_empty();
+    let mut replaced = false;
+    // Top-level keys live before the first header; treat the file start as the
+    // "header" insertion anchor when targeting a top-level key.
+    let mut header_idx: Option<usize> = if in_target { Some(0) } else { None };
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[[") {
+            in_target = false;
+            out.push(line.to_string());
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_target = trimmed[1..trimmed.len() - 1].trim() == table;
+            out.push(line.to_string());
+            if in_target && !replaced {
+                header_idx = Some(out.len());
+            }
+            continue;
+        }
+        if !replaced && in_target && line_defines_key(trimmed, key) {
+            let indent_len = line.len() - line.trim_start().len();
+            out.push(format!("{}{}", &line[..indent_len], assignment));
+            replaced = true;
+            continue;
+        }
+        out.push(line.to_string());
+    }
+
+    if !replaced {
+        match header_idx {
+            // Table (or top-level) present but key missing: insert after header.
+            Some(idx) if table.is_empty() || idx > 0 => out.insert(idx, assignment),
+            _ => {
+                if out.last().map(|l| !l.trim().is_empty()).unwrap_or(false) {
+                    out.push(String::new());
+                }
+                out.push(format!("[{}]", table));
+                out.push(assignment);
+            }
+        }
+    }
+
+    let mut result = out.join("\n");
+    if content.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// Apply a two-tier (`strong`/`weak`) update to a named profile's TOML file,
+/// preserving comments and unrelated keys.
+///
+/// Writes [`Config::PI_STRONG_TOML_KEYS`] for `strong` and
+/// [`Config::PI_WEAK_TOML_KEYS`] for `weak` (each only when `Some`). When the
+/// profile file does not yet exist it is seeded from the baked-in starter
+/// template first (so a first `wg profile pi` never fails on a missing file —
+/// design §6.1). Returns the path written.
+pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> Result<PathBuf> {
+    let path = profile_path(name)?;
+    let mut content = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read profile file {}", path.display()))?
+    } else if let Some(template) = starter_template(name) {
+        template.to_string()
+    } else {
+        // Reuse load()'s closest-match / suggestion error.
+        load(name)?;
+        anyhow::bail!(
+            "Profile '{}' source file not found at {}",
+            name,
+            path.display()
+        );
+    };
+
+    if let Some(s) = strong {
+        for dotted in Config::PI_STRONG_TOML_KEYS {
+            content = set_toml_string_value(&content, dotted, s);
+        }
+    }
+    if let Some(w) = weak {
+        for dotted in Config::PI_WEAK_TOML_KEYS {
+            content = set_toml_string_value(&content, dotted, w);
+        }
+    }
+
+    save_raw(name, &content)?;
+    Ok(path)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -748,9 +877,12 @@ is_default = true
     #[test]
     fn test_pi_starter_has_glm_workers_and_deepseek_agency_models() {
         // The pi starter pins worker/chat roles to Pi + OpenRouter GLM 5.2,
-        // while all agency/meta one-shot roles use a cheaper native OpenRouter
-        // DeepSeek route. The agency roles deliberately avoid `pi:` because
-        // these are short, non-interactive calls.
+        // while the four agency one-shot roles (the "weak" tier) use a cheaper
+        // native OpenRouter DeepSeek route. Per docs/design-two-tier-pi-profile.md
+        // §4/§8, the premium roles (evolver/creator/verification) and the other
+        // fast-tier roles (triage/placer/compactor/chat_compactor) no longer
+        // carry an explicit pin — they ride their tier (premium=strong /
+        // fast=weak) so `wg profile pi` can move them as a unit.
         let prof = parse_profile(STARTER_PI, Path::new("pi.toml"), "pi").unwrap();
         let worker = "pi:openrouter/z-ai/glm-5.2";
         let agency = "openrouter:deepseek/deepseek-chat";
@@ -776,11 +908,25 @@ is_default = true
             Some(worker)
         );
 
-        let meta_roles = [
+        // Only the four agency one-shots are explicitly pinned to DeepSeek
+        // (they ignore the tier cascade today, so they must be explicit).
+        let agency_oneshots = [
             prof.config.models.evaluator.as_ref(),
             prof.config.models.assigner.as_ref(),
             prof.config.models.flip_inference.as_ref(),
             prof.config.models.flip_comparison.as_ref(),
+        ];
+        for role in agency_oneshots {
+            assert_eq!(
+                role.and_then(|m| m.model.as_deref()),
+                Some(agency),
+                "the four pi agency one-shot roles must be pinned to DeepSeek (weak tier)"
+            );
+        }
+
+        // The premium + remaining fast roles must NOT carry an explicit pin —
+        // they ride their tier so the two-tier setter can move them as a unit.
+        let tier_riding_roles = [
             prof.config.models.verification.as_ref(),
             prof.config.models.triage.as_ref(),
             prof.config.models.placer.as_ref(),
@@ -789,11 +935,10 @@ is_default = true
             prof.config.models.compactor.as_ref(),
             prof.config.models.chat_compactor.as_ref(),
         ];
-        for role in meta_roles {
-            assert_eq!(
-                role.and_then(|m| m.model.as_deref()),
-                Some(agency),
-                "all pi profile agency/meta roles must be pinned to DeepSeek"
+        for role in tier_riding_roles {
+            assert!(
+                role.is_none(),
+                "premium/fast roles must ride their tier, not carry an explicit pin"
             );
         }
     }
@@ -1241,6 +1386,108 @@ assigner_agent = "local-agent"
             assert!(!changed, "must not migrate when description is clean");
             let after = std::fs::read_to_string(&path).unwrap();
             assert_eq!(after, mixed);
+        });
+    }
+
+    // ── set_toml_string_value / patch_pi_tiers ───────────────────────────────
+
+    #[test]
+    fn test_set_toml_string_value_replaces_in_place() {
+        let src = "[tiers]\nfast = \"old\"\nstandard = \"keep\"\n";
+        let out = set_toml_string_value(src, "tiers.fast", "new:model");
+        assert!(out.contains("fast = \"new:model\""));
+        assert!(out.contains("standard = \"keep\""), "siblings preserved");
+        assert!(!out.contains("\"old\""));
+    }
+
+    #[test]
+    fn test_set_toml_string_value_preserves_comments_and_unrelated_keys() {
+        let src = "# leading comment\ndescription = \"x\"\n\n[agent]\n# pick the worker model\nmodel = \"a\"\n";
+        let out = set_toml_string_value(src, "agent.model", "b");
+        assert!(out.contains("# leading comment"));
+        assert!(out.contains("# pick the worker model"));
+        assert!(out.contains("description = \"x\""));
+        assert!(out.contains("model = \"b\""));
+    }
+
+    #[test]
+    fn test_set_toml_string_value_inserts_missing_key_under_existing_table() {
+        let src = "[tiers]\nstandard = \"s\"\n";
+        let out = set_toml_string_value(src, "tiers.fast", "f");
+        // Parses and both keys present.
+        let val: toml::Value = out.parse().unwrap();
+        let tiers = val.get("tiers").unwrap();
+        assert_eq!(tiers.get("fast").unwrap().as_str(), Some("f"));
+        assert_eq!(tiers.get("standard").unwrap().as_str(), Some("s"));
+    }
+
+    #[test]
+    fn test_set_toml_string_value_appends_missing_table() {
+        let src = "[agent]\nmodel = \"a\"\n";
+        let out = set_toml_string_value(src, "models.evaluator.model", "weak:m");
+        let val: toml::Value = out.parse().unwrap();
+        assert_eq!(
+            val.get("models")
+                .and_then(|m| m.get("evaluator"))
+                .and_then(|e| e.get("model"))
+                .and_then(|m| m.as_str()),
+            Some("weak:m")
+        );
+    }
+
+    #[test]
+    fn test_set_toml_string_value_ignores_array_of_tables_keys() {
+        // A `model` key inside an [[llm_endpoints.endpoints]] element must not be
+        // mistaken for the [agent].model target.
+        let src =
+            "[agent]\nmodel = \"a\"\n\n[[llm_endpoints.endpoints]]\nmodel = \"do-not-touch\"\n";
+        let out = set_toml_string_value(src, "agent.model", "b");
+        assert!(out.contains("model = \"do-not-touch\""));
+        assert!(out.contains("model = \"b\""));
+    }
+
+    #[test]
+    fn test_patch_pi_tiers_seeds_from_template_and_writes_both_tiers() {
+        let _tmp = with_home(|| {
+            // pi.toml absent → seeds from the baked-in starter, then patches.
+            let path = patch_pi_tiers(
+                "pi",
+                Some("openrouter:z-ai/glm-5.2"),
+                Some("openrouter:deepseek/deepseek-v3.1"),
+            )
+            .unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            // Comment block survives the write.
+            assert!(content.contains("PLUGIN INSTALL"));
+            // Parse and verify the full key-set via the reader.
+            let cfg: Config = toml::from_str(&content).unwrap();
+            let (strong, weak) = cfg.pi_tiers();
+            assert_eq!(strong.as_deref(), Some("openrouter:z-ai/glm-5.2"));
+            assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+            assert_eq!(
+                cfg.tiers.premium.as_deref(),
+                Some("openrouter:z-ai/glm-5.2")
+            );
+            assert_eq!(
+                cfg.models
+                    .assigner
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("openrouter:deepseek/deepseek-v3.1")
+            );
+        });
+    }
+
+    #[test]
+    fn test_patch_pi_tiers_partial_leaves_other_tier_intact() {
+        let _tmp = with_home(|| {
+            // Seed by setting both, then patch only weak; strong must persist.
+            patch_pi_tiers("pi", Some("strong:v1"), Some("weak:v1")).unwrap();
+            let path = patch_pi_tiers("pi", None, Some("weak:v2")).unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let (strong, weak) = cfg.pi_tiers();
+            assert_eq!(strong.as_deref(), Some("strong:v1"), "strong untouched");
+            assert_eq!(weak.as_deref(), Some("weak:v2"));
         });
     }
 }

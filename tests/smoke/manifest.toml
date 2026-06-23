@@ -1558,6 +1558,15 @@ description = "Credentialed live-provider guard for pi plugin-in-the-loop: with 
 timeout_seconds = 420
 
 [[scenario]]
+name = "pi_two_tier_profile"
+script = "scenarios/pi_two_tier_profile.sh"
+owners = [
+    "interactive-pi-model",
+]
+description = "Pins the two-tier Pi profile setter (`wg profile pi`): --list surfaces the configured strong/weak models from the profile (not hardcoded); a positional `<strong> <weak>` set patches the §4.1 key-set in ~/.wg/profiles/pi.toml (preserving the plugin comment block) and echoes old → new; --show reflects the persisted tiers on a fresh process; a partial --weak leaves strong unchanged; setting on the ACTIVE pi profile re-applies to global config.toml so the next turn sees it; a lone positional is rejected as ambiguous. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_new_chat_launcher_pi_executor"
 script = "scenarios/tui_new_chat_launcher_pi_executor.sh"
 owners = [

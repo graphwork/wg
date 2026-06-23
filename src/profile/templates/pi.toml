@@ -28,8 +28,16 @@ model = "pi:openrouter/z-ai/glm-5.2"
 [models.task_agent]
 model = "pi:openrouter/z-ai/glm-5.2"
 
-# Agency/meta one-shot roles. Explicit per-role overrides win over the default
-# claude:haiku agency pin, so these route through the native OpenRouter handler.
+# Agency one-shot roles (the "weak" tier). These are short, recoverable
+# judgment calls — assign / evaluate / flip — pinned explicitly because they
+# currently ignore the tier cascade (resolve_agency_dispatch). Explicit per-role
+# overrides win over the default claude:haiku agency pin, so they route through
+# the native OpenRouter handler. The other fast-tier roles (triage / placer /
+# compactor / chat_compactor) ride `tiers.fast` and need no explicit pin; the
+# premium roles (evolver / creator / verification) are quality-critical
+# generative work and ride `tiers.premium` = strong (see
+# docs/design-two-tier-pi-profile.md §4). Set both tiers as a unit with
+# `wg profile pi <strong> <weak>` (or `--strong`/`--weak`).
 [models.evaluator]
 model = "openrouter:deepseek/deepseek-chat"
 
@@ -40,27 +48,6 @@ model = "openrouter:deepseek/deepseek-chat"
 model = "openrouter:deepseek/deepseek-chat"
 
 [models.flip_comparison]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.verification]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.triage]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.placer]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.creator]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.evolver]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.compactor]
-model = "openrouter:deepseek/deepseek-chat"
-
-[models.chat_compactor]
 model = "openrouter:deepseek/deepseek-chat"
 
 # ─────────────────────────────────────────────────────────────────────────────

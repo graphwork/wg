@@ -3418,6 +3418,49 @@ pub enum ProfileCommands {
     },
     /// Refresh model data from OpenRouter and recompute rankings
     Refresh,
+
+    /// Set or show the Pi profile's two model tiers (strong / weak).
+    ///
+    /// `strong` drives chat + workers + heavy generative roles; `weak` drives
+    /// the recoverable agency one-shots (.flip / .assign / eval). Accepts two
+    /// input forms:
+    ///
+    ///   wg profile pi <STRONG> <WEAK>          # positional (terse; '-' skips a tier)
+    ///   wg profile pi --strong X --weak Y      # explicit (partial-update friendly)
+    ///
+    /// With no args (or --show) it prints the current tiers and routing; --list
+    /// shows the models configured for the profile to pick from. See
+    /// docs/design-two-tier-pi-profile.md.
+    Pi {
+        /// Positional tiers in the order STRONG WEAK. Pass exactly 0 or 2
+        /// tokens; a literal `-` leaves that tier unchanged.
+        #[arg(value_name = "TIER", num_args = 0..=2)]
+        tiers: Vec<String>,
+
+        /// Set the strong tier (chat/worker/generative). Partial-update friendly.
+        #[arg(long)]
+        strong: Option<String>,
+
+        /// Set the weak tier (agency one-shots). Partial-update friendly.
+        #[arg(long)]
+        weak: Option<String>,
+
+        /// Show the current tiers and routing (also the no-arg default).
+        #[arg(long)]
+        show: bool,
+
+        /// List the OpenRouter/Pi models configured for this profile to pick from.
+        #[arg(long)]
+        list: bool,
+
+        /// Print what would change without writing any files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Stage the write without hot-reloading the running daemon.
+        #[arg(long)]
+        no_reload: bool,
+    },
 }
 
 #[derive(Subcommand)]

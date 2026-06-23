@@ -2488,6 +2488,25 @@ fn main() -> Result<()> {
             }
             ProfileCommands::InitStarters { force } => commands::profile_cmd::init_starters(force),
             ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
+            ProfileCommands::Pi {
+                tiers,
+                strong,
+                weak,
+                show,
+                list,
+                dry_run,
+                no_reload,
+            } => commands::profile_cmd::pi(
+                &workgraph_dir,
+                cli.json,
+                &tiers,
+                strong.as_deref(),
+                weak.as_deref(),
+                show,
+                list,
+                dry_run,
+                no_reload,
+            ),
         },
         Commands::Config {
             cmd: config_subcmd,
