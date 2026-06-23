@@ -772,7 +772,9 @@ impl Default for TuiConfig {
 }
 
 /// A configured LLM endpoint (like a WiFi network entry).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// `Default` is hand-written below (not derived) so `provider` defaults to
+/// `"anthropic"` instead of an empty string — see the `impl Default` comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointConfig {
     /// Display name for this endpoint
     pub name: String,

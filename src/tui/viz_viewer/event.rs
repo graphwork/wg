@@ -10033,7 +10033,7 @@ mod chat_tab_navigation_tests {
         {
             let launcher = app.launcher.as_mut().unwrap();
             launcher.enter_add_new();
-            launcher.add_executor_idx = 2; // nex
+            launcher.add_executor_idx = 4; // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
             launcher.active_section = super::super::state::LauncherSection::AddNew(
                 super::super::state::AddNewField::Endpoint,
             );
@@ -10479,7 +10479,7 @@ mod chat_tab_navigation_tests {
         {
             let l = app.launcher.as_mut().unwrap();
             l.enter_add_new();
-            l.add_executor_idx = 3; // nex
+            l.add_executor_idx = 4; // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
             l.add_model = "qwen3-coder".into();
             l.endpoint_suggestions = vec![
                 ep_sug("local-gpu", "http://127.0.0.1:8088", "local", false),
@@ -10671,7 +10671,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_tab_accepts_suggestion_normalized_for_nex_and_advances_to_endpoint() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
         for c in "minimax m3".chars() {
             key(&mut app, KeyCode::Char(c));
         }
@@ -10691,7 +10691,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_down_navigates_then_enter_accepts_highlighted() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
         // Down twice → highlight qwen/qwen3-coder (index 2) on the full list.
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
@@ -10706,7 +10706,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_arbitrary_free_text_is_preserved_through_tab() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
         // Type a custom spec that matches no suggestion AND is an explicit
         // spec (contains ':'). Tab must NOT overwrite it.
         let custom = "myvendor:my-custom-model-x";
@@ -10731,7 +10731,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_backspace_reexposes_suggestions_after_explicit_spec() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
         let typed = "minimax/m"; // contains '/' → explicit spec, suggestions hidden
         for c in typed.chars() {
             key(&mut app, KeyCode::Char(c));
