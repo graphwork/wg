@@ -32,11 +32,19 @@ pub struct LlmCallResult {
 /// can easily exceed 1024 tokens. 4096 provides comfortable headroom.
 const LIGHTWEIGHT_MAX_TOKENS: u32 = 4096;
 
+/// The provider-qualified spec the agency pipeline degrades to when its weak
+/// tier points at a keyless native provider. Written with the `claude:` prefix
+/// (rather than the bare `haiku` alias) so the registry label matches the
+/// default weak-tier value `effective_tiers()` produces.
+const AGENCY_CLAUDE_HAIKU_SPEC: &str = "claude:haiku";
+
 /// Roles whose only output is a one-shot JSON scoring/assignment response —
-/// the agency pipeline. These are intentionally pinned to the cheap
-/// `claude:haiku` registry default running on the claude CLI so that
-/// project-level cascade (e.g. `coordinator.model = "openrouter:..."`)
-/// can't quietly route them through a provider that lacks credentials.
+/// the agency pipeline. These resolve their model from the profile's **weak**
+/// two-tier label (`tiers.fast`, the cheap tier) rather than the project-level
+/// cascade (e.g. `coordinator.model = "openrouter:..."`), so a two-tier Pi
+/// profile that points `weak` at DeepSeek actually moves agency onto DeepSeek
+/// while a wrong `coordinator.model` can never quietly route them through a
+/// provider that lacks credentials.
 ///
 /// A user who *explicitly* sets `[models.<role>].provider` or
 /// `[models.<role>].model` for one of these roles still gets the
@@ -97,6 +105,65 @@ fn normalize_claude_cli_model(model_id: &str) -> String {
         .to_string()
 }
 
+/// Build an [`AgencyDispatch`] from a raw model spec. Claude-family models
+/// (even when written `anthropic/…` or `openrouter:anthropic/…`) route through
+/// the claude CLI with the bare family alias; everything else routes via
+/// `handler_for_model`.
+fn agency_dispatch_for_spec(raw_spec: &str) -> AgencyDispatch {
+    let spec = parse_model_spec(raw_spec);
+    let claude_cli_alias = claude_cli_alias_for_model(&spec.model_id);
+    let handler = if claude_cli_alias.is_some() {
+        ExecutorKind::Claude
+    } else {
+        handler_for_model(raw_spec)
+    };
+
+    AgencyDispatch {
+        handler,
+        raw_spec: raw_spec.to_string(),
+        model_id: claude_cli_alias.unwrap_or(&spec.model_id).to_string(),
+    }
+}
+
+/// Whether a native-HTTP agency model has a usable API key available.
+///
+/// Mirrors the key resolution that [`call_openai_native`] / [`call_anthropic_native`]
+/// perform (provider env var → matching endpoint config), so the credential
+/// decision made here matches what the actual call would find. Only the
+/// providers that genuinely require a key are gated; localhost / in-process
+/// providers (`local`, OAI-compat `nex` endpoints) and the self-authenticating
+/// CLIs are never blocked.
+fn agency_native_creds_available(config: &Config, raw_spec: &str) -> bool {
+    let spec = parse_model_spec(raw_spec);
+    let provider = spec
+        .provider
+        .as_deref()
+        .map(crate::config::provider_to_resolved_provider)
+        .unwrap_or("anthropic");
+
+    let env_present = |vars: &[&str]| -> bool {
+        vars.iter()
+            .any(|v| std::env::var(v).ok().is_some_and(|k| !k.trim().is_empty()))
+    };
+    let endpoint_present = |provider: &str| -> bool {
+        config
+            .llm_endpoints
+            .find_for_provider(provider)
+            .and_then(|ep| ep.resolve_api_key(None).ok().flatten())
+            .is_some()
+    };
+
+    match provider {
+        "openrouter" | "openai" => {
+            env_present(&["OPENROUTER_API_KEY", "OPENAI_API_KEY"]) || endpoint_present(provider)
+        }
+        "anthropic" => env_present(&["ANTHROPIC_API_KEY"]) || endpoint_present(provider),
+        // `local` / `oai-compat` (localhost nex) require no key, and any other
+        // provider is not our concern — don't block agency dispatch on it.
+        _ => true,
+    }
+}
+
 /// Resolve which handler+model an agency one-shot role should dispatch to.
 ///
 /// Contract (matches CLAUDE.md "explicit overrides win, cascade does not"):
@@ -104,34 +171,102 @@ fn normalize_claude_cli_model(model_id: &str) -> String {
 /// - Explicit `[models.<role>].model` → use that spec; route via
 ///   `handler_for_model` (so `codex:X` runs on `codex` CLI, `openrouter:X`
 ///   runs through the native HTTP path, etc).
-/// - No explicit per-role model → pin to `claude:haiku` on the claude CLI.
-///   Project-level cascade from `coordinator.model` / `[models.default]`
-///   is ignored on purpose: agency tasks must be cheap and immune to
-///   silent provider failures.
+/// - No explicit per-role model → resolve the profile's **weak** two-tier
+///   label (`tiers.fast`, the cheap tier). For the default / no-profile config
+///   the weak tier IS `claude:haiku`, so the historical agency pin is
+///   preserved; a two-tier Pi profile that sets `--weak
+///   openrouter:deepseek/<model>` now flows through to `.flip` / `.assign` /
+///   `.evaluate`. Project-level cascade from `coordinator.model` /
+///   `[models.default]` is still ignored on purpose.
+///
+/// Credential safety: when the model comes from the **weak-tier fallback** and
+/// resolves to a native-HTTP provider that needs an API key (OpenRouter /
+/// OpenAI / Anthropic-native) with none available, fall back to `claude:haiku`
+/// on the claude CLI and warn loudly. This preserves the original pin's second
+/// guarantee — agency verdicts are never *silently* dropped because "openrouter
+/// is configured but there's no key". An **explicit** per-role override is NOT
+/// pre-empted at resolve time (explicit overrides win and keep their declared
+/// route); it is still protected from silent drops at call time, where
+/// `agency_native_lightweight_call` falls back to claude:haiku on any native
+/// failure. (claude / codex CLI targets self-authenticate, so they are never
+/// downgraded either way.)
 pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDispatch {
     debug_assert!(
         is_agency_oneshot_role(role),
         "resolve_agency_dispatch is only valid for agency one-shot roles"
     );
 
+    // Explicit per-role override ([models.evaluator] / [models.assigner] /
+    // [models.flip_*]) wins and routes to its declared handler unconditionally.
+    if let Some(spec) = config.models.get_role(role).and_then(|c| c.model.clone()) {
+        return agency_dispatch_for_spec(&spec);
+    }
+
+    // No override: resolve the WEAK tier (tiers.fast). `weak_tier_spec()` always
+    // yields a value (hardcoded `claude:haiku` for the bare default), so the
+    // `unwrap_or_else` is purely defensive.
     let raw_spec = config
-        .models
-        .get_role(role)
-        .and_then(|c| c.model.clone())
+        .weak_tier_spec()
         .unwrap_or_else(|| CLAUDE_HAIKU_MODEL_ID.to_string());
+    let dispatch = agency_dispatch_for_spec(&raw_spec);
 
-    let spec = parse_model_spec(&raw_spec);
-    let claude_cli_alias = claude_cli_alias_for_model(&spec.model_id);
-    let handler = if claude_cli_alias.is_some() {
-        ExecutorKind::Claude
-    } else {
-        handler_for_model(&raw_spec)
-    };
+    // Credential safety net for the default weak-tier path: a native-HTTP target
+    // with no usable key would otherwise produce a confusing 401 (or a broken
+    // "fall back to claude CLI with a non-claude --model" call) and silently
+    // drop the verdict. Detect that here and degrade to claude:haiku with a loud
+    // warning instead, so the spawn-site registry label and the call site agree.
+    if dispatch.handler == ExecutorKind::Native && !agency_native_creds_available(config, &raw_spec)
+    {
+        eprintln!(
+            "[agency-dispatch] role={role} resolved to weak-tier model '{raw_spec}', but no API \
+             key is available for its provider — falling back to claude:haiku on the claude CLI \
+             so agency verdicts are not silently dropped. Configure the key (e.g. set \
+             OPENROUTER_API_KEY or `wg endpoints add`) to run agency on the configured model."
+        );
+        return agency_dispatch_for_spec(AGENCY_CLAUDE_HAIKU_SPEC);
+    }
 
-    AgencyDispatch {
-        handler,
-        raw_spec,
-        model_id: claude_cli_alias.unwrap_or(&spec.model_id).to_string(),
+    dispatch
+}
+
+/// Make the native-HTTP lightweight call for an agency role whose weak tier
+/// resolved to a native provider (`openrouter` / `openai` / `oai-compat` /
+/// `local` / `anthropic`). Returns `Err` if the resolved provider is not a
+/// native HTTP one, or the call itself fails — the caller falls back to
+/// `claude:haiku` so the agency verdict is never dropped.
+fn agency_native_lightweight_call(
+    config: &Config,
+    role: DispatchRole,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    let resolved = config.resolve_model_for_role(role);
+    let model = &resolved.model;
+    let registry_entry = resolved.registry_entry.as_ref();
+    let endpoint_name = resolved.endpoint.as_deref();
+
+    match resolved.provider.as_deref() {
+        Some("anthropic") => call_anthropic_native(
+            config,
+            "anthropic",
+            model,
+            prompt,
+            timeout_secs,
+            registry_entry,
+            endpoint_name,
+        ),
+        Some(prov @ ("oai-compat" | "openai" | "openrouter" | "local")) => call_openai_native(
+            config,
+            prov,
+            model,
+            prompt,
+            timeout_secs,
+            registry_entry,
+            endpoint_name,
+        ),
+        other => anyhow::bail!(
+            "agency role {role} weak-tier provider {other:?} is not a native HTTP provider"
+        ),
     }
 }
 
@@ -139,10 +274,11 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
 ///
 /// Resolves the model and provider for the given role, then dispatches via:
 /// 1. Agency one-shot roles (Evaluator, FlipInference, FlipComparison,
-///    Assigner) without an explicit per-role override are pinned to the
-///    claude CLI with `claude:haiku`. This makes agency tasks immune to
-///    `coordinator.model` cascade silently routing them through a
-///    provider that lacks credentials.
+///    Assigner) resolve via `resolve_agency_dispatch`: an explicit per-role
+///    override, else the profile's weak tier (`tiers.fast`), with a loud
+///    fall back to `claude:haiku` when the weak tier is a keyless native
+///    provider. This keeps agency cheap and immune to `coordinator.model`
+///    cascade silently routing them through a provider that lacks credentials.
 /// 2. If `provider` is set to a native provider ("anthropic", "openai",
 ///    "openrouter"), attempts a direct API call using the native client.
 ///    Native-call errors are surfaced (logged to stderr) before falling
@@ -171,9 +307,24 @@ pub fn run_lightweight_llm_call(
                 return call_codex_cli(&dispatch.model_id, prompt, timeout_secs);
             }
             ExecutorKind::Native => {
-                // Fall through to the native HTTP path below — openrouter,
-                // local, oai-compat, etc. are real HTTP providers that the
-                // cascade-based dispatch handles correctly.
+                // Weak tier points at a native HTTP provider (e.g.
+                // `openrouter:deepseek/...`). Make the call directly; on ANY
+                // failure (invalid key, timeout, 5xx) fall back to claude:haiku
+                // so the agency verdict is never silently dropped. The
+                // missing-key case is already redirected to claude inside
+                // `resolve_agency_dispatch`, so reaching here means a key was
+                // present — but it could still be rejected at request time.
+                match agency_native_lightweight_call(config, role, prompt, timeout_secs) {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        eprintln!(
+                            "[agency-dispatch] native weak-tier call for role={role} failed: \
+                             {e:#} — falling back to claude:haiku so the agency verdict is not \
+                             dropped",
+                        );
+                        return call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs);
+                    }
+                }
             }
             ExecutorKind::Shell
             | ExecutorKind::OpenCode
@@ -826,15 +977,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_agency_dispatch_default_pins_to_claude_haiku() {
-        // No [models.<role>] override — agency pins to claude:haiku on
-        // the claude CLI handler, ignoring any project-level cascade.
+    fn test_resolve_agency_dispatch_default_weak_tier_is_claude_haiku() {
+        // No [models.<role>] override and no [tiers] — the weak tier defaults to
+        // claude:haiku on the claude CLI handler, ignoring any project-level
+        // cascade. The historical pin is preserved, now expressed as the
+        // provider-qualified weak-tier spec.
         let mut config = Config::default();
         config.coordinator.model = Some("openrouter:anthropic/claude-sonnet-4-6".to_string());
 
         let dispatch = resolve_agency_dispatch(&config, DispatchRole::Assigner);
         assert_eq!(dispatch.handler, ExecutorKind::Claude);
-        assert_eq!(dispatch.raw_spec, CLAUDE_HAIKU_MODEL_ID);
+        assert_eq!(dispatch.raw_spec, "claude:haiku");
         assert_eq!(dispatch.model_id, CLAUDE_HAIKU_MODEL_ID);
     }
 
@@ -1033,11 +1186,13 @@ mod tests {
         );
 
         // The bypass kicks in because no per-role explicit override is set —
-        // resolve_agency_dispatch ignores cascade and pins to claude:haiku.
+        // resolve_agency_dispatch ignores cascade and resolves the weak tier,
+        // which for the default config is claude:haiku on the claude CLI.
         assert!(is_agency_oneshot_role(DispatchRole::Evaluator));
         let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator);
         assert_eq!(dispatch.handler, ExecutorKind::Claude);
-        assert_eq!(dispatch.raw_spec, CLAUDE_HAIKU_MODEL_ID);
+        assert_eq!(dispatch.raw_spec, "claude:haiku");
+        assert_eq!(dispatch.model_id, CLAUDE_HAIKU_MODEL_ID);
     }
 
     #[test]
@@ -1205,5 +1360,199 @@ mod tests {
             expected,
             cost
         );
+    }
+
+    // -- Agency routing to the WEAK tier (fix-route-agency) -----------------
+
+    /// Save/override an env var for the duration of a test, restoring on drop.
+    /// Tests that use this MUST be `#[serial]` because env is process-global.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: Option<&str>) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: tests using EnvGuard are #[serial], so no other thread is
+            // concurrently reading/writing the environment.
+            unsafe {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            EnvGuard { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    const ALL_AGENCY_ROLES: [DispatchRole; 4] = [
+        DispatchRole::Evaluator,
+        DispatchRole::FlipInference,
+        DispatchRole::FlipComparison,
+        DispatchRole::Assigner,
+    ];
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_weak_tier_deepseek_with_key() {
+        // The two-tier setter wrote `--weak openrouter:deepseek/deepseek-chat`
+        // into tiers.fast. With an OpenRouter key present, agency one-shots
+        // route to that DeepSeek model via the native HTTP handler — NOT the
+        // old hardcoded claude:haiku. (Covers validation item 1.)
+        let _key = EnvGuard::set("OPENROUTER_API_KEY", Some("sk-or-test-deepseek"));
+        let mut config = Config::default();
+        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+
+        for role in ALL_AGENCY_ROLES {
+            let dispatch = resolve_agency_dispatch(&config, role);
+            assert_eq!(
+                dispatch.handler,
+                ExecutorKind::Native,
+                "role {role:?} weak-tier deepseek must dispatch via the native HTTP handler",
+            );
+            assert_eq!(dispatch.raw_spec, "openrouter:deepseek/deepseek-chat");
+            assert_eq!(dispatch.model_id, "deepseek/deepseek-chat");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_weak_tier_key_from_endpoint() {
+        // The credential can come from a configured endpoint instead of an env
+        // var — same outcome: agency routes to the native DeepSeek model.
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let _a = EnvGuard::set("OPENAI_API_KEY", None);
+        let mut config = Config::default();
+        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config
+            .llm_endpoints
+            .endpoints
+            .push(crate::config::EndpointConfig {
+                name: "openrouter".to_string(),
+                provider: "openrouter".to_string(),
+                url: Some("https://openrouter.ai/api/v1".to_string()),
+                model: None,
+                api_key: Some("sk-or-endpoint-key".to_string()),
+                api_key_file: None,
+                api_key_env: None,
+                api_key_ref: None,
+                is_default: true,
+                context_window: None,
+            });
+
+        let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator);
+        assert_eq!(dispatch.handler, ExecutorKind::Native);
+        assert_eq!(dispatch.raw_spec, "openrouter:deepseek/deepseek-chat");
+        assert_eq!(dispatch.model_id, "deepseek/deepseek-chat");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_weak_tier_missing_key_falls_back_to_haiku() {
+        // Same weak tier, but NO OpenRouter/OpenAI key anywhere. The dispatch
+        // must NOT silently route to a keyless OpenRouter call (which 401s and
+        // drops the verdict). It falls back loudly to claude:haiku on the claude
+        // CLI. (Covers validation item 3: never a silent no-op.)
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let _a = EnvGuard::set("OPENAI_API_KEY", None);
+        let mut config = Config::default();
+        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+
+        for role in ALL_AGENCY_ROLES {
+            let dispatch = resolve_agency_dispatch(&config, role);
+            assert_eq!(
+                dispatch.handler,
+                ExecutorKind::Claude,
+                "role {role:?}: missing key must fall back to the claude CLI, not a keyless 401",
+            );
+            assert_eq!(dispatch.model_id, CLAUDE_HAIKU_MODEL_ID);
+            assert_eq!(dispatch.raw_spec, "claude:haiku");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_explicit_override_wins_over_weak_tier() {
+        // tiers.fast points weak at DeepSeek, but an explicit [models.evaluator]
+        // override must still win for that role — explicit overrides beat the
+        // tier default. (Covers validation item 2.)
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let mut config = Config::default();
+        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config
+            .models
+            .set_model(DispatchRole::Evaluator, "claude:sonnet");
+
+        let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator);
+        assert_eq!(
+            dispatch.raw_spec, "claude:sonnet",
+            "explicit override must win"
+        );
+        assert_eq!(dispatch.handler, ExecutorKind::Claude);
+        assert_eq!(dispatch.model_id, "sonnet");
+
+        // A sibling agency role with no override still resolves via the weak
+        // tier (here: no key -> haiku fallback) — proving the override is
+        // role-scoped, not global.
+        let assigner = resolve_agency_dispatch(&config, DispatchRole::Assigner);
+        assert_ne!(assigner.raw_spec, "claude:sonnet");
+        assert_eq!(assigner.handler, ExecutorKind::Claude);
+        assert_eq!(assigner.model_id, CLAUDE_HAIKU_MODEL_ID);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_explicit_codex_override_unaffected_by_weak_tier() {
+        // A codex override routes to the codex CLI regardless of the weak tier;
+        // codex self-authenticates, so it is not subject to the credential net.
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let mut config = Config::default();
+        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config
+            .models
+            .set_model(DispatchRole::Assigner, "codex:gpt-5.4-mini");
+
+        let dispatch = resolve_agency_dispatch(&config, DispatchRole::Assigner);
+        assert_eq!(dispatch.handler, ExecutorKind::Codex);
+        assert_eq!(dispatch.raw_spec, "codex:gpt-5.4-mini");
+        assert_eq!(dispatch.model_id, "gpt-5.4-mini");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_agency_native_creds_available_matches_provider() {
+        // Direct coverage of the credential predicate the dispatch relies on.
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let _a = EnvGuard::set("OPENAI_API_KEY", None);
+        let config = Config::default();
+
+        // No key, openrouter weak tier -> unavailable.
+        assert!(!agency_native_creds_available(
+            &config,
+            "openrouter:deepseek/deepseek-chat"
+        ));
+
+        // A localhost/in-process nex (oai-compat) model needs no key.
+        assert!(agency_native_creds_available(
+            &config,
+            "nex:qwen3-coder-30b"
+        ));
+
+        // With a key present, openrouter is available.
+        let _k = EnvGuard::set("OPENROUTER_API_KEY", Some("sk-or-x"));
+        assert!(agency_native_creds_available(
+            &config,
+            "openrouter:deepseek/deepseek-chat"
+        ));
     }
 }

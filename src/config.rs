@@ -2429,6 +2429,19 @@ impl Config {
         self.effective_registry().into_iter().find(|e| e.id == id)
     }
 
+    /// The raw model spec for the **weak** two-tier label.
+    ///
+    /// In the two-tier model (`design-two-tier-pi-profile.md`) `weak` is the
+    /// 2-coloring of the `fast` quality tier — the cheap tier used for agency
+    /// judgment one-shots (`.flip` / `.assign` / `.evaluate`). This returns the
+    /// provider-qualified spec (e.g. `openrouter:deepseek/deepseek-chat`, or
+    /// `claude:haiku` for the bare default) so callers that need the route
+    /// prefix (not just the bare model id) get it intact. Always `Some` because
+    /// `effective_tiers()` carries a hardcoded Anthropic fallback.
+    pub fn weak_tier_spec(&self) -> Option<String> {
+        self.effective_tiers().fast
+    }
+
     /// Resolve a tier to a ResolvedModel via the tier config and registry.
     pub fn resolve_tier(&self, tier: Tier) -> Option<ResolvedModel> {
         let tiers = self.effective_tiers();
