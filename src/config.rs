@@ -810,6 +810,27 @@ fn default_provider() -> String {
     "anthropic".to_string()
 }
 
+impl Default for EndpointConfig {
+    /// Hand-written so `provider` defaults to `"anthropic"` — matching the
+    /// serde `#[serde(default = "default_provider")]` used when deserializing.
+    /// A derived `Default` would leave `provider` empty (`""`), silently
+    /// diverging from the on-disk default and breaking provider routing.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider: default_provider(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default: false,
+            context_window: None,
+        }
+    }
+}
+
 /// Expand `~` prefix to user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
     let p = Path::new(path);

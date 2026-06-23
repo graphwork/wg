@@ -16726,8 +16726,9 @@ mod tests {
             assert!(layout.end > 0 && layout.end < 16);
             assert!(!layout.show_left_arrow);
             assert!(layout.show_right_arrow);
-            // Active tab (idx 0) must be visible.
-            assert!(0 >= layout.offset && 0 < layout.end);
+            // Active tab (idx 0) must be visible: offset has not advanced past
+            // it (offset == 0, since offset is usize) and it falls before `end`.
+            assert!(layout.offset == 0 && 0 < layout.end);
         }
 
         /// Active=15 (last tab) at width=80 forces offset to grow until tab 15 is visible.
