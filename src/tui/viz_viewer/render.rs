@@ -15913,9 +15913,19 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════
 
     use crate::tui::viz_viewer::state::{
-        AddNewField as EpAddNewField, EndpointSuggestion, LauncherMode as EpLauncherMode,
-        LauncherSection as EpLauncherSection, LauncherState as EpLauncherState,
+        ADD_NEW_EXECUTOR_CHOICES, AddNewField as EpAddNewField, EndpointSuggestion,
+        LauncherMode as EpLauncherMode, LauncherSection as EpLauncherSection,
+        LauncherState as EpLauncherState,
     };
+
+    /// Resolve an executor's radio index by label (robust to executor
+    /// insertions that shift the numeric indices — see launcher_redesign_tests).
+    fn exec_idx(label: &str) -> usize {
+        ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == label)
+            .unwrap_or_else(|| panic!("executor choice {label:?} not in ADD_NEW_EXECUTOR_CHOICES"))
+    }
 
     fn ep_suggestion(
         name: &str,
@@ -15981,10 +15991,10 @@ mod tests {
             ep_suggestion("lambda", "https://lambda01:30000", "openrouter", true),
         ];
 
-        // nex (executor idx 3), Endpoint focused → dropdown is shown.
+        // nex, Endpoint focused → dropdown is shown.
         let mut app = build_app_from_viz_output(&viz, "a");
         app.launcher = Some(launcher_addnew(
-            3,
+            exec_idx("nex"),
             EpAddNewField::Endpoint,
             suggestions.clone(),
         ));
@@ -16002,11 +16012,11 @@ mod tests {
             "the default endpoint must be marked.\n{nex_render}"
         );
 
-        // opencode (executor idx 2) → no Endpoint field, no suggestions,
+        // opencode → no Endpoint field, no suggestions,
         // even though suggestions are loaded in state.
         let mut app = build_app_from_viz_output(&viz, "a");
         app.launcher = Some(launcher_addnew(
-            2,
+            exec_idx("opencode"),
             EpAddNewField::Model,
             suggestions.clone(),
         ));
@@ -16022,7 +16032,11 @@ mod tests {
 
         // claude (executor idx 0) → no endpoint UI either.
         let mut app = build_app_from_viz_output(&viz, "a");
-        app.launcher = Some(launcher_addnew(0, EpAddNewField::Model, suggestions));
+        app.launcher = Some(launcher_addnew(
+            exec_idx("claude"),
+            EpAddNewField::Model,
+            suggestions,
+        ));
         let claude_render = render_launcher_to_string(&mut app);
         assert!(
             !claude_render.contains("local-gpu") && !claude_render.contains("Endpoint"),
@@ -16040,7 +16054,7 @@ mod tests {
             true,
         )];
         let mut app = build_app_from_viz_output(&viz, "a");
-        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, suggestions);
+        let mut launcher = launcher_addnew(exec_idx("nex"), EpAddNewField::Endpoint, suggestions);
         launcher.add_endpoint = "http://my-custom:9000".into();
         app.launcher = Some(launcher);
         let render = render_launcher_to_string(&mut app);
@@ -16065,9 +16079,9 @@ mod tests {
     #[test]
     fn launcher_endpoint_not_required_for_openrouter_nex_model() {
         let (viz, _) = build_hud_test_graph();
-        // nex (idx 3), Endpoint focused, NO configured endpoints.
+        // nex, Endpoint focused, NO configured endpoints.
         let mut app = build_app_from_viz_output(&viz, "a");
-        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, Vec::new());
+        let mut launcher = launcher_addnew(exec_idx("nex"), EpAddNewField::Endpoint, Vec::new());
         launcher.add_model = "minimax/minimax-m3".into(); // OpenRouter route
         app.launcher = Some(launcher);
         let render = render_launcher_to_string(&mut app);
@@ -16088,7 +16102,7 @@ mod tests {
     fn launcher_openrouter_default_is_selectable_option() {
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
-        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, Vec::new());
+        let mut launcher = launcher_addnew(exec_idx("nex"), EpAddNewField::Endpoint, Vec::new());
         launcher.add_model = "openrouter:minimax/minimax-m3".into();
         app.launcher = Some(launcher);
         let render = render_launcher_to_string(&mut app);
@@ -16107,7 +16121,7 @@ mod tests {
         let mut app = build_app_from_viz_output(&viz, "a");
         // nex, Model focused so the inactive Endpoint field shows its
         // placeholder; bare local model (no slash, no provider prefix).
-        let mut launcher = launcher_addnew(3, EpAddNewField::Model, Vec::new());
+        let mut launcher = launcher_addnew(exec_idx("nex"), EpAddNewField::Model, Vec::new());
         launcher.add_model = "qwen3-coder".into();
         app.launcher = Some(launcher);
         let render = render_launcher_to_string(&mut app);
@@ -16138,7 +16152,7 @@ mod tests {
             ),
         ];
         let mut app = build_app_from_viz_output(&viz, "a");
-        let mut launcher = launcher_addnew(3, EpAddNewField::Endpoint, suggestions);
+        let mut launcher = launcher_addnew(exec_idx("nex"), EpAddNewField::Endpoint, suggestions);
         launcher.add_model = "qwen3-coder".into(); // local model: no synthetic row
         app.launcher = Some(launcher);
         let render = render_launcher_to_string(&mut app);
@@ -16182,19 +16196,22 @@ mod tests {
             model_sug("deepseek/deepseek-r1", "openrouter", "mid"),
         ];
 
-        // nex (idx 3), Model focused → dropdown lists the model ids.
+        // nex, Model focused → dropdown lists the model ids.
         let mut app = build_app_from_viz_output(&viz, "a");
-        app.launcher = Some(launcher_addnew_model(3, suggestions.clone()));
+        app.launcher = Some(launcher_addnew_model(exec_idx("nex"), suggestions.clone()));
         let render = render_launcher_to_string(&mut app);
         assert!(
             render.contains("minimax/minimax-m3") && render.contains("deepseek/deepseek-r1"),
             "Model dropdown must list suggestion ids in Add-new mode.\n{render}"
         );
 
-        // opencode (idx 2), Model focused → dropdown shown too (at least
+        // opencode, Model focused → dropdown shown too (at least
         // nex + opencode per spec).
         let mut app = build_app_from_viz_output(&viz, "a");
-        app.launcher = Some(launcher_addnew_model(2, suggestions.clone()));
+        app.launcher = Some(launcher_addnew_model(
+            exec_idx("opencode"),
+            suggestions.clone(),
+        ));
         let oc_render = render_launcher_to_string(&mut app);
         assert!(
             oc_render.contains("minimax/minimax-m3"),
@@ -16207,7 +16224,7 @@ mod tests {
         let (viz, _) = build_hud_test_graph();
         let suggestions = vec![model_sug("minimax/minimax-m3", "openrouter", "curated")];
         let mut app = build_app_from_viz_output(&viz, "a");
-        let mut l = launcher_addnew_model(3, suggestions);
+        let mut l = launcher_addnew_model(exec_idx("nex"), suggestions);
         // A deliberate vendor route the user typed: the dropdown must step
         // aside so it cannot shadow/overwrite the explicit free-text spec.
         l.add_model = "minimax/minimax-m3".into();

@@ -1258,21 +1258,42 @@ mod tui_editor_tests {
     // redesign-new-chat: minimal Default mode + Add-new flow
     // ══════════════════════════════════════════════════════════════════════
 
-    /// Render-level lock: open_launcher → dialog shows the two presets +
-    /// the "+ Add new..." row, with no openrouter dump and no
+    /// Render-level lock: open_launcher → dialog shows the codex/claude/pi
+    /// presets + the "+ Add new..." row, with no openrouter dump and no
     /// recent-history list. Pre-redesign the dialog showed dozens of
     /// auto-discovered openrouter rows the user never asked for.
+    ///
+    /// The pi preset resolves its model from `recent_combos` (global
+    /// launcher history); isolate that history to an empty tempfile so the
+    /// pi row shows "press m to set model" deterministically — otherwise a
+    /// real machine's history can resolve pi to an `openrouter:` route and
+    /// trip the "no openrouter dump" anti-assertion below.
     #[test]
+    #[serial_test::serial(launcher_history_env)]
     fn launcher_default_mode_render_shows_two_presets_and_add_new() {
+        let history_tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var(
+                "WG_LAUNCHER_HISTORY_PATH",
+                history_tmp.path().join("launcher-history.jsonl"),
+            );
+        }
+
         let mut app = make_editor_test_app();
         app.open_launcher();
         // open_launcher rate-limits double-opens; the test app might
         // skip if the cap is hit. In practice the chat-cap is fine.
         if app.launcher.is_none() {
+            unsafe {
+                std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
+            }
             return;
         }
 
         let rendered = render_to_string(&mut app, 100, 30);
+        unsafe {
+            std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
+        }
 
         // Default mode title.
         assert!(
@@ -1288,6 +1309,11 @@ mod tui_editor_tests {
         assert!(
             buffer_contains(&rendered, "claude:opus"),
             "expected claude:opus preset row in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "Pi (pi.dev)"),
+            "expected the pi preset row in dialog (make-pi-a)\n{}",
             rendered
         );
         assert!(

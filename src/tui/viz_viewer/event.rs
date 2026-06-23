@@ -10033,7 +10033,7 @@ mod chat_tab_navigation_tests {
         {
             let launcher = app.launcher.as_mut().unwrap();
             launcher.enter_add_new();
-            launcher.add_executor_idx = 2; // nex
+            launcher.add_executor_idx = exec_idx("nex");
             launcher.active_section = super::super::state::LauncherSection::AddNew(
                 super::super::state::AddNewField::Endpoint,
             );
@@ -10470,6 +10470,17 @@ mod chat_tab_navigation_tests {
         }
     }
 
+    /// Resolve an executor's radio index by label instead of a magic number.
+    /// Inserting an executor (e.g. `pi`) shifts every later index; looking it
+    /// up by label keeps these tests robust — the regression that produced
+    /// this whole cluster of latent failures.
+    fn exec_idx(label: &str) -> usize {
+        super::super::state::ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == label)
+            .unwrap_or_else(|| panic!("executor choice {label:?} not in ADD_NEW_EXECUTOR_CHOICES"))
+    }
+
     /// Open the launcher in Add-new/nex mode focused on the Endpoint
     /// field, preloaded with two endpoint suggestions (lambda is default).
     fn launcher_on_endpoint_field() -> (VizApp, tempfile::TempDir) {
@@ -10479,7 +10490,7 @@ mod chat_tab_navigation_tests {
         {
             let l = app.launcher.as_mut().unwrap();
             l.enter_add_new();
-            l.add_executor_idx = 3; // nex
+            l.add_executor_idx = exec_idx("nex");
             l.add_model = "qwen3-coder".into();
             l.endpoint_suggestions = vec![
                 ep_sug("local-gpu", "http://127.0.0.1:8088", "local", false),
@@ -10635,7 +10646,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_typing_filters_and_resets_highlight() {
-        let (mut app, _tmp) = launcher_on_model_field(4); // nex (claude=0, codex=1, pi=2, opencode=3, nex=4)
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("nex"));
         // Move highlight off the top first so we can prove typing resets it.
         key(&mut app, KeyCode::Down);
         assert_eq!(app.launcher.as_ref().unwrap().model_suggestion_selected, 1);
@@ -10655,7 +10666,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_tab_accepts_suggestion_normalized_for_opencode_and_advances() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // opencode (claude=0, codex=1, pi=2, opencode=3)
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("opencode"));
         for c in "minimax m3".chars() {
             key(&mut app, KeyCode::Char(c));
         }
@@ -10671,7 +10682,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_tab_accepts_suggestion_normalized_for_nex_and_advances_to_endpoint() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("nex"));
         for c in "minimax m3".chars() {
             key(&mut app, KeyCode::Char(c));
         }
@@ -10691,7 +10702,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_down_navigates_then_enter_accepts_highlighted() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("nex"));
         // Down twice → highlight qwen/qwen3-coder (index 2) on the full list.
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
@@ -10706,7 +10717,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_arbitrary_free_text_is_preserved_through_tab() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("nex"));
         // Type a custom spec that matches no suggestion AND is an explicit
         // spec (contains ':'). Tab must NOT overwrite it.
         let custom = "myvendor:my-custom-model-x";
@@ -10731,7 +10742,7 @@ mod chat_tab_navigation_tests {
 
     #[test]
     fn model_backspace_reexposes_suggestions_after_explicit_spec() {
-        let (mut app, _tmp) = launcher_on_model_field(3); // nex
+        let (mut app, _tmp) = launcher_on_model_field(exec_idx("nex"));
         let typed = "minimax/m"; // contains '/' → explicit spec, suggestions hidden
         for c in typed.chars() {
             key(&mut app, KeyCode::Char(c));
