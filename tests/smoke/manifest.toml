@@ -1602,3 +1602,12 @@ owners = [
 ]
 description = "Pins fix-wg-add: the `d` (day) timeout unit must be accepted on BOTH the add-time validator (graph::parse_delay) and the spawn-path parser (parse_timeout_secs in src/commands/spawn/mod.rs). Pre-fix `wg add --timeout 1d` was accepted but the dispatcher/spawn path rejected `1d` with 'Invalid task timeout value' (the spawn parser only knew s/m/h), so the task never spawned and users had to rewrite `1d` -> `24h`. Asserts (1) `wg add --timeout 1d` is accepted; (2) `wg spawn --executor shell --timeout 1d` spawns without an 'Invalid' error (CLI-flag path, execution.rs:534); (3) a task created with `--timeout 1d` spawns without 'Invalid task timeout value' (stored-timeout path, execution.rs:540). Credential-free: uses the no-LLM `shell` executor running `echo hi`; no daemon or network needed."
 timeout_seconds = 30
+
+[[scenario]]
+name = "pi_plugin_install_hermetic"
+script = "scenarios/pi_plugin_install_hermetic.sh"
+owners = [
+    "implement-pi-plugin",
+]
+description = "Pins implement-pi-plugin: the `ensure-pi-plugin` install primitive + hermetic `pi -e <cache>/dist/index.js -ne` load. Credential-free core (pure `wg` binary): `wg pi-plugin compat-version` prints the embedded version; `wg pi-plugin install` (WG_PI_PLUGIN_FORCE_CACHE=1, isolated HOME/XDG_CACHE_HOME) materializes the embedded bundle into ${XDG_CACHE_HOME}/wg/pi-plugin/<compat>/ with a `.wg-ok` integrity stamp and writes the ~/.pi/agent/settings.json extensions entry; a second install is byte-identical (idempotent); a corrupted cache (truncated index.js + missing .wg-ok) is detected as not-ready and self-healed by re-materializing the embedded truth. Live (only when a `pi` binary is present, still credential-free because the extension loads at pi startup before any model connection): a MISMATCHED WG_PI_PLUGIN_COMPAT_VERSION makes real `pi --mode rpc -e <cache dist> -ne` fail LOUDLY with a compat-mismatch error naming the found wg version (the loud-fail tripwire), while a MATCHING version loads with no 'Failed to load extension' error. SKIPs the live sub-check (not the scenario) when no `pi` binary is on PATH."
+timeout_seconds = 60

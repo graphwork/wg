@@ -138,6 +138,48 @@ so a transposed invocation is caught immediately. A lone positional is rejected
 as ambiguous; explicit `[models.<role>]` overrides always win and are never
 touched. See `docs/design-two-tier-pi-profile.md`.
 
+#### Pi plugin install (`wg pi-plugin`, hermetic spawn, version-lock)
+
+A `pi:` model route is only half the integration — pi gains its WG tools
+(`wg_ready`/`wg_done`/… and `/wg`) from the `@worksgood/wg-pi-plugin` extension,
+which must be present in the pi process. This is now a declarative, idempotent
+consequence of choosing pi via the **one `ensure-pi-plugin` primitive**
+(`src/pi_plugin/mod.rs`, implementing `docs/design-pi-plugin-install.md`), not a
+manual step that drifts. The linchpin: the `wg` binary **carries the exact
+plugin build it is compatible with**, vendored under `pi-plugin/embedded/` and
+embedded at compile time (`include_dir!`), so there is no PATH/npm skew.
+
+- **`wg pi-plugin install`** — the explicit, blessed Console install (mirrors
+  `wg skill install`): materializes the version-locked build and writes the
+  `~/.pi/agent/settings.json` `extensions` entry so a human `pi` console
+  auto-loads the wg tools. `--dev` points the entry at the live in-repo
+  `pi-plugin/dist` (dev inner loop); default uses the embedded → cache copy at
+  `${XDG_CACHE_HOME:-~/.cache}/wg/pi-plugin/<compat>/`. Companions:
+  `wg pi-plugin status` (resolved source / cache path / wired+drift state),
+  `wg pi-plugin path` (scriptable dist entry), `wg pi-plugin compat-version`.
+- **Hermetic `wg → pi` spawn** — `wg pi-handler` launches
+  `pi --mode rpc -e <cache>/dist/index.js -ne …`, loading EXACTLY the embedded
+  build by absolute path with all discovery disabled. **No global `~/.pi`
+  install is needed or touched.** Topology B (the `node` host) is dev-tree only
+  (it needs `node_modules` for the pi SDK); the hermetic guarantee rides on
+  Topology A `pi -e`.
+- **`wg profile use pi` auto-ensures the plugin** — activating a profile that
+  resolves a `pi:` route calls `ensure-pi-plugin` as an idempotent side effect,
+  so the next spawned worker is guaranteed a matching plugin with no manual step.
+  `wg setup` does the same when a pi route is chosen. These three wiring points
+  (setup → activation → JIT pre-spawn) compose harmlessly because the primitive
+  is idempotent.
+- **Compat handshake** — `WG_PI_PLUGIN_COMPAT_VERSION` (in `src/pi_plugin/mod.rs`,
+  mirrors `WG_AGENCY_COMPAT_VERSION`) is the single source of truth. `wg
+  pi-handler` injects it into the child env; the plugin asserts it at startup and
+  fails **LOUDLY** on mismatch (naming expected-vs-found versions). The
+  human-console direction shells `wg pi-plugin compat-version` to catch drift.
+- **Embed / re-embed** — `cargo install --path .` stays **node-free** (the bytes
+  are committed). After editing `pi-plugin/src/**` or bumping the compat const,
+  run `make embed-pi-plugin` and commit `pi-plugin/embedded/`; a CI job
+  (`.github/workflows/ci.yml` "Pi-plugin … embed staleness") re-embeds and
+  `git diff --exit-code`s so a source edit without a re-embed fails loudly.
+
 #### Flipping the active profile and reverting (the round-trip)
 
 The active profile is global state in `~/.wg/active-profile`. The chat agent

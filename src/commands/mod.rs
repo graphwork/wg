@@ -88,6 +88,7 @@ pub mod openrouter;
 pub mod pause;
 pub mod peer;
 pub mod pi_handler;
+pub mod pi_plugin_install;
 pub mod placement;
 pub mod plan;
 pub mod profile_cmd;

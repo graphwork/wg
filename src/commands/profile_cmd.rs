@@ -815,6 +815,24 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
         println!("  No local routing overrides needed clearing.");
     }
 
+    // Wiring point #2 (activation): if the activated profile resolves any `pi:`
+    // route, place the version-locked plugin + wire the global pi settings entry
+    // as the idempotent side effect of "I want pi". The next spawned worker is
+    // then guaranteed a matching plugin. Best-effort: a failure warns but does
+    // not abort activation (the JIT pre-spawn ensure is the safety net).
+    if crate::commands::config_cmd::config_has_pi_route(&prof.config) {
+        match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console) {
+            Ok(p) => println!(
+                "  Ensured wg-pi-plugin (compat {}): {}",
+                p.compat,
+                p.dist_entry.display()
+            ),
+            Err(e) => eprintln!(
+                "  Warning: could not ensure wg-pi-plugin ({e}); run `wg pi-plugin install`."
+            ),
+        }
+    }
+
     if !no_reload {
         trigger_daemon_reload(dir, Some(profile_name));
     }

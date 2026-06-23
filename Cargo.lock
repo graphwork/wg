@@ -7938,6 +7938,7 @@ dependencies = [
  "hex",
  "hmac",
  "html-escape",
+ "include_dir",
  "insta",
  "keyring",
  "lettre",

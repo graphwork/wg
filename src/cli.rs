@@ -1388,6 +1388,17 @@ pub enum Commands {
         command: SkillCommands,
     },
 
+    /// Install / inspect the wg-pi-plugin (pi coding-agent integration).
+    ///
+    /// Mirrors `wg skill install`. The three wiring points (`wg setup`,
+    /// `wg profile use pi`, and the JIT `wg pi-handler` pre-flight) call this
+    /// automatically; the explicit command is the manual repair/verify handle.
+    #[command(name = "pi-plugin")]
+    PiPlugin {
+        #[command(subcommand)]
+        command: PiPluginCommands,
+    },
+
     /// Manage the agency (roles + tradeoffs)
     Agency {
         #[command(subcommand)]
@@ -3940,6 +3951,28 @@ pub enum SkillCommands {
 }
 
 #[derive(Subcommand)]
+pub enum PiPluginCommands {
+    /// Install the wg-pi-plugin for the human `pi` console: materialize the
+    /// version-locked build and wire `~/.pi/agent/settings.json`. Idempotent.
+    Install {
+        /// Point the settings entry at the live in-repo `pi-plugin/dist`
+        /// (dev inner-loop) instead of the embedded → cache copy.
+        #[arg(long)]
+        dev: bool,
+    },
+
+    /// Print resolved source, cache path, compat version, and wired/drift state.
+    Status,
+
+    /// Print the resolved `dist/index.js` path (scriptable).
+    Path,
+
+    /// Print WG_PI_PLUGIN_COMPAT_VERSION (the plugin's runtime assertion reads this).
+    #[command(name = "compat-version")]
+    CompatVersion,
+}
+
+#[derive(Subcommand)]
 pub enum AgencyCommands {
     /// Seed agency with starter roles and tradeoffs
     Init,
@@ -5274,6 +5307,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::User { .. } => "user",
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
+        Commands::PiPlugin { .. } => "pi-plugin",
         Commands::Agency { .. } => "agency",
         Commands::Peer { .. } => "peer",
         Commands::Role { .. } => "role",

@@ -65,6 +65,7 @@ use anyhow::{Context, Result};
 use worksgood::chat;
 use worksgood::config::{Config, EndpointConfig};
 use worksgood::executor_discovery::{self, PiNodeHost, PiRouteAvailability};
+use worksgood::pi_plugin::{self, EnsureMode};
 use worksgood::session_lock::{HandlerKind, SessionLock};
 
 use crate::terminal_host::{HostedChild, PtyTerminalHost, TerminalHost, TerminalProfile};
@@ -448,11 +449,12 @@ impl RpcTransport {
         marg: &PiModelArg,
         session_id: &str,
         session_dir: &Path,
+        dist_entry: &Path,
         secret_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
         std::fs::create_dir_all(session_dir).ok();
-        let args = rpc_spawn_args(marg, session_id, session_dir);
+        let args = rpc_spawn_args(marg, session_id, session_dir, dist_entry);
         logger.info(&format!(
             "pi-handler: spawning `{} {}`",
             pi_binary.display(),
@@ -589,9 +591,22 @@ impl Drop for RpcTransport {
 }
 
 /// Build the argv (excluding the `pi` binary) for a `--mode rpc` spawn. Factored
-/// out so tests can assert the model is always present and credentials are never
-/// passed via `--api-key`.
-fn rpc_spawn_args(marg: &PiModelArg, session_id: &str, session_dir: &Path) -> Vec<String> {
+/// out so tests can assert the model is always present, credentials are never
+/// passed via `--api-key`, and the hermetic plugin flags are present.
+///
+/// `-e <dist_entry>` loads EXACTLY the embedded/version-locked plugin build by
+/// absolute path; `-ne` (`--no-extensions`) disables all discovery so neither a
+/// stale `~/.pi` global, a project `.pi`, nor the user's other global `packages`
+/// can leak in. Per pi's help, "explicit -e paths still work" under `-ne`. The
+/// result is fully hermetic, offline, node-free, version-matched by construction
+/// — closing the drift where Topology A relied on an ambient global plugin that
+/// was never installed.
+fn rpc_spawn_args(
+    marg: &PiModelArg,
+    session_id: &str,
+    session_dir: &Path,
+    dist_entry: &Path,
+) -> Vec<String> {
     vec![
         "--mode".to_string(),
         "rpc".to_string(),
@@ -604,6 +619,10 @@ fn rpc_spawn_args(marg: &PiModelArg, session_id: &str, session_dir: &Path) -> Ve
         "--session-dir".to_string(),
         session_dir.to_string_lossy().to_string(),
         "--no-approve".to_string(),
+        // Hermetic plugin load: exactly the embedded build, no discovery.
+        "-e".to_string(),
+        dist_entry.to_string_lossy().to_string(),
+        "-ne".to_string(),
     ]
 }
 
@@ -818,7 +837,20 @@ enum Topology {
 /// Pick a topology from what's installed and an optional `WG_PI_TOPOLOGY`
 /// override (`rpc`/`a` or `node`/`b`). Prefer A (a `pi` binary) when present —
 /// the smallest delta and the "ship first" path — else fall to B.
-fn select_topology(avail: &PiRouteAvailability, override_env: Option<&str>) -> Result<Topology> {
+///
+/// `has_node_modules` gates Topology B: a bare `node` host cannot resolve the pi
+/// SDK (`@earendil-works/pi-*`) without `node_modules`, and we deliberately do
+/// NOT vendor it (that would break the node-free/offline promise). So Topology B
+/// is the in-repo dev tree only; a cache-only build refuses B and rides the
+/// hermetic Topology A `pi -e` (§4.2). This prevents a `pi_route_availability`
+/// report of a `~/.pi/.../wg-pi-plugin` dir from leading to a spawn that dies on
+/// an unresolved import.
+fn select_topology(
+    avail: &PiRouteAvailability,
+    override_env: Option<&str>,
+    has_node_modules: bool,
+) -> Result<Topology> {
+    let node_host_usable = avail.node_host.is_some() && has_node_modules;
     let forced = override_env.map(|s| s.trim().to_ascii_lowercase());
     match forced.as_deref() {
         Some("rpc") | Some("a") | Some("pi") => {
@@ -830,8 +862,16 @@ fn select_topology(avail: &PiRouteAvailability, override_env: Option<&str>) -> R
             );
         }
         Some("node") | Some("b") | Some("host") => {
-            if avail.node_host.is_some() {
+            if node_host_usable {
                 return Ok(Topology::NodeHost);
+            }
+            if avail.node_host.is_some() {
+                anyhow::bail!(
+                    "WG_PI_TOPOLOGY requested the Node-host topology, but the resolved plugin \
+                     has no `node_modules` to supply the pi SDK peer deps (cache-only Topology B \
+                     is out of scope). Use a `pi` binary (Topology A) or run from the in-repo \
+                     dev tree after `npm --prefix pi-plugin ci`."
+                );
             }
             anyhow::bail!(
                 "WG_PI_TOPOLOGY requested the Node-host topology but node + \
@@ -844,13 +884,14 @@ fn select_topology(avail: &PiRouteAvailability, override_env: Option<&str>) -> R
         _ => {
             if avail.pi_binary.is_some() {
                 Ok(Topology::Rpc)
-            } else if avail.node_host.is_some() {
+            } else if node_host_usable {
                 Ok(Topology::NodeHost)
             } else {
                 anyhow::bail!(
-                    "no usable pi transport: neither a `pi` binary nor the Node host \
-                     (node + wg-pi-host.mjs + dist/index.js) is available. Install pi \
-                     or build the wg-pi-plugin bundle (`npm --prefix pi-plugin run build`)."
+                    "no usable pi transport: neither a `pi` binary nor a Node host with \
+                     resolvable peer deps (node + wg-pi-host.mjs + dist/index.js + node_modules) \
+                     is available. Install pi, or run from the in-repo dev tree after \
+                     `npm --prefix pi-plugin ci && npm --prefix pi-plugin run build`."
                 )
             }
         }
@@ -893,8 +934,27 @@ pub fn run(
     let handler_log = chat_dir.join("handler.log");
     let logger = HandlerLogger::open(&handler_log)?;
 
+    // JIT safety net (wiring point #3): materialize the embedded, version-locked
+    // plugin into the cache (or resolve the dev dist) BEFORE spawn. Idempotent —
+    // a fast no-op when already correct. This is what makes the wg→pi direction
+    // impossible to get wrong: the binary that spawns pi is the same binary whose
+    // embedded bytes the plugin runs from.
+    let plugin = pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
+        .context("ensure-pi-plugin (Hermetic) before spawning pi")?;
+    logger.info(&format!(
+        "pi-handler: ensured plugin source={:?} compat={} entry={} has_node_modules={}",
+        plugin.source,
+        plugin.compat,
+        plugin.dist_entry.display(),
+        plugin.has_node_modules
+    ));
+
     let avail = executor_discovery::pi_route_availability();
-    let topology = select_topology(&avail, std::env::var("WG_PI_TOPOLOGY").ok().as_deref())?;
+    let topology = select_topology(
+        &avail,
+        std::env::var("WG_PI_TOPOLOGY").ok().as_deref(),
+        plugin.has_node_modules,
+    )?;
 
     // WG endpoint/secret resolution: the spawned pi process must receive its
     // credentials from WG config, NOT from ambient env or Pi's own login. This
@@ -911,7 +971,21 @@ pub fn run(
             marg.provider
         ));
     }
-    let secret_env = secret.env_pairs();
+    // Child env = WG-resolved credentials + the plugin tripwire/locator env:
+    //   WG_PI_PLUGIN_COMPAT_VERSION — the plugin asserts this against its own
+    //     embedded compat at load and fails LOUDLY on mismatch (cheap tripwire;
+    //     the real guarantee is that we point pi at our own embedded bytes).
+    //   WG_PI_PLUGIN_DIR — so executor_discovery + the Node host agree on the
+    //     resolved plugin root.
+    let mut secret_env = secret.env_pairs();
+    secret_env.push((
+        "WG_PI_PLUGIN_COMPAT_VERSION".to_string(),
+        plugin.compat.clone(),
+    ));
+    secret_env.push((
+        "WG_PI_PLUGIN_DIR".to_string(),
+        plugin.root.to_string_lossy().to_string(),
+    ));
 
     logger.info(&format!(
         "pi-handler starting: chat_ref={}, role={:?}, model={:?} -> provider={}/model={}, topology={:?}",
@@ -935,6 +1009,7 @@ pub fn run(
                 &marg,
                 chat_ref,
                 &session_dir,
+                &plugin.dist_entry,
                 &secret_env,
                 &logger,
             )?)
@@ -1204,13 +1279,25 @@ mod tests {
             provider: "openrouter".into(),
             model: "anthropic/claude-3.5-haiku".into(),
         };
-        let args = rpc_spawn_args(&marg, "coordinator-1", Path::new("/tmp/pi-sessions"));
+        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let args = rpc_spawn_args(&marg, "coordinator-1", Path::new("/tmp/pi-sessions"), dist);
         // Model + provider are always present and explicit.
         let pidx = args.iter().position(|a| a == "--provider").unwrap();
         assert_eq!(args[pidx + 1], "openrouter");
         let midx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[midx + 1], "anthropic/claude-3.5-haiku");
         assert!(args.contains(&"--mode".to_string()) && args.contains(&"rpc".to_string()));
+        // Hermetic plugin load: `-e <abs dist/index.js>` + `-ne` are present.
+        let eidx = args
+            .iter()
+            .position(|a| a == "-e")
+            .expect("`-e` must be present for hermetic plugin load");
+        assert_eq!(args[eidx + 1], dist.to_string_lossy());
+        assert!(
+            args.contains(&"-ne".to_string()),
+            "`-ne` must disable all extension discovery: {:?}",
+            args
+        );
         // Credentials by env ONLY — never on the command line.
         assert!(
             !args
@@ -1411,32 +1498,46 @@ mod tests {
 
     #[test]
     fn test_select_topology_prefers_rpc_then_node() {
+        // Prefer A (pi binary) regardless of node_modules.
         assert_eq!(
-            select_topology(&avail(true, true), None).unwrap(),
+            select_topology(&avail(true, true), None, true).unwrap(),
             Topology::Rpc
         );
         assert_eq!(
-            select_topology(&avail(true, false), None).unwrap(),
+            select_topology(&avail(true, false), None, false).unwrap(),
             Topology::Rpc
         );
+        // No pi binary, node host present + node_modules → B.
         assert_eq!(
-            select_topology(&avail(false, true), None).unwrap(),
+            select_topology(&avail(false, true), None, true).unwrap(),
             Topology::NodeHost
         );
-        assert!(select_topology(&avail(false, false), None).is_err());
+        assert!(select_topology(&avail(false, false), None, true).is_err());
+    }
+
+    #[test]
+    fn test_select_topology_node_host_requires_node_modules() {
+        // A cache-only build (node host bundle present but NO node_modules)
+        // cannot resolve the pi SDK — Topology B is refused, not silently spawned.
+        assert!(
+            select_topology(&avail(false, true), None, false).is_err(),
+            "cache-only Topology B must be refused"
+        );
+        // Forcing node without node_modules is also an error.
+        assert!(select_topology(&avail(true, true), Some("node"), false).is_err());
     }
 
     #[test]
     fn test_select_topology_honors_override() {
-        // Force node even when pi is present.
+        // Force node even when pi is present (needs node_modules for the SDK).
         assert_eq!(
-            select_topology(&avail(true, true), Some("node")).unwrap(),
+            select_topology(&avail(true, true), Some("node"), true).unwrap(),
             Topology::NodeHost
         );
         // Force rpc when only node is present → error.
-        assert!(select_topology(&avail(false, true), Some("rpc")).is_err());
+        assert!(select_topology(&avail(false, true), Some("rpc"), true).is_err());
         // Unknown value → error.
-        assert!(select_topology(&avail(true, true), Some("bogus")).is_err());
+        assert!(select_topology(&avail(true, true), Some("bogus"), true).is_err());
     }
 
     #[test]

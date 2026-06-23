@@ -2624,7 +2624,7 @@ fn spec_routes_to_pi(spec: &str) -> bool {
 /// model, the coordinator model, or any `[models]` role). Best-effort scan of
 /// the primary route fields — enough to decide whether the pi satisfiability
 /// lint applies.
-fn config_has_pi_route(config: &Config) -> bool {
+pub(crate) fn config_has_pi_route(config: &Config) -> bool {
     let mut specs: Vec<&str> = vec![config.agent.model.as_str()];
     if let Some(m) = config.coordinator.model.as_deref() {
         specs.push(m);

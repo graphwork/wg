@@ -1975,6 +1975,35 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
                 }
             }
         }
+        "pi" => {
+            // Wiring point #1 (onboarding): choosing pi declares "I want pi", so
+            // place the version-locked plugin + wire the global pi settings entry.
+            // ensure-pi-plugin is idempotent and headless-safe.
+            println!(
+                "A human `pi` console needs the wg-pi-plugin to get the wg tools + /wg commands."
+            );
+            let install = Confirm::new()
+                .with_prompt("Install the wg-pi-plugin for the pi console? (recommended)")
+                .default(true)
+                .interact()?;
+            if install {
+                match worksgood::pi_plugin::ensure_pi_plugin(
+                    worksgood::pi_plugin::EnsureMode::Console,
+                ) {
+                    Ok(p) => {
+                        println!("  Installed wg-pi-plugin (compat {}).", p.compat);
+                        Ok(format!("wg-pi-plugin installed ✓ (compat {})", p.compat))
+                    }
+                    Err(e) => {
+                        println!("  Install failed: {e}");
+                        Ok("wg-pi-plugin install FAILED — run `wg pi-plugin install`".to_string())
+                    }
+                }
+            } else {
+                println!("  You can install it later with: wg pi-plugin install");
+                Ok("wg-pi-plugin NOT installed — run `wg pi-plugin install`".to_string())
+            }
+        }
         _ => {
             println!("Custom executor selected. Make sure your agents know about wg commands.");
             println!("  For reference, see: wg quickstart");

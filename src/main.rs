@@ -1929,6 +1929,7 @@ fn main() -> Result<()> {
             }
             SkillCommands::Install => commands::skills::run_install(),
         },
+        Commands::PiPlugin { command } => commands::pi_plugin_install::run(command),
         Commands::Agency { command } => match command {
             AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
             AgencyCommands::Migrate { dry_run } => {
