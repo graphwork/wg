@@ -108,7 +108,7 @@ orthogonal takeover-fix and other-tools path. It is the v2 the
                        │  AXIS 1 — INTEGRATION CHANNEL (the plugin)      │
                        │  @worksgood/wg-pi-plugin loaded inside pi:      │
                        │  • wg tools (LLM/human call wg verbs)           │
-                       │  • /wg, /wg-model commands + task-graph widget  │
+                       │  • /wg, /wg-model commands                      │
                        │  • registerProvider(WG endpoints/keys)          │
                        │  • setModel + model_select → CoordinatorState   │
                        │  Loads in ALL pi modes (tui/rpc/json/print).    │
@@ -132,7 +132,7 @@ grab the terminal. Loading a plugin neither causes nor prevents
 
 - **Direction (1) — human hosts pi (Topology C):** the human runs `pi`
   interactively; the plugin is auto-discovered. Full-screen takeover is *the
-  product* (pi's native TUI + `/wg` + wg tools + graph widget). WG spawns nothing.
+  product* (pi's native TUI + `/wg` + wg tools). WG spawns nothing.
   **The plugin alone fully delivers the integration here; takeover is desired.**
 - **Direction (2) — WG spawns pi as worker/chat handler:** pi still runs
   `resolveAppMode`. If handed a both-TTY context with no mode flag it grabs the
@@ -158,12 +158,12 @@ Full design in [`plugin-research.md`](plugin-research.md) §2. Summary:
 - **Layout (`pi-plugin/src/`):** `index.ts` (registration entry), `tools.ts`
   (`wg_ready`/`wg_show`/`wg_add`/`wg_done`/`wg_fail`/`wg_msg_*`/`wg_run`),
   `commands.ts` (`/wg`, `/wg-model`), `graph-widget.ts`
-  (`setWidget`/`setStatus` on `session_start`/`turn_end`), `model-bridge.ts`
+  (legacy no-op compatibility exports), `model-bridge.ts`
   (`registerProvider` + `model_select` → `CoordinatorState.model_override`),
   `wg-backend.ts` (`pi.exec("wg", …)` today; daemon-IPC client later).
 - **Hooks used:** `registerTool` ×N, `registerCommand`, `registerProvider`,
-  `setModel`/`model_select`, `session_start`/`turn_end`, `before_agent_start`
-  (inject wg task context), `session_shutdown`, `pi.events`/`createEventBus`.
+  `setModel`/`model_select`, `before_agent_start` (inject wg task context),
+  `session_shutdown`, `pi.events`/`createEventBus`.
 - **Config knobs ride in via env** WG already exports to handlers
   (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_STATE_DIR`, daemon socket),
   read inside the extension factory.

@@ -1,7 +1,7 @@
 {
   "name": "@worksgood/wg-pi-plugin",
   "version": "0.1.0",
-  "description": "WG task-graph integration for the pi coding agent: wg tools, /wg and /wg-model commands, an in-session task-graph widget, and a model bridge that round-trips pi model selections back into WG's CoordinatorState.",
+  "description": "WG task-graph integration for the pi coding agent: wg tools, /wg and /wg-model commands, and a model bridge that round-trips pi model selections back into WG's CoordinatorState.",
   "keywords": [
     "pi-package",
     "wg",

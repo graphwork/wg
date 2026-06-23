@@ -1,7 +1,7 @@
 /**
  * Verifies the plugin's registration entry: calling wgPlugin(fakePi) must
  * register the full wg tool family and the /wg + /wg-model commands, and
- * subscribe to the documented lifecycle events.
+ * subscribe to the documented non-UI lifecycle events.
  *
  * Tests run against the built artifact (dist/) — `npm test` builds first.
  */
@@ -76,12 +76,11 @@ describe("wgPlugin registration entry", () => {
     expect(pi.registerCommand).toHaveBeenCalledWith("wg-model", expect.any(Object));
   });
 
-  it("subscribes to the lifecycle + model_select hooks", () => {
+  it("does not install passive ready-task UI hooks", () => {
     const pi = makeFakePi();
     wgPlugin(pi);
-    expect(pi.subscribedEvents).toEqual(
-      expect.arrayContaining(["session_start", "turn_end", "model_select", "session_shutdown"]),
-    );
+    expect(pi.subscribedEvents).toEqual(expect.arrayContaining(["session_start", "model_select", "session_shutdown"]));
+    expect(pi.subscribedEvents).not.toContain("turn_end");
   });
 
   it("does not register a provider when WG exports no endpoint", () => {

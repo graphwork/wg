@@ -23,16 +23,16 @@ npm --prefix "$plugin" test >/tmp/wg-pi-plugin-test.log 2>&1 || \
 npm --prefix "$plugin" run selftest >/tmp/wg-pi-plugin-selftest.log 2>&1 || \
     loud_fail "pi-plugin host selftest failed: $(tail -80 /tmp/wg-pi-plugin-selftest.log)"
 
-node --input-type=module - "$plugin" <<'NODE' >/tmp/wg-pi-plugin-render.log 2>&1 || \
-    loud_fail "pi-plugin graph widget render smoke failed: $(cat /tmp/wg-pi-plugin-render.log)"
+node --input-type=module - "$plugin" <<'NODE' >/tmp/wg-pi-plugin-contract.log 2>&1 || \
+    loud_fail "pi-plugin registration contract smoke failed: $(cat /tmp/wg-pi-plugin-contract.log)"
 const plugin = process.argv[2];
 const mod = await import(`${plugin}/dist/index.js`);
 const lines = mod.renderWidget([
   { id: "task-a", title: "Alpha" },
   { id: "task-b", title: "Beta" },
 ]);
-if (!lines[0].includes("WG ready (2)") || !lines.join("\n").includes("task-a Alpha")) {
-  throw new Error(`unexpected widget render: ${JSON.stringify(lines)}`);
+if (Array.isArray(lines) && lines.length !== 0) {
+  throw new Error(`passive ready-task widget should be disabled, got: ${JSON.stringify(lines)}`);
 }
 for (const mode of ["rpc", "tui", "print"]) {
   const pi = {
@@ -53,10 +53,13 @@ for (const mode of ["rpc", "tui", "print"]) {
   for (const command of ["wg", "wg-model"]) {
     if (!pi.commands.includes(command)) throw new Error(`${mode}: missing command ${command}`);
   }
-  for (const event of ["session_start", "turn_end", "model_select", "session_shutdown"]) {
+  for (const event of ["session_start", "model_select", "session_shutdown"]) {
     if (!pi.events.includes(event)) throw new Error(`${mode}: missing event ${event}`);
+  }
+  for (const event of ["turn_end"]) {
+    if (pi.events.includes(event)) throw new Error(`${mode}: should not subscribe to passive ready UI event ${event}`);
   }
 }
 NODE
 
-echo "PASS: pi plugin loads/registers tools commands model bridge and graph widget in rpc/tui/print modes"
+echo "PASS: pi plugin loads/registers tools commands and model bridge without passive ready-task UI hooks"

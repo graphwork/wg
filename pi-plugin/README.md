@@ -13,7 +13,6 @@ Topology B the SDK Node host). See
 |---|---|
 | **Tools** (LLM/human callable) | `wg_ready`, `wg_show`, `wg_add`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
 | **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-model <provider:id>` (warm in-session swap) |
-| **Widget/status** | task-graph "ready" view above the editor + footer count, refreshed on `session_start` and `turn_end` |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + `model_select` → WG `CoordinatorState.model_override` write-back |
 
 WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_STATE_DIR`,
@@ -28,7 +27,6 @@ without touching the tool/command surface.
 src/index.ts          registration entry — default export wgPlugin(pi)
 src/tools.ts          the wg verb family
 src/commands.ts       /wg and /wg-model (+ autocomplete)
-src/graph-widget.ts   setWidget/setStatus on session_start + turn_end
 src/model-bridge.ts   registerProvider + model_select write-back
 src/wg-backend.ts     pi.exec("wg", …) client (daemon-IPC later)
 host/wg-pi-host.mjs   Topology B: embed pi as a library with the plugin loaded

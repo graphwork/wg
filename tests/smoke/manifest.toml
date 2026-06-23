@@ -321,7 +321,7 @@ owners = [
     "redesign-new-chat",
     "smoke-gate-is",
 ]
-description = "redesign-new-chat 2026-04-30: the TUI new-chat dialog opens in a minimal Default mode with exactly two preset radios (codex:gpt-5.5, claude:opus) plus a '+ Add new...' row, NOT a populated openrouter list or recent-history list. Picking '+ Add new...' flips into a small inline form with executor radio (claude/codex/nex), model field, and an endpoint field that is shown ONLY for executor=nex. Pins the entire redesign contract via the launcher_redesign_tests + launcher_open_tests modules."
+description = "redesign-new-chat 2026-04-30: the TUI new-chat dialog opens in a minimal Default mode with preset radios (codex:gpt-5.5, claude:opus, pi:glm-5.2) plus a '+ Add new...' row, NOT a populated openrouter list or recent-history list. Picking '+ Add new...' flips into a small inline form with executor radio (claude/codex/pi/nex), model field, and an endpoint field that is shown ONLY for executor=nex. Pins the entire redesign contract via the launcher_redesign_tests + launcher_open_tests modules."
 timeout_seconds = 90
 
 [[scenario]]
@@ -1500,7 +1500,7 @@ script = "scenarios/pi_plugin_load_contract.sh"
 owners = [
     "pi-plugin-impl-smoke",
 ]
-description = "Pins the plugin-first pi package contract: the built @worksgood/wg-pi-plugin registers the full wg tool family, /wg and /wg-model commands, lifecycle/model_select hooks, model_select write-back to CoordinatorState.model_override, and a task-graph widget render; the host selftest verifies the plugin bundle loads through the Topology-B Node host. The smoke instantiates the plugin in fake rpc/tui/print mode contexts so registration remains mode-independent."
+description = "Pins the plugin-first pi package contract: the built @worksgood/wg-pi-plugin registers the full wg tool family, /wg and /wg-model commands, session_start/model_select/session_shutdown hooks, and model_select write-back to CoordinatorState.model_override, without passive turn_end ready-task UI hooks or widget rendering; the host selftest verifies the plugin bundle loads through the Topology-B Node host. The smoke instantiates the plugin in fake rpc/tui/print mode contexts so registration remains mode-independent."
 timeout_seconds = 180
 
 [[scenario]]

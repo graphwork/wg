@@ -132,26 +132,15 @@ so pi's own agent loop executes the task with full wg tooling in context. Becaus
 tools are callable by the LLM, an attended human can also just *ask* pi to "pick
 up the next ready wg task" and it will call `wg_ready` → `wg_show` → work.
 
-### 1.2 Surface the wg task graph in-session → widgets/status
+### 1.2 Explicit wg access only; no passive ready-task UI
 
-A `refreshGraph()` helper calls `wg ready`/`wg list` and pushes a compact view to
-the always-visible widget and footer, refreshed on `session_start` and `turn_end`:
+The plugin exposes WG through tools and slash commands. It must not install an
+always-visible ready-task widget/status footer on `session_start` or `turn_end`:
+that duplicates the WG TUI and pollutes Pi chat sessions with state the user can
+already inspect directly.
 
-```ts
-async function refreshGraph(ctx) {
-  const r = await pi.exec("wg", ["ready", "--json"]);
-  const ready = JSON.parse(r.stdout || "[]");
-  ctx.ui.setWidget("wg-graph", ["WG ready:", ...ready.slice(0, 5).map(t => ` • ${t.id} ${t.title}`)]);
-  ctx.ui.setStatus("wg", `wg: ${ready.length} ready`);
-}
-pi.on("session_start", (_e, ctx) => refreshGraph(ctx));
-pi.on("turn_end", (_e, ctx) => refreshGraph(ctx));
-```
-
-In `rpc` mode these same calls become structured `extension_ui` protocol events
-(`rpc.md` "Extension UI protocol") that **WG's own renderer** can consume to draw
-the graph in its ratatui pane — same plugin code, different sink, because
-`ctx.hasUI` is true in both `tui` and `rpc`.
+If WG later wants embedded graph UI, it should be an explicit `/wg graph` or
+user-triggered command surface, not automatic session chrome.
 
 ### 1.3 Switch models mid-chat via pi's native model manager → `setModel` + round-trip
 
@@ -228,7 +217,7 @@ pi-plugin/
 │   ├── index.ts            # export default function (pi: ExtensionAPI) — registration entry
 │   ├── tools.ts            # wg_ready / wg_show / wg_add / wg_done / wg_fail / wg_msg_* / wg_run
 │   ├── commands.ts         # /wg, /wg-model
-│   ├── graph-widget.ts     # setWidget/setStatus refresh on session_start + turn_end
+│   ├── graph-widget.ts     # legacy no-op compatibility exports
 │   ├── model-bridge.ts     # registerProvider(wg endpoints) + model_select → CoordinatorState
 │   └── wg-backend.ts       # exec("wg", …) today; daemon-IPC client later (§4.4)
 └── dist/                   # built output referenced by the manifest
@@ -240,13 +229,11 @@ pi-plugin/
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerWgTools } from "./tools.js";
 import { registerWgCommands } from "./commands.js";
-import { installGraphWidget } from "./graph-widget.js";
 import { installModelBridge } from "./model-bridge.js";
 
 export default function wgPlugin(pi: ExtensionAPI) {
   registerWgTools(pi);       // pi.registerTool(...) × N
   registerWgCommands(pi);    // pi.registerCommand("wg", ...), "wg-model"
-  installGraphWidget(pi);    // pi.on("session_start"/"turn_end", refreshGraph)
   installModelBridge(pi);    // pi.registerProvider(...); pi.on("model_select", writeBackToWG)
 }
 ```
@@ -255,7 +242,7 @@ Config knobs (which WG chat/task this session is bound to, daemon socket path,
 whether to inject the task graph) ride in via env (`WG_TASK_ID`, `WG_AGENT_ID`,
 `WG_CHAT_ID`, `WG_STATE_DIR`) read inside the factory — exactly the env WG already
 exports to handlers (`integration-plan.md` §1.3). Defer any long-lived resource
-(socket, watcher) to `session_start` and tear down in `session_shutdown`
+(socket, watcher) to explicit connection setup and tear down in `session_shutdown`
 (`extensions.md:219-223`).
 
 ### 2.4 Hooks summary (what the plugin subscribes to)
@@ -266,7 +253,6 @@ exports to handlers (`integration-plan.md` §1.3). Defer any long-lived resource
 | `registerCommand("wg"/"wg-model")` | human slash-command surface + autocomplete |
 | `registerProvider` | inject WG endpoints/keys into pi's model registry |
 | `setModel` / `model_select` | native warm mid-chat switch + write-back to `CoordinatorState` |
-| `session_start` / `turn_end` | refresh task-graph widget/status |
 | `before_agent_start` | inject current wg task context / system-prompt addendum |
 | `agent_end` | optional: `wg log` a breadcrumb of the turn |
 | `session_shutdown` | close daemon socket / watchers |
@@ -392,9 +378,9 @@ must locate Node + ship the host + plugin bundle (`executor_discovery` extension
 ### 4.3 Topology C — inverted: pi hosts, human drives WG from inside (direction 1)
 
 Human runs `pi` (interactive). Plugin auto-discovered. `/wg run <id>`, wg tools,
-task-graph widget, pi-native `/model` with write-back. WG spawns nothing; the
-plugin reaches the WG backend via `pi.exec("wg", …)` or the daemon socket. This is
-the attended front-end; takeover is the product.
+and pi-native `/model` with write-back. WG spawns nothing; the plugin reaches the
+WG backend via `pi.exec("wg", …)` or the daemon socket. This is the attended
+front-end; takeover is the product.
 
 ### 4.4 WG-side wiring (mostly unchanged from `integration-plan.md` §1.1)
 
@@ -424,11 +410,11 @@ branch except the staged P5 patch under `docs/pi-integration/upstream-patch/`.
 |---|---|---|
 | **P0 `pi-executor-kind`** (ExecutorKind::Pi + discovery) | **KEEP** (extend) | WG still must recognize `pi:` routes. Extend discovery to accept the Node-host+plugin path (Topology B), not just a `pi` binary. |
 | **P1a `pi-handler`** (RPC chat + one-shot worker) | **KEEP, reframed** | Still the headless transport that defeats the takeover in direction (2). What changes: in-session wg-awareness moves *out* of WG prompt-munging and *into* the plugin. Add "ensure plugin is loaded" + "bridge plugin event bus ↔ WG IPC." For Topology B, this becomes the `node wg-pi-host` spawn rather than a `pi` spawn. |
-| **P1b `pi-profile`** (`pi.toml` starter) | **KEEP** unchanged | Still need a profile pinning pi routes + `claude:haiku` agency roles. |
+| **P1b `pi-profile`** (`pi.toml` starter) | **KEEP** | Still need a profile pinning Pi worker/chat routes, now with explicit cheaper agency/meta overrides. |
 | **P2a `wg chat model <id> <spec>`** | **KEEP**, gains warm path | Still WG's CLI verb over `SetChatExecutor`. For a live pi/plugin session, the model swap now goes through pi-native `setModel` (warm) instead of a respawn — i.e. P2a's pi branch fuses with P3's pi half. |
 | **P2b `tui-model-picker`** (WG's own TUI `/model`) | **KEEP for WG-native panes; REPLACED for the pi front-end** | When WG renders the transcript (Topology A/B RPC), it still needs its own picker. When the human is in pi's interactive TUI (Topology C), they use pi's **native** `/model` and the plugin round-trips the choice — WG builds nothing for that surface. |
 | **P3 `warm-swap`** (nex per-turn + pi `set_model`) | **pi half SUBSUMED into the plugin (now default, not "optional later"); nex half KEEP** | The plugin makes pi's warm `set_model` the *normal* path, not a deferred Layer-2 optimization. The nex per-turn re-resolve is pi-independent and unchanged. |
-| **P4a `pi-smoke`** + **P4b `pi-live-validation`** | **KEEP, EXPAND** | Still need config-lint + credentialed validation. **Add** plugin scenarios: plugin loads in `rpc`/`tui`/`print`; wg tools callable; `/wg` command works; `model_select` writes back to `CoordinatorState`; task-graph widget renders; **takeover-regression guard stays** (asserts headless pi never enters raw mode — this guards direction 2, which the plugin does *not* fix). |
+| **P4a `pi-smoke`** + **P4b `pi-live-validation`** | **KEEP, EXPAND** | Still need config-lint + credentialed validation. **Add** plugin scenarios: plugin loads in `rpc`/`tui`/`print`; wg tools callable; `/wg` command works; `model_select` writes back to `CoordinatorState`; passive ready-task widgets are not installed; **takeover-regression guard stays** (asserts headless pi never enters raw mode — this guards direction 2, which the plugin does *not* fix). |
 | **P5 `pi-upstream-patch`** (`PI_NO_TUI`) | **DROP / moot** | Superseded by the direction-split (§3). No upstream pi change is required. `docs/pi-integration/upstream-patch/` stays as a documented, unsubmitted artifact; do not open the PR. |
 
 **New work the plugin pivot introduces (not in P0–P5):**

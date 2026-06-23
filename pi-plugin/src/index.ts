@@ -4,8 +4,8 @@
  * One artifact, loaded the same way whether a human launched pi (Topology C,
  * auto-discovered) or WG spawned it (Topology A `pi --mode rpc`, or Topology B
  * the SDK Node host in host/wg-pi-host.mjs). Registers the wg tool family, the
- * /wg and /wg-model commands, an in-session task-graph widget, and the model
- * bridge — natively, inside pi's lifecycle (integration-plan-v2.md §2).
+ * /wg and /wg-model commands, and the model bridge — natively, inside pi's
+ * lifecycle (integration-plan-v2.md §2).
  *
  * WG context (which task/chat this session is bound to, the project dir, the
  * daemon socket) rides in via environment variables WG already exports to its
@@ -17,7 +17,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readWgEnv, WgBackend } from "./wg-backend.js";
 import { registerWgTools } from "./tools.js";
 import { registerWgCommands } from "./commands.js";
-import { installGraphWidget } from "./graph-widget.js";
 import { installModelBridge } from "./model-bridge.js";
 
 export default function wgPlugin(pi: ExtensionAPI): void {
@@ -26,7 +25,6 @@ export default function wgPlugin(pi: ExtensionAPI): void {
 
   registerWgTools(pi, backend); // wg_ready / wg_show / wg_add / wg_done / wg_fail / wg_msg_* / wg_run
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
-  installGraphWidget(pi, backend); // setWidget/setStatus on session_start + turn_end
   installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
 
   // Tear down any session-scoped resources (the future daemon-IPC socket /
