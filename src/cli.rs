@@ -2297,6 +2297,29 @@ pub enum Commands {
         command: ModelsCommands,
     },
 
+    /// Re-runnable OpenRouter scout that proposes the strong/weak Pi tiers
+    ///
+    /// Researches OpenRouter's current catalog and proposes:
+    ///   strong = best coding/work model right now
+    ///   weak   = cheapest model reliable enough for agency judgment one-shots
+    ///            (flip / assign / post-flip eval / off-the-rails)
+    /// Bootstraps from the tiers currently set and always prints
+    /// `strong: <old> -> <new> because …` / `weak: <old> -> <new> because …`.
+    /// Default is dry-run (prints the copy-pasteable apply command); `--apply`
+    /// writes the tiers. This is the engine behind `wg profile pi --scout`.
+    #[command(name = "model-scout")]
+    ModelScout {
+        /// Write the proposed tiers (default is dry-run preview only)
+        #[arg(long)]
+        apply: bool,
+        /// Bypass any model cache and fetch a fresh catalog
+        #[arg(long)]
+        no_cache: bool,
+        /// Cap both tiers to this blended cost (USD per 1M tokens)
+        #[arg(long, value_name = "USD_PER_MTOK")]
+        max_cost: Option<f64>,
+    },
+
     /// Model registry and routing management
     Model {
         #[command(subcommand)]
@@ -5256,6 +5279,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Chat { .. } => "chat",
         Commands::Endpoints { .. } | Commands::Endpoint { .. } => "endpoints",
         Commands::Models { .. } => "models",
+        Commands::ModelScout { .. } => "model-scout",
         Commands::Model { .. } => "model",
         Commands::Key { .. } => "key",
         Commands::Secret { .. } => "secret",
@@ -5330,6 +5354,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Evolve { .. }
             | Commands::Profile { .. }
             | Commands::Config { .. }
+            | Commands::ModelScout { .. }
             | Commands::DeadAgents { .. }
             | Commands::Html { .. }
             | Commands::Sweep { .. }

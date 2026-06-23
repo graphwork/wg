@@ -50,6 +50,7 @@ pub mod matrix_lite;
 pub mod messages;
 pub mod metrics;
 pub mod model_benchmarks;
+pub mod model_scout;
 pub mod models;
 #[path = "commands/nex.rs"]
 pub mod nex;

@@ -3676,6 +3676,11 @@ fn main() -> Result<()> {
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }
+        Commands::ModelScout {
+            apply,
+            no_cache,
+            max_cost,
+        } => worksgood::model_scout::run(&workgraph_dir, apply, no_cache, max_cost, cli.json),
         Commands::Secret { command } => match command {
             cli::SecretCommands::Set {
                 name,
