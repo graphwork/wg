@@ -9,11 +9,23 @@
 //! 4. Local/global `[dispatcher].executor` (a.k.a. `coordinator.executor`) →  final
 //! 5. Default (`claude`)
 //!
-//! **Model spec NEVER overrides executor.** Once executor is resolved (e.g.
-//! via local `[dispatcher].executor=claude`), the model field is *not*
-//! consulted to override it. This is the regression that bit us: a global
-//! `is_default = openrouter` endpoint and a registry lookup of `opus` should
-//! NEVER cause a `claude`-pinned dispatcher to spawn a `native` executor.
+//! **A BARE model alias never overrides the executor.** Once executor is
+//! resolved (e.g. via local `[dispatcher].executor=claude`), a *bare* model
+//! field (`opus`, `qwen3-coder`) is *not* consulted to override it. This is the
+//! regression that bit us: a global `is_default = openrouter` endpoint and a
+//! registry lookup of `opus` should NEVER cause a `claude`-pinned dispatcher to
+//! spawn a `native` executor.
+//!
+//! **An EXPLICIT provider prefix reconciles the executor (handler).** After the
+//! precedence above resolves a floor, `enforce_model_compat` consults
+//! [`crate::dispatch::handler_for_model`] — the single source of truth — for any
+//! model carrying an explicit `provider:` prefix and overrides the floor when it
+//! genuinely cannot run that model: `claude` can only speak Anthropic, and the
+//! in-process `native`/nex handler cannot run a CLI-locked `claude:`/`codex:`
+//! model. An explicit `codex` floor paired with an incompatible model is left
+//! for `validate_cli_backend_match` to reject loudly rather than rewrite. This
+//! guarantees the handler that runs is always consistent with the resolved
+//! model spec — no `(executor, model)` pair that disagrees can reach a spawn.
 //!
 //! ## Precedence (endpoint)
 //!
@@ -36,7 +48,7 @@
 //! always answer "why did this task spawn `native --endpoint openrouter`?"
 //! by reading one line.
 
-use crate::config::{Config, EndpointConfig, parse_model_spec, provider_to_executor};
+use crate::config::{Config, EndpointConfig, parse_model_spec};
 use crate::graph::Task;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
@@ -518,47 +530,83 @@ pub fn plan_spawn(
     })
 }
 
-/// If the resolved executor is `claude` but the model spec carries a
-/// non-Anthropic provider prefix, switch to the executor the model actually
-/// needs. The claude CLI cannot speak OpenAI-compat / openrouter / local
-/// endpoints — running it against `local:qwen3-coder` returns 404 and burns
-/// the spawn (the autohaiku regression).
+/// Reconcile the resolved executor with the model spec so the handler that
+/// actually runs is consistent with the model. `handler_for_model` is the
+/// **single source of truth** for which handler a `provider:model` spec
+/// requires; this is the one place a resolved executor floor is overridden
+/// when it cannot run the chosen model.
 ///
-/// This override only fires when the resolved executor is `claude`. It does
-/// NOT touch explicit non-claude executor choices (`-x codex`, `-x native`)
-/// — those are kept even with `local:` models, on the assumption that the
-/// chosen executor is OAI-compat-aware (codex, native) or the user knows
-/// what they're doing.
+/// The rule (only triggered by an *explicit* provider prefix — bare aliases
+/// like `opus` / `sonnet` carry no backend signal and keep the floor):
 ///
-/// Bare aliases like `opus` / `sonnet` (no provider prefix) do NOT trigger
-/// the override — they're claude-compatible by convention.
+/// - **`claude` floor + any non-Anthropic model** → override. The claude CLI
+///   cannot speak OpenAI-compat / openrouter / local endpoints — running it
+///   against `local:qwen3-coder` returns 404 and burns the spawn (the
+///   autohaiku regression). Because `claude` is also the *default* floor, it
+///   yields rather than failing.
+/// - **flexible floor (`native` / external CLI) + a CLI-locked model
+///   (`claude:` / `codex:`)** → override. A native/external adapter cannot
+///   fake a CLI backend, so a `nex`-profile (`executor=native`) default paired
+///   with a `claude:`/`codex:`-pinned task must route to that CLI rather than
+///   doom-spawn. This closes the residual mismatch where `validate_cli_backend_match`
+///   only guarded the `claude`/`codex` executors, never `native`/external.
+/// - **explicit `codex` floor + an incompatible model** → left untouched here
+///   so `validate_cli_backend_match` rejects it loudly: codex is never a
+///   default, so a `-x codex` + `claude:` pairing is a config error to surface,
+///   not silently rewrite.
+/// - **flexible floor + a flexible (`native`) model** (e.g. `codex`/`native`/
+///   external + `openrouter:`/`local:`) → keep the floor. Those executors are
+///   OAI-compat-aware and can serve the model.
 fn enforce_model_compat(
     executor: ExecutorKind,
     executor_source: String,
     model: &ResolvedModelSpec,
 ) -> (ExecutorKind, String) {
-    if !matches!(executor, ExecutorKind::Claude) {
-        return (executor, executor_source);
-    }
+    // Bare aliases (no provider prefix) carry no backend signal — keep the
+    // resolved floor (`opus`/`sonnet`/`qwen3-coder` route by executor choice).
     let Some(ref provider) = model.provider else {
         return (executor, executor_source);
     };
-    let required = provider_to_executor(provider);
-    if required == "claude" {
+    // Single source of truth: the handler this model spec requires.
+    let required = crate::dispatch::handler_for_model(&model.raw);
+    if required == executor {
         return (executor, executor_source);
     }
-    let Some(kind) = ExecutorKind::from_str(required) else {
-        return (executor, executor_source);
+    // Does the floor yield to the model's required handler, or stay (and let
+    // `validate_cli_backend_match` reject genuinely-conflicting explicit pairs)?
+    let model_is_cli_locked = matches!(required, ExecutorKind::Claude | ExecutorKind::Codex);
+    let should_override = match executor {
+        // claude can ONLY speak Anthropic; any other handler forces an override.
+        ExecutorKind::Claude => true,
+        // The in-process nex/native handler speaks OAI-compat only — it cannot
+        // run a CLI-locked model (`claude:`/`codex:`), so it yields to the
+        // model's required CLI rather than doom-spawning (the residual gap:
+        // `validate_cli_backend_match` only guarded the claude/codex executors).
+        ExecutorKind::Native => model_is_cli_locked,
+        // explicit codex floor → leave incompatible pairs for validate to reject;
+        // shell has no model; external CLIs route their own provider/model.
+        _ => false,
     };
+    if !should_override {
+        return (executor, executor_source);
+    }
     let new_source = format!(
-        "model-compat override: was claude (from {}), model={} prefix={} requires {}",
-        executor_source, model.raw, provider, required,
+        "model-compat override (handler_for_model): was {} (from {}), model={} prefix={} requires {}",
+        executor.as_str(),
+        executor_source,
+        model.raw,
+        provider,
+        required.as_str(),
     );
     eprintln!(
-        "[dispatch] model-compat: claude (from {}) cannot run model '{}' (prefix '{}'); routing to '{}'",
-        executor_source, model.raw, provider, required,
+        "[dispatch] model-compat: {} (from {}) cannot run model '{}' (prefix '{}'); routing to '{}'",
+        executor.as_str(),
+        executor_source,
+        model.raw,
+        provider,
+        required.as_str(),
     );
-    (kind, new_source)
+    (required, new_source)
 }
 
 /// Reject explicit CLI-backend mismatches before anything launches.
@@ -1147,9 +1195,12 @@ mod tests {
     fn test_agency_executor_overrides_dispatcher_default() {
         // When an agent_executor (agency-derived) is provided, it wins over
         // the dispatcher default but not over an explicit [dispatcher].executor.
+        // Use a native-compatible model so this stays a pure precedence check:
+        // a CLI-locked model would (correctly) trigger the model-compat override
+        // — see `test_native_floor_yields_to_cli_locked_model`.
         let config = Config::default();
         let task = base_task("t1");
-        let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
+        let plan = plan_spawn(&task, &config, Some("native"), Some("nex:qwen3-coder")).unwrap();
         assert_eq!(plan.executor, ExecutorKind::Native);
         assert!(plan.provenance.executor_source.contains("agency"));
     }
@@ -1555,6 +1606,117 @@ mod tests {
             "with no task.endpoint, fall back to is_default. got {:?}",
             plan.provenance.endpoint_source
         );
+    }
+
+    /// Regression (fix-executor-model): the handler is ALWAYS derived from the
+    /// resolved model spec. For every CLI-backed provider prefix, `plan_spawn`
+    /// must agree with `handler_for_model` (the single source of truth) — and a
+    /// **stale** executor floor (here a leftover `claude`, the historical
+    /// default that bit the original report) must NOT win over the model spec.
+    #[test]
+    fn test_handler_derived_from_model_spec_no_stale_executor_wins() {
+        let cases = [
+            ("openrouter:anthropic/claude-opus-4-7", ExecutorKind::Native),
+            ("nex:qwen3-coder", ExecutorKind::Native),
+            ("claude:opus", ExecutorKind::Claude),
+            ("codex:gpt-5.5", ExecutorKind::Codex),
+        ];
+        for (model, expected) in cases {
+            // A stale `[dispatcher].executor = claude` (the original-report
+            // default) must not pin the spawn to claude for non-Anthropic models.
+            let mut config = Config::default();
+            config.coordinator.executor = Some("claude".to_string());
+            let task = base_task("t1");
+            let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
+            assert_eq!(
+                plan.executor, expected,
+                "model {model} must route to {expected:?} despite a stale claude floor; provenance={:?}",
+                plan.provenance
+            );
+            assert_eq!(
+                plan.executor,
+                crate::dispatch::handler_for_model(model),
+                "plan_spawn must agree with handler_for_model (single source of truth) for {model}"
+            );
+            // The plan-level env handed to the spawned agent must reflect the
+            // SAME resolved {executor, model} — no field can disagree.
+            assert_eq!(
+                plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+                Some(expected.as_str()),
+                "WG_EXECUTOR_TYPE must match the resolved handler for {model}"
+            );
+            assert_eq!(
+                plan.env.get("WG_MODEL").map(String::as_str),
+                Some(model),
+                "WG_MODEL must carry the resolved model spec for {model}"
+            );
+        }
+    }
+
+    /// Regression (fix-executor-model): a flexible floor — `native` (the
+    /// `nex`-profile default) or an external CLI — must NOT stay paired with a
+    /// CLI-locked model it cannot run. Before the fix, `validate_cli_backend_match`
+    /// only guarded the `claude`/`codex` executors, so `executor=native` +
+    /// `claude:opus` / `codex:gpt-5.5` slipped through as a doomed spawn that
+    /// `handler_for_model` would have routed correctly.
+    #[test]
+    fn test_native_floor_yields_to_cli_locked_model() {
+        for (model, expected) in [
+            ("claude:opus", ExecutorKind::Claude),
+            ("codex:gpt-5.5", ExecutorKind::Codex),
+        ] {
+            let mut config = Config::default();
+            config.coordinator.executor = Some("native".to_string());
+            let task = base_task("t1");
+            let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
+            assert_eq!(
+                plan.executor, expected,
+                "native floor must yield to CLI-locked model {model}; provenance={:?}",
+                plan.provenance
+            );
+            assert_eq!(plan.executor, crate::dispatch::handler_for_model(model));
+            assert!(
+                plan.provenance.executor_source.contains("model-compat"),
+                "the override must be traceable in provenance, got {:?}",
+                plan.provenance.executor_source
+            );
+            assert_eq!(
+                plan.env.get("WG_EXECUTOR_TYPE").map(String::as_str),
+                Some(expected.as_str())
+            );
+            assert_eq!(plan.env.get("WG_MODEL").map(String::as_str), Some(model));
+        }
+    }
+
+    /// Boundary: a flexible floor keeps serving a *flexible* (OAI-compat) model.
+    /// `native`/`codex`/external + `openrouter:`/`local:` must NOT be rewritten —
+    /// those executors speak OAI-compat, and this is the whole point of the
+    /// `nex`/`codex` profiles. Locks the override to CLI-locked models only.
+    #[test]
+    fn test_flexible_floor_keeps_flexible_model() {
+        for floor in ["native", "codex", "opencode"] {
+            let mut config = Config::default();
+            config.coordinator.executor = Some(floor.to_string());
+            let task = base_task("t1");
+            let plan = plan_spawn(
+                &task,
+                &config,
+                None,
+                Some("openrouter:deepseek/deepseek-v3.2"),
+            )
+            .unwrap();
+            assert_eq!(
+                plan.executor,
+                ExecutorKind::from_str(floor).unwrap(),
+                "flexible floor {floor} must keep serving an openrouter model; provenance={:?}",
+                plan.provenance
+            );
+            assert!(
+                !plan.provenance.executor_source.contains("model-compat"),
+                "no override expected for {floor} + openrouter model, got {:?}",
+                plan.provenance.executor_source
+            );
+        }
     }
 
     /// Fix C boundary: claude executor must continue to ignore task.endpoint

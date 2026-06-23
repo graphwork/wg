@@ -1976,11 +1976,9 @@ impl LauncherState {
             if let Some(model) = Self::resolve_pi_model(config, workgraph_dir) {
                 presets[pi_idx].model = model.clone();
                 presets[pi_idx].label = format!("pi:{}", model);
-                presets[pi_idx].description =
-                    format!("Pi (pi.dev) — {}", model);
+                presets[pi_idx].description = format!("Pi (pi.dev) — {}", model);
             } else {
-                presets[pi_idx].description =
-                    "Pi (pi.dev) — press m to set model".to_string();
+                presets[pi_idx].description = "Pi (pi.dev) — press m to set model".to_string();
             }
         }
         presets
@@ -2352,7 +2350,11 @@ impl LauncherState {
         // Suppress suggestions when the typed text is already an explicit
         // spec (mirrors Add-new's model_input_is_explicit_spec).
         let t = self.preset_model_edit.trim();
-        if !t.is_empty() && (t.contains('/') || t.split_once(':').is_some_and(|(p, _)| worksgood::config::KNOWN_PROVIDERS.contains(&p))) {
+        if !t.is_empty()
+            && (t.contains('/')
+                || t.split_once(':')
+                    .is_some_and(|(p, _)| worksgood::config::KNOWN_PROVIDERS.contains(&p)))
+        {
             return Vec::new();
         }
         let mut scored: Vec<(i64, usize, ModelSuggestion)> = self
@@ -2392,7 +2394,9 @@ impl LauncherState {
             self.preset_model_suggestion_selected = 0;
             return;
         }
-        let cur = self.preset_model_suggestion_selected.min(len.saturating_sub(1)) as isize;
+        let cur = self
+            .preset_model_suggestion_selected
+            .min(len.saturating_sub(1)) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1);
         self.preset_model_suggestion_selected = next as usize;
     }
@@ -2427,9 +2431,7 @@ impl LauncherState {
         self.active_section = match (&self.mode, &self.active_section) {
             (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
             (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
-            (LauncherMode::Default, LauncherSection::PresetModel(_)) => {
-                LauncherSection::Defaults
-            }
+            (LauncherMode::Default, LauncherSection::PresetModel(_)) => LauncherSection::Defaults,
             (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
             (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
                 LauncherSection::AddNew(AddNewField::Model)
@@ -2471,9 +2473,7 @@ impl LauncherState {
         self.active_section = match (&self.mode, &self.active_section) {
             (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
             (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
-            (LauncherMode::Default, LauncherSection::PresetModel(_)) => {
-                LauncherSection::Defaults
-            }
+            (LauncherMode::Default, LauncherSection::PresetModel(_)) => LauncherSection::Defaults,
             (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
             (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
                 LauncherSection::AddNew(AddNewField::Name)
@@ -5702,10 +5702,19 @@ pub enum SettingsEntryKind {
     /// `p` activates it; editing is via `wg profile edit`.
     Profile { name: String, is_active: bool },
     /// A configured LLM endpoint row.
-    Endpoint { name: String, url: String, provider: String, is_default: bool },
+    Endpoint {
+        name: String,
+        url: String,
+        provider: String,
+        is_default: bool,
+    },
     /// A recent launcher (executor, model, endpoint) combo from history.
     /// Read-only display; Enter re-opens the launcher.
-    RecentRoute { executor: String, model: Option<String>, endpoint: Option<String> },
+    RecentRoute {
+        executor: String,
+        model: Option<String>,
+        endpoint: Option<String>,
+    },
 }
 
 impl Default for SettingsEntryKind {
@@ -17913,7 +17922,11 @@ impl VizApp {
             let is_active = active_profile.as_deref() == Some(name.as_str());
             entries.push(SettingsEntry {
                 key: format!("profile.use {}", name),
-                value: if is_active { "✦ active".into() } else { "installed".into() },
+                value: if is_active {
+                    "✦ active".into()
+                } else {
+                    "installed".into()
+                },
                 source: worksgood::config::ConfigSource::Global,
                 section: "Profiles",
                 kind: SettingsEntryKind::Profile {
@@ -17942,7 +17955,11 @@ impl VizApp {
         for ep in &config.llm_endpoints.endpoints {
             entries.push(SettingsEntry {
                 key: format!("endpoint.{}", ep.name),
-                value: format!("{} [{}]", ep.url.as_deref().unwrap_or("(no url)"), ep.provider),
+                value: format!(
+                    "{} [{}]",
+                    ep.url.as_deref().unwrap_or("(no url)"),
+                    ep.provider
+                ),
                 source: lookup("llm_endpoints"),
                 section: "Endpoints",
                 kind: SettingsEntryKind::Endpoint {
@@ -18061,8 +18078,7 @@ impl VizApp {
             SettingsEntryKind::Profile { name, .. } => name.clone(),
             _ => return,
         };
-        let exe =
-            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
         let result = std::process::Command::new(&exe)
             .arg("profile")
             .arg("use")
@@ -18071,8 +18087,7 @@ impl VizApp {
             .output();
         match result {
             Ok(out) if out.status.success() => {
-                self.settings_panel.notice =
-                    Some(format!("Activated profile: {}", name));
+                self.settings_panel.notice = Some(format!("Activated profile: {}", name));
                 self.load_settings_panel();
             }
             Ok(out) => {
@@ -18091,13 +18106,11 @@ impl VizApp {
     pub fn clear_launcher_history(&mut self) {
         match worksgood::launcher_history::clear_history() {
             Ok(()) => {
-                self.settings_panel.notice =
-                    Some("Cleared launcher history".to_string());
+                self.settings_panel.notice = Some("Cleared launcher history".to_string());
                 self.load_settings_panel();
             }
             Err(e) => {
-                self.settings_panel.last_error =
-                    Some(format!("Failed to clear history: {}", e));
+                self.settings_panel.last_error = Some(format!("Failed to clear history: {}", e));
             }
         }
     }

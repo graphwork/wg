@@ -516,6 +516,15 @@ description = "Agency MUST NOT pick the claude executor for an agent whose role 
 timeout_seconds = 30
 
 [[scenario]]
+name = "native_floor_yields_to_cli_locked_model"
+script = "scenarios/native_floor_yields_to_cli_locked_model.sh"
+owners = [
+    "fix-executor-model",
+]
+description = "Mirror of WG_EXECUTOR_MODEL_MISMATCH.md: the handler is ALWAYS derived from the resolved model spec (handler_for_model = single source of truth), so no disagreeing (executor, model) pair reaches a spawn. Closes the residual gap where validate_cli_backend_match only guarded the claude/codex executors: a `native` (nex-profile) dispatcher floor + a CLI-locked `claude:`/`codex:` model must yield to the model's CLI handler, never doom-spawn on the in-process nex handler that cannot run it. Asserts `wg spawn --executor native` of a claude:opus / codex:gpt-5.5 task logs `--executor claude/codex` (never native) and the agent metadata env matches. No live LLM endpoint required (bogus endpoint + 1s timeout; routing is decided before the agent runs)."
+timeout_seconds = 30
+
+[[scenario]]
 name = "dispatcher_codex_wins_over_agency"
 script = "scenarios/dispatcher_codex_wins_over_agency.sh"
 owners = [

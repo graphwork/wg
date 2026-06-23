@@ -1700,9 +1700,7 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 launcher.commit_preset_model_edit();
                 launcher.next_section();
             }
-            KeyCode::Char('m')
-                if !modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            KeyCode::Char('m') if !modifiers.contains(KeyModifiers::CONTROL) => {
                 // 'm' on a preset row enters the inline model editor;
                 // while editing it's a literal char.
                 launcher.preset_model_edit.push('m');
