@@ -3336,6 +3336,14 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('s') if app.right_panel_tab == RightPanelTab::Settings => {
             app.toggle_settings_scope();
         }
+        // Settings tab: 'p' activates the selected profile row.
+        KeyCode::Char('p') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.activate_selected_profile();
+        }
+        // Settings tab: 'D' (Shift-d) clears launcher history.
+        KeyCode::Char('D') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.clear_launcher_history();
+        }
         // Log tab: 's' toggles head/tail summary mode (RawPretty view).
         // Long tool/command outputs collapse to first 5 + last 5 lines
         // with a `… N lines elided …` marker between them.

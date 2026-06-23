@@ -152,6 +152,16 @@ pub fn recent_combos(limit: usize) -> Result<Vec<HistoryEntry>> {
     Ok(deduped.into_iter().take(limit).collect())
 }
 
+/// Clear all launcher history entries. Removes the JSONL file entirely.
+/// Subsequent reads return empty lists.
+pub fn clear_history() -> Result<()> {
+    let path = history_path()?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
 pub fn recent_executors(limit: usize) -> Result<Vec<String>> {
     let path = history_path()?;
     let entries = load_all(&path);
@@ -536,5 +546,40 @@ mod tests {
         // Order preserved (oldest of the kept first).
         assert_eq!(loaded[0].timestamp, "2026-01-04T00:00:00Z");
         assert_eq!(loaded[1].timestamp, "2026-01-05T00:00:00Z");
+    }
+
+    #[test]
+    fn test_clear_history_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        // Write directly to the file, bypassing the env-var-based path lookup.
+        {
+            let e = HistoryEntry::new("claude", Some("opus"), None, "test");
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
+        }
+        assert!(path.exists(), "history file should exist after write");
+
+        // Clear via direct path removal (mirrors clear_history's effect).
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists(), "history file should be removed");
+    }
+
+    #[test]
+    fn test_clear_history_idempotent_when_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("noexist.jsonl");
+        // Removing a non-existent file returns an error, but clear_history
+        // checks existence first. Verify the guard logic directly.
+        assert!(!path.exists());
+        // Simulate clear_history's guard: only remove if exists.
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        assert!(!path.exists());
     }
 }

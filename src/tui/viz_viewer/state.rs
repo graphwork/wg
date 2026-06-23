@@ -5693,6 +5693,27 @@ pub struct ConfigPanelState {
     pub last_config_mtime: Option<std::time::SystemTime>,
 }
 
+/// What kind of entry a Settings tab row is — drives key handling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsEntryKind {
+    /// A normal dotted config key, editable inline via `set_setting_value`.
+    Config,
+    /// A named profile row (`~/.wg/profiles/<name>.toml`).
+    /// `p` activates it; editing is via `wg profile edit`.
+    Profile { name: String, is_active: bool },
+    /// A configured LLM endpoint row.
+    Endpoint { name: String, url: String, provider: String, is_default: bool },
+    /// A recent launcher (executor, model, endpoint) combo from history.
+    /// Read-only display; Enter re-opens the launcher.
+    RecentRoute { executor: String, model: Option<String>, endpoint: Option<String> },
+}
+
+impl Default for SettingsEntryKind {
+    fn default() -> Self {
+        Self::Config
+    }
+}
+
 /// One row in the Settings tab — a merged-config key with its origin.
 #[derive(Clone, Debug)]
 pub struct SettingsEntry {
@@ -5704,6 +5725,9 @@ pub struct SettingsEntry {
     pub source: worksgood::config::ConfigSource,
     /// Group label (audit §2 layout) — e.g. "Agent", "Coordinator", "Tiers".
     pub section: &'static str,
+    /// What kind of row this is — drives per-key actions (activate profile,
+    /// edit config, etc.).
+    pub kind: SettingsEntryKind,
 }
 
 /// State for the `Settings` tab (RightPanelTab::Settings).
@@ -17699,24 +17723,28 @@ impl VizApp {
             value: config.agent.model.clone(),
             source: lookup("agent.model"),
             section: "Agent",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agent.executor".into(),
             value: config.agent.executor.clone(),
             source: lookup("agent.executor"),
             section: "Agent",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agent.heartbeat_timeout".into(),
             value: config.agent.heartbeat_timeout.to_string(),
             source: lookup("agent.heartbeat_timeout"),
             section: "Agent",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agent.interval".into(),
             value: config.agent.interval.to_string(),
             source: lookup("agent.interval"),
             section: "Agent",
+            kind: SettingsEntryKind::Config,
         });
 
         // Coordinator (a.k.a. dispatcher)
@@ -17725,36 +17753,42 @@ impl VizApp {
             value: config.coordinator.max_agents.to_string(),
             source: lookup("coordinator.max_agents"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "coordinator.max_coordinators".into(),
             value: config.coordinator.max_coordinators.to_string(),
             source: lookup("coordinator.max_coordinators"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "coordinator.poll_interval".into(),
             value: config.coordinator.poll_interval.to_string(),
             source: lookup("coordinator.poll_interval"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "coordinator.coordinator_agent".into(),
             value: config.coordinator.coordinator_agent.to_string(),
             source: lookup("coordinator.coordinator_agent"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "coordinator.model".into(),
             value: config.coordinator.model.clone().unwrap_or_default(),
             source: lookup("coordinator.model"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "coordinator.agent_timeout".into(),
             value: config.coordinator.agent_timeout.clone(),
             source: lookup("coordinator.agent_timeout"),
             section: "Coordinator",
+            kind: SettingsEntryKind::Config,
         });
 
         // Tiers
@@ -17763,18 +17797,21 @@ impl VizApp {
             value: config.tiers.fast.clone().unwrap_or_default(),
             source: lookup("tiers.fast"),
             section: "Tiers",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "tiers.standard".into(),
             value: config.tiers.standard.clone().unwrap_or_default(),
             source: lookup("tiers.standard"),
             section: "Tiers",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "tiers.premium".into(),
             value: config.tiers.premium.clone().unwrap_or_default(),
             source: lookup("tiers.premium"),
             section: "Tiers",
+            kind: SettingsEntryKind::Config,
         });
 
         // Agency toggles
@@ -17783,25 +17820,112 @@ impl VizApp {
             value: config.agency.auto_evaluate.to_string(),
             source: lookup("agency.auto_evaluate"),
             section: "Agency",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agency.auto_assign".into(),
             value: config.agency.auto_assign.to_string(),
             source: lookup("agency.auto_assign"),
             section: "Agency",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agency.auto_triage".into(),
             value: config.agency.auto_triage.to_string(),
             source: lookup("agency.auto_triage"),
             section: "Agency",
+            kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
             key: "agency.auto_create".into(),
             value: config.agency.auto_create.to_string(),
             source: lookup("agency.auto_create"),
             section: "Agency",
+            kind: SettingsEntryKind::Config,
         });
+
+        // ── Profiles ──
+        // Active and available named profiles from `~/.wg/profiles/`.
+        let active_profile = worksgood::profile::named::active().unwrap_or(None);
+        let installed = worksgood::profile::named::list_installed().unwrap_or_default();
+        let starters = worksgood::profile::named::STARTER_NAMES;
+        // Active profile marker (read-only display).
+        entries.push(SettingsEntry {
+            key: "profile.active".into(),
+            value: active_profile.clone().unwrap_or_else(|| "(none)".into()),
+            source: lookup("profile"),
+            section: "Profiles",
+            kind: SettingsEntryKind::Config,
+        });
+        for name in &installed {
+            let is_active = active_profile.as_deref() == Some(name.as_str());
+            entries.push(SettingsEntry {
+                key: format!("profile.use {}", name),
+                value: if is_active { "✦ active".into() } else { "installed".into() },
+                source: worksgood::config::ConfigSource::Global,
+                section: "Profiles",
+                kind: SettingsEntryKind::Profile {
+                    name: name.clone(),
+                    is_active,
+                },
+            });
+        }
+        for name in starters {
+            if !installed.iter().any(|i| i == *name) {
+                entries.push(SettingsEntry {
+                    key: format!("profile.use {}", name),
+                    value: "starter (not installed)".into(),
+                    source: worksgood::config::ConfigSource::Default,
+                    section: "Profiles",
+                    kind: SettingsEntryKind::Profile {
+                        name: (*name).to_string(),
+                        is_active: false,
+                    },
+                });
+            }
+        }
+
+        // ── Endpoints ──
+        // Configured LLM endpoints (executor defaults / model routes).
+        for ep in &config.llm_endpoints.endpoints {
+            entries.push(SettingsEntry {
+                key: format!("endpoint.{}", ep.name),
+                value: format!("{} [{}]", ep.url.as_deref().unwrap_or("(no url)"), ep.provider),
+                source: lookup("llm_endpoints"),
+                section: "Endpoints",
+                kind: SettingsEntryKind::Endpoint {
+                    name: ep.name.clone(),
+                    url: ep.url.clone().unwrap_or_default(),
+                    provider: ep.provider.clone(),
+                    is_default: ep.is_default,
+                },
+            });
+        }
+
+        // ── Recent Launcher Routes ──
+        // Recent (executor, model, endpoint) combos from launcher history.
+        if let Ok(recents) = worksgood::launcher_history::recent_combos(15) {
+            for entry in &recents {
+                let model = entry.model.as_deref().unwrap_or("(default)");
+                let endpoint = entry.endpoint.as_deref().unwrap_or("");
+                let value = if endpoint.is_empty() {
+                    format!("{} → {}", entry.executor, model)
+                } else {
+                    format!("{} → {} @ {}", entry.executor, model, endpoint)
+                };
+                entries.push(SettingsEntry {
+                    key: format!("recent.{}", entry.executor),
+                    value,
+                    source: worksgood::config::ConfigSource::Global,
+                    section: "Recent Routes",
+                    kind: SettingsEntryKind::RecentRoute {
+                        executor: entry.executor.clone(),
+                        model: entry.model.clone(),
+                        endpoint: entry.endpoint.clone(),
+                    },
+                });
+            }
+        }
 
         // Reset selection if it became out of bounds (e.g. fresh load).
         if self.settings_panel.selected >= entries.len() {
@@ -17870,6 +17994,60 @@ impl VizApp {
             "Edit scope: {}",
             self.settings_panel.edit_scope.label()
         ));
+    }
+
+    /// Activate the selected profile row. Calls `wg profile use <name>` via
+    /// the canonical CLI command (single source of truth for profile
+    /// activation). Reloads the settings panel afterward so the active
+    /// marker reflects the change.
+    pub fn activate_selected_profile(&mut self) {
+        let idx = self.settings_panel.selected;
+        if idx >= self.settings_panel.entries.len() {
+            return;
+        }
+        let name = match &self.settings_panel.entries[idx].kind {
+            SettingsEntryKind::Profile { name, .. } => name.clone(),
+            _ => return,
+        };
+        let exe =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
+        let result = std::process::Command::new(&exe)
+            .arg("profile")
+            .arg("use")
+            .arg(&name)
+            .arg("--no-reload")
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                self.settings_panel.notice =
+                    Some(format!("Activated profile: {}", name));
+                self.load_settings_panel();
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                self.settings_panel.last_error =
+                    Some(format!("profile use {} failed: {}", name, stderr.trim()));
+            }
+            Err(e) => {
+                self.settings_panel.last_error =
+                    Some(format!("Failed to run wg profile use: {}", e));
+            }
+        }
+    }
+
+    /// Clear all launcher history entries. Removes the JSONL file entirely.
+    pub fn clear_launcher_history(&mut self) {
+        match worksgood::launcher_history::clear_history() {
+            Ok(()) => {
+                self.settings_panel.notice =
+                    Some("Cleared launcher history".to_string());
+                self.load_settings_panel();
+            }
+            Err(e) => {
+                self.settings_panel.last_error =
+                    Some(format!("Failed to clear history: {}", e));
+            }
+        }
     }
 
     /// Run `wg config lint` and surface the result inline in the panel.
