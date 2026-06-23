@@ -1003,6 +1003,9 @@ fn handle_paste(app: &mut VizApp, text: &str) {
                     LauncherSection::AddNew(AddNewField::Name) => {
                         launcher.name.push_str(&clean);
                     }
+                    LauncherSection::PresetModel(_) => {
+                        launcher.preset_model_edit.push_str(&clean);
+                    }
                     // Defaults radio + AddNew Executor radio have no
                     // text field; drop the paste rather than silently
                     // mangle the selection.
@@ -1678,6 +1681,45 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
     // Section-specific dispatch. Each branch returns at the end so the
     // generic fallthrough at the bottom handles only un-claimed keys.
     match launcher.active_section.clone() {
+        LauncherSection::PresetModel(idx) => match code {
+            KeyCode::Up => {
+                launcher.move_preset_model_suggestion(-1);
+            }
+            KeyCode::Down => {
+                launcher.move_preset_model_suggestion(1);
+            }
+            KeyCode::Enter => {
+                launcher.accept_preset_model_suggestion();
+                app.launch_from_launcher();
+            }
+            KeyCode::Esc => {
+                launcher.cancel_preset_model_edit();
+            }
+            KeyCode::Tab => {
+                // Commit and advance to Name.
+                launcher.commit_preset_model_edit();
+                launcher.next_section();
+            }
+            KeyCode::Char('m')
+                if !modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                // 'm' on a preset row enters the inline model editor;
+                // while editing it's a literal char.
+                launcher.preset_model_edit.push('m');
+                launcher.preset_model_suggestion_selected = 0;
+            }
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
+            {
+                launcher.preset_model_edit.push(c);
+                launcher.preset_model_suggestion_selected = 0;
+            }
+            KeyCode::Backspace => {
+                launcher.preset_model_edit.pop();
+                launcher.preset_model_suggestion_selected = 0;
+            }
+            _ => {}
+        },
         LauncherSection::Defaults => match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if launcher.default_selected > 0 {
@@ -1688,6 +1730,14 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 let max = launcher.presets.len(); // last index is "+ Add new"
                 if launcher.default_selected < max {
                     launcher.default_selected += 1;
+                }
+            }
+            KeyCode::Char('m') if !modifiers.contains(KeyModifiers::CONTROL) => {
+                // Enter inline model edit for the highlighted preset.
+                // This is the first-class way to change a Pi preset's
+                // model without drilling into Add new.
+                if launcher.default_selected < launcher.presets.len() {
+                    launcher.enter_preset_model_edit(launcher.default_selected);
                 }
             }
             KeyCode::Enter => {

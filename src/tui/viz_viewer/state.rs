@@ -1121,12 +1121,22 @@ pub enum AddNewField {
 
 /// Which section of the launcher pane has keyboard focus.
 ///
-/// Default mode focuses either the radio of presets or the optional
-/// Name field. Add-new mode focuses one of the AddNew form fields.
+/// Default mode focuses either the radio of presets, the optional
+/// Name field, or the inline Model editor for the highlighted preset
+/// ([`LauncherSection::PresetModel`]) — surfaced for the Pi preset (and any
+/// preset whose model is not a hard-coded constant) so the user can see and
+/// change the model without drilling into Add new. Add-new mode focuses one
+/// of the AddNew form fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LauncherSection {
     /// Default-mode radio: select a preset combo or "+ Add new..."
     Defaults,
+    /// Inline model editor for the highlighted preset. Surfaced in Default
+    /// mode so Pi (and any other preset with a configurable model) is
+    /// first-class: the user picks the preset then edits its model in place
+    /// rather than navigating the two-page Add-new flow. Holds the preset
+    /// index being edited so the renderer and event handler agree.
+    PresetModel(usize),
     /// Optional chat name field (shown in both modes).
     Name,
     /// Add-new mode: focused on one of the AddNew form fields.
@@ -1633,6 +1643,21 @@ pub struct LauncherState {
     /// `presets.len()` when "+ Add new..." is highlighted.
     pub default_selected: usize,
 
+    // ── Inline preset-model editor (Default mode) ──
+    /// When the user enters the inline model editor for a preset
+    /// ([`LauncherSection::PresetModel`]), the working text is held here so
+    /// edits don't mutate `presets[i].model` until accepted. Mirrors
+    /// `add_model` from Add-new mode.
+    pub preset_model_edit: String,
+    /// Model fuzzy-autocomplete suggestions surfaced while editing a
+    /// preset's model inline. Populated from the same source as
+    /// `model_suggestions` but filtered for the preset's executor at
+    /// render time.
+    pub preset_model_suggestions: Vec<ModelSuggestion>,
+    /// Highlighted row within the filtered preset-model suggestion list
+    /// (see [`LauncherState::filtered_preset_model_suggestions`]).
+    pub preset_model_suggestion_selected: usize,
+
     // ── Add-new-mode state ──
     /// Index into `ADD_NEW_EXECUTOR_CHOICES`.
     pub add_executor_idx: usize,
@@ -1871,9 +1896,13 @@ fn executor_model_boost(provider: &str, executor: &str) -> i64 {
 }
 
 impl LauncherState {
-    /// Built-in default presets shown in Default mode. Two combos:
-    /// codex:gpt-5.5 and claude:opus. Order is significant — the
-    /// initially-selected row is index 0 (codex per spec).
+    /// Built-in default presets shown in Default mode. Three first-class
+    /// executor choices: codex, claude, and pi — all surfaced on the first
+    /// page without drilling into Add new. The codex/claude models are
+    /// conventional constants; the Pi model is intentionally `String::new()`
+    /// and resolved at launcher-open time by [`Self::presets_with_pi_model`]
+    /// from the last-used / config-default Pi model (never a hard-coded
+    /// constant), so selecting Pi never silently pins a model.
     pub fn default_presets() -> Vec<LauncherPreset> {
         vec![
             LauncherPreset {
@@ -1888,7 +1917,73 @@ impl LauncherState {
                 label: "claude:opus".to_string(),
                 description: "Claude CLI (Opus)".to_string(),
             },
+            LauncherPreset {
+                executor: "pi".to_string(),
+                model: String::new(),
+                label: "pi".to_string(),
+                description: "Pi (pi.dev) — model from last-used/config".to_string(),
+            },
         ]
+    }
+
+    /// Resolve the Pi model for the launcher from state, in priority order:
+    /// 1. Most recent `pi` executor entry in launcher history (LRU)
+    /// 2. Config `[coordinator].model` when the effective executor is `pi`
+    /// 3. `None` (launcher shows "— set model —" and the user must set one)
+    ///
+    /// Never returns a hard-coded constant — the model always comes from
+    /// current/default/last-used state.
+    pub fn resolve_pi_model(
+        config: &worksgood::config::Config,
+        workgraph_dir: &std::path::Path,
+    ) -> Option<String> {
+        // 1. Last-used Pi model from launcher history (LRU).
+        if let Ok(combos) = worksgood::launcher_history::recent_combos(50) {
+            for entry in &combos {
+                if entry.executor == "pi" {
+                    if let Some(m) = &entry.model {
+                        if !m.is_empty() {
+                            return Some(m.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Config default when the effective executor is pi.
+        let effective = config.coordinator.effective_executor();
+        if effective == "pi" {
+            if let Some(m) = config.coordinator.model.as_ref() {
+                if !m.is_empty() {
+                    return Some(m.clone());
+                }
+            }
+        }
+        // 3. Per-chat override for coordinator 0 (unlikely but cheap).
+        let _ = workgraph_dir; // suppress unused warning in test builds
+        None
+    }
+
+    /// Build the default presets with the Pi model resolved from
+    /// last-used/config state. Returns the same vec as
+    /// [`default_presets`] but with the Pi preset's `model`/`label`/
+    /// `description` filled in when a model is available.
+    pub fn presets_with_pi_model(
+        config: &worksgood::config::Config,
+        workgraph_dir: &std::path::Path,
+    ) -> Vec<LauncherPreset> {
+        let mut presets = Self::default_presets();
+        if let Some(pi_idx) = presets.iter().position(|p| p.executor == "pi") {
+            if let Some(model) = Self::resolve_pi_model(config, workgraph_dir) {
+                presets[pi_idx].model = model.clone();
+                presets[pi_idx].label = format!("pi:{}", model);
+                presets[pi_idx].description =
+                    format!("Pi (pi.dev) — {}", model);
+            } else {
+                presets[pi_idx].description =
+                    "Pi (pi.dev) — press m to set model".to_string();
+            }
+        }
+        presets
     }
 
     /// True when the highlighted Default-mode row is "+ Add new...".
@@ -2178,6 +2273,153 @@ impl LauncherState {
         self.active_section = LauncherSection::AddNew(AddNewField::Executor);
     }
 
+    /// Enter the inline model editor for preset `idx` in Default mode. Copies
+    /// the preset's current model into the working text so edits don't
+    /// mutate the preset until committed. No-op (returns) when `idx` is out
+    /// of range. This is the first-class entry to changing a Pi preset's
+    /// model without drilling into Add new.
+    pub fn enter_preset_model_edit(&mut self, idx: usize) {
+        let Some(preset) = self.presets.get(idx) else {
+            return;
+        };
+        self.preset_model_edit = preset.model.clone();
+        self.preset_model_suggestion_selected = 0;
+        self.active_section = LauncherSection::PresetModel(idx);
+    }
+
+    /// Cancel the inline model edit, restoring focus to the preset radio
+    /// without writing the working text back to the preset.
+    pub fn cancel_preset_model_edit(&mut self) {
+        self.preset_model_edit.clear();
+        self.preset_model_suggestion_selected = 0;
+        self.active_section = LauncherSection::Defaults;
+    }
+
+    /// Commit the inline model edit: write the working text back to the
+    /// preset's `model` field and return focus to the preset radio. Returns
+    /// the committed model string for convenience.
+    pub fn commit_preset_model_edit(&mut self) -> Option<String> {
+        if let LauncherSection::PresetModel(idx) = self.active_section {
+            let text = self.preset_model_edit.trim().to_string();
+            if let Some(preset) = self.presets.get_mut(idx) {
+                if !text.is_empty() {
+                    preset.model = text.clone();
+                    // Also update the label to reflect the new model so the
+                    // radio shows what will actually launch.
+                    preset.label = format!("{}:{}", preset.executor, text);
+                }
+            }
+            self.preset_model_edit.clear();
+            self.preset_model_suggestion_selected = 0;
+            self.active_section = LauncherSection::Defaults;
+            Some(
+                self.presets
+                    .get(idx)
+                    .map(|p| p.model.clone())
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// True when the inline preset-model edit is active.
+    pub fn is_editing_preset_model(&self) -> bool {
+        matches!(self.active_section, LauncherSection::PresetModel(_))
+    }
+
+    /// The preset index whose model is being inline-edited, if any.
+    pub fn editing_preset_idx(&self) -> Option<usize> {
+        match self.active_section {
+            LauncherSection::PresetModel(idx) => Some(idx),
+            _ => None,
+        }
+    }
+
+    /// Filtered model suggestions for the inline preset-model editor. Uses
+    /// the same fuzzy ranking as Add-new mode but scoped to the preset's
+    /// executor. Empty when not editing or the text is an explicit spec.
+    pub fn filtered_preset_model_suggestions(&self) -> Vec<ModelSuggestion> {
+        let idx = match self.active_section {
+            LauncherSection::PresetModel(i) => i,
+            _ => return Vec::new(),
+        };
+        let preset = match self.presets.get(idx) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let executor = preset.executor.as_str();
+        // Suppress suggestions when the typed text is already an explicit
+        // spec (mirrors Add-new's model_input_is_explicit_spec).
+        let t = self.preset_model_edit.trim();
+        if !t.is_empty() && (t.contains('/') || t.split_once(':').is_some_and(|(p, _)| worksgood::config::KNOWN_PROVIDERS.contains(&p))) {
+            return Vec::new();
+        }
+        let mut scored: Vec<(i64, usize, ModelSuggestion)> = self
+            .model_suggestions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let hay = format!("{} {} {}", s.id, s.provider, s.source);
+                let base = fuzzy_match_score(&hay, t)?;
+                Some((
+                    base + executor_model_boost(&s.provider, executor),
+                    i,
+                    s.clone(),
+                ))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, s)| s).collect()
+    }
+
+    /// The currently-highlighted preset-model suggestion, clamped.
+    pub fn highlighted_preset_model_suggestion(&self) -> Option<ModelSuggestion> {
+        let filtered = self.filtered_preset_model_suggestions();
+        if filtered.is_empty() {
+            return None;
+        }
+        let idx = self
+            .preset_model_suggestion_selected
+            .min(filtered.len().saturating_sub(1));
+        filtered.get(idx).cloned()
+    }
+
+    /// Move the preset-model suggestion highlight by `delta` rows.
+    pub fn move_preset_model_suggestion(&mut self, delta: isize) {
+        let len = self.filtered_preset_model_suggestions().len();
+        if len == 0 {
+            self.preset_model_suggestion_selected = 0;
+            return;
+        }
+        let cur = self.preset_model_suggestion_selected.min(len.saturating_sub(1)) as isize;
+        let next = (cur + delta).clamp(0, len as isize - 1);
+        self.preset_model_suggestion_selected = next as usize;
+    }
+
+    /// Accept the highlighted preset-model suggestion: normalize it for the
+    /// preset's executor and write it into the working text. Returns `true`
+    /// when a suggestion was accepted.
+    pub fn accept_preset_model_suggestion(&mut self) -> bool {
+        let idx = match self.active_section {
+            LauncherSection::PresetModel(i) => i,
+            _ => return false,
+        };
+        let executor = self
+            .presets
+            .get(idx)
+            .map(|p| p.executor.clone())
+            .unwrap_or_default();
+        match self.highlighted_preset_model_suggestion() {
+            Some(sug) => {
+                self.preset_model_edit =
+                    normalize_model_for_executor(&sug.id, &sug.provider, &executor);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Cycle to the next form field. Default mode toggles between the
     /// preset radio and the Name field. Add-new mode walks
     /// Executor → Model → [Endpoint when nex] → Name → Executor.
@@ -2185,6 +2427,9 @@ impl LauncherState {
         self.active_section = match (&self.mode, &self.active_section) {
             (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
             (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
+            (LauncherMode::Default, LauncherSection::PresetModel(_)) => {
+                LauncherSection::Defaults
+            }
             (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
             (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
                 LauncherSection::AddNew(AddNewField::Model)
@@ -2226,6 +2471,9 @@ impl LauncherState {
         self.active_section = match (&self.mode, &self.active_section) {
             (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
             (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
+            (LauncherMode::Default, LauncherSection::PresetModel(_)) => {
+                LauncherSection::Defaults
+            }
             (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
             (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
                 LauncherSection::AddNew(AddNewField::Name)
@@ -2257,6 +2505,12 @@ impl LauncherState {
         match self.mode {
             LauncherMode::Default => {
                 let preset = self.presets.get(self.default_selected)?;
+                // A preset with an empty model (e.g. Pi before the user sets
+                // one) cannot launch — the caller surfaces this as an error
+                // so the user is directed to set a model first.
+                if preset.model.is_empty() {
+                    return None;
+                }
                 Some((preset.executor.clone(), Some(preset.model.clone()), None))
             }
             LauncherMode::AddNew => {
@@ -15476,12 +15730,15 @@ impl VizApp {
             mode: LauncherMode::Default,
             active_section: LauncherSection::Defaults,
             name: String::new(),
-            presets: LauncherState::default_presets(),
+            presets: LauncherState::presets_with_pi_model(&config, &self.workgraph_dir),
             default_selected: 0,
             add_executor_idx: 0,
             add_model: String::new(),
             model_suggestions,
             model_suggestion_selected: 0,
+            preset_model_edit: String::new(),
+            preset_model_suggestions: Vec::new(),
+            preset_model_suggestion_selected: 0,
             add_endpoint: String::new(),
             endpoint_suggestions,
             endpoint_suggestion_selected,
