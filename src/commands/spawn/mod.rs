@@ -47,8 +47,12 @@ pub struct SpawnResult {
     pub model: Option<String>,
 }
 
-/// Parse a timeout duration string like "30m", "1h", "90s" into seconds.
+/// Parse a timeout duration string like "30m", "1h", "90s", "1d" into seconds.
 /// Returns the number of seconds as a u64.
+///
+/// Supports the same unit set as `graph::parse_delay` (s/m/h/d), which is what
+/// `wg add --timeout` validates against — keeping the two in parity so a value
+/// accepted at add-time (e.g. `1d`) is not later rejected on the spawn path.
 fn parse_timeout_secs(timeout_str: &str) -> Result<u64> {
     let timeout_str = timeout_str.trim();
     if timeout_str.is_empty() {
@@ -61,6 +65,8 @@ fn parse_timeout_secs(timeout_str: &str) -> Result<u64> {
         (s, "m")
     } else if let Some(s) = timeout_str.strip_suffix('h') {
         (s, "h")
+    } else if let Some(s) = timeout_str.strip_suffix('d') {
+        (s, "d")
     } else {
         // Default to seconds if no unit
         (timeout_str, "s")
@@ -72,13 +78,14 @@ fn parse_timeout_secs(timeout_str: &str) -> Result<u64> {
         "s" => num,
         "m" => num * 60,
         "h" => num * 3600,
+        "d" => num * 86400,
         _ => num,
     };
 
     Ok(secs)
 }
 
-/// Parse a timeout duration string like "30m", "1h", "90s"
+/// Parse a timeout duration string like "30m", "1h", "90s", "1d"
 #[cfg(test)]
 fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
     let timeout_str = timeout_str.trim();
@@ -92,6 +99,8 @@ fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
         (s, "m")
     } else if let Some(s) = timeout_str.strip_suffix('h') {
         (s, "h")
+    } else if let Some(s) = timeout_str.strip_suffix('d') {
+        (s, "d")
     } else {
         // Default to seconds if no unit
         (timeout_str, "s")
@@ -103,6 +112,7 @@ fn parse_timeout(timeout_str: &str) -> Result<std::time::Duration> {
         "s" => num,
         "m" => num * 60,
         "h" => num * 3600,
+        "d" => num * 86400,
         _ => num,
     };
 
@@ -373,6 +383,12 @@ mod tests {
     fn test_parse_timeout_hours() {
         let dur = parse_timeout("2h").unwrap();
         assert_eq!(dur, std::time::Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn test_parse_timeout_days() {
+        let dur = parse_timeout("1d").unwrap();
+        assert_eq!(dur, std::time::Duration::from_secs(86400));
     }
 
     #[test]
@@ -756,6 +772,25 @@ args = ["-lc", "true"]
     }
 
     #[test]
+    fn test_parse_timeout_secs_days() {
+        // Regression: `wg add --timeout 1d` was accepted at add-time but the
+        // spawn path rejected `1d` ("Invalid task timeout value") because the
+        // 'd' unit was missing here. See task fix-wg-add.
+        assert_eq!(parse_timeout_secs("1d").unwrap(), 86400);
+        assert_eq!(parse_timeout_secs("2d").unwrap(), 172800);
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_day_equals_24h() {
+        // `1d` and `24h` must resolve to the same number of seconds so users
+        // no longer have to rewrite `1d` -> `24h` to unwedge a task.
+        assert_eq!(
+            parse_timeout_secs("1d").unwrap(),
+            parse_timeout_secs("24h").unwrap()
+        );
+    }
+
+    #[test]
     fn test_parse_timeout_secs_no_unit() {
         assert_eq!(parse_timeout_secs("120").unwrap(), 120);
     }
@@ -763,6 +798,21 @@ args = ["-lc", "true"]
     #[test]
     fn test_parse_timeout_secs_empty_fails() {
         assert!(parse_timeout_secs("").is_err());
+    }
+
+    #[test]
+    fn test_parse_timeout_secs_matches_parse_delay_units() {
+        // The spawn path (parse_timeout_secs) and `wg add --timeout`
+        // (graph::parse_delay) must accept exactly the same suffixed unit
+        // set: s/m/h/d. (The bare-number = seconds fallback is intentionally
+        // spawn-path-only; parse_delay rejects unit-less input.)
+        for input in ["45s", "30m", "2h", "1d"] {
+            assert_eq!(
+                parse_timeout_secs(input).unwrap(),
+                worksgood::graph::parse_delay(input).unwrap(),
+                "unit mismatch for input {input:?}"
+            );
+        }
     }
 
     #[test]
