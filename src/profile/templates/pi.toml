@@ -1,43 +1,67 @@
-description = "Pi Coding Agent: openrouter/anthropic/claude-3.5-haiku workers, claude-sonnet-4 premium tier, claude:haiku for agency meta-tasks"
+description = "Pi Coding Agent: GLM 5.2 workers/chat via OpenRouter, DeepSeek Chat for agency/meta checks"
 
-# Pi routes for worker/chat roles. The verified-working default is
-# `pi:openrouter/anthropic/claude-3.5-haiku` (the only id confirmed live in the
-# prior pi-as-executor evals); the `premium` tier escalates to claude-sonnet-4
-# for complex-reasoning / verification spawns (WG_TIER=premium).
+# Pi routes for worker/chat roles. The default and task-agent route use GLM 5.2
+# through Pi's OpenRouter provider:
+#
+#   pi:openrouter/z-ai/glm-5.2
+#
+# The agency/meta roles below are intentionally explicit OpenRouter routes, not
+# `pi:` routes. They are short one-shot checks (assign/evaluate/flip/triage/etc.)
+# and do not need Pi's interactive handler; the native OpenRouter path is faster
+# and cheaper for this traffic.
 
 [agent]
-model = "pi:openrouter/anthropic/claude-3.5-haiku"
+model = "pi:openrouter/z-ai/glm-5.2"
 
 [dispatcher]
-model = "pi:openrouter/anthropic/claude-3.5-haiku"
+model = "pi:openrouter/z-ai/glm-5.2"
 max_agents = 8
 
 [tiers]
-fast = "pi:openrouter/anthropic/claude-3.5-haiku"
-standard = "pi:openrouter/anthropic/claude-3.5-haiku"
-premium = "pi:openrouter/anthropic/claude-sonnet-4"
+fast = "openrouter:deepseek/deepseek-chat"
+standard = "pi:openrouter/z-ai/glm-5.2"
+premium = "pi:openrouter/z-ai/glm-5.2"
 
 [models.default]
-model = "pi:openrouter/anthropic/claude-3.5-haiku"
+model = "pi:openrouter/z-ai/glm-5.2"
 
 [models.task_agent]
-model = "pi:openrouter/anthropic/claude-3.5-haiku"
+model = "pi:openrouter/z-ai/glm-5.2"
 
-# NOTE: agency tasks (.evaluate-*, .flip-*, .assign-*) are short one-shot LLM
-# calls pinned to claude:haiku by design (see CLAUDE.md "Agency tasks run on
-# claude CLI"). Pi is a worker/chat external handler and does NOT serve the
-# agency one-shot path, so these roles stay on the claude CLI handler.
+# Agency/meta one-shot roles. Explicit per-role overrides win over the default
+# claude:haiku agency pin, so these route through the native OpenRouter handler.
 [models.evaluator]
-model = "claude:haiku"
+model = "openrouter:deepseek/deepseek-chat"
 
 [models.assigner]
-model = "claude:haiku"
+model = "openrouter:deepseek/deepseek-chat"
 
 [models.flip_inference]
-model = "claude:haiku"
+model = "openrouter:deepseek/deepseek-chat"
 
 [models.flip_comparison]
-model = "claude:haiku"
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.verification]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.triage]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.placer]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.creator]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.evolver]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.compactor]
+model = "openrouter:deepseek/deepseek-chat"
+
+[models.chat_compactor]
+model = "openrouter:deepseek/deepseek-chat"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLUGIN INSTALL / PLACEMENT (wg-pi-plugin)

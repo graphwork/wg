@@ -746,20 +746,19 @@ is_default = true
     }
 
     #[test]
-    fn test_pi_starter_has_pi_worker_and_claude_agency_models() {
-        // The pi starter pins worker roles to pi: routes while keeping the
-        // agency one-shot roles on claude:haiku, per CLAUDE.md "Agency tasks
-        // run on claude CLI" — pi is a worker/chat external handler and does
-        // not serve the agency one-shot path. Models mirror opencode.toml.
+    fn test_pi_starter_has_glm_workers_and_deepseek_agency_models() {
+        // The pi starter pins worker/chat roles to Pi + OpenRouter GLM 5.2,
+        // while all agency/meta one-shot roles use a cheaper native OpenRouter
+        // DeepSeek route. The agency roles deliberately avoid `pi:` because
+        // these are short, non-interactive calls.
         let prof = parse_profile(STARTER_PI, Path::new("pi.toml"), "pi").unwrap();
-        let worker = "pi:openrouter/anthropic/claude-3.5-haiku";
-        let premium = "pi:openrouter/anthropic/claude-sonnet-4";
+        let worker = "pi:openrouter/z-ai/glm-5.2";
+        let agency = "openrouter:deepseek/deepseek-chat";
         assert_eq!(prof.config.agent.model, worker);
         assert_eq!(prof.config.coordinator.model.as_deref(), Some(worker));
-        assert_eq!(prof.config.tiers.fast.as_deref(), Some(worker));
+        assert_eq!(prof.config.tiers.fast.as_deref(), Some(agency));
         assert_eq!(prof.config.tiers.standard.as_deref(), Some(worker));
-        // Premium tier escalates to the sonnet-4 route.
-        assert_eq!(prof.config.tiers.premium.as_deref(), Some(premium));
+        assert_eq!(prof.config.tiers.premium.as_deref(), Some(worker));
         assert_eq!(
             prof.config
                 .models
@@ -776,18 +775,25 @@ is_default = true
                 .and_then(|m| m.model.as_deref()),
             Some(worker)
         );
-        // Agency meta-roles stay on claude:haiku — pi is worker-only and does
-        // not serve the agency one-shot LLM path.
-        for role in [
+
+        let meta_roles = [
             prof.config.models.evaluator.as_ref(),
             prof.config.models.assigner.as_ref(),
             prof.config.models.flip_inference.as_ref(),
             prof.config.models.flip_comparison.as_ref(),
-        ] {
+            prof.config.models.verification.as_ref(),
+            prof.config.models.triage.as_ref(),
+            prof.config.models.placer.as_ref(),
+            prof.config.models.creator.as_ref(),
+            prof.config.models.evolver.as_ref(),
+            prof.config.models.compactor.as_ref(),
+            prof.config.models.chat_compactor.as_ref(),
+        ];
+        for role in meta_roles {
             assert_eq!(
                 role.and_then(|m| m.model.as_deref()),
-                Some("claude:haiku"),
-                "all agency meta-roles must be pinned to claude:haiku"
+                Some(agency),
+                "all pi profile agency/meta roles must be pinned to DeepSeek"
             );
         }
     }
