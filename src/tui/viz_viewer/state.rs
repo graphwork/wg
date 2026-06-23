@@ -27308,24 +27308,25 @@ mod launcher_redesign_tests {
         }
     }
 
-    /// Index of an executor choice by label. Referenced instead of a
-    /// hard-coded index so inserting a new executor (e.g. `pi` at idx 2) never
-    /// silently retargets these tests — only the pinned core (claude=0,
-    /// codex=1, pi=2) is safe to reference positionally; nex/opencode are
-    /// "shiftable" and move when external CLIs are added.
-    fn executor_idx(label: &str) -> usize {
+    /// Resolve an executor's radio index by label instead of hardcoding a
+    /// magic number. Inserting a new executor (e.g. `pi`) shifts every index
+    /// after it; looking the index up by label keeps these tests robust
+    /// against that — the exact regression that produced this test cluster.
+    fn exec_idx(label: &str) -> usize {
         ADD_NEW_EXECUTOR_CHOICES
             .iter()
             .position(|c| c.label == label)
-            .unwrap_or_else(|| panic!("executor choice {label} exists"))
+            .unwrap_or_else(|| panic!("executor choice {label:?} not in ADD_NEW_EXECUTOR_CHOICES"))
     }
 
     #[test]
     fn default_presets_are_codex_then_claude() {
         let presets = LauncherState::default_presets();
-        // Three preset rows: codex, claude, then the Pi/model-picker preset
-        // (its model is resolved from last-used/config by presets_with_pi_model).
-        assert_eq!(presets.len(), 3, "three preset rows in default state");
+        assert_eq!(
+            presets.len(),
+            3,
+            "codex and claude, then the pi preset (make-pi-a)"
+        );
         assert_eq!(presets[0].executor, "codex");
         assert_eq!(presets[0].model, "codex:gpt-5.5");
         assert_eq!(presets[1].executor, "claude");
@@ -27380,19 +27381,47 @@ mod launcher_redesign_tests {
     fn add_new_show_endpoint_only_for_nex() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        // Every executor EXCEPT nex hides the endpoint field: claude & codex
-        // auth themselves; pi / opencode / octomind / dexto are OpenRouter-first
-        // (the model route selects the provider, so there is no endpoint to set).
-        for label in ["claude", "codex", "pi", "opencode", "octomind", "dexto"] {
-            state.add_executor_idx = executor_idx(label);
-            assert!(
-                !state.add_new_show_endpoint(),
-                "{label} must never show an endpoint field"
-            );
-        }
-        // Only nex (the in-process native handler) needs an explicit endpoint.
-        state.add_executor_idx = executor_idx("nex");
+        // claude (idx 0)
+        state.add_executor_idx = 0;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "claude must never show an endpoint field"
+        );
+        // codex (idx 1)
+        state.add_executor_idx = 1;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "codex must never show an endpoint field"
+        );
+        // opencode
+        state.add_executor_idx = exec_idx("opencode");
+        assert!(
+            !state.add_new_show_endpoint(),
+            "opencode must never show an endpoint field"
+        );
+        // nex
+        state.add_executor_idx = exec_idx("nex");
         assert!(state.add_new_show_endpoint());
+        // octomind / dexto are OpenRouter-first (model route selects the
+        // provider) → no endpoint field, like opencode.
+        let octomind_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "octomind")
+            .unwrap();
+        state.add_executor_idx = octomind_idx;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "octomind must never show an endpoint field"
+        );
+        let dexto_idx = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == "dexto")
+            .unwrap();
+        state.add_executor_idx = dexto_idx;
+        assert!(
+            !state.add_new_show_endpoint(),
+            "dexto must never show an endpoint field"
+        );
     }
 
     #[test]
@@ -27437,7 +27466,7 @@ mod launcher_redesign_tests {
         // default injected.
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = executor_idx("nex");
+        state.add_executor_idx = exec_idx("nex");
         state.add_model = "minimax/minimax-m3".into();
         state.add_endpoint = "".into(); // blank — first-class option
         let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
@@ -27454,7 +27483,7 @@ mod launcher_redesign_tests {
     fn add_new_with_nex_resolves_with_endpoint() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = executor_idx("nex");
+        state.add_executor_idx = exec_idx("nex");
         state.add_model = "qwen3-coder".into();
         state.add_endpoint = "https://lambda01.tail334fe6.ts.net:30000".into();
         let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
@@ -27516,7 +27545,7 @@ mod launcher_redesign_tests {
     fn add_new_with_opencode_resolves_without_endpoint() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = executor_idx("opencode");
+        state.add_executor_idx = exec_idx("opencode");
         state.add_model = "opencode:openrouter/stepfun/step-3.7-flash".into();
         let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
         assert_eq!(executor, "opencode");
@@ -27591,7 +27620,7 @@ mod launcher_redesign_tests {
     fn next_section_add_new_includes_endpoint_for_nex() {
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = executor_idx("nex");
+        state.add_executor_idx = exec_idx("nex");
         state.active_section = LauncherSection::AddNew(AddNewField::Model);
         state.next_section();
         assert_eq!(
@@ -27610,14 +27639,13 @@ mod launcher_endpoint_autocomplete_tests {
     };
     use worksgood::config::{Config, EndpointConfig};
 
-    /// Index of the nex executor choice, looked up by label so it tracks
-    /// reorderings of `ADD_NEW_EXECUTOR_CHOICES` (nex is shiftable — it moved
-    /// from idx 3 to idx 4 when `pi`/`opencode` were inserted ahead of it).
-    fn nex_idx() -> usize {
+    /// Resolve an executor's radio index by label (robust to executor
+    /// insertions that shift the numeric indices — see launcher_redesign_tests).
+    fn exec_idx(label: &str) -> usize {
         ADD_NEW_EXECUTOR_CHOICES
             .iter()
-            .position(|c| c.label == "nex")
-            .expect("nex executor choice exists")
+            .position(|c| c.label == label)
+            .unwrap_or_else(|| panic!("executor choice {label:?} not in ADD_NEW_EXECUTOR_CHOICES"))
     }
 
     fn ep(name: &str, url: Option<&str>, provider: &str, is_default: bool) -> EndpointSuggestion {
@@ -27658,7 +27686,7 @@ mod launcher_endpoint_autocomplete_tests {
             name: String::new(),
             presets: LauncherState::default_presets(),
             default_selected: 0,
-            add_executor_idx: nex_idx(),
+            add_executor_idx: exec_idx("nex"),
             add_model: "qwen3-coder".into(),
             model_suggestions: Vec::new(),
             model_suggestion_selected: 0,
@@ -28032,11 +28060,20 @@ mod launcher_endpoint_autocomplete_tests {
 #[cfg(test)]
 mod launcher_model_autocomplete_tests {
     use super::{
-        AddNewField, LauncherMode, LauncherSection, LauncherState, ModelSuggestion,
-        build_model_suggestions, fuzzy_match_score, normalize_model_for_executor,
+        ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection, LauncherState,
+        ModelSuggestion, build_model_suggestions, fuzzy_match_score, normalize_model_for_executor,
     };
     use worksgood::config::{Config, EndpointConfig};
     use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
+
+    /// Resolve an executor's radio index by label (robust to executor
+    /// insertions that shift the numeric indices — see launcher_redesign_tests).
+    fn exec_idx(label: &str) -> usize {
+        ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .position(|c| c.label == label)
+            .unwrap_or_else(|| panic!("executor choice {label:?} not in ADD_NEW_EXECUTOR_CHOICES"))
+    }
 
     fn sug(id: &str, provider: &str, source: &str) -> ModelSuggestion {
         ModelSuggestion {
@@ -28070,20 +28107,13 @@ mod launcher_model_autocomplete_tests {
         }
     }
 
-    // Executor indices looked up by label so inserting a new executor (e.g.
-    // `pi` at idx 2) never silently retargets these tests. Current order:
-    // 0=claude, 1=codex, 2=pi, 3=opencode, 4=nex.
-    fn opencode_idx() -> usize {
-        super::ADD_NEW_EXECUTOR_CHOICES
-            .iter()
-            .position(|c| c.label == "opencode")
-            .expect("opencode executor choice exists")
+    // Executor radio indices, resolved by label so an inserted executor
+    // (e.g. `pi`) can't silently retarget these tests.
+    fn opencode() -> usize {
+        exec_idx("opencode")
     }
-    fn nex_idx() -> usize {
-        super::ADD_NEW_EXECUTOR_CHOICES
-            .iter()
-            .position(|c| c.label == "nex")
-            .expect("nex executor choice exists")
+    fn nex() -> usize {
+        exec_idx("nex")
     }
 
     // ── fuzzy matcher ──────────────────────────────────────────────────
@@ -28327,7 +28357,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn filtered_returns_all_for_empty_query() {
         let state = model_state(
-            nex_idx(),
+            nex(),
             vec![
                 sug("minimax/minimax-m3", "openrouter", "curated"),
                 sug("qwen3-coder", "", "recent"),
@@ -28339,7 +28369,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn filtered_fuzzy_narrows_to_match() {
         let mut state = model_state(
-            opencode_idx(),
+            opencode(),
             vec![
                 sug("minimax/minimax-m3", "openrouter", "curated"),
                 sug("deepseek/deepseek-r1", "openrouter", "mid"),
@@ -28355,7 +28385,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn suggestions_suppressed_for_explicit_spec_text() {
         let mut state = model_state(
-            nex_idx(),
+            nex(),
             vec![sug("minimax/minimax-m3", "openrouter", "curated")],
         );
         // A vendor route the user typed deliberately — never overwrite it.
@@ -28392,7 +28422,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn accept_opencode_writes_openrouter_route() {
         let mut state = model_state(
-            opencode_idx(),
+            opencode(),
             vec![sug("minimax/minimax-m3", "openrouter", "curated")],
         );
         state.add_model = "minimax m3".into();
@@ -28407,7 +28437,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn accept_nex_writes_openrouter_spec() {
         let mut state = model_state(
-            nex_idx(),
+            nex(),
             vec![sug("minimax/minimax-m3", "openrouter", "curated")],
         );
         state.add_model = "minimax".into();
@@ -28421,7 +28451,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn accept_is_noop_for_free_text_with_no_match() {
         let mut state = model_state(
-            nex_idx(),
+            nex(),
             vec![sug("minimax/minimax-m3", "openrouter", "curated")],
         );
         // Arbitrary custom model that matches nothing → free text preserved.
@@ -28435,7 +28465,7 @@ mod launcher_model_autocomplete_tests {
         // User typed a full route that fuzzy-matches a suggestion; the
         // explicit spec must NOT be overwritten.
         let mut state = model_state(
-            nex_idx(),
+            nex(),
             vec![sug("minimax/minimax-m3", "openrouter", "curated")],
         );
         state.add_model = "openrouter:minimax/minimax-m3".into();
@@ -28446,7 +28476,7 @@ mod launcher_model_autocomplete_tests {
     #[test]
     fn move_clamps_within_filtered_bounds() {
         let mut state = model_state(
-            nex_idx(),
+            nex(),
             vec![
                 sug("a/one", "openrouter", "c"),
                 sug("b/two", "openrouter", "c"),
@@ -29023,10 +29053,11 @@ mod launcher_open_tests {
     use super::*;
 
     /// open_launcher must initialize the redesigned dialog in Default
-    /// mode with exactly the codex:gpt-5.5 + claude:opus presets and
+    /// mode with the codex:gpt-5.5, claude:opus and pi presets and
     /// nothing else (no openrouter dump, no recent-list, no
     /// pre-populated executor/model/endpoint pickers). This is the
-    /// regression lock for redesign-new-chat 2026-04-30.
+    /// regression lock for redesign-new-chat 2026-04-30, updated for the
+    /// pi preset added by make-pi-a.
     #[test]
     fn open_launcher_starts_in_default_mode_with_two_presets() {
         let tmp = tempfile::tempdir().unwrap();
@@ -29045,7 +29076,6 @@ mod launcher_open_tests {
         let launcher = app.launcher.as_ref().expect("launcher must populate");
         assert_eq!(launcher.mode, LauncherMode::Default);
         assert_eq!(launcher.active_section, LauncherSection::Defaults);
-        // Three presets: codex, claude, and the Pi/model-picker preset.
         assert_eq!(launcher.presets.len(), 3);
         assert_eq!(launcher.presets[0].label, "codex:gpt-5.5");
         assert_eq!(launcher.presets[1].label, "claude:opus");

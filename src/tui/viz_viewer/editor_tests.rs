@@ -41,35 +41,6 @@ mod tui_editor_tests {
         app
     }
 
-    /// RAII guard that points `WG_LAUNCHER_HISTORY_PATH` at an empty tempfile
-    /// for the guard's lifetime so the launcher's Pi preset resolves
-    /// deterministically: with no recorded history the model falls back to
-    /// "press m to set model" instead of surfacing whatever route the
-    /// developer's real `launcher-history.jsonl` happens to hold. Mirrors
-    /// `with_history_env` in the init/setup tests; `unsafe` is required
-    /// because `set_var` is process-global, so any test holding this guard
-    /// must also carry `#[serial_test::serial(launcher_history_env)]`.
-    struct EmptyLauncherHistory {
-        _tmp: tempfile::TempDir,
-    }
-
-    impl Drop for EmptyLauncherHistory {
-        fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
-            }
-        }
-    }
-
-    fn empty_launcher_history() -> EmptyLauncherHistory {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let history_path = tmp.path().join("launcher-history.jsonl");
-        unsafe {
-            std::env::set_var("WG_LAUNCHER_HISTORY_PATH", &history_path);
-        }
-        EmptyLauncherHistory { _tmp: tmp }
-    }
-
     /// Put the app into ChatInput mode.
     fn enter_chat_input(app: &mut VizApp) {
         app.input_mode = InputMode::ChatInput;
@@ -1287,27 +1258,42 @@ mod tui_editor_tests {
     // redesign-new-chat: minimal Default mode + Add-new flow
     // ══════════════════════════════════════════════════════════════════════
 
-    /// Render-level lock: open_launcher → dialog shows the two presets +
-    /// the "+ Add new..." row, with no openrouter dump and no
+    /// Render-level lock: open_launcher → dialog shows the codex/claude/pi
+    /// presets + the "+ Add new..." row, with no openrouter dump and no
     /// recent-history list. Pre-redesign the dialog showed dozens of
     /// auto-discovered openrouter rows the user never asked for.
+    ///
+    /// The pi preset resolves its model from `recent_combos` (global
+    /// launcher history); isolate that history to an empty tempfile so the
+    /// pi row shows "press m to set model" deterministically — otherwise a
+    /// real machine's history can resolve pi to an `openrouter:` route and
+    /// trip the "no openrouter dump" anti-assertion below.
     #[test]
     #[serial_test::serial(launcher_history_env)]
     fn launcher_default_mode_render_shows_two_presets_and_add_new() {
-        // Isolate launcher history so the Pi preset (3rd row, added by the
-        // model-picker redesign) shows "press m to set model" rather than a
-        // real `openrouter:` route from the dev's machine — which would trip
-        // the no-openrouter-dump anti-assertion below.
-        let _hist = empty_launcher_history();
+        let history_tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var(
+                "WG_LAUNCHER_HISTORY_PATH",
+                history_tmp.path().join("launcher-history.jsonl"),
+            );
+        }
+
         let mut app = make_editor_test_app();
         app.open_launcher();
         // open_launcher rate-limits double-opens; the test app might
         // skip if the cap is hit. In practice the chat-cap is fine.
         if app.launcher.is_none() {
+            unsafe {
+                std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
+            }
             return;
         }
 
         let rendered = render_to_string(&mut app, 100, 30);
+        unsafe {
+            std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
+        }
 
         // Default mode title.
         assert!(
@@ -1323,6 +1309,11 @@ mod tui_editor_tests {
         assert!(
             buffer_contains(&rendered, "claude:opus"),
             "expected claude:opus preset row in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "Pi (pi.dev)"),
+            "expected the pi preset row in dialog (make-pi-a)\n{}",
             rendered
         );
         assert!(

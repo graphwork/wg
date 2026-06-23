@@ -772,8 +772,11 @@ impl Default for TuiConfig {
 }
 
 /// A configured LLM endpoint (like a WiFi network entry).
-/// `Default` is hand-written below (not derived) so `provider` defaults to
-/// `"anthropic"` instead of an empty string — see the `impl Default` comment.
+//
+// NOTE: `Default` is NOT derived here — there is a hand-written `impl Default`
+// below so `provider` defaults to `"anthropic"` (a derived Default would leave
+// it empty and break provider routing). A stray `Default` in this derive list
+// (added in `fix-bin-test`) collided with that impl and broke the lib build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointConfig {
     /// Display name for this endpoint
@@ -2217,6 +2220,77 @@ pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
     match provider {
         "codex" => "codex",
         other => provider_to_native_provider(other),
+    }
+}
+
+/// Rewrite a **strong-tier** model spec so it executes through the
+/// self-authenticating `pi` handler instead of the in-process `nex`/native
+/// OpenRouter client.
+///
+/// ## Why
+///
+/// The Pi profile's strong tier (chat + workers + heavy generative roles) is
+/// meant to run *through Pi*, which holds its own provider login — exactly like
+/// the `claude:` / `codex:` CLI handlers auth themselves. A raw `openrouter:`
+/// spec instead routes to the in-process nex handler ([`handler_for_model`] →
+/// [`ExecutorKind::Native`]), which makes **wg itself** the OpenRouter HTTP
+/// client and so REQUIRES an OpenRouter key wired into wg config. When that key
+/// is absent, strong-tier workers die at spawn (wrapper-internal exit 1 before
+/// any work). Rewriting the spec to a `pi:` route removes that requirement: pi
+/// runs the model with its own credentials and wg needs no OpenRouter secret.
+///
+/// ## What it does
+///
+/// - An explicit OpenRouter route (`openrouter:z-ai/glm-5.2`, or an alias that
+///   maps to the openrouter native provider) → `pi:openrouter/z-ai/glm-5.2`.
+/// - A bare slash route (`z-ai/glm-5.2` / `openrouter/z-ai/glm-5.2`) is an
+///   OpenRouter route too → `pi:openrouter/z-ai/glm-5.2`.
+/// - Everything else is left verbatim: `pi:` routes (already correct), the
+///   `claude:` / `codex:` CLIs (auth themselves), and nex-local / oai-compat
+///   routes (`nex:` / `oai-compat:` / `local:` …) that genuinely need the
+///   in-process handler plus a localhost endpoint pi cannot stand in for.
+///
+/// The conversion is the inverse of [`crate::commands::pi_handler::pi_model_arg`]
+/// parsing and is idempotent — applying it to an already-`pi:` route is a no-op.
+///
+/// This is the single chokepoint shared by every path that *persists* the
+/// strong tier ([`Config::set_pi_tiers`], `profile::named::patch_pi_tiers`, and
+/// the model scout), so no write path can reintroduce a nex-routed strong spec.
+/// The weak/agency tier is deliberately NOT routed through here: it keeps its
+/// native route and the loud keyless-native `claude:haiku` fallback intact.
+pub fn pi_strong_route(spec: &str) -> String {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return spec.to_string();
+    }
+    let parsed = parse_model_spec(trimmed);
+    match parsed.provider.as_deref() {
+        // Explicit OpenRouter (or an alias mapping to it) → pi-served remote
+        // model pi can run with its own login and no endpoint.
+        Some(provider) if provider_to_native_provider(provider) == "openrouter" => {
+            let model_id = parsed
+                .model_id
+                .strip_prefix("openrouter/")
+                .unwrap_or(&parsed.model_id);
+            format!("pi:openrouter/{model_id}")
+        }
+        // Any other explicit provider (claude:, codex:, nex:, oai-compat:,
+        // local:, gemini:, an already-normalized pi: route, …) routes to a
+        // handler that can serve it — leave it verbatim.
+        Some(_) => trimmed.to_string(),
+        // No provider prefix. A bare `vendor/model` slash route is an OpenRouter
+        // route (matches the dispatch bare-route normalization and pi_model_arg);
+        // send it through pi. A bare single-token alias (`opus`) gives pi nothing
+        // to target, and a `pi:`/other-colon route is preserved verbatim.
+        None => {
+            if let Some(rest) = trimmed.strip_prefix("openrouter/") {
+                format!("pi:openrouter/{rest}")
+            } else if trimmed.contains('/') && !trimmed.contains(':') {
+                format!("pi:openrouter/{trimmed}")
+            } else {
+                trimmed.to_string()
+            }
+        }
     }
 }
 
@@ -4678,18 +4752,23 @@ impl Config {
     /// `profile::named::patch_pi_tiers`, which targets the same TOML keys.
     pub fn set_pi_tiers(&mut self, strong: Option<&str>, weak: Option<&str>) {
         if let Some(s) = strong {
-            self.agent.model = s.to_string();
-            self.coordinator.model = Some(s.to_string());
+            // Strong tier must execute through the self-authenticating pi
+            // handler, never the in-process nex OpenRouter client (which would
+            // require a wg-side key). Normalize an `openrouter:`/bare route to a
+            // `pi:` route; CLI / pi / nex-local specs pass through unchanged.
+            let s = pi_strong_route(s);
+            self.agent.model = s.clone();
+            self.coordinator.model = Some(s.clone());
             let role = RoleModelConfig {
                 provider: None,
-                model: Some(s.to_string()),
+                model: Some(s.clone()),
                 tier: None,
                 endpoint: None,
             };
             self.models.default = Some(role.clone());
             self.models.task_agent = Some(role);
-            self.tiers.standard = Some(s.to_string());
-            self.tiers.premium = Some(s.to_string());
+            self.tiers.standard = Some(s.clone());
+            self.tiers.premium = Some(s);
         }
         if let Some(w) = weak {
             self.tiers.fast = Some(w.to_string());
@@ -9088,30 +9167,38 @@ model = "codex:gpt-5.5"
     fn test_set_pi_tiers_writes_full_strong_keyset() {
         let mut cfg = Config::default();
         cfg.set_pi_tiers(Some("openrouter:z-ai/glm-5.2"), None);
-        // Every strong key is set; weak keys untouched.
-        assert_eq!(cfg.agent.model, "openrouter:z-ai/glm-5.2");
+        // Every strong key is set to the pi: route (NOT the raw openrouter:
+        // spec) so strong-tier work runs through the self-authenticating pi
+        // handler rather than the in-process nex OpenRouter client. Weak keys
+        // untouched.
+        assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
         assert_eq!(
             cfg.coordinator.model.as_deref(),
-            Some("openrouter:z-ai/glm-5.2")
+            Some("pi:openrouter/z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.tiers.standard.as_deref(),
-            Some("openrouter:z-ai/glm-5.2")
+            Some("pi:openrouter/z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.tiers.premium.as_deref(),
-            Some("openrouter:z-ai/glm-5.2")
+            Some("pi:openrouter/z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
-            Some("openrouter:z-ai/glm-5.2")
+            Some("pi:openrouter/z-ai/glm-5.2")
         );
         assert_eq!(
             cfg.models
                 .task_agent
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("openrouter:z-ai/glm-5.2")
+            Some("pi:openrouter/z-ai/glm-5.2")
+        );
+        // The strong spec routes to the pi handler (single source of truth).
+        assert_eq!(
+            crate::dispatch::handler_for_model(&cfg.agent.model),
+            crate::dispatch::ExecutorKind::Pi
         );
         // Weak tier left alone by a strong-only update.
         assert!(cfg.tiers.fast.is_none());
@@ -9150,8 +9237,55 @@ model = "codex:gpt-5.5"
             Some("openrouter:deepseek/deepseek-v3.1"),
         );
         let (strong, weak) = cfg.pi_tiers();
-        assert_eq!(strong.as_deref(), Some("openrouter:qwen/qwen3-max"));
+        // Strong is normalized to a pi: route on write; weak (agency one-shots)
+        // keeps its native openrouter: route for the keyless-native fallback.
+        assert_eq!(strong.as_deref(), Some("pi:openrouter/qwen/qwen3-max"));
         assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+    }
+
+    #[test]
+    fn test_pi_strong_route_normalizes_openrouter_to_pi_but_leaves_others() {
+        // OpenRouter routes (the reported bug: `openrouter:z-ai/glm-5.2` routed
+        // to nex and required a wg-side key) become pi: routes.
+        assert_eq!(
+            pi_strong_route("openrouter:z-ai/glm-5.2"),
+            "pi:openrouter/z-ai/glm-5.2"
+        );
+        // Bare slash / CLI-slash routes are OpenRouter routes too.
+        assert_eq!(
+            pi_strong_route("z-ai/glm-5.2"),
+            "pi:openrouter/z-ai/glm-5.2"
+        );
+        assert_eq!(
+            pi_strong_route("openrouter/z-ai/glm-5.2"),
+            "pi:openrouter/z-ai/glm-5.2"
+        );
+        // Idempotent: an already-pi: route is preserved verbatim.
+        assert_eq!(
+            pi_strong_route("pi:openrouter/z-ai/glm-5.2"),
+            "pi:openrouter/z-ai/glm-5.2"
+        );
+        // Self-authenticating CLIs are left alone (they need no wg key, no pi).
+        assert_eq!(pi_strong_route("claude:opus"), "claude:opus");
+        assert_eq!(pi_strong_route("codex:gpt-5.5"), "codex:gpt-5.5");
+        // nex-local / oai-compat routes need the in-process handler + endpoint;
+        // pi cannot stand in, so they pass through unchanged.
+        assert_eq!(pi_strong_route("nex:qwen3-coder"), "nex:qwen3-coder");
+        assert_eq!(pi_strong_route("local:qwen3-coder"), "local:qwen3-coder");
+        // A bare single-token alias gives pi no provider to target — verbatim.
+        assert_eq!(pi_strong_route("opus"), "opus");
+        // Empty / whitespace inputs are returned as-is.
+        assert_eq!(pi_strong_route(""), "");
+        // The normalized openrouter route routes to the pi handler; the raw one
+        // would have routed to the in-process nex/native handler.
+        assert_eq!(
+            crate::dispatch::handler_for_model(&pi_strong_route("openrouter:z-ai/glm-5.2")),
+            crate::dispatch::ExecutorKind::Pi
+        );
+        assert_eq!(
+            crate::dispatch::handler_for_model("openrouter:z-ai/glm-5.2"),
+            crate::dispatch::ExecutorKind::Native
+        );
     }
 
     #[test]

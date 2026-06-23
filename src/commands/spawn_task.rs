@@ -571,23 +571,37 @@ mod tests {
         f()
     }
 
+    /// Write a project-local `config.toml` into `dir` pinning a native
+    /// (`nex:`) model. Without it, `Config::load_or_default` falls back to
+    /// the built-in `[agent].model = "claude:opus"` default; the model-compat
+    /// override in `plan_spawn` then reroutes the pinned
+    /// `WG_EXECUTOR_TYPE=native` hint to the claude handler (logging
+    /// `native ... cannot run model claude:opus ... routing to claude`),
+    /// failing the `expected Native handler` assertions. Combined with
+    /// `with_env`'s empty `WG_GLOBAL_DIR`, handler resolution then depends
+    /// only on this per-test temp config — never on the machine's global
+    /// config or active profile.
+    fn pin_native_config(dir: &Path) {
+        std::fs::write(
+            dir.join("config.toml"),
+            b"[agent]\nmodel = \"nex:qwen3-coder\"\n",
+        )
+        .unwrap();
+    }
+
     // These tests pin WG_EXECUTOR_TYPE=native because role/resume are
     // Native-handler-specific concepts; the dispatcher default (Claude)
-    // would route to a Claude handler with no role/resume fields. They also
-    // pin WG_MODEL to a native-compatible model (`nex:qwen3-coder`) for two
-    // reasons: (1) it prevents the agent harness's own WG_MODEL (the agent's
-    // resolved model) from leaking in via dispatch::plan_spawn's
-    // `default_model` arg, and (2) it keeps the handler Native — leaving the
-    // model unset lets the built-in default (`claude:opus`) win, and the
-    // model-compat guard then correctly redirects `native` + a `claude:`
-    // model to the claude handler ("native cannot run model claude:opus"),
-    // which would defeat these Native-handler assertions.
+    // would route to a Claude handler with no role/resume fields. We also
+    // scrub WG_MODEL because the agent harness running cargo test sets it
+    // to the agent's resolved model, which would otherwise leak in via
+    // dispatch::plan_spawn's `default_model` arg.
     #[test]
     #[serial]
     fn coordinator_task_gets_coordinator_role() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".coordinator-0");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -602,8 +616,9 @@ mod tests {
     #[test]
     #[serial]
     fn non_coordinator_task_gets_no_role() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("my-task");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -618,8 +633,9 @@ mod tests {
     #[test]
     #[serial]
     fn role_override_wins() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".coordinator-0");
             let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
             match spec {
@@ -634,8 +650,9 @@ mod tests {
     #[test]
     #[serial]
     fn resume_true_when_journal_exists() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("have-journal");
             let chat = dir.path().join("chat").join(&task.id);
             std::fs::create_dir_all(&chat).unwrap();
@@ -651,8 +668,9 @@ mod tests {
     #[test]
     #[serial]
     fn resume_false_when_fresh() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
+            pin_native_config(dir.path());
             let task = mktask("fresh-task");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {
@@ -671,9 +689,10 @@ mod tests {
     #[test]
     #[serial]
     fn dot_chat_id_strips_leading_dot_for_chat_ref() {
-        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+        with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
+            pin_native_config(dir.path());
             let task = mktask(".chat-7");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {

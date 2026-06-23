@@ -38,11 +38,16 @@ grep -q "\[strong\]" <<<"$list_out" \
 $list_out"
 
 # ── 2. SELECT + APPLY: set both tiers positionally; echo shows old → new ─────
+# fix-strong-tier: the STRONG tier is normalized to a `pi:` route on write (so
+# strong-tier work runs through the self-authenticating pi handler, NOT the
+# in-process nex OpenRouter client that would need a wg-side key). The user
+# typed a raw `openrouter:` spec; what gets echoed/persisted is the `pi:` form.
+# The WEAK/agency tier keeps its native `openrouter:` route.
 set_out=$(wg profile pi openrouter:qwen/qwen3-max openrouter:deepseek/deepseek-v3.1 2>&1) \
     || loud_fail "wg profile pi <strong> <weak> failed:
 $set_out"
-grep -q "glm-5.2 → openrouter:qwen/qwen3-max" <<<"$set_out" \
-    || loud_fail "set echo missing strong old → new transition:
+grep -q "glm-5.2 → pi:openrouter/qwen/qwen3-max" <<<"$set_out" \
+    || loud_fail "set echo missing strong old → new transition (expected pi: route):
 $set_out"
 grep -q "deepseek-chat → openrouter:deepseek/deepseek-v3.1" <<<"$set_out" \
     || loud_fail "set echo missing weak old → new transition:
@@ -50,12 +55,22 @@ $set_out"
 [ -f "$PI" ] || loud_fail "profile file was not written at $PI"
 
 # The surgical patch updated the §4.1 key-set AND preserved the comment block.
-grep -q 'standard = "openrouter:qwen/qwen3-max"' "$PI" \
-    || loud_fail "tiers.standard not patched to strong:
+# Strong → pi: route (pi handler auths itself); weak → native openrouter: route.
+grep -q 'standard = "pi:openrouter/qwen/qwen3-max"' "$PI" \
+    || loud_fail "tiers.standard not patched to the pi: strong route:
+$(cat "$PI")"
+grep -q 'premium = "pi:openrouter/qwen/qwen3-max"' "$PI" \
+    || loud_fail "tiers.premium not patched to the pi: strong route:
 $(cat "$PI")"
 grep -q 'fast = "openrouter:deepseek/deepseek-v3.1"' "$PI" \
     || loud_fail "tiers.fast not patched to weak:
 $(cat "$PI")"
+# The strong tier must NOT persist as a raw openrouter: spec (the bug that made
+# wg the OpenRouter client and required a wg-side key → exit-1-at-spawn).
+if grep -q 'standard = "openrouter:qwen/qwen3-max"' "$PI"; then
+    loud_fail "strong tier persisted as a raw openrouter: spec (routes to nex, needs a wg key):
+$(cat "$PI")"
+fi
 grep -q "PLUGIN INSTALL" "$PI" \
     || loud_fail "comment block was lost by the patch (should be a line patch):
 $(cat "$PI")"
@@ -63,8 +78,8 @@ $(cat "$PI")"
 # ── 3. PERSISTS: --show reflects the applied tiers on a fresh process ────────
 show_out=$(wg profile pi --show 2>&1) || loud_fail "wg profile pi --show failed:
 $show_out"
-grep -q "strong = openrouter:qwen/qwen3-max" <<<"$show_out" \
-    || loud_fail "--show did not reflect the persisted strong tier:
+grep -q "strong = pi:openrouter/qwen/qwen3-max" <<<"$show_out" \
+    || loud_fail "--show did not reflect the persisted pi: strong tier:
 $show_out"
 grep -q "weak   = openrouter:deepseek/deepseek-v3.1" <<<"$show_out" \
     || loud_fail "--show did not reflect the persisted weak tier:
@@ -74,7 +89,7 @@ $show_out"
 partial_out=$(wg profile pi --weak openrouter:deepseek/deepseek-chat 2>&1) \
     || loud_fail "partial --weak update failed:
 $partial_out"
-grep -q "strong = openrouter:qwen/qwen3-max .* (unchanged)" <<<"$partial_out" \
+grep -q "strong = pi:openrouter/qwen/qwen3-max .* (unchanged)" <<<"$partial_out" \
     || loud_fail "partial weak update should leave strong unchanged:
 $partial_out"
 
@@ -85,9 +100,16 @@ wg profile use pi --no-reload >/dev/null 2>&1 \
     || loud_fail "wg profile use pi failed"
 wg profile pi --strong openrouter:z-ai/glm-5.2 >/dev/null 2>&1 \
     || loud_fail "set on active pi profile failed"
-grep -q 'standard = "openrouter:z-ai/glm-5.2"' "$HOME/.wg/config.toml" \
-    || loud_fail "active set did not re-apply strong to the global config.toml (next turn would not see it):
+# fix-strong-tier: the active re-apply must write the pi: strong route into the
+# global config so the NEXT worker dispatches through pi (handler_for_model →
+# ExecutorKind::Pi), needing no wg-side OpenRouter key.
+grep -q 'standard = "pi:openrouter/z-ai/glm-5.2"' "$HOME/.wg/config.toml" \
+    || loud_fail "active set did not re-apply the pi: strong route to the global config.toml (next worker would route through nex and need a wg key):
 $(cat "$HOME/.wg/config.toml" 2>/dev/null || echo '(no config.toml)')"
+if grep -q 'standard = "openrouter:z-ai/glm-5.2"' "$HOME/.wg/config.toml"; then
+    loud_fail "strong tier re-applied as a raw openrouter: spec (routes to nex, needs a wg key):
+$(cat "$HOME/.wg/config.toml")"
+fi
 
 # ── 6. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
 if wg profile pi openrouter:z-ai/glm-5.2 >/dev/null 2>&1; then
