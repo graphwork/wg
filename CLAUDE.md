@@ -184,17 +184,38 @@ the older `api_key_env = "VAR_NAME"` is still accepted but
 schemes (`op://...`, `pass:...`, `env:VAR`, `literal:...`) work without
 storing the secret in `wg`.
 
-### Agency tasks run on claude CLI
+### Agency one-shot tasks run on the weak tier
 
 `.evaluate-*`, `.flip-*`, and `.assign-*` tasks are short one-shot LLM
-calls (scoring + assignment verdicts), not full worker agents. They are
-pinned to `claude:haiku` running on the claude CLI — the same handler
-worker agents use — and ignore project-level provider cascade from
-`coordinator.model`. This keeps agency cheap and immune to "openrouter
-configured but no key" silent failures. Power users who *want* a
-non-Anthropic provider for these roles can override per-role via
-`[models.evaluator]` / `[models.assigner]` etc. in config; explicit
-overrides win, cascade does not. The agent registry records these as
-`executor=claude` (the legacy `eval` / `assign` labels are gone — they
-were always cosmetic).
+calls (scoring + assignment verdicts), not full worker agents. They resolve
+their model from the active profile's **weak** two-tier label (`tiers.fast`,
+the cheap tier) via `resolve_agency_dispatch` — they do **not** follow the
+project-level provider cascade from `coordinator.model` / `[models.default]`.
+For the default (and `claude`) profile the weak tier *is* `claude:haiku` on
+the claude CLI, so the historical pin is preserved and default behavior is
+unchanged. A two-tier Pi profile that sets `--weak openrouter:deepseek/<model>`
+now routes agency through DeepSeek automatically — no explicit per-role
+overrides required.
+
+Explicit `[models.evaluator]` / `[models.assigner]` / flip-role overrides in
+config still win and keep their declared route (e.g. a `codex:` spec runs on
+the codex CLI); the `coordinator.model` cascade is still ignored. This keeps
+agency cheap while letting power users pin a specific provider per role.
+
+Credential safety: agency verdicts are never *silently* dropped. When the
+weak tier resolves to a keyless native-HTTP provider that needs an API key
+(OpenRouter / OpenAI / anthropic-native, with no key in env or a matching
+endpoint), it falls back **loudly** to `claude:haiku` on the claude CLI and
+warns on stderr which key to set. An explicit per-role override is *not*
+pre-empted at resolve time (explicit wins, keeps its route) but is still
+protected at call time — `agency_native_lightweight_call` falls back to
+`claude:haiku` on any native failure (invalid key, timeout, 5xx). claude /
+codex CLI targets self-authenticate, so they are never downgraded.
+
+The agent registry records each agency task under its resolved handler
+(`executor=claude` for the default weak tier, the native / codex handler when
+the weak tier or an override points there); the legacy `eval` / `assign`
+labels are gone — they were always cosmetic. See the `resolve_agency_dispatch`
+doc comment and `Config::weak_tier_spec()` in `src/service/llm.rs` /
+`src/config.rs`.
 Agency federation compatibility is exposed as `WG_AGENCY_COMPAT_VERSION = "1.2.4"` and import manifests record that compat surface for CSV/hash handshakes.
