@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { installModelBridge, wgSpecFromModel, buildProviderConfig } from "../dist/index.js";
+import { installModelBridge, wgSpecFromModel, buildProviderConfig, WgBackend } from "../dist/index.js";
 
 type ModelSelectHandler = (event: unknown) => unknown | Promise<unknown>;
 
@@ -77,6 +77,39 @@ describe("installModelBridge model_select write-back", () => {
     await expect(
       fire({ type: "model_select", model: { provider: "claude", id: "opus" }, source: "set" }),
     ).resolves.not.toThrow();
+  });
+
+  it("logs a write-back warning when `wg chat model` exits non-zero (not a silent no-op)", async () => {
+    // Regression guard for fix-pi-model: wire a REAL WgBackend over a fake exec
+    // host whose `wg chat model` exits non-zero (e.g. the verb is absent). Before
+    // the fix the ExecResult was returned as-is and nothing was logged; now the
+    // backend rejects and the model_select handler surfaces a console.error.
+    const { pi, fire } = fakePi();
+    const host = {
+      exec: vi.fn(async () => ({
+        stdout: "",
+        stderr: "error: unrecognized subcommand 'model'",
+        code: 2,
+        killed: false,
+      })),
+    };
+    const backend = new WgBackend(host, { chatId: "chat-1" });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      installModelBridge(pi, backend, {});
+      await expect(
+        fire({ type: "model_select", model: { provider: "openrouter", id: "openai/gpt-4o" }, source: "set" }),
+      ).resolves.not.toThrow();
+
+      // The non-zero exit was NOT swallowed: the failure was logged loudly.
+      expect(host.exec).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      const logged = errSpy.mock.calls[0].join(" ");
+      expect(logged).toContain("model write-back failed");
+      expect(logged).toContain("openrouter:openai/gpt-4o");
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 

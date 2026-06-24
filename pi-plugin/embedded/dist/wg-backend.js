@@ -108,16 +108,30 @@ export class WgBackend {
      *
      * This shells the `wg chat model <chat> <spec>` verb, which is delivered by
      * the downstream `pi-plugin-impl-chat-model-verb` task. Until that verb
-     * lands the call is a no-op-with-error at runtime, but the bridge logic
-     * (model_select → write-back) is complete and unit-tested here against a
-     * mocked backend.
+     * lands the call exits non-zero at runtime ("unknown subcommand").
+     *
+     * CRITICAL: `pi.exec` RESOLVES on a non-zero exit (it only rejects on spawn
+     * failure), so returning the raw {@link ExecResult} would make a failed
+     * write-back a SILENT no-op — the `model_select` handler's catch never fires
+     * and nothing is logged (the bug fix-pi-model addresses). Unlike the
+     * read/display verbs that surface `r.code` to the user, this write only
+     * succeeds when the override is actually persisted, so a non-zero exit is an
+     * error: we **reject** with a message naming the verb, exit code, and the
+     * `wg` stderr/stdout so the failure is visible (and the warm pi swap keeps
+     * working regardless — the caller swallows the rejection into a log line).
      */
-    setModelOverride(spec, chatRef, opts = {}) {
+    async setModelOverride(spec, chatRef, opts = {}) {
         const chat = chatRef ?? this.env.chatId;
         if (!chat) {
-            return Promise.reject(new Error("wg-pi-plugin: cannot write model override — no chat id (set $WG_CHAT_ID)"));
+            throw new Error("wg-pi-plugin: cannot write model override — no chat id (set $WG_CHAT_ID)");
         }
-        return this.run(["chat", "model", chat, spec], opts);
+        const r = await this.run(["chat", "model", chat, spec], opts);
+        if (r.code !== 0) {
+            const detail = (r.stderr || r.stdout).trim();
+            throw new Error(`wg-pi-plugin: 'wg chat model ${chat} ${spec}' exited ${r.code}` +
+                (detail ? `: ${detail}` : ""));
+        }
+        return r;
     }
 }
 //# sourceMappingURL=wg-backend.js.map
