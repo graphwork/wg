@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use worksgood::config::{
-    CLAUDE_OPUS_MODEL_ID, Config, KNOWN_PROVIDERS, RoleModelConfig, parse_model_spec,
-    parse_model_spec_strict,
+    CLAUDE_OPUS_MODEL_ID, Config, HANDLER_PREFIXES, KNOWN_PROVIDERS, RoleModelConfig,
+    is_rejected_leading_provider, parse_model_spec, parse_model_spec_strict,
 };
 use worksgood::graph::WorkGraph;
 use worksgood::models::{ModelEntry, ModelRegistry, ModelTier};
@@ -541,6 +541,10 @@ model = "openrouter:custom/project-model"
 
 #[test]
 fn strict_accepts_all_known_providers() {
+    // Handler-first (release N, warn window): every known provider still
+    // parses without ERRORING. Handler prefixes (claude/codex/nex/native) are
+    // kept verbatim; a bare provider namespace (openrouter/ollama/…) warns and
+    // defaults to the `nex:` handler — it is never returned as a bare provider.
     for provider in KNOWN_PROVIDERS {
         let input = format!("{}:some-model", provider);
         let spec = parse_model_spec_strict(&input).unwrap_or_else(|e| {
@@ -549,8 +553,22 @@ fn strict_accepts_all_known_providers() {
                 provider, e
             )
         });
-        assert_eq!(spec.provider.as_deref(), Some(*provider));
-        assert_eq!(spec.model_id, "some-model");
+        if HANDLER_PREFIXES.contains(provider) {
+            assert_eq!(spec.provider.as_deref(), Some(*provider));
+            assert_eq!(spec.model_id, "some-model");
+        } else {
+            assert!(
+                is_rejected_leading_provider(provider),
+                "non-handler known provider '{}' must be a rejected leading token",
+                provider
+            );
+            assert_eq!(
+                spec.provider.as_deref(),
+                Some("nex"),
+                "bare provider '{}' must default to the nex handler",
+                provider
+            );
+        }
     }
 }
 
@@ -598,10 +616,23 @@ fn strict_rejects_provider_with_empty_model() {
 
 #[test]
 fn strict_handles_model_with_slashes() {
-    // e.g., openrouter:deepseek/deepseek-v3.2
-    let spec = parse_model_spec_strict("openrouter:deepseek/deepseek-v3.2").unwrap();
-    assert_eq!(spec.provider.as_deref(), Some("openrouter"));
-    assert_eq!(spec.model_id, "deepseek/deepseek-v3.2");
+    // Handler-first canonical form: the leading token is a handler (`nex`),
+    // and the inner `openrouter:<vendor>/<model>` dialect — slash and all —
+    // is passed through verbatim as the native model string.
+    let spec = parse_model_spec_strict("nex:openrouter:deepseek/deepseek-v3.2").unwrap();
+    assert_eq!(spec.provider.as_deref(), Some("nex"));
+    assert_eq!(spec.model_id, "openrouter:deepseek/deepseek-v3.2");
+}
+
+#[test]
+fn strict_bare_openrouter_defaults_to_nex_handler_in_warn_window() {
+    // Handler-first enforcement (release N): a bare `openrouter:` leading
+    // token is a provider namespace, not a handler. It WARNs loudly and
+    // defaults to the `nex:`-qualified canonical form (so existing configs
+    // keep working). The returned spec is never a bare provider prefix.
+    let spec = parse_model_spec_strict("openrouter:z-ai/glm-5.2").unwrap();
+    assert_eq!(spec.provider.as_deref(), Some("nex"));
+    assert_eq!(spec.model_id, "openrouter:z-ai/glm-5.2");
 }
 
 #[test]
@@ -703,10 +734,16 @@ fn config_spec_roundtrips_through_parse() {
                 spec_str, entry.id, e
             )
         });
-        assert_eq!(
-            parsed.model_id,
+        // Handler-first: for a handler-prefixed config_spec (`claude:opus`)
+        // the model_id IS the short name; for a bare-provider config_spec
+        // (`openrouter:deepseek-chat-v3`) strict parse warns and defaults to
+        // the nex handler, so the inner dialect (and thus the short name) is
+        // carried in model_id. Either way the short name must be recoverable.
+        assert!(
+            parsed.model_id.ends_with(entry.short_name()),
+            "short name '{}' not recoverable from parsed model_id '{}' for {}",
             entry.short_name(),
-            "model_id mismatch for {}",
+            parsed.model_id,
             entry.id
         );
         assert!(

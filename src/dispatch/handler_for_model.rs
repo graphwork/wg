@@ -25,22 +25,38 @@
 //!
 //! ## Mapping
 //!
-//! | Model prefix              | Handler        | Wire        | Endpoint required |
-//! |---------------------------|----------------|-------------|-------------------|
-//! | `claude:*` (and bare)     | `claude` CLI   | Anthropic   | no (CLI auths)    |
-//! | `codex:*`                 | `codex` CLI    | OAI-compat  | no (CLI auths)    |
-//! | `nex:*` (canonical)       | `native` (nex) | OAI-compat  | yes               |
-//! | `openrouter:*`            | `native` (nex) | OAI-compat  | optional          |
-//! | `local:*` (deprecated)    | `native` (nex) | OAI-compat  | yes               |
-//! | `oai-compat:*` (deprecated) / `openai:*` | `native` (nex) | OAI-compat  | yes               |
-//! | `ollama:*`                | `native` (nex) | OAI-compat  | yes               |
-//! | `vllm:*`/`llamacpp:*`     | `native` (nex) | OAI-compat  | yes               |
-//! | `gemini:*`                | `native` (nex) | (per impl)  | yes               |
-//! | `native:*`                | `native` (nex) | OAI-compat  | yes               |
+//! The **leading** token of a model spec is always a *handler*; everything
+//! after the first `:` is that handler's own native model dialect (passed
+//! through verbatim). Canonical handler-first forms:
 //!
-//! `local:` and `oai-compat:` are deprecated aliases for `nex:` — they
-//! still route to the same handler for one release with a stderr warning,
-//! and `wg migrate config` rewrites them in existing configs.
+//! | Model spec                         | Handler        | Wire        | Endpoint required |
+//! |------------------------------------|----------------|-------------|-------------------|
+//! | `claude:*` (and bare `opus`/…)     | `claude` CLI   | Anthropic   | no (CLI auths)    |
+//! | `codex:*`                          | `codex` CLI    | OAI-compat  | no (CLI auths)    |
+//! | `nex:*` (canonical)                | `native` (nex) | OAI-compat  | yes               |
+//! | `nex:openrouter:*`                 | `native` (nex) | OpenRouter  | optional          |
+//! | `nex:ollama:*` / `nex:vllm:*` / …  | `native` (nex) | local       | yes               |
+//! | `pi:openrouter:*` / `pi:openrouter/*` | `pi` CLI    | OpenRouter  | no (pi auths)     |
+//! | `native:*`                         | `native` (nex) | OAI-compat  | yes               |
+//!
+//! ### Deprecated leading provider prefixes (handler-first migration)
+//!
+//! A **bare provider prefix** is NOT a valid leading handler token — the
+//! provider belongs in the *inner* dialect after a handler. These warn at the
+//! strict-validation entry points and `wg migrate config` rewrites them:
+//!
+//! | Deprecated leading form   | Canonical handler-first form |
+//! |---------------------------|------------------------------|
+//! | `openrouter:*`            | `nex:openrouter:*` (or `pi:openrouter:*`) |
+//! | `ollama:*`/`vllm:*`/`llamacpp:*` | `nex:ollama:*` / `nex:vllm:*` / … |
+//! | `gemini:*`                | `nex:gemini:*`               |
+//! | `oai-compat:*`/`openai:*`/`local:*` | `nex:*` (pure alias — drop the prefix) |
+//!
+//! This **lenient resolver stays tolerant**: a bare provider prefix still
+//! maps to the `native` handler here (= `nex:` behavior) so nothing breaks
+//! mid-release; the loud warning + (eventual) hard error live at the strict
+//! entry points (`parse_model_spec_strict`). See
+//! `docs/design-handler-first-model-spec.md`.
 //!
 //! Bare aliases without a provider prefix (`opus`, `sonnet`, `haiku`) default
 //! to the `claude` handler — they're Anthropic models by convention.
@@ -196,6 +212,47 @@ mod tests {
         // it must NOT be classified worker-only.
         assert!(ExecutorKind::Pi.is_external_cli());
         assert!(!ExecutorKind::Pi.is_worker_only_external());
+    }
+
+    #[test]
+    fn test_handler_first_nex_openrouter_routes_to_native() {
+        // Handler-first canonical form: the leading token `nex` selects the
+        // in-process native handler; the inner `openrouter:…` is the native
+        // handler's own dialect (parsed via the first-colon rule). This is the
+        // recommended replacement for a bare `openrouter:…` spec.
+        assert_eq!(
+            handler_for_model("nex:openrouter:z-ai/glm-5.2"),
+            ExecutorKind::Native
+        );
+        assert_eq!(handler_for_model("nex:ollama:llama3"), ExecutorKind::Native);
+    }
+
+    #[test]
+    fn test_handler_first_pi_openrouter_routes_to_pi() {
+        // Both pi inner spellings route to the Pi handler via the first-colon
+        // rule: the colon form (`pi:openrouter:…`) and pi's native slash form
+        // (`pi:openrouter/…`). The external-CLI prefix interception fires for
+        // both — only the leading `pi` token matters for handler selection.
+        assert_eq!(
+            handler_for_model("pi:openrouter:z-ai/glm-5.2"),
+            ExecutorKind::Pi
+        );
+        assert_eq!(
+            handler_for_model("pi:openrouter/z-ai/glm-5.2"),
+            ExecutorKind::Pi
+        );
+    }
+
+    #[test]
+    fn test_bare_openrouter_lenient_resolver_stays_native() {
+        // The lenient resolver remains tolerant during the warn window: a bare
+        // `openrouter:` leading prefix still resolves to the native handler
+        // (= `nex:` behavior) so nothing breaks mid-release. The loud warning
+        // lives at the strict entry points, not here.
+        assert_eq!(
+            handler_for_model("openrouter:z-ai/glm-5.2"),
+            ExecutorKind::Native
+        );
     }
 
     #[test]

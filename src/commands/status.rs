@@ -537,13 +537,25 @@ fn print_status(status: &StatusOutput) {
         println!("Service: stopped");
     }
 
-    // Line 2: Dispatcher config
-    let model_str = status.coordinator.model.as_deref().unwrap_or("default");
+    // Line 2: Dispatcher config. Echo the canonical handler-first model form
+    // and the handler it actually resolves to (`model → handler=X`), so a
+    // bare-provider mis-route (the 14h-401 incident: `openrouter:…` silently
+    // routed to the keyless `native` handler) is visible in `wg status`
+    // instead of only surfacing when an agent dies.
+    let model_display = match status.coordinator.model.as_deref() {
+        Some(m) => {
+            let canonical =
+                worksgood::config::handler_first_rewrite(m).unwrap_or_else(|| m.to_string());
+            let handler = worksgood::dispatch::handler_for_model(m).as_str();
+            format!("{canonical} → handler={handler}")
+        }
+        None => "default".to_string(),
+    };
     println!(
         "Dispatcher: max={}, executor={}, model={}, poll={}s",
         status.coordinator.max_agents,
         status.coordinator.executor,
-        model_str,
+        model_display,
         status.coordinator.poll_interval
     );
 

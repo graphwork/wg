@@ -875,15 +875,18 @@ fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, S
                 return Some(new_str);
             }
         }
-        // Generic rewrite for the deprecated `local:` / `oai-compat:` prefixes
-        // — replace with the canonical `nex:` (matches `wg nex`).
-        // Only fires on values that match `<deprecated>:<rest>` where
-        // <deprecated> is in `deprecated_provider_prefix_replacement`.
-        if let Some((prefix, rest)) = s.split_once(':')
-            && let Some(replacement) =
-                worksgood::config::deprecated_provider_prefix_replacement(prefix)
-        {
-            let new_str = format!("{}:{}", replacement, rest);
+        // Handler-first rewrite for deprecated **leading** provider prefixes
+        // (docs/design-handler-first-model-spec.md §5.2): the leading token
+        // must name a handler, never a bare provider. Two rewrite shapes:
+        //   - swap (pure aliases of the nex wire): `oai-compat:X`/`openai:X`/
+        //     `local:X`/`native:X` → `nex:X` (drop the prefix);
+        //   - prepend (wire-distinct providers): `openrouter:X`/`ollama:X`/
+        //     `vllm:X`/`llamacpp:X`/`gemini:X` → `nex:<prefix>:X` (keep it as
+        //     the inner dialect).
+        // The `local:`/`oai-compat:` swap behavior is unchanged (it is now a
+        // subset of `handler_first_rewrite`). Already handler-first specs
+        // (`claude:`, `codex:`, `nex:`, `pi:…`) and bare aliases are no-ops.
+        if let Some(new_str) = worksgood::config::handler_first_rewrite(s) {
             rewritten.push((path.to_string(), s.clone(), new_str.clone()));
             return Some(new_str);
         }
@@ -1305,6 +1308,76 @@ model = "oai-compat:gpt-5"
         let migrated = std::fs::read_to_string(&path).unwrap();
         assert!(migrated.contains("\"nex:gpt-5\""));
         assert!(!migrated.contains("\"oai-compat:gpt-5\""));
+    }
+
+    #[test]
+    fn rewrites_bare_openrouter_prefix_to_handler_first() {
+        // Handler-first enforcement: a bare `openrouter:` leading token is a
+        // provider namespace, not a handler. `wg migrate config` PREPENDS the
+        // canonical `nex:` handler, keeping `openrouter` as the inner dialect
+        // (the wire is distinct and the native handler still needs it). This
+        // is the exact spec behind the 14h-401 incident.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[dispatcher]
+model = "openrouter:z-ai/glm-5.2"
+
+[tiers]
+fast = "ollama:llama3"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "openrouter:z-ai/glm-5.2"
+                    && new == "nex:openrouter:z-ai/glm-5.2"),
+            "should prepend nex: to openrouter; got {:?}",
+            r.rewritten_values,
+        );
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "ollama:llama3" && new == "nex:ollama:llama3"),
+            "should prepend nex: to ollama; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("\"nex:openrouter:z-ai/glm-5.2\""));
+        assert!(migrated.contains("\"nex:ollama:llama3\""));
+        // No bare provider prefix survives the migration.
+        assert!(!migrated.contains("\"openrouter:z-ai/glm-5.2\""));
+        assert!(!migrated.contains("\"ollama:llama3\""));
+    }
+
+    #[test]
+    fn lint_flags_bare_openrouter_via_dry_run() {
+        // `wg config lint` reuses `migrate_one(path, dry_run=true)`, so the
+        // dry run must REPORT the bare-provider rewrite without writing the
+        // file. This is the exact predicate the lint surface prints.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[dispatcher]
+model = "openrouter:z-ai/glm-5.2"
+"#,
+        );
+        let r = migrate_one(&path, true).unwrap();
+        assert!(!r.wrote, "dry run must not write the file");
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "openrouter:z-ai/glm-5.2"
+                    && new == "nex:openrouter:z-ai/glm-5.2"),
+            "lint dry run must flag the bare openrouter prefix; got {:?}",
+            r.rewritten_values,
+        );
+        // File is untouched on disk.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("\"openrouter:z-ai/glm-5.2\""));
     }
 
     #[test]

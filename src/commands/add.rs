@@ -41,7 +41,10 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     {
         let prefix = worksgood::config::native_provider_to_prefix(&entry.provider);
         let full_spec = format!("{}:{}", prefix, entry.model);
-        if worksgood::config::parse_model_spec_strict(&full_spec).is_ok() {
+        // Quiet: `full_spec` is a spec the tool reconstructed from the
+        // registry, not the user's literal input — a handler-first warning
+        // about a route wg itself chose would be spurious.
+        if worksgood::config::parse_model_spec_strict_quiet(&full_spec).is_ok() {
             eprintln!(
                 "Resolved model '{}' → '{}' (from model_registry)",
                 model, full_spec
@@ -55,8 +58,10 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     if spec.provider.is_none() && model.contains('/') {
         // Looks like "provider/model" format (e.g., "minimax/minimax-m2.7")
         let candidate = format!("openrouter:{}", model);
-        // Validate that this parses correctly
-        if worksgood::config::parse_model_spec_strict(&candidate).is_ok() {
+        // Validate that this parses correctly. Quiet: `candidate` is a spec
+        // the tool reconstructed from a bare `vendor/model` slash route, not
+        // the user's literal input — warning about it would be spurious.
+        if worksgood::config::parse_model_spec_strict_quiet(&candidate).is_ok() {
             eprintln!("Resolved model '{}' → '{}'", model, candidate);
             return Ok(candidate);
         }

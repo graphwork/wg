@@ -1787,6 +1787,166 @@ pub fn deprecated_provider_prefix_replacement(provider: &str) -> Option<&'static
     }
 }
 
+// ---------------------------------------------------------------------------
+// Handler-first model-spec enforcement
+// (docs/design-handler-first-model-spec.md)
+// ---------------------------------------------------------------------------
+
+/// Handler/executor prefixes that are valid as the **leading** token of a
+/// model spec. The leading token always names a *handler* (which subprocess
+/// runs the spec); everything after the first `:` is that handler's own
+/// native model dialect, opaque to wg's routing.
+///
+/// `native` is the legacy in-process executor name and an alias of `nex`.
+/// External-CLI handlers (`pi`, `opencode`, `aider`, …) are valid leading
+/// tokens too, but they live in [`crate::dispatch::ExecutorKind::EXTERNAL_CLIS`]
+/// — they are intentionally NOT in [`KNOWN_PROVIDERS`] (an executor is not a
+/// model provider), so they are checked separately.
+pub const HANDLER_PREFIXES: &[&str] = &["claude", "codex", "nex", "native"];
+
+/// Whether `prefix` is a model-namespace (provider) prefix that is NOT a
+/// valid leading handler token under the handler-first rule.
+///
+/// These are the prefixes the handler-first rule rejects as a **leading**
+/// spec token: `openrouter`, `openai`, `oai-compat`, `ollama`, `vllm`,
+/// `llamacpp`, `gemini`, `local`. They must instead appear as the *inner*
+/// dialect of a handler-qualified spec, e.g. `nex:openrouter:vendor/model`
+/// (in-process native) or `pi:openrouter:vendor/model` (pi CLI).
+///
+/// Bare Anthropic aliases (`opus`/`sonnet`/`haiku`) have no `:` and are not
+/// rejected; the handler prefixes ([`HANDLER_PREFIXES`]) are not rejected;
+/// external-CLI prefixes are not in [`KNOWN_PROVIDERS`] so they are never
+/// rejected here.
+pub fn is_rejected_leading_provider(prefix: &str) -> bool {
+    KNOWN_PROVIDERS.contains(&prefix) && !HANDLER_PREFIXES.contains(&prefix)
+}
+
+/// How `wg migrate config` rewrites a deprecated leading provider prefix
+/// into its handler-first canonical form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPrefixMigration {
+    /// Replace the leading prefix with the canonical handler, **dropping**
+    /// the original (`oai-compat:gpt-x` → `nex:gpt-x`): the prefix was a
+    /// pure alias of the handler's default wire, so it carries no distinct
+    /// meaning the handler still needs.
+    Swap(&'static str),
+    /// **Prepend** the canonical handler, keeping the original prefix as the
+    /// *inner* dialect (`openrouter:vendor/model` → `nex:openrouter:vendor/model`):
+    /// the prefix names a distinct wire the native handler still needs.
+    Prepend(&'static str),
+}
+
+/// Map a deprecated **leading** provider prefix to its handler-first
+/// rewrite. Returns `None` for prefixes that are already handler-first
+/// (`claude`, `codex`, `nex`, external CLIs) or unknown.
+///
+/// Per the design (§5.2): collapse the pure-alias set
+/// `{local, oai-compat, openai, native}` to `nex:` (swap, drop the prefix);
+/// prepend `nex:` to the wire-distinct set
+/// `{openrouter, ollama, vllm, llamacpp, gemini}` (keep the prefix as inner
+/// dialect). Keep in sync with [`is_rejected_leading_provider`] and the
+/// `wg migrate config` rewrite.
+pub fn provider_prefix_migration(prefix: &str) -> Option<ProviderPrefixMigration> {
+    use ProviderPrefixMigration::*;
+    match prefix {
+        // Pure aliases of the nex handler's default oai-compat wire → swap.
+        "local" | "oai-compat" | "openai" | "native" => Some(Swap("nex")),
+        // Wire-distinct providers the native handler still needs → keep as
+        // the inner dialect.
+        "openrouter" | "ollama" | "vllm" | "llamacpp" | "gemini" => Some(Prepend("nex")),
+        _ => None,
+    }
+}
+
+/// Apply the handler-first migration to a full spec string, returning the
+/// rewritten canonical form (`openrouter:X` → `nex:openrouter:X`,
+/// `oai-compat:X` → `nex:X`). Returns `None` when the spec's leading token
+/// needs no rewrite (already handler-first, bare alias, or unknown prefix).
+pub fn handler_first_rewrite(spec: &str) -> Option<String> {
+    let (prefix, rest) = spec.split_once(':')?;
+    if rest.is_empty() {
+        return None;
+    }
+    match provider_prefix_migration(prefix)? {
+        ProviderPrefixMigration::Swap(handler) => Some(format!("{handler}:{rest}")),
+        ProviderPrefixMigration::Prepend(handler) => Some(format!("{handler}:{prefix}:{rest}")),
+    }
+}
+
+/// Build the loud handler-first deprecation message for a spec whose leading
+/// token is a rejected provider prefix (`openrouter:…`, `ollama:…`, …),
+/// naming the `nex:` / `pi:` handler-qualified forms the user should use
+/// instead. Returns `None` for specs that are already handler-first.
+///
+/// This is the message shown at every strict-validation entry point (CLI
+/// `--model`, config load, `wg service start/daemon --model`) so the silent
+/// mis-route that 401'd for 14 hours becomes a loud, impossible-to-miss
+/// signal.
+pub fn handler_first_warning(spec: &str) -> Option<String> {
+    let (prefix, rest) = spec.split_once(':')?;
+    if rest.trim().is_empty() || !is_rejected_leading_provider(prefix) {
+        return None;
+    }
+    let canonical = handler_first_rewrite(spec).unwrap_or_else(|| format!("nex:{spec}"));
+    // `pi:` self-auths the OpenRouter wire, so it's the documented alternative
+    // for the incident-relevant `openrouter:` case. For the pure-alias / local
+    // providers a `pi:<prefix>:…` route would be misleading, so only the `nex:`
+    // canonical is offered.
+    let alternative = if prefix == "openrouter" {
+        format!(" or `pi:{prefix}:{rest}` (pi CLI — auths itself)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "`{prefix}` is a model namespace, not a handler — a bare `{prefix}:` model \
+         spec silently routes to the in-process `native` handler, which owns no \
+         credential of its own (this is what 401'd every task for 14h). Name a \
+         handler explicitly: `{canonical}` (in-process native — needs the matching \
+         endpoint/key){alternative}. Run `wg migrate config` to rewrite automatically."
+    ))
+}
+
+/// Strip a leading native-handler prefix (`nex:` / `native:`) from a model
+/// spec **when** the remainder is itself a `<provider>:<model>` spec, so the
+/// inner dialect drives wire/provider resolution.
+///
+/// `nex:openrouter:z-ai/glm-5.2` → `openrouter:z-ai/glm-5.2`: the native
+/// handler owns everything after its own prefix as its native model dialect
+/// (the handler-first inner re-parse, design §6.3). Without this, the leading
+/// `nex` collapses to the oai-compat localhost default and an
+/// `nex:openrouter:…` route would silently target localhost instead of
+/// OpenRouter.
+///
+/// A bare nex model with no inner provider (`nex:qwen3-coder`) is returned
+/// unchanged — `nex` stays the provider (→ oai-compat wire) exactly as
+/// before. Idempotent on specs that carry no `nex:`/`native:` prefix. Mirrors
+/// how the CLI adapters (`opencode_model_arg`) strip their own executor
+/// prefix.
+pub fn strip_native_handler_prefix(spec: &str) -> &str {
+    if let Some((prefix, rest)) = spec.split_once(':')
+        && (prefix == "nex" || prefix == "native")
+        && let Some((inner_prefix, inner_rest)) = rest.split_once(':')
+        && KNOWN_PROVIDERS.contains(&inner_prefix)
+        && !inner_rest.trim().is_empty()
+    {
+        return rest;
+    }
+    spec
+}
+
+/// Release flag for the handler-first rollout
+/// (docs/design-handler-first-model-spec.md §5.1 / §11 step 8).
+///
+/// - `false` = **release N**: a bare leading provider prefix WARNs loudly at
+///   the strict-validation entry points and defaults to `nex:` (so nothing
+///   breaks immediately — the lenient resolver already routes it to native).
+/// - `true` = **release N+1**: the same entry points HARD-ERROR with the
+///   handler-first message.
+///
+/// The switch is intentionally a single const so flipping the rollout is a
+/// one-line, well-tested change.
+pub const HANDLER_FIRST_HARD_ERROR: bool = false;
+
 /// Result of parsing a `provider:model` spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
@@ -1897,7 +2057,30 @@ pub fn model_is_openrouter(model: &str) -> bool {
 /// // Invalid: unknown provider
 /// assert!(parse_model_spec_strict("foobar:gpt-4").is_err());
 /// ```
+///
+/// Emits the handler-first deprecation warning to stderr when the leading
+/// token is a bare provider prefix (release N). Use
+/// [`parse_model_spec_strict_quiet`] for bulk config validation, which has
+/// already surfaced that warning once (with a dotted path) via
+/// [`deprecated_model_prefix_warnings_for_toml`].
 pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> {
+    parse_model_spec_strict_impl(spec, true)
+}
+
+/// Like [`parse_model_spec_strict`] but never emits the handler-first
+/// deprecation warning to stderr — it still warn-defaults a bare provider to
+/// `nex:` (or hard-errors under [`HANDLER_FIRST_HARD_ERROR`]). For callers
+/// that validate many model fields in bulk (config load) where a separate
+/// surface already prints one path-annotated warning per occurrence, so the
+/// strict parse would otherwise double-warn on every load.
+pub fn parse_model_spec_strict_quiet(spec: &str) -> Result<ModelSpec, ModelSpecError> {
+    parse_model_spec_strict_impl(spec, false)
+}
+
+fn parse_model_spec_strict_impl(
+    spec: &str,
+    emit_warning: bool,
+) -> Result<ModelSpec, ModelSpecError> {
     if spec.is_empty() {
         return Err(ModelSpecError {
             input: spec.to_string(),
@@ -1939,6 +2122,38 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
             provider: Some(prefix.to_string()),
             model_id: rest.to_string(),
         });
+    }
+
+    // Handler-first enforcement: a bare PROVIDER prefix (`openrouter`,
+    // `ollama`, `gemini`, `oai-compat`, `local`, …) is NOT a valid leading
+    // handler token. The leading token must always name a handler; the
+    // provider belongs in the inner dialect (`nex:openrouter:…` /
+    // `pi:openrouter:…`). Release N (HANDLER_FIRST_HARD_ERROR == false) WARNs
+    // loudly and resolves the spec as its `nex:`-defaulted canonical form
+    // (so existing configs keep working, matching the lenient resolver's
+    // `_ => native` arm); release N+1 hard-errors. This is the single place
+    // every strict entry point (CLI `--model`, config load,
+    // `wg service start/daemon --model`) funnels through. Mirrors the
+    // `amplifier` rejection above, in the opposite direction.
+    if let Some((prefix, rest)) = spec.split_once(':')
+        && !rest.trim().is_empty()
+        && is_rejected_leading_provider(prefix)
+    {
+        let message = handler_first_warning(spec).unwrap_or_default();
+        if HANDLER_FIRST_HARD_ERROR {
+            return Err(ModelSpecError {
+                input: spec.to_string(),
+                message,
+            });
+        }
+        if emit_warning {
+            eprintln!("warning: {message}");
+        }
+        // Default to the handler-first canonical form so the returned spec
+        // is never a bare provider prefix. `handler_first_rewrite` always
+        // yields a `nex:`-qualified string for a rejected provider.
+        let canonical = handler_first_rewrite(spec).unwrap_or_else(|| spec.to_string());
+        return Ok(parse_model_spec(&canonical));
     }
 
     if let Some((prefix, rest)) = spec.split_once(':') {
@@ -2086,29 +2301,26 @@ fn lookup_toml_path<'a>(root: &'a toml::Value, path: &[&str]) -> Option<&'a toml
 }
 
 /// Inspect a raw config.toml string and produce deprecation warnings for
-/// any model strings that use the deprecated `local:` / `oai-compat:`
-/// provider prefixes. Both prefixes were retired in favor of the canonical
-/// `nex:` (matches the `wg nex` subcommand). Existing configs keep
-/// working for one release; this surface is what tells users to migrate.
+/// any model strings whose **leading** token is a bare provider prefix
+/// instead of a handler (`openrouter:`, `ollama:`, `gemini:`, `oai-compat:`,
+/// `openai:`, `local:`, `vllm:`, `llamacpp:`). Under the handler-first rule
+/// the leading token must always name a handler; the provider belongs in the
+/// inner dialect (`nex:openrouter:…` / `pi:openrouter:…`). Existing configs
+/// keep working for one release; this surface is what tells users to migrate.
 ///
 /// Walks every string value in the document and reports each occurrence
 /// once with its dotted-path location so users can find and rewrite it.
-/// Pair with `wg migrate config` for an automated rewrite.
+/// Pair with `wg migrate config` for an automated rewrite. The message body
+/// is the shared [`handler_first_warning`] used at every entry point, so the
+/// load-time warning, the strict-parse warning, and lint all agree.
 pub fn deprecated_model_prefix_warnings_for_toml(content: &str) -> Vec<String> {
     let Ok(value) = content.parse::<toml::Value>() else {
         return Vec::new();
     };
     let mut out = Vec::new();
     walk_strings_readonly(&value, "", &mut |path, s| {
-        if let Some((prefix, rest)) = s.split_once(':')
-            && let Some(replacement) = deprecated_provider_prefix_replacement(prefix)
-        {
-            out.push(format!(
-                "model spec `{} = \"{}\"` uses deprecated `{}:` prefix — \
-                 use `{}:{}` instead (the `nex:` prefix matches the `wg nex` \
-                 subcommand). Run `wg migrate config` to rewrite automatically.",
-                path, s, prefix, replacement, rest,
-            ));
+        if let Some(msg) = handler_first_warning(s) {
+            out.push(format!("model spec `{path} = \"{s}\"`: {msg}"));
         }
     });
     out
@@ -4955,8 +5167,12 @@ impl Config {
     pub fn validate_model_format(&self) -> anyhow::Result<()> {
         let mut errors: Vec<String> = Vec::new();
 
+        // Quiet variant: this runs on every config load and a bare provider
+        // prefix is already surfaced once (with a dotted path) by
+        // `deprecated_model_prefix_warnings_for_toml` at the same load. Using
+        // the warning variant here would double-warn on every `wg` invocation.
         let check_model = |field: &str, model: &str| -> Option<String> {
-            match parse_model_spec_strict(model) {
+            match parse_model_spec_strict_quiet(model) {
                 Ok(_) => None,
                 Err(e) => Some(format!("  {} = \"{}\": {}", field, model, e)),
             }
@@ -7591,6 +7807,155 @@ provider = "openrouter"
         assert!(parse_model_spec_strict("foobar:gpt-4").is_err());
     }
 
+    // -----------------------------------------------------------------------
+    // Handler-first model-spec enforcement
+    // (docs/design-handler-first-model-spec.md)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_handler_first_partition() {
+        // Handlers are valid leading tokens; provider namespaces are not.
+        for h in ["claude", "codex", "nex", "native"] {
+            assert!(HANDLER_PREFIXES.contains(&h));
+            assert!(
+                !is_rejected_leading_provider(h),
+                "{h} is a handler, must not be rejected"
+            );
+        }
+        for p in [
+            "openrouter",
+            "openai",
+            "oai-compat",
+            "ollama",
+            "vllm",
+            "llamacpp",
+            "gemini",
+            "local",
+        ] {
+            assert!(
+                is_rejected_leading_provider(p),
+                "{p} is a provider namespace, must be rejected as a leading token"
+            );
+        }
+        // External-CLI handlers are not in KNOWN_PROVIDERS, so they are never
+        // rejected here (handled by the executor-prefix interception).
+        assert!(!is_rejected_leading_provider("pi"));
+        assert!(!is_rejected_leading_provider("opencode"));
+    }
+
+    #[test]
+    fn test_handler_first_rewrite_prepend_vs_swap() {
+        // Wire-distinct providers prepend the handler (keep the inner dialect).
+        assert_eq!(
+            handler_first_rewrite("openrouter:z-ai/glm-5.2").as_deref(),
+            Some("nex:openrouter:z-ai/glm-5.2")
+        );
+        assert_eq!(
+            handler_first_rewrite("ollama:llama3").as_deref(),
+            Some("nex:ollama:llama3")
+        );
+        assert_eq!(
+            handler_first_rewrite("gemini:gemini-2.5-pro").as_deref(),
+            Some("nex:gemini:gemini-2.5-pro")
+        );
+        // Pure aliases swap to nex (drop the prefix).
+        assert_eq!(
+            handler_first_rewrite("oai-compat:gpt-x").as_deref(),
+            Some("nex:gpt-x")
+        );
+        assert_eq!(
+            handler_first_rewrite("openai:gpt-x").as_deref(),
+            Some("nex:gpt-x")
+        );
+        assert_eq!(
+            handler_first_rewrite("local:qwen3-coder").as_deref(),
+            Some("nex:qwen3-coder")
+        );
+        assert_eq!(
+            handler_first_rewrite("native:qwen3-coder").as_deref(),
+            Some("nex:qwen3-coder")
+        );
+        // Already handler-first or bare → no rewrite.
+        assert_eq!(handler_first_rewrite("claude:opus"), None);
+        assert_eq!(handler_first_rewrite("nex:openrouter:z-ai/glm-5.2"), None);
+        assert_eq!(handler_first_rewrite("codex:gpt-5.5"), None);
+        assert_eq!(handler_first_rewrite("opus"), None);
+    }
+
+    #[test]
+    fn test_handler_first_warning_targets() {
+        // Bare provider prefixes warn loudly and name the canonical form.
+        let w = handler_first_warning("openrouter:z-ai/glm-5.2").unwrap();
+        assert!(w.contains("nex:openrouter:z-ai/glm-5.2"), "{w}");
+        assert!(w.contains("pi:openrouter:z-ai/glm-5.2"), "{w}");
+        assert!(w.contains("not a handler"), "{w}");
+        // Handler-first forms and bare aliases are silent.
+        assert!(handler_first_warning("nex:openrouter:z-ai/glm-5.2").is_none());
+        assert!(handler_first_warning("pi:openrouter/z-ai/glm-5.2").is_none());
+        assert!(handler_first_warning("claude:opus").is_none());
+        assert!(handler_first_warning("opus").is_none());
+    }
+
+    #[test]
+    fn test_strip_native_handler_prefix() {
+        // Unwrap nex:/native: only when the remainder is itself a
+        // provider:model spec — that drives the inner wire resolution.
+        assert_eq!(
+            strip_native_handler_prefix("nex:openrouter:z-ai/glm-5.2"),
+            "openrouter:z-ai/glm-5.2"
+        );
+        assert_eq!(
+            strip_native_handler_prefix("native:ollama:llama3"),
+            "ollama:llama3"
+        );
+        // A bare nex model keeps its prefix (nex → oai-compat wire as before).
+        assert_eq!(
+            strip_native_handler_prefix("nex:qwen3-coder"),
+            "nex:qwen3-coder"
+        );
+        // Non-nex specs are untouched.
+        assert_eq!(
+            strip_native_handler_prefix("openrouter:z-ai/glm-5.2"),
+            "openrouter:z-ai/glm-5.2"
+        );
+        assert_eq!(strip_native_handler_prefix("claude:opus"), "claude:opus");
+        assert_eq!(strip_native_handler_prefix("opus"), "opus");
+    }
+
+    #[test]
+    fn test_parse_model_spec_strict_handler_first() {
+        // Release N: bare provider prefix warns + defaults to the nex-qualified
+        // canonical form (never returns a bare provider).
+        let spec = parse_model_spec_strict("openrouter:z-ai/glm-5.2").unwrap();
+        assert_eq!(spec.provider.as_deref(), Some("nex"));
+        assert_eq!(spec.model_id, "openrouter:z-ai/glm-5.2");
+
+        let spec = parse_model_spec_strict("ollama:llama3").unwrap();
+        assert_eq!(spec.provider.as_deref(), Some("nex"));
+        assert_eq!(spec.model_id, "ollama:llama3");
+
+        // Handler-first specs parse via the first-colon rule, unchanged.
+        let spec = parse_model_spec_strict("nex:openrouter:z-ai/glm-5.2").unwrap();
+        assert_eq!(spec.provider.as_deref(), Some("nex"));
+        assert_eq!(spec.model_id, "openrouter:z-ai/glm-5.2");
+
+        let spec = parse_model_spec_strict("pi:openrouter/z-ai/glm-5.2").unwrap();
+        assert_eq!(spec.provider.as_deref(), Some("pi"));
+        assert_eq!(spec.model_id, "openrouter/z-ai/glm-5.2");
+
+        // claude:opus and bare opus/sonnet/haiku → claude, unchanged.
+        let spec = parse_model_spec_strict("claude:opus").unwrap();
+        assert_eq!(spec.provider.as_deref(), Some("claude"));
+        assert_eq!(spec.model_id, "opus");
+
+        // Bare alias and genuinely-unknown prefix still error.
+        assert!(parse_model_spec_strict("opus").is_err());
+        assert!(parse_model_spec_strict("foobar:gpt-4").is_err());
+
+        // Release N keeps the warn-and-default behavior (not a hard error yet).
+        assert!(!HANDLER_FIRST_HARD_ERROR);
+    }
+
     #[test]
     fn test_provider_to_native_provider_mapping() {
         assert_eq!(provider_to_native_provider("openrouter"), "openrouter");
@@ -7690,16 +8055,17 @@ model = "oai-compat:gpt-5"
 
     #[test]
     fn test_deprecated_model_prefix_warnings_canonical_silent() {
-        // `nex:` (canonical) and `claude:` (handler-name match) must NOT
-        // emit a warning. Same for `openrouter:` — that one keeps its
-        // implicit-endpoint convenience and stays.
+        // Handler-first canonical forms must NOT emit a warning: `nex:`
+        // (canonical handler), `claude:` (handler-name match), the nested
+        // `nex:openrouter:…` form, and `pi:openrouter/…` (handler-qualified).
         let toml = r#"
 [agent]
 model = "nex:qwen3-coder"
 
 [tiers]
 fast = "claude:haiku"
-standard = "openrouter:anthropic/claude-sonnet-4-6"
+standard = "nex:openrouter:anthropic/claude-sonnet-4-6"
+premium = "pi:openrouter/anthropic/claude-opus-4-6"
 "#;
         let warnings = deprecated_model_prefix_warnings_for_toml(toml);
         assert!(
@@ -7707,6 +8073,52 @@ standard = "openrouter:anthropic/claude-sonnet-4-6"
             "no warnings expected; got {:?}",
             warnings
         );
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_bare_openrouter() {
+        // Handler-first enforcement: a bare `openrouter:` leading token is a
+        // provider namespace, not a handler — it must warn loudly and name
+        // both the `nex:` and `pi:` handler-qualified forms. This is the
+        // exact form behind the 14h-401 incident.
+        let toml = r#"
+[dispatcher]
+model = "openrouter:z-ai/glm-5.2"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        assert_eq!(warnings.len(), 1, "got: {:?}", warnings);
+        let w = &warnings[0];
+        assert!(w.contains("dispatcher.model"), "must include path — {w}");
+        assert!(
+            w.contains("nex:openrouter:z-ai/glm-5.2"),
+            "must name the nex: canonical — {w}"
+        );
+        assert!(
+            w.contains("pi:openrouter:z-ai/glm-5.2"),
+            "must name the pi: alternative — {w}"
+        );
+        assert!(w.contains("wg migrate config"), "must hint migrate — {w}");
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_wire_distinct_providers() {
+        // The full rejected leading-provider set warns (not just the legacy
+        // local/oai-compat pair): ollama, vllm, llamacpp, gemini.
+        let toml = r#"
+[tiers]
+fast = "ollama:llama3"
+standard = "gemini:gemini-2.5-pro"
+premium = "vllm:my-model"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        assert_eq!(warnings.len(), 3, "got: {:?}", warnings);
+        assert!(warnings.iter().any(|w| w.contains("nex:ollama:llama3")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("nex:gemini:gemini-2.5-pro"))
+        );
+        assert!(warnings.iter().any(|w| w.contains("nex:vllm:my-model")));
     }
 
     #[test]

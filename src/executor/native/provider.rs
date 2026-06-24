@@ -275,6 +275,16 @@ pub fn create_provider_ext_with_config(
         return Ok(Box::new(FakeProvider::from_file(&path, model)?));
     }
 
+    // Handler-first inner re-parse (design §6.3): a leading `nex:` / `native:`
+    // names THIS in-process handler; everything after it is the handler's own
+    // native model dialect. Unwrap it so a wire-distinct inner provider
+    // (`nex:openrouter:z-ai/glm-5.2` → `openrouter:z-ai/glm-5.2`) drives the
+    // provider/endpoint resolution below instead of `nex` collapsing to the
+    // oai-compat localhost default and silently targeting the wrong API. A
+    // bare nex model with no inner provider (`nex:qwen3-coder`) is left
+    // untouched. Mirrors how the CLI adapters strip their own executor prefix.
+    let model = crate::config::strip_native_handler_prefix(model);
+
     // Inline URL shortcut: `-e http://localhost:11434` (or https://)
     // bypasses the named-endpoint config lookup. Builds an OpenAI-
     // compatible client against that URL with no API key (the

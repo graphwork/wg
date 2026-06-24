@@ -114,6 +114,21 @@ pub enum ConfigScope {
 }
 
 /// Show current configuration
+/// Trailing annotation for a model line in `wg config --show`. When the spec's
+/// leading token is a bare provider prefix that the handler-first rule
+/// rewrites, surface the canonical handler-first form plus the resolved
+/// handler so a silent mis-route (e.g. `openrouter:` → keyless `native`) is
+/// visible in the config dump itself. Empty for already-handler-first specs.
+fn handler_first_annotation(model: &str) -> String {
+    match worksgood::config::handler_first_rewrite(model) {
+        Some(canonical) => {
+            let handler = worksgood::dispatch::handler_for_model(model).as_str();
+            format!("    # handler-first: {canonical} (handler={handler})")
+        }
+        None => String::new(),
+    }
+}
+
 pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
     let config = match scope {
         Some(ConfigScope::Global) => Config::load_global()?.unwrap_or_default(),
@@ -129,7 +144,11 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!();
         println!("[agent]");
         println!("  executor = \"{}\"", config.agent.executor);
-        println!("  model = \"{}\"", config.agent.model);
+        println!(
+            "  model = \"{}\"{}",
+            config.agent.model,
+            handler_first_annotation(&config.agent.model)
+        );
         println!("  interval = {}", config.agent.interval);
         println!("  heartbeat_timeout = {}", config.agent.heartbeat_timeout);
         if let Some(max) = config.agent.max_tasks {
@@ -149,7 +168,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             config.coordinator.effective_executor()
         );
         if let Some(ref m) = config.coordinator.model {
-            println!("  model = \"{}\"", m);
+            println!("  model = \"{}\"{}", m, handler_first_annotation(m));
         }
         println!(
             "  max_incomplete_retries = {}",
@@ -1384,33 +1403,64 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
 
     let config = Config::load_merged(dir)?;
 
+    // Render a model route in its canonical **handler-first** form and the
+    // handler it actually resolves to. A bare provider prefix
+    // (`openrouter:z-ai/glm-5.2`) is shown as `nex:openrouter:z-ai/glm-5.2`,
+    // and the HANDLER column echoes `handler_for_model` so a silent mis-route
+    // (the 14h-401 incident) is visible at a glance rather than only when an
+    // agent dies.
+    let canonical = |model: &str| -> String {
+        worksgood::config::handler_first_rewrite(model).unwrap_or_else(|| model.to_string())
+    };
+    let handler_of =
+        |model: &str| -> &'static str { worksgood::dispatch::handler_for_model(model).as_str() };
+
     if json {
         let mut entries = serde_json::Map::new();
+        let mut insert_role = |entries: &mut serde_json::Map<String, serde_json::Value>,
+                               name: &str,
+                               resolved: &worksgood::config::ResolvedModel,
+                               tier: String,
+                               source: &str| {
+            // `model`/`provider` keep their original split representation (the
+            // bare model id + resolved provider) for back-compat. `route` is
+            // the full `provider:model` spec, `canonical` renders it
+            // handler-first, and `handler` echoes the resolved handler so a
+            // mis-route is machine-visible.
+            let spec = resolved.spawn_model_spec();
+            entries.insert(
+                name.to_string(),
+                serde_json::json!({
+                    "model": resolved.model,
+                    "route": spec,
+                    "canonical": canonical(&spec),
+                    "handler": handler_of(&spec),
+                    "provider": resolved.provider,
+                    "endpoint": resolved.endpoint,
+                    "tier": tier,
+                    "source": source,
+                }),
+            );
+        };
         // Show default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
         let source = config.resolve_model_source(DispatchRole::Default);
-        entries.insert(
-            "default".to_string(),
-            serde_json::json!({
-                "model": resolved.model,
-                "provider": resolved.provider,
-                "endpoint": resolved.endpoint,
-                "tier": DispatchRole::Default.default_tier().to_string(),
-                "source": source,
-            }),
+        insert_role(
+            &mut entries,
+            "default",
+            &resolved,
+            DispatchRole::Default.default_tier().to_string(),
+            source,
         );
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
             let source = config.resolve_model_source(*role);
-            entries.insert(
-                role.to_string(),
-                serde_json::json!({
-                    "model": resolved.model,
-                    "provider": resolved.provider,
-                    "endpoint": resolved.endpoint,
-                    "tier": role.default_tier().to_string(),
-                    "source": source,
-                }),
+            insert_role(
+                &mut entries,
+                &role.to_string(),
+                &resolved,
+                role.default_tier().to_string(),
+                source,
             );
         }
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -1419,49 +1469,58 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("===========================");
         println!();
         println!(
-            "  {:<20} {:<10} {:<30} {:<14} {:<16} SOURCE",
-            "ROLE", "TIER", "MODEL", "PROVIDER", "ENDPOINT"
+            "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<14} SOURCE",
+            "ROLE", "TIER", "MODEL", "HANDLER", "PROVIDER", "ENDPOINT"
         );
-        println!("  {}", "-".repeat(106));
+        println!("  {}", "-".repeat(112));
+
+        let print_row =
+            |role: &str, tier: &str, resolved: &worksgood::config::ResolvedModel, source: &str| {
+                let provider_display = resolved
+                    .provider
+                    .as_deref()
+                    .map(worksgood::config::native_provider_to_prefix)
+                    .unwrap_or("(not set)");
+                // `spawn_model_spec` reattaches the provider into a full
+                // `provider:model` route; `canonical` then renders it
+                // handler-first and `handler_of` resolves the real handler.
+                let spec = resolved.spawn_model_spec();
+                println!(
+                    "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<14} {}",
+                    role,
+                    tier,
+                    canonical(&spec),
+                    handler_of(&spec),
+                    provider_display,
+                    resolved.endpoint.as_deref().unwrap_or(""),
+                    source,
+                );
+            };
 
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
         let source = config.resolve_model_source(DispatchRole::Default);
-        let provider_display = resolved
-            .provider
-            .as_deref()
-            .map(worksgood::config::native_provider_to_prefix)
-            .unwrap_or("(not set)");
-        println!(
-            "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
+        print_row(
             "default",
-            DispatchRole::Default.default_tier(),
-            resolved.model,
-            provider_display,
-            resolved.endpoint.as_deref().unwrap_or(""),
-            source,
+            &DispatchRole::Default.default_tier().to_string(),
+            &resolved,
+            &source,
         );
 
         // Per-role
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
             let source = config.resolve_model_source(*role);
-            let provider_display = resolved
-                .provider
-                .as_deref()
-                .map(worksgood::config::native_provider_to_prefix)
-                .unwrap_or("(not set)");
-            println!(
-                "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
-                role.to_string(),
-                role.default_tier(),
-                resolved.model,
-                provider_display,
-                resolved.endpoint.as_deref().unwrap_or(""),
-                source,
+            print_row(
+                &role.to_string(),
+                &role.default_tier().to_string(),
+                &resolved,
+                &source,
             );
         }
         println!();
+        println!("HANDLER is the subprocess that runs the model (handler_for_model): a bare");
+        println!("provider prefix resolves to `native` — the canonical form is shown in MODEL.");
         println!("Sources: explicit = user-set model, tier-default = from default_tier(),");
         println!("         tier-override = from [models.role].tier, legacy = from agency.*_model,");
         println!("         fallback = from [models.default] or agent.model");

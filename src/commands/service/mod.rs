@@ -933,6 +933,27 @@ WantedBy=default.target
     Ok(())
 }
 
+/// Emit the loud handler-first warning when a service `--model` launch /
+/// override arg is a bare provider prefix (`openrouter:…`, `ollama:…`, …)
+/// instead of a handler-qualified spec.
+///
+/// This guards **the exact path behind the 14h-401 incident**: a coordinator
+/// launched `wg service start/daemon --model openrouter:z-ai/glm-5.2` silently
+/// routed to the keyless in-process `native` handler, so every non-pinned task
+/// 401'd invisibly. Now the bare-provider launch arg warns loudly at startup
+/// (to the terminal for `start`, to the daemon log for `daemon`) instead of
+/// silently routing to a credential-less handler.
+///
+/// Returns the warning string (also emitted to stderr) so tests can assert it;
+/// `None` when the arg is absent or already handler-first.
+pub(crate) fn warn_bare_provider_model_arg(model: Option<&str>, context: &str) -> Option<String> {
+    let spec = model?;
+    let msg = worksgood::config::handler_first_warning(spec)?;
+    let full = format!("warning: ({context} --model) {msg}");
+    eprintln!("{full}");
+    Some(full)
+}
+
 /// Run a single coordinator tick (debug/testing command)
 pub fn run_tick(
     dir: &Path,
@@ -940,6 +961,7 @@ pub fn run_tick(
     executor: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
+    warn_bare_provider_model_arg(model, "wg service tick");
     let config = Config::load_merged(dir)?;
     let max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let executor = executor
@@ -1045,6 +1067,10 @@ pub fn run_start(
     force: bool,
     no_coordinator_agent: bool,
 ) -> Result<()> {
+    // Handler-first: a bare-provider `--model` launch arg (the 14h-401
+    // incident) must warn loudly here, on the user's terminal, before the
+    // daemon is even forked.
+    warn_bare_provider_model_arg(model, "wg service start");
     let config = Config::load_merged(dir)?;
 
     // Check if service is already running
@@ -2060,6 +2086,15 @@ pub fn run_daemon(
     // --- Persistent logging setup ---
     let logger = DaemonLogger::open(dir).context("Failed to initialise daemon logger")?;
     logger.install_panic_hook();
+
+    // Handler-first: re-assert the bare-provider `--model` warning inside the
+    // forked daemon so it lands in the daemon log too (run_start warned on the
+    // terminal; the daemon process has its own stderr → log file). Also log it
+    // through the structured logger so the mis-route is captured in the record
+    // the 14h-401 incident lacked.
+    if let Some(w) = warn_bare_provider_model_arg(cli_model, "wg service daemon") {
+        logger.warn(&w);
+    }
 
     logger.info(&format!(
         "Daemon starting (PID {}, socket {})",
@@ -3389,6 +3424,9 @@ pub fn run_reload(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    // Handler-first: a bare-provider `--model` reload override would push the
+    // same keyless-native mis-route onto a running daemon — warn loudly.
+    warn_bare_provider_model_arg(model, "wg service reload");
     let request = IpcRequest::Reconfigure {
         max_agents,
         executor: executor.map(std::string::ToString::to_string),
@@ -4280,6 +4318,50 @@ pub fn send_request(_dir: &Path, _request: &IpcRequest) -> Result<IpcResponse> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Regression test for the 14h-401 incident: a coordinator launched
+    /// `wg service start/daemon --model openrouter:z-ai/glm-5.2` silently
+    /// routed to the keyless in-process `native` handler, so every non-pinned
+    /// task 401'd invisibly. The daemon-launch model arg must now produce a
+    /// LOUD warning naming the `nex:` / `pi:` handler-qualified forms — never
+    /// a silent route. This guards the exact arg-validation helper that both
+    /// `run_start` and `run_daemon` (and `run_reload` / `run_tick`) funnel
+    /// through.
+    #[test]
+    fn test_daemon_launch_bare_provider_model_warns_loudly() {
+        // The incident spec: bare `openrouter:` → warn naming nex: and pi:.
+        let w = warn_bare_provider_model_arg(Some("openrouter:z-ai/glm-5.2"), "wg service daemon")
+            .expect("bare openrouter --model must warn at the daemon-launch path");
+        assert!(w.contains("not a handler"), "must explain the rule — {w}");
+        assert!(
+            w.contains("nex:openrouter:z-ai/glm-5.2"),
+            "must name the nex: handler-qualified form — {w}"
+        );
+        assert!(
+            w.contains("pi:openrouter:z-ai/glm-5.2"),
+            "must name the pi: handler-qualified form — {w}"
+        );
+        assert!(
+            w.contains("wg service daemon --model"),
+            "must say which launch arg is at fault — {w}"
+        );
+
+        // Other rejected providers warn too.
+        assert!(warn_bare_provider_model_arg(Some("ollama:llama3"), "x").is_some());
+
+        // Handler-first specs and bare aliases are SILENT — no false alarms.
+        assert!(
+            warn_bare_provider_model_arg(Some("nex:openrouter:z-ai/glm-5.2"), "x").is_none(),
+            "handler-first nex: form must not warn"
+        );
+        assert!(
+            warn_bare_provider_model_arg(Some("pi:openrouter/z-ai/glm-5.2"), "x").is_none(),
+            "handler-first pi: form must not warn"
+        );
+        assert!(warn_bare_provider_model_arg(Some("claude:opus"), "x").is_none());
+        assert!(warn_bare_provider_model_arg(Some("opus"), "x").is_none());
+        assert!(warn_bare_provider_model_arg(None, "x").is_none());
+    }
 
     /// 5 consecutive failures must trip the circuit breaker (sets
     /// `cooldown_until`) so the daemon stops re-attempting the registry
