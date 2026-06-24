@@ -3542,6 +3542,17 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
 
+        // Log tab: '{' / '}' cycle through a retried task's attempts
+        // (older / newer agent). Pins the chosen attempt so the live agent
+        // doesn't snap back on the next refresh. Siblings of '[' / ']'
+        // (which browse loop iterations) — a distinct, retry-specific axis.
+        KeyCode::Char('{') if app.right_panel_tab == RightPanelTab::Log => {
+            app.log_pane_cycle_attempt(false);
+        }
+        KeyCode::Char('}') if app.right_panel_tab == RightPanelTab::Log => {
+            app.log_pane_cycle_attempt(true);
+        }
+
         // Detail tab: 'R' toggles raw JSON display
         KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
             app.detail_raw_json = !app.detail_raw_json;

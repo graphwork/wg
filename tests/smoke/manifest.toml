@@ -486,6 +486,15 @@ description = "wg tui's '4: Log' pane renders raw_stream.jsonl events for an in-
 timeout_seconds = 60
 
 [[scenario]]
+name = "tui_log_pane_follows_retry"
+script = "scenarios/tui_log_pane_follows_retry.sh"
+owners = [
+    "fix-tui-retry-log",
+]
+description = "After a fail→retry, wg tui's '4: Log' pane defaults to the LIVE (latest/assigned) agent's events — not the first (failed) attempt's stale log — and labels the displayed attempt 'attempt N/M (live|failed)'. '{' cycles to the previous (failed) attempt. Regression for load_log_pane() picking the first agent-* mentioned in the task log, which stuck the pane on the dead attempt while the graph progressed on a live retry agent."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_log_scroll_controls"
 script = "scenarios/tui_log_scroll_controls.sh"
 owners = [

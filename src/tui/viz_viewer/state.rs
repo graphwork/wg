@@ -5135,6 +5135,18 @@ pub struct LogPaneState {
     pub total_wrapped_lines: usize,
     /// Agent ID for the selected task (for loading output.log).
     pub agent_id: Option<String>,
+    /// Every attempt agent for the selected task, oldest attempt first, newest
+    /// last. Rebuilt by `load_log_pane`; drives the `{`/`}` attempt switcher and
+    /// the "attempt N/M" header label so a retried task can be inspected per
+    /// attempt instead of sticking on the first (failed) one.
+    pub attempt_agent_ids: Vec<String>,
+    /// Agent the user manually pinned via the attempt switcher (None = follow
+    /// the live/current agent). Survives the per-refresh invalidate so a manual
+    /// pin doesn't snap back to the live agent on the next tick.
+    pub manual_pin: Option<String>,
+    /// Task the `manual_pin` belongs to. When the selected task changes, the
+    /// pin is dropped so the new task defaults to its own live agent.
+    pub pinned_for_task: Option<String>,
     /// Agent output text buffer — same type as the Output tab uses.
     pub agent_output: OutputAgentText,
     /// Whether new content arrived while scrolled up (for "new output" indicator).
@@ -5161,6 +5173,9 @@ impl Default for LogPaneState {
             viewport_height: 0,
             total_wrapped_lines: 0,
             agent_id: None,
+            attempt_agent_ids: Vec::new(),
+            manual_pin: None,
+            pinned_for_task: None,
             agent_output: OutputAgentText::default(),
             has_new_content: false,
             viewing_iteration: None,
@@ -11165,7 +11180,17 @@ impl VizApp {
         // Reset agent output if task changed.
         let prev_agent_id = self.log_pane.agent_id.clone();
 
-        let mut agent_id: Option<String> = None;
+        // Every `agent-*` referenced in the log, in chronological order. A
+        // retried task accumulates one block of entries per attempt, oldest
+        // first — so this is the attempt order. We collect ALL of them (not
+        // just the first) and let `select_attempt_agent` choose the default so
+        // the pane follows the live agent instead of the failed first attempt.
+        let mut log_mentioned: Vec<String> = Vec::new();
+        let mut note_agent = |id: String, list: &mut Vec<String>| {
+            if id.starts_with("agent-") && !list.iter().any(|x| *x == id) {
+                list.push(id);
+            }
+        };
 
         if task.log.is_empty() {
             self.log_pane
@@ -11173,23 +11198,20 @@ impl VizApp {
                 .push("(no log entries)".to_string());
         } else {
             let now = chrono::Utc::now();
-            // Find agent_id from log entries (actor field) or from "Spawned" message.
             for entry in &task.log {
-                // Try to extract agent_id from actor field.
-                if agent_id.is_none() {
-                    if let Some(ref actor) = entry.actor
-                        && actor.starts_with("agent-")
-                    {
-                        agent_id = Some(actor.clone());
-                    }
-                    // Also check message for "[agent-XXXX]" pattern.
-                    if agent_id.is_none()
-                        && entry.message.contains("[agent-")
-                        && let Some(start) = entry.message.find("[agent-")
-                        && let Some(end) = entry.message[start..].find(']')
-                    {
-                        agent_id = Some(entry.message[start + 1..start + end].to_string());
-                    }
+                // Collect agent ids from the actor field …
+                if let Some(ref actor) = entry.actor {
+                    note_agent(actor.clone(), &mut log_mentioned);
+                }
+                // … and from the "[agent-XXXX]" pattern in the message.
+                if entry.message.contains("[agent-")
+                    && let Some(start) = entry.message.find("[agent-")
+                    && let Some(end) = entry.message[start..].find(']')
+                {
+                    note_agent(
+                        entry.message[start + 1..start + end].to_string(),
+                        &mut log_mentioned,
+                    );
                 }
                 if self.log_pane.json_mode {
                     // Raw JSON format for debugging.
@@ -11209,20 +11231,34 @@ impl VizApp {
             }
         }
 
-        // Also check the agent registry for an agent working on this task.
-        if agent_id.is_none() {
-            for entry in &self.agent_monitor.agents {
-                if entry.task_id.as_deref() == Some(&task_id) {
-                    agent_id = Some(entry.agent_id.clone());
-                    break;
-                }
-            }
-        }
+        // Agents the registry associates with this task (covers a just-spawned
+        // retry agent that has not yet written a log entry).
+        let registry_ids: Vec<String> = self
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|e| e.task_id.as_deref() == Some(&task_id))
+            .map(|e| e.agent_id.clone())
+            .collect();
 
-        // Fall back to task.assigned field.
-        if agent_id.is_none() {
-            agent_id = task.assigned.clone();
-        }
+        // A manual pin only applies to the task it was made for; selecting a
+        // different task drops it so the new task defaults to its live agent.
+        let manual_pin = if self.log_pane.pinned_for_task.as_deref() == Some(&task_id) {
+            self.log_pane.manual_pin.clone()
+        } else {
+            self.log_pane.manual_pin = None;
+            self.log_pane.pinned_for_task = None;
+            None
+        };
+
+        let selection = worksgood::attempt_select::select_attempt_agent(
+            &log_mentioned,
+            &registry_ids,
+            task.assigned.as_deref(),
+            manual_pin.as_deref(),
+        );
+        self.log_pane.attempt_agent_ids = selection.ordered;
+        let agent_id = selection.selected;
 
         // Reset agent output buffer if agent changed.
         if agent_id != prev_agent_id {
@@ -11246,6 +11282,86 @@ impl VizApp {
         self.log_pane.task_id = None;
         // Mark agent output as dirty so markdown is re-rendered.
         self.log_pane.agent_output.dirty = true;
+    }
+
+    /// Cycle the Log pane through the selected task's retry attempts
+    /// (`{` = older, `}` = newer). The chosen attempt is *pinned* so the
+    /// per-refresh reload (`load_log_pane`) doesn't snap back to the live
+    /// agent; the pin is dropped when the user selects a different task.
+    pub fn log_pane_cycle_attempt(&mut self, forward: bool) {
+        let ids = self.log_pane.attempt_agent_ids.clone();
+        if ids.len() < 2 {
+            return;
+        }
+        let pos = self
+            .log_pane
+            .agent_id
+            .as_ref()
+            .and_then(|cur| ids.iter().position(|x| x == cur))
+            .unwrap_or(0);
+        let next = if forward {
+            (pos + 1) % ids.len()
+        } else if pos == 0 {
+            ids.len() - 1
+        } else {
+            pos - 1
+        };
+        let target = ids[next].clone();
+
+        let task_id = self.selected_task_id().map(|s| s.to_string());
+        self.log_pane.manual_pin = Some(target.clone());
+        self.log_pane.pinned_for_task = task_id;
+
+        if self.log_pane.agent_id.as_deref() != Some(target.as_str()) {
+            self.log_pane.agent_id = Some(target);
+            // Fresh agent → reset the incremental read state so the new
+            // attempt's output/events load from the top.
+            self.log_pane.agent_output = OutputAgentText::default();
+            self.log_pane.stream_events.clear();
+            self.log_pane.raw_stream_offset = 0;
+            self.log_pane.scroll = usize::MAX;
+            self.log_pane.auto_tail = true;
+            self.log_pane.has_new_content = false;
+            // Pull in the newly-selected attempt's content immediately.
+            self.update_log_output();
+            self.update_log_stream_events();
+        }
+    }
+
+    /// Liveness suffix for an agent, derived from the registry, e.g. ` (live)`.
+    /// Empty when the agent isn't in the registry (status unknown).
+    fn agent_liveness_suffix(&self, agent_id: &str) -> &'static str {
+        match self
+            .agent_monitor
+            .agents
+            .iter()
+            .find(|a| a.agent_id == agent_id)
+            .map(|a| a.status)
+        {
+            Some(AgentStatus::Working | AgentStatus::Starting | AgentStatus::Idle) => " (live)",
+            Some(AgentStatus::Done) => " (done)",
+            Some(AgentStatus::Failed) => " (failed)",
+            Some(AgentStatus::Dead) => " (dead)",
+            _ => "",
+        }
+    }
+
+    /// Header label distinguishing the displayed attempt among a retried task's
+    /// attempts, e.g. `attempt 2/2 (live)`. Returns None for a single-attempt
+    /// task (no retry → nothing to disambiguate).
+    pub fn log_pane_attempt_label(&self) -> Option<String> {
+        let ids = &self.log_pane.attempt_agent_ids;
+        if ids.len() < 2 {
+            return None;
+        }
+        let cur = self.log_pane.agent_id.as_ref()?;
+        let pos = ids.iter().position(|x| x == cur)?;
+        Some(format!(
+            "attempt {}/{}{}",
+            pos + 1,
+            ids.len(),
+            self.agent_liveness_suffix(cur)
+        ))
     }
 
     /// Scroll log pane up.
@@ -31159,6 +31275,168 @@ mod activity_sort_debounce_tests {
         assert!(
             !app.pending_sort_apply,
             "user-driven cycle_sort_mode must clear the pending flag by applying directly"
+        );
+    }
+}
+
+#[cfg(test)]
+mod retry_log_pane_tests {
+    use super::*;
+    use worksgood::graph::{LogEntry, Node, Status, WorkGraph};
+    use worksgood::parser::save_graph;
+    use worksgood::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::{LayoutMode, VizOutput};
+    use std::collections::{HashMap, HashSet};
+
+    fn log_entry(actor: &str, message: &str) -> LogEntry {
+        LogEntry {
+            timestamp: "2026-06-24T00:00:00Z".to_string(),
+            actor: Some(actor.to_string()),
+            user: None,
+            message: message.to_string(),
+        }
+    }
+
+    /// Build a single-task graph mirroring a fail→retry: the log records the
+    /// failed first attempt (agent-275) before the live retry (agent-280), and
+    /// `assigned` points at the live agent. Returns (VizOutput, TempDir).
+    fn build_retried_task_graph() -> (VizOutput, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let mut t = make_task_with_status("retry-task", "Retried task", Status::InProgress);
+        t.assigned = Some("agent-280".to_string());
+        t.retry_count = 1;
+        t.log = vec![
+            log_entry("agent-275", "Claimed by autonomous agent"),
+            log_entry(
+                "agent-275",
+                "[wrapper] Agent exited with code 1, marking task failed",
+            ),
+            LogEntry {
+                timestamp: "2026-06-24T00:01:00Z".to_string(),
+                actor: None,
+                user: None,
+                message: "Task reset for retry from in-progress (attempt #1)".to_string(),
+            },
+            log_entry("agent-280", "Claimed by autonomous agent"),
+        ];
+        graph.add_node(Node::Task(t));
+
+        let tmp = tempfile::tempdir().unwrap();
+        save_graph(&graph, &tmp.path().join("graph.jsonl")).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        (viz, tmp)
+    }
+
+    fn build_app(viz: &VizOutput, selected_id: &str, dir: &std::path::Path) -> VizApp {
+        let mut app = VizApp::from_viz_output_for_test(viz);
+        app.workgraph_dir = dir.to_path_buf();
+        app.selected_task_idx = app.task_order.iter().position(|id| id == selected_id);
+        app
+    }
+
+    /// The core fix: load_log_pane must default to the LIVE (assigned) agent,
+    /// not the first (failed) agent mentioned in the task log.
+    #[test]
+    fn load_log_pane_defaults_to_live_agent_after_retry() {
+        let (viz, tmp) = build_retried_task_graph();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+
+        app.load_log_pane();
+
+        assert_eq!(
+            app.log_pane.attempt_agent_ids,
+            vec!["agent-275".to_string(), "agent-280".to_string()],
+            "attempts must be ordered oldest→newest"
+        );
+        assert_eq!(
+            app.log_pane.agent_id.as_deref(),
+            Some("agent-280"),
+            "Log pane must follow the live/assigned agent, not the failed first attempt"
+        );
+    }
+
+    /// Manual prev/next pins an older attempt and the pin survives the
+    /// per-refresh invalidate+reload (it does NOT snap back to the live agent).
+    #[test]
+    fn manual_attempt_pin_survives_reload() {
+        let (viz, tmp) = build_retried_task_graph();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+
+        app.load_log_pane();
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
+
+        // Cycle backwards to the older (failed) attempt.
+        app.log_pane_cycle_attempt(false);
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-275"));
+        assert_eq!(app.log_pane.manual_pin.as_deref(), Some("agent-275"));
+
+        // A refresh re-runs load_log_pane; the pin must hold.
+        app.invalidate_log_pane();
+        app.load_log_pane();
+        assert_eq!(
+            app.log_pane.agent_id.as_deref(),
+            Some("agent-275"),
+            "manual pin must survive reload so inspecting an old attempt isn't interrupted"
+        );
+
+        // Cycling forward returns to the live agent.
+        app.log_pane_cycle_attempt(true);
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
+    }
+
+    /// The attempt label reflects the displayed attempt and its liveness.
+    #[test]
+    fn attempt_label_tracks_displayed_attempt() {
+        let (viz, tmp) = build_retried_task_graph();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.agent_monitor.agents = vec![
+            AgentMonitorEntry {
+                agent_id: "agent-275".to_string(),
+                task_id: Some("retry-task".to_string()),
+                task_title: None,
+                status: AgentStatus::Failed,
+                runtime_secs: None,
+                started_at: None,
+                completed_at: None,
+            },
+            AgentMonitorEntry {
+                agent_id: "agent-280".to_string(),
+                task_id: Some("retry-task".to_string()),
+                task_title: None,
+                status: AgentStatus::Working,
+                runtime_secs: None,
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+
+        app.load_log_pane();
+        assert_eq!(
+            app.log_pane_attempt_label().as_deref(),
+            Some("attempt 2/2 (live)")
+        );
+
+        app.log_pane_cycle_attempt(false);
+        assert_eq!(
+            app.log_pane_attempt_label().as_deref(),
+            Some("attempt 1/2 (failed)")
         );
     }
 }

@@ -572,7 +572,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     } else {
         print_human_readable(&details);
         if task.retry_count > 0 {
-            print_retry_history(dir, &task.id);
+            print_retry_history(dir, &task.id, task.assigned.as_deref(), task.status);
         }
     }
 
@@ -1054,28 +1054,47 @@ fn format_countdown(timestamp: &str) -> String {
     }
 }
 
-fn print_retry_history(dir: &Path, task_id: &str) {
+fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, status: Status) {
     let archive_base = dir.join("log").join("agents").join(task_id);
-    if !archive_base.exists() {
-        return;
-    }
 
     let mut archives: Vec<_> = match std::fs::read_dir(&archive_base) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
             .collect(),
-        Err(_) => return,
+        Err(_) => Vec::new(),
     };
 
-    if archives.is_empty() {
+    // The live/in-progress attempt is NOT archived yet — it still occupies the
+    // agent dir. Show it explicitly so the historical (failed) attempts below
+    // are never mistaken for the current one.
+    let live_line = (status == Status::InProgress)
+        .then_some(current_agent)
+        .flatten()
+        .map(|agent| {
+            format!(
+                "  Attempt {} (current): [{}] — in-progress  ◀ live",
+                archives.len() + 1,
+                agent
+            )
+        });
+
+    if archives.is_empty() && live_line.is_none() {
         return;
     }
 
     archives.sort_by_key(|e| e.file_name());
 
     println!();
-    println!("Attempt History:");
+    if live_line.is_some() && !archives.is_empty() {
+        // Make the split between "what ran before" and "what's running now"
+        // unambiguous in the header itself.
+        println!(
+            "Attempt History (prior attempts below; current attempt is live — see Status/Assigned above):"
+        );
+    } else {
+        println!("Attempt History:");
+    }
 
     let evals_dir = dir.join("agency").join("evaluations");
     let now = Utc::now();
@@ -1142,6 +1161,10 @@ fn print_retry_history(dir: &Path, task_id: &str) {
             agent_str,
             eval_str
         );
+    }
+
+    if let Some(line) = live_line {
+        println!("{}", line);
     }
 }
 

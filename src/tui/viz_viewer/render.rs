@@ -4836,6 +4836,10 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .as_deref()
             .map(|id| format!("agent={}", id))
             .unwrap_or_else(|| "no agent".to_string());
+        // For a retried task, show which attempt is displayed + its liveness,
+        // e.g. "attempt 2/2 (live)", so the failed first attempt is never
+        // mistaken for the live one.
+        let attempt_label = app.log_pane_attempt_label();
         let mode_label = format!("view=[{}]", app.log_pane.view_mode.label());
         let tail_label = if app.log_pane.auto_tail {
             "tail=on"
@@ -4847,6 +4851,27 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         } else {
             "summary=off"
         };
+        // When the task has multiple attempts, surface the attempt label
+        // prominently (bold, colored by liveness) and advertise the switcher.
+        let (attempt_span, attempt_hint) = match attempt_label {
+            Some(ref label) => {
+                let color = if label.contains("(live)") {
+                    Color::Green
+                } else if label.contains("(failed)") || label.contains("(dead)") {
+                    Color::Red
+                } else {
+                    Color::Yellow
+                };
+                (
+                    Span::styled(
+                        format!(" [{}] ", label),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    "  {/} attempt",
+                )
+            }
+            None => (Span::raw(""), ""),
+        };
         Line::from(vec![
             Span::styled(
                 format!(" {} ", task_label),
@@ -4854,6 +4879,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .fg(text_primary(app.is_light_theme))
                     .add_modifier(Modifier::BOLD),
             ),
+            attempt_span,
             Span::styled(
                 format!(
                     " {}  {}  {}  {}",
@@ -4862,7 +4888,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                "    [4] cycle view  [s] summary  [J] json",
+                format!("    [4] cycle view  [s] summary  [J] json{}", attempt_hint),
                 Style::default().fg(Color::Indexed(239)),
             ),
         ])
@@ -16435,6 +16461,77 @@ mod tests {
             "Wrapped 500-char response must span ≥ 5 visual rows in 80-col \
              pane; got {} rows. Rendered:\n{}",
             rows_with_markers,
+            rendered
+        );
+    }
+
+    /// Regression for fix-tui-retry-log: after a fail→retry the Log pane header
+    /// must label which attempt is displayed and its liveness, so the live
+    /// (latest) agent is distinguishable from the failed first attempt.
+    #[test]
+    fn test_log_header_shows_attempt_label_and_liveness() {
+        use crate::tui::viz_viewer::state::{
+            AgentMonitorEntry, LogPaneState, RightPanelTab, VizApp,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use worksgood::AgentStatus;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.right_panel_tab = RightPanelTab::Log;
+
+        // Two attempts: agent-275 failed (attempt 1), agent-280 is live
+        // (attempt 2) and is the one being displayed.
+        app.agent_monitor.agents = vec![
+            AgentMonitorEntry {
+                agent_id: "agent-275".to_string(),
+                task_id: Some("my-task".to_string()),
+                task_title: None,
+                status: AgentStatus::Failed,
+                runtime_secs: None,
+                started_at: None,
+                completed_at: None,
+            },
+            AgentMonitorEntry {
+                agent_id: "agent-280".to_string(),
+                task_id: Some("my-task".to_string()),
+                task_title: None,
+                status: AgentStatus::Working,
+                runtime_secs: None,
+                started_at: None,
+                completed_at: None,
+            },
+        ];
+        app.log_pane = LogPaneState::default();
+        app.log_pane.task_id = Some("my-task".to_string());
+        app.log_pane.attempt_agent_ids = vec!["agent-275".to_string(), "agent-280".to_string()];
+        app.log_pane.agent_id = Some("agent-280".to_string());
+        app.log_pane.agent_output.full_text = "live agent output".to_string();
+
+        let backend = TestBackend::new(120, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_log_tab(frame, &mut app, area);
+            })
+            .unwrap();
+
+        let rendered = buffer_to_string(&terminal.backend().buffer().clone());
+        assert!(
+            rendered.contains("attempt 2/2"),
+            "Log header must show the displayed attempt index. Rendered:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("(live)"),
+            "Log header must mark the live attempt's liveness. Rendered:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("agent=agent-280"),
+            "Log header must show the live agent id, not the failed one. Rendered:\n{}",
             rendered
         );
     }
