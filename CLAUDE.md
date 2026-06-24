@@ -183,6 +183,39 @@ embedded at compile time (`include_dir!`), so there is no PATH/npm skew.
   (`.github/workflows/ci.yml` "Pi-plugin … embed staleness") re-embeds and
   `git diff --exit-code`s so a source edit without a re-embed fails loudly.
 
+#### Pi worker accounting (token/cost + events bridge)
+
+A pi *worker* task runs `pi --mode json`, which streams NDJSON on stdout with
+pi's OWN usage schema — `turn_end.message.usage = {input, output, cacheRead,
+cacheWrite, totalTokens, cost{…,total}}` — NOT the canonical
+`{input_tokens, output_tokens, …}`. Two pieces translate this into WG's
+accounting surfaces (see `docs`/git history for `fix-pi-handler`):
+
+- **Token-cost accounting** — `graph::parse_token_usage` (and the live variant)
+  learned a pi branch: it sums each `turn_end.message.usage` ONCE per turn
+  (the SAME snapshot is repeated on `message_update`/`message_end` — those are
+  ignored, so there is no double-count) via the explicit field-map in
+  `stream_event::pi_usage_to_turn` / `pi_usage_cost`. Cost prefers pi's own
+  per-turn `usage.cost.total`; when zero it falls back to model-registry rates
+  (`graph::estimate_agent_cost_usd`). This populates `task.token_usage` exactly
+  like claude/codex, so `wg show` / `wg spend` / `wg stats` reflect the pi task.
+- **Canonical event channel** — the spawn wrapper's `pi` arm
+  (`write_wrapper_script` in `src/commands/spawn/execution.rs`) captures pi's
+  NDJSON to `raw_stream.jsonl` (so the TUI events pane renders per-step events
+  via `parse_raw_stream_line`'s pi arms) and, after pi exits, runs
+  `wg pi-stream-bridge --agent-dir <dir> --exit-code $?`. That internal command
+  (`stream_event::translate_pi_stream`) writes the canonical `stream.jsonl`
+  (init + per-turn Turn/tool/text events + a Result with the SUMMED, non-zero
+  usage + cost) and a `session-summary.md` from the final assistant turn so
+  `wg show <pi task>` isn't bare. The mapping + dedup summation are unit-tested
+  in `src/stream_event.rs` and pinned by the `pi_stream_bridge_populates_usage`
+  smoke scenario.
+
+Note: `wg show`'s "in" figure is `input_tokens − cache_read_input_tokens`
+(saturating), an executor-agnostic display convention — heavily-cached runs
+(claude included) show `0` novel-in even though tokens/cost are accounted in
+full; the JSON (`wg show --json`) and `wg spend` carry the real `input_tokens`.
+
 #### Flipping the active profile and reverting (the round-trip)
 
 The active profile is global state in `~/.wg/active-profile`. The chat agent

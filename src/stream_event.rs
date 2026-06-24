@@ -399,6 +399,243 @@ pub fn translate_claude_stream(path: &Path, offset: u64) -> Result<(Vec<StreamEv
     Ok((events, new_offset))
 }
 
+// ── Pi CLI JSON-mode translation ────────────────────────────────────────
+
+/// Map a pi `usage` object to canonical [`TurnUsage`].
+///
+/// Pi's usage schema is `{input, output, cacheRead, cacheWrite, totalTokens,
+/// cost}` — different field names from Claude's `input_tokens`/`output_tokens`.
+/// A naive read of the canonical names finds nothing and yields 0/0, which is
+/// exactly the "pi shows zero tokens" bug; map the fields EXPLICITLY here.
+///
+/// Pi's `input` already EXCLUDES the cache-read portion
+/// (`input + cacheRead + output == totalTokens`), so the fields map straight
+/// across with no subtraction (unlike codex, whose `input_tokens` is inclusive).
+pub fn pi_usage_to_turn(usage: &serde_json::Value) -> TurnUsage {
+    let u = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_read = u("cacheRead");
+    let cache_write = u("cacheWrite");
+    TurnUsage {
+        input_tokens: u("input"),
+        output_tokens: u("output"),
+        cache_read_input_tokens: (cache_read > 0).then_some(cache_read),
+        cache_creation_input_tokens: (cache_write > 0).then_some(cache_write),
+        reasoning_tokens: None,
+    }
+}
+
+/// Per-turn cost in USD from a pi `usage` object (`usage.cost.total`).
+/// Returns 0.0 when the provider did not report a cost (caller may then fall
+/// back to model-registry per-token rates).
+pub fn pi_usage_cost(usage: &serde_json::Value) -> f64 {
+    usage
+        .get("cost")
+        .and_then(|c| c.get("total"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+}
+
+/// Outcome of translating a pi NDJSON event stream into canonical events.
+pub struct PiTranslation {
+    /// Canonical stream events in order: `Init`, per-step events, final `Result`.
+    pub events: Vec<StreamEvent>,
+    /// Summed usage across all turns (cost from pi's own per-turn `cost.total`;
+    /// callers apply a registry fallback when it is zero).
+    pub total: TotalUsage,
+    /// Number of `turn_end` events summed (the turn count).
+    pub turn_count: u32,
+    /// Final assistant text — used for the agent's `session-summary.md`.
+    pub final_text: Option<String>,
+}
+
+/// Translate a pi `--mode json` NDJSON event stream into canonical
+/// [`StreamEvent`]s.
+///
+/// Pi emits the SAME per-turn usage snapshot on `message_update` (many per
+/// turn), `message_end`, AND `turn_end`. To avoid double/triple-counting we
+/// harvest usage from `turn_end` ONLY — once per turn — so the summed total
+/// equals the sum of per-turn `turn_end.message.usage.totalTokens`. Per-step
+/// events (tool start/end, assistant text/thinking) are forwarded so the TUI
+/// events pane and `wg log` are populated between `init` and `result`.
+///
+/// `success` sets the final `Result.success`. `model_override` (e.g. from the
+/// agent's `metadata.json`) wins for the `Init`/`Result` model; otherwise the
+/// model is derived from the stream's `provider`/`model` fields.
+pub fn translate_pi_stream(
+    content: &str,
+    model_override: Option<&str>,
+    success: bool,
+) -> PiTranslation {
+    let mut steps: Vec<StreamEvent> = Vec::new();
+    let mut total = TotalUsage::default();
+    let mut cost = 0.0f64;
+    let mut turn_count = 0u32;
+    let mut session_id: Option<String> = None;
+    let mut stream_model: Option<String> = None;
+    let mut final_text: Option<String> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match val.get("type").and_then(|v| v.as_str()) {
+            Some("session") => {
+                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                    session_id = Some(id.to_string());
+                }
+            }
+            Some("tool_execution_start") => {
+                let name = val
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool");
+                steps.push(StreamEvent::ToolStart {
+                    name: name.to_string(),
+                    timestamp_ms: now_ms(),
+                });
+            }
+            Some("tool_execution_end") => {
+                let name = val
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("tool");
+                let is_error = val
+                    .get("isError")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                steps.push(StreamEvent::ToolEnd {
+                    name: name.to_string(),
+                    is_error,
+                    duration_ms: 0,
+                    timestamp_ms: now_ms(),
+                });
+            }
+            Some("turn_end") => {
+                turn_count += 1;
+                let msg = val.get("message");
+
+                // Derive the canonical model spec from the assistant message
+                // (`provider`/`model`) the first time we see it.
+                if stream_model.is_none()
+                    && let Some(m) = msg
+                    && let Some(mdl) = m.get("model").and_then(|v| v.as_str())
+                {
+                    let prov = m.get("provider").and_then(|v| v.as_str());
+                    stream_model = Some(match prov {
+                        Some(p) if !mdl.contains(':') => format!("{}:{}", p, mdl),
+                        _ => mdl.to_string(),
+                    });
+                }
+
+                // Forward assistant text / thinking content as per-step events.
+                if let Some(content_arr) = msg
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content_arr {
+                        match block.get("type").and_then(|v| v.as_str()) {
+                            Some("text") => {
+                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                    let t = t.trim();
+                                    if !t.is_empty() {
+                                        steps.push(StreamEvent::TextChunk {
+                                            text: t.to_string(),
+                                            timestamp_ms: now_ms(),
+                                        });
+                                        final_text = Some(t.to_string());
+                                    }
+                                }
+                            }
+                            Some("thinking") => {
+                                if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
+                                    let t = t.trim();
+                                    if !t.is_empty() {
+                                        steps.push(StreamEvent::ThinkingChunk {
+                                            text: t.to_string(),
+                                            timestamp_ms: now_ms(),
+                                        });
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let tools_used: Vec<String> = msg
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("toolCall"))
+                            .filter_map(|b| {
+                                b.get("name").and_then(|n| n.as_str()).map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Harvest usage from `turn_end` ONLY (the dedup point).
+                let usage_val = msg.and_then(|m| m.get("usage"));
+                let turn_usage = usage_val.map(pi_usage_to_turn);
+                if let Some(u) = usage_val {
+                    let tu = pi_usage_to_turn(u);
+                    total.input_tokens += tu.input_tokens;
+                    total.output_tokens += tu.output_tokens;
+                    if let Some(cr) = tu.cache_read_input_tokens {
+                        *total.cache_read_input_tokens.get_or_insert(0) += cr;
+                    }
+                    if let Some(cc) = tu.cache_creation_input_tokens {
+                        *total.cache_creation_input_tokens.get_or_insert(0) += cc;
+                    }
+                    cost += pi_usage_cost(u);
+                }
+
+                steps.push(StreamEvent::Turn {
+                    turn_number: turn_count,
+                    tools_used,
+                    usage: turn_usage,
+                    timestamp_ms: now_ms(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let model = model_override.map(String::from).or(stream_model);
+    if cost > 0.0 {
+        total.cost_usd = Some(cost);
+    }
+    total.model = model.clone();
+
+    let mut events = Vec::with_capacity(steps.len() + 2);
+    events.push(StreamEvent::Init {
+        executor_type: "pi".to_string(),
+        model: model.clone(),
+        session_id,
+        timestamp_ms: now_ms(),
+    });
+    events.append(&mut steps);
+    events.push(StreamEvent::Result {
+        success,
+        usage: total.clone(),
+        timestamp_ms: now_ms(),
+    });
+
+    PiTranslation {
+        events,
+        total,
+        turn_count,
+        final_text,
+    }
+}
+
 // ── Liveness detection ──────────────────────────────────────────────────
 
 /// Stream state tracked per agent by the coordinator.
@@ -769,5 +1006,138 @@ not json
         assert!(matches!(events[1], StreamEvent::Turn { .. }));
         assert!(matches!(events[2], StreamEvent::Result { .. }));
         assert!(offset > 0);
+    }
+
+    // ── Pi translation ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_pi_usage_to_turn_maps_distinct_field_names() {
+        // pi uses {input, output, cacheRead, cacheWrite} — NOT the canonical
+        // input_tokens/output_tokens. A naive read would yield 0/0.
+        let usage = serde_json::json!({
+            "input": 22219, "output": 87, "cacheRead": 2048, "cacheWrite": 0,
+            "totalTokens": 24354,
+            "cost": {"input": 0.022219, "output": 0.000348, "total": 0.02293564}
+        });
+        let turn = pi_usage_to_turn(&usage);
+        assert_eq!(turn.input_tokens, 22219);
+        assert_eq!(turn.output_tokens, 87);
+        assert_eq!(turn.cache_read_input_tokens, Some(2048));
+        assert_eq!(turn.cache_creation_input_tokens, None); // cacheWrite 0 -> None
+        // pi's input already excludes cacheRead: input+cacheRead+output==total.
+        assert_eq!(turn.input_tokens + turn.output_tokens + 2048, 24354);
+        assert!((pi_usage_cost(&usage) - 0.02293564).abs() < 1e-9);
+    }
+
+    /// A captured-shape pi event stream: the SAME per-turn usage snapshot
+    /// appears on `message_update` (repeated, many per turn), `message_end`,
+    /// AND `turn_end`. The harvest must sum `turn_end` ONCE per turn and never
+    /// accumulate `message_update`/`message_end`.
+    fn pi_fixture_two_turns() -> String {
+        [
+            r#"{"type":"session","version":3,"id":"sess-abc","cwd":"/tmp"}"#,
+            r#"{"type":"agent_start"}"#,
+            r#"{"type":"turn_start"}"#,
+            // repeated streaming snapshots carrying usage — MUST be ignored
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","partial":{"usage":{"input":100,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":101,"cost":{"total":0.001}}}}}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","partial":{"usage":{"input":100,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":101,"cost":{"total":0.001}}}}}"#,
+            r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"command":"ls"}}"#,
+            r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}"#,
+            // message_end repeats the same usage — MUST be ignored
+            r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}"#,
+            // turn_end #1 — the authoritative usage record
+            r#"{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","content":[{"type":"thinking","thinking":"plan"},{"type":"toolCall","name":"bash","arguments":{"command":"ls"}}],"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}"#,
+            r#"{"type":"turn_start"}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","partial":{"usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"total":0.03}}}}}"#,
+            // turn_end #2 — final answer text
+            r#"{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","content":[{"type":"text","text":"final answer"}],"usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"total":0.03}}}}"#,
+            r#"{"type":"agent_end","messages":[]}"#,
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn test_translate_pi_stream_sums_turn_end_once_no_double_count() {
+        let tr = translate_pi_stream(&pi_fixture_two_turns(), None, true);
+
+        // Two turns harvested.
+        assert_eq!(tr.turn_count, 2);
+        // Summed totals == sum of per-turn turn_end usage ONLY:
+        //   input:  200 + 5   = 205
+        //   output: 10  + 7   = 17
+        //   cacheRead: 50 + 260 = 310
+        // NOT inflated by the repeated message_update / message_end snapshots.
+        assert_eq!(tr.total.input_tokens, 205);
+        assert_eq!(tr.total.output_tokens, 17);
+        assert_eq!(tr.total.cache_read_input_tokens, Some(310));
+        // Cost summed from per-turn cost.total: 0.02 + 0.03 = 0.05
+        assert!((tr.total.cost_usd.unwrap() - 0.05).abs() < 1e-9);
+        // Total tokens equals the sum of per-turn totalTokens (260 + 272).
+        assert_eq!(
+            tr.total.input_tokens
+                + tr.total.output_tokens
+                + tr.total.cache_read_input_tokens.unwrap(),
+            260 + 272
+        );
+        // Model derived from provider/model in the stream.
+        assert_eq!(tr.total.model.as_deref(), Some("openrouter:z-ai/glm-5.2"));
+        // Final assistant text captured for the session summary.
+        assert_eq!(tr.final_text.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn test_translate_pi_stream_event_shape() {
+        let tr = translate_pi_stream(&pi_fixture_two_turns(), None, true);
+        // First event Init(pi), last event Result with the summed usage.
+        assert!(matches!(
+            &tr.events[0],
+            StreamEvent::Init { executor_type, session_id, .. }
+                if executor_type == "pi" && session_id.as_deref() == Some("sess-abc")
+        ));
+        let last = tr.events.last().unwrap();
+        match last {
+            StreamEvent::Result { success, usage, .. } => {
+                assert!(success);
+                assert_eq!(usage.input_tokens, 205);
+                assert_eq!(usage.output_tokens, 17);
+            }
+            other => panic!("expected Result, got {:?}", other),
+        }
+        // Per-step events between init and result populate the events pane.
+        assert!(
+            tr.events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolStart { name, .. } if name == "bash"))
+        );
+        assert!(
+            tr.events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { name, .. } if name == "bash"))
+        );
+        assert!(
+            tr.events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Turn { turn_number: 2, .. }))
+        );
+        assert!(
+            tr.events.iter().any(
+                |e| matches!(e, StreamEvent::TextChunk { text, .. } if text == "final answer")
+            )
+        );
+    }
+
+    #[test]
+    fn test_translate_pi_stream_empty_still_yields_bookends() {
+        let tr = translate_pi_stream("", Some("openrouter:z-ai/glm-5.2"), false);
+        assert_eq!(tr.events.len(), 2); // init + result, no steps
+        assert_eq!(tr.turn_count, 0);
+        assert_eq!(tr.total.input_tokens, 0);
+        assert!(matches!(&tr.events[0], StreamEvent::Init { .. }));
+        assert!(matches!(
+            &tr.events[1],
+            StreamEvent::Result { success: false, .. }
+        ));
+        // model_override is honored when the stream carries no model.
+        assert_eq!(tr.total.model.as_deref(), Some("openrouter:z-ai/glm-5.2"));
     }
 }

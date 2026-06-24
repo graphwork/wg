@@ -89,6 +89,7 @@ pub mod pause;
 pub mod peer;
 pub mod pi_handler;
 pub mod pi_plugin_install;
+pub mod pi_stream_bridge;
 pub mod placement;
 pub mod plan;
 pub mod profile_cmd;

@@ -1793,6 +1793,28 @@ fn write_wrapper_script(
             );
             (cmd, None, String::new(), String::new())
         }
+        "pi" => {
+            // Pi (`pi --mode json`) emits NDJSON on stdout. Capture it to
+            // raw_stream.jsonl (so the TUI events pane can render per-step
+            // events live, like claude/codex) and tee to output.log; stderr
+            // -> output.log. After pi exits, `wg pi-stream-bridge` reads that
+            // NDJSON and writes the canonical stream.jsonl with REAL summed
+            // token/cost usage (replacing the old 0/0 bookend) + a session
+            // summary. No bash-emitted bookend — the bridge owns stream.jsonl.
+            let raw_stream_file = output_dir.join("raw_stream.jsonl");
+            let raw_str = raw_stream_file.to_string_lossy().to_string();
+            let cmd = format!(
+                "{timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
+                timed_command = timed_command,
+                raw = shell_escape(&raw_str),
+            );
+            let bridge = format!(
+                "wg pi-stream-bridge --agent-dir {dir} --exit-code $EXIT_CODE 2>> \"$OUTPUT_FILE\" \
+                 || echo \"[wrapper] WARNING: 'wg pi-stream-bridge' failed with exit code $?\" >> \"$OUTPUT_FILE\"",
+                dir = shell_escape(&output_dir.to_string_lossy()),
+            );
+            (cmd, None, String::new(), bridge)
+        }
         _ => {
             // Shell and custom executors: wrapper writes bookend events.
             let cmd = format!(
@@ -1825,9 +1847,9 @@ fn write_wrapper_script(
         }
     };
 
-    // Raw stream path for the failure classifier. Only claude/codex write this file.
+    // Raw stream path for the failure classifier. claude/codex/pi write this file.
     let raw_stream_shell_var = match executor_type {
-        "claude" | "codex" => {
+        "claude" | "codex" | "pi" => {
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             format!(
                 "RAW_STREAM={}",

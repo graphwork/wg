@@ -4946,6 +4946,165 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
                 }),
             })
         }
+        // ── Pi CLI stream events (`pi --mode json`) ─────────────────────────
+        // Pi emits NDJSON with its own shape. We render the finalized
+        // boundaries — `tool_execution_start`/`tool_execution_end` (tool calls
+        // + results) and `turn_end` (assistant text/thinking) — and swallow
+        // the high-frequency streaming deltas (`message_update`,
+        // `*_delta`, `toolcall_*`) and bookkeeping events so they don't flood
+        // the pane (mirrors codex's started/updated suppression).
+        "session"
+        | "agent_start"
+        | "agent_end"
+        | "turn_start"
+        | "message_start"
+        | "message_end"
+        | "tool_execution_update" => None,
+        "message_update" | "toolcall_start" | "toolcall_delta" | "toolcall_end"
+        | "thinking_start" | "thinking_delta" | "thinking_end" | "text_start" | "text_delta" => {
+            None
+        }
+        "tool_execution_start" => {
+            let name = val
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
+            let args = val.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let detail = match name {
+                "bash" | "Bash" => args.get("command").and_then(|v| v.as_str()).map(|c| {
+                    let c = c.trim();
+                    if c.len() > 120 {
+                        format!("{}…", &c[..c.floor_char_boundary(120)])
+                    } else {
+                        c.to_string()
+                    }
+                }),
+                "read" | "write" | "edit" | "Read" | "Write" | "Edit" => args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .map(|p| p.to_string()),
+                _ => None,
+            };
+            let summary = match detail {
+                Some(d) => format!("⌁ {} → {}", name, d),
+                None => format!("⌁ {}", name),
+            };
+            Some(AgentStreamEvent {
+                kind: AgentStreamEventKind::ToolCall,
+                agent_id: default_agent_id.to_string(),
+                summary,
+                details: Some(EventDetails::ToolCall {
+                    name: name.to_string(),
+                    input: args,
+                }),
+            })
+        }
+        "tool_execution_end" => {
+            let is_error = val
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let content = val
+                .get("result")
+                .and_then(|r| r.get("content"))
+                .and_then(|c| c.as_array())
+                .and_then(|blocks| {
+                    blocks
+                        .iter()
+                        .find_map(|b| b.get("text").and_then(|v| v.as_str()))
+                })
+                .unwrap_or("");
+            let content = content.trim();
+            let truncated = if content.len() > 200 {
+                format!("{}…", &content[..content.floor_char_boundary(200)])
+            } else {
+                content.to_string()
+            };
+            let prefix = if is_error { "✗" } else { "✓" };
+            let summary = if truncated.is_empty() {
+                format!("{} (no output)", prefix)
+            } else {
+                format!("{} {}", prefix, truncated)
+            };
+            Some(AgentStreamEvent {
+                kind: if is_error {
+                    AgentStreamEventKind::Error
+                } else {
+                    AgentStreamEventKind::ToolResult
+                },
+                agent_id: default_agent_id.to_string(),
+                summary,
+                details: Some(EventDetails::ToolResult {
+                    content: content.to_string(),
+                    is_error,
+                }),
+            })
+        }
+        "turn_end" => {
+            // Surface assistant text + thinking from the turn's message
+            // content. Tool calls are skipped — `tool_execution_*` covers them.
+            let content_arr = val
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())?;
+            let mut events = Vec::new();
+            for block in content_arr {
+                match block.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "text" => {
+                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            events.push(AgentStreamEvent {
+                                kind: AgentStreamEventKind::TextOutput,
+                                agent_id: default_agent_id.to_string(),
+                                summary: text.to_string(),
+                                details: Some(EventDetails::TextOutput {
+                                    text: text.to_string(),
+                                }),
+                            });
+                        }
+                    }
+                    "thinking" => {
+                        let text = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            let truncated = if text.len() > 200 {
+                                format!("{}…", &text[..text.floor_char_boundary(200)])
+                            } else {
+                                text.to_string()
+                            };
+                            events.push(AgentStreamEvent {
+                                kind: AgentStreamEventKind::Thinking,
+                                agent_id: default_agent_id.to_string(),
+                                summary: format!("💭 {}", truncated),
+                                details: Some(EventDetails::Thinking {
+                                    text: text.to_string(),
+                                }),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if events.len() == 1 {
+                events.into_iter().next()
+            } else if events.len() > 1 {
+                let combined = events
+                    .iter()
+                    .map(|e| e.summary.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(AgentStreamEvent {
+                    kind: events[0].kind.clone(),
+                    agent_id: default_agent_id.to_string(),
+                    summary: combined,
+                    details: None,
+                })
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -28618,6 +28777,52 @@ mod agent_stream_tests {
         let event = parse_raw_stream_line(line, "agent-11").unwrap();
         assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
         assert!(event.summary.contains("Working on it."));
+    }
+
+    // ── Pi CLI stream parsing (regression: fix-pi-handler) ──────────────────
+    // Covers the bug where `parse_raw_stream_line` returned None for every pi
+    // `tool_execution_*` / `turn_end` event, leaving the TUI live log pane
+    // empty for any agent running on a `pi:*` model.
+
+    #[test]
+    fn test_parse_pi_tool_execution_start() {
+        let line = r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"command":"wg msg read smoke"}}"#;
+        let event = parse_raw_stream_line(line, "agent-p1").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.starts_with("⌁ "), "got: {}", event.summary);
+        assert!(event.summary.contains("wg msg read smoke"));
+    }
+
+    #[test]
+    fn test_parse_pi_tool_execution_end() {
+        let line = r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{"content":[{"type":"text","text":"ok output"}]},"isError":false}"#;
+        let event = parse_raw_stream_line(line, "agent-p2").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolResult);
+        assert!(event.summary.contains("ok output"));
+    }
+
+    #[test]
+    fn test_parse_pi_turn_end_text() {
+        let line = r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer here"}],"usage":{"input":5,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":12}}}"#;
+        let event = parse_raw_stream_line(line, "agent-p3").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
+        assert!(event.summary.contains("final answer here"));
+    }
+
+    #[test]
+    fn test_parse_pi_streaming_deltas_are_swallowed() {
+        // The high-frequency streaming snapshots must NOT flood the pane.
+        for line in [
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"x"}}"#,
+            r#"{"type":"turn_start"}"#,
+            r#"{"type":"session","id":"s","cwd":"/tmp"}"#,
+            r#"{"type":"agent_end","messages":[]}"#,
+        ] {
+            assert!(
+                parse_raw_stream_line(line, "agent-p4").is_none(),
+                "expected None for: {line}"
+            );
+        }
     }
 
     // ── Codex CLI stream parsing (regression: tui-live-log) ─────────────────

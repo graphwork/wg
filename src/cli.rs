@@ -563,6 +563,20 @@ pub enum Commands {
         exit_code: i32,
     },
 
+    /// [Internal] Translate a finished pi agent's NDJSON stream into the
+    /// canonical `stream.jsonl` (real token/cost usage) + `session-summary.md`.
+    /// Used by the spawn wrapper after `pi --mode json` exits.
+    #[command(hide = true)]
+    PiStreamBridge {
+        /// Path to the agent output dir (contains raw_stream.jsonl / output.log)
+        #[arg(long, value_name = "DIR")]
+        agent_dir: String,
+
+        /// Shell exit code of the pi process (0 = success)
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        exit_code: i32,
+    },
+
     /// Mark a task as incomplete (retryable — needs another pass)
     Incomplete {
         /// Task ID to mark as incomplete
@@ -5251,6 +5265,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Done { .. } => "done",
         Commands::Fail { .. } => "fail",
         Commands::ClassifyFailure { .. } => "classify-failure",
+        Commands::PiStreamBridge { .. } => "pi-stream-bridge",
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",

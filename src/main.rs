@@ -1181,6 +1181,10 @@ fn main() -> Result<()> {
             raw_stream,
             exit_code,
         } => commands::classify_failure::run(raw_stream.as_deref(), exit_code),
+        Commands::PiStreamBridge {
+            agent_dir,
+            exit_code,
+        } => commands::pi_stream_bridge::run(std::path::Path::new(&agent_dir), exit_code),
         Commands::Incomplete { id, reason } => {
             commands::incomplete::run(&workgraph_dir, &id, reason.as_deref())
         }

@@ -1042,7 +1042,79 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
         return Some(codex_total);
     }
 
+    // Pi CLI (`pi --mode json`) has no Claude-style `result` usage object;
+    // per-turn usage lives on each `turn_end.message.usage` under pi's own
+    // field names ({input, output, cacheRead, cacheWrite, cost}). The SAME
+    // snapshot also appears on `message_update`/`message_end`, so sum
+    // `turn_end` ONCE per turn to avoid double-counting.
+    if let Some(usage) =
+        extract_pi_token_usage(&content, model_spec.as_deref(), model_pricing.as_ref())
+    {
+        return Some(usage);
+    }
+
     None
+}
+
+/// Sum pi `turn_end` usage across an `output.log` / `raw_stream.jsonl` body.
+/// Returns `None` when no `turn_end` event is present. Cost prefers pi's own
+/// per-turn `cost.total`; when that is zero it falls back to model-registry
+/// per-token rates.
+fn extract_pi_token_usage(
+    content: &str,
+    model_spec: Option<&str>,
+    pricing: Option<&ModelRegistryEntry>,
+) -> Option<TokenUsage> {
+    let mut total = TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
+    let mut pi_cost = 0.0f64;
+    let mut found = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') || !line.contains("\"type\":\"turn_end\"") {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if val.get("type").and_then(|v| v.as_str()) != Some("turn_end") {
+            continue;
+        }
+        let Some(usage) = val.get("message").and_then(|m| m.get("usage")) else {
+            continue;
+        };
+        found = true;
+        let turn = crate::stream_event::pi_usage_to_turn(usage);
+        total.input_tokens += turn.input_tokens;
+        total.output_tokens += turn.output_tokens;
+        total.cache_read_input_tokens += turn.cache_read_input_tokens.unwrap_or(0);
+        total.cache_creation_input_tokens += turn.cache_creation_input_tokens.unwrap_or(0);
+        pi_cost += crate::stream_event::pi_usage_cost(usage);
+    }
+
+    if !found {
+        return None;
+    }
+
+    total.cost_usd = if pi_cost > 0.0 {
+        pi_cost
+    } else {
+        estimate_model_cost_usd(
+            model_spec,
+            pricing,
+            total.input_tokens,
+            total.output_tokens,
+            total.cache_read_input_tokens,
+        )
+    };
+    Some(total)
 }
 
 fn extract_result_token_usage(val: &serde_json::Value) -> Option<TokenUsage> {
@@ -1143,6 +1215,27 @@ fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
         .tasks()
         .find(|task| task.assigned.as_deref() == Some(agent_id))
         .and_then(|task| task.model.clone())
+}
+
+/// Estimate USD cost for an agent's token usage using model-registry per-token
+/// rates, inferring the model spec + pricing from the agent's `output.log`
+/// neighbourhood (`metadata.json` / graph). Used as a fallback when an executor
+/// (e.g. pi on a provider that does not report cost) reports zero cost.
+pub fn estimate_agent_cost_usd(
+    output_log_path: &std::path::Path,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_input_tokens: u64,
+) -> f64 {
+    let model_spec = infer_agent_model_spec(output_log_path);
+    let pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
+    estimate_model_cost_usd(
+        model_spec.as_deref(),
+        pricing.as_ref(),
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens,
+    )
 }
 
 fn estimate_model_cost_usd(
@@ -3468,6 +3561,41 @@ mod tests {
         assert_eq!(usage.output_tokens, 11228);
         assert_eq!(usage.cache_read_input_tokens, 3096388);
         assert_eq!(usage.cache_creation_input_tokens, 6204);
+    }
+
+    #[test]
+    fn test_parse_token_usage_pi_turn_end_summation() {
+        // Pi (`pi --mode json`) has no `result` usage object; usage lives on
+        // each `turn_end.message.usage` with pi's own field names. The same
+        // snapshot also appears on message_update/message_end — those must NOT
+        // be summed. Harvested total == sum of per-turn turn_end totals.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            &log_path,
+            [
+                r#"{"type":"session","id":"s1","cwd":"/tmp"}"#,
+                r#"{"type":"message_update","assistantMessageEvent":{"partial":{"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}}"#,
+                r#"{"type":"message_end","message":{"role":"assistant","usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}"#,
+                r#"{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}"#,
+                r#"{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"total":0.03}}}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 205); // 200 + 5
+        assert_eq!(usage.output_tokens, 17); // 10 + 7
+        assert_eq!(usage.cache_read_input_tokens, 310); // 50 + 260
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        // Cost from pi's own per-turn cost.total: 0.02 + 0.03
+        assert!((usage.cost_usd - 0.05).abs() < 1e-9);
+        // Sanity: matches sum of per-turn totalTokens (260 + 272).
+        assert_eq!(
+            usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens,
+            260 + 272
+        );
     }
 
     #[test]

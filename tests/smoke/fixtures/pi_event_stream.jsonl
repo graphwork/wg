@@ -1,0 +1,13 @@
+{"type":"session","version":3,"id":"sess-smoke-pi","timestamp":"2026-06-24T07:23:29.312Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"}],"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"input":0.012,"output":0.008,"cacheRead":0,"cacheWrite":0,"total":0.02}}}}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"partial":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}}
+{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"command":"echo hello"}}
+{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{"content":[{"type":"text","text":"hello"}]},"isError":false}
+{"type":"message_end","message":{"role":"assistant","usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}
+{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","content":[{"type":"thinking","thinking":"plan"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"echo hello"}}],"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"input":0.012,"output":0.008,"cacheRead":0,"cacheWrite":0,"total":0.02}},"stopReason":"toolUse"}}
+{"type":"turn_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done","partial":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"total":0.03}}}}}
+{"type":"turn_end","message":{"role":"assistant","provider":"openrouter","model":"z-ai/glm-5.2","content":[{"type":"text","text":"all done, task complete"}],"usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"input":0.003,"output":0.005,"cacheRead":0.022,"cacheWrite":0,"total":0.03}},"stopReason":"endTurn"}}
+{"type":"agent_end","messages":[]}

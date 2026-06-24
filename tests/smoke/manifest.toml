@@ -1393,6 +1393,15 @@ description = "Pins fix-codex-agent-2: Codex `exec --json` `turn.completed` usag
 timeout_seconds = 180
 
 [[scenario]]
+name = "pi_stream_bridge_populates_usage"
+script = "scenarios/pi_stream_bridge_populates_usage.sh"
+owners = [
+    "fix-pi-handler",
+]
+description = "Pins fix-pi-handler: `wg pi-stream-bridge` translates a captured pi `--mode json` NDJSON stream into the canonical stream.jsonl with a NONZERO result.usage equal to the SUMMED per-turn `turn_end.message.usage` totals (pi's {input,output,cacheRead,cacheWrite,cost} field names mapped explicitly; the repeated message_update/message_end usage snapshots must NOT double-count), plus per-step events (turn/tool_start/tool_end) for the TUI events pane and a session-summary.md so `wg show` isn't bare. No live LLM call required."
+timeout_seconds = 120
+
+[[scenario]]
 name = "nex_current_data_prompt"
 script = "scenarios/nex_current_data_prompt.sh"
 owners = [
