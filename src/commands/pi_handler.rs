@@ -971,20 +971,13 @@ pub fn run(
             marg.provider
         ));
     }
-    // Child env = WG-resolved credentials + the plugin tripwire/locator env:
-    //   WG_PI_PLUGIN_COMPAT_VERSION — the plugin asserts this against its own
-    //     embedded compat at load and fails LOUDLY on mismatch (cheap tripwire;
-    //     the real guarantee is that we point pi at our own embedded bytes).
-    //   WG_PI_PLUGIN_DIR — so executor_discovery + the Node host agree on the
-    //     resolved plugin root.
+    // Child env = WG-resolved credentials + the plugin tripwire/locator env +
+    // the explicit WG project binding (see `plugin_child_env`).
     let mut secret_env = secret.env_pairs();
-    secret_env.push((
-        "WG_PI_PLUGIN_COMPAT_VERSION".to_string(),
-        plugin.compat.clone(),
-    ));
-    secret_env.push((
-        "WG_PI_PLUGIN_DIR".to_string(),
-        plugin.root.to_string_lossy().to_string(),
+    secret_env.extend(plugin_child_env(
+        &plugin.compat,
+        &plugin.root,
+        workgraph_dir,
     ));
 
     logger.info(&format!(
@@ -1096,6 +1089,43 @@ pub fn run(
             chat::clear_streaming_ref(workgraph_dir, chat_ref);
         }
     }
+}
+
+/// The plugin-locator + WG project-binding env appended to the pi child's
+/// `secret_env`:
+///   - `WG_PI_PLUGIN_COMPAT_VERSION` — the plugin asserts this against its own
+///     embedded compat at load and fails LOUDLY on mismatch (cheap tripwire; the
+///     real guarantee is that we point pi at our own embedded bytes).
+///   - `WG_PI_PLUGIN_DIR` — so `executor_discovery` + the Node host agree on the
+///     resolved plugin root.
+///   - `WG_DIR` — the resolved project dir, bound EXPLICITLY so the plugin's
+///     `wg add`/`wg done`/… calls reach THIS graph via `--dir <project>`
+///     (`wg-backend.ts` prefers `WG_DIR` over cwd inference). Production dispatch
+///     (`spawn_task.rs` `dispatch_pi`) also exports `WG_DIR` ambiently before
+///     `exec`ing `wg pi-handler`, but we must never *rely* on that inheritance: a
+///     bare `wg pi-handler` (or any caller that does not set ambient `WG_DIR`)
+///     plus a pi that does not preserve the project cwd at tool-exec time would
+///     otherwise land the verbs in NO graph and silently miss the round-trip.
+///     Belt-and-suspenders: bind it here on the child env unconditionally.
+fn plugin_child_env(
+    plugin_compat: &str,
+    plugin_root: &Path,
+    workgraph_dir: &Path,
+) -> Vec<(String, String)> {
+    vec![
+        (
+            "WG_PI_PLUGIN_COMPAT_VERSION".to_string(),
+            plugin_compat.to_string(),
+        ),
+        (
+            "WG_PI_PLUGIN_DIR".to_string(),
+            plugin_root.to_string_lossy().to_string(),
+        ),
+        (
+            "WG_DIR".to_string(),
+            workgraph_dir.to_string_lossy().to_string(),
+        ),
+    ]
 }
 
 fn parse_coordinator_id(chat_ref: &str) -> Option<u32> {
@@ -1306,6 +1336,68 @@ mod tests {
             "credentials must never be passed via --api-key: {:?}",
             args
         );
+    }
+
+    // --- explicit WG_DIR binding on the pi child env (fix-wg-pi) ---------------
+
+    #[test]
+    fn test_plugin_child_env_binds_wg_dir_explicitly() {
+        // The plugin-locator env must carry WG_DIR = the resolved project dir so
+        // the pi child's plugin reaches THIS graph via `--dir <project>` even
+        // without ambient WG_DIR inheritance.
+        let pairs = plugin_child_env(
+            "0.1.0",
+            Path::new("/cache/wg/pi-plugin/0.1.0"),
+            Path::new("/proj/wg"),
+        );
+        let wg_dir = pairs
+            .iter()
+            .find(|(k, _)| k == "WG_DIR")
+            .expect("WG_DIR must be present in the pi child env");
+        assert_eq!(wg_dir.1, "/proj/wg");
+        // The pre-existing locator/tripwire vars are still present.
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k == "WG_PI_PLUGIN_COMPAT_VERSION")
+                .unwrap()
+                .1,
+            "0.1.0"
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k == "WG_PI_PLUGIN_DIR")
+                .unwrap()
+                .1,
+            "/cache/wg/pi-plugin/0.1.0"
+        );
+    }
+
+    #[test]
+    fn test_pi_child_secret_env_carries_wg_dir() {
+        // Mirror exactly how `run()` assembles the child `secret_env`:
+        // WG-resolved credential env, then the plugin-locator + WG_DIR env. The
+        // assembled env handed to the pi child MUST carry WG_DIR=<project>.
+        let secret = PiEndpointSecret {
+            api_key: Some("sk-test".to_string()),
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            provider: Some("openrouter".to_string()),
+        };
+        let workgraph_dir = Path::new("/home/bot/myproj");
+        let mut secret_env = secret.env_pairs();
+        secret_env.extend(plugin_child_env(
+            "0.1.0",
+            Path::new("/cache/wg/pi-plugin/0.1.0"),
+            workgraph_dir,
+        ));
+        let wg_dir = secret_env
+            .iter()
+            .find(|(k, _)| k == "WG_DIR")
+            .expect("the pi child secret_env must carry WG_DIR");
+        assert_eq!(wg_dir.1, "/home/bot/myproj");
+        // Credential env from the secret is preserved alongside the binding.
+        assert!(secret_env.iter().any(|(k, _)| k == "WG_API_KEY"));
     }
 
     // --- WG endpoint/secret env injection (fix-pi-endpoint-secret-env) ---------
