@@ -1099,8 +1099,21 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
     let evals_dir = dir.join("agency").join("evaluations");
     let now = Utc::now();
 
+    // Pre-resolve per-attempt eval attribution so each archived attempt shows
+    // the eval that actually scored it — not the single newest eval echoed onto
+    // every attempt (the old behaviour made a retried attempt 1 display attempt
+    // 2's score). See task `rshow`.
+    let archive_tss: Vec<String> = archives
+        .iter()
+        .map(|a| a.file_name().to_string_lossy().to_string())
+        .collect();
+    let task_evals = load_task_evals(&evals_dir, task_id);
+    let eval_tss: Vec<String> = task_evals.iter().map(|e| e.timestamp.clone()).collect();
+    let eval_attribution =
+        worksgood::attempt_select::attribute_evals_to_attempts(&archive_tss, &eval_tss);
+
     for (idx, archive) in archives.iter().enumerate() {
-        let ts = archive.file_name().to_string_lossy().to_string();
+        let ts = &archive_tss[idx];
         let age = ts
             .parse::<DateTime<Utc>>()
             .ok()
@@ -1110,47 +1123,21 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
             })
             .unwrap_or_default();
 
-        // Try to find agent id from the archive directory
-        let agent_id = archive
-            .path()
-            .join("prompt.txt")
-            .exists()
-            .then(|| {
-                // Agent ID is encoded in the registry, check the archive for hints
-                // Look at output.txt for agent references
-                std::fs::read_to_string(archive.path().join("output.txt"))
-                    .ok()
-                    .and_then(|content| {
-                        content.lines().take(5).find_map(|line| {
-                            if line.contains("agent-") {
-                                line.split_whitespace()
-                                    .find(|w| w.starts_with("agent-"))
-                                    .map(|s| {
-                                        s.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
-                                            .to_string()
-                                    })
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            })
-            .flatten();
-
-        let agent_str = agent_id
-            .as_deref()
+        // Prefer the authoritative `agent-id` file written at archive time;
+        // fall back to scanning the archived output for the first `agent-<n>`
+        // (covers archives created before that file existed).
+        let agent_str = read_archived_agent_id(&archive.path())
             .map(|a| format!(" [{}]", a))
             .unwrap_or_default();
 
-        // Look for eval result for this task
-        let eval_info = if evals_dir.exists() {
-            find_eval_for_attempt(&evals_dir, task_id, &ts)
-        } else {
-            None
-        };
-
-        let eval_str = eval_info
-            .map(|(score, verdict)| format!(" — eval: {:.2}{}", score, verdict))
+        let eval_str = eval_attribution
+            .get(idx)
+            .copied()
+            .flatten()
+            .map(|ei| {
+                let e = &task_evals[ei];
+                format!(" — eval: {:.2}{}", e.score, e.verdict)
+            })
             .unwrap_or_default();
 
         println!(
@@ -1168,44 +1155,81 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
     }
 }
 
-fn find_eval_for_attempt(
-    evals_dir: &Path,
-    task_id: &str,
-    _archive_ts: &str,
-) -> Option<(f64, String)> {
+/// Resolve the agent id that ran an archived attempt. Prefers the authoritative
+/// `agent-id` file written at archive time; falls back to scanning the archived
+/// `output.txt` for the first `agent-<n>` so attempts archived before that file
+/// existed still attribute. See `worksgood::attempt_select`.
+fn read_archived_agent_id(archive_path: &Path) -> Option<String> {
+    if let Ok(s) = std::fs::read_to_string(archive_path.join("agent-id")) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let output = std::fs::read_to_string(archive_path.join("output.txt")).ok()?;
+    worksgood::attempt_select::extract_agent_id_from_output(&output)
+}
+
+/// One evaluation record relevant to the attempt history.
+struct AttemptEval {
+    timestamp: String,
+    score: f64,
+    /// Pre-formatted verdict suffix (e.g. ` (notes…)`), or empty.
+    verdict: String,
+}
+
+/// Load every recorded evaluation for `task_id`, oldest first, for attributing
+/// evals to the attempts that produced them.
+fn load_task_evals(evals_dir: &Path, task_id: &str) -> Vec<AttemptEval> {
     let prefix = format!("eval-{}-", task_id);
     let mut eval_files: Vec<_> = match std::fs::read_dir(evals_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
             .collect(),
-        Err(_) => return None,
+        Err(_) => return Vec::new(),
     };
-
-    if eval_files.is_empty() {
-        return None;
-    }
-
     eval_files.sort_by_key(|e| e.file_name());
-    let latest = eval_files.last()?.path();
 
-    let content = std::fs::read_to_string(&latest).ok()?;
-    let eval: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let mut out = Vec::new();
+    for f in &eval_files {
+        let Ok(content) = std::fs::read_to_string(f.path()) else {
+            continue;
+        };
+        let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let Some(score) = eval.get("score").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let timestamp = eval
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let notes = eval.get("notes").and_then(|v| v.as_str()).unwrap_or("");
+        out.push(AttemptEval {
+            timestamp,
+            score,
+            verdict: format_eval_verdict(notes),
+        });
+    }
+    out
+}
 
-    let score = eval.get("score")?.as_f64()?;
-    let notes = eval.get("notes").and_then(|v| v.as_str()).unwrap_or("");
-
-    let verdict = if !notes.is_empty() {
-        if notes.len() > 80 {
-            format!(" ({}...)", &notes[..77])
-        } else {
-            format!(" ({})", notes)
-        }
+/// Format an eval's free-text notes into the ` (…)` suffix shown after a
+/// score, truncating on a char boundary (never mid-codepoint) so multibyte
+/// notes can't panic.
+fn format_eval_verdict(notes: &str) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    if notes.chars().count() > 80 {
+        let truncated: String = notes.chars().take(77).collect();
+        format!(" ({}...)", truncated)
     } else {
-        String::new()
-    };
-
-    Some((score, verdict))
+        format!(" ({})", notes)
+    }
 }
 
 #[cfg(test)]

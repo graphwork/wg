@@ -495,6 +495,15 @@ description = "After a fail→retry, wg tui's '4: Log' pane defaults to the LIVE
 timeout_seconds = 90
 
 [[scenario]]
+name = "wg_show_retry_attempts"
+script = "scenarios/wg_show_retry_attempts.sh"
+owners = [
+    "rshow",
+]
+description = "Pins `wg show <retried-task>`'s Attempt History attribution: each archived attempt renders the agent that ran it (attempt 1 via the output.txt fallback scanner over the COMPACT-JSON `cwd` agent id; attempt 2 via the authoritative `agent-id` file, which wins over a divergent cwd) AND only the eval that scored it (attempt 1 → 0.10, attempt 2 → 0.88 — never the single newest eval echoed onto every attempt). Regression for print_retry_history's whitespace-split agent-id scan (always None on compact JSON) and find_eval_for_attempt ignoring the archive timestamp."
+timeout_seconds = 30
+
+[[scenario]]
 name = "tui_log_scroll_controls"
 script = "scenarios/tui_log_scroll_controls.sh"
 owners = [

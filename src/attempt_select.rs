@@ -12,6 +12,8 @@
 //! follows the CURRENT / latest / alive agent **by default**, while still
 //! letting the user manually pin (and cycle to) an older attempt.
 
+use chrono::{DateTime, Utc};
+
 /// Result of resolving which attempt agent a per-task view should show.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AttemptSelection {
@@ -85,6 +87,99 @@ pub fn select_attempt_agent(
         .or_else(|| ordered.last().cloned());
 
     AttemptSelection { ordered, selected }
+}
+
+/// Extract the first `agent-<digits>` identifier appearing anywhere in archived
+/// executor output.
+///
+/// A per-attempt archive (`.wg/log/agents/<task>/<ts>/output.txt`) holds the
+/// raw executor stream. For the claude CLI its first record is a COMPACT JSON
+/// line (no inter-token whitespace) whose `cwd` field embeds the attempt's
+/// worktree path, e.g. `"cwd":"…/.wg-worktrees/agent-5740"`. A
+/// whitespace-tokenising scan (`split_whitespace().find(|w|
+/// w.starts_with("agent-"))`) never matches that — the id is inside a quoted
+/// JSON field, not a standalone token — so `wg show`'s attempt history rendered
+/// NO agent attribution at all (see task `rshow`).
+///
+/// This scans the raw text for the literal `agent-` followed by ≥1 ASCII digit
+/// and returns the first hit. It is executor-agnostic (any output naming the
+/// agent dir / worktree resolves) and serves only as a *fallback* — the
+/// archive's authoritative `agent-id` file is preferred when present.
+pub fn extract_agent_id_from_output(content: &str) -> Option<String> {
+    const NEEDLE: &str = "agent-";
+    let bytes = content.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = content[search_from..].find(NEEDLE) {
+        let start = search_from + rel;
+        let digits_start = start + NEEDLE.len();
+        let digit_len = bytes[digits_start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if digit_len > 0 {
+            return Some(content[start..digits_start + digit_len].to_string());
+        }
+        // No digits followed this `agent-`; resume scanning past it.
+        search_from = digits_start.max(start + 1);
+    }
+    None
+}
+
+/// Attribute each evaluation to the attempt it actually scored.
+///
+/// `attempt_timestamps` are the archived attempts' timestamps (RFC 3339, oldest
+/// first — the archive dir names). `eval_timestamps` are the recorded
+/// evaluation timestamps for the same task. Returns, parallel to
+/// `attempt_timestamps`, the index into `eval_timestamps` of the evaluation
+/// belonging to each attempt, or `None` when no eval scored that attempt.
+///
+/// An eval scores the most-recent attempt that existed when it ran, so it is
+/// attributed to the latest attempt whose timestamp is ≤ the eval's timestamp
+/// (an eval predating every attempt falls to the earliest attempt, so none are
+/// silently dropped). When several evals map to one attempt, the latest wins.
+/// This replaces the prior "show the single newest eval against EVERY attempt"
+/// behaviour, which made a retried attempt 1 display attempt 2's score.
+pub fn attribute_evals_to_attempts(
+    attempt_timestamps: &[String],
+    eval_timestamps: &[String],
+) -> Vec<Option<usize>> {
+    let mut result: Vec<Option<usize>> = vec![None; attempt_timestamps.len()];
+    if attempt_timestamps.is_empty() {
+        return result;
+    }
+    let parse = |s: &str| {
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+    };
+    let attempts: Vec<Option<DateTime<Utc>>> =
+        attempt_timestamps.iter().map(|s| parse(s)).collect();
+
+    for (ei, ets) in eval_timestamps.iter().enumerate() {
+        let Some(et) = parse(ets) else { continue };
+        // Latest attempt whose timestamp ≤ eval time; default to the earliest
+        // attempt (index 0) when the eval predates all of them.
+        let mut target = 0usize;
+        for (i, at) in attempts.iter().enumerate() {
+            if let Some(at) = at
+                && *at <= et
+            {
+                target = i;
+            }
+        }
+        // Keep the latest eval when several land on the same attempt.
+        let replace = match result[target] {
+            None => true,
+            Some(prev) => match parse(&eval_timestamps[prev]) {
+                Some(pt) => et >= pt,
+                None => true,
+            },
+        };
+        if replace {
+            result[target] = Some(ei);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -171,5 +266,120 @@ mod tests {
         let sel = select_attempt_agent(&log, &[], None, None);
         assert_eq!(sel.ordered, vec!["agent-5", "coordinator"]);
         assert_eq!(sel.selected.as_deref(), Some("coordinator"));
+    }
+
+    /// The reported `wg show` bug: the agent id is buried inside the COMPACT
+    /// JSON `cwd` field of the init record (no surrounding whitespace), so a
+    /// whitespace-split scan finds nothing. The substring scanner must recover
+    /// it.
+    #[test]
+    fn extracts_agent_id_from_compact_json_cwd() {
+        let init = r#"{"type":"system","subtype":"init","cwd":"/home/bot/wg/.wg-worktrees/agent-5740","session_id":"abc"}"#;
+        assert_eq!(
+            extract_agent_id_from_output(init).as_deref(),
+            Some("agent-5740")
+        );
+    }
+
+    /// Plain whitespace-delimited mentions still resolve.
+    #[test]
+    fn extracts_agent_id_from_plain_text() {
+        assert_eq!(
+            extract_agent_id_from_output("spawned agent-12 for the task").as_deref(),
+            Some("agent-12")
+        );
+    }
+
+    /// The FIRST `agent-<n>` wins (the init line names the running agent first).
+    #[test]
+    fn extracts_first_agent_id_when_several_present() {
+        let out = "cwd .wg-worktrees/agent-5740 ... later note about agent-99";
+        assert_eq!(
+            extract_agent_id_from_output(out).as_deref(),
+            Some("agent-5740")
+        );
+    }
+
+    /// `agent-` with no trailing digits is skipped, not mis-returned; the real
+    /// numbered id later in the text is found.
+    #[test]
+    fn skips_agent_dash_without_digits() {
+        assert_eq!(
+            extract_agent_id_from_output("the agent-registry holds agent-7").as_deref(),
+            Some("agent-7")
+        );
+        assert_eq!(extract_agent_id_from_output("no ids here").as_deref(), None);
+        assert_eq!(extract_agent_id_from_output("agent-").as_deref(), None);
+    }
+
+    /// The headline eval-attribution bug: a 2-attempt task whose single eval ran
+    /// after both archives must attach ONLY to attempt 2 — never echo the same
+    /// score onto the retried attempt 1.
+    #[test]
+    fn eval_attributes_to_the_attempt_it_scored() {
+        let attempts = vec![
+            "2026-06-24T13:43:03Z".to_string(),
+            "2026-06-24T14:13:01Z".to_string(),
+        ];
+        let evals = vec!["2026-06-24T14:14:34.325169408+00:00".to_string()];
+        assert_eq!(
+            attribute_evals_to_attempts(&attempts, &evals),
+            vec![None, Some(0)],
+            "the single post-retry eval belongs to attempt 2 only"
+        );
+    }
+
+    /// Each attempt with its own eval gets its own score.
+    #[test]
+    fn eval_attributes_per_attempt_window() {
+        let attempts = vec![
+            "2026-06-24T13:00:00Z".to_string(),
+            "2026-06-24T14:00:00Z".to_string(),
+        ];
+        let evals = vec![
+            "2026-06-24T13:30:00Z".to_string(), // scored attempt 1
+            "2026-06-24T14:30:00Z".to_string(), // scored attempt 2
+        ];
+        assert_eq!(
+            attribute_evals_to_attempts(&attempts, &evals),
+            vec![Some(0), Some(1)]
+        );
+    }
+
+    /// Several evals on one attempt → the latest one wins; the other attempt is
+    /// untouched.
+    #[test]
+    fn eval_keeps_latest_when_multiple_map_to_one_attempt() {
+        let attempts = vec![
+            "2026-06-24T13:00:00Z".to_string(),
+            "2026-06-24T14:00:00Z".to_string(),
+        ];
+        let evals = vec![
+            "2026-06-24T14:10:00Z".to_string(),
+            "2026-06-24T14:20:00Z".to_string(), // later — wins for attempt 2
+        ];
+        assert_eq!(
+            attribute_evals_to_attempts(&attempts, &evals),
+            vec![None, Some(1)]
+        );
+    }
+
+    /// An eval predating every attempt falls to the earliest attempt rather than
+    /// being dropped.
+    #[test]
+    fn eval_predating_all_attempts_falls_to_earliest() {
+        let attempts = vec!["2026-06-24T13:00:00Z".to_string()];
+        let evals = vec!["2026-06-24T12:00:00Z".to_string()];
+        assert_eq!(
+            attribute_evals_to_attempts(&attempts, &evals),
+            vec![Some(0)]
+        );
+    }
+
+    /// No archived attempts → empty result (the live attempt is rendered
+    /// separately and carries no historical eval).
+    #[test]
+    fn eval_attribution_with_no_attempts_is_empty() {
+        assert!(attribute_evals_to_attempts(&[], &["2026-06-24T12:00:00Z".to_string()]).is_empty());
     }
 }

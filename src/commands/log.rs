@@ -132,7 +132,10 @@ fn agent_archive_dir(dir: &Path, task_id: &str) -> PathBuf {
 /// Archive an agent's prompt.txt and output.log for a completed task.
 ///
 /// Copies from .wg/agents/<agent-id>/{prompt.txt,output.log}
-/// to .wg/log/agents/<task-id>/<ISO-timestamp>/{prompt.txt,output.txt}
+/// to .wg/log/agents/<task-id>/<ISO-timestamp>/{prompt.txt,output.txt} and
+/// records the running agent id in an authoritative `agent-id` file so the
+/// retry attempt history (`wg show`, TUI) can attribute each attempt to its
+/// agent without re-parsing executor-specific output. See task `rshow`.
 ///
 /// Each retry gets its own timestamped directory, preserving full history.
 pub fn archive_agent(dir: &Path, task_id: &str, agent_id: &str) -> Result<PathBuf> {
@@ -149,6 +152,11 @@ pub fn archive_agent(dir: &Path, task_id: &str, agent_id: &str) -> Result<PathBu
             archive_dir.display()
         )
     })?;
+
+    // Authoritative, executor-agnostic record of which agent ran this attempt.
+    // Best-effort: a failure here must not abort archiving (the attempt-history
+    // renderer falls back to scanning output.txt).
+    let _ = fs::write(archive_dir.join("agent-id"), agent_id);
 
     // Copy prompt.txt if it exists
     let prompt_src = agent_dir.join("prompt.txt");
@@ -630,6 +638,13 @@ mod tests {
         assert!(archive_dir.exists());
         assert!(archive_dir.join("prompt.txt").exists());
         assert!(archive_dir.join("output.txt").exists());
+
+        // Authoritative agent-id file lets the attempt history attribute the
+        // archived attempt without re-parsing output.txt.
+        assert_eq!(
+            fs::read_to_string(archive_dir.join("agent-id")).unwrap(),
+            "agent-1"
+        );
 
         assert_eq!(
             fs::read_to_string(archive_dir.join("prompt.txt")).unwrap(),
