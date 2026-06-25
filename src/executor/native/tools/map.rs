@@ -32,7 +32,6 @@
 //! an explicit concurrency cap.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

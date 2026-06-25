@@ -31,7 +31,11 @@ fn shell_escape(s: &str) -> String {
 /// Generate a command that reads prompt from a file
 /// This is more reliable than heredoc when output redirection is involved
 fn prompt_file_command(prompt_file: &str, command: &str) -> String {
-    format!("cat {} | {}", shell_escape(&sanitize_bash_path(prompt_file)), command)
+    format!(
+        "cat {} | {}",
+        shell_escape(&sanitize_bash_path(prompt_file)),
+        command
+    )
 }
 
 /// Strip the Windows extended-length path prefix (`\\?\`) from a path.

@@ -26,7 +26,9 @@
 //! the path *and* a tag describing which rule matched, plus an optional
 //! warning string.
 
-use anyhow::{Result, anyhow};
+// `anyhow!` is only used in the Windows error path below, so import it
+// fully-qualified at the call site to avoid an unused-import warning on Unix.
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Which resolution rule produced the final bash path.
@@ -116,7 +118,7 @@ pub fn resolve_bash(config_override: Option<&Path>) -> Result<BashResolution> {
             });
         }
 
-        Err(anyhow!(
+        Err(anyhow::anyhow!(
             "Could not locate a usable bash executable. Git for Windows' \
              `bash.exe` was not found in the well-known install locations, \
              and no non-WSL `bash.exe` is on PATH. Install Git for Windows \
@@ -199,10 +201,7 @@ pub(crate) fn scan_path_candidates(candidates: &[PathBuf]) -> (Option<PathBuf>, 
         {
             if is_wsl_shim(candidate) {
                 if warning.is_none() {
-                    warning = Some(format!(
-                        "{} is the WSL shim — skipped",
-                        candidate.display()
-                    ));
+                    warning = Some(format!("{} is the WSL shim — skipped", candidate.display()));
                 }
                 continue;
             }
@@ -237,9 +236,7 @@ fn is_wsl_shim(candidate: &Path) -> bool {
     // Also check %SystemRoot%\System32\bash.exe in case Windows is installed
     // on a non-C: drive.
     if let Ok(sysroot) = std::env::var("SystemRoot") {
-        let shim = PathBuf::from(sysroot)
-            .join("System32")
-            .join("bash.exe");
+        let shim = PathBuf::from(sysroot).join("System32").join("bash.exe");
         if paths_eq_ci(candidate, &shim) {
             return true;
         }
@@ -348,8 +345,7 @@ mod tests {
         // the real bash is still picked.
         assert_eq!(picked, Some(real_bash));
         // Warning is only asserted if the shim actually exists on this box.
-        let shim_exists =
-            PathBuf::from(r"C:\Windows\System32\bash.exe").is_file();
+        let shim_exists = PathBuf::from(r"C:\Windows\System32\bash.exe").is_file();
         if shim_exists {
             assert!(warning.is_some(), "expected WSL-shim warning");
         }

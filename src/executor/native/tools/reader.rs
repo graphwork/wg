@@ -42,7 +42,6 @@
 //!     against another file), a workspace is the right primitive.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

@@ -536,20 +536,24 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 fn call_codex_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     use std::io::Write as _;
 
-    let mut child = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
-        .arg("codex")
-        .arg("exec")
-        .arg("--json")
-        .arg("--skip-git-repo-check")
-        .arg("--dangerously-bypass-approvals-and-sandbox")
-        .arg("--model")
-        .arg(model)
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn codex CLI for lightweight LLM call")?;
+    // Cross-platform `timeout(1)` replacement — Windows has no equivalent.
+    // Same in-process call-site treatment njt's #22 applied to call_claude_cli.
+    let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
+        "codex",
+        |cmd| {
+            cmd.arg("exec")
+                .arg("--json")
+                .arg("--skip-git-repo-check")
+                .arg("--dangerously-bypass-approvals-and-sandbox")
+                .arg("--model")
+                .arg(model)
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped())
+        },
+        timeout_secs,
+    )
+    .context("Failed to spawn codex CLI for lightweight LLM call")?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
