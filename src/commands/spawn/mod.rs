@@ -34,28 +34,55 @@ fn prompt_file_command(prompt_file: &str, command: &str) -> String {
     format!("cat {} | {}", shell_escape(&sanitize_bash_path(prompt_file)), command)
 }
 
-/// Strip the Windows extended-length path prefix (`\\?\`) so bash can
-/// open the path. Git-for-Windows' `bash.exe` can WRITE to `\\?\C:\...`
-/// via redirect operators, but it cannot pass such a path as an argument
-/// to a builtin or external command (`cat '\\?\C:\...\prompt.txt'`
-/// fails "No such file or directory"). `PathBuf::canonicalize` on
-/// Windows loves to return the verbatim form, so stripping here keeps
-/// generated shell scripts portable.
+/// Strip the Windows extended-length path prefix (`\\?\`) from a path.
 ///
-/// No-op on non-Windows.
-#[allow(clippy::manual_map)]
-pub(crate) fn sanitize_bash_path(path: &str) -> String {
+/// `PathBuf::canonicalize` on Windows returns paths in verbatim form like
+/// `\\?\C:\src\ontempo\run.sh`. Most Windows APIs accept that, but several
+/// tools that consume paths do not:
+///   - Git-for-Windows `bash.exe` can't locate a script passed as an
+///     argument ("No such file or directory"), and silently produces no
+///     output when its CWD is a verbatim path.
+///   - `git worktree add` bails creating "leading directories of
+///     '//?/C:/...'".
+/// Stripping the prefix yields the plain `C:\...` form, which they all
+/// handle.
+///
+/// This is the **single shared helper** for the whole `\\?\` group
+/// (consolidating njt's #24/#25/#28); `spawn/execution.rs` and
+/// `spawn/worktree.rs` call it for `Command` args, and [`sanitize_bash_path`]
+/// below is the string-returning convenience that delegates here so the
+/// stripping logic lives in exactly one place.
+///
+/// No-op on non-Windows targets.
+pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        if let Some(rest) = path.strip_prefix(r"\\?\") {
-            // UNC form: `\\?\UNC\server\share\x` → `\\server\share\x`
+        if let Some(s) = path.to_str()
+            && let Some(rest) = s.strip_prefix(r"\\?\")
+        {
+            // UNC form `\\?\UNC\server\share\...` → `\\server\share\...`
             if let Some(unc) = rest.strip_prefix("UNC\\") {
-                return format!(r"\\{}", unc);
+                return PathBuf::from(format!(r"\\{unc}"));
             }
-            return rest.to_string();
+            return PathBuf::from(rest);
         }
     }
-    path.to_string()
+    path.to_path_buf()
+}
+
+/// String-returning convenience over [`strip_verbatim_prefix`] for call
+/// sites that build shell-script fragments — redirect targets and
+/// `shell_escape` arguments — rather than `Command` args. Delegates to the
+/// one `strip_verbatim_prefix` implementation. Git-for-Windows' `bash.exe`
+/// can WRITE to `\\?\C:\...` via redirect operators but cannot pass such a
+/// path as an argument to a builtin/external command, so generated scripts
+/// must use the stripped form.
+///
+/// No-op on non-Windows.
+pub(crate) fn sanitize_bash_path(path: &str) -> String {
+    strip_verbatim_prefix(Path::new(path))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Result of spawning an agent
@@ -1162,5 +1189,55 @@ args = ["-lc", "true"]
             !script.contains("feat: $TASK_ID ($WG_AGENT_ID)"),
             "Commit message logic should not be in wrapper (moved to wg done)"
         );
+    }
+
+    // ---- `\\?\` verbatim-prefix consolidation (njt #24/#25/#28) ----
+    // Single shared helper; `sanitize_bash_path` delegates to it.
+
+    #[cfg(windows)]
+    #[test]
+    fn test_strip_verbatim_prefix_windows() {
+        // Plain verbatim path
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\src\foo")),
+            PathBuf::from(r"C:\src\foo")
+        );
+        // UNC verbatim → plain UNC
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\x")),
+            PathBuf::from(r"\\server\share\x")
+        );
+        // Non-verbatim path passes through unchanged
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\src\foo")),
+            PathBuf::from(r"C:\src\foo")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_strip_verbatim_prefix_noop_on_unix() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new("/c/src/foo")),
+            PathBuf::from("/c/src/foo")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_sanitize_bash_path_delegates_windows() {
+        // String adapter must match the Path helper's stripping behaviour.
+        assert_eq!(sanitize_bash_path(r"\\?\C:\src\foo"), r"C:\src\foo");
+        assert_eq!(
+            sanitize_bash_path(r"\\?\UNC\server\share\x"),
+            r"\\server\share\x"
+        );
+        assert_eq!(sanitize_bash_path(r"C:\src\foo"), r"C:\src\foo");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_sanitize_bash_path_noop_on_unix() {
+        assert_eq!(sanitize_bash_path("/c/src/foo"), "/c/src/foo");
     }
 }

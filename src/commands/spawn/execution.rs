@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use worksgood::agency;
@@ -15,43 +15,14 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use worksgood::service::registry::AgentRegistry;
 
-/// Strip the Windows extended-length path prefix (`\\?\`) from a path.
-///
-/// `PathBuf::canonicalize` on Windows returns paths in verbatim form like
-/// `\\?\C:\src\ontempo\run.sh`. Most Windows APIs accept that, but some
-/// tools that consume paths as arguments don't — notably Git-for-Windows
-/// bash.exe fails to locate the script ("No such file or directory")
-/// before it can run, and Git itself bails in `git worktree add` with
-/// "could not create leading directories of '//?/C:/...'". Strip the
-/// prefix so those tools see the plain `C:\...` form, which they all
-/// handle.
-///
-/// No-op on non-Windows targets.
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(s) = path.to_str()
-            && let Some(rest) = s.strip_prefix(r"\\?\")
-        {
-            // UNC form `\\?\UNC\server\share\...` must become `\\server\share\...`
-            if let Some(unc) = rest.strip_prefix("UNC\\") {
-                return PathBuf::from(format!(r"\\{unc}"));
-            }
-            return PathBuf::from(rest);
-        }
-    }
-    path.to_path_buf()
-}
-
 use super::context::{
     build_previous_attempt_context, build_scope_context, build_task_context, discover_test_files,
     format_test_discovery_context, resolve_task_exec_mode, resolve_task_scope,
 };
 use super::worktree;
-use super::sanitize_bash_path;
 use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
-    shell_escape,
+    sanitize_bash_path, shell_escape, strip_verbatim_prefix,
 };
 
 /// Internal shared implementation for spawning an agent.

@@ -8,35 +8,11 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Strip the Windows extended-length path prefix (`\\?\`) from a path.
-///
-/// `PathBuf::canonicalize` on Windows returns paths in verbatim form like
-/// `\\?\C:\src\ontempo\.wg-worktrees\agent-710`. Git-for-Windows renders
-/// that prefix as forward-slashes (`//?/C:/...`) when it tries to create
-/// leading directories and then bails:
-///
-///     fatal: could not create leading directories of
-///     '//?/C:/src/ontempo/.wg-worktrees/agent-710/.git': Invalid argument
-///
-/// Strip the prefix so git sees a plain `C:\...` path, which it handles.
-/// No-op on non-Windows targets.
-///
-/// (Duplicated in `commands/spawn/execution.rs` per #24 — factor into a
-/// shared helper once both land.)
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(s) = path.to_str()
-            && let Some(rest) = s.strip_prefix(r"\\?\")
-        {
-            if let Some(unc) = rest.strip_prefix("UNC\\") {
-                return PathBuf::from(format!(r"\\{unc}"));
-            }
-            return PathBuf::from(rest);
-        }
-    }
-    path.to_path_buf()
-}
+// The Windows `\\?\` verbatim-prefix stripping lives in one place — the
+// shared `strip_verbatim_prefix` in this module's parent (`spawn/mod.rs`),
+// consolidating njt's #24/#25/#28. `git worktree add` and `git -C` both bail
+// on verbatim paths, so the call sites below strip first.
+use super::strip_verbatim_prefix;
 
 /// Worktree paths and metadata for an isolated agent workspace.
 #[derive(Debug)]
@@ -261,34 +237,9 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn test_strip_verbatim_prefix_windows() {
-        // Plain verbatim path
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\C:\src\foo")),
-            PathBuf::from(r"C:\src\foo")
-        );
-        // UNC verbatim → plain UNC
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\x")),
-            PathBuf::from(r"\\server\share\x")
-        );
-        // Non-verbatim path passes through unchanged
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"C:\src\foo")),
-            PathBuf::from(r"C:\src\foo")
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn test_strip_verbatim_prefix_noop_on_unix() {
-        assert_eq!(
-            strip_verbatim_prefix(Path::new("/c/src/foo")),
-            PathBuf::from("/c/src/foo")
-        );
-    }
+    // `strip_verbatim_prefix` unit tests live with the consolidated helper in
+    // `spawn/mod.rs` (it moved there from this file as part of the `\\?\`
+    // consolidation of njt's #24/#25/#28).
 
     #[test]
     fn test_create_worktree() {
