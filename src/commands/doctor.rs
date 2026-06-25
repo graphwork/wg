@@ -41,16 +41,36 @@ pub struct Check {
 
 impl Check {
     fn ok(name: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Ok, detail: detail.into(), hint: None }
+        Self {
+            name: name.into(),
+            status: Status::Ok,
+            detail: detail.into(),
+            hint: None,
+        }
     }
     fn warn(name: impl Into<String>, detail: impl Into<String>, hint: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Warn, detail: detail.into(), hint: Some(hint.into()) }
+        Self {
+            name: name.into(),
+            status: Status::Warn,
+            detail: detail.into(),
+            hint: Some(hint.into()),
+        }
     }
     fn err(name: impl Into<String>, detail: impl Into<String>, hint: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Err, detail: detail.into(), hint: Some(hint.into()) }
+        Self {
+            name: name.into(),
+            status: Status::Err,
+            detail: detail.into(),
+            hint: Some(hint.into()),
+        }
     }
     fn info(name: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), status: Status::Info, detail: detail.into(), hint: None }
+        Self {
+            name: name.into(),
+            status: Status::Info,
+            detail: detail.into(),
+            hint: None,
+        }
     }
 }
 
@@ -87,7 +107,13 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         info: checks.iter().filter(|c| c.status == Status::Info).count(),
     };
 
-    let exit_code = if summary.err > 0 { 2 } else if summary.warn > 0 { 1 } else { 0 };
+    let exit_code = if summary.err > 0 {
+        2
+    } else if summary.warn > 0 {
+        1
+    } else {
+        0
+    };
 
     if json {
         let report = DoctorReport {
@@ -178,7 +204,10 @@ fn check_host_tools() -> Vec<Check> {
             // Git-for-Windows bash identifies as msys or mingw.
             #[cfg(windows)]
             if first.contains("msys") || first.contains("mingw") {
-                out.push(Check::ok("bash", format!("found (Git for Windows): {}", first)));
+                out.push(Check::ok(
+                    "bash",
+                    format!("found (Git for Windows): {}", first),
+                ));
             } else {
                 out.push(Check::warn(
                     "bash",
@@ -201,10 +230,7 @@ fn check_host_tools() -> Vec<Check> {
 
     // git
     match run_capture("git", &["--version"]) {
-        Some((true, stdout, _)) => out.push(Check::ok(
-            "git",
-            format!("found: {}", stdout.trim()),
-        )),
+        Some((true, stdout, _)) => out.push(Check::ok("git", format!("found: {}", stdout.trim()))),
         _ => out.push(Check::err(
             "git",
             "not found on PATH",
@@ -277,21 +303,23 @@ fn check_auth(dir: &Path) -> Vec<Check> {
                  always 401. Move it to `CLAUDE_CODE_OAUTH_TOKEN` instead.",
             ));
         } else if v.starts_with("sk-ant-api") {
-            out.push(Check::ok(
-                "ANTHROPIC_API_KEY",
-                "set to a console API key",
-            ));
+            out.push(Check::ok("ANTHROPIC_API_KEY", "set to a console API key"));
         } else {
             out.push(Check::warn(
                 "ANTHROPIC_API_KEY",
-                format!("set but doesn't match known prefixes: starts with `{}…`", &v[..v.len().min(12)]),
+                format!(
+                    "set but doesn't match known prefixes: starts with `{}…`",
+                    &v[..v.len().min(12)]
+                ),
                 "Double-check the token format.",
             ));
         }
     }
 
     // OAuth token
-    let oauth_env = std::env::var("CLAUDE_CODE_OAUTH_TOKEN").ok().filter(|v| !v.is_empty());
+    let oauth_env = std::env::var("CLAUDE_CODE_OAUTH_TOKEN")
+        .ok()
+        .filter(|v| !v.is_empty());
     if let Some(v) = oauth_env.as_ref() {
         if v.starts_with("sk-ant-oat01-") {
             out.push(Check::ok(
@@ -347,7 +375,10 @@ fn check_auth(dir: &Path) -> Vec<Check> {
         && let Ok(content) = std::fs::read_to_string(&cfg_path)
     {
         if content.contains("claude_code_oauth_token_file") {
-            out.push(Check::ok("[auth] config", "token-file reference in .workgraph/config.toml"));
+            out.push(Check::ok(
+                "[auth] config",
+                "token-file reference in .workgraph/config.toml",
+            ));
         } else if content.contains("claude_code_oauth_token") {
             out.push(Check::warn(
                 "[auth] config",
@@ -382,10 +413,7 @@ fn check_workgraph_dir(dir: &Path) -> Vec<Check> {
         let line_count = std::fs::read_to_string(&graph)
             .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
             .unwrap_or(0);
-        out.push(Check::ok(
-            "graph.jsonl",
-            format!("{} entries", line_count),
-        ));
+        out.push(Check::ok("graph.jsonl", format!("{} entries", line_count)));
     } else {
         out.push(Check::warn(
             "graph.jsonl",
@@ -414,7 +442,11 @@ fn check_daemon(dir: &Path) -> Vec<Check> {
     {
         Some(v) => {
             let pid = v.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
-            let socket = v.get("socket_path").and_then(|s| s.as_str()).unwrap_or("?").to_string();
+            let socket = v
+                .get("socket_path")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?")
+                .to_string();
             if pid > 0 {
                 // state.json lingers after a crash/kill. Confirm the PID
                 // is actually a live process before claiming "running".
@@ -514,8 +546,13 @@ fn is_pid_alive(pid: u32) -> bool {
         // Fall back to listing processes via tasklist: cheap enough for a
         // single check and avoids adding a winapi-surface dependency just
         // for this file.
-        match run_capture("tasklist", &["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"]) {
-            Some((true, stdout, _)) => !stdout.trim().is_empty() && stdout.contains(&pid.to_string()),
+        match run_capture(
+            "tasklist",
+            &["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"],
+        ) {
+            Some((true, stdout, _)) => {
+                !stdout.trim().is_empty() && stdout.contains(&pid.to_string())
+            }
             _ => false,
         }
     }

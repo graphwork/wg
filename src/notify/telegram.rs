@@ -371,10 +371,7 @@ impl NotificationChannel for TelegramChannel {
         tokio::spawn(async move {
             let mut offset: i64 = 0;
             loop {
-                let url = format!(
-                    "https://api.telegram.org/bot{}/getUpdates",
-                    bot.bot_token
-                );
+                let url = format!("https://api.telegram.org/bot{}/getUpdates", bot.bot_token);
                 let body = serde_json::json!({
                     "offset": offset,
                     "timeout": 30,
@@ -528,7 +525,10 @@ chat_id = "456"
         let tg = TelegramConfig::from_notify_config(&config).unwrap();
         assert_eq!(tg.bot_token, "123:ABC");
         assert_eq!(tg.chat_id, "456");
-        assert!(tg.bots.is_empty(), "legacy form should not populate bots map");
+        assert!(
+            tg.bots.is_empty(),
+            "legacy form should not populate bots map"
+        );
     }
 
     #[test]
@@ -619,7 +619,10 @@ agent_id = "bruno"
         assert_eq!(nora.1.bot_token, "222:BBB");
         assert_eq!(nora.1.agent_id.as_deref(), Some("nora"));
 
-        let bruno = bots.iter().find(|(id, _)| id == "bruno").expect("bruno bot");
+        let bruno = bots
+            .iter()
+            .find(|(id, _)| id == "bruno")
+            .expect("bruno bot");
         assert_eq!(bruno.1.bot_token, "333:CCC");
         assert_eq!(bruno.1.agent_id.as_deref(), Some("bruno"));
     }

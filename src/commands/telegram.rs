@@ -151,7 +151,9 @@ pub fn run_list_bots(json: bool) -> Result<()> {
         );
     } else if channels.is_empty() {
         println!("Telegram: no bots configured");
-        println!("\nAdd a [telegram] block to ~/.config/workgraph/notify.toml or .workgraph/notify.toml.");
+        println!(
+            "\nAdd a [telegram] block to ~/.config/workgraph/notify.toml or .workgraph/notify.toml."
+        );
         println!(
             "Single-bot (legacy):\n  [telegram]\n  bot_token = \"...\"\n  chat_id = \"...\"\n"
         );
