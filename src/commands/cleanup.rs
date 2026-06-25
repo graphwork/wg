@@ -544,12 +544,19 @@ fn attempt_manual_worktree_cleanup(
 /// Fix permissions on a file and retry removal
 #[cfg(unix)]
 fn fix_permissions_and_retry_removal(file_path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     // Try to make the file writable
     if let Ok(metadata) = fs::metadata(file_path) {
         let mut perms = metadata.permissions();
-        perms.set_mode(0o644); // Read/write for owner, read for others
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o644); // Read/write for owner, read for others
+        }
+        #[cfg(not(unix))]
+        {
+            perms.set_readonly(false);
+        }
 
         if let Err(e) = fs::set_permissions(file_path, perms) {
             return Err(anyhow!("Failed to fix file permissions: {}", e));
@@ -582,8 +589,6 @@ fn fix_permissions_and_retry_removal(file_path: &Path) -> Result<()> {
 /// Fix permissions on a directory and its contents, then retry removal
 #[cfg(unix)]
 fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     if !dir_path.exists() {
         return Ok(());
     }
@@ -594,7 +599,15 @@ fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
             // Make directory executable/readable
             if let Ok(metadata) = fs::metadata(path) {
                 let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    perms.set_mode(0o755);
+                }
+                #[cfg(not(unix))]
+                {
+                    perms.set_readonly(false);
+                }
                 let _ = fs::set_permissions(path, perms);
             }
 
@@ -608,7 +621,15 @@ fn fix_directory_permissions_and_retry(dir_path: &Path) -> Result<()> {
             // Make file writable
             if let Ok(metadata) = fs::metadata(path) {
                 let mut perms = metadata.permissions();
-                perms.set_mode(0o644);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    perms.set_mode(0o644);
+                }
+                #[cfg(not(unix))]
+                {
+                    perms.set_readonly(false);
+                }
                 let _ = fs::set_permissions(path, perms);
             }
         }

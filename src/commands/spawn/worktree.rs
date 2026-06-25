@@ -70,7 +70,11 @@ pub fn create_worktree(
         anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
 
-    // Symlink .wg so wg CLI works from the worktree
+    // Link .wg into the worktree so `wg` CLI commands resolve to the same
+    // graph. On Unix this is a symlink; on Windows it's a directory junction
+    // (via `mklink /J`), which — unlike a symlink — doesn't require Developer
+    // Mode or admin. Both resolve identically for the path operations wg
+    // performs. See `create_workgraph_link`.
     let symlink_target = workgraph_dir
         .canonicalize()
         .context("Failed to canonicalize .wg path")?;
@@ -110,9 +114,11 @@ fn create_workgraph_link(target: &Path, link: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn create_workgraph_link(target: &Path, link: &Path) -> Result<()> {
-    std::os::windows::fs::symlink_dir(target, link).with_context(|| {
+    // Prefer a directory junction over a symlink so the link works without
+    // Developer Mode or admin privileges (see `create_windows_link`).
+    create_windows_link(target, link).with_context(|| {
         format!(
-            "Failed to symlink .wg into worktree from {} to {}",
+            "Failed to link .wg into worktree from {} to {}",
             link.display(),
             target.display()
         )
@@ -207,6 +213,40 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     // temporarily missing during concurrent cleanup, causing data loss.
 
     Ok(())
+}
+
+/// Create a directory-link at `link_path` pointing to `target` on Windows.
+///
+/// Prefers a junction (`mklink /J`) over a symlink because junctions work for
+/// every user without Developer Mode or admin privileges. A junction only
+/// supports absolute local paths and only links directories, both of which
+/// are true for `.workgraph`. If `mklink` isn't available we fall back to
+/// `symlink_dir`, which will fail helpfully if the user doesn't have the
+/// required privileges.
+#[cfg(windows)]
+fn create_windows_link(target: &Path, link_path: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    // `mklink` is a cmd.exe builtin, not an .exe; must invoke through cmd.
+    // `/J` = directory junction. CREATE_NO_WINDOW = 0x08000000 suppresses the
+    // flashing console window when running from a GUI context.
+    let status = Command::new("cmd")
+        .args([
+            "/C",
+            "mklink",
+            "/J",
+            &link_path.to_string_lossy(),
+            &target.to_string_lossy(),
+        ])
+        .creation_flags(0x0800_0000)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => std::os::windows::fs::symlink_dir(target, link_path).context(
+            "mklink /J failed and symlink_dir fallback also failed; \
+             junctions normally work without admin — is cmd.exe on PATH?",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -363,8 +403,14 @@ mod tests {
 
         let info = create_worktree(&project, &wg_dir, "agent-2", "task-bar").unwrap();
         let symlink = info.path.join(".wg");
+        // On Unix this is a symlink; on Windows it's a directory junction
+        // (a reparse point that isn't classified as a symlink by the stdlib
+        // but resolves identically for I/O).
+        #[cfg(unix)]
         assert!(symlink.is_symlink());
-        // The marker file should be readable through the symlink
+        #[cfg(windows)]
+        assert!(symlink.exists(), "link should be readable");
+        // The marker file should be readable through the link
         assert_eq!(
             std::fs::read_to_string(symlink.join("marker")).unwrap(),
             "test"
