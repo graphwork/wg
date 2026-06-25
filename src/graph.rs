@@ -1915,7 +1915,7 @@ fn is_bool_false(val: &bool) -> bool {
 }
 
 /// Trust level for an agent
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrustLevel {
     /// Fully verified (human admin, proven agent)

@@ -1676,6 +1676,15 @@ description = "Pins fed-wave4 (WG-Fed Wave 4, cross-graph addressing + transport
 timeout_seconds = 120
 
 [[scenario]]
+name = "federation_recovery_portable_state"
+script = "scenarios/federation_recovery_portable_state.sh"
+owners = [
+    "fed-wave5",
+]
+description = "Pins fed-wave5 (WG-Fed Wave 5, portable state + recovery; docs/federation-study/06 §5 Wave 5, ADR-fed-003 §D4/§D5/§D6 + ADR-fed-004 §D6): the seven-step proof that an identity is portable (V2) and recoverable (V6) and that the fork-vs-same-self boundary is cryptographically unskippable. Three isolated $HOME keystores + a dumb, untrusted directory L. (1) `wg identity new alice --recovery` mints a self-certifying wgid AND an offline recovery key, with NO private-key byte leaking into any published file; (2) `wg identity rotate` performs a succession rotate_root — the wgid ADDRESS IS UNCHANGED, the sigchain grows, and a fresh third party still verifies alice OFFLINE (the active signing root rotates underneath the stable genesis address, §D4); (3) `wg identity enroll-signer` adds a same-self signer onto the SAME wgid via a root-signed add_key (the same-self continuation, S-4-locked); (4) `wg identity revoke --kid` appends a durable revoke_key and the republished record marks the key revoked; (5) `wg identity recover` mints a new root and rotates it in under the higher-priority OFFLINE RECOVERY KEY (V6) — address unchanged, fresh party re-verifies offline; (6) DOWNLOAD = FORK — Bob downloads alice's key-less bundle and `wg identity fork` yields a NEW wgid (a verifiable child, NOT alice), and the downloaded bundle CANNOT `enroll-signer` as the SAME identity (no root in custody → fails with a fork/custody error: download != same-self, §D4); (7) S-5 PROVENANCE GATE — alice auto-loads her OWN state (same-self), an UNKNOWN-trust cross-self `load-state` is REFUSED (low-trust state not silently consumed), and a republished prompt-injection-bearing conversation cache is hard-blocked by the AI-input-safety scan even for a Verified author (ADR-fed-004 §D6/§OQ1/§OQ2). The transport L is untrusted: every published byte is signed/CAS and self-verifying."
+timeout_seconds = 90
+
+[[scenario]]
 name = "content_safety_spark"
 script = "scenarios/content_safety_spark.sh"
 owners = [

@@ -3130,6 +3130,22 @@ pub enum IdentityCommands {
     New {
         /// Local handle for the identity (e.g. alice).
         name: String,
+        /// Embed an offline recovery key at genesis (the §D5 owner backstop). Its
+        /// private key lands in custody; only its pubkey goes into the genesis slot.
+        #[arg(long)]
+        recovery: bool,
+        /// A guardian's ed25519 pubkey (hex) for the node-less M-of-N ceremony.
+        /// Repeatable. Used with `--node-less` + `--threshold`.
+        #[arg(long = "guardian")]
+        guardians: Vec<String>,
+        /// The M-of-N guardian threshold (the `M`).
+        #[arg(long)]
+        threshold: Option<u8>,
+        /// Node-less mode: MANDATES a paper/offline recovery key AND an M-of-N (M≥2)
+        /// guardian quorum (the ceremony that defuses Fatal A-4; refuses to mint
+        /// without it).
+        #[arg(long = "node-less")]
+        node_less: bool,
     },
 
     /// Show a local identity (public material only; never private keys).
@@ -3154,6 +3170,10 @@ pub enum IdentityCommands {
         /// already-expired attestation (for exercising fail-closed-on-stale).
         #[arg(long)]
         fresh_ttl: Option<i64>,
+        /// Seed the published `conv-cache-v1` snapshot with this turn text (used to
+        /// exercise the S-5 scan, e.g. a poisoned / injection-bearing cache).
+        #[arg(long = "state-text")]
+        state_text: Option<String>,
     },
 
     /// (Re)emit a signed freshness attestation over the current head (S-3). Run
@@ -3236,6 +3256,77 @@ pub enum IdentityCommands {
         /// The third location `L` (needed to resolve the signer's sigchain).
         #[arg(long)]
         store: Option<String>,
+    },
+
+    /// Rotate the active root (succession): mint a new root, the current root signs
+    /// it in. The `wgid:` address is unchanged (Wave 5, ADR-fed-003 §D5).
+    Rotate {
+        /// Local handle of an identity you minted.
+        name: String,
+        /// The store `L` to re-publish the rotated bundle to.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Revoke an authorized key by kid (a durable, self-verifying `revoke_key`).
+    Revoke {
+        /// Local handle of an identity you minted.
+        name: String,
+        /// The kid of the key to revoke.
+        #[arg(long)]
+        kid: String,
+        /// The store `L` to re-publish to.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Recover an identity with its offline recovery key (mint a new root, rotate it
+    /// in under the higher-priority recovery key). Needs `new --recovery` at genesis.
+    Recover {
+        /// Local handle of an identity you minted with a recovery key.
+        name: String,
+        /// The store `L` to re-publish the recovered bundle to.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Fork a downloaded identity onto this host: mint a NEW identity (new `wgid:`)
+    /// whose genesis cites the parent — the default "download = fork" (§D4).
+    Fork {
+        /// Local handle of the identity to fork from (typically a fetched bundle).
+        #[arg(long)]
+        from: String,
+        /// Local handle for the new forked child identity.
+        #[arg(long = "as")]
+        as_name: String,
+    },
+
+    /// Same-self continuation: enroll a fresh signer onto the EXISTING `wgid:` via a
+    /// root-signed `add_key`. Requires the root in custody — a downloader cannot (§D4).
+    EnrollSigner {
+        /// Local handle of an identity you minted (holds its root).
+        name: String,
+        /// The store `L` to re-publish to.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Load a `StateSnapshot` through the S-5 fail-closed pipeline (ADR-fed-004 §D6):
+    /// loaded state is UNTRUSTED INPUT, provenance-gated by trust_level. Low-trust or
+    /// flagged state is never silently consumed.
+    LoadState {
+        /// Local handle of the loading identity.
+        name: String,
+        /// The store `L` to fetch the state from.
+        #[arg(long)]
+        store: String,
+        /// Whose state to load (a `wgid:`/`did:key:`). Omit ⇒ your own (same-self).
+        #[arg(long)]
+        from: Option<String>,
+        /// The loader's trust assessment of the author: verified | provisional |
+        /// unknown (default unknown — the TOFU/fail-closed default).
+        #[arg(long = "author-trust", default_value = "unknown")]
+        author_trust: String,
     },
 }
 

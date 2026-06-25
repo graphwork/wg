@@ -404,3 +404,48 @@ The cross-graph end-to-end proof is pinned by
 two `wg fed-node` daemons exchanging a signed+sealed `wg msg --to wgid:` to an offline
 recipient, a forged sender rejected, high-value freshness failing closed on stale, and
 verification surviving the sender's origin node going offline (cached sigchain).
+
+### WG-Fed Wave 5 — portable state + recovery (rotate/revoke/recover, fork-vs-same-self, S-5)
+
+Wave 5 (`docs/federation-study/06` §5 Wave 5, `docs/ADR-fed-003` §D4/§D5/§D6 +
+`docs/ADR-fed-004` §D6) makes an identity **portable (V2)** and **recoverable (V6)**,
+and makes the fork-vs-same-self continuity boundary *cryptographically unskippable*.
+The `wgid:` address (the **genesis** root pubkey) never changes; the **active** signing
+root rotates underneath it. `WG_FED_COMPAT_VERSION` is bumped `0.1.0 → 0.2.0` (the
+`rotate_root` verification semantics changed — a 0.1.x peer must fail loud, not silently
+mis-verify a rotated chain).
+
+- **Sigchain ops** (`src/identity/sigchain.rs`) — `rotate_root` (succession: the current
+  active root signs in the next), `revoke_key` (durable, self-verifying), and **layered
+  recovery**: `rotate_root_via_recovery_key` (offline recovery key, the node-default
+  owner backstop) and `rotate_root_via_guardians` (M-of-N guardian quorum, the node-less
+  ceremony that defuses Fatal A-4). `verify` replays the chain to track `active_root` and
+  keeps **add_key / revoke_key / succession-rotate root-locked** (the hydra kill, S-4);
+  recovery installs a *new root the recoverer possesses*, authorized by a control the
+  downloader lacks (the recovery key or quorum) — never a surviving-delegate `add_key`.
+  `RecoverySlot` gains `recovery_key`; `validate_node_less` mandates paper-key + M-of-N.
+- **Fork vs same-self** (ADR-fed-003 §D4) — a genesis may cite a `ParentRef`; `wg identity
+  fork --from <downloaded> --as <child>` mints a **NEW** `wgid` (a verifiable child, NOT
+  the parent) — the default "download = fork". Continuing as the **same** identity needs a
+  root-signed `add_key`: `wg identity enroll-signer <name>` — which a downloaded, key-less
+  bundle **cannot** produce (no root in custody), so same-self is unskippable by design.
+- **S-5 loadable-state safety** (`src/identity/state_safety.rs`, ADR-fed-004 §D6) — a
+  loaded `StateSnapshot` is **UNTRUSTED INPUT**: a signature proves *who wrote* it, never
+  that it is *safe to load*. `wg identity load-state <name> --store <L> [--from <wgid>]
+  [--author-trust …]` runs the fail-closed pipeline — CAS integrity → signature/provenance
+  → `model_binding` → kind dispatch (transparent scan / opaque contain / unknown degrade) →
+  the per-kind AI-input-safety scan (structural / embedded-secret / prompt-injection) →
+  provenance-gate by `trust_level`. **Auto-load only for `same-self` OR `(cross-self ∧
+  Verified ∧ transparent ∧ scan-clean)`**; everything else is human-in-loop, an `Unknown`
+  cross-self author is refused, and a hard scan hit blocks unconditionally.
+- **CLI** — `wg identity {new --recovery|--node-less|--guardian|--threshold, rotate,
+  revoke, recover, fork, enroll-signer, load-state}`; `publish --state-text` seeds a
+  custom (e.g. poisoned) cache for the S-5 demo.
+
+The end-to-end proof is pinned by
+`tests/smoke/scenarios/federation_recovery_portable_state.sh` (`owners = [fed-wave5]`):
+rotate (address unchanged) → same-self enroll → revoke → recover via the offline recovery
+key → download=fork enforced (same-self on a downloaded bundle refused) → S-5 gate
+(same-self auto-loads, unknown cross-self refused, injection-bearing cache hard-blocked).
+Guardian (node-less) recovery is exercised by the `recover_via_guardian_quorum` library
+test. **Waves 6 (encryption=ACL + UCAN delegation) remains deferred.**

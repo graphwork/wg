@@ -153,7 +153,7 @@ impl FreshnessAttestation {
         }
         let digest = signing_digest(&self.to_value());
         let sig_bytes = decode_sig(&self.sig)?;
-        if keys::verify_sig(&auth.root_pub, &digest, &sig_bytes) {
+        if keys::verify_sig(&auth.active_root, &digest, &sig_bytes) {
             return Ok(());
         }
         for k in &auth.keys {
