@@ -1921,9 +1921,15 @@ TASK_ID={escaped_task_id}
 OUTPUT_FILE={escaped_output_file}
 {raw_stream_shell_var}
 
-# Allow nested Claude Code sessions (spawned agents are independent)
+# Allow nested Claude Code sessions (spawned agents are independent).
+# The MANAGED_BY_HOST / SDK_HAS_OAUTH_REFRESH vars in particular leak
+# through when the daemon was launched from inside a Claude Code
+# session and make the spawned claude CLI prefer an inaccessible host
+# bridge over the configured token.
 unset CLAUDECODE
 unset CLAUDE_CODE_ENTRYPOINT
+unset CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
+unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 {timeout_note}
 {debug_env_vars}
 {stream_init}
