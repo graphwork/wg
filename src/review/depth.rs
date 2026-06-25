@@ -24,8 +24,9 @@ use super::{Sensitivity, Verdict};
 use crate::graph::TrustLevel;
 
 /// The applied review depth — which passes run and the default verdict on clean
-/// (ADR-CS1 D3). Surfaced in `wg show` / `wg review` and linted by `wg config lint`
-/// (a too-loose route is visible at a glance).
+/// (ADR-CS1 D3). Surfaced today by `wg review depth` / `wg review check` (a too-loose
+/// route is visible at a glance); the `wg show` / `wg config lint` integration is
+/// Review-Wave C.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewDepth {
     /// The highest pass that runs (1..4). Pass 1 always runs; Pass 2+ on the

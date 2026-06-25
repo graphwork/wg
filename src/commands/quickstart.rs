@@ -645,10 +645,38 @@ PEER WG PROJECTS
 ─────────────────────────────────────────
   Cross-repo communication between WG instances:
 
-  wg peer add <name> <path>           # Register a peer WG project
+  wg peer add <name> <path>           # Register a path-based peer (same host)
+  wg peer add <name> --wgid <W> --endpoint <U>  # Key-based peer (cross-graph)
   wg peer list                        # List all peers with service status
   wg peer status                      # Quick health check of all peers
   wg add "Task" --repo <peer>         # Create a task in a peer WG project
+
+WG-FED IDENTITY & CROSS-GRAPH FEDERATION
+─────────────────────────────────────────
+  Self-certifying key identity (wgid:), signed messages, portable state:
+
+  wg identity new <name>              # Mint a wgid: (root key → wg secret)
+  wg identity show <name> | list      # Inspect / list local identities
+  wg identity publish <name> --store <L>          # Publish record + sigchain
+  wg identity fetch <wgid> --store <L> [--save N] # Fetch + verify OFFLINE by wgid
+  wg fed-node serve --addr <H:P>      # Run the store-and-forward inbox node
+  wg msg send --to <wgid> --from <id> --body "…" [--seal]   # Cross-graph message
+  wg msg poll --as <id> [--store <url>] [--require-fresh high-value]
+  wg identity rotate|revoke|recover|fork|enroll-signer    # Rotation & recovery
+  wg identity delegate|verify-cap|revoke-cap              # UCAN capabilities
+  wg identity load-state <name> --store <L>  # Fail-closed loadable-state gate
+
+CONTENT-SAFETY REVIEW GATE
+─────────────────────────────────────────
+  Screen inbound content (task/code/state/msg) BEFORE an agent consumes it:
+
+  wg review check --class IC1 --trust unknown --content-file <f> [--author <wgid>]
+                                      # accept / quarantine / reject (strictest wins)
+  wg review depth --trust <t> [--sensitivity low|high]   # trust-proportional depth
+  wg review reviewer-scope            # the dual-LLM no-scope bound
+  wg review log                       # the hash-linked verdict sigchain (audit)
+  wg review consume --content-file <f>  # digest-pinned consumption (MUST-2)
+  wg review revoke --cid <b3:…>       # loud revoke: trace author, lower trust, re-run
 
 EVALUATION & MONITORING
 ─────────────────────────────────────────
@@ -1090,9 +1118,32 @@ fn json_output() -> serde_json::Value {
         },
         "peer_workgraphs": {
             "add": "wg peer add <name> <path>",
+            "add_key_based": "wg peer add <name> --wgid <W> --endpoint <U>",
             "list": "wg peer list",
             "status": "wg peer status",
             "cross_repo_task": "wg add \"task\" --repo <peer>"
+        },
+        "federation": {
+            "description": "WG-Fed: self-certifying wgid: identity, signed cross-graph messages, portable/recoverable state.",
+            "identity_new": "wg identity new <name>",
+            "identity_show": "wg identity show <name> | wg identity list",
+            "publish": "wg identity publish <name> --store <L>",
+            "fetch": "wg identity fetch <wgid> --store <L> [--save <name>]",
+            "node": "wg fed-node serve --addr <H:P>",
+            "msg_send": "wg msg send --to <wgid> --from <id> --body \"…\" [--seal]",
+            "msg_poll": "wg msg poll --as <id> [--store <url>] [--require-fresh high-value]",
+            "recovery": "wg identity rotate|revoke|recover|fork|enroll-signer",
+            "delegation": "wg identity delegate|verify-cap|revoke-cap",
+            "load_state": "wg identity load-state <name> --store <L>"
+        },
+        "content_safety_review": {
+            "description": "WG-Review: screen inbound task/code/state/msg BEFORE an agent consumes it (accept/quarantine/reject, fail-closed).",
+            "check": "wg review check --class IC1 --trust unknown --content-file <f> [--author <wgid>]",
+            "depth": "wg review depth --trust <t> [--sensitivity low|high]",
+            "reviewer_scope": "wg review reviewer-scope",
+            "log": "wg review log",
+            "consume": "wg review consume --content-file <f>",
+            "revoke": "wg review revoke --cid <b3:…>"
         },
         "evaluation_and_monitoring": {
             "evaluate_run": "wg evaluate run <task-id>",
@@ -1471,6 +1522,8 @@ mod tests {
             "ANALYSIS",
             "DEAD AGENT DETECTION",
             "PEER WG PROJECTS",
+            "WG-FED IDENTITY & CROSS-GRAPH FEDERATION",
+            "CONTENT-SAFETY REVIEW GATE",
             "EVALUATION & MONITORING",
             "NOTIFICATION & COMMUNICATION",
             "RESOURCE MANAGEMENT",
