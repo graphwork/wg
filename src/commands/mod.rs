@@ -112,6 +112,7 @@ pub mod resource;
 pub mod resources;
 pub mod resume;
 pub mod retry;
+pub mod review_cmd;
 pub mod role;
 pub mod runs_cmd;
 pub mod screencast_autopilot;
