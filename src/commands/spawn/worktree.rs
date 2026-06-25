@@ -82,12 +82,18 @@ pub fn create_worktree(
     // path as an argument.
     let setup_script = workgraph_dir.join("worktree-setup.sh");
     if setup_script.exists() {
-        let _ = Command::new("bash")
-            .arg(strip_verbatim_prefix(&setup_script))
-            .arg(strip_verbatim_prefix(&worktree_dir))
-            .arg(strip_verbatim_prefix(project_root))
-            .current_dir(strip_verbatim_prefix(&worktree_dir))
-            .output(); // Best-effort; don't fail spawn if setup hook fails
+        // No Config in scope here — bash_exe_path falls through to env +
+        // well-known Windows paths + PATH scan (skipping the WSL shim),
+        // which is what we want for a hook script. Strip the `\\?\` prefix
+        // from the path args + cwd so Git-for-Windows bash can read them.
+        if let Ok(bash_path) = worksgood::platform_bash::bash_exe_path(None) {
+            let _ = Command::new(&bash_path)
+                .arg(strip_verbatim_prefix(&setup_script))
+                .arg(strip_verbatim_prefix(&worktree_dir))
+                .arg(strip_verbatim_prefix(project_root))
+                .current_dir(strip_verbatim_prefix(&worktree_dir))
+                .output(); // Best-effort; don't fail spawn if setup hook fails
+        }
     }
 
     Ok(WorktreeInfo {

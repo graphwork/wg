@@ -597,7 +597,11 @@ pub(crate) fn spawn_agent_inner(
     // not — it reports "No such file or directory" before the script can
     // run, and the agent dies instantly with no output.log. Strip the
     // prefix so bash sees a plain `C:\...` path, which it handles fine.
-    let mut cmd = Command::new("bash");
+    // Resolve the bash binary via platform_bash so a stock Windows PATH
+    // doesn't route us to the WSL shim (`C:\Windows\System32\bash.exe`).
+    let bash_path = worksgood::platform_bash::bash_exe_path(config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for spawn wrapper")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg(strip_verbatim_prefix(&wrapper_path));
 
     // Set environment variables from executor config
