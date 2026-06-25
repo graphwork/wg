@@ -44,6 +44,7 @@ pub mod cycles;
 pub mod dead_agents;
 pub mod dev_check;
 pub mod discover;
+pub mod doctor;
 pub mod done;
 pub mod edit;
 pub mod endpoints;
