@@ -72,6 +72,7 @@ pub mod registry {
     pub use crate::service::registry::AgentRegistry as Registry;
     pub use crate::service::registry::AgentStatus;
 }
+pub mod review;
 pub mod runs;
 pub mod secret;
 pub mod service;
