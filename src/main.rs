@@ -3739,6 +3739,55 @@ fn main() -> Result<()> {
                 }
             },
         },
+        Commands::Identity { command } => match command {
+            cli::IdentityCommands::New { name } => {
+                commands::identity_cmd::run_new(&workgraph_dir, &name, cli.json)
+            }
+            cli::IdentityCommands::Show { name } => {
+                commands::identity_cmd::run_show(&workgraph_dir, &name, cli.json)
+            }
+            cli::IdentityCommands::List => {
+                commands::identity_cmd::run_list(&workgraph_dir, cli.json)
+            }
+            cli::IdentityCommands::Publish { name, store } => {
+                commands::identity_cmd::run_publish(&workgraph_dir, &name, &store, cli.json)
+            }
+            cli::IdentityCommands::Fetch { wgid, store, save } => {
+                commands::identity_cmd::run_fetch(
+                    &workgraph_dir,
+                    &wgid,
+                    &store,
+                    save.as_deref(),
+                    cli.json,
+                )
+            }
+            cli::IdentityCommands::Send {
+                from,
+                to,
+                store,
+                body,
+                kind,
+                seal,
+            } => commands::identity_cmd::run_send(
+                &workgraph_dir,
+                &from,
+                &to,
+                &store,
+                &body,
+                &kind,
+                seal,
+                cli.json,
+            ),
+            cli::IdentityCommands::Poll { name, store } => {
+                commands::identity_cmd::run_poll(&workgraph_dir, &name, &store, cli.json)
+            }
+            cli::IdentityCommands::Verify { file, store } => commands::identity_cmd::run_verify(
+                &workgraph_dir,
+                &file,
+                store.as_deref(),
+                cli.json,
+            ),
+        },
     }
 }
 

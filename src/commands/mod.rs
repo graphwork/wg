@@ -61,6 +61,7 @@ pub mod func_make_adaptive;
 pub mod gc;
 pub mod graph;
 pub mod heartbeat;
+pub mod identity_cmd;
 pub mod impact;
 pub mod incomplete;
 pub mod init;

@@ -2374,6 +2374,24 @@ pub enum Commands {
         command: SecretCommands,
     },
 
+    /// Manage WG-Fed federated identities (self-certifying `wgid:` + sigchain)
+    ///
+    /// The WG-Fed spark surface (ADR-fed-001..004): mint a self-certifying
+    /// identity whose root key never leaves `wg secret` custody; publish/fetch a
+    /// self-verifying `IdentityRecord` (+ `StateSnapshot`) to a dumb, untrusted
+    /// store; and send/poll signed (optionally sealed) cross-graph events.
+    ///
+    /// Quick start:
+    ///   wg identity new alice                       # mint (root stays in custody)
+    ///   wg identity publish alice --store ./L        # publish to a dumb location
+    ///   wg identity fetch <wgid> --store ./L         # fetch + verify offline
+    ///   wg identity send --from bob --to <wgid> --store ./L --body hi
+    ///   wg identity poll alice --store ./L           # receive + authenticate
+    Identity {
+        #[command(subcommand)]
+        command: IdentityCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex(NexArgs),
 
@@ -3067,6 +3085,86 @@ pub enum ModelCommands {
         /// Write to global config
         #[arg(long)]
         global: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IdentityCommands {
+    /// Mint a new self-certifying identity (root key into `wg secret`).
+    New {
+        /// Local handle for the identity (e.g. alice).
+        name: String,
+    },
+
+    /// Show a local identity (public material only; never private keys).
+    Show {
+        /// Local handle.
+        name: String,
+    },
+
+    /// List local identities.
+    List,
+
+    /// Publish an identity's `IdentityRecord` + sigchain + a `StateSnapshot` to a
+    /// dumb, untrusted third location (a directory or `file://` path).
+    Publish {
+        /// Local handle of an identity you minted.
+        name: String,
+        /// The third location `L` (directory path or `file://`).
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Fetch + verify an identity from a third location, offline, by `wgid:`.
+    Fetch {
+        /// The `wgid:` (or `did:key:`) address to fetch.
+        wgid: String,
+        /// The third location `L` to fetch from.
+        #[arg(long)]
+        store: String,
+        /// Cache the fetched (key-less) bundle locally under this handle.
+        #[arg(long)]
+        save: Option<String>,
+    },
+
+    /// Send a signed (optionally sealed) cross-graph event into `L`'s inbox.
+    Send {
+        /// Local handle of the authoring identity (must hold its signer key).
+        #[arg(long)]
+        from: String,
+        /// Recipient `wgid:` address.
+        #[arg(long)]
+        to: String,
+        /// The third location `L` carrying the store-and-forward inbox.
+        #[arg(long)]
+        store: String,
+        /// Message body (plaintext, or the payload to seal).
+        #[arg(long)]
+        body: String,
+        /// Event kind (default `msg`).
+        #[arg(long, default_value = "msg")]
+        kind: String,
+        /// Seal the body to the recipient's encryption key (X25519 + XChaCha20).
+        #[arg(long)]
+        seal: bool,
+    },
+
+    /// Poll `L`'s inbox for an identity and authenticate each event by key.
+    Poll {
+        /// Local handle whose inbox to poll.
+        name: String,
+        /// The third location `L`.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Verify a record or event file offline.
+    Verify {
+        /// Path to a JSON `IdentityRecord` or `SignedEvent`.
+        file: String,
+        /// The third location `L` (needed to resolve the signer's sigchain).
+        #[arg(long)]
+        store: Option<String>,
     },
 }
 
@@ -5375,6 +5473,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Model { .. } => "model",
         Commands::Key { .. } => "key",
         Commands::Secret { .. } => "secret",
+        Commands::Identity { .. } => "identity",
         Commands::Nex(_) => "nex",
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",
@@ -5473,6 +5572,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Model { .. }
             | Commands::Key { .. }
             | Commands::Secret { .. }
+            | Commands::Identity { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
