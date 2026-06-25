@@ -3797,8 +3797,20 @@ fn main() -> Result<()> {
             },
         },
         Commands::Identity { command } => match command {
-            cli::IdentityCommands::New { name } => {
-                commands::identity_cmd::run_new(&workgraph_dir, &name, cli.json)
+            cli::IdentityCommands::New {
+                name,
+                recovery,
+                guardians,
+                threshold,
+                node_less,
+            } => {
+                let rec_cfg = commands::identity_cmd::RecoveryConfig {
+                    with_recovery_key: recovery,
+                    guardians,
+                    threshold: threshold.unwrap_or(0),
+                    node_less,
+                };
+                commands::identity_cmd::run_new(&workgraph_dir, &name, &rec_cfg, cli.json)
             }
             cli::IdentityCommands::Show { name } => {
                 commands::identity_cmd::run_show(&workgraph_dir, &name, cli.json)
@@ -3810,11 +3822,13 @@ fn main() -> Result<()> {
                 name,
                 store,
                 fresh_ttl,
+                state_text,
             } => commands::identity_cmd::run_publish(
                 &workgraph_dir,
                 &name,
                 &store,
                 fresh_ttl,
+                state_text.as_deref(),
                 cli.json,
             ),
             cli::IdentityCommands::Attest {
@@ -3878,6 +3892,34 @@ fn main() -> Result<()> {
                 &workgraph_dir,
                 &file,
                 store.as_deref(),
+                cli.json,
+            ),
+            cli::IdentityCommands::Rotate { name, store } => {
+                commands::identity_cmd::run_rotate(&workgraph_dir, &name, &store, cli.json)
+            }
+            cli::IdentityCommands::Revoke { name, kid, store } => {
+                commands::identity_cmd::run_revoke(&workgraph_dir, &name, &kid, &store, cli.json)
+            }
+            cli::IdentityCommands::Recover { name, store } => {
+                commands::identity_cmd::run_recover(&workgraph_dir, &name, &store, cli.json)
+            }
+            cli::IdentityCommands::Fork { from, as_name } => {
+                commands::identity_cmd::run_fork(&workgraph_dir, &from, &as_name, cli.json)
+            }
+            cli::IdentityCommands::EnrollSigner { name, store } => {
+                commands::identity_cmd::run_enroll_signer(&workgraph_dir, &name, &store, cli.json)
+            }
+            cli::IdentityCommands::LoadState {
+                name,
+                store,
+                from,
+                author_trust,
+            } => commands::identity_cmd::run_load_state(
+                &workgraph_dir,
+                &name,
+                &store,
+                from.as_deref(),
+                &author_trust,
                 cli.json,
             ),
         },

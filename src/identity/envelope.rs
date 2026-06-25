@@ -306,8 +306,8 @@ fn verify_sig_against_authorized(
 ) -> Result<()> {
     let digest = signing_digest(value);
     let sig_bytes = decode_sig(sig_hex)?;
-    // Root may sign.
-    if keys::verify_sig(&auth.root_pub, &digest, &sig_bytes) {
+    // The active root may sign (after a rotate_root, the old root may not).
+    if keys::verify_sig(&auth.active_root, &digest, &sig_bytes) {
         return Ok(());
     }
     // Any active signer may sign.

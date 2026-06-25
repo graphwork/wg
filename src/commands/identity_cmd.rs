@@ -27,6 +27,9 @@ use worksgood::identity::keys::{self, Custodian};
 use worksgood::identity::sigchain::{
     self, AuthorizedKeys, KeyEntry, KeyRole, KeyStatus, SigchainLink,
 };
+use worksgood::identity::state_safety::{
+    KindClass, LoadDecision, ScanResult, classify_kind, evaluate, parse_trust, scan_transparent,
+};
 use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
 
@@ -47,12 +50,33 @@ struct LocalIdentity {
     /// a downloaded (key-less) bundle. The latter cannot author — the spark's
     /// "download ≠ impersonation" boundary (ADR-fed-003 §D1).
     holds_private: bool,
+    /// The **active** root kid after any `rotate_root`/recovery (Wave 5). Empty for
+    /// pre-Wave-5 records ⇒ falls back to `root_kid` (the genesis root). Use
+    /// [`LocalIdentity::cur_root_kid`].
+    #[serde(default)]
+    active_root_kid: String,
+    /// The offline recovery key's kid in custody, if one was minted at genesis
+    /// (`wg identity new --recovery`). `None` for agents anchored to a custodian.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_kid: Option<String>,
     record: IdentityRecord,
     sigchain: Vec<SigchainLink>,
     /// Highest freshness-attestation `seq` this identity has *issued* (monotonic).
     /// Bumped on every `publish`/`attest` so a verifier can detect rollback.
     #[serde(default)]
     freshness_seq: u64,
+}
+
+impl LocalIdentity {
+    /// The currently-active root kid (Wave 5): `active_root_kid` if set, else the
+    /// genesis `root_kid` (back-compat for records minted before rotation existed).
+    fn cur_root_kid(&self) -> String {
+        if self.active_root_kid.is_empty() {
+            self.root_kid.clone()
+        } else {
+            self.active_root_kid.clone()
+        }
+    }
 }
 
 fn identity_dir(workgraph_dir: &Path) -> PathBuf {
@@ -112,10 +136,37 @@ fn load_local_by_wgid(workgraph_dir: &Path, wgid: &str) -> Option<LocalIdentity>
 
 // ── Minting (step 1) ───────────────────────────────────────────────────────────
 
+/// Genesis-time recovery configuration (ADR-fed-003 §D5). Default is empty
+/// (agent / node-present, recovery anchors to the custodian). `--recovery` adds an
+/// offline recovery key; `--node-less` additionally mandates an M-of-N guardian
+/// quorum (the ceremony that defuses Fatal A-4 — [`RecoverySlot::validate_node_less`]).
+#[derive(Default, Clone)]
+pub struct RecoveryConfig {
+    pub with_recovery_key: bool,
+    pub guardians: Vec<String>,
+    pub threshold: u8,
+    pub node_less: bool,
+}
+
+impl RecoveryConfig {
+    fn is_empty(&self) -> bool {
+        !self.with_recovery_key
+            && self.guardians.is_empty()
+            && self.threshold == 0
+            && !self.node_less
+    }
+}
+
 /// Mint root/signer/enc keys into custody, build the genesis+add_key sigchain,
 /// sign the `IdentityRecord`, and persist local public state. The root private
-/// key is written to `wg secret` and **never returned or displayed**.
-fn mint(name: &str) -> Result<LocalIdentity> {
+/// key is written to `wg secret` and **never returned or displayed**. When `parent`
+/// is `Some`, the genesis cites it as a **fork** parent (ADR-fed-003 §D4) — a new
+/// `wgid:`, a verifiable child, never the parent.
+fn mint(
+    name: &str,
+    rec_cfg: &RecoveryConfig,
+    parent: Option<sigchain::ParentRef>,
+) -> Result<LocalIdentity> {
     let cust = Custodian::new(name);
 
     // Root (ed25519) — signs the sigchain only; lives in custody forever.
@@ -134,9 +185,40 @@ fn mint(name: &str) -> Result<LocalIdentity> {
     let enc_kid = keys::kid_for(&enc.public);
     cust.store_sealing_key(&enc_kid, &enc.secret)?;
 
+    // Optional offline recovery key (the §D5 owner backstop). Minted into custody;
+    // only its PUBLIC key goes into the genesis recovery slot.
+    let mut recovery_kid: Option<String> = None;
+    let recovery_slot = if rec_cfg.is_empty() {
+        None
+    } else {
+        let recovery_key = if rec_cfg.with_recovery_key || rec_cfg.node_less {
+            let rk = keys::gen_ed25519()?;
+            let rk_kid = keys::kid_for(&rk.public);
+            cust.store_signing_key(&rk_kid, &rk.seed)?;
+            recovery_kid = Some(rk_kid);
+            Some(hex::encode(rk.public))
+        } else {
+            None
+        };
+        let slot = sigchain::RecoverySlot {
+            guardians: rec_cfg.guardians.clone(),
+            threshold: rec_cfg.threshold,
+            recovery_key,
+        };
+        if rec_cfg.node_less {
+            // The mandatory node-less ceremony: refuse to mint an unrecoverable id.
+            slot.validate_node_less()?;
+        }
+        Some(slot)
+    };
+
     // Build the sigchain: genesis (root self-signed) → add_key signer → add_key enc.
-    // add_key links are signed by the root (the hydra lock, S-4).
-    let g = sigchain::genesis(&cust, &root.public, &root_kid, None)?;
+    // add_key links are signed by the root (the hydra lock, S-4). A fork's genesis
+    // cites its parent (§D4).
+    let g = match parent {
+        Some(p) => sigchain::genesis_fork(&cust, &root.public, &root_kid, recovery_slot, p)?,
+        None => sigchain::genesis(&cust, &root.public, &root_kid, recovery_slot)?,
+    };
     let signer_entry = KeyEntry {
         kid: signer_kid.clone(),
         public: hex::encode(signer.public),
@@ -181,10 +263,12 @@ fn mint(name: &str) -> Result<LocalIdentity> {
     Ok(LocalIdentity {
         name: name.to_string(),
         wgid,
-        root_kid,
+        root_kid: root_kid.clone(),
         signer_kid,
         enc_kid,
         holds_private: true,
+        active_root_kid: root_kid,
+        recovery_kid,
         record,
         sigchain: chain,
         freshness_seq: 0,
@@ -289,6 +373,8 @@ fn emit_attestation(
     ttl_secs: i64,
 ) -> Result<FreshnessAttestation> {
     let cust = Custodian::new(&id.name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    let sk = signing_kid(id, &cust, &auth)?;
     id.freshness_seq += 1;
     let mut att = FreshnessAttestation::build(
         &id.wgid,
@@ -297,7 +383,7 @@ fn emit_attestation(
         ttl_secs,
         id.freshness_seq,
     );
-    att.sign(&cust, &id.signer_kid)?;
+    att.sign(&cust, &sk)?;
     let att_cid = att.cid();
     store.put_object(&att_cid, &serde_json::to_vec(&att)?)?;
     store.put_attestation(&id.wgid, &serde_json::to_vec(&att)?)?;
@@ -305,14 +391,80 @@ fn emit_attestation(
     Ok(att)
 }
 
+// ── Wave 5 shared helpers: re-publish after a chain mutation ────────────────────
+
+/// The custody kid to sign new records / snapshots / attestations with: the active
+/// signer if we still hold it, else the active root (e.g. after the signer was
+/// revoked). A downloaded bundle holds neither and cannot author.
+fn signing_kid(id: &LocalIdentity, cust: &Custodian, auth: &AuthorizedKeys) -> Result<String> {
+    if let Some(s) = auth.active_signer() {
+        if cust.has_key(&s.kid)? {
+            return Ok(s.kid.clone());
+        }
+    }
+    let root_kid = id.cur_root_kid();
+    if cust.has_key(&root_kid)? {
+        return Ok(root_kid);
+    }
+    bail!(
+        "no active signing key for {:?} in custody — cannot author (download ≠ \
+         impersonation, ADR-fed-003 §D1)",
+        id.name
+    )
+}
+
+/// Re-sign the `IdentityRecord` over the current head + active key set and publish
+/// all sigchain links + record + head + a fresh attestation. Used after every
+/// sigchain mutation (rotate / revoke / recover / enroll-signer).
+fn republish(workgraph_dir: &Path, id: &mut LocalIdentity, store: &dyn FedStore) -> Result<()> {
+    let cust = Custodian::new(&id.name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    let head_cid = id.sigchain.last().unwrap().cid();
+    id.record.sigchain_head = head_cid;
+    id.record.keys = auth.keys.clone();
+    let sk = signing_kid(id, &cust, &auth)?;
+    id.record.sig = String::new();
+    id.record.sign(&cust, &sk)?;
+
+    for link in &id.sigchain {
+        store.put_object(&link.cid(), &serde_json::to_vec(link)?)?;
+    }
+    let record_cid = id.record.cid();
+    store.put_object(&record_cid, &serde_json::to_vec(&id.record)?)?;
+
+    // Preserve any previously-published state snapshots in the head pointer.
+    let snapshots = store
+        .get_head(&id.wgid)
+        .map(|h| h.snapshots)
+        .unwrap_or_default();
+    let att = emit_attestation(workgraph_dir, store, id, ROUTINE_DELTA_SECS)?;
+    store.put_head(
+        &id.wgid,
+        &Head {
+            record: record_cid,
+            snapshots,
+            attestation: Some(att.cid()),
+        },
+    )?;
+    save_local(workgraph_dir, id)?;
+    Ok(())
+}
+
 // ── Command handlers ───────────────────────────────────────────────────────────
 
 /// `wg identity new <name>` — mint a self-certifying identity (spark step 1).
-pub fn run_new(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
+/// `--recovery`/`--guardian`/`--threshold`/`--node-less` populate the genesis
+/// recovery slot (Wave 5, ADR-fed-003 §D5).
+pub fn run_new(
+    workgraph_dir: &Path,
+    name: &str,
+    rec_cfg: &RecoveryConfig,
+    json: bool,
+) -> Result<()> {
     if local_path(workgraph_dir, name).exists() {
         bail!("identity {name:?} already exists locally; pick another name");
     }
-    let id = mint(name)?;
+    let id = mint(name, rec_cfg, None)?;
     save_local(workgraph_dir, &id)?;
 
     if json {
@@ -326,6 +478,8 @@ pub fn run_new(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
                 "sigchain_head": id.record.sigchain_head,
                 "compat": WG_FED_COMPAT_VERSION,
                 "root_custody": "wg-secret-keystore",
+                "has_recovery_key": id.recovery_kid.is_some(),
+                "node_less": rec_cfg.node_less,
             })
         );
     } else {
@@ -333,6 +487,20 @@ pub fn run_new(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
         println!("  wgid: {}", id.wgid);
         println!("  signer kid: {}", id.signer_kid);
         println!("  enc kid:    {}", id.enc_kid);
+        if id.recovery_kid.is_some() {
+            println!(
+                "  recovery:   offline recovery key in custody{}",
+                if rec_cfg.node_less {
+                    format!(
+                        " + {}-of-{} guardian quorum (node-less ceremony)",
+                        rec_cfg.threshold,
+                        rec_cfg.guardians.len()
+                    )
+                } else {
+                    String::new()
+                }
+            );
+        }
         println!(
             "  root key:   held in custody (wg secret keystore) behind a sign-this-digest \
              boundary — never displayed, exported, or written to any record/file/env."
@@ -418,6 +586,7 @@ pub fn run_publish(
     name: &str,
     store_loc: &str,
     fresh_ttl: Option<i64>,
+    state_text: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let mut id = load_local(workgraph_dir, name)?;
@@ -435,12 +604,15 @@ pub fn run_publish(
     let record_cid = id.record.cid();
     store.put_object(&record_cid, &serde_json::to_vec(&id.record)?)?;
 
-    // Build + sign + publish one StateSnapshot (payload_kind conv-cache-v1).
+    // Build + sign + publish one StateSnapshot (payload_kind conv-cache-v1). The
+    // `--state-text` override lets a publisher seed a custom conversation turn — used
+    // to demonstrate the S-5 scan blocking a poisoned (e.g. injection-bearing) cache.
+    let turn_text = state_text.unwrap_or("wg-fed spark conversation cache");
     let cust = Custodian::new(name);
     let payload = serde_json::to_vec(&serde_json::json!({
         "kind": "conv-cache-v1",
         "owner": id.wgid,
-        "turns": [{"role": "system", "text": "wg-fed spark conversation cache"}],
+        "turns": [{"role": "system", "text": turn_text}],
     }))?;
     let pcid = payload_cid(&payload);
     store.put_object(&pcid, &payload)?;
@@ -651,6 +823,8 @@ pub fn run_fetch(
                 .map(|k| k.kid.clone())
                 .unwrap_or_default(),
             holds_private: false,
+            active_root_kid: String::new(),
+            recovery_kid: None,
             record: bundle.record.clone(),
             sigchain: bundle.chain.clone(),
             freshness_seq: 0,
@@ -994,4 +1168,451 @@ pub fn run_verify(
     } else {
         bail!("verification failed: {detail}")
     }
+}
+
+// ── Wave 5 command handlers: rotate / revoke / recover / fork / enroll / load ────
+
+/// `wg identity rotate <name> --store <L>` — normal-succession `rotate_root`: mint a
+/// new active root and have the *current* active root sign it in (ADR-fed-003 §D5).
+/// The `wgid:` address is unchanged; the active signing root rotates underneath.
+pub fn run_rotate(workgraph_dir: &Path, name: &str, store_loc: &str, json: bool) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
+    if !id.holds_private {
+        bail!("identity {name:?} is a downloaded bundle; it holds no root and cannot rotate");
+    }
+    let cust = Custodian::new(name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    let active_root_kid = id.cur_root_kid();
+    if !cust.has_key(&active_root_kid)? {
+        bail!("the active root key is not in this custody — cannot sign a succession rotate");
+    }
+
+    // Mint the new root into custody, then append a succession rotate_root link.
+    let new_root = keys::gen_ed25519()?;
+    let new_kid = keys::kid_for(&new_root.public);
+    cust.store_signing_key(&new_kid, &new_root.seed)?;
+    let rot = sigchain::rotate_root(
+        &cust,
+        id.sigchain.last().unwrap(),
+        &auth.active_root,
+        &active_root_kid,
+        &new_root.public,
+    )?;
+    id.sigchain.push(rot);
+    id.active_root_kid = new_kid.clone();
+
+    let store = open_store(store_loc)?;
+    republish(workgraph_dir, &mut id, store.as_ref())?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wgid": id.wgid, "rotated": true, "new_active_root_kid": new_kid,
+                "sigchain_head": id.record.sigchain_head, "store": store_loc,
+            })
+        );
+    } else {
+        println!("Rotated active root of {} (address unchanged)", id.wgid);
+        println!("  new active root kid: {new_kid}");
+        println!("  sigchain head:       {}", id.record.sigchain_head);
+    }
+    Ok(())
+}
+
+/// `wg identity revoke <name> --kid <kid> --store <L>` — append a root-signed
+/// `revoke_key` retiring an authorized key (ADR-fed-003 §D6). The revoked key no
+/// longer authorizes signing; the durable, content-addressed revocation publishes
+/// in the same self-verifying cascade (composed with freshness, S-3).
+pub fn run_revoke(
+    workgraph_dir: &Path,
+    name: &str,
+    kid: &str,
+    store_loc: &str,
+    json: bool,
+) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
+    if !id.holds_private {
+        bail!("identity {name:?} is a downloaded bundle; it cannot author a revocation");
+    }
+    let cust = Custodian::new(name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    if !auth.keys.iter().any(|k| k.kid == kid) {
+        bail!(
+            "{kid:?} is not an authorized key of {} — nothing to revoke",
+            id.wgid
+        );
+    }
+    let active_root_kid = id.cur_root_kid();
+    if !cust.has_key(&active_root_kid)? {
+        bail!("the active root key is not in this custody — cannot sign a revoke");
+    }
+    let rk = sigchain::revoke_key(
+        &cust,
+        id.sigchain.last().unwrap(),
+        &auth.active_root,
+        &active_root_kid,
+        kid,
+    )?;
+    id.sigchain.push(rk);
+
+    let store = open_store(store_loc)?;
+    republish(workgraph_dir, &mut id, store.as_ref())?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wgid": id.wgid, "revoked_kid": kid, "sigchain_head": id.record.sigchain_head,
+                "store": store_loc,
+            })
+        );
+    } else {
+        println!("Revoked key {kid} of {}", id.wgid);
+        println!("  sigchain head: {}", id.record.sigchain_head);
+    }
+    Ok(())
+}
+
+/// `wg identity recover <name> --store <L>` — recover the identity using the offline
+/// **recovery key** registered at genesis (`wg identity new --recovery`): mint a new
+/// root and rotate it in under the higher-priority recovery key, even against a lost
+/// or hostile active root (ADR-fed-003 §D5, the node-default owner backstop, V6).
+///
+/// The node-less **M-of-N guardian** recovery path is the same `rotate_root` link
+/// authorized by a guardian quorum (`sigchain::rotate_root_via_guardians`), exercised
+/// end-to-end by the `recover_via_guardian_quorum` library test.
+pub fn run_recover(workgraph_dir: &Path, name: &str, store_loc: &str, json: bool) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
+    if !id.holds_private {
+        bail!("identity {name:?} is a downloaded bundle; recovery is performed by the owner");
+    }
+    let cust = Custodian::new(name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    let recovery = auth.recovery.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no recovery configuration in {}'s genesis — mint with `--recovery` (offline \
+             recovery key) or `--node-less` (paper key + M-of-N guardians) to enable recovery \
+             (ADR-fed-003 §D5)",
+            id.wgid
+        )
+    })?;
+    let rk_kid = id.recovery_kid.clone().ok_or_else(|| {
+        anyhow::anyhow!("no offline recovery key in this custody for {}", id.wgid)
+    })?;
+    let rk_hex = recovery
+        .recovery_key
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("genesis registered no offline recovery key"))?;
+    let rk_pub = decode_pub32(&rk_hex)?;
+
+    // Mint the fresh post-recovery root, then rotate it in under the recovery key.
+    let new_root = keys::gen_ed25519()?;
+    let new_kid = keys::kid_for(&new_root.public);
+    cust.store_signing_key(&new_kid, &new_root.seed)?;
+    let rot = sigchain::rotate_root_via_recovery_key(
+        &cust,
+        id.sigchain.last().unwrap(),
+        &rk_pub,
+        &rk_kid,
+        &new_root.public,
+    )?;
+    id.sigchain.push(rot);
+    id.active_root_kid = new_kid.clone();
+
+    let store = open_store(store_loc)?;
+    republish(workgraph_dir, &mut id, store.as_ref())?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wgid": id.wgid, "recovered": true, "via": "recovery-key",
+                "new_active_root_kid": new_kid, "sigchain_head": id.record.sigchain_head,
+            })
+        );
+    } else {
+        println!(
+            "Recovered {} via the offline recovery key (address unchanged)",
+            id.wgid
+        );
+        println!("  new active root kid: {new_kid}");
+        println!("  sigchain head:       {}", id.record.sigchain_head);
+    }
+    Ok(())
+}
+
+/// `wg identity fork --from <name> --as <child>` — the **default** "download onto a
+/// new host" semantics (ADR-fed-003 §D4): mint a brand-new identity (new root → new
+/// `wgid:`) whose genesis cites `<name>` as its fork parent. A verifiable child,
+/// cryptographically **not** the parent — it cannot sign as the parent.
+pub fn run_fork(workgraph_dir: &Path, from: &str, as_name: &str, json: bool) -> Result<()> {
+    if local_path(workgraph_dir, as_name).exists() {
+        bail!("identity {as_name:?} already exists locally; pick another name");
+    }
+    let parent = load_local(workgraph_dir, from)?;
+    // Verify the parent we are forking from (its chain must be sound).
+    let parent_auth = sigchain::verify(&parent.sigchain, &parent.wgid)
+        .with_context(|| format!("verifying parent {from} before fork"))?;
+    let pref = sigchain::ParentRef {
+        wgid: parent.wgid.clone(),
+        sigchain_head: parent_auth.head.clone(),
+    };
+    let child = mint(as_name, &RecoveryConfig::default(), Some(pref))?;
+    save_local(workgraph_dir, &child)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "forked_from": parent.wgid,
+                "child_wgid": child.wgid,
+                "same_identity": false,
+                "saved_as": as_name,
+            })
+        );
+    } else {
+        println!("Forked a NEW identity from {}", parent.wgid);
+        println!(
+            "  child wgid: {}  (a verifiable child — NOT the parent)",
+            child.wgid
+        );
+        println!("  saved local as '{as_name}' (holds its own fresh root)");
+        println!(
+            "  note: a download is a FORK by default. Continuing as the SAME identity on a \
+             new host requires a root-signed add_key (`wg identity enroll-signer`)."
+        );
+    }
+    Ok(())
+}
+
+/// `wg identity enroll-signer <name> --store <L>` — the **same-self** continuation
+/// boundary (ADR-fed-003 §D4): enroll a fresh signer key onto the *existing* `wgid:`
+/// via a root-signed `add_key`. This requires a control a mere downloader lacks (the
+/// root in custody, and `add_key` is root-locked, S-4) — so "download and it just
+/// works as the same identity" is cryptographically unskippable, by design.
+pub fn run_enroll_signer(
+    workgraph_dir: &Path,
+    name: &str,
+    store_loc: &str,
+    json: bool,
+) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
+    if !id.holds_private {
+        bail!(
+            "cannot enroll a same-self signer onto {}: this is a downloaded, key-less bundle. \
+             Continuing as the SAME identity on a new host requires a root-signed add_key \
+             (ADR-fed-003 §D4) — a control a downloader does NOT have. A download is a FORK by \
+             default; use `wg identity fork --from {name} --as <child>` instead.",
+            id.wgid
+        );
+    }
+    let cust = Custodian::new(name);
+    let auth = sigchain::verify(&id.sigchain, &id.wgid)?;
+    let active_root_kid = id.cur_root_kid();
+    if !cust.has_key(&active_root_kid)? {
+        bail!("the active root key is not in this custody — cannot sign add_key (S-4 lock)");
+    }
+    // Mint the new host's signer key; authorize it with a root-signed add_key.
+    let signer = keys::gen_ed25519()?;
+    let signer_kid = keys::kid_for(&signer.public);
+    cust.store_signing_key(&signer_kid, &signer.seed)?;
+    let entry = KeyEntry {
+        kid: signer_kid.clone(),
+        public: hex::encode(signer.public),
+        role: KeyRole::Signer,
+        scope: vec!["event".into(), "state".into()],
+        status: KeyStatus::Active,
+    };
+    let link = sigchain::add_key(
+        &cust,
+        id.sigchain.last().unwrap(),
+        &auth.active_root,
+        &active_root_kid,
+        entry,
+    )?;
+    id.sigchain.push(link);
+
+    let store = open_store(store_loc)?;
+    republish(workgraph_dir, &mut id, store.as_ref())?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wgid": id.wgid, "same_self": true, "enrolled_signer_kid": signer_kid,
+                "sigchain_head": id.record.sigchain_head,
+            })
+        );
+    } else {
+        println!(
+            "Enrolled a same-self signer onto {} (root-authorized add_key)",
+            id.wgid
+        );
+        println!("  new signer kid: {signer_kid}");
+        println!("  this host can now author as the SAME identity (not a fork)");
+    }
+    Ok(())
+}
+
+/// `wg identity load-state <name> --store <L> [--from <wgid>] [--author-trust <lvl>]`
+/// — the S-5 load pipeline (ADR-fed-004 §D6). Loaded `StateSnapshot`s are **untrusted
+/// input**: a valid signature proves *who wrote* it, never that it is *safe to load*.
+/// The pipeline is fail-closed — CAS integrity → signature/provenance → model_binding
+/// → kind dispatch → AI-input-safety scan → provenance-gate by `trust_level`. Low-trust
+/// or flagged state is **never silently consumed**.
+pub fn run_load_state(
+    workgraph_dir: &Path,
+    name: &str,
+    store_loc: &str,
+    from: Option<&str>,
+    author_trust: &str,
+    json: bool,
+) -> Result<()> {
+    let me = load_local(workgraph_dir, name)?;
+    let store = open_store(store_loc)?;
+    let trust = parse_trust(author_trust)?;
+
+    // Whose state are we loading? Default: our own (same-self resume happy path).
+    let author_wgid = match from {
+        Some(w) => keys::wgid_from_pubkey(&keys::pubkey_from_wgid(w)?),
+        None => me.wgid.clone(),
+    };
+    let same_self = author_wgid == me.wgid;
+
+    // Steps 1–2 (provenance): resolve + verify the author's bundle (chain + record +
+    // snapshots all signature/CAS-checked). A forged author fails here.
+    let bundle = resolve_bundle(store.as_ref(), &author_wgid)
+        .with_context(|| format!("resolving author {author_wgid} for state load"))?;
+    let scid = bundle
+        .snapshots
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("author {author_wgid} has no published state snapshot"))?;
+    let snap_bytes = store.get_object(scid)?;
+    let snap: StateSnapshot =
+        serde_json::from_slice(&snap_bytes).context("parsing author state snapshot")?;
+
+    // Step 1 (CAS): the payload bytes must hash to content_cid (tamper-evident).
+    let payload = store.get_object(&snap.content_cid)?;
+    if payload_cid(&payload) != snap.content_cid {
+        bail!("CAS integrity failure: payload does not match content_cid (tampered) — fail closed");
+    }
+    // Step 2 (signature/provenance) on the specific snapshot.
+    snap.verify(&bundle.auth)
+        .context("snapshot signature/provenance check failed")?;
+
+    // Step 4 (model_binding): must be present + well-formed; an opaque kind with no
+    // binding is contained, never loaded.
+    let kind_class = classify_kind(&snap.payload_kind);
+    if snap.model_binding.is_none() && kind_class == KindClass::Opaque {
+        bail!("opaque snapshot has no model_binding — fail closed (ADR-fed-004 §OQ1)");
+    }
+
+    // Step 5 (kind dispatch): an unknown kind degrades gracefully and STOPS.
+    if kind_class == KindClass::Unknown {
+        return finish_load(
+            json,
+            &author_wgid,
+            same_self,
+            trust,
+            kind_class,
+            &ScanResult::default(),
+            &LoadDecision::Refuse {
+                reason: format!(
+                    "unknown payload_kind {:?} — state present but unreadable by this client; \
+                     verified provenance, did not load (ADR-fed-004 §D4)",
+                    snap.payload_kind
+                ),
+            },
+            "degrade",
+        );
+    }
+
+    // Step 6 (AI-input-safety scan): transparent kinds are content-scanned; opaque
+    // kinds are contained (not inspected) and forced through the trust gate.
+    let scan = if kind_class == KindClass::Transparent {
+        let payload_json: serde_json::Value =
+            serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
+        scan_transparent(&snap.payload_kind, &payload_json)
+    } else {
+        ScanResult::default()
+    };
+
+    // Step 7 (provenance gate): decide auto-load / human-in-loop / refuse.
+    let decision = evaluate(trust, same_self, kind_class, &scan);
+    finish_load(
+        json,
+        &author_wgid,
+        same_self,
+        trust,
+        kind_class,
+        &scan,
+        &decision,
+        decision.label(),
+    )
+}
+
+/// Print the load decision and map it to a process outcome: `AutoLoad` ⇒ loaded /
+/// exit 0; `HumanInLoop` ⇒ held / exit 0 (not loaded); `Refuse` ⇒ fail closed (error).
+#[allow(clippy::too_many_arguments)]
+fn finish_load(
+    json: bool,
+    author: &str,
+    same_self: bool,
+    trust: worksgood::graph::TrustLevel,
+    kind: KindClass,
+    scan: &ScanResult,
+    decision: &LoadDecision,
+    label: &str,
+) -> Result<()> {
+    let loaded = decision.loads();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "author": author,
+                "same_self": same_self,
+                "author_trust": format!("{trust:?}"),
+                "kind_class": format!("{kind:?}"),
+                "decision": label,
+                "loaded": loaded,
+                "reason": decision.reason(),
+                "hard_hits": scan.hard_hits,
+                "soft_hits": scan.soft_hits,
+            })
+        );
+    } else {
+        let verb = match decision {
+            LoadDecision::AutoLoad => "LOADED",
+            LoadDecision::HumanInLoop { .. } => "HELD (human-in-loop)",
+            LoadDecision::Refuse { .. } => "REFUSED",
+        };
+        println!("{verb} state from {author} [{label}]");
+        println!("  same-self: {same_self}; author trust: {trust:?}; kind: {kind:?}");
+        if let Some(r) = decision.reason() {
+            println!("  {r}");
+        }
+        for h in &scan.hard_hits {
+            println!("  scan(block): {h}");
+        }
+        for h in &scan.soft_hits {
+            println!("  scan(escalate): {h}");
+        }
+    }
+    match decision {
+        // Fail closed on refuse so a caller can gate on the exit code.
+        LoadDecision::Refuse { reason } => bail!("state load refused (S-5, fail-closed): {reason}"),
+        _ => Ok(()),
+    }
+}
+
+/// Decode a 32-byte hex public key.
+fn decode_pub32(hexed: &str) -> Result<[u8; 32]> {
+    let b = hex::decode(hexed).context("public key not hex")?;
+    if b.len() != 32 {
+        bail!("public key is {} bytes, expected 32", b.len());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&b);
+    Ok(out)
 }
