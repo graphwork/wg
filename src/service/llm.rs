@@ -270,6 +270,27 @@ fn agency_native_lightweight_call(
     }
 }
 
+/// If the daemon has a Claude OAuth token configured via `[auth]` in
+/// config.toml, inject it into the child's env so the spawned `claude`
+/// CLI can authenticate without requiring the caller to have exported
+/// `CLAUDE_CODE_OAUTH_TOKEN` beforehand. No-op when the token is already
+/// present in the env or not configured (falls back to the CLI's own
+/// credential resolution — `~/.claude/credentials.json`, etc.).
+fn inject_claude_oauth_token(cmd: &mut process::Command) {
+    // Best-effort: load config from cwd's workgraph dir. This is a pure
+    // read of the file and can silently skip on any failure.
+    let dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.join(".workgraph"))
+        .filter(|p| p.exists());
+    if let Some(dir) = dir
+        && let Ok(cfg) = Config::load_merged(&dir)
+        && let Some(token) = cfg.auth.resolve_claude_oauth_token()
+    {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+}
+
 /// Run a lightweight (no tool-use) LLM call for an internal dispatch role.
 ///
 /// Resolves the model and provider for the given role, then dispatches via:
@@ -456,7 +477,11 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
                 .env_remove("CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH")
                 .stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped())
-                .stderr(process::Stdio::piped())
+                .stderr(process::Stdio::piped());
+            // Inject the configured `[auth]` OAuth token (if any) so a headless
+            // daemon without an exported CLAUDE_CODE_OAUTH_TOKEN can still auth.
+            inject_claude_oauth_token(cmd);
+            cmd
         },
         timeout_secs,
     )
