@@ -300,11 +300,12 @@ pub fn run_send_fed(
         match crate::commands::identity_cmd::run_send(
             workgraph_dir,
             from,
-            &recipient_wgid,
+            std::slice::from_ref(&recipient_wgid),
             ep,
             body,
             kind,
             seal,
+            false, // `wg msg` uses single-recipient sealing, not sealed-sender
             json,
         ) {
             Ok(()) => return Ok(()),

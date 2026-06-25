@@ -3867,6 +3867,7 @@ fn main() -> Result<()> {
                 body,
                 kind,
                 seal,
+                sealed_sender,
             } => commands::identity_cmd::run_send(
                 &workgraph_dir,
                 &from,
@@ -3875,6 +3876,7 @@ fn main() -> Result<()> {
                 &body,
                 &kind,
                 seal,
+                sealed_sender,
                 cli.json,
             ),
             cli::IdentityCommands::Poll {
@@ -3922,6 +3924,39 @@ fn main() -> Result<()> {
                 &author_trust,
                 cli.json,
             ),
+            cli::IdentityCommands::Delegate {
+                from,
+                to,
+                grants,
+                ttl,
+                parent,
+                human,
+                out,
+                store,
+            } => commands::identity_cmd::run_delegate(
+                &workgraph_dir,
+                &from,
+                &to,
+                &grants,
+                ttl,
+                parent.as_deref(),
+                human,
+                out.as_deref(),
+                store.as_deref(),
+                cli.json,
+            ),
+            cli::IdentityCommands::VerifyCap { cap, store } => {
+                commands::identity_cmd::run_verify_cap(&workgraph_dir, &cap, &store, cli.json)
+            }
+            cli::IdentityCommands::RevokeCap { from, cap, store } => {
+                commands::identity_cmd::run_revoke_cap(
+                    &workgraph_dir,
+                    &from,
+                    &cap,
+                    &store,
+                    cli.json,
+                )
+            }
         },
         Commands::FedNode { command } => match command {
             cli::FedNodeCommands::Serve { addr, store } => {

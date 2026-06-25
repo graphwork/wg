@@ -24,11 +24,18 @@
 //! - [`sigchain`] — `genesis` / `add_key` / `revoke_key` / `rotate_root` links +
 //!   layered recovery (offline recovery key + M-of-N guardians) + [`sigchain::verify`].
 //! - [`envelope`] — `IdentityRecord` / `StateSnapshot` / `SignedEvent`: sign /
-//!   verify / canonical-encode + BLAKE3 content-addressing + optional sealing.
+//!   verify / canonical-encode + BLAKE3 content-addressing + **per-recipient sealing**
+//!   (Wave 6: the `to` set IS the ACL — a hybrid CEK envelope wraps the body key to
+//!   each recipient, plus an optional sealed-sender mode that hides `from` from relays).
+//! - [`custody`] — Wave 6 UCAN-style capability delegation (ADR-fed-003 §D3):
+//!   issue / verify / revoke short-lived, scoped, **attenuating-only** capabilities,
+//!   plus the [`custody::LeashPolicy`] authority dial (broad/long by birth,
+//!   environment-tightenable — §D2's trust-default amendment).
 //! - [`state_safety`] — the S-5 load pipeline (ADR-fed-004 §D6): loaded
 //!   `StateSnapshot`s are **untrusted input**, provenance-gated by `trust_level`,
 //!   `model_binding`-enforced, with human-in-loop for cross-trust loads.
 
+pub mod custody;
 pub mod envelope;
 pub mod freshness;
 pub mod keys;
@@ -115,7 +122,14 @@ pub fn signing_digest(value: &Value) -> [u8; 32] {
 /// parameters are eventually *signed*, not merely exchanged; the spark fixes the
 /// constant + the loud-fail rule, and transport-side authentication of the
 /// handshake hardens in Wave 4.
-pub const WG_FED_COMPAT_VERSION: &str = "0.2.0";
+///
+/// `0.2.0 → 0.3.0` (Wave 6): the wire gained per-recipient sealed envelopes
+/// (`SignedEvent.enc_multi`) + sealed-sender (an anonymized outer `from`) and the
+/// off-chain UCAN [`custody::Capability`]. A 0.2.x peer cannot verify a multi-sealed
+/// or sealed-sender event (it drops the unknown field → the signature no longer
+/// matches → it rejects), so it must fail the handshake loudly rather than mis-handle
+/// the new wire (S-7).
+pub const WG_FED_COMPAT_VERSION: &str = "0.3.0";
 
 /// The only signing/identity algorithm the spark implements.
 ///
@@ -183,20 +197,21 @@ mod tests {
     #[test]
     fn compat_accepts_patch_bump() {
         // Same major.minor, different patch is fine even pre-1.0.
-        assert!(check_compat("0.2.99").is_ok());
+        assert!(check_compat("0.3.99").is_ok());
     }
 
     #[test]
     fn compat_rejects_minor_bump_pre_1_0() {
         // Pre-1.0 the wire format is not frozen, so a minor bump is incompatible.
-        let err = check_compat("0.3.0").unwrap_err().to_string();
+        let err = check_compat("0.4.0").unwrap_err().to_string();
         assert!(err.contains("FAILED"), "{err}");
-        assert!(err.contains("0.3.0"), "{err}");
+        assert!(err.contains("0.4.0"), "{err}");
         assert!(err.contains(WG_FED_COMPAT_VERSION), "{err}");
-        // The prior wave's wire (0.1.0) is also incompatible: the Wave-5 rotate_root
-        // verification semantics changed, so a 0.1.x peer must fail loud, not
-        // silently mis-verify a rotated chain.
+        // The prior waves' wire (0.1.0 / 0.2.0) is also incompatible: Wave 5 changed
+        // rotate_root verification and Wave 6 added the sealed-multi / sealed-sender /
+        // UCAN wire, so an older peer must fail loud, not silently mis-handle it.
         assert!(check_compat("0.1.0").is_err());
+        assert!(check_compat("0.2.0").is_err());
     }
 
     #[test]

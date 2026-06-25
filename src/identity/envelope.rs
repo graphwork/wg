@@ -169,6 +169,88 @@ pub struct SealedBlob {
     pub ciphertext: String,
 }
 
+/// The placeholder outer `from` of a **sealed-sender** event: the relay/node sees
+/// only `anon → to`, never the real author (FR-S4). The true sender + its signature
+/// live *inside* the sealed payload and are recovered only by a recipient (HQ4).
+pub const ANON_SENDER: &str = "wgid:anon";
+
+const SEAL_CEK_SCHEME: &str = "x25519-hkdf-xchacha20poly1305-cek-v1";
+
+/// One recipient's wrapping of the content-encryption key (CEK). The presence of a
+/// wrap for a recipient kid is exactly what puts that recipient in the ACL — only a
+/// holder of the matching encryption key can unwrap the CEK (Wave 6, HQ4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientWrap {
+    /// kid of the recipient encryption key this wrap is sealed to.
+    pub recipient_kid: String,
+    /// Sender's per-recipient ephemeral X25519 public key, hex.
+    pub ephemeral_pub: String,
+    /// 24-byte XChaCha20 nonce for the wrap, hex.
+    pub nonce: String,
+    /// AEAD-wrapped CEK (incl. tag), hex.
+    pub wrapped_cek: String,
+}
+
+/// A **per-recipient sealed envelope** — the realization of *encryption = ACL*
+/// (ADR-fed-003 §HQ4, the `federation.rs` `AccessPolicy` hook). The body is encrypted
+/// **once** under a random content-encryption key (CEK); that CEK is then wrapped to
+/// each recipient via X25519 ECDH. The set of `recipients` **is** the access-control
+/// list: every member can unwrap the CEK and decrypt; a third party holding the
+/// ciphertext but no listed encryption key cannot unwrap any CEK and is locked out.
+/// Static recipient keys (no forward secrecy) on the offline path — FS does not
+/// compose with send-to-offline (S-6); rotation caps the static-key exposure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SealedEnvelope {
+    pub scheme: String,
+    /// One wrap per recipient — the ACL.
+    pub recipients: Vec<RecipientWrap>,
+    /// 24-byte XChaCha20 nonce for the body, hex.
+    pub body_nonce: String,
+    /// AEAD body ciphertext under the CEK (incl. tag), hex.
+    pub body_ct: String,
+    /// When true, the encrypted body is an inner [`SenderSealed`] payload carrying the
+    /// real author + its signature — the outer `from` is [`ANON_SENDER`] so a relay
+    /// learns nothing about the sender (sealed-sender, FR-S4).
+    #[serde(default)]
+    pub sealed_sender: bool,
+}
+
+/// The inner, encrypted-under-the-CEK payload of a **sealed-sender** event: the real
+/// author and a signature only a recipient (after unsealing) can recover and verify.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SenderSealed {
+    pub from: String,
+    pub kind: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub to: Vec<String>,
+    pub body: String,
+    #[serde(default)]
+    pub sig: String,
+}
+
+impl SenderSealed {
+    fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("SenderSealed serializes")
+    }
+
+    fn sign(&mut self, custodian: &Custodian, signer_kid: &str) -> Result<()> {
+        let digest = signing_digest(&self.to_value());
+        self.sig = hex::encode(custodian.sign_digest(signer_kid, &digest)?);
+        Ok(())
+    }
+
+    /// Verify the inner author signature against the (now-revealed) sender's authorized
+    /// signer set. This is the sealed-sender authentication leg: a relay could not
+    /// forge it, and only after unsealing does a recipient learn whom to verify.
+    pub fn verify(&self, sender_auth: &AuthorizedKeys) -> Result<()> {
+        if self.from != keys::wgid_from_pubkey(&sender_auth.root_pub) {
+            bail!("sealed-sender inner.from does not match the verified sender sigchain root");
+        }
+        verify_sig_against_authorized(&self.to_value(), &self.sig, sender_auth, "SenderSealed")
+    }
+}
+
 /// A message — the unit of transport (doc 04 §1.4c, ADR-fed-002). Addressed by
 /// **pubkey** (`wgid:`), not path. Authenticated offline; a forged `from` fails.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,12 +268,16 @@ pub struct SignedEvent {
     pub kind: String,
     #[serde(default)]
     pub refs: Vec<Value>,
-    /// Plaintext body (mutually exclusive with `enc`).
+    /// Plaintext body (mutually exclusive with `enc`/`enc_multi`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    /// Sealed body (mutually exclusive with `body`).
+    /// Single-recipient sealed body (Wave 3/4; mutually exclusive with `body`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enc: Option<SealedBlob>,
+    /// Per-recipient sealed envelope (Wave 6 — the `to` set IS the ACL; mutually
+    /// exclusive with `body`). Carries the optional sealed-sender mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enc_multi: Option<SealedEnvelope>,
     #[serde(default)]
     pub sig: String,
 }
@@ -224,6 +310,7 @@ impl SignedEvent {
             refs: Vec::new(),
             body: Some(body.to_string()),
             enc: None,
+            enc_multi: None,
             sig: String::new(),
         };
         ev.id = ev.core_id();
@@ -252,10 +339,99 @@ impl SignedEvent {
             refs: Vec::new(),
             body: None,
             enc: Some(enc),
+            enc_multi: None,
             sig: String::new(),
         };
         ev.id = ev.core_id();
         Ok(ev)
+    }
+
+    /// Build a **per-recipient sealed** event (Wave 6): the body is encrypted once
+    /// under a fresh CEK and that CEK is wrapped to every recipient in `recipients`
+    /// (`(enc_kid, enc_pub)` pairs). The recipient set IS the ACL — each can decrypt,
+    /// a third party cannot. `from` is the real sender (authenticated by the outer
+    /// signature as usual); for sender anonymity use [`SignedEvent::new_sealed_sender`].
+    pub fn new_sealed_multi(
+        from: &str,
+        to: &[String],
+        created_at: &str,
+        kind: &str,
+        body: &str,
+        recipients: &[(String, [u8; 32])],
+    ) -> Result<Self> {
+        let env = seal_multi(body.as_bytes(), recipients, false)?;
+        let mut ev = Self {
+            v: ENVELOPE_V,
+            alg: ALG_ED25519.to_string(),
+            id: String::new(),
+            from: from.to_string(),
+            to: to.to_vec(),
+            created_at: created_at.to_string(),
+            kind: kind.to_string(),
+            refs: Vec::new(),
+            body: None,
+            enc: None,
+            enc_multi: Some(env),
+            sig: String::new(),
+        };
+        ev.id = ev.core_id();
+        Ok(ev)
+    }
+
+    /// Build a **sealed-sender** event (Wave 6, FR-S4): the outer `from` is
+    /// [`ANON_SENDER`] so a relay/node learns nothing about the author; the real
+    /// `from` + a signature by `custodian`'s `signer_kid` are placed *inside* the
+    /// CEK-protected payload, recoverable and verifiable only by a listed recipient.
+    /// The outer event carries **no** signature (it is anonymous) — authenticity comes
+    /// from the inner [`SenderSealed`] signature, checked after [`Self::open_sender_sealed`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_sealed_sender(
+        real_from: &str,
+        to: &[String],
+        created_at: &str,
+        kind: &str,
+        body: &str,
+        recipients: &[(String, [u8; 32])],
+        custodian: &Custodian,
+        signer_kid: &str,
+    ) -> Result<Self> {
+        let mut inner = SenderSealed {
+            from: real_from.to_string(),
+            kind: kind.to_string(),
+            created_at: created_at.to_string(),
+            to: to.to_vec(),
+            body: body.to_string(),
+            sig: String::new(),
+        };
+        inner.sign(custodian, signer_kid)?;
+        let plaintext = serde_json::to_vec(&inner.to_value())?;
+        let env = seal_multi(&plaintext, recipients, true)?;
+        let mut ev = Self {
+            v: ENVELOPE_V,
+            alg: ALG_ED25519.to_string(),
+            id: String::new(),
+            from: ANON_SENDER.to_string(),
+            to: to.to_vec(),
+            created_at: created_at.to_string(),
+            kind: kind.to_string(),
+            refs: Vec::new(),
+            body: None,
+            enc: None,
+            enc_multi: Some(env),
+            sig: String::new(),
+        };
+        ev.id = ev.core_id();
+        Ok(ev)
+    }
+
+    /// True iff this is a sealed-sender event (the outer `from` is anonymized).
+    pub fn is_sealed_sender(&self) -> bool {
+        self.from == ANON_SENDER
+            || self
+                .enc_multi
+                .as_ref()
+                .map(|e| e.sealed_sender)
+                .unwrap_or(false)
     }
 
     pub fn sign(&mut self, custodian: &Custodian, signer_kid: &str) -> Result<()> {
@@ -267,7 +443,17 @@ impl SignedEvent {
     /// Verify the event: the content id is intact AND the signature verifies
     /// against a key the **sender's** sigchain authorizes for signing. This is the
     /// single check behind "forged from fails" and "download ≠ impersonation".
+    ///
+    /// A **sealed-sender** event (anonymized outer `from`) carries no outer signature
+    /// — call [`Self::open_sender_sealed`] and verify the recovered inner author
+    /// instead. Calling `verify` on one is a usage error and bails loudly.
     pub fn verify(&self, sender_auth: &AuthorizedKeys) -> Result<()> {
+        if self.is_sealed_sender() {
+            bail!(
+                "this is a sealed-sender event (anonymized outer from) — authenticate it \
+                 with open_sender_sealed() + SenderSealed::verify(), not verify()"
+            );
+        }
         // The claimed `from` must be the sender whose chain we verified.
         if self.from != keys::wgid_from_pubkey(&sender_auth.root_pub) {
             bail!(
@@ -282,15 +468,41 @@ impl SignedEvent {
         verify_sig_against_authorized(&self.to_value(), &self.sig, sender_auth, "SignedEvent")
     }
 
-    /// Open a sealed event with the recipient's custody-held encryption key.
-    /// A holder of the ciphertext **without** the recipient enc key cannot.
+    /// Open a sealed event with the recipient's custody-held encryption key. Handles
+    /// both the per-recipient envelope (Wave 6; only a member of the `to`/ACL set can
+    /// unwrap the CEK) and the single-recipient `enc` blob (Wave 3/4). A holder of the
+    /// ciphertext **without** a listed recipient enc key cannot open either.
     pub fn open(&self, custodian: &Custodian) -> Result<String> {
+        if let Some(env) = &self.enc_multi {
+            let plaintext = open_multi(env, custodian)?;
+            if env.sealed_sender {
+                // The inner payload is a SenderSealed JSON, not raw body bytes.
+                let inner: SenderSealed = serde_json::from_slice(&plaintext)
+                    .context("parsing sealed-sender inner payload")?;
+                return Ok(inner.body);
+            }
+            return String::from_utf8(plaintext).context("sealed payload is not valid UTF-8");
+        }
         let blob = self
             .enc
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("event is not sealed"))?;
         let plaintext = open_seal(blob, custodian)?;
         String::from_utf8(plaintext).context("sealed payload is not valid UTF-8")
+    }
+
+    /// Open a **sealed-sender** event, returning the recovered inner [`SenderSealed`]
+    /// payload (the real author + signature). The caller must then resolve the inner
+    /// `from`'s sigchain and call [`SenderSealed::verify`] to authenticate it — the
+    /// relay could not forge it, but the payload is *unverified* until that check.
+    pub fn open_sender_sealed(&self, custodian: &Custodian) -> Result<SenderSealed> {
+        let env = self
+            .enc_multi
+            .as_ref()
+            .filter(|e| e.sealed_sender)
+            .ok_or_else(|| anyhow::anyhow!("event is not a sealed-sender envelope"))?;
+        let plaintext = open_multi(env, custodian)?;
+        serde_json::from_slice(&plaintext).context("parsing sealed-sender inner payload")
     }
 }
 
@@ -348,13 +560,139 @@ fn decode_pub(pub_hex: &str) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-/// HKDF-SHA256 a shared X25519 secret into a 32-byte XChaCha20 key.
-fn derive_seal_key(shared: &[u8; 32]) -> Result<[u8; 32]> {
+/// HKDF-SHA256 a shared X25519 secret into a 32-byte XChaCha20 key under `info`
+/// (domain separation: the single-recipient seal and the multi-recipient CEK-wrap
+/// use distinct `info` labels so a key derived for one can never serve the other).
+fn derive_key(shared: &[u8; 32], info: &[u8]) -> Result<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, shared);
     let mut okm = [0u8; 32];
-    hk.expand(b"wg-fed-seal-v1", &mut okm)
+    hk.expand(info, &mut okm)
         .map_err(|_| anyhow::anyhow!("HKDF expand failed"))?;
     Ok(okm)
+}
+
+/// HKDF the single-recipient seal key (Wave 3/4 `enc` blob).
+fn derive_seal_key(shared: &[u8; 32]) -> Result<[u8; 32]> {
+    derive_key(shared, b"wg-fed-seal-v1")
+}
+
+/// HKDF the per-recipient CEK-wrapping key (Wave 6 `enc_multi`).
+fn derive_wrap_key(shared: &[u8; 32]) -> Result<[u8; 32]> {
+    derive_key(shared, b"wg-fed-cek-wrap-v1")
+}
+
+/// Fill `buf` with CSPRNG bytes or bail loudly.
+fn fill_random(buf: &mut [u8]) -> Result<()> {
+    getrandom::getrandom(buf).map_err(|e| anyhow::anyhow!("CSPRNG unavailable: {e}"))
+}
+
+/// XChaCha20-Poly1305 encrypt `plaintext` under `key`+`nonce`.
+fn aead_encrypt(key: &[u8; 32], nonce: &[u8; 24], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| anyhow::anyhow!("cipher init failed: {e}"))?;
+    cipher
+        .encrypt(XNonce::from_slice(nonce), plaintext)
+        .map_err(|e| anyhow::anyhow!("AEAD encrypt failed: {e}"))
+}
+
+/// XChaCha20-Poly1305 decrypt `ciphertext` under `key`+`nonce`.
+fn aead_decrypt(key: &[u8; 32], nonce: &[u8; 24], ciphertext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| anyhow::anyhow!("cipher init failed: {e}"))?;
+    cipher
+        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .map_err(|_| anyhow::anyhow!("AEAD decrypt failed — wrong key or tampered ciphertext"))
+}
+
+/// Seal `plaintext` to a **set** of recipients (the ACL). The body is encrypted once
+/// under a fresh CEK; the CEK is X25519-wrapped to each recipient. Only a holder of a
+/// listed recipient encryption key can unwrap the CEK and decrypt (HQ4). `recipients`
+/// is `(enc_kid, enc_pub)` pairs; an empty set is refused (a message no one can read).
+fn seal_multi(
+    plaintext: &[u8],
+    recipients: &[(String, [u8; 32])],
+    sealed_sender: bool,
+) -> Result<SealedEnvelope> {
+    if recipients.is_empty() {
+        bail!("refusing to seal to an empty recipient set (the ACL would admit no one)");
+    }
+    let mut cek = [0u8; 32];
+    fill_random(&mut cek)?;
+    let mut body_nonce = [0u8; 24];
+    fill_random(&mut body_nonce)?;
+    let body_ct = aead_encrypt(&cek, &body_nonce, plaintext)?;
+
+    let mut wraps = Vec::with_capacity(recipients.len());
+    for (kid, enc_pub) in recipients {
+        let mut eph_secret = [0u8; 32];
+        fill_random(&mut eph_secret)?;
+        let eph = StaticSecret::from(eph_secret);
+        let eph_pub = XPublicKey::from(&eph).to_bytes();
+        let shared = eph.diffie_hellman(&XPublicKey::from(*enc_pub));
+        let key = derive_wrap_key(&shared.to_bytes())?;
+        let mut nonce = [0u8; 24];
+        fill_random(&mut nonce)?;
+        let wrapped = aead_encrypt(&key, &nonce, &cek)?;
+        wraps.push(RecipientWrap {
+            recipient_kid: kid.clone(),
+            ephemeral_pub: hex::encode(eph_pub),
+            nonce: hex::encode(nonce),
+            wrapped_cek: hex::encode(wrapped),
+        });
+    }
+    Ok(SealedEnvelope {
+        scheme: SEAL_CEK_SCHEME.to_string(),
+        recipients: wraps,
+        body_nonce: hex::encode(body_nonce),
+        body_ct: hex::encode(body_ct),
+        sealed_sender,
+    })
+}
+
+/// Open a per-recipient envelope with the custody-held encryption key of *any* wrap
+/// addressed to us. A holder of the ciphertext but no listed recipient key matches no
+/// wrap and is locked out — the ACL boundary.
+fn open_multi(env: &SealedEnvelope, custodian: &Custodian) -> Result<Vec<u8>> {
+    if env.scheme != SEAL_CEK_SCHEME {
+        bail!("unknown sealed-envelope scheme {:?}", env.scheme);
+    }
+    let body_nonce = decode_nonce(&env.body_nonce, "body nonce")?;
+    let body_ct = hex::decode(&env.body_ct).context("bad body ciphertext hex")?;
+    for wrap in &env.recipients {
+        // Only attempt wraps whose recipient key we actually hold (the ACL check).
+        if !custodian.has_key(&wrap.recipient_kid)? {
+            continue;
+        }
+        let eph_pub = decode_pub(&wrap.ephemeral_pub).context("bad wrap ephemeral pub")?;
+        // ECDH inside custody — the static enc secret never leaves.
+        let shared = custodian.agree(&wrap.recipient_kid, &eph_pub)?;
+        let key = derive_wrap_key(&shared)?;
+        let nonce = decode_nonce(&wrap.nonce, "wrap nonce")?;
+        let wrapped = hex::decode(&wrap.wrapped_cek).context("bad wrapped CEK hex")?;
+        let cek_bytes = aead_decrypt(&key, &nonce, &wrapped)?;
+        if cek_bytes.len() != 32 {
+            bail!("unwrapped CEK is {} bytes, expected 32", cek_bytes.len());
+        }
+        let mut cek = [0u8; 32];
+        cek.copy_from_slice(&cek_bytes);
+        return aead_decrypt(&cek, &body_nonce, &body_ct);
+    }
+    bail!(
+        "not in the recipient ACL set — this custody holds no encryption key for any \
+         of the {} sealed recipients (a third party cannot decrypt, HQ4)",
+        env.recipients.len()
+    )
+}
+
+/// Decode a 24-byte hex nonce.
+fn decode_nonce(nonce_hex: &str, what: &str) -> Result<[u8; 24]> {
+    let b = hex::decode(nonce_hex).with_context(|| format!("bad {what} hex"))?;
+    if b.len() != 24 {
+        bail!("{what} is {} bytes, expected 24", b.len());
+    }
+    let mut out = [0u8; 24];
+    out.copy_from_slice(&b);
+    Ok(out)
 }
 
 const SEAL_SCHEME: &str = "x25519-xchacha20poly1305-v1";
@@ -565,5 +903,84 @@ mod tests {
         // Bob (a third party w.r.t. the seal) cannot — he holds no key for
         // alice's enc kid.
         assert!(ev.open(&cust_bob).is_err());
+    }
+
+    #[test]
+    fn multi_recipient_only_acl_set_opens() {
+        // Wave 6: the `to` set IS the ACL. Sender seals to {alice, bob}; both open,
+        // a third party (carol) holding only her own key cannot.
+        let (cust_sender, sender) = mint("sender_acl");
+        let (cust_alice, alice) = mint("alice_acl");
+        let (cust_bob, bob) = mint("bob_acl");
+        let (cust_carol, _carol) = mint("carol_acl");
+
+        let recipients = vec![
+            (alice.enc_kid.clone(), alice.enc_pub),
+            (bob.enc_kid.clone(), bob.enc_pub),
+        ];
+        let mut ev = SignedEvent::new_sealed_multi(
+            &sender.wgid,
+            &[alice.wgid.clone(), bob.wgid.clone()],
+            "2026-06-25T00:00:00Z",
+            "msg",
+            "secret for the ACL",
+            &recipients,
+        )
+        .unwrap();
+        ev.sign(&cust_sender, &sender.signer_kid).unwrap();
+        // The outer signature still authenticates the (non-anonymous) sender.
+        assert!(ev.verify(&sender.auth).is_ok());
+
+        // Every member of the ACL decrypts the SAME body.
+        assert_eq!(ev.open(&cust_alice).unwrap(), "secret for the ACL");
+        assert_eq!(ev.open(&cust_bob).unwrap(), "secret for the ACL");
+        // A third party with the full ciphertext but no listed key is locked out.
+        assert!(ev.open(&cust_carol).is_err());
+        // The sender (also not in the ACL) cannot read it back either.
+        assert!(ev.open(&cust_sender).is_err());
+    }
+
+    #[test]
+    fn sealed_sender_hides_from_yet_recipient_authenticates() {
+        let (cust_alice, alice) = mint("alice_ss");
+        let (cust_bob, bob) = mint("bob_ss");
+        let (_cust_mallory, mallory) = mint("mallory_ss");
+
+        let recipients = vec![(bob.enc_kid.clone(), bob.enc_pub)];
+        let ev = SignedEvent::new_sealed_sender(
+            &alice.wgid,
+            &[bob.wgid.clone()],
+            "2026-06-25T00:00:00Z",
+            "msg",
+            "anonymous-to-the-relay secret",
+            &recipients,
+            &cust_alice,
+            &alice.signer_kid,
+        )
+        .unwrap();
+
+        // The relay/node sees only an anonymized outer `from`.
+        assert_eq!(ev.from, ANON_SENDER);
+        assert!(ev.is_sealed_sender());
+        // verify() refuses a sealed-sender event (no outer signature to check).
+        assert!(ev.verify(&alice.auth).is_err());
+
+        // Bob unseals → learns the real author + a signature he can verify.
+        let inner = ev.open_sender_sealed(&cust_bob).unwrap();
+        assert_eq!(inner.from, alice.wgid);
+        assert_eq!(inner.body, "anonymous-to-the-relay secret");
+        assert!(inner.verify(&alice.auth).is_ok());
+        // ...and verifying the inner author against the WRONG chain fails.
+        assert!(inner.verify(&mallory.auth).is_err());
+        // open() also yields the body for a sealed-sender event.
+        assert_eq!(ev.open(&cust_bob).unwrap(), "anonymous-to-the-relay secret");
+
+        // A forged inner author (mallory rewrites from→alice on her own payload) fails
+        // the inner signature check.
+        let mut forged = ev.open_sender_sealed(&cust_bob).unwrap();
+        forged.from = alice.wgid.clone();
+        forged.body = "i am alice".into();
+        // No re-sign by alice's key is possible (mallory lacks it) → verify fails.
+        assert!(forged.verify(&alice.auth).is_err());
     }
 }
