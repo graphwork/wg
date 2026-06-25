@@ -363,3 +363,44 @@ on one host are isolated by `HOME` alone. Compatibility is gated by
 mismatch, mirroring `WG_AGENCY_COMPAT_VERSION` / `WG_PI_PLUGIN_COMPAT_VERSION`).
 The seven-step end-to-end proof is pinned by
 `tests/smoke/scenarios/federation_spark_two_graphs.sh` (`owners = [wg-fed-spark]`).
+
+### WG-Fed Wave 4 — cross-graph addressing + transport hardening
+
+Wave 4 (`docs/federation-study/06` §5, `docs/ADR-fed-002-transport.md`) promotes the
+spark's single dumb-directory rung to a **real network transport** and adds the S-3
+freshness defense. The transport stays **untrusted** end-to-end (every byte is
+signed/optionally-sealed and self-verifying); no relay or node is mandatory.
+
+- **Transport abstraction** (`src/identity/transport.rs`) — a `FedStore` trait (put/get
+  content-addressed objects, head pointers, store-and-forward inbox events, freshness
+  attestations) with two wire-compatible rungs: `FileStore` (the spark's directory,
+  unchanged layout) and `HttpStore` (a `reqwest::blocking` client). `open_store(loc)`
+  routes by scheme — `http(s)://` → node, anything else → directory/`file://`. **Every
+  `wg identity … --store <L>` now accepts an `http://` node URL** transparently.
+- **The WG node inbox** (`src/identity/node.rs`, `wg fed-node serve --addr H:P
+  [--store DIR]`) — the **default rung** (ADR-fed-002 §D1 rung 1), a dependency-light
+  HTTP/1.1 store-and-forward server over `TcpListener` exposing the `FedStore` surface
+  under `/wgfed/v1/…`. It holds `wgid:`-addressed `SignedEvent`s for **offline**
+  recipients until they poll.
+- **`wg msg --to wgid:` between graphs** — `wg msg send --to <wgid|peer> --from
+  <identity> [--seal] [--store <url>]` and `wg msg poll --as <identity> [--store
+  <url>] [--require-fresh <class>]` route a signed event over the node inbox. `--to`
+  resolves the delivery node via the cascade; the local `wg msg send <task> …` path is
+  unchanged when `--to` is absent.
+- **Resolution cascade** (`federation::resolve_peer_endpoint`, ADR-fed-001 §D5) —
+  `PeerConfig`/`Remote` gain `wgid` + `endpoints`; resolution is **cached signed
+  endpoint record → optional directory hint → DHT (deferred past Wave 4)**. Path-based
+  `federation.yaml` peers keep resolving (`resolve_peer`) alongside key-based ones;
+  `wg peer add <name> [<path>] [--wgid W --endpoint U …]` registers either kind.
+- **Freshness attestations** (`src/identity/freshness.rs`, S-3) — `publish`/`attest`
+  emit a signed `valid-as-of T, expires T+Δ, seq` over the current head;
+  `wg identity check-fresh <wgid> --store <L> --class routine|high-value` and
+  `--require-fresh` on poll **re-fetch it and fail closed on stale** (high-value Δ ≤
+  15 min, routine ≈ 24 h, ±5 min skew) with a **monotonic `seq`** rollback backstop.
+  `--fresh-ttl` (negative = already-expired) exercises the stale path.
+
+The cross-graph end-to-end proof is pinned by
+`tests/smoke/scenarios/federation_node_inbox_cross_graph.sh` (`owners = [fed-wave4]`):
+two `wg fed-node` daemons exchanging a signed+sealed `wg msg --to wgid:` to an offline
+recipient, a forged sender rejected, high-value freshness failing closed on stale, and
+verification surviving the sender's origin node going offline (cached sigchain).

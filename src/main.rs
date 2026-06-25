@@ -1779,23 +1779,49 @@ fn main() -> Result<()> {
                     from,
                     priority,
                     stdin,
+                    to,
+                    body,
+                    kind,
+                    seal,
+                    store,
                 } => {
-                    // Auto-detect sender: if --from is default "user" and WG_TASK_ID
-                    // is set, use the task ID (slug) as the sender identity so agents
-                    // identify by their task name rather than a generic "user" label.
-                    let sender = if from == "user" {
-                        std::env::var("WG_TASK_ID").unwrap_or(from)
+                    if let Some(to) = to {
+                        // Cross-graph (key-based) send over the WG node inbox (Wave 4).
+                        let body = body
+                            .or(message)
+                            .ok_or_else(|| anyhow::anyhow!("cross-graph send needs --body"))?;
+                        commands::msg::run_send_fed(
+                            &workgraph_dir,
+                            &from,
+                            &to,
+                            store.as_deref(),
+                            &body,
+                            &kind,
+                            seal,
+                            cli.json,
+                        )
                     } else {
-                        from
-                    };
-                    commands::msg::run_send(
-                        &workgraph_dir,
-                        &task_id,
-                        message.as_deref(),
-                        &sender,
-                        &priority,
-                        stdin,
-                    )
+                        // Local task/agent message.
+                        let task_id = task_id.ok_or_else(|| {
+                            anyhow::anyhow!("local `wg msg send` needs a <task-id> (or use --to)")
+                        })?;
+                        // Auto-detect sender: if --from is default "user" and WG_TASK_ID
+                        // is set, use the task ID (slug) as the sender identity so agents
+                        // identify by their task name rather than a generic "user" label.
+                        let sender = if from == "user" {
+                            std::env::var("WG_TASK_ID").unwrap_or(from)
+                        } else {
+                            from
+                        };
+                        commands::msg::run_send(
+                            &workgraph_dir,
+                            &task_id,
+                            message.as_deref(),
+                            &sender,
+                            &priority,
+                            stdin,
+                        )
+                    }
                 }
                 MsgCommands::List { task_id } => {
                     commands::msg::run_list(&workgraph_dir, &task_id, cli.json)
@@ -1806,16 +1832,36 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|| "user".to_string());
                     commands::msg::run_read(&workgraph_dir, &task_id, &agent_id, cli.json)
                 }
-                MsgCommands::Poll { task_id, agent } => {
-                    let agent_id = agent
-                        .or(agent_id_from_env)
-                        .unwrap_or_else(|| "user".to_string());
-                    let has_messages =
-                        commands::msg::run_poll(&workgraph_dir, &task_id, &agent_id, cli.json)?;
-                    if !has_messages {
-                        std::process::exit(1);
+                MsgCommands::Poll {
+                    task_id,
+                    agent,
+                    as_identity,
+                    store,
+                    require_fresh,
+                } => {
+                    if let Some(as_identity) = as_identity {
+                        // Cross-graph node-inbox poll (Wave 4).
+                        commands::msg::run_poll_fed(
+                            &workgraph_dir,
+                            &as_identity,
+                            store.as_deref(),
+                            require_fresh.as_deref(),
+                            cli.json,
+                        )
+                    } else {
+                        let task_id = task_id.ok_or_else(|| {
+                            anyhow::anyhow!("local `wg msg poll` needs a <task-id> (or use --as)")
+                        })?;
+                        let agent_id = agent
+                            .or(agent_id_from_env)
+                            .unwrap_or_else(|| "user".to_string());
+                        let has_messages =
+                            commands::msg::run_poll(&workgraph_dir, &task_id, &agent_id, cli.json)?;
+                        if !has_messages {
+                            std::process::exit(1);
+                        }
+                        Ok(())
                     }
-                    Ok(())
                 }
             }
         }
@@ -2089,7 +2135,16 @@ fn main() -> Result<()> {
                 name,
                 path,
                 description,
-            } => commands::peer::run_add(&workgraph_dir, &name, &path, description.as_deref()),
+                wgid,
+                endpoints,
+            } => commands::peer::run_add(
+                &workgraph_dir,
+                &name,
+                path.as_deref(),
+                description.as_deref(),
+                wgid.as_deref(),
+                &endpoints,
+            ),
             PeerCommands::Remove { name } => commands::peer::run_remove(&workgraph_dir, &name),
             PeerCommands::List => commands::peer::run_list(&workgraph_dir, cli.json),
             PeerCommands::Show { name } => {
@@ -3751,8 +3806,36 @@ fn main() -> Result<()> {
             cli::IdentityCommands::List => {
                 commands::identity_cmd::run_list(&workgraph_dir, cli.json)
             }
-            cli::IdentityCommands::Publish { name, store } => {
-                commands::identity_cmd::run_publish(&workgraph_dir, &name, &store, cli.json)
+            cli::IdentityCommands::Publish {
+                name,
+                store,
+                fresh_ttl,
+            } => commands::identity_cmd::run_publish(
+                &workgraph_dir,
+                &name,
+                &store,
+                fresh_ttl,
+                cli.json,
+            ),
+            cli::IdentityCommands::Attest {
+                name,
+                store,
+                fresh_ttl,
+            } => commands::identity_cmd::run_attest(
+                &workgraph_dir,
+                &name,
+                &store,
+                fresh_ttl,
+                cli.json,
+            ),
+            cli::IdentityCommands::CheckFresh { wgid, store, class } => {
+                commands::identity_cmd::run_check_fresh(
+                    &workgraph_dir,
+                    &wgid,
+                    &store,
+                    &class,
+                    cli.json,
+                )
             }
             cli::IdentityCommands::Fetch { wgid, store, save } => {
                 commands::identity_cmd::run_fetch(
@@ -3780,15 +3863,29 @@ fn main() -> Result<()> {
                 seal,
                 cli.json,
             ),
-            cli::IdentityCommands::Poll { name, store } => {
-                commands::identity_cmd::run_poll(&workgraph_dir, &name, &store, cli.json)
-            }
+            cli::IdentityCommands::Poll {
+                name,
+                store,
+                require_fresh,
+            } => commands::identity_cmd::run_poll(
+                &workgraph_dir,
+                &name,
+                &store,
+                require_fresh.as_deref(),
+                cli.json,
+            ),
             cli::IdentityCommands::Verify { file, store } => commands::identity_cmd::run_verify(
                 &workgraph_dir,
                 &file,
                 store.as_deref(),
                 cli.json,
             ),
+        },
+        Commands::FedNode { command } => match command {
+            cli::FedNodeCommands::Serve { addr, store } => {
+                commands::fed_node::run_serve(&workgraph_dir, &addr, store.as_deref())
+            }
+            cli::FedNodeCommands::StorePath => commands::fed_node::run_store_path(&workgraph_dir),
         },
     }
 }

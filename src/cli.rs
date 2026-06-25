@@ -2396,6 +2396,18 @@ pub enum Commands {
         command: IdentityCommands,
     },
 
+    /// Run/inspect the WG-Fed node store-and-forward inbox (the default cross-graph
+    /// transport rung, ADR-fed-002). Holds signed `wgid:`-addressed messages for
+    /// offline recipients until they poll.
+    ///
+    ///   wg fed-node serve --addr 127.0.0.1:8451   # run the inbox (blocking)
+    ///   wg fed-node store-path                     # print the default store dir
+    #[command(name = "fed-node")]
+    FedNode {
+        #[command(subcommand)]
+        command: FedNodeCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex(NexArgs),
 
@@ -3109,14 +3121,45 @@ pub enum IdentityCommands {
     /// List local identities.
     List,
 
-    /// Publish an identity's `IdentityRecord` + sigchain + a `StateSnapshot` to a
-    /// dumb, untrusted third location (a directory or `file://` path).
+    /// Publish an identity's `IdentityRecord` + sigchain + `StateSnapshot` +
+    /// freshness attestation to a store `L` (a directory, `file://` path, or an
+    /// `http://` WG node inbox).
     Publish {
         /// Local handle of an identity you minted.
         name: String,
-        /// The third location `L` (directory path or `file://`).
+        /// The store `L` (directory path, `file://`, or `http://` node).
         #[arg(long)]
         store: String,
+        /// Freshness-attestation TTL in seconds (default 24h). Use `0` to publish an
+        /// already-expired attestation (for exercising fail-closed-on-stale).
+        #[arg(long)]
+        fresh_ttl: Option<i64>,
+    },
+
+    /// (Re)emit a signed freshness attestation over the current head (S-3). Run
+    /// periodically so a verifier can always re-fetch a recent `valid-as-of`.
+    Attest {
+        /// Local handle of an identity you minted.
+        name: String,
+        /// The store `L` (directory, `file://`, or `http://` node).
+        #[arg(long)]
+        store: String,
+        /// Attestation TTL in seconds (default 24h; `0` = already expired).
+        #[arg(long)]
+        fresh_ttl: Option<i64>,
+    },
+
+    /// Verifier side of S-3: re-fetch a `wgid`'s freshness attestation and apply the
+    /// fail-closed rule. Exits non-zero on stale/rollback (high-value gate).
+    CheckFresh {
+        /// The `wgid:` (or `did:key:`) to check.
+        wgid: String,
+        /// The store `L` to fetch the attestation from.
+        #[arg(long)]
+        store: String,
+        /// Action sensitivity: `routine` (Δ≈24h) or `high-value` (Δ≤15min).
+        #[arg(long, default_value = "routine")]
+        class: String,
     },
 
     /// Fetch + verify an identity from a third location, offline, by `wgid:`.
@@ -3157,9 +3200,13 @@ pub enum IdentityCommands {
     Poll {
         /// Local handle whose inbox to poll.
         name: String,
-        /// The third location `L`.
+        /// The store `L` (directory, `file://`, or `http://` node).
         #[arg(long)]
         store: String,
+        /// Gate accepted events on a fresh attestation for the sender (fail closed on
+        /// stale): `routine` or `high-value`. Omit for no freshness gate.
+        #[arg(long)]
+        require_fresh: Option<String>,
     },
 
     /// Verify a record or event file offline.
@@ -3170,6 +3217,21 @@ pub enum IdentityCommands {
         #[arg(long)]
         store: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum FedNodeCommands {
+    /// Run the node store-and-forward inbox HTTP server (blocking).
+    Serve {
+        /// Bind address, e.g. `127.0.0.1:8451` (use `:0` for an ephemeral port).
+        #[arg(long, default_value = "127.0.0.1:8451")]
+        addr: String,
+        /// Backing store directory (default: `<.wg>/fed-node`).
+        #[arg(long)]
+        store: Option<String>,
+    },
+    /// Print the default node store directory (scriptable).
+    StorePath,
 }
 
 #[derive(Subcommand)]
@@ -3313,25 +3375,51 @@ pub enum OpenRouterCommands {
 
 #[derive(Subcommand)]
 pub enum MsgCommands {
-    /// Send a message to a task/agent
+    /// Send a message — to a local task/agent, or cross-graph to a `--to wgid:`.
+    ///
+    /// Local:       wg msg send <task-id> "body" [--from user]
+    /// Cross-graph: wg msg send --to wgid:… --from <identity> --body "…" [--seal]
     Send {
-        /// Task ID
-        task_id: String,
+        /// Task ID (local message). Omit when sending cross-graph with `--to`.
+        task_id: Option<String>,
 
-        /// Message body
+        /// Message body (local positional). For cross-graph use `--body`.
         message: Option<String>,
 
-        /// Sender identifier (default: "user")
+        /// Sender identifier. Local default "user"; cross-graph: a local identity
+        /// handle that holds its signer key (`wg identity new <name>`).
         #[arg(long, default_value = "user")]
         from: String,
 
-        /// Message priority: normal or urgent
+        /// Message priority: normal or urgent (local messages only)
         #[arg(long, default_value = "normal")]
         priority: String,
 
         /// Read message body from stdin
         #[arg(long)]
         stdin: bool,
+
+        /// Cross-graph recipient: a `wgid:`/`did:key:` address or a `federation.yaml`
+        /// peer name. Routes over the WG node store-and-forward inbox (Wave 4).
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Cross-graph message body (alternative to the positional for `--to`).
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Cross-graph event kind (default `msg`).
+        #[arg(long, default_value = "msg")]
+        kind: String,
+
+        /// Seal the cross-graph body to the recipient's encryption key.
+        #[arg(long)]
+        seal: bool,
+
+        /// Override the delivery endpoint (a node/dir URL) instead of resolving it
+        /// from `federation.yaml` (cross-graph only).
+        #[arg(long)]
+        store: Option<String>,
     },
 
     /// List all messages for a task
@@ -3350,14 +3438,31 @@ pub enum MsgCommands {
         agent: Option<String>,
     },
 
-    /// Poll for new messages (exit code 0 = new messages, 1 = none)
+    /// Poll for new messages (exit code 0 = new messages, 1 = none).
+    ///
+    /// Local:       wg msg poll <task-id> [--agent …]
+    /// Cross-graph: wg msg poll --as <identity> [--store <node-url>]
     Poll {
-        /// Task ID
-        task_id: String,
+        /// Task ID (local). Omit when polling cross-graph with `--as`.
+        task_id: Option<String>,
 
         /// Agent ID (default: from WG_AGENT_ID env var, or "user")
         #[arg(long)]
         agent: Option<String>,
+
+        /// Poll this graph's node inbox for the given local identity handle
+        /// (cross-graph). Uses `federation.yaml`'s `node:` URL unless `--store` set.
+        #[arg(long = "as")]
+        as_identity: Option<String>,
+
+        /// Override the node inbox URL (cross-graph only).
+        #[arg(long)]
+        store: Option<String>,
+
+        /// Gate accepted cross-graph events on freshness (fail closed on stale):
+        /// `routine` or `high-value`.
+        #[arg(long)]
+        require_fresh: Option<String>,
     },
 }
 
@@ -4557,17 +4662,27 @@ pub enum SessionAliasCommands {
 
 #[derive(Subcommand)]
 pub enum PeerCommands {
-    /// Register a peer WG project
+    /// Register a peer WG project — path-based (same host) and/or key-based
+    /// (`--wgid` + `--endpoint`, for cross-graph messaging over the node inbox).
     Add {
         /// Peer name (used as shorthand reference)
         name: String,
 
-        /// Path to the peer project (containing .wg/)
-        path: String,
+        /// Path to the peer project (containing .wg/). Omit for a key-based peer.
+        path: Option<String>,
 
         /// Description of this peer
         #[arg(long, short = 'd')]
         description: Option<String>,
+
+        /// The peer's self-certifying `wgid:` address (key-based federation).
+        #[arg(long)]
+        wgid: Option<String>,
+
+        /// A delivery endpoint (node/relay base URL, e.g. `http://host:port`).
+        /// Repeatable — the resolution cascade tries them in order.
+        #[arg(long = "endpoint")]
+        endpoints: Vec<String>,
     },
 
     /// Remove a registered peer
@@ -5488,6 +5603,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Key { .. } => "key",
         Commands::Secret { .. } => "secret",
         Commands::Identity { .. } => "identity",
+        Commands::FedNode { .. } => "fed-node",
         Commands::Nex(_) => "nex",
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",

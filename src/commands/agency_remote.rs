@@ -46,6 +46,7 @@ pub fn run_add(
             path: path.to_string(),
             description: description.map(String::from),
             last_sync: None,
+            ..Default::default()
         },
     );
 

@@ -1,18 +1,17 @@
-//! `wg identity` — the WG-Fed spark surface (Wave 3).
+//! `wg identity` — the WG-Fed identity surface (Wave 3 spark + Wave 4 transport).
 //!
-//! Implements the thinnest end-to-end slice that passes the seven-step spark test
-//! (`docs/federation-study/06-decision-memo-and-roadmap.md` §4): mint a
-//! self-certifying identity whose root never leaves custody; publish/fetch a
-//! self-verifying `IdentityRecord` + `StateSnapshot` to a **dumb, untrusted third
-//! location** `L`; and send/poll a signed (optionally sealed) cross-graph
-//! `SignedEvent` over a store-and-forward inbox.
+//! Implements minting a self-certifying identity whose root never leaves custody;
+//! publish/fetch of a self-verifying `IdentityRecord` + `StateSnapshot`; and
+//! send/poll of a signed (optionally sealed) cross-graph `SignedEvent` over a
+//! store-and-forward inbox.
 //!
-//! The "third location" and the inbox are realized here as the simplest possible
-//! untrusted transport — a plain directory (the spark transport = "anything that
-//! returns bytes"; the HTTP/relay rungs harden in Wave 4, ADR-fed-002). Every
-//! artifact `L` serves is self-verifying, so `L` is never trusted: it cannot
-//! forge an identity or an author (verification is pure local crypto rooted at the
-//! `wgid:`, ADR-fed-001 §D5).
+//! Wave 4 (ADR-fed-002) generalizes the `--store <L>` argument: `L` is now any
+//! [`FedStore`] rung — a dumb directory **or** an `http://` WG node inbox — opened by
+//! [`open_store`]. The same signed/sealed bytes traverse either, and the recipient's
+//! offline self-verification is unchanged (verification is never central, ADR-fed-001
+//! §D5). Wave 4 also adds **freshness attestations** (S-3): `publish`/`attest` emit a
+//! signed `valid-as-of T, expires T+Δ` over the current head, and `check-fresh`
+//! re-fetches it and **fails closed on stale** for high-value actions.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -20,10 +19,15 @@ use std::path::{Path, PathBuf};
 use worksgood::identity::envelope::{
     AgentFields, Endpoint, IdentityRecord, SignedEvent, StateSnapshot, payload_cid,
 };
+use worksgood::identity::freshness::{
+    ActionClass, FreshVerdict, FreshnessAttestation, ROUTINE_DELTA_SECS, check_fresh,
+    load_seen_seq, record_seen_seq,
+};
 use worksgood::identity::keys::{self, Custodian};
 use worksgood::identity::sigchain::{
     self, AuthorizedKeys, KeyEntry, KeyRole, KeyStatus, SigchainLink,
 };
+use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
 
 // ── Local identity state (public; private keys live only in custody) ───────────
@@ -45,6 +49,10 @@ struct LocalIdentity {
     holds_private: bool,
     record: IdentityRecord,
     sigchain: Vec<SigchainLink>,
+    /// Highest freshness-attestation `seq` this identity has *issued* (monotonic).
+    /// Bumped on every `publish`/`attest` so a verifier can detect rollback.
+    #[serde(default)]
+    freshness_seq: u64,
 }
 
 fn identity_dir(workgraph_dir: &Path) -> PathBuf {
@@ -53,6 +61,12 @@ fn identity_dir(workgraph_dir: &Path) -> PathBuf {
 
 fn local_path(workgraph_dir: &Path, name: &str) -> PathBuf {
     identity_dir(workgraph_dir).join(format!("{name}.json"))
+}
+
+/// Dir tracking the highest freshness `seq` a verifier has *seen* per identity (the
+/// rollback backstop, distinct from the per-identity *issued* seq above).
+fn freshness_seen_dir(workgraph_dir: &Path) -> PathBuf {
+    identity_dir(workgraph_dir).join("freshness_seen")
 }
 
 fn save_local(workgraph_dir: &Path, id: &LocalIdentity) -> Result<()> {
@@ -76,72 +90,24 @@ fn load_local(workgraph_dir: &Path, name: &str) -> Result<LocalIdentity> {
     serde_json::from_str(&json).with_context(|| format!("parsing {}", path.display()))
 }
 
-// ── The dumb object store + inbox (the untrusted third location L) ─────────────
-
-/// Map a content id / wgid to a filesystem-safe leaf name.
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
+/// Scan the identity dir for a saved (own or fetched) bundle whose wgid matches —
+/// the local "cached signed endpoint record" used for offline sender authentication.
+fn load_local_by_wgid(workgraph_dir: &Path, wgid: &str) -> Option<LocalIdentity> {
+    let dir = identity_dir(workgraph_dir);
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(id) = serde_json::from_str::<LocalIdentity>(&text) {
+                if id.wgid == wgid {
+                    return Some(id);
+                }
             }
-        })
-        .collect()
-}
-
-fn store_root(store: &str) -> PathBuf {
-    // Accept a bare path or a `file://` URI (HTTP/relay rungs are Wave 4).
-    let s = store.strip_prefix("file://").unwrap_or(store);
-    PathBuf::from(s)
-}
-
-fn objects_dir(store: &str) -> PathBuf {
-    store_root(store).join("objects")
-}
-fn heads_dir(store: &str) -> PathBuf {
-    store_root(store).join("heads")
-}
-fn inbox_dir(store: &str, wgid: &str) -> PathBuf {
-    store_root(store).join("inbox").join(sanitize(wgid))
-}
-
-/// Put a content-addressed object. The CID is computed by the caller and is the
-/// integrity check — `L` cannot tamper without breaking it.
-fn store_put(store: &str, cid: &str, bytes: &[u8]) -> Result<()> {
-    let dir = objects_dir(store);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(sanitize(cid)), bytes)?;
-    Ok(())
-}
-
-fn store_get(store: &str, cid: &str) -> Result<Vec<u8>> {
-    let path = objects_dir(store).join(sanitize(cid));
-    std::fs::read(&path).with_context(|| format!("object {cid} not found in store {store}"))
-}
-
-/// A head pointer published at `L` for a `wgid` (mutable, untrusted — it only
-/// points at self-verifying objects, so a forged head cannot forge an identity).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct Head {
-    record: String,
-    #[serde(default)]
-    snapshots: Vec<String>,
-}
-
-fn head_put(store: &str, wgid: &str, head: &Head) -> Result<()> {
-    let dir = heads_dir(store);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(sanitize(wgid)), serde_json::to_vec(head)?)?;
-    Ok(())
-}
-
-fn head_get(store: &str, wgid: &str) -> Result<Head> {
-    let path = heads_dir(store).join(sanitize(wgid));
-    let bytes =
-        std::fs::read(&path).with_context(|| format!("no published head for {wgid} at {store}"))?;
-    serde_json::from_slice(&bytes).context("parsing head pointer")
+        }
+    }
+    None
 }
 
 // ── Minting (step 1) ───────────────────────────────────────────────────────────
@@ -221,10 +187,11 @@ fn mint(name: &str) -> Result<LocalIdentity> {
         holds_private: true,
         record,
         sigchain: chain,
+        freshness_seq: 0,
     })
 }
 
-// ── resolve + verify a bundle from the store (offline, self-certifying) ────────
+// ── resolve + verify a bundle from a store (offline, self-certifying) ──────────
 
 /// A fetched, fully-verified identity bundle.
 struct ResolvedBundle {
@@ -232,15 +199,16 @@ struct ResolvedBundle {
     chain: Vec<SigchainLink>,
     auth: AuthorizedKeys,
     snapshots: Vec<String>,
+    attestation: Option<String>,
 }
 
-/// Fetch a `wgid`'s record + sigchain from `L` and **verify offline** — the
-/// signature checks against the genesis pubkey embedded in the address; no call to
-/// the origin and no central authority (ADR-fed-001 §D5). Walks the content-
+/// Fetch a `wgid`'s record + sigchain from a [`FedStore`] and **verify offline** —
+/// the signature checks against the genesis pubkey embedded in the address; no call
+/// to the origin and no central authority (ADR-fed-001 §D5). Walks the content-
 /// addressed sigchain from `record.sigchain_head` back to genesis.
-fn resolve_bundle(store: &str, wgid: &str) -> Result<ResolvedBundle> {
-    let head = head_get(store, wgid)?;
-    let record_bytes = store_get(store, &head.record)?;
+fn resolve_bundle(store: &dyn FedStore, wgid: &str) -> Result<ResolvedBundle> {
+    let head = store.get_head(wgid)?;
+    let record_bytes = store.get_object(&head.record)?;
     let record: IdentityRecord =
         serde_json::from_slice(&record_bytes).context("parsing fetched IdentityRecord")?;
     if record.id != wgid {
@@ -256,7 +224,7 @@ fn resolve_bundle(store: &str, wgid: &str) -> Result<ResolvedBundle> {
         if guard > 10_000 {
             bail!("sigchain too long / cyclic while resolving {wgid}");
         }
-        let link_bytes = store_get(store, &cid)?;
+        let link_bytes = store.get_object(&cid)?;
         let link: SigchainLink =
             serde_json::from_slice(&link_bytes).context("parsing fetched sigchain link")?;
         cursor = link.prev.clone();
@@ -277,7 +245,26 @@ fn resolve_bundle(store: &str, wgid: &str) -> Result<ResolvedBundle> {
         chain,
         auth,
         snapshots: head.snapshots,
+        attestation: head.attestation,
     })
+}
+
+/// Resolve a sender's authorized-key set, preferring a **locally cached, already-
+/// verified** bundle (so the sender's node may be offline at poll time) and falling
+/// back to the store. This is the ADR-fed-001 §D5 cascade applied to authentication:
+/// the cached signed record can only help, never override a self-verification.
+fn resolve_auth_cached(
+    workgraph_dir: &Path,
+    store: &dyn FedStore,
+    wgid: &str,
+) -> Result<AuthorizedKeys> {
+    if let Some(local) = load_local_by_wgid(workgraph_dir, wgid) {
+        // Re-verify the cached chain offline (do not trust the cache blindly).
+        if let Ok(auth) = sigchain::verify(&local.sigchain, wgid) {
+            return Ok(auth);
+        }
+    }
+    Ok(resolve_bundle(store, wgid)?.auth)
 }
 
 fn enc_pub_of(auth: &AuthorizedKeys) -> Result<(String, [u8; 32])> {
@@ -291,6 +278,31 @@ fn enc_pub_of(auth: &AuthorizedKeys) -> Result<(String, [u8; 32])> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes);
     Ok((enc.kid.clone(), out))
+}
+
+/// Build, sign, and publish a freshness attestation over `id`'s current head; bump
+/// and persist the issued `seq`. Shared by `publish` and `attest`.
+fn emit_attestation(
+    workgraph_dir: &Path,
+    store: &dyn FedStore,
+    id: &mut LocalIdentity,
+    ttl_secs: i64,
+) -> Result<FreshnessAttestation> {
+    let cust = Custodian::new(&id.name);
+    id.freshness_seq += 1;
+    let mut att = FreshnessAttestation::build(
+        &id.wgid,
+        &id.record.sigchain_head,
+        chrono::Utc::now(),
+        ttl_secs,
+        id.freshness_seq,
+    );
+    att.sign(&cust, &id.signer_kid)?;
+    let att_cid = att.cid();
+    store.put_object(&att_cid, &serde_json::to_vec(&att)?)?;
+    store.put_attestation(&id.wgid, &serde_json::to_vec(&att)?)?;
+    save_local(workgraph_dir, id)?;
+    Ok(att)
 }
 
 // ── Command handlers ───────────────────────────────────────────────────────────
@@ -343,6 +355,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
                 "enc_kid": id.enc_kid,
                 "sigchain_head": id.record.sigchain_head,
                 "sigchain_len": id.sigchain.len(),
+                "freshness_seq": id.freshness_seq,
             })
         );
     } else {
@@ -398,22 +411,29 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
 }
 
 /// `wg identity publish <name> --store <L>` — publish the self-verifying
-/// `IdentityRecord` + sigchain + one `StateSnapshot` to the dumb location `L`
-/// (spark step 2). No private key is ever written.
-pub fn run_publish(workgraph_dir: &Path, name: &str, store: &str, json: bool) -> Result<()> {
-    let id = load_local(workgraph_dir, name)?;
+/// `IdentityRecord` + sigchain + one `StateSnapshot` **and a freshness attestation**
+/// to `L` (a directory or an `http://` node). No private key is ever written.
+pub fn run_publish(
+    workgraph_dir: &Path,
+    name: &str,
+    store_loc: &str,
+    fresh_ttl: Option<i64>,
+    json: bool,
+) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
     if !id.holds_private {
         bail!("identity {name:?} is a downloaded bundle; you can only publish your own");
     }
+    let store = open_store(store_loc)?;
 
     // Publish each sigchain link as a content-addressed object.
     for link in &id.sigchain {
         let bytes = serde_json::to_vec(link)?;
-        store_put(store, &link.cid(), &bytes)?;
+        store.put_object(&link.cid(), &bytes)?;
     }
     // Publish the IdentityRecord.
     let record_cid = id.record.cid();
-    store_put(store, &record_cid, &serde_json::to_vec(&id.record)?)?;
+    store.put_object(&record_cid, &serde_json::to_vec(&id.record)?)?;
 
     // Build + sign + publish one StateSnapshot (payload_kind conv-cache-v1).
     let cust = Custodian::new(name);
@@ -423,7 +443,7 @@ pub fn run_publish(workgraph_dir: &Path, name: &str, store: &str, json: bool) ->
         "turns": [{"role": "system", "text": "wg-fed spark conversation cache"}],
     }))?;
     let pcid = payload_cid(&payload);
-    store_put(store, &pcid, &payload)?;
+    store.put_object(&pcid, &payload)?;
     let mut snap = StateSnapshot {
         v: ENVELOPE_V,
         alg: ALG_ED25519.to_string(),
@@ -439,14 +459,20 @@ pub fn run_publish(workgraph_dir: &Path, name: &str, store: &str, json: bool) ->
     };
     snap.sign(&cust, &id.signer_kid)?;
     let snap_cid = snap.cid();
-    store_put(store, &snap_cid, &serde_json::to_vec(&snap)?)?;
+    store.put_object(&snap_cid, &serde_json::to_vec(&snap)?)?;
 
-    head_put(
-        store,
+    // Freshness attestation over the current head (S-3). `--fresh-ttl 0` publishes an
+    // already-expired attestation, useful for exercising fail-closed-on-stale.
+    let ttl = fresh_ttl.unwrap_or(ROUTINE_DELTA_SECS);
+    let att = emit_attestation(workgraph_dir, store.as_ref(), &mut id, ttl)?;
+    let att_cid = att.cid();
+
+    store.put_head(
         &id.wgid,
         &Head {
             record: record_cid.clone(),
             snapshots: vec![snap_cid.clone()],
+            attestation: Some(att_cid.clone()),
         },
     )?;
 
@@ -457,17 +483,129 @@ pub fn run_publish(workgraph_dir: &Path, name: &str, store: &str, json: bool) ->
                 "wgid": id.wgid,
                 "record_cid": record_cid,
                 "snapshot_cid": snap_cid,
-                "store": store,
+                "attestation_cid": att_cid,
+                "freshness_seq": id.freshness_seq,
+                "store": store_loc,
             })
         );
     } else {
-        println!("Published '{}' to {store}", id.name);
-        println!("  wgid:         {}", id.wgid);
-        println!("  record cid:   {record_cid}");
-        println!("  snapshot cid: {snap_cid}");
+        println!("Published '{}' to {store_loc}", id.name);
+        println!("  wgid:            {}", id.wgid);
+        println!("  record cid:      {record_cid}");
+        println!("  snapshot cid:    {snap_cid}");
+        println!("  attestation cid: {att_cid} (seq {})", id.freshness_seq);
         println!("  (bundle carries NO private key — verify with `wg identity fetch`)");
     }
     Ok(())
+}
+
+/// `wg identity attest <name> --store <L>` — (re)emit a fresh signed attestation over
+/// the current head, bumping `seq`. The custodian/node runs this periodically so a
+/// verifier can always re-fetch a recent `valid-as-of` (ADR-fed-001 §OQ4).
+pub fn run_attest(
+    workgraph_dir: &Path,
+    name: &str,
+    store_loc: &str,
+    fresh_ttl: Option<i64>,
+    json: bool,
+) -> Result<()> {
+    let mut id = load_local(workgraph_dir, name)?;
+    if !id.holds_private {
+        bail!("identity {name:?} is a downloaded bundle; cannot issue attestations for it");
+    }
+    let store = open_store(store_loc)?;
+    let ttl = fresh_ttl.unwrap_or(ROUTINE_DELTA_SECS);
+    let att = emit_attestation(workgraph_dir, store.as_ref(), &mut id, ttl)?;
+    // Update the head's attestation pointer if a head already exists.
+    if let Ok(mut head) = store.get_head(&id.wgid) {
+        head.attestation = Some(att.cid());
+        store.put_head(&id.wgid, &head)?;
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wgid": id.wgid,
+                "attestation_cid": att.cid(),
+                "seq": id.freshness_seq,
+                "as_of": att.as_of,
+                "expires": att.expires,
+            })
+        );
+    } else {
+        println!("Attested {} (seq {})", id.wgid, id.freshness_seq);
+        println!("  as_of:   {}", att.as_of);
+        println!("  expires: {}", att.expires);
+    }
+    Ok(())
+}
+
+/// `wg identity check-fresh <wgid> --store <L> [--class routine|high-value]` — the
+/// **verifier side** of S-3: re-fetch the attestation, verify its signature, and
+/// apply the **fail-closed** freshness rule. Exits non-zero on stale/rollback so a
+/// high-value caller can gate on it.
+pub fn run_check_fresh(
+    workgraph_dir: &Path,
+    wgid: &str,
+    store_loc: &str,
+    class: &str,
+    json: bool,
+) -> Result<()> {
+    let pubkey = keys::pubkey_from_wgid(wgid)?;
+    let wgid = keys::wgid_from_pubkey(&pubkey);
+    let class = ActionClass::parse(class)?;
+    let store = open_store(store_loc)?;
+
+    let bytes = store.get_attestation(&wgid)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no freshness attestation published for {wgid} — \
+            failing closed (cannot confirm the key is current)"
+        )
+    })?;
+    let att: FreshnessAttestation =
+        serde_json::from_slice(&bytes).context("parsing fetched freshness attestation")?;
+
+    // Verify the attestation signature against the identity's authorized keys.
+    let auth = resolve_auth_cached(workgraph_dir, store.as_ref(), &wgid)?;
+    att.verify_signature(&auth)
+        .context("freshness attestation failed signature verification")?;
+
+    let seen_dir = freshness_seen_dir(workgraph_dir);
+    let last_seen = load_seen_seq(&seen_dir, &wgid);
+    let verdict = check_fresh(&att, chrono::Utc::now(), class, last_seen);
+
+    match &verdict {
+        FreshVerdict::Fresh { seq, head } => {
+            // Advance the rollback high-water mark only on a fresh accept.
+            record_seen_seq(&seen_dir, &wgid, *seq)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "wgid": wgid, "fresh": true, "class": format!("{class:?}"),
+                        "seq": seq, "head": head, "as_of": att.as_of, "expires": att.expires,
+                    })
+                );
+            } else {
+                println!("FRESH {wgid} ({class:?}, seq {seq}) — head {head} confirmed current");
+            }
+            Ok(())
+        }
+        FreshVerdict::Stale { reason } | FreshVerdict::Rollback { reason } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "wgid": wgid, "fresh": false, "class": format!("{class:?}"),
+                        "reason": reason,
+                    })
+                );
+            } else {
+                println!("STALE {wgid} ({class:?}) — FAIL CLOSED: {reason}");
+            }
+            bail!("freshness check failed closed: {reason}")
+        }
+    }
 }
 
 /// `wg identity fetch <wgid> --store <L> [--save <name>]` — fetch + verify a
@@ -476,20 +614,21 @@ pub fn run_publish(workgraph_dir: &Path, name: &str, store: &str, json: bool) ->
 pub fn run_fetch(
     workgraph_dir: &Path,
     wgid: &str,
-    store: &str,
+    store_loc: &str,
     save: Option<&str>,
     json: bool,
 ) -> Result<()> {
     // Normalize a did:key spelling to the wgid the store is keyed by.
     let pubkey = keys::pubkey_from_wgid(wgid)?;
     let wgid = keys::wgid_from_pubkey(&pubkey);
+    let store = open_store(store_loc)?;
 
-    let bundle = resolve_bundle(store, &wgid)?;
+    let bundle = resolve_bundle(store.as_ref(), &wgid)?;
 
     // Verify the published snapshot too, if any (step 2/7 completeness).
     let mut verified_snapshots = 0usize;
     for scid in &bundle.snapshots {
-        let bytes = store_get(store, scid)?;
+        let bytes = store.get_object(scid)?;
         let snap: StateSnapshot = serde_json::from_slice(&bytes).context("parsing snapshot")?;
         snap.verify(&bundle.auth)
             .with_context(|| format!("verifying snapshot {scid}"))?;
@@ -514,6 +653,7 @@ pub fn run_fetch(
             holds_private: false,
             record: bundle.record.clone(),
             sigchain: bundle.chain.clone(),
+            freshness_seq: 0,
         };
         save_local(workgraph_dir, &id)?;
     }
@@ -527,6 +667,7 @@ pub fn run_fetch(
                 "offline": true,
                 "sigchain_len": bundle.chain.len(),
                 "verified_snapshots": verified_snapshots,
+                "has_attestation": bundle.attestation.is_some(),
                 "saved_as": save,
             })
         );
@@ -544,14 +685,14 @@ pub fn run_fetch(
 
 /// `wg identity send --from <name> --to <wgid> --store <L>` — author + sign (and
 /// optionally seal) a cross-graph `SignedEvent` into `L`'s store-and-forward inbox
-/// (spark step 4). Authoring requires the **signer private key in custody**:
-/// a downloaded bundle cannot author (the impersonation defense, step 6).
+/// (spark step 4 / Wave 4 node inbox). Authoring requires the **signer private key in
+/// custody**: a downloaded bundle cannot author (the impersonation defense, step 6).
 #[allow(clippy::too_many_arguments)]
 pub fn run_send(
     workgraph_dir: &Path,
     from: &str,
     to: &str,
-    store: &str,
+    store_loc: &str,
     body: &str,
     kind: &str,
     seal: bool,
@@ -573,10 +714,11 @@ pub fn run_send(
     let to_pub = keys::pubkey_from_wgid(to)?;
     let to_wgid = keys::wgid_from_pubkey(&to_pub);
     let created_at = chrono::Utc::now().to_rfc3339();
+    let store = open_store(store_loc)?;
 
     let mut ev = if seal {
         // Need the recipient's enc key — fetch + verify their bundle from L.
-        let recipient = resolve_bundle(store, &to_wgid)
+        let recipient = resolve_bundle(store.as_ref(), &to_wgid)
             .with_context(|| format!("resolving recipient {to_wgid} to seal to"))?;
         let (enc_kid, enc_pub) = enc_pub_of(&recipient.auth)?;
         SignedEvent::new_sealed(
@@ -601,10 +743,8 @@ pub fn run_send(
 
     // Deliver: write to the recipient's inbox at L (store-and-forward; the
     // recipient may be offline and will receive it on its next poll).
-    let dir = inbox_dir(store, &to_wgid);
-    std::fs::create_dir_all(&dir)?;
     let event_bytes = serde_json::to_vec(&ev)?;
-    std::fs::write(dir.join(format!("{}.json", sanitize(&ev.id))), &event_bytes)?;
+    store.put_event(&to_wgid, &ev.id, &event_bytes)?;
 
     if json {
         println!(
@@ -613,8 +753,10 @@ pub fn run_send(
                 "event_id": ev.id,
                 "from": ev.from,
                 "to": to_wgid,
+                "kind": kind,
                 "sealed": seal,
                 "accepted": true,
+                "store": store_loc,
             })
         );
     } else {
@@ -622,51 +764,62 @@ pub fn run_send(
         println!("  event id: {}", ev.id);
         println!("  from: {}", ev.from);
         println!("  to:   {to_wgid}");
+        println!("  via:  {store_loc}");
         println!("  sealed: {seal}");
     }
     Ok(())
 }
 
 /// `wg identity poll <name> --store <L>` — fetch events from `L`'s inbox and
-/// authenticate each by key (spark step 5). Prints a per-event verdict; a forged
-/// "from" or a tampered event is REJECTED. Sealed events addressed to us are
-/// opened with our custody-held encryption key.
-pub fn run_poll(workgraph_dir: &Path, name: &str, store: &str, json: bool) -> Result<()> {
+/// authenticate each by key (spark step 5 / Wave 4 node inbox). A forged "from" or a
+/// tampered event is REJECTED. Sealed events addressed to us are opened with our
+/// custody-held encryption key. When `require_fresh` is set, accepting an event is
+/// **gated on a fresh attestation** for the sender and **fails closed on stale**.
+pub fn run_poll(
+    workgraph_dir: &Path,
+    name: &str,
+    store_loc: &str,
+    require_fresh: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let id = load_local(workgraph_dir, name)?;
     let cust = Custodian::new(name);
-    let dir = inbox_dir(store, &id.wgid);
+    let store = open_store(store_loc)?;
+    let fresh_class = match require_fresh {
+        Some(c) => Some(ActionClass::parse(c)?),
+        None => None,
+    };
 
     let mut verdicts: Vec<serde_json::Value> = Vec::new();
     let mut accepted = 0usize;
     let mut rejected = 0usize;
 
-    if dir.exists() {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-            .collect();
-        entries.sort();
-        for path in entries {
-            let bytes = std::fs::read(&path)?;
-            let verdict = authenticate_event(&bytes, store, &id, &cust);
-            match verdict {
-                Ok((from, body)) => {
-                    accepted += 1;
-                    verdicts.push(serde_json::json!({
-                        "verdict": "VERIFIED", "from": from, "body": body,
-                    }));
-                    if !json {
-                        println!("VERIFIED from {from}: {body}");
-                    }
+    for ev in store.list_events(&id.wgid)? {
+        let verdict = authenticate_event(
+            &ev.bytes,
+            store.as_ref(),
+            &id,
+            &cust,
+            workgraph_dir,
+            fresh_class,
+        );
+        match verdict {
+            Ok((from, body)) => {
+                accepted += 1;
+                verdicts.push(serde_json::json!({
+                    "verdict": "VERIFIED", "from": from, "body": body,
+                }));
+                if !json {
+                    println!("VERIFIED from {from}: {body}");
                 }
-                Err(e) => {
-                    rejected += 1;
-                    verdicts.push(serde_json::json!({
-                        "verdict": "REJECTED", "reason": e.to_string(),
-                    }));
-                    if !json {
-                        println!("REJECTED: {e}");
-                    }
+            }
+            Err(e) => {
+                rejected += 1;
+                verdicts.push(serde_json::json!({
+                    "verdict": "REJECTED", "reason": e.to_string(),
+                }));
+                if !json {
+                    println!("REJECTED: {e}");
                 }
             }
         }
@@ -691,22 +844,31 @@ pub fn run_poll(workgraph_dir: &Path, name: &str, store: &str, json: bool) -> Re
     Ok(())
 }
 
-/// Verify one inbox event: resolve the sender's bundle from `L`, verify the
-/// signature against the sender's authorized signer set, then (if sealed and
-/// addressed to us) open it. Returns `(from_wgid, body)` on success.
+/// Verify one inbox event: resolve the sender's bundle (cache-first for offline
+/// tolerance), verify the signature against the sender's authorized signer set, then
+/// (if sealed and addressed to us) open it. When `fresh_class` is set, additionally
+/// require a fresh attestation for the sender (fail closed). Returns `(from, body)`.
 fn authenticate_event(
     bytes: &[u8],
-    store: &str,
+    store: &dyn FedStore,
     me: &LocalIdentity,
     cust: &Custodian,
+    workgraph_dir: &Path,
+    fresh_class: Option<ActionClass>,
 ) -> Result<(String, String)> {
     let ev: SignedEvent = serde_json::from_slice(bytes).context("parsing inbox event")?;
-    // Resolve and verify the *claimed* sender's identity from L.
-    let sender = resolve_bundle(store, &ev.from)
+    // Resolve and verify the *claimed* sender's identity (cache-first → store).
+    let sender_auth = resolve_auth_cached(workgraph_dir, store, &ev.from)
         .with_context(|| format!("resolving claimed sender {}", ev.from))?;
     // Authenticate: signature must verify against a key the sender's chain
     // authorizes. A forged "from" (wrong signature) fails here.
-    ev.verify(&sender.auth)?;
+    ev.verify(&sender_auth)?;
+
+    // Freshness gate (S-3): for a freshness-required action, the sender's key must be
+    // confirmed current by a freshly re-fetched attestation, or we fail closed.
+    if let Some(class) = fresh_class {
+        gate_freshness(workgraph_dir, store, &ev.from, &sender_auth, class)?;
+    }
 
     let body = if ev.enc.is_some() {
         ev.open(cust)
@@ -721,12 +883,65 @@ fn authenticate_event(
     Ok((ev.from, body))
 }
 
+/// Fail-closed freshness gate for a high-value accept (ADR-fed-001 §OQ4). Re-fetches
+/// the **sender's** signed `valid-as-of` attestation — preferring the sender's own
+/// advertised endpoint (the S-3 "re-fetch from the source" so a frozen inbox can't
+/// keep a revoked key alive), falling back to the inbox we polled from.
+fn gate_freshness(
+    workgraph_dir: &Path,
+    store: &dyn FedStore,
+    wgid: &str,
+    auth: &AuthorizedKeys,
+    class: ActionClass,
+) -> Result<()> {
+    let bytes = fetch_sender_attestation(workgraph_dir, store, wgid).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no freshness attestation for {wgid} — failing closed on a {class:?} action \
+             (cannot confirm the sender's key is current; possible withheld revoke)"
+        )
+    })?;
+    let att: FreshnessAttestation =
+        serde_json::from_slice(&bytes).context("parsing sender freshness attestation")?;
+    att.verify_signature(auth)
+        .context("sender freshness attestation failed signature verification")?;
+    let seen_dir = freshness_seen_dir(workgraph_dir);
+    let last_seen = load_seen_seq(&seen_dir, wgid);
+    match check_fresh(&att, chrono::Utc::now(), class, last_seen) {
+        FreshVerdict::Fresh { seq, .. } => {
+            record_seen_seq(&seen_dir, wgid, seq)?;
+            Ok(())
+        }
+        FreshVerdict::Stale { reason } | FreshVerdict::Rollback { reason } => {
+            bail!("freshness gate failed closed for {wgid}: {reason}")
+        }
+    }
+}
+
+/// Re-fetch a sender's freshness attestation, preferring the sender's advertised
+/// endpoint(s) from the resolution cascade and falling back to the poll store.
+fn fetch_sender_attestation(
+    workgraph_dir: &Path,
+    poll_store: &dyn FedStore,
+    wgid: &str,
+) -> Option<Vec<u8>> {
+    if let Ok(resolved) = worksgood::federation::resolve_peer_endpoint(wgid, workgraph_dir) {
+        for ep in &resolved.endpoints {
+            if let Ok(store) = open_store(ep) {
+                if let Ok(Some(bytes)) = store.get_attestation(wgid) {
+                    return Some(bytes);
+                }
+            }
+        }
+    }
+    poll_store.get_attestation(wgid).ok().flatten()
+}
+
 /// `wg identity verify <file> [--store <L>]` — verify a record or event file
 /// offline. For an event, the sender's chain is resolved from `--store`.
 pub fn run_verify(
-    _workgraph_dir: &Path,
+    workgraph_dir: &Path,
     file: &str,
-    store: Option<&str>,
+    store_loc: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let bytes = std::fs::read(file).with_context(|| format!("reading {file}"))?;
@@ -734,12 +949,14 @@ pub fn run_verify(
 
     let (kind, ok, detail) = if value.get("from").is_some() && value.get("kind").is_some() {
         // A SignedEvent — needs the sender's chain.
-        let store = store.ok_or_else(|| {
+        let store_loc = store_loc.ok_or_else(|| {
             anyhow::anyhow!("verifying a SignedEvent needs --store to resolve the sender")
         })?;
+        let store = open_store(store_loc)?;
         let ev: SignedEvent = serde_json::from_value(value).context("parsing SignedEvent")?;
         let from = ev.from.clone();
-        match resolve_bundle(store, &from).and_then(|b| ev.verify(&b.auth)) {
+        match resolve_auth_cached(workgraph_dir, store.as_ref(), &from).and_then(|a| ev.verify(&a))
+        {
             Ok(()) => ("SignedEvent", true, format!("authored by {from}")),
             Err(e) => ("SignedEvent", false, e.to_string()),
         }
@@ -748,11 +965,14 @@ pub fn run_verify(
         let rec: IdentityRecord =
             serde_json::from_value(value).context("parsing IdentityRecord")?;
         let id = rec.id.clone();
-        match store {
-            Some(store) => match resolve_bundle(store, &id) {
-                Ok(_) => ("IdentityRecord", true, format!("verified {id}")),
-                Err(e) => ("IdentityRecord", false, e.to_string()),
-            },
+        match store_loc {
+            Some(store_loc) => {
+                let store = open_store(store_loc)?;
+                match resolve_bundle(store.as_ref(), &id) {
+                    Ok(_) => ("IdentityRecord", true, format!("verified {id}")),
+                    Err(e) => ("IdentityRecord", false, e.to_string()),
+                }
+            }
             None => bail!("verifying an IdentityRecord needs --store to resolve its sigchain"),
         }
     } else {

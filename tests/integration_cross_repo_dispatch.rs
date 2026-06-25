@@ -39,6 +39,7 @@ fn register_peer(local_wg_dir: &Path, name: &str, peer_path: &str, desc: Option<
         PeerConfig {
             path: peer_path.to_string(),
             description: desc.map(String::from),
+            ..Default::default()
         },
     );
     federation::save_federation_config(local_wg_dir, &config).unwrap();
@@ -303,6 +304,7 @@ fn federation_config_peers_roundtrip() {
         PeerConfig {
             path: "/home/erik/workgraph".to_string(),
             description: Some("The WG tool".to_string()),
+            ..Default::default()
         },
     );
     config.peers.insert(
@@ -310,6 +312,7 @@ fn federation_config_peers_roundtrip() {
         PeerConfig {
             path: "/home/erik/grants".to_string(),
             description: None,
+            ..Default::default()
         },
     );
 
@@ -339,6 +342,7 @@ fn federation_config_peers_coexist_with_remotes() {
             path: "/some/agency".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     config.peers.insert(
@@ -346,6 +350,7 @@ fn federation_config_peers_coexist_with_remotes() {
         PeerConfig {
             path: "/some/other/repo".to_string(),
             description: Some("Another repo".to_string()),
+            ..Default::default()
         },
     );
 

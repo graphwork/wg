@@ -238,6 +238,120 @@ pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
     Ok(true)
 }
 
+// ── Cross-graph (key-based) messaging over the WG node inbox (Wave 4) ──────────
+//
+// `wg msg --to wgid:` routes a signed (optionally sealed) `SignedEvent` to a peer on
+// another graph over the default transport rung (the node HTTP store-and-forward
+// inbox, ADR-fed-002 §D1). Delivery target is found by the resolution cascade
+// (`federation::resolve_peer_endpoint`: cached endpoint → directory → DHT); the
+// authoring/verification machinery is shared with `wg identity send/poll`, so the
+// transport is untrusted and every byte is self-verifying.
+
+/// `wg msg send --to <wgid|peer> --from <identity> [--seal] [--store <url>]` — deliver
+/// a signed cross-graph message to a recipient on another WG, over the node inbox.
+///
+/// `to` may be a raw `wgid:`/`did:key:` address or a `federation.yaml` peer name. The
+/// delivery endpoint is resolved by the cascade unless `--store` overrides it with an
+/// explicit node/dir URL. Tries each resolved endpoint in fallback-ladder order.
+#[allow(clippy::too_many_arguments)]
+pub fn run_send_fed(
+    workgraph_dir: &Path,
+    from: &str,
+    to: &str,
+    store_override: Option<&str>,
+    body: &str,
+    kind: &str,
+    seal: bool,
+    json: bool,
+) -> Result<()> {
+    use worksgood::federation::resolve_peer_endpoint;
+
+    // Decide the delivery endpoints + the recipient's canonical wgid.
+    let (recipient_wgid, endpoints): (String, Vec<String>) = if let Some(store) = store_override {
+        // Explicit transport: `to` must be (or resolve to) a wgid for addressing.
+        let resolved = resolve_peer_endpoint(to, workgraph_dir);
+        let wgid = match resolved {
+            Ok(r) => r.wgid,
+            Err(_) => normalize_to_wgid(to)?,
+        };
+        (wgid, vec![store.to_string()])
+    } else {
+        let resolved = resolve_peer_endpoint(to, workgraph_dir).with_context(|| {
+            format!("resolving delivery endpoints for '{to}' (pass --store to override)")
+        })?;
+        if !json {
+            println!(
+                "resolved {} via {} → {} endpoint(s)",
+                resolved.wgid,
+                resolved.source,
+                resolved.endpoints.len()
+            );
+        }
+        (resolved.wgid, resolved.endpoints)
+    };
+
+    if endpoints.is_empty() {
+        anyhow::bail!("no delivery endpoints for '{to}'");
+    }
+
+    // Fallback ladder: try each endpoint until one accepts (ADR-fed-002 §D1/§D2).
+    let mut last_err: Option<anyhow::Error> = None;
+    for ep in &endpoints {
+        match crate::commands::identity_cmd::run_send(
+            workgraph_dir,
+            from,
+            &recipient_wgid,
+            ep,
+            body,
+            kind,
+            seal,
+            json,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if !json {
+                    eprintln!("  endpoint {ep} failed: {e}; trying next rung…");
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("delivery failed on all endpoints")))
+}
+
+/// `wg msg poll --as <identity> [--store <url>]` — poll this graph's node inbox for
+/// signed cross-graph messages and authenticate each by key. With `--store` omitted,
+/// uses the `node:` URL configured in `federation.yaml`.
+pub fn run_poll_fed(
+    workgraph_dir: &Path,
+    as_identity: &str,
+    store_override: Option<&str>,
+    require_fresh: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let store = match store_override {
+        Some(s) => s.to_string(),
+        None => {
+            let cfg = worksgood::federation::load_federation_config(workgraph_dir)?;
+            cfg.node.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no node inbox configured — set `node: http://host:port` in \
+                     federation.yaml or pass --store <url>"
+                )
+            })?
+        }
+    };
+    crate::commands::identity_cmd::run_poll(workgraph_dir, as_identity, &store, require_fresh, json)
+}
+
+/// Normalize a `wgid:`/`did:key:` address to the canonical `wgid:` (for `--store`
+/// overrides where the cascade is bypassed).
+fn normalize_to_wgid(to: &str) -> Result<String> {
+    let pubkey = worksgood::identity::keys::pubkey_from_wgid(to)
+        .with_context(|| format!("'{to}' is not a wgid:/did:key: address"))?;
+    Ok(worksgood::identity::keys::wgid_from_pubkey(&pubkey))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
