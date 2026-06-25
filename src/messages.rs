@@ -60,6 +60,25 @@ pub struct Message {
     /// Set when `update_message_statuses()` transitions status to `Read`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_at: Option<String>,
+
+    // ── WG-Fed federation fields (ADR-fed-001..002, doc 02 §2.3) ───────────────
+    // A local queue message gains the federated-addressing fields so it can carry
+    // a cross-graph `SignedEvent`'s envelope alongside the existing task-keyed
+    // queue. All four are `#[serde(default)]` and skip-when-empty: today's
+    // task-keyed JSONL parses unchanged and serializes byte-identically, and an
+    // old reader simply ignores fields it does not know — backward compatible.
+    /// Author's `wgid:` address (federated messages only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Recipient `wgid:` addresses (federated messages only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
+    /// ed25519 signature over the originating `SignedEvent` (hex).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
+    /// Threading/causality references (content ids of related artifacts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
 }
 
 fn default_priority() -> String {
@@ -153,6 +172,10 @@ pub fn send_message(
         priority: priority.to_string(),
         status: DeliveryStatus::Sent,
         read_at: None,
+        from: None,
+        to: Vec::new(),
+        sig: None,
+        refs: Vec::new(),
     };
 
     // Append the message as a single JSON line
@@ -959,6 +982,10 @@ pub fn deliver_message(
         priority: priority.to_string(),
         status: DeliveryStatus::Sent,
         read_at: None,
+        from: None,
+        to: Vec::new(),
+        sig: None,
+        refs: Vec::new(),
     };
     let delivered = adapter.deliver(workgraph_dir, agent, &msg)?;
 
@@ -1357,6 +1384,10 @@ mod tests {
             priority: "normal".to_string(),
             status: DeliveryStatus::Sent,
             read_at: None,
+            from: None,
+            to: Vec::new(),
+            sig: None,
+            refs: Vec::new(),
         };
 
         let delivered = adapter.deliver(&wg_dir, &agent, &msg).unwrap();
@@ -1391,6 +1422,10 @@ mod tests {
                 priority: "normal".to_string(),
                 status: DeliveryStatus::Sent,
                 read_at: None,
+                from: None,
+                to: Vec::new(),
+                sig: None,
+                refs: Vec::new(),
             };
             adapter.deliver(&wg_dir, &agent, &msg).unwrap();
         }
@@ -1450,6 +1485,10 @@ mod tests {
             priority: "normal".to_string(),
             status: DeliveryStatus::Sent,
             read_at: None,
+            from: None,
+            to: Vec::new(),
+            sig: None,
+            refs: Vec::new(),
         };
 
         let adapter = ClaudeMessageAdapter;

@@ -322,3 +322,44 @@ labels are gone — they were always cosmetic. See the `resolve_agency_dispatch`
 doc comment and `Config::weak_tier_spec()` in `src/service/llm.rs` /
 `src/config.rs`.
 Agency federation compatibility is exposed as `WG_AGENCY_COMPAT_VERSION = "1.2.4"` and import manifests record that compat surface for CSV/hash handshakes.
+
+## WG-Fed identity (`wg identity`) — federation Wave 3 spark
+
+WG-Fed is the cross-WG federation substrate (self-certifying key identity +
+signed messages + portable signed state) decided in `docs/federation-study/06`
+and ratified in `docs/ADR-fed-001..004-*.md`. The **Wave-3 spark PoC** is the
+first real federation code: `src/identity/` (`mod.rs` = `WG_FED_COMPAT_VERSION`
++ loud-fail handshake + canonical-JSON BLAKE3 content-addressing; `keys.rs` =
+ed25519/X25519 gen + the `wgid:` / `did:key` multibase + the custody boundary;
+`sigchain.rs` = `genesis`/`add_key` + `verify`; `envelope.rs` =
+`IdentityRecord`/`StateSnapshot`/`SignedEvent` sign/verify/seal). `Message`
+gained `from`/`to`/`sig`/`refs` (all `#[serde(default)]`, backward compatible).
+
+An identity is a **self-certifying `wgid:<multibase-ed25519-pubkey>`** (a pure
+prefix-swap with `did:key:`) backed by an append-only signed sigchain. The
+**three-tier key hierarchy** (root / signer / encryption) lives in `wg secret`'s
+keystore behind an **ssh-agent-style "sign this digest" custody boundary**
+(`identity::keys::Custodian` — `sign_digest`/`agree` only; **the root private
+key is never returned, exported, or written to any record/file/env**).
+Verification is **never central**: a pure local signature check rooted at the
+genesis pubkey embedded in the address. The custody split is what makes
+"download ≠ impersonation" hold — possessing a published bundle confers no
+ability to author as that identity.
+
+```
+wg identity new <name>                    # mint (root → wg secret; emits wgid: + signed IdentityRecord)
+wg identity publish <name> --store <L>     # publish IdentityRecord + sigchain + a StateSnapshot to a dumb, untrusted location
+wg identity fetch <wgid> --store <L> [--save <name>]   # fetch + verify OFFLINE by wgid alone
+wg identity send --from <name> --to <wgid> --store <L> --body <text> [--seal]   # signed (optionally sealed) cross-graph event
+wg identity poll <name> --store <L>        # receive + authenticate by key (forged "from" / tampered events rejected)
+wg identity show <name> | wg identity list | wg identity verify <file> [--store <L>]
+```
+
+The third location `L` is a dumb, untrusted bytes store (the spark uses a
+directory / `file://` path; the HTTP-inbox and relay transport rungs harden in
+Wave 4 per ADR-fed-002). The keystore is `$HOME`-relative, so two WG instances
+on one host are isolated by `HOME` alone. Compatibility is gated by
+`WG_FED_COMPAT_VERSION` in `src/identity/mod.rs` (loud-fail on incompatible
+mismatch, mirroring `WG_AGENCY_COMPAT_VERSION` / `WG_PI_PLUGIN_COMPAT_VERSION`).
+The seven-step end-to-end proof is pinned by
+`tests/smoke/scenarios/federation_spark_two_graphs.sh` (`owners = [wg-fed-spark]`).

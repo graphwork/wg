@@ -110,6 +110,22 @@ ammonia = "4"
 hmac = "0.12.1"
 hex = "0.4.3"
 
+# WG-Fed (federation) cryptography — the `src/identity/` module is the home for
+# all signing/sealing crypto (the tree had none before; doc 02 §2.4). These are
+# the suite fixed by ADR-fed-001 §D7 / doc 04 §1.3 and listed in the Wave-3 spark
+# task. ed25519 = identity/signing, x25519 (static_secrets) = per-recipient
+# sealing key-agreement, blake3 = content-addressing, chacha20poly1305 = the
+# sealed envelope AEAD, hkdf = per-message key derivation. bs58 renders the
+# `wgid:`/`did:key` multibase body; getrandom seeds fresh keypairs. All already
+# resolved transitively, so promoting them to direct deps needs no new fetch.
+ed25519-dalek = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+blake3 = "1"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+bs58 = "0.5"
+getrandom = "0.2"
+
 # PTY-embed: spawn `wg nex` (or any command) as a child of the
 # ratatui TUI with a pseudo-terminal, render its output as a
 # terminal-cell grid, forward key events to its stdin.

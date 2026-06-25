@@ -3061,6 +3061,10 @@ mod tests {
             priority: "normal".to_string(),
             status: msg_queue::DeliveryStatus::Sent,
             read_at: None,
+            from: None,
+            to: Vec::new(),
+            sig: None,
+            refs: Vec::new(),
         }
     }
 

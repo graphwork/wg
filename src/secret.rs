@@ -125,11 +125,6 @@ fn keystore_dir() -> Result<PathBuf> {
     Ok(home.join(".wg").join("keystore"))
 }
 
-fn keystore_path(name: &str) -> Result<PathBuf> {
-    validate_name(name)?;
-    Ok(keystore_dir()?.join(name))
-}
-
 fn secrets_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Cannot determine home directory")?;
     Ok(home.join(".wg").join("secrets"))
@@ -423,21 +418,43 @@ pub fn keyring_list() -> Result<Vec<String>> {
 // ── Keystore backend (explicit file store at ~/.wg/keystore/) ────────────────
 
 pub fn keystore_set(name: &str, value: &str) -> Result<()> {
-    let path = keystore_path(name)?;
-    write_secret_file(&path, value)
-        .with_context(|| format!("Failed to write to keystore for '{}'", name))
+    keystore_set_in(&keystore_dir()?, name, value)
 }
 
 pub fn keystore_get(name: &str) -> Result<Option<String>> {
-    read_secret_file(&keystore_path(name)?)
+    keystore_get_in(&keystore_dir()?, name)
 }
 
 pub fn keystore_delete(name: &str) -> Result<bool> {
-    delete_secret_file(&keystore_path(name)?)
+    keystore_delete_in(&keystore_dir()?, name)
 }
 
 pub fn keystore_list() -> Result<Vec<String>> {
     list_secret_files(&keystore_dir()?)
+}
+
+// ── Keystore backend with an explicit base directory ─────────────────────────
+//
+// The `*_in` variants take the keystore directory explicitly instead of deriving
+// it from `$HOME`. The WG-Fed identity custodian (`src/identity/keys.rs`) uses
+// these so unit tests can inject a unique per-test keystore dir — process-global
+// `$HOME` mutation is not parallel-test-safe, while an injected path is. The
+// 0600/0700 file semantics are identical (`write_secret_file`).
+
+pub fn keystore_set_in(dir: &std::path::Path, name: &str, value: &str) -> Result<()> {
+    validate_name(name)?;
+    write_secret_file(&dir.join(name), value)
+        .with_context(|| format!("Failed to write to keystore for '{}'", name))
+}
+
+pub fn keystore_get_in(dir: &std::path::Path, name: &str) -> Result<Option<String>> {
+    validate_name(name)?;
+    read_secret_file(&dir.join(name))
+}
+
+pub fn keystore_delete_in(dir: &std::path::Path, name: &str) -> Result<bool> {
+    validate_name(name)?;
+    delete_secret_file(&dir.join(name))
 }
 
 // ── Plaintext backend (opt-in, requires allow_plaintext = true) ───────────────
