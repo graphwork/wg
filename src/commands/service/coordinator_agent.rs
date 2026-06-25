@@ -576,15 +576,33 @@ impl CoordinatorAgent {
         if pid == 0 {
             return false;
         }
-        // Send SIGINT (not SIGKILL) — Claude CLI treats this as "stop generating"
+        // Send SIGINT (Unix) or Ctrl+Break (Windows) — the handler subprocess
+        // treats either as "stop generating and emit TurnComplete", preserving
+        // conversation context.
         #[cfg(unix)]
         {
+            // Send SIGINT (not SIGKILL) — the CLI treats this as "stop
+            // generating" rather than a hard kill.
             unsafe {
                 libc::kill(pid as i32, libc::SIGINT);
             }
             true
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)` delivers
+            // Ctrl+Break to the target process group. This requires the
+            // child to have been spawned with `CREATE_NEW_PROCESS_GROUP`.
+            // If that flag is missing the call silently no-ops (a non-zero
+            // return from the API wouldn't indicate "child didn't get a
+            // signal", so we don't check it).
+            use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+            unsafe {
+                GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid);
+            }
+            true
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
