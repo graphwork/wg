@@ -8,6 +8,12 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// The Windows `\\?\` verbatim-prefix stripping lives in one place — the
+// shared `strip_verbatim_prefix` in this module's parent (`spawn/mod.rs`),
+// consolidating njt's #24/#25/#28. `git worktree add` and `git -C` both bail
+// on verbatim paths, so the call sites below strip first.
+use super::strip_verbatim_prefix;
+
 /// Worktree paths and metadata for an isolated agent workspace.
 #[derive(Debug)]
 pub struct WorktreeInfo {
@@ -48,12 +54,14 @@ pub fn create_worktree(
         );
     }
 
-    // Create worktree from HEAD
+    // Create worktree from HEAD.
+    // Strip the `\\?\` prefix from both the target path and cwd on Windows,
+    // otherwise `git worktree add` fails to create the leading directories.
     let output = Command::new("git")
         .args(["worktree", "add"])
-        .arg(&worktree_dir)
+        .arg(strip_verbatim_prefix(&worktree_dir))
         .args(["-b", &branch, "HEAD"])
-        .current_dir(project_root)
+        .current_dir(strip_verbatim_prefix(project_root))
         .output()
         .context("Failed to run git worktree add")?;
 
@@ -69,15 +77,23 @@ pub fn create_worktree(
     let symlink_path = worktree_dir.join(".wg");
     create_workgraph_link(&symlink_target, &symlink_path)?;
 
-    // Run worktree-setup.sh if it exists
+    // Run worktree-setup.sh if it exists. Same `\\?\` stripping as the
+    // main bash wrapper spawn — without it, bash can't parse the script
+    // path as an argument.
     let setup_script = workgraph_dir.join("worktree-setup.sh");
     if setup_script.exists() {
-        let _ = Command::new("bash")
-            .arg(&setup_script)
-            .arg(&worktree_dir)
-            .arg(project_root)
-            .current_dir(&worktree_dir)
-            .output(); // Best-effort; don't fail spawn if setup hook fails
+        // No Config in scope here — bash_exe_path falls through to env +
+        // well-known Windows paths + PATH scan (skipping the WSL shim),
+        // which is what we want for a hook script. Strip the `\\?\` prefix
+        // from the path args + cwd so Git-for-Windows bash can read them.
+        if let Ok(bash_path) = worksgood::platform_bash::bash_exe_path(None) {
+            let _ = Command::new(&bash_path)
+                .arg(strip_verbatim_prefix(&setup_script))
+                .arg(strip_verbatim_prefix(&worktree_dir))
+                .arg(strip_verbatim_prefix(project_root))
+                .current_dir(strip_verbatim_prefix(&worktree_dir))
+                .output(); // Best-effort; don't fail spawn if setup hook fails
+        }
     }
 
     Ok(WorktreeInfo {
@@ -172,17 +188,18 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
         let _ = std::fs::remove_dir_all(&target_dir);
     }
 
-    // Force-remove the worktree
+    // Force-remove the worktree. Strip the `\\?\` prefix to match the
+    // create-path — git rejects it on both add and remove.
     let _ = Command::new("git")
         .args(["worktree", "remove", "--force"])
-        .arg(worktree_path)
-        .current_dir(project_root)
+        .arg(strip_verbatim_prefix(worktree_path))
+        .current_dir(strip_verbatim_prefix(project_root))
         .output();
 
     // Delete the branch
     let _ = Command::new("git")
         .args(["branch", "-D", branch])
-        .current_dir(project_root)
+        .current_dir(strip_verbatim_prefix(project_root))
         .output();
 
     // NOTE: We intentionally do NOT run `git worktree prune` here.
@@ -225,6 +242,10 @@ mod tests {
             .output()
             .unwrap();
     }
+
+    // `strip_verbatim_prefix` unit tests live with the consolidated helper in
+    // `spawn/mod.rs` (it moved there from this file as part of the `\\?\`
+    // consolidation of njt's #24/#25/#28).
 
     #[test]
     fn test_create_worktree() {

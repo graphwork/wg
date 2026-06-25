@@ -1270,6 +1270,7 @@ fn main() -> Result<()> {
         Commands::Blocked { id } => commands::blocked::run(&workgraph_dir, &id, cli.json),
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir, cli.json),
+        Commands::Doctor => commands::doctor::run(&workgraph_dir, cli.json),
         Commands::Cleanup { subcmd } => {
             let args = commands::cleanup::CleanupArgs { subcmd };
             commands::cleanup::run(args)
@@ -3405,6 +3406,7 @@ fn main() -> Result<()> {
                 interval,
                 task_id.as_deref(),
             ),
+            TelegramCommands::ListBots => commands::telegram::run_list_bots(cli.json),
         },
         Commands::Endpoints { command } | Commands::Endpoint { command } => match command {
             EndpointsCommands::List => commands::endpoints::run_list(&workgraph_dir, cli.json),

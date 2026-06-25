@@ -270,6 +270,27 @@ fn agency_native_lightweight_call(
     }
 }
 
+/// If the daemon has a Claude OAuth token configured via `[auth]` in
+/// config.toml, inject it into the child's env so the spawned `claude`
+/// CLI can authenticate without requiring the caller to have exported
+/// `CLAUDE_CODE_OAUTH_TOKEN` beforehand. No-op when the token is already
+/// present in the env or not configured (falls back to the CLI's own
+/// credential resolution — `~/.claude/credentials.json`, etc.).
+fn inject_claude_oauth_token(cmd: &mut process::Command) {
+    // Best-effort: load config from cwd's workgraph dir. This is a pure
+    // read of the file and can silently skip on any failure.
+    let dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.join(".workgraph"))
+        .filter(|p| p.exists());
+    if let Some(dir) = dir
+        && let Ok(cfg) = Config::load_merged(&dir)
+        && let Some(token) = cfg.auth.resolve_claude_oauth_token()
+    {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+}
+
 /// Run a lightweight (no tool-use) LLM call for an internal dispatch role.
 ///
 /// Resolves the model and provider for the given role, then dispatches via:
@@ -425,25 +446,46 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     // Eval prompts can be very large (30KB+ with diffs, logs, artifacts) and
     // passing them as arguments can hit OS arg-length limits or cause the
     // `timeout` wrapper to fail with exit 124 before the API call even starts.
-    let mut child = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
-        .arg("claude")
-        .arg("--model")
-        .arg(model)
-        .arg("--print")
-        .arg("--output-format")
-        .arg("json")
-        .arg("--dangerously-skip-permissions")
-        // Strip CLAUDECODE env var so the CLI doesn't refuse to run
-        // when invoked from within a Claude Code session (e.g. daemon
-        // spawned by a coordinator agent). This is a headless --print
-        // call, not an interactive nested session.
-        .env_remove("CLAUDECODE")
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn claude CLI for lightweight LLM call")?;
+    let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
+        "claude",
+        |cmd| {
+            cmd.arg("--model")
+                .arg(model)
+                .arg("--print")
+                .arg("--output-format")
+                .arg("json")
+                .arg("--dangerously-skip-permissions")
+                // Strip Claude-Code-specific env vars that leak through when the
+                // daemon itself was spawned from a Claude Code session (common on
+                // Windows where people launch the daemon from a cmd.exe spawned
+                // by Claude Code):
+                //   - CLAUDECODE / CLAUDE_CODE_ENTRYPOINT: make the CLI refuse
+                //     to run or behave as a nested session
+                //   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: tells the CLI to
+                //     prefer the host bridge (Claude Code's auth IPC) over the
+                //     configured API key / OAuth token. In a detached daemon
+                //     there's no host bridge to resolve to, so the CLI 401s on
+                //     every call and surfaces its synthetic "Invalid API key"
+                //     placeholder.
+                //   - CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: hints the CLI that an
+                //     SDK-level refresh loop is running and it shouldn't refresh
+                //     its own token. True inside Claude Code, false in a headless
+                //     daemon; leaving it set disables the CLI's own refresh.
+                .env_remove("CLAUDECODE")
+                .env_remove("CLAUDE_CODE_ENTRYPOINT")
+                .env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
+                .env_remove("CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH")
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped());
+            // Inject the configured `[auth]` OAuth token (if any) so a headless
+            // daemon without an exported CLAUDE_CODE_OAUTH_TOKEN can still auth.
+            inject_claude_oauth_token(cmd);
+            cmd
+        },
+        timeout_secs,
+    )
+    .context("Failed to spawn claude CLI for lightweight LLM call")?;
 
     // Write prompt to stdin and close the pipe to signal EOF.
     if let Some(mut stdin) = child.stdin.take() {
@@ -458,10 +500,12 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
-            "Claude CLI call failed (exit {:?}): {}",
+            "Claude CLI call failed (exit {:?}): stderr={:?} stdout={:?}",
             output.status.code(),
-            stderr.chars().take(500).collect::<String>()
+            stderr.chars().take(500).collect::<String>(),
+            stdout.chars().take(500).collect::<String>()
         );
     }
 
@@ -492,20 +536,24 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 fn call_codex_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     use std::io::Write as _;
 
-    let mut child = process::Command::new("timeout")
-        .arg(format!("{}s", timeout_secs))
-        .arg("codex")
-        .arg("exec")
-        .arg("--json")
-        .arg("--skip-git-repo-check")
-        .arg("--dangerously-bypass-approvals-and-sandbox")
-        .arg("--model")
-        .arg(model)
-        .stdin(process::Stdio::piped())
-        .stdout(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn codex CLI for lightweight LLM call")?;
+    // Cross-platform `timeout(1)` replacement — Windows has no equivalent.
+    // Same in-process call-site treatment njt's #22 applied to call_claude_cli.
+    let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
+        "codex",
+        |cmd| {
+            cmd.arg("exec")
+                .arg("--json")
+                .arg("--skip-git-repo-check")
+                .arg("--dangerously-bypass-approvals-and-sandbox")
+                .arg("--model")
+                .arg(model)
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped())
+        },
+        timeout_secs,
+    )
+    .context("Failed to spawn codex CLI for lightweight LLM call")?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin

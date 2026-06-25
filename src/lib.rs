@@ -62,6 +62,8 @@ pub mod notify;
 pub mod parser;
 pub mod pi_plugin;
 pub mod plan_validator;
+pub mod platform_bash;
+pub mod platform_timeout;
 pub mod profile;
 pub mod provenance;
 pub mod query;

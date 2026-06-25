@@ -22,7 +22,7 @@ use super::context::{
 use super::worktree;
 use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
-    shell_escape,
+    sanitize_bash_path, shell_escape, strip_verbatim_prefix,
 };
 
 /// Internal shared implementation for spawning an agent.
@@ -590,9 +590,19 @@ pub(crate) fn spawn_agent_inner(
         timed_fallback.as_deref(),
     )?;
 
-    // Run the wrapper script
-    let mut cmd = Command::new("bash");
-    cmd.arg(&wrapper_path);
+    // Run the wrapper script. On Windows, `wrapper_path` often comes back
+    // from PathBuf::canonicalize with the `\\?\` extended-length prefix
+    // (e.g. `\\?\C:\src\ontempo\.workgraph\agents\agent-710\run.sh`). Most
+    // Windows APIs accept that form, but Git-for-Windows' bash.exe does
+    // not — it reports "No such file or directory" before the script can
+    // run, and the agent dies instantly with no output.log. Strip the
+    // prefix so bash sees a plain `C:\...` path, which it handles fine.
+    // Resolve the bash binary via platform_bash so a stock Windows PATH
+    // doesn't route us to the WSL shim (`C:\Windows\System32\bash.exe`).
+    let bash_path = worksgood::platform_bash::bash_exe_path(config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for spawn wrapper")?;
+    let mut cmd = Command::new(&bash_path);
+    cmd.arg(strip_verbatim_prefix(&wrapper_path));
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -643,12 +653,28 @@ pub(crate) fn spawn_agent_inner(
     }
     inject_api_key_env(&mut cmd, endpoint_config, &effective_api_key);
 
+    // Pass through the Claude Code OAuth token (if configured in [auth]
+    // of config.toml and not already in the daemon's env). Task agents
+    // shell out to the `claude` CLI for the claude executor; without
+    // this, agents on a headless Windows install either can't
+    // authenticate or the user has to export the token in every shell
+    // before starting the daemon. No-op when `claude login` has been
+    // run — the CLI picks up `~/.claude/credentials.json` on its own.
+    if let Some(token) = config.auth.resolve_claude_oauth_token() {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+    }
+
     // Set working directory: worktree overrides settings.working_dir
     if let Some(ref wt) = worktree_info {
-        cmd.current_dir(&wt.path);
-        cmd.env("WG_WORKTREE_PATH", &wt.path);
+        // Strip `\\?\` verbatim prefix: bash.exe (MinGW/Git-for-Windows) silently
+        // produces no output when its CWD is a verbatim extended-length path like
+        // `\\?\C:\...`. Rust's PathBuf::canonicalize returns these on Windows.
+        let clean_worktree_path = sanitize_bash_path(&wt.path.to_string_lossy());
+        let clean_project_root = sanitize_bash_path(&wt.project_root.to_string_lossy());
+        cmd.current_dir(&clean_worktree_path);
+        cmd.env("WG_WORKTREE_PATH", &clean_worktree_path);
         cmd.env("WG_BRANCH", &wt.branch);
-        cmd.env("WG_PROJECT_ROOT", &wt.project_root);
+        cmd.env("WG_PROJECT_ROOT", &clean_project_root);
         // Signal to Claude Code (and other tools) that this session is already
         // inside a managed worktree — do not create a competing one.
         cmd.env("WG_WORKTREE_ACTIVE", "1");
@@ -675,6 +701,18 @@ pub(crate) fn spawn_agent_inner(
                 Ok(())
             });
         }
+    }
+    // Windows equivalent: put the child at the root of its own process
+    // group so console control events (Ctrl+Break, Ctrl+C, window-close)
+    // that reach — or cascade through — the daemon's group don't also
+    // terminate the task agent. The coordinator spawn in
+    // `coordinator_agent::spawn_claude_process` already sets this flag
+    // for the same reason; task agents need the same protection.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
     }
 
     // Claim the task BEFORE spawning the process to prevent race conditions
@@ -1791,11 +1829,12 @@ fi
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
             // Capture JSONL stdout to raw_stream.jsonl and also copy to output.log.
-            // stderr goes to output.log only.
+            // stderr goes to output.log only. `tee -a <path>` opens the file
+            // itself and fails on `\\?\C:\...` verbatim paths, so sanitize.
             let cmd = format!(
                 "{timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
                 timed_command = timed_command,
-                raw = shell_escape(&raw_str),
+                raw = shell_escape(&sanitize_bash_path(&raw_str)),
             );
             let fb_cmd = fallback_command.map(|fb| {
                 format!(
@@ -1909,9 +1948,15 @@ TASK_ID={escaped_task_id}
 OUTPUT_FILE={escaped_output_file}
 {raw_stream_shell_var}
 
-# Allow nested Claude Code sessions (spawned agents are independent)
+# Allow nested Claude Code sessions (spawned agents are independent).
+# The MANAGED_BY_HOST / SDK_HAS_OAUTH_REFRESH vars in particular leak
+# through when the daemon was launched from inside a Claude Code
+# session and make the spawned claude CLI prefer an inaccessible host
+# bridge over the configured token.
 unset CLAUDECODE
 unset CLAUDE_CODE_ENTRYPOINT
+unset CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
+unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 {timeout_note}
 {debug_env_vars}
 {stream_init}
@@ -2011,7 +2056,11 @@ fi
 exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),
-        escaped_output_file = shell_escape(output_file_str),
+        // `$OUTPUT_FILE` is used throughout the wrapper as a `>>` redirect
+        // target. Bash on Windows (Git-for-Windows) refuses `\\?\C:\...`
+        // verbatim paths for redirects with "No such file or directory",
+        // so output.log never appears and the agent looks silently dead.
+        escaped_output_file = shell_escape(&sanitize_bash_path(output_file_str)),
         raw_stream_shell_var = raw_stream_shell_var,
         run_command = run_command,
         session_fallback_block = session_fallback_block,

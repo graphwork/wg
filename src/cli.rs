@@ -855,6 +855,10 @@ pub enum Commands {
     /// Check the graph for issues (cycles, orphan references)
     Check,
 
+    /// Diagnose the workgraph environment (host tools, auth, daemon state).
+    /// Exit code 0 = all green, 1 = warnings, 2 = errors.
+    Doctor,
+
     /// Manual cleanup commands for edge case recovery
     Cleanup {
         #[command(subcommand)]
@@ -5349,6 +5353,15 @@ pub enum TelegramCommands {
         #[arg(long)]
         task_id: Option<String>,
     },
+
+    /// List all configured Telegram bots
+    ///
+    /// Reads the `[telegram]` section of `notify.toml` and prints every bot:
+    /// the legacy single-bot config (if present) plus every entry under
+    /// `[telegram.bots.<id>]`, with bot id, agent binding, chat id, and a
+    /// truncated token preview. Use this to verify multi-bot setups before
+    /// starting `wg telegram listen`.
+    ListBots,
 }
 
 /// Get the command name from a Commands enum variant for usage tracking
@@ -5385,6 +5398,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Blocked { .. } => "blocked",
         Commands::WhyBlocked { .. } => "why-blocked",
         Commands::Check => "check",
+        Commands::Doctor => "doctor",
         Commands::Cleanup { .. } => "cleanup",
         Commands::Cycles => "cycles",
         Commands::List { .. } => "list",

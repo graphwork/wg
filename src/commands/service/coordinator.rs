@@ -3254,7 +3254,9 @@ fn spawn_eval_inline(
     );
 
     // Fork the process
-    let mut cmd = Command::new("bash");
+    let bash_path = worksgood::platform_bash::bash_exe_path(config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for inline eval")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg("-c").arg(&script);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
@@ -3270,6 +3272,20 @@ fn spawn_eval_inline(
                 Ok(())
             });
         }
+    }
+    // On Windows, the direct equivalent is `CREATE_NEW_PROCESS_GROUP`: it
+    // puts the child at the root of its own process group so console
+    // control events (Ctrl+Break, Ctrl+C, window-close) sent to — or
+    // cascading through — the daemon's group don't also terminate it.
+    // Without this, inline-spawn bash children die at roughly each 60s
+    // tick because a stray console event in the daemon's group takes them
+    // with it. The regular task-agent spawn path in `spawn/execution`
+    // already uses the same flag for this reason.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
     }
 
     let child = match cmd.spawn() {
@@ -3442,7 +3458,10 @@ exit $EXIT_CODE"#,
     );
 
     // Fork the process
-    let mut cmd = Command::new("bash");
+    let assign_config = Config::load_or_default(dir);
+    let bash_path = worksgood::platform_bash::bash_exe_path(assign_config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for inline assign")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg("-c").arg(&script);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
@@ -3458,6 +3477,20 @@ exit $EXIT_CODE"#,
                 Ok(())
             });
         }
+    }
+    // On Windows, the direct equivalent is `CREATE_NEW_PROCESS_GROUP`: it
+    // puts the child at the root of its own process group so console
+    // control events (Ctrl+Break, Ctrl+C, window-close) sent to — or
+    // cascading through — the daemon's group don't also terminate it.
+    // Without this, inline-spawn bash children die at roughly each 60s
+    // tick because a stray console event in the daemon's group takes them
+    // with it. The regular task-agent spawn path in `spawn/execution`
+    // already uses the same flag for this reason.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP = 0x00000200
+        cmd.creation_flags(0x0000_0200);
     }
 
     let child = match cmd.spawn() {
