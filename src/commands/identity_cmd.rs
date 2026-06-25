@@ -16,6 +16,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+use worksgood::identity::custody::{self, Capability, LeashPolicy, Revocation, Scope};
 use worksgood::identity::envelope::{
     AgentFields, Endpoint, IdentityRecord, SignedEvent, StateSnapshot, payload_cid,
 };
@@ -32,6 +33,11 @@ use worksgood::identity::state_safety::{
 };
 use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
+
+/// Reserved store "inbox" the C-tier revocation-list convenience publishes signed
+/// [`Revocation`]s into (Wave 6). It is a discovery *hint* only — `verify-cap` always
+/// re-checks each revocation's signature and authorization, never trusting the store.
+const REVOCATION_INBOX: &str = "wgfed:revocations";
 
 // ── Local identity state (public; private keys live only in custody) ───────────
 
@@ -865,11 +871,12 @@ pub fn run_fetch(
 pub fn run_send(
     workgraph_dir: &Path,
     from: &str,
-    to: &str,
+    to: &[String],
     store_loc: &str,
     body: &str,
     kind: &str,
     seal: bool,
+    sealed_sender: bool,
     json: bool,
 ) -> Result<()> {
     let id = load_local(workgraph_dir, from)?;
@@ -885,40 +892,65 @@ pub fn run_send(
         );
     }
 
-    let to_pub = keys::pubkey_from_wgid(to)?;
-    let to_wgid = keys::wgid_from_pubkey(&to_pub);
+    // Normalize every recipient address (the `to` set — which, when sealing, IS the ACL).
+    let to_wgids: Vec<String> = to
+        .iter()
+        .map(|t| keys::pubkey_from_wgid(t).map(|p| keys::wgid_from_pubkey(&p)))
+        .collect::<Result<_>>()?;
+    if to_wgids.is_empty() {
+        bail!("at least one --to recipient is required");
+    }
+
     let created_at = chrono::Utc::now().to_rfc3339();
     let store = open_store(store_loc)?;
+    // Sealed-sender implies sealing (the inner author is recovered from the seal).
+    let seal = seal || sealed_sender;
 
     let mut ev = if seal {
-        // Need the recipient's enc key — fetch + verify their bundle from L.
-        let recipient = resolve_bundle(store.as_ref(), &to_wgid)
-            .with_context(|| format!("resolving recipient {to_wgid} to seal to"))?;
-        let (enc_kid, enc_pub) = enc_pub_of(&recipient.auth)?;
-        SignedEvent::new_sealed(
-            &id.wgid,
-            std::slice::from_ref(&to_wgid),
-            &created_at,
-            kind,
-            body,
-            &enc_kid,
-            &enc_pub,
-        )?
+        // Resolve each recipient's encryption key (fetch + verify their bundle from L).
+        // The set of resolved enc keys is the access-control list (HQ4).
+        let mut recipients: Vec<(String, [u8; 32])> = Vec::with_capacity(to_wgids.len());
+        for w in &to_wgids {
+            let recipient = resolve_bundle(store.as_ref(), w)
+                .with_context(|| format!("resolving recipient {w} to seal to"))?;
+            recipients.push(enc_pub_of(&recipient.auth)?);
+        }
+        if sealed_sender {
+            SignedEvent::new_sealed_sender(
+                &id.wgid,
+                &to_wgids,
+                &created_at,
+                kind,
+                body,
+                &recipients,
+                &cust,
+                &id.signer_kid,
+            )?
+        } else {
+            SignedEvent::new_sealed_multi(
+                &id.wgid,
+                &to_wgids,
+                &created_at,
+                kind,
+                body,
+                &recipients,
+            )?
+        }
     } else {
-        SignedEvent::new_plain(
-            &id.wgid,
-            std::slice::from_ref(&to_wgid),
-            &created_at,
-            kind,
-            body,
-        )
+        SignedEvent::new_plain(&id.wgid, &to_wgids, &created_at, kind, body)
     };
-    ev.sign(&cust, &id.signer_kid)?;
+    // A sealed-sender event carries NO outer signature (it is anonymous — authenticity
+    // is the inner author signature). Every other event is signed by the sender.
+    if !sealed_sender {
+        ev.sign(&cust, &id.signer_kid)?;
+    }
 
-    // Deliver: write to the recipient's inbox at L (store-and-forward; the
-    // recipient may be offline and will receive it on its next poll).
+    // Deliver: write to EACH recipient's inbox at L (store-and-forward; a recipient
+    // may be offline and receives it on its next poll).
     let event_bytes = serde_json::to_vec(&ev)?;
-    store.put_event(&to_wgid, &ev.id, &event_bytes)?;
+    for w in &to_wgids {
+        store.put_event(w, &ev.id, &event_bytes)?;
+    }
 
     if json {
         println!(
@@ -926,9 +958,11 @@ pub fn run_send(
             serde_json::json!({
                 "event_id": ev.id,
                 "from": ev.from,
-                "to": to_wgid,
+                "to": to_wgids,
                 "kind": kind,
                 "sealed": seal,
+                "sealed_sender": sealed_sender,
+                "recipients": to_wgids.len(),
                 "accepted": true,
                 "store": store_loc,
             })
@@ -937,9 +971,9 @@ pub fn run_send(
         println!("Accepted for delivery (store-and-forward; recipient may be offline)");
         println!("  event id: {}", ev.id);
         println!("  from: {}", ev.from);
-        println!("  to:   {to_wgid}");
+        println!("  to:   {}", to_wgids.join(", "));
         println!("  via:  {store_loc}");
-        println!("  sealed: {seal}");
+        println!("  sealed: {seal}  sealed-sender: {sealed_sender}");
     }
     Ok(())
 }
@@ -1031,6 +1065,27 @@ fn authenticate_event(
     fresh_class: Option<ActionClass>,
 ) -> Result<(String, String)> {
     let ev: SignedEvent = serde_json::from_slice(bytes).context("parsing inbox event")?;
+
+    // Sealed-sender (Wave 6): the relay saw an anonymized `from`. Recover the real
+    // author from inside the seal (only a recipient can), then authenticate it.
+    if ev.is_sealed_sender() {
+        let inner = ev.open_sender_sealed(cust).context(
+            "sealed-sender event could not be opened with our key (we are not a recipient)",
+        )?;
+        let sender_auth = resolve_auth_cached(workgraph_dir, store, &inner.from)
+            .with_context(|| format!("resolving sealed-sender author {}", inner.from))?;
+        inner
+            .verify(&sender_auth)
+            .context("sealed-sender inner author signature failed verification")?;
+        if let Some(class) = fresh_class {
+            gate_freshness(workgraph_dir, store, &inner.from, &sender_auth, class)?;
+        }
+        if !inner.to.iter().any(|t| t == &me.wgid) {
+            bail!("sealed-sender event not addressed to {}", me.wgid);
+        }
+        return Ok((inner.from, inner.body));
+    }
+
     // Resolve and verify the *claimed* sender's identity (cache-first → store).
     let sender_auth = resolve_auth_cached(workgraph_dir, store, &ev.from)
         .with_context(|| format!("resolving claimed sender {}", ev.from))?;
@@ -1044,9 +1099,11 @@ fn authenticate_event(
         gate_freshness(workgraph_dir, store, &ev.from, &sender_auth, class)?;
     }
 
-    let body = if ev.enc.is_some() {
+    let body = if ev.enc.is_some() || ev.enc_multi.is_some() {
+        // Sealed (single-recipient `enc` or the Wave 6 per-recipient `enc_multi`):
+        // only a member of the ACL can open it — a third party fails here.
         ev.open(cust)
-            .context("event is sealed but could not be opened with our key")?
+            .context("event is sealed but could not be opened with our key (not in the ACL?)")?
     } else {
         ev.body.clone().unwrap_or_default()
     };
@@ -1615,4 +1672,294 @@ fn decode_pub32(hexed: &str) -> Result<[u8; 32]> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&b);
     Ok(out)
+}
+
+// ── Wave 6: UCAN-style capability delegation (issue / verify / revoke) ───────────
+
+/// The custody gate shared by the capability + revocation issuers: a downloaded
+/// (key-less) bundle holds no signer and cannot author (download ≠ impersonation).
+fn require_signer(id: &LocalIdentity, cust: &Custodian, what: &str) -> Result<()> {
+    if !cust.has_key(&id.signer_kid)? {
+        bail!(
+            "cannot {what} as {:?} ({}): no signer private key in this custody — \
+             possessing a downloaded bundle does NOT grant authority (ADR-fed-003 §D1)",
+            id.name,
+            id.wgid
+        );
+    }
+    Ok(())
+}
+
+/// `wg identity delegate` — issue a UCAN-style capability (a root grant or an
+/// attenuating-only sub-delegation). Honors the leash dial (broad/long by default,
+/// `WG_FED_LEASH_*`-tightenable; §D2/§D3).
+#[allow(clippy::too_many_arguments)]
+pub fn run_delegate(
+    workgraph_dir: &Path,
+    from: &str,
+    to: &str,
+    grants: &[String],
+    ttl: Option<i64>,
+    parent: Option<&str>,
+    human: bool,
+    out: Option<&str>,
+    store_loc: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let id = load_local(workgraph_dir, from)?;
+    let cust = Custodian::new(from);
+    require_signer(&id, &cust, "issue a capability")?;
+
+    let to_pub = keys::pubkey_from_wgid(to)?;
+    let to_wgid = keys::wgid_from_pubkey(&to_pub);
+    let now = chrono::Utc::now();
+    // The dial reads from the environment — unset ⇒ the broad/long birth default.
+    let policy = LeashPolicy::from_env();
+
+    // The requested scope: explicit `--grant can@with` pairs, or the broad default.
+    let requested_scope = if grants.is_empty() {
+        Scope::broad_default(&id.wgid)
+    } else {
+        Scope::new(
+            grants
+                .iter()
+                .map(|g| custody::parse_ability(g))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    };
+
+    let cap = match parent {
+        None => custody::issue_root(
+            &cust,
+            &id.signer_kid,
+            &id.wgid,
+            &to_wgid,
+            requested_scope,
+            ttl,
+            now,
+            &policy,
+            human,
+        )?,
+        Some(pfile) => {
+            let pbytes = std::fs::read(pfile).with_context(|| format!("reading parent {pfile}"))?;
+            let parent_cap: Capability =
+                serde_json::from_slice(&pbytes).context("parsing parent capability")?;
+            // The delegator must be the parent's audience (it sub-delegates its grant).
+            if parent_cap.aud != id.wgid {
+                bail!(
+                    "cannot sub-delegate: {from} ({}) is not the parent capability's \
+                     audience ({})",
+                    id.wgid,
+                    parent_cap.aud
+                );
+            }
+            // No explicit grants ⇒ pass through the parent's scope (still attenuating).
+            let scope = if grants.is_empty() {
+                parent_cap.scope.clone()
+            } else {
+                requested_scope
+            };
+            custody::delegate(
+                &cust,
+                &id.signer_kid,
+                &parent_cap,
+                &to_wgid,
+                scope,
+                ttl,
+                now,
+                &policy,
+            )?
+        }
+    };
+
+    if let Some(o) = out {
+        std::fs::write(o, serde_json::to_vec_pretty(&cap)?)
+            .with_context(|| format!("writing capability to {o}"))?;
+    }
+    if let Some(s) = store_loc {
+        let store = open_store(s)?;
+        store.put_object(&cap.cid(), &serde_json::to_vec(&cap)?)?;
+    }
+
+    let granted: Vec<String> = cap
+        .scope
+        .abilities
+        .iter()
+        .map(|a| format!("{}@{}", a.can, a.with))
+        .collect();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "cid": cap.cid(),
+                "iss": cap.iss,
+                "aud": cap.aud,
+                "expires": cap.expires,
+                "granted": granted,
+                "chain_len": cap.chain_len(),
+                "leash_slack": policy.is_slack(),
+                "human": human,
+                "capability": cap,
+            })
+        );
+    } else {
+        println!("Issued capability {}", cap.cid());
+        println!("  iss: {}", cap.iss);
+        println!("  aud: {}", cap.aud);
+        println!("  expires: {}", cap.expires);
+        println!("  granted: {}", granted.join(", "));
+        println!(
+            "  leash: {} (chain depth {})",
+            if policy.is_slack() {
+                "slack (broad/long birth default)"
+            } else {
+                "tightened by environment policy"
+            },
+            cap.chain_len()
+        );
+    }
+    Ok(())
+}
+
+/// `wg identity verify-cap` — verify a capability chain offline (signatures,
+/// attenuation, expiry, revocation). Exits non-zero on invalid / expired / revoked.
+pub fn run_verify_cap(
+    workgraph_dir: &Path,
+    cap_file: &str,
+    store_loc: &str,
+    json: bool,
+) -> Result<()> {
+    let cap: Capability = serde_json::from_slice(
+        &std::fs::read(cap_file).with_context(|| format!("reading {cap_file}"))?,
+    )
+    .context("parsing capability")?;
+    let store = open_store(store_loc)?;
+    let now = chrono::Utc::now();
+
+    // Map every cid → iss along the presented chain so we only honor a revocation
+    // that names a cap in THIS chain and is signed by that cap's own issuer.
+    let mut chain_iss: Vec<(String, String)> = Vec::new();
+    let mut cur = Some(&cap);
+    while let Some(c) = cur {
+        chain_iss.push((c.cid(), c.iss.clone()));
+        cur = c.proof.as_deref();
+    }
+
+    // Discover + authenticate revocations from the store's reserved list (a hint —
+    // each is re-verified, never trusted blindly).
+    let mut revoked: Vec<String> = Vec::new();
+    if let Ok(events) = store.list_events(REVOCATION_INBOX) {
+        for ev in events {
+            let Ok(rev) = serde_json::from_slice::<Revocation>(&ev.bytes) else {
+                continue;
+            };
+            let Some((_, expected_iss)) = chain_iss.iter().find(|(cid, _)| cid == &rev.cap_cid)
+            else {
+                continue; // not about a cap in this chain
+            };
+            if &rev.revoked_by != expected_iss {
+                continue; // only the issuing identity may revoke its capability
+            }
+            if let Ok(auth) = resolve_auth_cached(workgraph_dir, store.as_ref(), &rev.revoked_by) {
+                if rev.verify_signature(&auth).is_ok() {
+                    revoked.push(rev.cap_cid.clone());
+                }
+            }
+        }
+    }
+
+    let resolve = |w: &str| resolve_auth_cached(workgraph_dir, store.as_ref(), w);
+    let verdict = custody::verify(&cap, now, &revoked, &resolve);
+
+    match &verdict {
+        Ok(v) => {
+            let granted: Vec<String> = v
+                .granted
+                .abilities
+                .iter()
+                .map(|a| format!("{}@{}", a.can, a.with))
+                .collect();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "valid": true,
+                        "principal": v.principal,
+                        "aud": v.aud,
+                        "granted": granted,
+                        "chain_len": v.chain_len,
+                    })
+                );
+            } else {
+                println!("VALID capability for {}", v.aud);
+                println!("  principal: {}", v.principal);
+                println!("  granted: {}", granted.join(", "));
+                println!("  chain depth: {}", v.chain_len);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "valid": false, "reason": e.to_string() })
+                );
+            } else {
+                println!("INVALID capability: {e}");
+            }
+            bail!("capability verification failed: {e}")
+        }
+    }
+}
+
+/// `wg identity revoke-cap` — revoke a capability and its whole delegated subtree
+/// (issuer-subtree revocation, §D3). Publishes a signed revocation to the store.
+pub fn run_revoke_cap(
+    workgraph_dir: &Path,
+    from: &str,
+    cap_file: &str,
+    store_loc: &str,
+    json: bool,
+) -> Result<()> {
+    let id = load_local(workgraph_dir, from)?;
+    let cust = Custodian::new(from);
+    require_signer(&id, &cust, "revoke a capability")?;
+
+    let cap: Capability = serde_json::from_slice(
+        &std::fs::read(cap_file).with_context(|| format!("reading {cap_file}"))?,
+    )
+    .context("parsing capability")?;
+    if cap.iss != id.wgid {
+        bail!(
+            "only the capability's issuer ({}) may revoke it; {from} is {}",
+            cap.iss,
+            id.wgid
+        );
+    }
+
+    let now = chrono::Utc::now();
+    let rev = Revocation::issue(&cust, &id.signer_kid, &cap, now)?;
+    let rev_bytes = serde_json::to_vec(&rev)?;
+    let store = open_store(store_loc)?;
+    store.put_object(&rev.cid(), &rev_bytes)?;
+    store.put_event(REVOCATION_INBOX, &rev.cid(), &rev_bytes)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "revoked": true,
+                "cap_cid": rev.cap_cid,
+                "revoked_by": rev.revoked_by,
+                "revocation_cid": rev.cid(),
+            })
+        );
+    } else {
+        println!(
+            "Revoked capability {} (and its delegated subtree)",
+            rev.cap_cid
+        );
+        println!("  by: {}", rev.revoked_by);
+    }
+    Ok(())
 }

@@ -1685,6 +1685,15 @@ description = "Pins fed-wave5 (WG-Fed Wave 5, portable state + recovery; docs/fe
 timeout_seconds = 90
 
 [[scenario]]
+name = "federation_acl_ucan_delegation"
+script = "scenarios/federation_acl_ucan_delegation.sh"
+owners = [
+    "fed-wave6",
+]
+description = "Pins fed-wave6 (WG-Fed Wave 6, encryption=ACL + UCAN delegation — completes WG-Fed; docs/federation-study/06 §5 Wave 6, ADR-fed-003 §D2/§D3, HQ4): confidentiality realized as ACLs (R24) + structural, attenuating-only capability delegation with the leash slack-by-default (Erik's §D2 trust-default amendment). Four isolated $HOME keystores (custody is $HOME-relative) + a dumb, untrusted directory L; parties dave (sender) / alice (recipient + UCAN principal) / bob (recipient + UCAN delegate) / carol (third party + sub-delegate). (A) ENCRYPTION=ACL — `wg identity send --to alice --to bob --seal` seals the body once under a fresh CEK wrapped per-recipient; alice AND bob each decrypt the SAME body while a third party (carol) handed the raw ciphertext in her inbox CANNOT decrypt (the to-set IS the ACL, HQ4). (B) SEALED-SENDER — `--sealed-sender` anonymizes the stored event's outer `from` to `wgid:anon` (the real sender wgid does NOT appear in the relay-visible bytes) yet bob recovers + authenticates the real author (dave) from inside the seal. (C) UCAN — `wg identity delegate` issues a BROAD root capability (leash_slack=true by birth default) that `verify-cap` confirms VALID offline; a sub-resource attenuation verifies VALID at chain depth 2 while a WIDENING sub-delegation is structurally REFUSED (the hydra kill, §D3); an already-expired capability (`--ttl=-5`) FAILS CLOSED on verify with EXPIRED (a stolen signer is worthless after expiry); `revoke-cap` on a parent makes the delegated child verify FAIL with REVOKED (issuer-subtree revocation); and the SAME broad issue under `WG_FED_LEASH_MAX_TTL_SECS`+`WG_FED_LEASH_SCOPE` is TIGHTENED to a capped TTL + read-only ceiling (leash_slack=false) — slack-by-default, dialed by config. (D) CUSTODY≠AUTHORITY — a downloaded key-less bundle CANNOT issue a capability (download != impersonation). The transport L is untrusted: every published byte is signed/CAS and self-verifying."
+timeout_seconds = 90
+
+[[scenario]]
 name = "content_safety_spark"
 script = "scenarios/content_safety_spark.sh"
 owners = [

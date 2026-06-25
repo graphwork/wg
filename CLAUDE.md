@@ -448,4 +448,56 @@ rotate (address unchanged) → same-self enroll → revoke → recover via the o
 key → download=fork enforced (same-self on a downloaded bundle refused) → S-5 gate
 (same-self auto-loads, unknown cross-self refused, injection-bearing cache hard-blocked).
 Guardian (node-less) recovery is exercised by the `recover_via_guardian_quorum` library
-test. **Waves 6 (encryption=ACL + UCAN delegation) remains deferred.**
+test.
+
+### WG-Fed Wave 6 — encryption=ACL + UCAN delegation (COMPLETES WG-Fed; unblocks exec spark)
+
+Wave 6 (`docs/federation-study/06` §5 Wave 6, `docs/ADR-fed-003` §D2/§D3 + the HQ4
+encryption-as-ACL decision) realizes **confidentiality (R24)** and **structural,
+attenuating-only delegation**, completing WG-Fed. `WG_FED_COMPAT_VERSION` is bumped
+`0.2.0 → 0.3.0` (the wire gained per-recipient sealed envelopes + sealed-sender + the
+off-chain UCAN; a 0.2.x peer cannot verify the new sealed events, so it must fail the
+handshake loudly rather than mis-handle them, S-7).
+
+- **Encryption = ACL** (`src/identity/envelope.rs`) — a **per-recipient sealed
+  envelope** (`SignedEvent.enc_multi`, `SealedEnvelope`): the body is encrypted **once**
+  under a fresh content-encryption key (CEK), and that CEK is X25519-wrapped to **each**
+  recipient. **The `to` set IS the access-control list** — every member unwraps the CEK
+  and decrypts; a third party holding the ciphertext but no listed encryption key is
+  locked out. `wg identity send --to A --to B --seal` (repeatable `--to`) seals to the
+  set. A **sealed-sender** option (`--sealed-sender`) anonymizes the outer `from` to
+  `wgid:anon` so a relay learns nothing — the real author + its signature ride *inside*
+  the seal and are recovered + verified only by a recipient (FR-S4). Static recipient
+  keys (no forward secrecy) on the offline path — FS does not compose with send-to-offline
+  (**S-6**); MLS/Double-Ratchet is online/long-lived-groups only and stays deferred.
+- **UCAN delegation** (`src/identity/custody.rs`) — a `Capability` is a signed, scoped,
+  **expiring** "agent X (`aud`) may act for principal Y (`iss`), scope S, until T" token,
+  **off-chain** (not appended to the sigchain — the chain authorizes *keys*, the UCAN
+  authorizes *actions*). `issue_root` / `delegate` / `verify` / `Revocation`. The
+  integrity invariants are **dial-independent** (§D3): delegation **never shares a private
+  key**; **sub-delegation is attenuating-only** (child scope ⊆ parent, expiry ≤ parent —
+  the structural **hydra** kill, verified at issue *and* at verify); `add_key`/`rotate_root`
+  stays **root-locked** (Wave 5); **revocation is issuer-subtree** (revoking a parent kills
+  the whole delegated subtree); every action is attributable to `iss`+`aud` (NFR-7).
+  Verification is offline — `verify` resolves each issuer's sigchain via a resolver
+  closure, no central authority. **A short TTL + revocation makes a stolen signer
+  near-worthless after expiry.** CLI: `wg identity delegate` (root grant or
+  `--parent`-attenuating sub-delegation), `verify-cap`, `revoke-cap`.
+- **The leash dial** (`custody::LeashPolicy`, ADR-fed-003 §D2 — Erik's trust-default
+  amendment) — authority is **broad/long by birth default** (agents and humans are
+  first-class peers, not tools), **slack unless tightened**. Tightening is
+  **environment-driven policy** (`WG_FED_LEASH_MAX_TTL_SECS` clamps TTL,
+  `WG_FED_LEASH_SCOPE` is a `can@with` ceiling), **never the birth default**, and
+  **humans are never leashed**. Custody (root stays with the custodian) ≠ authority scope
+  (the dial); the integrity invariants hold at *every* dial setting.
+- **Directory/node convenience (C-tier hint)** — revocations are published to the store's
+  reserved `wgfed:revocations` list and discovered by `verify-cap`, but each is
+  re-verified (signature + issuer-authorization) and **never overrides self-verification**.
+
+The end-to-end proof is pinned by
+`tests/smoke/scenarios/federation_acl_ucan_delegation.sh` (`owners = [fed-wave6]`):
+multi-recipient ACL (both recipients decrypt, a third party with the ciphertext cannot)
+→ sealed-sender (`from` anonymized, recipient still authenticates the real author) → UCAN
+issue/verify/attenuate (widening refused) → expiry fail-closed → issuer-subtree revocation
+→ leash slack-by-default vs env-tightened → download ≠ capability-issuance. **WG-Fed is
+complete; the execution-federation spark (gated on this) can now proceed.**

@@ -3219,9 +3219,11 @@ pub enum IdentityCommands {
         /// Local handle of the authoring identity (must hold its signer key).
         #[arg(long)]
         from: String,
-        /// Recipient `wgid:` address.
-        #[arg(long)]
-        to: String,
+        /// Recipient `wgid:` address. Repeatable — with `--seal` the **set of `--to`
+        /// recipients IS the ACL** (each gets a wrap of the body key; a third party
+        /// cannot decrypt). Wave 6.
+        #[arg(long, required = true)]
+        to: Vec<String>,
         /// The third location `L` carrying the store-and-forward inbox.
         #[arg(long)]
         store: String,
@@ -3231,9 +3233,15 @@ pub enum IdentityCommands {
         /// Event kind (default `msg`).
         #[arg(long, default_value = "msg")]
         kind: String,
-        /// Seal the body to the recipient's encryption key (X25519 + XChaCha20).
+        /// Seal the body to the recipient set's encryption keys (per-recipient ACL,
+        /// X25519 + XChaCha20). The `to` set is the access-control list.
         #[arg(long)]
         seal: bool,
+        /// Sealed-sender (Wave 6, FR-S4): hide the real `from` from the relay/node —
+        /// the author + its signature ride *inside* the sealed payload, recovered only
+        /// by a recipient. Implies `--seal`.
+        #[arg(long = "sealed-sender")]
+        sealed_sender: bool,
     },
 
     /// Poll `L`'s inbox for an identity and authenticate each event by key.
@@ -3327,6 +3335,68 @@ pub enum IdentityCommands {
         /// unknown (default unknown — the TOFU/fail-closed default).
         #[arg(long = "author-trust", default_value = "unknown")]
         author_trust: String,
+    },
+
+    /// Issue a UCAN-style capability — a signed, scoped, expiring "agent X may act for
+    /// principal Y, scope S, until T" (Wave 6, ADR-fed-003 §D3). A root grant (no
+    /// `--parent`) or an **attenuating-only** sub-delegation (`--parent <capfile>`).
+    /// Authority is **broad/long by default** (the leash amendment §D2); environment
+    /// policy (`WG_FED_LEASH_MAX_TTL_SECS` / `WG_FED_LEASH_SCOPE`) tightens it.
+    Delegate {
+        /// Local handle of the issuer (must hold its signer key). For a root grant
+        /// this is the principal; for a sub-delegation it must be the parent's audience.
+        #[arg(long)]
+        from: String,
+        /// Audience `wgid:` receiving the authority.
+        #[arg(long)]
+        to: String,
+        /// A granted ability `can@resource` (e.g. `graph/write@graph://*`). Repeatable.
+        /// Omit for the broad birth-default scope (act-as-agent + graph/* + msg/send).
+        #[arg(long = "grant")]
+        grants: Vec<String>,
+        /// TTL in seconds (default: the leash policy's broad/long default; a negative
+        /// value mints an already-expired capability to exercise fail-closed-on-expiry).
+        #[arg(long)]
+        ttl: Option<i64>,
+        /// Sub-delegate this parent capability file instead of issuing a root grant.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Treat the audience as a human principal — never leashed (§D2).
+        #[arg(long)]
+        human: bool,
+        /// Write the issued capability JSON to this file (besides stdout).
+        #[arg(long)]
+        out: Option<String>,
+        /// Also publish the capability to a store `L` (a convenience hint;
+        /// verification is always self-contained).
+        #[arg(long)]
+        store: Option<String>,
+    },
+
+    /// Verify a UCAN capability chain **offline**: each link's signature against its
+    /// issuer's sigchain, attenuation (child ⊆ parent), expiry, and revocation. Exits
+    /// non-zero on invalid / expired / revoked (Wave 6, ADR-fed-003 §D3).
+    VerifyCap {
+        /// Path to the capability JSON file.
+        #[arg(long)]
+        cap: String,
+        /// The store `L` to resolve issuer sigchains (and discover revocations) from.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Revoke a capability and its whole delegated subtree (issuer-subtree revocation,
+    /// §D3). Publishes a signed revocation to `--store`; a later verify-cap fails closed.
+    RevokeCap {
+        /// Local handle of the revoker — must be the capability's issuer.
+        #[arg(long)]
+        from: String,
+        /// Path to the capability JSON file to revoke.
+        #[arg(long)]
+        cap: String,
+        /// The store `L` to publish the revocation to.
+        #[arg(long)]
+        store: String,
     },
 }
 
