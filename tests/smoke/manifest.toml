@@ -1667,6 +1667,15 @@ description = "Pins wg-fed-spark (WG-Fed Wave 3, the spark PoC; docs/federation-
 timeout_seconds = 60
 
 [[scenario]]
+name = "federation_node_inbox_cross_graph"
+script = "scenarios/federation_node_inbox_cross_graph.sh"
+owners = [
+    "fed-wave4",
+]
+description = "Pins fed-wave4 (WG-Fed Wave 4, cross-graph addressing + transport hardening; docs/federation-study/06 §5 Wave 4, ADR-fed-002): signed cross-WG messaging at email-speed over a REAL network. Two `wg fed-node serve` HTTP store-and-forward inboxes (nodes A and B) on ephemeral ports + two isolated $HOME keystores. (1) both nodes bind and answer /wgfed/v1/health; (2) `wg identity publish` pushes alice's bundle + a freshness attestation to node A and bob's to node B over the HttpStore client rung (no shared filesystem); (3) `wg peer add --wgid --endpoint` registers key-based peers and `wg msg --to wgid:` resolves the delivery node via the ADR-fed-001 §D5 cascade (cached endpoint record) — while an OLD path-based peer still resolves in `wg peer list` alongside; (4) alice `wg msg send --to bob --seal` is accepted for store-and-forward at node B while bob is offline (not polling); (5) bob `wg msg poll --as bob` over node B authenticates the sender by key and decrypts the sealed body, and a FORGED 'from alice' event (mallory's signature, `from` rewritten) is REJECTED; (6) freshness S-3 — a fresh attestation passes a high-value `check-fresh`, then once alice re-issues a back-dated (expired) attestation both a high-value `check-fresh` AND a `--require-fresh high-value` poll FAIL CLOSED (the gate re-fetches alice's attestation from her node via the cascade); (7) offline tolerance — with alice's origin node A killed, bob STILL authenticates her stored message from his node B inbox using the cached, already-verified sigchain. The transport (incl. each node) is untrusted: every byte is signed/sealed and self-verifying."
+timeout_seconds = 120
+
+[[scenario]]
 name = "content_safety_spark"
 script = "scenarios/content_safety_spark.sh"
 owners = [

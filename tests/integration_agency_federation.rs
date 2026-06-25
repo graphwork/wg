@@ -632,6 +632,7 @@ fn remote_add_list_remove_lifecycle() {
             path: "/some/path/agency".to_string(),
             description: Some("test remote".to_string()),
             last_sync: None,
+            ..Default::default()
         },
     );
     write_federation_config(&wg_dir, &config);
@@ -674,6 +675,7 @@ fn remote_name_resolves_for_pull_push() {
             path: remote_store.store_path().to_string_lossy().to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     write_federation_config(&wg_dir, &config);
@@ -723,6 +725,7 @@ fn touch_remote_sync_updates_timestamp() {
             path: "/some/path".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     write_federation_config(&wg_dir, &config);
@@ -1115,6 +1118,7 @@ fn federation_config_yaml_roundtrip() {
             path: "/home/user/shared/agency".to_string(),
             description: Some("Main shared store".to_string()),
             last_sync: Some("2026-01-15T12:00:00Z".to_string()),
+            ..Default::default()
         },
     );
     config.remotes.insert(
@@ -1123,6 +1127,7 @@ fn federation_config_yaml_roundtrip() {
             path: "~/team-agents".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
 
@@ -1582,6 +1587,7 @@ fn multiple_remotes_coexist() {
             path: store_a.store_path().to_string_lossy().to_string(),
             description: Some("Team A store".to_string()),
             last_sync: None,
+            ..Default::default()
         },
     );
     config.remotes.insert(
@@ -1590,6 +1596,7 @@ fn multiple_remotes_coexist() {
             path: store_b.store_path().to_string_lossy().to_string(),
             description: Some("Team B store".to_string()),
             last_sync: None,
+            ..Default::default()
         },
     );
     write_federation_config(&wg_dir, &config);
@@ -1621,6 +1628,7 @@ fn remote_removal_isolates_others() {
             path: "/some/alpha/path".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     config.remotes.insert(
@@ -1629,6 +1637,7 @@ fn remote_removal_isolates_others() {
             path: "/some/beta/path".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     config.remotes.insert(
@@ -1637,6 +1646,7 @@ fn remote_removal_isolates_others() {
             path: "/some/gamma/path".to_string(),
             description: None,
             last_sync: None,
+            ..Default::default()
         },
     );
     write_federation_config(&wg_dir, &config);

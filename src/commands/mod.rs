@@ -53,6 +53,7 @@ pub mod evaluate;
 pub mod evolve;
 pub mod exec;
 pub mod fail;
+pub mod fed_node;
 pub mod forecast;
 pub mod func_apply;
 pub mod func_bootstrap;

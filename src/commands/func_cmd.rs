@@ -858,6 +858,7 @@ mod tests {
                 worksgood::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: Some("Test peer".to_string()),
+                    ..Default::default()
                 },
             )]),
             ..Default::default()
@@ -893,6 +894,7 @@ mod tests {
                 worksgood::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: Some("Test peer".to_string()),
+                    ..Default::default()
                 },
             )]),
             ..Default::default()
@@ -930,6 +932,7 @@ mod tests {
                 worksgood::federation::PeerConfig {
                     path: "/nonexistent/path".to_string(),
                     description: None,
+                    ..Default::default()
                 },
             )]),
             ..Default::default()
@@ -965,6 +968,7 @@ mod tests {
                 worksgood::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
+                    ..Default::default()
                 },
             )]),
             ..Default::default()

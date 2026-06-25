@@ -26,8 +26,11 @@
 //!   verify / canonical-encode + BLAKE3 content-addressing + optional sealing.
 
 pub mod envelope;
+pub mod freshness;
 pub mod keys;
+pub mod node;
 pub mod sigchain;
+pub mod transport;
 
 use anyhow::{Result, bail};
 use serde_json::Value;

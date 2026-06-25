@@ -17,21 +17,48 @@ use crate::service::is_process_alive;
 // ---------------------------------------------------------------------------
 
 /// A named remote agency store reference.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Wave 4 (ADR-fed-002): a remote may now be **key-based** — carry a `wgid:` address
+/// and one or more delivery `endpoints` (node/relay URIs) — *alongside* (or instead
+/// of) the legacy filesystem `path`. Path-based remotes keep working unchanged; the
+/// new fields default to empty so old `federation.yaml` files parse as before.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Remote {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync: Option<String>,
+    /// The peer's self-certifying `wgid:` address (key-based federation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wgid: Option<String>,
+    /// Delivery endpoints (node/relay base URIs, e.g. `http://host:port`) advertised
+    /// for this peer. Used by the resolution cascade as the cached endpoint hint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<String>,
 }
 
 /// A peer WG project (another repo with its own .wg/).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Wave 4 (ADR-fed-001 §D5, ADR-fed-002): a peer is now resolvable two ways that
+/// **coexist** — by filesystem `path` (the legacy same-host federation) and/or by
+/// self-certifying `wgid:` + delivery `endpoints` (key-based, cross-host messaging
+/// over the node inbox). `path` is optional so a pure key-based peer needs no path;
+/// old path-based `federation.yaml` peers still resolve untouched.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PeerConfig {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The peer's self-certifying `wgid:` address (key-based federation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wgid: Option<String>,
+    /// Delivery endpoints (node/relay base URIs, e.g. `http://host:port`) advertised
+    /// for this peer — the "cached signed endpoint record" rung of the cascade.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<String>,
 }
 
 /// Top-level federation.yaml structure.
@@ -42,6 +69,16 @@ pub struct FederationConfig {
     /// Peer WG projects for cross-repo communication.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peers: BTreeMap<String, PeerConfig>,
+    /// This graph's own WG node inbox base URL (e.g. `http://host:port`), used as the
+    /// default publish/poll target for key-based federation. Optional — the node is a
+    /// convenience, never a mandatory root (ADR-fed-002 §D2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// An optional directory node base URL queried by the resolution cascade when a
+    /// peer's endpoints are not already cached (ADR-fed-001 §D5 stage 2). A forged
+    /// directory can only *hint*; it can never override the local signature check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 /// Load federation config from .wg/federation.yaml.
@@ -303,6 +340,14 @@ pub fn resolve_peer(reference: &str, workgraph_dir: &Path) -> Result<ResolvedPee
 
     // Check named peers first
     let raw_path = if let Some(peer) = config.peers.get(reference) {
+        if peer.path.is_empty() {
+            anyhow::bail!(
+                "peer '{reference}' is key-based (wgid: {}) and has no filesystem path. \
+                 Path resolution is for same-host federation; use wgid endpoint resolution \
+                 (cross-graph messaging) for this peer.",
+                peer.wgid.as_deref().unwrap_or("<none>")
+            );
+        }
         peer.path.clone()
     } else {
         reference.to_string()
@@ -339,6 +384,234 @@ pub fn resolve_peer(reference: &str, workgraph_dir: &Path) -> Result<ResolvedPee
         project_path,
         workgraph_dir: wg_dir,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Key-based endpoint resolution: the ADR-fed-001 §D5 cascade
+// ---------------------------------------------------------------------------
+
+/// Which rung of the resolution cascade produced an endpoint set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveSource {
+    /// A cached signed endpoint record: a configured peer's `endpoints`, or the
+    /// `endpoints` of a locally fetched + verified `IdentityRecord`.
+    Cache,
+    /// An optional directory hint (a configured directory node confirmed it hosts the
+    /// identity). A forged directory can only hint, never override verification.
+    Directory,
+    /// DHT / Iroh discovery — **deferred past Wave 4** (the wire library is
+    /// candidate-agnostic through Wave 4, ADR-fed-002 §OQ1). Reserved.
+    Dht,
+}
+
+impl std::fmt::Display for ResolveSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ResolveSource::Cache => "cache",
+            ResolveSource::Directory => "directory",
+            ResolveSource::Dht => "dht",
+        };
+        f.write_str(s)
+    }
+}
+
+/// A resolved key-based peer: the normalized `wgid:` and the delivery endpoint(s) to
+/// try, in fallback-ladder order (ADR-fed-002 §D1/§D2).
+#[derive(Debug, Clone)]
+pub struct ResolvedEndpoint {
+    pub wgid: String,
+    pub endpoints: Vec<String>,
+    pub source: ResolveSource,
+}
+
+/// Resolve a peer **reference** (a `federation.yaml` peer name, or a raw
+/// `wgid:`/`did:key:` address) to delivery endpoints, via the fail-safe cascade
+/// (ADR-fed-001 §D5): **cached signed endpoint record → optional directory hint →
+/// DHT** — any one step suffices.
+///
+/// Verification is never delegated to this function: it only finds *where* to deliver
+/// (a convenience). Whether a fetched bundle is authentic is always a separate local
+/// signature check (`identity::sigchain::verify`), so a forged directory or peer entry
+/// cannot impersonate — it can at most send you to the wrong (still self-verifying)
+/// box.
+pub fn resolve_peer_endpoint(
+    reference: &str,
+    workgraph_dir: &Path,
+) -> Result<ResolvedEndpoint, anyhow::Error> {
+    let config = load_federation_config(workgraph_dir)?;
+
+    // Normalize the target wgid: either the reference *is* a wgid/did:key, or it is a
+    // peer name whose entry carries a wgid.
+    let (target_wgid, named_peer) = if is_wgid_like(reference) {
+        (normalize_wgid(reference)?, None)
+    } else if let Some(peer) = config.peers.get(reference) {
+        let wgid = peer.wgid.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "peer '{reference}' has no wgid: — it is path-based only and cannot be \
+                 addressed by key. Add `wgid:` + `endpoints:` to it in federation.yaml, \
+                 or pass a wgid: directly."
+            )
+        })?;
+        (normalize_wgid(&wgid)?, Some(peer.clone()))
+    } else {
+        anyhow::bail!(
+            "'{reference}' is neither a known peer nor a wgid:/did:key: address. \
+             Known peers: {}",
+            if config.peers.is_empty() {
+                "(none)".to_string()
+            } else {
+                config.peers.keys().cloned().collect::<Vec<_>>().join(", ")
+            }
+        );
+    };
+
+    let mut tried: Vec<&str> = Vec::new();
+
+    // ── Stage 1: cache (cached signed endpoint record) ─────────────────────────
+    tried.push("cache");
+    // 1a. Endpoints on the named peer entry.
+    if let Some(peer) = &named_peer {
+        let eps = http_endpoints(&peer.endpoints);
+        if !eps.is_empty() {
+            return Ok(ResolvedEndpoint {
+                wgid: target_wgid,
+                endpoints: eps,
+                source: ResolveSource::Cache,
+            });
+        }
+    }
+    // 1b. Endpoints on a peer (by-name miss) whose wgid matches the target.
+    for peer in config.peers.values() {
+        if peer
+            .wgid
+            .as_deref()
+            .and_then(|w| normalize_wgid(w).ok())
+            .as_deref()
+            == Some(target_wgid.as_str())
+        {
+            let eps = http_endpoints(&peer.endpoints);
+            if !eps.is_empty() {
+                return Ok(ResolvedEndpoint {
+                    wgid: target_wgid,
+                    endpoints: eps,
+                    source: ResolveSource::Cache,
+                });
+            }
+        }
+    }
+    // 1c. Endpoints carried in a locally fetched + verified IdentityRecord (the
+    //     genuine "cached signed endpoint record" — these endpoints were signed).
+    if let Some(eps) = cached_record_endpoints(workgraph_dir, &target_wgid) {
+        if !eps.is_empty() {
+            return Ok(ResolvedEndpoint {
+                wgid: target_wgid,
+                endpoints: eps,
+                source: ResolveSource::Cache,
+            });
+        }
+    }
+
+    // ── Stage 2: optional directory hint ───────────────────────────────────────
+    if let Some(directory) = &config.directory {
+        tried.push("directory");
+        if directory_hosts(directory, &target_wgid) {
+            return Ok(ResolvedEndpoint {
+                wgid: target_wgid,
+                endpoints: vec![directory.trim_end_matches('/').to_string()],
+                source: ResolveSource::Directory,
+            });
+        }
+    }
+
+    // ── Stage 3: DHT — deferred past Wave 4 (wire library not yet bound) ────────
+    // Reserved for the Iroh/relay discovery leg (ADR-fed-002 §OQ1). Not built here.
+
+    anyhow::bail!(
+        "could not resolve delivery endpoints for {target_wgid} (cascade tried: {}). \
+         Add `endpoints:` to the peer in federation.yaml, fetch+save its identity \
+         (`wg identity fetch <wgid> --save <name>`), or configure a `directory:`.",
+        tried.join(" → ")
+    )
+}
+
+/// True if `s` looks like a key address (`wgid:` or `did:key:`).
+fn is_wgid_like(s: &str) -> bool {
+    s.starts_with("wgid:") || s.starts_with("did:key:")
+}
+
+/// Normalize a `wgid:`/`did:key:` spelling to the canonical `wgid:` the stores key by.
+fn normalize_wgid(s: &str) -> Result<String, anyhow::Error> {
+    let pubkey = crate::identity::keys::pubkey_from_wgid(s)?;
+    Ok(crate::identity::keys::wgid_from_pubkey(&pubkey))
+}
+
+/// Keep only http(s) endpoints (the rung implemented in Wave 4), preserving order.
+fn http_endpoints(eps: &[String]) -> Vec<String> {
+    eps.iter()
+        .filter(|e| e.starts_with("http://") || e.starts_with("https://"))
+        .map(|e| e.trim_end_matches('/').to_string())
+        .collect()
+}
+
+/// Look in `<workgraph_dir>/identity/*.json` for a saved bundle whose wgid matches,
+/// and return the http(s) `endpoints` from its (signed) `IdentityRecord`.
+fn cached_record_endpoints(workgraph_dir: &Path, target_wgid: &str) -> Option<Vec<String>> {
+    let dir = workgraph_dir.join("identity");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let wgid_matches = value
+            .get("wgid")
+            .and_then(|w| w.as_str())
+            .and_then(|w| normalize_wgid(w).ok())
+            .map(|w| w == target_wgid)
+            .unwrap_or(false);
+        if !wgid_matches {
+            continue;
+        }
+        let uris: Vec<String> = value
+            .get("record")
+            .and_then(|r| r.get("endpoints"))
+            .and_then(|e| e.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|ep| ep.get("uri").and_then(|u| u.as_str()))
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let eps = http_endpoints(&uris);
+        if !eps.is_empty() {
+            return Some(eps);
+        }
+    }
+    None
+}
+
+/// Best-effort probe: does the configured directory node host a head for this wgid?
+fn directory_hosts(directory: &str, wgid: &str) -> bool {
+    let base = directory.trim_end_matches('/');
+    let url = format!(
+        "{base}{}/heads/{}",
+        crate::identity::transport::API_PREFIX,
+        crate::identity::transport::sanitize(wgid)
+    );
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()
+        .and_then(|c| c.get(&url).send().ok())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 /// Peer service status information.
@@ -1804,10 +2077,12 @@ mod tests {
                     PeerConfig {
                         path: peer_project.to_str().unwrap().to_string(),
                         description: None,
+                        ..Default::default()
                     },
                 );
                 m
             },
+            ..Default::default()
         };
         save_federation_config(&local_wg, &config).unwrap();
 
@@ -1840,10 +2115,12 @@ mod tests {
                     PeerConfig {
                         path: peer_project.to_str().unwrap().to_string(),
                         description: None,
+                        ..Default::default()
                     },
                 );
                 m
             },
+            ..Default::default()
         };
         save_federation_config(&local_wg, &config).unwrap();
 
@@ -2045,5 +2322,130 @@ mod tests {
             result.resolution,
             RemoteResolution::Unreachable(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_resolution_tests {
+    //! Wave-4 key-based resolution cascade (ADR-fed-001 §D5): cached endpoint record
+    //! → directory → DHT, with path-based peers continuing to resolve alongside.
+    use super::*;
+    use crate::identity::keys::{gen_ed25519, wgid_from_pubkey};
+    use tempfile::TempDir;
+
+    fn fresh_wgid() -> String {
+        let kp = gen_ed25519().unwrap();
+        wgid_from_pubkey(&kp.public)
+    }
+
+    fn wg_dir(tmp: &TempDir) -> std::path::PathBuf {
+        let d = tmp.path().join(".wg");
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn cache_hit_resolves_named_key_peer_endpoints() {
+        let tmp = TempDir::new().unwrap();
+        let dir = wg_dir(&tmp);
+        let wgid = fresh_wgid();
+        let mut cfg = FederationConfig::default();
+        cfg.peers.insert(
+            "bob".to_string(),
+            PeerConfig {
+                wgid: Some(wgid.clone()),
+                endpoints: vec!["http://127.0.0.1:9001".into()],
+                ..Default::default()
+            },
+        );
+        save_federation_config(&dir, &cfg).unwrap();
+
+        let resolved = resolve_peer_endpoint("bob", &dir).unwrap();
+        assert_eq!(resolved.source, ResolveSource::Cache);
+        assert_eq!(resolved.wgid, wgid);
+        assert_eq!(
+            resolved.endpoints,
+            vec!["http://127.0.0.1:9001".to_string()]
+        );
+    }
+
+    #[test]
+    fn cache_hit_resolves_by_raw_wgid_across_peers() {
+        let tmp = TempDir::new().unwrap();
+        let dir = wg_dir(&tmp);
+        let wgid = fresh_wgid();
+        let mut cfg = FederationConfig::default();
+        cfg.peers.insert(
+            "named-differently".to_string(),
+            PeerConfig {
+                wgid: Some(wgid.clone()),
+                endpoints: vec!["https://node.example/".into()],
+                ..Default::default()
+            },
+        );
+        save_federation_config(&dir, &cfg).unwrap();
+
+        // Address by the raw wgid, not the peer name.
+        let resolved = resolve_peer_endpoint(&wgid, &dir).unwrap();
+        assert_eq!(resolved.source, ResolveSource::Cache);
+        // Trailing slash trimmed.
+        assert_eq!(resolved.endpoints, vec!["https://node.example".to_string()]);
+    }
+
+    #[test]
+    fn path_based_peers_still_resolve_alongside_key_based() {
+        // FR-F6: path-based federation keeps working when key-based peers coexist.
+        let tmp = TempDir::new().unwrap();
+        let dir = wg_dir(&tmp);
+        // A real path-based peer project.
+        let peer_root = tmp.path().join("peer-proj");
+        std::fs::create_dir_all(peer_root.join(".wg")).unwrap();
+
+        let mut cfg = FederationConfig::default();
+        cfg.peers.insert(
+            "legacy".to_string(),
+            PeerConfig {
+                path: peer_root.to_str().unwrap().to_string(),
+                ..Default::default()
+            },
+        );
+        cfg.peers.insert(
+            "modern".to_string(),
+            PeerConfig {
+                wgid: Some(fresh_wgid()),
+                endpoints: vec!["http://127.0.0.1:9100".into()],
+                ..Default::default()
+            },
+        );
+        save_federation_config(&dir, &cfg).unwrap();
+
+        // The path-based peer still resolves by path (unchanged behavior).
+        let legacy = resolve_peer("legacy", &dir).unwrap();
+        assert_eq!(
+            legacy.project_path.canonicalize().unwrap(),
+            peer_root.canonicalize().unwrap()
+        );
+        // And the key-based peer resolves by endpoint.
+        let modern = resolve_peer_endpoint("modern", &dir).unwrap();
+        assert_eq!(modern.source, ResolveSource::Cache);
+
+        // Asking for endpoints on a path-only peer is a clear error (not a panic).
+        assert!(resolve_peer_endpoint("legacy", &dir).is_err());
+        // Asking for a path on a key-only peer is a clear error too.
+        assert!(resolve_peer("modern", &dir).is_err());
+    }
+
+    #[test]
+    fn unresolvable_reference_reports_cascade_tried() {
+        let tmp = TempDir::new().unwrap();
+        let dir = wg_dir(&tmp);
+        save_federation_config(&dir, &FederationConfig::default()).unwrap();
+        // A valid wgid with no configured endpoints / directory → cascade exhausts.
+        let wgid = fresh_wgid();
+        let err = resolve_peer_endpoint(&wgid, &dir).unwrap_err().to_string();
+        assert!(
+            err.contains("cache"),
+            "error should name the cascade: {err}"
+        );
     }
 }

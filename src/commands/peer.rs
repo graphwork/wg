@@ -4,12 +4,15 @@ use anyhow::Result;
 
 use worksgood::federation;
 
-/// Add a named peer WG project.
+/// Add a named peer WG project — path-based (same host), key-based (`wgid` +
+/// `endpoints`, cross-graph), or both. At least one of `path`/`wgid` is required.
 pub fn run_add(
     workgraph_dir: &Path,
     name: &str,
-    path: &str,
+    path: Option<&str>,
     description: Option<&str>,
+    wgid: Option<&str>,
+    endpoints: &[String],
 ) -> Result<()> {
     let mut config = federation::load_federation_config(workgraph_dir)?;
 
@@ -20,42 +23,59 @@ pub fn run_add(
             name
         );
     }
+    if path.is_none() && wgid.is_none() {
+        anyhow::bail!(
+            "a peer needs a <path> (same-host) and/or --wgid (+ --endpoint, cross-graph)"
+        );
+    }
 
     // Validate path accessibility (warn but don't block)
-    let resolved_path = if let Some(suffix) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            home.join(suffix)
+    if let Some(path) = path {
+        let resolved_path = if let Some(suffix) = path.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(suffix)
+            } else {
+                Path::new(path).to_path_buf()
+            }
         } else {
             Path::new(path).to_path_buf()
-        }
-    } else {
-        Path::new(path).to_path_buf()
-    };
+        };
 
-    if !resolved_path.exists() {
-        eprintln!(
-            "Warning: Path '{}' does not exist or is not accessible. \
-             The peer will be added anyway.",
-            path
-        );
-    } else if !resolved_path.join(".wg").is_dir() {
-        eprintln!(
-            "Warning: No .wg directory found at '{}'. \
-             The peer will be added anyway (it may not be initialized yet).",
-            path
-        );
+        if !resolved_path.exists() {
+            eprintln!(
+                "Warning: Path '{}' does not exist or is not accessible. \
+                 The peer will be added anyway.",
+                path
+            );
+        } else if !resolved_path.join(".wg").is_dir() {
+            eprintln!(
+                "Warning: No .wg directory found at '{}'. \
+                 The peer will be added anyway (it may not be initialized yet).",
+                path
+            );
+        }
     }
 
     config.peers.insert(
         name.to_string(),
         federation::PeerConfig {
-            path: path.to_string(),
+            path: path.unwrap_or_default().to_string(),
             description: description.map(String::from),
+            wgid: wgid.map(String::from),
+            endpoints: endpoints.to_vec(),
         },
     );
 
     federation::save_federation_config(workgraph_dir, &config)?;
-    println!("Added peer '{}' -> {}", name, path);
+    match (path, wgid) {
+        (Some(p), Some(w)) => println!("Added peer '{name}' -> {p} (wgid {w})"),
+        (Some(p), None) => println!("Added peer '{name}' -> {p}"),
+        (None, Some(w)) => println!(
+            "Added key-based peer '{name}' -> wgid {w} ({} endpoint(s))",
+            endpoints.len()
+        ),
+        (None, None) => unreachable!(),
+    }
 
     Ok(())
 }
@@ -393,8 +413,10 @@ mod tests {
         run_add(
             &wg_dir,
             "other",
-            peer_project.to_str().unwrap(),
+            Some(peer_project.to_str().unwrap()),
             Some("Another project"),
+            None,
+            &[],
         )
         .unwrap();
 
@@ -413,8 +435,16 @@ mod tests {
         let wg_dir = setup_workgraph_dir(&tmp);
         let peer_project = setup_peer_project(&tmp, "other-repo");
 
-        run_add(&wg_dir, "other", peer_project.to_str().unwrap(), None).unwrap();
-        let result = run_add(&wg_dir, "other", "/another/path", None);
+        run_add(
+            &wg_dir,
+            "other",
+            Some(peer_project.to_str().unwrap()),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let result = run_add(&wg_dir, "other", Some("/another/path"), None, None, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
     }
@@ -424,7 +454,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = setup_workgraph_dir(&tmp);
 
-        run_add(&wg_dir, "other", "/some/path", None).unwrap();
+        run_add(&wg_dir, "other", Some("/some/path"), None, None, &[]).unwrap();
         run_remove(&wg_dir, "other").unwrap();
 
         let config = federation::load_federation_config(&wg_dir).unwrap();
@@ -447,7 +477,15 @@ mod tests {
         let wg_dir = setup_workgraph_dir(&tmp);
         let peer_project = setup_peer_project(&tmp, "other-repo");
 
-        run_add(&wg_dir, "other", peer_project.to_str().unwrap(), None).unwrap();
+        run_add(
+            &wg_dir,
+            "other",
+            Some(peer_project.to_str().unwrap()),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
         // Should not error
         run_show(&wg_dir, "other", false).unwrap();
         run_show(&wg_dir, "other", true).unwrap();
@@ -477,7 +515,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = setup_workgraph_dir(&tmp);
 
-        run_add(&wg_dir, "faraway", "/nonexistent/path", None).unwrap();
+        run_add(
+            &wg_dir,
+            "faraway",
+            Some("/nonexistent/path"),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
 
         let config = federation::load_federation_config(&wg_dir).unwrap();
         assert!(config.peers.contains_key("faraway"));
@@ -507,12 +553,21 @@ mod tests {
                 path: "/some/agency/store".to_string(),
                 description: None,
                 last_sync: None,
+                ..Default::default()
             },
         );
         federation::save_federation_config(&wg_dir, &config).unwrap();
 
         // Add a peer
-        run_add(&wg_dir, "other", peer_project.to_str().unwrap(), None).unwrap();
+        run_add(
+            &wg_dir,
+            "other",
+            Some(peer_project.to_str().unwrap()),
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
 
         // Both should exist
         let config = federation::load_federation_config(&wg_dir).unwrap();
