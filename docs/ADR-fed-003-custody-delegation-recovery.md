@@ -362,7 +362,8 @@ WG-Fed's revocation is **three composed layers**, all self-verifying:
    self-verifying revocation of a key.
 2. **Issuer-subtree UCAN revocation** (§D3) — kill a parent capability, kill its
    whole subtree.
-3. **Freshness attestations** (ADR-001 D7/OQ4 — the *shared* mechanism): the
+3. **Freshness attestations** (ADR-001 OQ4 — the *shared* mechanism; the freshness
+   attestation format lives in ADR-001 OQ4, distinct from the D7 compat handshake): the
    custodian/node periodically emits a signed `{ head, as_of, expires = as_of + Δ,
    seq, alg, sig }` over the current `sigchain_head`; a verifier **re-fetches** it
    before a freshness-gated action and **fails closed on stale** for high-value
@@ -539,7 +540,7 @@ self-verifying bytes over a fail-safe cascade, never a mandatory central CRL.**
   *manufacture* a valid un-revoke (a revoke, once any verifier sees it, is durable).
 - **Issuer-subtree UCAN revocations** are signed revocation records published in the
   **same cascade** and, crucially, **piggy-backed on the freshness attestation**
-  (§D6 / ADR-001 D7): the `{ head, as_of, expires, seq }` a verifier *already*
+  (§D6 / ADR-001 OQ4): the `{ head, as_of, expires, seq }` a verifier *already*
   re-fetches before a high-value action carries the current head, so learning "is
   this revoked?" is the *same fetch* as "is this fresh?" — **no extra lookup
   dependency** is added.

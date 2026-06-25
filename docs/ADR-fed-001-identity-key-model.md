@@ -167,13 +167,16 @@ agents share the `wgid:` + sigchain + 3-tier model identically; the differences 
 | | Human | Agent |
 |---|---|---|
 | Root custody | Self-held (device/passkey, hardware-backed) | Custodian-held (node/owner) via ssh-agent-style signing boundary |
-| Day-to-day signing | Device signer | Delegated UCAN signer (short-lived) |
+| Day-to-day signing | Device signer | Delegated UCAN signer (scope/expiry per ADR-003's authority dial) |
 | Recovery | Device set + offline recovery key + social M-of-N | Falls back to the custodian (never independently recoverable) |
 
 No human-only assumption (biometric, phone) sits on a path an agent must traverse.
 The `IdentityRecord` carries the operational `Agent` fields (role, motivation,
 capabilities, trust level, executor) so a pulled federated identity is dispatchable
-without a schema mismatch (FR-I6). The custody/recovery split itself is ADR-003.
+without a schema mismatch (FR-I6). The custody/recovery split itself is ADR-003 —
+including the **authority-scope default**, which ADR-003 §D2's trust-default amendment
+sets to **broad / long-lived by birth** (the short-lived "leash" is environment-driven
+policy, not the agent's default; humans self-hold their root and are never leashed).
 
 ### D7 — Crypto agility and a fail-loud compat handshake
 
