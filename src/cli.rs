@@ -2396,6 +2396,26 @@ pub enum Commands {
         command: IdentityCommands,
     },
 
+    /// WG-Review — the inbound-content review gate (content-safety spark)
+    ///
+    /// Screen inbound content (a task/prompt, an artifact, a message) through a
+    /// fail-closed, trust-proportional review pipeline **before an agent consumes
+    /// it**: verdicts are accept / quarantine / reject with a bounded reason +
+    /// provenance, recorded on a hash-linked verdict sigchain. Review depth reuses
+    /// the WG-Fed `trust_level` (trusted ⇒ light; unknown ⇒ deep/quarantine).
+    ///
+    /// Quick start:
+    ///   wg review check --class IC1 --trust unknown --content-file ./task.txt
+    ///   wg review depth --trust verified --sensitivity low   # show the applied depth
+    ///   wg review reviewer-scope                             # the dual-LLM no-scope bound
+    ///   wg review log                                        # the verdict sigchain
+    ///   wg review consume --content-file ./artifact         # digest-pinned (MUST-2)
+    ///   wg review revoke --cid <b3:…>                        # the audit/revoke leg
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex(NexArgs),
 
@@ -3169,6 +3189,71 @@ pub enum IdentityCommands {
         /// The third location `L` (needed to resolve the signer's sigchain).
         #[arg(long)]
         store: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ReviewCommands {
+    /// Screen one inbound item through the review pipeline (Pass 0→2) and record a
+    /// verdict. The verdict — accept / quarantine / reject — is the strictest any
+    /// pass reached; a non-accept verdict means the consuming task may NOT proceed.
+    Check {
+        /// Content class: IC1 (task/prompt), IC2 (artifact/code), IC3 (state),
+        /// IC4 (message).
+        #[arg(long, default_value = "IC1")]
+        class: String,
+        /// The author's trust level: verified | provisional | unknown.
+        #[arg(long, default_value = "unknown")]
+        trust: String,
+        /// Path to the inbound content bytes to review.
+        #[arg(long = "content-file")]
+        content_file: String,
+        /// The author's `wgid:` (or local handle) — the Pass-0 provenance.
+        #[arg(long)]
+        author: Option<String>,
+        /// Self-asserted sensitivity: low | high (absent ⇒ unlabeled, fail-closed).
+        #[arg(long)]
+        sensitivity: Option<String>,
+        /// The downstream consuming task this verdict gates (for the TC8 re-run).
+        #[arg(long = "consumer-task")]
+        consumer_task: Option<String>,
+    },
+
+    /// Show the applied `review.depth` for a trust × sensitivity pair (the
+    /// trust-proportional dial; trusted ⇒ light, unknown ⇒ deep/quarantine).
+    Depth {
+        /// Trust level: verified | provisional | unknown.
+        #[arg(long, default_value = "unknown")]
+        trust: String,
+        /// Sensitivity: low | high (absent ⇒ unlabeled, fail-closed).
+        #[arg(long)]
+        sensitivity: Option<String>,
+    },
+
+    /// Print the Pass-2 reviewer's granted scope — the dual-LLM no-scope bound. A
+    /// field-scan finds only `act-as-reviewer` (no graph-write, no network, no exfil).
+    #[command(name = "reviewer-scope")]
+    ReviewerScope,
+
+    /// Show the recorded verdict sigchain (the audit substrate).
+    Log,
+
+    /// **Digest-pinned consumption (MUST-2).** Re-hash the presented bytes and
+    /// permit consumption only if they match an `accept` verdict on record — a
+    /// post-review mutated byte (or a mutable-name swap) is refused.
+    Consume {
+        /// Path to the bytes a consumer is about to read.
+        #[arg(long = "content-file")]
+        content_file: String,
+    },
+
+    /// **The loud revoke leg (ADR-CS3 D4).** Trace a later-discovered poison by its
+    /// content digest, lower the author's trust (so its next item takes the deep
+    /// path), and report the downstream consumers to re-run.
+    Revoke {
+        /// The content digest (`b3:…`) of the poisoned item.
+        #[arg(long)]
+        cid: String,
     },
 }
 
@@ -5503,6 +5588,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
         Commands::Session { .. } => "session",
+        Commands::Review { .. } => "review",
     }
 }
 
@@ -5587,6 +5673,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Key { .. }
             | Commands::Secret { .. }
             | Commands::Identity { .. }
+            | Commands::Review { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]

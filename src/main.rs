@@ -3790,6 +3790,39 @@ fn main() -> Result<()> {
                 cli.json,
             ),
         },
+
+        Commands::Review { command } => match command {
+            cli::ReviewCommands::Check {
+                class,
+                trust,
+                content_file,
+                author,
+                sensitivity,
+                consumer_task,
+            } => commands::review_cmd::run_check(
+                &workgraph_dir,
+                &class,
+                &trust,
+                &content_file,
+                author.as_deref(),
+                sensitivity.as_deref(),
+                consumer_task.as_deref(),
+                cli.json,
+            ),
+            cli::ReviewCommands::Depth { trust, sensitivity } => {
+                commands::review_cmd::run_depth(&trust, sensitivity.as_deref(), cli.json)
+            }
+            cli::ReviewCommands::ReviewerScope => {
+                commands::review_cmd::run_reviewer_scope(cli.json)
+            }
+            cli::ReviewCommands::Log => commands::review_cmd::run_log(&workgraph_dir, cli.json),
+            cli::ReviewCommands::Consume { content_file } => {
+                commands::review_cmd::run_consume(&workgraph_dir, &content_file, cli.json)
+            }
+            cli::ReviewCommands::Revoke { cid } => {
+                commands::review_cmd::run_revoke(&workgraph_dir, &cid, cli.json)
+            }
+        },
     }
 }
 
