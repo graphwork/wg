@@ -3281,6 +3281,12 @@ pub enum IdentityCommands {
         /// stale): `routine` or `high-value`. Omit for no freshness gate.
         #[arg(long)]
         require_fresh: Option<String>,
+
+        /// Auto-gate (Review-Wave C): screen each authenticated inbound (IC4) through
+        /// the review pipeline with author-trust DERIVED from the peer/provider trust
+        /// dial (no `--trust` flag); a non-`accept` verdict refuses consumption.
+        #[arg(long)]
+        review: bool,
     },
 
     /// Verify a record or event file offline.
@@ -3920,6 +3926,12 @@ pub enum MsgCommands {
         /// `routine` or `high-value`.
         #[arg(long)]
         require_fresh: Option<String>,
+
+        /// Auto-gate inbound (cross-graph only): screen each authenticated event
+        /// through the review pipeline with author-trust DERIVED from the peer/provider
+        /// trust dial (no `--trust` flag); a non-`accept` verdict refuses consumption.
+        #[arg(long)]
+        review: bool,
     },
 }
 
@@ -5140,6 +5152,13 @@ pub enum PeerCommands {
         /// Repeatable — the resolution cascade tries them in order.
         #[arg(long = "endpoint")]
         endpoints: Vec<String>,
+
+        /// The authorizer's trust assertion about this peer (`verified` |
+        /// `provisional` | `unknown`) — the canonical author-trust the inbound review
+        /// gate (`wg msg poll --review`) reads, unified with the WG-Exec pool dial.
+        /// Omit for `provisional` (TOFU); a non-peer stranger is `unknown` (fail-closed).
+        #[arg(long)]
+        trust: Option<String>,
     },
 
     /// Remove a registered peer

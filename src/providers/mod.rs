@@ -35,6 +35,7 @@ pub mod placement;
 pub mod verify;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -311,6 +312,14 @@ impl ProviderEntry {
     }
 }
 
+/// Canonical on-disk path of the authorizer's provider registry
+/// (`<workgraph_dir>/exec/registry.json`). The single source of truth shared by the
+/// `wg provider` CLI and the [`crate::trust`] resolver, so the leash and the review
+/// gate read **one** persisted trust dial.
+pub fn registry_path(workgraph_dir: &Path) -> PathBuf {
+    workgraph_dir.join("exec").join("registry.json")
+}
+
 /// The authorizer's known-provider pool, keyed by `wgid:` (ADR-E1 D6). Persisted as
 /// JSON by the CLI layer; the private-pool case needs **zero** central nodes (NFR-6).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -353,6 +362,27 @@ impl ProviderRegistry {
         self.get(wgid)
             .map(|e| e.trust_level)
             .unwrap_or(TrustLevel::Unknown)
+    }
+
+    /// The authorizer's trust **opinion** about a wgid: `Some(level)` iff the wgid is
+    /// enrolled in the pool, else `None` ("no opinion"). The `Option` form is what the
+    /// canonical [`crate::trust`] resolver consumes so it can distinguish *enrolled at
+    /// Unknown* from *never enrolled* and fold the pool's assertion against the
+    /// federation peer registry's. ([`trust_of`](Self::trust_of) keeps the fail-closed
+    /// Unknown-defaulting form the leash itself reads.)
+    pub fn opinion_of(&self, wgid: &str) -> Option<TrustLevel> {
+        self.get(wgid).map(|e| e.trust_level)
+    }
+
+    /// Load the persisted registry from `<workgraph_dir>/exec/registry.json`. Returns an
+    /// empty registry when absent or unreadable (fail-safe — a missing pool trusts
+    /// nobody). This is the single canonical reader; the `wg provider` CLI persists
+    /// through [`registry_path`].
+    pub fn load(workgraph_dir: &Path) -> Self {
+        std::fs::read_to_string(registry_path(workgraph_dir))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     /// Record an accepted signed renewal (the liveness signal).

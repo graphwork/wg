@@ -4,8 +4,21 @@ use anyhow::Result;
 
 use worksgood::federation;
 
+/// Parse a CLI trust spelling to a [`worksgood::graph::TrustLevel`]; an unrecognized
+/// value is `Unknown` (fail-closed — never silently grant *more* trust). Mirrors
+/// `wg provider enroll`'s parser so the two trust-asserting surfaces agree.
+fn parse_trust(s: &str) -> worksgood::graph::TrustLevel {
+    use worksgood::graph::TrustLevel;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "verified" => TrustLevel::Verified,
+        "provisional" => TrustLevel::Provisional,
+        _ => TrustLevel::Unknown,
+    }
+}
+
 /// Add a named peer WG project — path-based (same host), key-based (`wgid` +
 /// `endpoints`, cross-graph), or both. At least one of `path`/`wgid` is required.
+#[allow(clippy::too_many_arguments)]
 pub fn run_add(
     workgraph_dir: &Path,
     name: &str,
@@ -13,6 +26,7 @@ pub fn run_add(
     description: Option<&str>,
     wgid: Option<&str>,
     endpoints: &[String],
+    trust: Option<&str>,
 ) -> Result<()> {
     let mut config = federation::load_federation_config(workgraph_dir)?;
 
@@ -56,6 +70,8 @@ pub fn run_add(
         }
     }
 
+    let trust_level = trust.map(parse_trust);
+
     config.peers.insert(
         name.to_string(),
         federation::PeerConfig {
@@ -63,21 +79,36 @@ pub fn run_add(
             description: description.map(String::from),
             wgid: wgid.map(String::from),
             endpoints: endpoints.to_vec(),
+            trust: trust_level,
         },
     );
 
     federation::save_federation_config(workgraph_dir, &config)?;
+    let trust_note = match trust_level {
+        Some(t) => format!(" [trust={}]", trust_str(t)),
+        None => String::new(),
+    };
     match (path, wgid) {
-        (Some(p), Some(w)) => println!("Added peer '{name}' -> {p} (wgid {w})"),
-        (Some(p), None) => println!("Added peer '{name}' -> {p}"),
+        (Some(p), Some(w)) => println!("Added peer '{name}' -> {p} (wgid {w}){trust_note}"),
+        (Some(p), None) => println!("Added peer '{name}' -> {p}{trust_note}"),
         (None, Some(w)) => println!(
-            "Added key-based peer '{name}' -> wgid {w} ({} endpoint(s))",
+            "Added key-based peer '{name}' -> wgid {w} ({} endpoint(s)){trust_note}",
             endpoints.len()
         ),
         (None, None) => unreachable!(),
     }
 
     Ok(())
+}
+
+/// Render a [`worksgood::graph::TrustLevel`] in its kebab-case wire spelling.
+fn trust_str(t: worksgood::graph::TrustLevel) -> &'static str {
+    use worksgood::graph::TrustLevel;
+    match t {
+        TrustLevel::Verified => "verified",
+        TrustLevel::Provisional => "provisional",
+        TrustLevel::Unknown => "unknown",
+    }
 }
 
 /// Remove a named peer.

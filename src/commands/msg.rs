@@ -320,14 +320,20 @@ pub fn run_send_fed(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("delivery failed on all endpoints")))
 }
 
-/// `wg msg poll --as <identity> [--store <url>]` — poll this graph's node inbox for
-/// signed cross-graph messages and authenticate each by key. With `--store` omitted,
-/// uses the `node:` URL configured in `federation.yaml`.
+/// `wg msg poll --as <identity> [--store <url>] [--review]` — poll this graph's node
+/// inbox for signed cross-graph messages and authenticate each by key. With `--store`
+/// omitted, uses the `node:` URL configured in `federation.yaml`.
+///
+/// With `review` set, this is the **live IC4 ingest auto-gate**: each authenticated
+/// inbound is screened through the review pipeline with author-trust derived from the
+/// canonical peer/provider trust dial (no `--trust` flag), and a non-`accept` verdict
+/// refuses consumption (the `auto-wire-the` seam, Review-Wave C).
 pub fn run_poll_fed(
     workgraph_dir: &Path,
     as_identity: &str,
     store_override: Option<&str>,
     require_fresh: Option<&str>,
+    review: bool,
     json: bool,
 ) -> Result<()> {
     let store = match store_override {
@@ -342,7 +348,14 @@ pub fn run_poll_fed(
             })?
         }
     };
-    crate::commands::identity_cmd::run_poll(workgraph_dir, as_identity, &store, require_fresh, json)
+    crate::commands::identity_cmd::run_poll(
+        workgraph_dir,
+        as_identity,
+        &store,
+        require_fresh,
+        review,
+        json,
+    )
 }
 
 /// Normalize a `wgid:`/`did:key:` address to the canonical `wgid:` (for `--store`

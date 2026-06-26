@@ -44,26 +44,21 @@ fn exec_dir(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("exec")
 }
 
-fn registry_path(workgraph_dir: &Path) -> PathBuf {
-    exec_dir(workgraph_dir).join("registry.json")
-}
-
 fn ledger_path(workgraph_dir: &Path) -> PathBuf {
     exec_dir(workgraph_dir).join("leases.json")
 }
 
 fn load_registry(workgraph_dir: &Path) -> ProviderRegistry {
-    std::fs::read_to_string(registry_path(workgraph_dir))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    // Delegate to the single canonical reader so the leash and the review gate read the
+    // SAME persisted trust dial (see `worksgood::trust`).
+    ProviderRegistry::load(workgraph_dir)
 }
 
 fn save_registry(workgraph_dir: &Path, reg: &ProviderRegistry) -> Result<()> {
     let dir = exec_dir(workgraph_dir);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::write(
-        registry_path(workgraph_dir),
+        worksgood::providers::registry_path(workgraph_dir),
         serde_json::to_string_pretty(reg)?,
     )?;
     Ok(())

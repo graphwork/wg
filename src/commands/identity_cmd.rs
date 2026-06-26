@@ -33,6 +33,8 @@ use worksgood::identity::state_safety::{
 };
 use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
+use worksgood::review::{ContentClass, Provenance, Sensitivity, VerdictStore, review_inbound};
+use worksgood::trust::{resolve_author_trust, strictest_trust};
 
 /// Reserved store "inbox" the C-tier revocation-list convenience publishes signed
 /// [`Revocation`]s into (Wave 6). It is a discovery *hint* only — `verify-cap` always
@@ -1010,11 +1012,21 @@ pub fn run_send(
 /// tampered event is REJECTED. Sealed events addressed to us are opened with our
 /// custody-held encryption key. When `require_fresh` is set, accepting an event is
 /// **gated on a fresh attestation** for the sender and **fails closed on stale**.
+///
+/// When `review` is set, this is the **live IC4 ingest auto-gate** (Review-Wave C, the
+/// `auto-wire-the` seam): every *authenticated* inbound event is additionally screened
+/// through the [`review_inbound`] pipeline with author-trust **derived** from the
+/// canonical [`resolve_author_trust`] dial (federation peer registry + WG-Exec pool) —
+/// no hand-passed `--trust` flag — and a non-`accept` verdict **refuses consumption**
+/// (received ≠ consumed, ADR-CS1 D1). Each verdict is recorded to the verdict sigchain
+/// (the audit leg). Authentication counts (`accepted`/`rejected`) are unchanged; a
+/// forged/tampered event never reaches the gate (it is rejected at auth).
 pub fn run_poll(
     workgraph_dir: &Path,
     name: &str,
     store_loc: &str,
     require_fresh: Option<&str>,
+    review: bool,
     json: bool,
 ) -> Result<()> {
     let id = load_local(workgraph_dir, name)?;
@@ -1028,6 +1040,10 @@ pub fn run_poll(
     let mut verdicts: Vec<serde_json::Value> = Vec::new();
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    // Review (IC4 auto-gate) tallies — only meaningful when `review` is set.
+    let mut screened = 0usize;
+    let mut consumable = 0usize;
+    let mut quarantined = 0usize;
 
     for ev in store.list_events(&id.wgid)? {
         let verdict = authenticate_event(
@@ -1041,12 +1057,45 @@ pub fn run_poll(
         match verdict {
             Ok((from, body)) => {
                 accepted += 1;
-                verdicts.push(serde_json::json!({
+                let mut ev_json = serde_json::json!({
                     "verdict": "VERIFIED", "from": from, "body": body,
-                }));
+                });
                 if !json {
                     println!("VERIFIED from {from}: {body}");
                 }
+                // ── IC4 ingest auto-gate: screen BEFORE consumption (received ≠ consumed)
+                if review {
+                    let r = review_inbound_event(workgraph_dir, &from, &body);
+                    screened += 1;
+                    if r.permits_consumption {
+                        consumable += 1;
+                    } else {
+                        quarantined += 1;
+                    }
+                    if !json {
+                        println!(
+                            "  review: {} ({}, trust={}) → {}",
+                            r.verdict,
+                            r.reason,
+                            r.effective_trust,
+                            if r.permits_consumption {
+                                "CONSUMABLE"
+                            } else {
+                                "BLOCKED (held un-consumed; non-accept verdict)"
+                            }
+                        );
+                    }
+                    ev_json["consumable"] = serde_json::json!(r.permits_consumption);
+                    ev_json["review"] = serde_json::json!({
+                        "verdict": r.verdict,
+                        "reason": r.reason,
+                        "effective_trust": r.effective_trust,
+                        "permits_consumption": r.permits_consumption,
+                        "content_cid": r.content_cid,
+                        "trust_derived": true,
+                    });
+                }
+                verdicts.push(ev_json);
             }
             Err(e) => {
                 rejected += 1;
@@ -1061,22 +1110,89 @@ pub fn run_poll(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "wgid": id.wgid,
-                "accepted": accepted,
-                "rejected": rejected,
-                "events": verdicts,
-            })
-        );
+        let mut out = serde_json::json!({
+            "wgid": id.wgid,
+            "accepted": accepted,
+            "rejected": rejected,
+            "events": verdicts,
+        });
+        if review {
+            out["review"] = serde_json::json!({
+                "screened": screened,
+                "consumable": consumable,
+                "quarantined": quarantined,
+            });
+        }
+        println!("{out}");
     } else {
         println!(
             "polled {} ({accepted} verified, {rejected} rejected)",
             id.wgid
         );
+        if review {
+            println!(
+                "  ingest gate: {screened} screened → {consumable} consumable, {quarantined} blocked"
+            );
+        }
     }
     Ok(())
+}
+
+/// The outcome of auto-gating one authenticated inbound event.
+struct IngestReview {
+    verdict: &'static str,
+    reason: &'static str,
+    effective_trust: &'static str,
+    permits_consumption: bool,
+    content_cid: String,
+}
+
+/// Screen one authenticated inbound message (IC4) through the review pipeline with
+/// **derived** author-trust, fold any revoke override (strictest-wins), record the
+/// verdict to the audit sigchain, and report whether consumption is permitted.
+///
+/// Sensitivity is left **`Unlabeled`** (fail-closed → High): an inbound message does
+/// not declare its blast radius, so it never gets the light path on sensitivity alone —
+/// a *Verified* author still accepts on clean content, an *Unknown* one quarantines.
+fn review_inbound_event(workgraph_dir: &Path, from: &str, body: &str) -> IngestReview {
+    let baseline = resolve_author_trust(workgraph_dir, from);
+    let store = VerdictStore::open(workgraph_dir);
+    // Fold a revoke-lowered override (D4): a previously-poisoned author's next item
+    // takes the deeper path. Strictest wins, identical to `wg review check`.
+    let effective_trust = match store.trust_override(from).ok().flatten() {
+        Some(overridden) => strictest_trust(baseline, overridden),
+        None => baseline,
+    };
+    let provenance = Provenance {
+        author: Some(from.to_string()),
+        trust: effective_trust.clone(),
+    };
+    let outcome = review_inbound(
+        ContentClass::Ic4Message,
+        body,
+        &provenance,
+        Sensitivity::Unlabeled,
+    );
+    // Audit leg: record on the hash-linked verdict sigchain (best-effort; a recording
+    // failure must not crash the poll — the gate decision still stands).
+    let _ = store.record(&outcome, Some(from), None);
+    IngestReview {
+        verdict: outcome.verdict.tag(),
+        reason: outcome.reason.tag(),
+        effective_trust: trust_tag(&effective_trust),
+        permits_consumption: outcome.verdict.permits_consumption(),
+        content_cid: outcome.content_cid,
+    }
+}
+
+/// Render a [`worksgood::graph::TrustLevel`] in its kebab-case wire spelling.
+fn trust_tag(t: &worksgood::graph::TrustLevel) -> &'static str {
+    use worksgood::graph::TrustLevel;
+    match t {
+        TrustLevel::Verified => "verified",
+        TrustLevel::Provisional => "provisional",
+        TrustLevel::Unknown => "unknown",
+    }
 }
 
 /// Verify one inbox event: resolve the sender's bundle (cache-first for offline

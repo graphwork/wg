@@ -564,7 +564,15 @@ one-shot (`resolve_agency_dispatch`), the N-reviewer + model-strength-by-depth l
 real Pass-3 sandbox, the full cross-plane D-iii TC8 defense, and the human at Pass 4 are
 **Review-Wave C/D**. The pipeline is reachable today through the `wg review` CLI;
 **auto-wiring the four ingest seams** into the live import / accept / msg / state-load paths
-is the production build, not the spark.
+is the production build, not the spark. **The IC4 (message) ingest seam is now wired**:
+`wg msg poll --as <id> --review` (and `wg identity poll --review`) auto-screen each
+*authenticated* inbound through the review pipeline at the consumption edge (received ≠
+consumed) and **refuse consumption of a non-accept verdict**, with author-trust **derived**
+(no `--trust` flag) from the canonical `worksgood::trust::resolve_author_trust` dial —
+which unifies the federation **peer registry** (`wg peer add --trust`, a new `PeerConfig.trust`
+field) with the **WG-Exec provider pool** (`exec/registry.json`, via the one
+`ProviderRegistry::load`), fail-closed to `Unknown`. So review *depth* and the exec *leash*
+read **one** trust dial. The remaining import / accept / state-load seams stay Review-Wave C/D.
 
 The end-to-end proof is pinned by `tests/smoke/scenarios/content_safety_spark.sh`
 (`owners = [cs-spark]`): a legit `Verified` low-sensitivity IC1 takes the light path and is
@@ -684,7 +692,13 @@ is **auto-wiring**: the review gate's author-trust is hand-passed (`--trust`) an
 invoked manually between `wg msg poll` and the exec offer. Production must (a) derive author-trust
 canonically from the federation peer/sigchain `graph::TrustLevel` (the same dial the exec pool
 reads) and (b) auto-run the review pipeline at the live ingest edge so "received ≠ consumed" holds
-with no manual step. That is filed as the `auto-wire-the` follow-up (Review-Wave C/D), not papered
-over. **Spark boundary**: the exec result work-product is the exec spark's deterministic stub (the
+with no manual step. **This is now SHIPPED for the IC4 (message) ingest path** (the `auto-wire-the`
+build): `src/trust.rs::resolve_author_trust` is the canonical trust resolver unifying the federation
+peer registry (`wg peer add --trust`) with the WG-Exec provider pool, and `wg msg poll --review`
+auto-screens each authenticated inbound through the review pipeline with that *derived* trust,
+refusing consumption of a non-accept verdict (no `--trust` flag, no separate `wg review check`).
+It is pinned by `tests/smoke/scenarios/e2e_autowire_ingest_gate.sh` (`owners = [auto-wire-the]`).
+The remaining import / accept / state-load ingest seams stay Review-Wave C/D. **Spark boundary**:
+the exec result work-product is the exec spark's deterministic stub (the
 real weak-tier LLM is a later wave); the e2e proves the **composition + the security bounds at
 every seam**, not the silicon.

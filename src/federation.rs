@@ -59,6 +59,15 @@ pub struct PeerConfig {
     /// for this peer — the "cached signed endpoint record" rung of the cascade.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<String>,
+    /// The authorizer's **local trust assertion** about this peer
+    /// ([`crate::graph::TrustLevel`] — the one trust dial, never self-certified by the
+    /// peer). This is the canonical author-trust source the inbound review gate reads
+    /// (`wg msg poll --review`) so review depth is *derived*, not hand-passed; it is
+    /// unified with the WG-Exec provider-pool trust through [`crate::trust`]. `None`
+    /// means "enrolled but unvouched" and resolves to `Provisional` (TOFU) — a stranger
+    /// who is not a peer at all is `Unknown` (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<crate::graph::TrustLevel>,
 }
 
 /// Top-level federation.yaml structure.

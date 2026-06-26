@@ -1838,17 +1838,24 @@ fn main() -> Result<()> {
                     as_identity,
                     store,
                     require_fresh,
+                    review,
                 } => {
                     if let Some(as_identity) = as_identity {
-                        // Cross-graph node-inbox poll (Wave 4).
+                        // Cross-graph node-inbox poll (Wave 4) — `--review` auto-gates IC4.
                         commands::msg::run_poll_fed(
                             &workgraph_dir,
                             &as_identity,
                             store.as_deref(),
                             require_fresh.as_deref(),
+                            review,
                             cli.json,
                         )
                     } else {
+                        if review {
+                            anyhow::bail!(
+                                "`--review` is for cross-graph ingest (use it with `--as <identity>`)"
+                            );
+                        }
                         let task_id = task_id.ok_or_else(|| {
                             anyhow::anyhow!("local `wg msg poll` needs a <task-id> (or use --as)")
                         })?;
@@ -2137,6 +2144,7 @@ fn main() -> Result<()> {
                 description,
                 wgid,
                 endpoints,
+                trust,
             } => commands::peer::run_add(
                 &workgraph_dir,
                 &name,
@@ -2144,6 +2152,7 @@ fn main() -> Result<()> {
                 description.as_deref(),
                 wgid.as_deref(),
                 &endpoints,
+                trust.as_deref(),
             ),
             PeerCommands::Remove { name } => commands::peer::run_remove(&workgraph_dir, &name),
             PeerCommands::List => commands::peer::run_list(&workgraph_dir, cli.json),
@@ -3883,11 +3892,13 @@ fn main() -> Result<()> {
                 name,
                 store,
                 require_fresh,
+                review,
             } => commands::identity_cmd::run_poll(
                 &workgraph_dir,
                 &name,
                 &store,
                 require_fresh.as_deref(),
+                review,
                 cli.json,
             ),
             cli::IdentityCommands::Verify { file, store } => commands::identity_cmd::run_verify(
