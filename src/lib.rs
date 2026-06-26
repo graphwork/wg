@@ -66,6 +66,7 @@ pub mod platform_bash;
 pub mod platform_timeout;
 pub mod profile;
 pub mod provenance;
+pub mod providers;
 pub mod query;
 pub mod registry {
     pub use crate::service::registry::AgentEntry as Agent;

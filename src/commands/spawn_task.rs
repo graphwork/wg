@@ -290,6 +290,15 @@ pub fn resolve_handler(
             ));
         }
         ExecutorKind::Pi => HandlerSpec::Pi { chat_ref, model },
+        ExecutorKind::RemoteRunner => {
+            return Err(anyhow!(
+                "remote-runner executor is driven by the WG-Exec providers plane \
+                 (`wg provider …`), not the local spawn-task handler path: a \
+                 `Placement::Provider(wgid:)` spawn is placed/granted/run/accepted over \
+                 the execution wire (src/providers/), where the two scoped UCANs + the \
+                 epoch-fenced lease live"
+            ));
+        }
         ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \

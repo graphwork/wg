@@ -92,6 +92,25 @@ pub enum ExecutorKind {
     /// `handler_for_model`'s external-CLI interception (no new match arm); the
     /// `wg pi-handler` RPC/worker contract is built on top in a later phase.
     Pi,
+    /// WG-Exec remote runner (Exec-Wave B): drives a `Placement::Provider(wgid:)`
+    /// spawn onto a **separately-owned remote provider** over the execution wire
+    /// (`src/providers/`). It is NOT a local subprocess handler — the spawn-task
+    /// handler path errors on it; the providers plane (`wg provider …`) owns its
+    /// mechanics (the two scoped UCANs, the sealed bundle, the epoch-fenced lease).
+    RemoteRunner,
+}
+
+/// Where a spawn runs (ADR-E1 D6, the placement field `plan_spawn` gains). `Local`
+/// reproduces today's same-host spawn **byte-for-byte** (NFR-3, the migration
+/// substrate); `Provider(wgid:)` routes the spawn to a separately-owned remote provider
+/// via the WG-Exec providers plane (driven by the [`ExecutorKind::RemoteRunner`] arm).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Placement {
+    /// Run on this host, the only behavior before federation.
+    #[default]
+    Local,
+    /// Run on the named `wgid:` provider over the execution wire.
+    Provider(String),
 }
 
 impl ExecutorKind {
@@ -151,6 +170,7 @@ impl ExecutorKind {
             ExecutorKind::Octomind => "octomind",
             ExecutorKind::Dexto => "dexto",
             ExecutorKind::Pi => "pi",
+            ExecutorKind::RemoteRunner => "remote-runner",
         }
     }
 
@@ -170,6 +190,7 @@ impl ExecutorKind {
             "octomind" => Some(ExecutorKind::Octomind),
             "dexto" => Some(ExecutorKind::Dexto),
             "pi" => Some(ExecutorKind::Pi),
+            "remote-runner" => Some(ExecutorKind::RemoteRunner),
             _ => None,
         }
     }
@@ -307,6 +328,11 @@ pub struct SpawnPlan {
     /// argv from `executor` + `model` + `endpoint` and the existing
     /// per-executor templates.
     pub argv: Vec<String>,
+    /// Where the spawn runs (ADR-E1 D6). Defaults to [`Placement::Local`] —
+    /// today's same-host spawn, unchanged — so adding this field is a no-op for
+    /// every existing call site; the WG-Exec providers plane sets
+    /// `Provider(wgid:)` for a remote placement.
+    pub placement: Placement,
     pub provenance: SpawnProvenance,
 }
 
@@ -526,6 +552,9 @@ pub fn plan_spawn(
         endpoint,
         env,
         argv: Vec::new(),
+        // Today's dispatcher always runs locally; a remote placement is set by the
+        // WG-Exec providers plane, never inferred here (ADR-E1 D6, NFR-3).
+        placement: Placement::Local,
         provenance,
     })
 }

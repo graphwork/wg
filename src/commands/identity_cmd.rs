@@ -44,7 +44,7 @@ const REVOCATION_INBOX: &str = "wgfed:revocations";
 /// Everything WG needs locally to *use* an identity it minted, or to *reference*
 /// one it fetched. Private keys are **never** here — they live in `wg secret`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct LocalIdentity {
+pub(crate) struct LocalIdentity {
     /// Local handle (the `wg identity new <name>` name).
     name: String,
     wgid: String,
@@ -83,6 +83,29 @@ impl LocalIdentity {
             self.active_root_kid.clone()
         }
     }
+
+    // ── Accessors for the WG-Exec provider plane (`src/providers/`, exec_fed_cmd) ──
+    // The execution plane reuses these saved identities verbatim — no second identity
+    // system (NFR-4). Read-only views; private keys stay in `wg secret` custody.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn wgid(&self) -> &str {
+        &self.wgid
+    }
+    pub(crate) fn signer_kid(&self) -> &str {
+        &self.signer_kid
+    }
+    pub(crate) fn enc_kid(&self) -> &str {
+        &self.enc_kid
+    }
+    pub(crate) fn sigchain(&self) -> &[SigchainLink] {
+        &self.sigchain
+    }
+    /// Replay this identity's sigchain to its authorized key set (offline self-verify).
+    pub(crate) fn auth(&self) -> Result<AuthorizedKeys> {
+        sigchain::verify(&self.sigchain, &self.wgid)
+    }
 }
 
 fn identity_dir(workgraph_dir: &Path) -> PathBuf {
@@ -108,7 +131,7 @@ fn save_local(workgraph_dir: &Path, id: &LocalIdentity) -> Result<()> {
     Ok(())
 }
 
-fn load_local(workgraph_dir: &Path, name: &str) -> Result<LocalIdentity> {
+pub(crate) fn load_local(workgraph_dir: &Path, name: &str) -> Result<LocalIdentity> {
     let path = local_path(workgraph_dir, name);
     let json = std::fs::read_to_string(&path).with_context(|| {
         format!(
@@ -343,7 +366,7 @@ fn resolve_bundle(store: &dyn FedStore, wgid: &str) -> Result<ResolvedBundle> {
 /// verified** bundle (so the sender's node may be offline at poll time) and falling
 /// back to the store. This is the ADR-fed-001 §D5 cascade applied to authentication:
 /// the cached signed record can only help, never override a self-verification.
-fn resolve_auth_cached(
+pub(crate) fn resolve_auth_cached(
     workgraph_dir: &Path,
     store: &dyn FedStore,
     wgid: &str,
@@ -402,7 +425,11 @@ fn emit_attestation(
 /// The custody kid to sign new records / snapshots / attestations with: the active
 /// signer if we still hold it, else the active root (e.g. after the signer was
 /// revoked). A downloaded bundle holds neither and cannot author.
-fn signing_kid(id: &LocalIdentity, cust: &Custodian, auth: &AuthorizedKeys) -> Result<String> {
+pub(crate) fn signing_kid(
+    id: &LocalIdentity,
+    cust: &Custodian,
+    auth: &AuthorizedKeys,
+) -> Result<String> {
     if let Some(s) = auth.active_signer() {
         if cust.has_key(&s.kid)? {
             return Ok(s.kid.clone());

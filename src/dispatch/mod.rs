@@ -12,5 +12,7 @@ pub mod plan;
 pub mod profile;
 
 pub use handler_for_model::handler_for_model;
-pub use plan::{ExecutorKind, ResolvedModelSpec, SpawnPlan, SpawnProvenance, plan_spawn};
+pub use plan::{
+    ExecutorKind, Placement, ResolvedModelSpec, SpawnPlan, SpawnProvenance, plan_spawn,
+};
 pub use profile::{ProfileCache, effective_config_for_task, effective_config_owned};

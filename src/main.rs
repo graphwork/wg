@@ -3997,6 +3997,134 @@ fn main() -> Result<()> {
                 commands::review_cmd::run_revoke(&workgraph_dir, &cid, cli.json)
             }
         },
+        Commands::Provider { command } => match command {
+            cli::ProviderCommands::Enroll {
+                provider,
+                trust,
+                model,
+                isolation,
+                attested,
+            } => commands::exec_fed_cmd::run_enroll(
+                &workgraph_dir,
+                &provider,
+                &trust,
+                &model,
+                &isolation,
+                attested,
+                cli.json,
+            ),
+            cli::ProviderCommands::Offer {
+                as_name,
+                task,
+                model,
+                isolation,
+                sensitivity,
+                provider,
+                out,
+            } => commands::exec_fed_cmd::run_offer(
+                &workgraph_dir,
+                &as_name,
+                &task,
+                &model,
+                &isolation,
+                sensitivity.as_deref(),
+                &provider,
+                &out,
+                cli.json,
+            ),
+            cli::ProviderCommands::Claim {
+                as_name,
+                offer,
+                store,
+                out,
+            } => commands::exec_fed_cmd::run_claim(
+                &workgraph_dir,
+                &as_name,
+                &offer,
+                &store,
+                &out,
+                cli.json,
+            ),
+            cli::ProviderCommands::Grant {
+                as_name,
+                claim,
+                task_input,
+                after,
+                ucan_ttl_secs,
+                store,
+                out,
+            } => commands::exec_fed_cmd::run_grant(
+                &workgraph_dir,
+                &as_name,
+                &claim,
+                &task_input,
+                &after,
+                ucan_ttl_secs,
+                &store,
+                &out,
+                cli.json,
+            ),
+            cli::ProviderCommands::Run {
+                as_name,
+                grant,
+                store,
+                out,
+                target_task,
+                corrupt,
+                scope_probe,
+            } => commands::exec_fed_cmd::run_worker_run(
+                &workgraph_dir,
+                &as_name,
+                &grant,
+                &store,
+                &out,
+                target_task.as_deref(),
+                corrupt,
+                scope_probe.as_deref(),
+                cli.json,
+            ),
+            cli::ProviderCommands::Accept { result, store, now } => {
+                commands::exec_fed_cmd::run_accept(
+                    &workgraph_dir,
+                    &result,
+                    &store,
+                    now.as_deref(),
+                    cli.json,
+                )
+            }
+            cli::ProviderCommands::Reclaim { task, new_provider } => {
+                commands::exec_fed_cmd::run_reclaim(
+                    &workgraph_dir,
+                    &task,
+                    new_provider.as_deref(),
+                    cli.json,
+                )
+            }
+            cli::ProviderCommands::Verify {
+                result,
+                verifier,
+                pinned_spec,
+                checkability,
+                store,
+            } => commands::exec_fed_cmd::run_verify(
+                &workgraph_dir,
+                &result,
+                &verifier,
+                &pinned_spec,
+                &checkability,
+                &store,
+                cli.json,
+            ),
+            cli::ProviderCommands::Show { task, sensitivity } => commands::exec_fed_cmd::run_show(
+                &workgraph_dir,
+                &task,
+                sensitivity.as_deref(),
+                cli.json,
+            ),
+            cli::ProviderCommands::Providers => {
+                commands::exec_fed_cmd::run_providers(&workgraph_dir, cli.json)
+            }
+        },
     }
 }
 

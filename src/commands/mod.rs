@@ -52,6 +52,7 @@ pub mod eval_scaffold;
 pub mod evaluate;
 pub mod evolve;
 pub mod exec;
+pub mod exec_fed_cmd;
 pub mod fail;
 pub mod fed_node;
 pub mod forecast;

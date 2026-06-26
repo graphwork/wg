@@ -357,9 +357,10 @@ pub fn run_lightweight_llm_call(
             | ExecutorKind::Amplifier
             | ExecutorKind::Octomind
             | ExecutorKind::Dexto
-            | ExecutorKind::Pi => {
-                // Shell and external task/chat executors do not make
-                // sense for a lightweight one-shot LLM call; degrade to the
+            | ExecutorKind::Pi
+            | ExecutorKind::RemoteRunner => {
+                // Shell, external task/chat executors, and the WG-Exec remote runner do
+                // not make sense for a lightweight one-shot LLM call; degrade to the
                 // safe default (claude CLI on haiku).
                 return call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs);
             }

@@ -2428,6 +2428,32 @@ pub enum Commands {
         command: ReviewCommands,
     },
 
+    /// WG-Exec — the execution-federation provider plane (Exec-Wave B spark)
+    ///
+    /// Place a task on a separately-owned remote provider, run a worker under **two
+    /// scoped attenuating UCANs (never the root key)** reading only its sealed task
+    /// slice, and accept a **signed** result back — with the provider demonstrably
+    /// unable to exceed its lease (wrong-task write / post-expiry sign / replay all
+    /// rejected), a hostile provider's corrupted result caught by a disjoint re-run vs
+    /// the pinned spec, and a confidential task to a non-attested provider **refused,
+    /// never shipped in plaintext** (fail-closed). Reuses the WG-Fed identity/UCAN/seal
+    /// substrate verbatim (no second system).
+    ///
+    /// Quick start (the six-step spark flow):
+    ///   wg provider enroll <wgid> --trust verified --model claude:opus --isolation container
+    ///   wg provider offer  --as agentG --task T --model claude:opus --isolation container \
+    ///     --sensitivity normal --provider <wgid> --store ./L --out offer.json
+    ///   wg provider claim  --as providerP --offer offer.json --store ./L --out claim.json
+    ///   wg provider grant  --as agentG --claim claim.json --task-input ./T.txt \
+    ///     --store ./L --out grant.json    # field-scan: no root key, no blanket write
+    ///   wg provider run    --as providerP --grant grant.json --store ./L --out result.json
+    ///   wg provider accept --result result.json --store ./L
+    ///   wg provider verify --result result.json --verifier <Q> --pinned-spec ./spec.json --store ./L
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex(NexArgs),
 
@@ -3478,6 +3504,191 @@ pub enum ReviewCommands {
         #[arg(long)]
         cid: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ProviderCommands {
+    /// Enroll (or update) a provider in the authorizer's pool at an authorizer-asserted
+    /// trust level + advertised capability. Trust is the authorizer's to set — never
+    /// self-certified by the provider (ADR-E1 D6).
+    Enroll {
+        /// The provider's `wgid:` address.
+        provider: String,
+        /// Authorizer-asserted trust: verified | provisional | unknown.
+        #[arg(long, default_value = "provisional")]
+        trust: String,
+        /// The model/handler the provider offers.
+        #[arg(long, default_value = "claude:opus")]
+        model: String,
+        /// Advertised isolation class: process | container | vm | tee.
+        #[arg(long, default_value = "container")]
+        isolation: String,
+        /// Mark the isolation class as attestation-backed (a verified quote). v1's
+        /// attestation slot has an empty allow-list, so this stays false in the spark.
+        #[arg(long)]
+        attested: bool,
+    },
+
+    /// Emit a signed `PlacementOffer` after the fail-closed filter+leash. A confidential
+    /// task to a non-attested provider, or an unlabeled task, is REFUSED here — no offer
+    /// is written, so context is never shipped (ADR-E2 D2/D-i).
+    Offer {
+        /// The authorizer/principal G's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The task id to place.
+        #[arg(long)]
+        task: String,
+        /// Required model/handler.
+        #[arg(long, default_value = "claude:opus")]
+        model: String,
+        /// Minimum isolation class.
+        #[arg(long, default_value = "container")]
+        isolation: String,
+        /// Sensitivity: normal | high | confidential. Absent ⇒ unlabeled (fails closed).
+        #[arg(long)]
+        sensitivity: Option<String>,
+        /// The provider's `wgid:` this offer is pushed to.
+        #[arg(long)]
+        provider: String,
+        /// Where to write the signed offer JSON.
+        #[arg(long)]
+        out: String,
+    },
+
+    /// A provider builds a signed `Claim` against an offer (the eligibility proof). It
+    /// advertises capability + signs; it does NOT authorize itself to run (ADR-E1 D2).
+    Claim {
+        /// The provider's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The offer JSON to claim.
+        #[arg(long)]
+        offer: String,
+        /// The dumb/untrusted store (directory or http:// node) for identity resolution.
+        #[arg(long)]
+        store: String,
+        /// Where to write the signed claim JSON.
+        #[arg(long)]
+        out: String,
+    },
+
+    /// The authorizer issues a `RunGrant`: the two scoped attenuating UCANs (act-as-agent
+    /// + graph-write-task-only, NEVER the root key / blanket write) + the sealed context
+    /// slice + the signed lease (ADR-E3 D1). The output field-scan is the step-1 proof.
+    Grant {
+        /// The authorizer/principal G's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The claim JSON to grant against.
+        #[arg(long)]
+        claim: String,
+        /// File holding the task's input/prompt (the minimal slice's core).
+        #[arg(long = "task-input")]
+        task_input: String,
+        /// `--after` dependency artifacts as `dep_task=path` (repeatable).
+        #[arg(long = "after")]
+        after: Vec<String>,
+        /// Override the issued UCAN TTL in seconds (e.g. a short stranger TTL for the
+        /// post-expiry assertion). Absent ⇒ the leash-decided TTL.
+        #[arg(long = "ucan-ttl-secs")]
+        ucan_ttl_secs: Option<i64>,
+        /// The dumb/untrusted store for identity resolution + the provider enc key.
+        #[arg(long)]
+        store: String,
+        /// Where to write the signed grant JSON.
+        #[arg(long)]
+        out: String,
+    },
+
+    /// The worker on the provider: verify the grant + both UCANs offline, open the sealed
+    /// slice (asserting it is exactly the configured tier, no out-of-slice secret), and
+    /// emit a `ResultEnvelope` signed by the delegated signer.
+    Run {
+        /// The provider's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The grant JSON to run under.
+        #[arg(long)]
+        grant: String,
+        /// The dumb/untrusted store for identity resolution.
+        #[arg(long)]
+        store: String,
+        /// Where to write the signed result JSON.
+        #[arg(long)]
+        out: String,
+        /// Aim the write at a DIFFERENT task (the over-scope assertion — step 4i). Absent
+        /// ⇒ the grant's own task.
+        #[arg(long = "target-task")]
+        target_task: Option<String>,
+        /// Produce the hostile corrupted diff (backdoor + test-poisoning) for step 5.
+        #[arg(long)]
+        corrupt: bool,
+        /// A probe string the test seeds outside the slice; assert it never leaks (step 2).
+        #[arg(long = "scope-probe")]
+        scope_probe: Option<String>,
+    },
+
+    /// The authorizer's canonical-write accept: attribution (rejecting unsigned /
+    /// wrong-signed / expired) + task-scoped graph-write authorization (rejecting a
+    /// different-task write) + the atomic epoch CAS (rejecting stale / replayed writes).
+    Accept {
+        /// The result JSON to accept.
+        #[arg(long)]
+        result: String,
+        /// The dumb/untrusted store for identity resolution.
+        #[arg(long)]
+        store: String,
+        /// Override the clock (RFC3339) — used for the post-expiry assertion (step 4ii).
+        #[arg(long)]
+        now: Option<String>,
+    },
+
+    /// Reclaim a task, bumping the monotonic lease epoch. The old worker's epoch is now
+    /// stale; any late write/renewal it produces is fenced out (ADR-E3 D6).
+    Reclaim {
+        /// The task id to reclaim.
+        #[arg(long)]
+        task: String,
+        /// The new provider to re-place onto (display only in the spark).
+        #[arg(long = "new-provider")]
+        new_provider: Option<String>,
+    },
+
+    /// The integrity leash: attribution + a deterministic re-run in a TRUSTED DOMAIN
+    /// (never the producer — X-5) vs the authorizer's PINNED spec (not the provider's
+    /// shipped tests — X-6). Catches a corrupted result, flags test-poisoning (ADR-E4 D3).
+    Verify {
+        /// The result JSON to verify.
+        #[arg(long)]
+        result: String,
+        /// The disjoint verifier's `wgid:` — MUST differ from the producer (X-5).
+        #[arg(long)]
+        verifier: String,
+        /// The authorizer's pinned acceptance spec (JSON: {task_id, required, forbidden}).
+        #[arg(long = "pinned-spec")]
+        pinned_spec: String,
+        /// Checkability class: checkable | semi | non.
+        #[arg(long, default_value = "checkable")]
+        checkability: String,
+        /// The dumb/untrusted store for identity resolution.
+        #[arg(long)]
+        store: String,
+    },
+
+    /// Surface the applied lease + (recomputed) leash for a task (`wg show` parity).
+    Show {
+        /// The task id.
+        #[arg(long)]
+        task: String,
+        /// Sensitivity to recompute the leash for (display only).
+        #[arg(long)]
+        sensitivity: Option<String>,
+    },
+
+    /// List the authorizer's known pool with trust + observed liveness.
+    #[command(alias = "list")]
+    Providers,
 }
 
 #[derive(Subcommand)]
@@ -5866,6 +6077,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ApplyPlacement { .. } => "apply-placement",
         Commands::Session { .. } => "session",
         Commands::Review { .. } => "review",
+        Commands::Provider { .. } => "provider",
     }
 }
 
@@ -5951,6 +6163,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Secret { .. }
             | Commands::Identity { .. }
             | Commands::Review { .. }
+            | Commands::Provider { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
