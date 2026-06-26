@@ -4,7 +4,7 @@
 **Date:** 2026-06-26
 **Decision:** Context confidentiality on borrowed compute has exactly **three levers along the one leash dial**: **trust (A)** — the provider sees plaintext, acceptable *only* on a `Verified` box you own; **minimize (B)** — ship the smallest `ContextScope` slice, which bounds blast radius but is **NOT confidentiality** (the provider reads its slice and every token of it); and **attest (C)** — a TEE the operator runs but provably cannot read, the *only* lever that defends context against a provider you do not trust. **A task that requires confidentiality routes to an *attested* provider (C) or is *refused* — never to A, never to B** (FR-K5, loud). We ship C's **attestation slot** (the handshake interface + the seal-context-to-quote hook) **early** — before any enclave exists — so confidential work is a provider-capability away rather than a redesign; v1's payload behind the slot is "trust the pool, or refuse, loudly," and the real enclave lands in Exec-Wave D. **Secrets** are never long-lived plaintext on an untrusted provider (authorizer-held + privileged-op callback, or sealed-to-attestation, FR-K2). **Minimal context** defaults to the smallest slice and widens on demonstrated need, with sensitivity **taint-tracked through `--after` edges** (the slice-builder is the confidentiality TCB, X-2). Degradation is **loud, never silent** (FR-K1/K5, D-i fail-closed).
 
-> **This is one of the two load-bearing execution ADRs** (with ADR-E3, result
+> **This is one of the two load-bearing execution ADRs** (with ADR-E4, result
 > integrity). It owns **HQ1 — context confidentiality on borrowed compute, *the*
 > execution-plane crux** — and the confidentiality-tier call the decision memo
 > demands be made *plainly*. The decision was *made* in the execution-federation
@@ -17,12 +17,19 @@
 > the vouched-overflow tier) — that is settled (memo §1/§2, defended adversarially
 > in `docs/execution-federation-study/05-adversarial-evaluation.md` §3.1).
 >
+> **A numbering note.** The decision memo §6 labels the *result-integrity* stub
+> **ADR-E3** and the *capability/lease* stub **ADR-E4**; the Exec-Wave A task graph
+> **swaps** them. In this package **ADR-E3 = capability & lease**
+> (`docs/ADR-exec-e3-capability-lease.md`) and **ADR-E4 = result integrity &
+> verification** (`docs/ADR-exec-e4-verification.md`) — *same decisions, swapped
+> labels*; this ADR's cross-references below use the task-graph numbering.
+>
 > **It invents no identity, capability, or crypto.** Confidential transit reuses
 > WG-Fed's per-recipient sealed envelopes (`docs/ADR-fed-002` transport,
 > `docs/ADR-fed-001` keys); the secrets-off-the-provider callback rides WG-Fed's
 > custodian-held-root + ssh-agent-style "sign this digest" boundary
 > (`docs/ADR-fed-003` §D1) and the two scoped attenuating UCANs (ADR-fed-003 §D3,
-> formalized for execution in **ADR-E4**); the sealed-state-at-rest story composes
+> formalized for execution in **ADR-E3**); the sealed-state-at-rest story composes
 > with the loadable-state safety pipeline (`docs/ADR-fed-004` §D6). The boundary is
 > explicit: **identity/delegation/crypto formats are inherited from WG-Fed; the
 > *confidentiality policy* — the three tiers, the C-or-refuse rule, the attestation
@@ -157,13 +164,13 @@ must not yield the authorizer's keys:
 
 - **Trusted pool (A):** plaintext-for-the-task-only is acceptable (you own the box);
   even here the worker never holds a *standing root* credential — it holds the two
-  task-scoped attenuating UCANs (ADR-E4 / ADR-fed-003 §D3), never the agent's root
+  task-scoped attenuating UCANs (ADR-E3 / ADR-fed-003 §D3), never the agent's root
   key (FR-C1).
 - **Low-trust (B / cooperative):** **authority stays *off* the provider.** The
   authorizer holds the secret and the worker reaches back via the **privileged-op
   callback** (ssh-agent-style "sign/do this") — which is **intent-bound,
   rate-limited, budget-metered, and logged** so it cannot be turned into a signing or
-  free-inference oracle (doc 05 X-3, formalized in ADR-E4). The provider gets the
+  free-inference oracle (doc 05 X-3, formalized in ADR-E3). The provider gets the
   *use* of a capability for the task, never the *bytes* of a long-lived credential.
 - **Confidential (C):** secrets are **sealed to the attestation** — released into the
   enclave only against a *verified* quote (sealed-to-attested-key, the key-release
@@ -260,7 +267,7 @@ minimization is *named* as blast-radius-only, not sold as confidentiality (D1/D4
 the applied `context{scope_tier, seal}` is **surfaced** (`wg show` / `wg providers`)
 and **linted** (`wg config lint`, which already exists). And because a *broken*
 attestation forges both confidentiality and integrity (C-ii), **C is layered with the
-ADR-E3 verification levers** (eval-gate + cross-domain re-run where checkable), never
+ADR-E4 verification levers** (eval-gate + cross-domain re-run where checkable), never
 trusted as the only evidence. The failure direction is **always over-protection
 (refuse), never under-protection (silent exposure).**
 
@@ -272,7 +279,7 @@ trusted as the only evidence. The failure direction is **always over-protection
 (`docs/execution-federation-study/06` §1/§2.2/§3 HQ1+HQ8/§6 ADR-E2 stub); this ADR
 formalizes the decision and resolves the stub's three open questions (below). It is
 one of four Exec-Wave A deliverables (ADR-E1 placement, ADR-E2 confidentiality,
-ADR-E3 integrity, ADR-E4 capability/lease). **No execution code lands until all four
+ADR-E3 capability/lease, ADR-E4 integrity). **No execution code lands until all four
 are Accepted** (memo §5). Depends on WG-Fed **ADR-001 (identity)**, **ADR-002
 (transport/encryption)**, **ADR-003 (custody/UCAN)**, and **ADR-004 (loadable-state
 safety)** Accepted — the substrate this ADR composes with and does not redefine.
@@ -330,7 +337,7 @@ safety)** Accepted — the substrate this ADR composes with and does not redefin
   not a self-claim (D2/D5).
 - **Attestation as a sole oracle.** Rejected: doc 05 C-ii — a *broken* attestation
   forges confidentiality *and* integrity at once, so it is **worse than none** if
-  trusted alone. C is defence-in-depth alongside the ADR-E3 levers (D7).
+  trusted alone. C is defence-in-depth alongside the ADR-E4 levers (D7).
 - **Building our own TEE / enclave / attestation service.** Rejected: memo §7
   non-goal 3 / doc 03 §5 — we **design the slot** and *use* enclave primitives;
   implementing an enclave is out of scope and out of our competence to get right.
@@ -403,7 +410,7 @@ that drives it. Sensitivity must be **inferred + labelled, not solely self-asser
   level), **taint inherited through `--after`** from the sensitivity of dependency
   artifacts, secret-touching signals (does the task's scope reference credentials /
   `wg secret` / a sealed artifact?), and the target's blast radius (foundational/root
-  graph position ⇒ higher floor, mirroring the cross-task-poison constraint, ADR-E3
+  graph position ⇒ higher floor, mirroring the cross-task-poison constraint, ADR-E4
   D-iii / TC8).
 - **Three-way verdict, fail-closed:** **`normal`** (eligible for A) only when the
   task is *explicitly and inferably* normal and clears every taint signal;
@@ -501,12 +508,12 @@ allow-list has no consumers until a real enclave fills the slot (D5) — but the
 - `docs/ADR-fed-003-custody-delegation-recovery.md` — §D1 (custodian-held root +
   ssh-agent boundary the secrets-off-the-provider callback inherits), §D2 (the
   leash-as-a-dial amendment this tier's `context` output is one face of), §D3 (the
-  attenuating UCANs ADR-E4 formalizes for execution).
+  attenuating UCANs ADR-E3 formalizes for execution).
 - `docs/ADR-fed-004-loadable-state-safety.md` — §D6 (loaded state is untrusted input;
   the sealed-state-at-rest + provenance posture this ADR's at-rest row composes with).
 - `docs/ADR-content-safety-001-review-gate.md` — §RA-9 (taint-inference fail-closed
   routing the sensitivity classifier OQ2 reuses).
 - **Sibling Exec-Wave A ADRs:** `docs/ADR-exec-e1-*` (placement — confidential routing
-  is a placement constraint), `docs/ADR-exec-e3-*` (result integrity — the layered
-  verification levers C is defence-in-depth *alongside*), `docs/ADR-exec-e4-*`
-  (capability/lease — the two scoped UCANs + the privileged-op callback secrets ride).
+  is a placement constraint), `docs/ADR-exec-e3-*` (capability/lease — the two scoped
+  UCANs + the privileged-op callback secrets ride), `docs/ADR-exec-e4-*` (result
+  integrity — the layered verification levers C is defence-in-depth *alongside*).

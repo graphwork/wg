@@ -5,8 +5,8 @@
 **Decision:** Placement authority is **per-authorizer** — each WG schedules its own ready tasks onto providers it knows; **there is no central scheduler, no mandatory directory, no global queue in the correctness path**. The default is **push** (the authorizer assigns); **pull** (a provider claims work via a capability-gated `Claim`) is a first-class option, but a `Claim` is a *request* the authorizer independently verifies — the authorizer's signed `RunGrant` is the actual placement decision. Matching is a **hard filter** (capability match + trust-floor) followed by an **advisory, deterministic rank**; rank can reorder eligible providers but can **never** promote a provider past the trust-floor. **One mechanism spans private → cooperative → market** with only `trust_level` + the applied leash changing, never the protocol. Any central directory/reputation is an **optional hint that can only help, never override** the local trust + capability + signature check. `plan_spawn` gains a `placement ∈ {Local, Provider(wgid:)}` field; `wg claim` becomes **capability-gated**.
 
 > **This is the first execution-plane ADR (Exec-Wave A).** ADR-E2 (confidentiality
-> tier & the attestation slot), ADR-E3 (result integrity & the verification leash),
-> and ADR-E4 (capability & lease lifecycle) cite the placement mechanism, the
+> tier & the attestation slot), ADR-E3 (capability & lease lifecycle), and ADR-E4
+> (result integrity & the verification leash) cite the placement mechanism, the
 > push/pull split, and the `Provider(wgid:)` seam fixed here. The decision was
 > *made* in the execution-federation decision memo
 > (`docs/execution-federation-study/06-decision-memo-and-roadmap.md` §1, §2.2, §3
@@ -15,6 +15,15 @@
 > choice (`WG-Exec` = Candidate D's leash-selector, shipped A-first, with C's
 > attested tier as the confidential escape-hatch and B as a vouched-overflow
 > cooperative) — that is settled.
+>
+> **A numbering note (the file numbering is the task-graph's, not the memo §6
+> stub's).** The decision memo §6 labels the *result-integrity* stub **ADR-E3** and
+> the *capability/lease* stub **ADR-E4**; the Exec-Wave A task graph **swaps** them so
+> the files read placement → confidentiality → capability/lease → verification. In
+> this package (and throughout this ADR's cross-references) **ADR-E3 = capability &
+> lease** (`docs/ADR-exec-e3-capability-lease.md`) and **ADR-E4 = result integrity &
+> verification** (`docs/ADR-exec-e4-verification.md`) — *same decisions, swapped
+> labels*. The acceptance brief uses this task-graph numbering.
 >
 > **It rests on WG-Fed and invents no second system.** Provider/authorizer/worker
 > identities are `wgid:` (**ADR-fed-001**, Accepted); the scoped capabilities a
@@ -91,7 +100,7 @@ The per-capability rule is fixed exactly as HQ10's table states it (and verbatim
 | Trust / identity verification | **Never** | correctness/security-critical → local self-verify against the `wgid:` sigchain |
 | Matching / scheduling | **No (per-authorizer)** | correctness-critical → never central |
 | Provider directory / discovery | Optional | convenience — loss only **degrades reach** |
-| Reputation | Optional (signed gossip) | convenience — a **hint**, never trust on sensitive work (ADR-E3) |
+| Reputation | Optional (signed gossip) | convenience — a **hint**, never trust on sensitive work (ADR-E4) |
 
 The binding invariant, inherited verbatim: **a central component is a hint that can
 only help, never override a self-verification** (fail-safe, never fail-open). Lose the
@@ -107,7 +116,7 @@ Placement has **two directions**, and the authorizer is the placement authority 
 
 - **Push (default).** The authorizer's dispatcher selects a provider (D3) for a ready
   task and emits a `PlacementOffer`; on acceptance it issues a `RunGrant` (the two
-  scoped UCANs + the sealed context bundle, per ADR-E4/ADR-E2). This is the trusted
+  scoped UCANs + the sealed context bundle, per ADR-E3/ADR-E2). This is the trusted
   private-pool path and the nearest lift of today's behavior.
 
 - **Pull (first-class option).** A provider with spare capacity emits a **`Claim`**
@@ -125,7 +134,7 @@ path: the claimer's self-asserted eligibility is just a hint the authorizer
 self-checks before granting.
 
 Claim **contention** (two providers claim the same task) is resolved by the **same
-monotonic lease-epoch atomic compare-and-set** that ADR-E4 uses for reclaim fencing
+monotonic lease-epoch atomic compare-and-set** that ADR-E3 uses for reclaim fencing
 (HQ6/X-4): the first `Claim` the authorizer grants wins the CAS on the task's lease;
 a competing grant attempt sees a stale epoch and is rejected. No auction, no global
 lock — one well-understood concurrency primitive shared with the lease lifecycle.
@@ -142,7 +151,7 @@ phases**, and the order is load-bearing:
      low-trust/confidential routing the class must be **attested, not self-advertised**
      (HQ8/TC10, ADR-E2) — an unverifiable advertisement does not satisfy the filter.
    - **Trust-floor** — `provider.trust_level ≥ leash(task).trust_floor`, where the
-     floor is whatever the **fail-closed leash** (HQ11, ADR-E2/E3) demands for the
+     floor is whatever the **fail-closed leash** (HQ11, ADR-E2/E4) demands for the
      task's sensitivity. **Trust is the authorizer's to assert from its own local
      record, never the provider's to self-certify.** An unlabeled task fails closed
      (refuse/C, never A — D-i); a confidential task with no attested-confidential
@@ -173,7 +182,7 @@ classes (FR-P4):
 | Pool class | What changes | What does **not** change |
 |---|---|---|
 | **Private pool** (own boxes) | `Verified` trust, slack leash, push-default | the placement protocol |
-| **Vouched cooperative** (B overflow) | `Provisional` trust, tighter leash, pull first-class, re-run verification (ADR-E3) | the placement protocol |
+| **Vouched cooperative** (B overflow) | `Provisional` trust, tighter leash, pull first-class, re-run verification (ADR-E4) | the placement protocol |
 | **Open market** (v1 **non-goal**) | `Unknown` trust, tightest leash, fairness/auction layer | the placement protocol |
 
 This is the EX6 spine made concrete: *"moving a provider from my pool to a stranger's
@@ -197,7 +206,7 @@ override**. Concretely:
   locally (HQ10).
 - Reputation gossip is **signed** and **advisory**: it can only feed the *rank*
   (D3 phase 2), never the *filter*. The behave-then-defect attack (P6) is handled
-  **structurally** by ADR-E3's verification leash (applied regardless of accrued
+  **structurally** by ADR-E4's verification leash (applied regardless of accrued
   reputation), not by trusting a score (HQ4/X-7).
 
 The **private-pool/per-authorizer case needs none of this** — it works with **zero**
@@ -259,9 +268,10 @@ code lands until **ADR-E1/E2/E3/E4** are Accepted (memo §5, Exec-Wave A).
   continue to work because a local worker trivially satisfies the trusted-pool filter.
 - **Enables FR-P1–P5** (per-authorizer placement, push, capability-gated pull,
   one-mechanism-spans-pools, filter-plus-rank matching). It composes with ADR-E2 (the
-  leash supplies the `trust_floor` the filter reads), ADR-E3 (rank reads reputation as
-  an advisory hint only; verification is applied independent of rank), and ADR-E4 (the
-  `RunGrant` carries the scoped UCANs; claim contention reuses the lease-epoch CAS).
+  leash supplies the `trust_floor` the filter reads), ADR-E3 (the `RunGrant` carries
+  the scoped UCANs; claim contention reuses the lease-epoch CAS), and ADR-E4 (rank
+  reads reputation as an advisory hint only; verification is applied independent of
+  rank).
 - **No central scheduler ⇒ no global optimization or cross-authorizer fairness.** Each
   authorizer sees only *its* providers' state. Accepted at work-speed (NFR-2); the
   open-market scale case is a non-goal (memo §7 non-goals 1/6).
@@ -331,7 +341,7 @@ Erik's to tune:
 3. **Rank inputs are locally-held or signed.** Cost is the authorizer's own metered
    rate (`graph::parse_token_usage` / `wg spend`, the budget substrate); latency is the
    authorizer's *observed* liveness/responsiveness, not the provider's self-report;
-   reputation is the local/advisory signed score (ADR-E3) — never a central ledger.
+   reputation is the local/advisory signed score (ADR-E4) — never a central ledger.
 
 **Default ordering (proposed; flagged).** For v1 — whose default tier is the
 **authorizer-funded trusted private pool** (memo §2.2, HQ9) — cost is largely internal
@@ -344,7 +354,7 @@ redoing work*, not overspend. The proposed default is therefore a **lexicographi
 > **(4) deterministic hash tiebreak**.
 
 When the **B verified-overflow tier** is in play (someone else's metered compute,
-ADR-E3), a deployment will reasonably want **cost-first**; that is a one-line reweight,
+ADR-E4), a deployment will reasonably want **cost-first**; that is a one-line reweight,
 not a redesign, because the *inputs* and *invariants* above are fixed.
 
 *Why.* Putting liveness/free-capacity first directly serves the work-speed goal (NFR-2)
@@ -376,10 +386,10 @@ handled **without** an auction:
   Bounded structurally because **the authorizer, not the claimer, decides placement**
   (D2): a `Claim` is a request the authorizer may decline. Hard/foundational/root tasks
   are **pushed** to high-trust providers under the cross-task-poison placement
-  constraint (foundational ⇒ A/C tier, leaf ⇒ B — memo §1 commitment 3, ADR-E3), so
+  constraint (foundational ⇒ A/C tier, leaf ⇒ B — memo §1 commitment 3, ADR-E4), so
   they are never left in the queue to be cherry-picked around in the first place.
 - **Claim contention / thundering herd** (many providers race the same task). Resolved
-  by the **lease-epoch atomic CAS** (D2, shared with ADR-E4): the first granted `Claim`
+  by the **lease-epoch atomic CAS** (D2, shared with ADR-E3): the first granted `Claim`
   wins; losers get a stale-epoch rejection. No global lock, no auction.
 
 **Minimal anti-starvation (proposed; flagged).** As the one positive fairness nudge in
@@ -418,7 +428,7 @@ by checking each part **locally**, never by trusting the claimer's self-assertio
    **insufficient** — the proof must reference an **attestation** binding the
    isolation/TEE class to the provider's `wgid:` (HQ8/TC10, ADR-E2); absent that, the
    task is simply not claim-eligible by that provider. An advertised-but-undelivered
-   capability is caught after-the-fact and penalizes reputation (FR-R4, ADR-E3).
+   capability is caught after-the-fact and penalizes reputation (FR-R4, ADR-E4).
 3. **Trust-floor proof.** Eligibility requires
    `provider.trust_level ≥ leash(task).trust_floor`, evaluated **by the authorizer
    against its own local `ProviderRegistry` trust record** — **never** asserted by the
@@ -434,7 +444,7 @@ by checking each part **locally**, never by trusting the claimer's self-assertio
 The **invariant that ties it together:** a `Claim` is **necessary but not sufficient**
 (D2). Even a perfectly-formed, fully-attested claim does **not** authorize execution;
 only the authorizer's signed **`RunGrant`** (the two scoped UCANs + sealed bundle,
-ADR-E4/ADR-E2) does. This keeps the HQ10 invariant intact on the pull path: the
+ADR-E3/ADR-E2) does. This keeps the HQ10 invariant intact on the pull path: the
 provider's self-asserted eligibility is a **request the authorizer independently
 verifies and may decline** — a compromised directory or a lying provider can shape what
 is *requested*, never what is *granted*.
@@ -477,17 +487,19 @@ performance choice for the Exec-Wave B/C build, not a placement-model decision.
   contention), X-7 (poisoned reputation cannot promote past the verification gate),
   B-i (open-market sybil — why the market is a non-goal), D-i (fail-closed unlabeled
   default).
-- **`docs/ADR-fed-001-identity-key-model.md`** (Accepted) — `wgid:` identity, the
+- **`docs/ADR-fed-001-identity-key-model.md`** (Proposed; a gating dependency — must
+  be Accepted first, memo §5) — `wgid:` identity, the
   sigchain, and §D5 "verification is never central; central = a hint that can't
   override self-verify" (the HQ6 invariant this ADR inherits for placement); OQ4 (the
   freshness attestation OQ3 re-checks).
-- **`docs/ADR-fed-003-custody-delegation-recovery.md`** (Accepted) — the
+- **`docs/ADR-fed-003-custody-delegation-recovery.md`** (Proposed; a gating dependency
+  — must be Accepted first, memo §5) — the
   custodian-held root + ssh-agent-style signing boundary and the **attenuating-only
   UCAN** the `RunGrant` carries (the scoped capabilities placement issues; the worker
   never holds root — invent no second delegation system, NFR-4).
 - Sibling execution ADRs: **ADR-E2** (confidentiality tier & the attestation slot —
   supplies the leash `trust_floor` and the attested-isolation requirement the D3
-  filter reads), **ADR-E3** (result integrity & the verification leash — the advisory
-  reputation rank input and the cross-task-poison push constraint), **ADR-E4**
-  (capability & lease lifecycle — the `RunGrant` UCANs and the lease-epoch CAS reused
-  for claim contention).
+  filter reads), **ADR-E3** (capability & lease lifecycle — the `RunGrant` UCANs and
+  the lease-epoch CAS reused for claim contention), **ADR-E4** (result integrity & the
+  verification leash — the advisory reputation rank input and the cross-task-poison
+  push constraint).
