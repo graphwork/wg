@@ -509,6 +509,19 @@ impl SignedEvent {
 // ── Shared verification + sealing helpers ──────────────────────────────────────
 
 /// Verify `sig_hex` over `value` (minus `sig`) against any key authorized to sign
+/// for this identity (root or an active signer). The public entry point reused by
+/// the transport node's write-auth (`super::node`) and [`super::transport::Head`]:
+/// "this body was signed by a key the sigchain authorizes for this wgid".
+pub fn verify_signed_value(
+    value: &Value,
+    sig_hex: &str,
+    auth: &AuthorizedKeys,
+    what: &str,
+) -> Result<()> {
+    verify_sig_against_authorized(value, sig_hex, auth, what)
+}
+
+/// Verify `sig_hex` over `value` (minus `sig`) against any key authorized to sign
 /// for this identity (root or an active signer). Tries each; succeeds if any does.
 fn verify_sig_against_authorized(
     value: &Value,

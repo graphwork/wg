@@ -1676,6 +1676,15 @@ description = "Pins fed-wave4 (WG-Fed Wave 4, cross-graph addressing + transport
 timeout_seconds = 120
 
 [[scenario]]
+name = "harden_node_network"
+script = "scenarios/harden_node_network.sh"
+owners = [
+    "harden-node",
+]
+description = "Pins harden-node (lock down the WG-Fed network node — the one exposed surface; docs/prod-audit/00 B1/B2/M3/M4). One `wg fed-node serve` HTTP node with tightened env-overridable limits (WG_FED_NODE_INBOX_MAX_EVENTS, WG_FED_NODE_READ_TIMEOUT_MS) + one isolated $HOME keystore. Hostile clients (curl + raw python sockets) prove the abuse bounds while a legit owner still works: (0) node binds + answers /health; (1) a real owner `wg identity publish` is ACCEPTED through the hardened node (owner-signed head + attestation + content-addressed objects all pass); (2) write-auth B1 — the owner's real head with its `sig` STRIPPED is REJECTED (403) while the original owner-signed head is re-accepted (200); (3) CID integrity M3 — an object PUT under a chosen CID that is not hash(bytes) is REJECTED (409, no content-address squatting); (4) bounded reads B2 — a request declaring a 4 GiB body (none sent) is REJECTED (413) without pre-allocating the lied length; (5) inbox flood quota B1/M4 — past the per-inbox cap delivery is REFUSED (507); (6) inbox GC M4 — a delivered event is listed, then DELETEd (delete-after-ack) and reclaimed; (7) slow-loris M4 — a connection that opens and never finishes its request is closed by the read timeout (bounded, not pinned). The node is untrusted: legit bytes are self-verifying; every hostile write is refused at the boundary."
+timeout_seconds = 120
+
+[[scenario]]
 name = "federation_recovery_portable_state"
 script = "scenarios/federation_recovery_portable_state.sh"
 owners = [

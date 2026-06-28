@@ -473,14 +473,14 @@ fn republish(workgraph_dir: &Path, id: &mut LocalIdentity, store: &dyn FedStore)
         .map(|h| h.snapshots)
         .unwrap_or_default();
     let att = emit_attestation(workgraph_dir, store, id, ROUTINE_DELTA_SECS)?;
-    store.put_head(
-        &id.wgid,
-        &Head {
-            record: record_cid,
-            snapshots,
-            attestation: Some(att.cid()),
-        },
-    )?;
+    let mut head = Head {
+        record: record_cid,
+        snapshots,
+        attestation: Some(att.cid()),
+        sig: String::new(),
+    };
+    head.sign(&cust, &sk)?; // owner-sign for the node's write-auth (B1)
+    store.put_head(&id.wgid, &head)?;
     save_local(workgraph_dir, id)?;
     Ok(())
 }
@@ -674,14 +674,16 @@ pub fn run_publish(
     let att = emit_attestation(workgraph_dir, store.as_ref(), &mut id, ttl)?;
     let att_cid = att.cid();
 
-    store.put_head(
-        &id.wgid,
-        &Head {
-            record: record_cid.clone(),
-            snapshots: vec![snap_cid.clone()],
-            attestation: Some(att_cid.clone()),
-        },
-    )?;
+    // Sign the head so the (untrusted) network node can authenticate the owner before
+    // accepting the write (audit B1) — the local directory rung ignores the signature.
+    let mut head = Head {
+        record: record_cid.clone(),
+        snapshots: vec![snap_cid.clone()],
+        attestation: Some(att_cid.clone()),
+        sig: String::new(),
+    };
+    head.sign(&cust, &id.signer_kid)?;
+    store.put_head(&id.wgid, &head)?;
 
     if json {
         println!(
@@ -723,9 +725,12 @@ pub fn run_attest(
     let store = open_store(store_loc)?;
     let ttl = fresh_ttl.unwrap_or(ROUTINE_DELTA_SECS);
     let att = emit_attestation(workgraph_dir, store.as_ref(), &mut id, ttl)?;
-    // Update the head's attestation pointer if a head already exists.
+    // Update the head's attestation pointer if a head already exists, then re-sign so
+    // the mutated head re-authenticates against the node's write-auth (audit B1).
     if let Ok(mut head) = store.get_head(&id.wgid) {
         head.attestation = Some(att.cid());
+        let cust = Custodian::new(name);
+        head.sign(&cust, id.signer_kid())?;
         store.put_head(&id.wgid, &head)?;
     }
     if json {

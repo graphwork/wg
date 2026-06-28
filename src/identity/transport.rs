@@ -41,6 +41,12 @@ pub fn sanitize(s: &str) -> String {
 
 /// A head pointer published for a `wgid` (mutable, untrusted — it only points at
 /// self-verifying objects, so a forged head cannot forge an identity).
+///
+/// On the **dumb directory** rung ([`FileStore`]) a head is a trusted local pointer
+/// and `sig` may be empty. On the **network node** rung ([`super::node`]) — the one
+/// exposed surface — the node refuses an unsigned or wrong-key head: the `sig` is an
+/// ed25519 signature by a key the wgid's sigchain authorizes, so only the owner can
+/// (re)publish or roll back its own head (closes the head-squat threat, audit B1).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Head {
     pub record: String,
@@ -49,6 +55,32 @@ pub struct Head {
     /// CID of the latest published freshness attestation, if any (S-3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<String>,
+    /// ed25519 signature over the canonical head (with `sig` removed) by an
+    /// authorized signer/root of the wgid this head is published for. Empty on the
+    /// local directory rung; mandatory + checked on the network node (audit B1).
+    #[serde(default)]
+    pub sig: String,
+}
+
+impl Head {
+    fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("Head serializes")
+    }
+
+    /// Sign this head with `custodian`'s key `signer_kid` so the network node can
+    /// authenticate the owner (the directory rung leaves it empty). Idempotent: a
+    /// later mutation (e.g. updating `attestation`) must re-`sign`.
+    pub fn sign(&mut self, custodian: &super::keys::Custodian, signer_kid: &str) -> Result<()> {
+        let digest = super::signing_digest(&self.to_value());
+        self.sig = hex::encode(custodian.sign_digest(signer_kid, &digest)?);
+        Ok(())
+    }
+
+    /// Verify this head's `sig` against the wgid's authorized key set (the network
+    /// node's write-auth check). A missing or wrong-key signature fails.
+    pub fn verify(&self, auth: &super::sigchain::AuthorizedKeys) -> Result<()> {
+        super::envelope::verify_signed_value(&self.to_value(), &self.sig, auth, "Head")
+    }
 }
 
 /// One event sitting in an inbox: its id (dedup key) and raw bytes (verbatim, so a
@@ -79,6 +111,14 @@ pub trait FedStore {
     fn put_event(&self, recipient_wgid: &str, event_id: &str, bytes: &[u8]) -> Result<()>;
     /// List + fetch all events currently in a recipient's inbox (sorted by id).
     fn list_events(&self, recipient_wgid: &str) -> Result<Vec<InboxEvent>>;
+    /// Delete one event from a recipient's inbox (delete-after-ack). Removing an
+    /// already-absent event is a no-op success, so an ack is idempotent. This is the
+    /// reclaim half of inbox GC (audit M4): a polled+acked event stops occupying the
+    /// inbox so it cannot grow without bound.
+    fn delete_event(&self, recipient_wgid: &str, event_id: &str) -> Result<()> {
+        let _ = (recipient_wgid, event_id);
+        Ok(())
+    }
 
     /// Publish a freshness attestation for a `wgid` (S-3; latest wins).
     fn put_attestation(&self, wgid: &str, bytes: &[u8]) -> Result<()>;
@@ -131,6 +171,72 @@ impl FileStore {
     }
     fn attest_dir(&self) -> PathBuf {
         self.root.join("attestations")
+    }
+
+    /// `(event_count, total_bytes)` currently held in one recipient's inbox — the
+    /// input to the node's per-inbox flood quota (audit B1/M4). Cheap: a single
+    /// `read_dir` + `metadata` pass, no payload reads.
+    pub fn inbox_stats(&self, recipient_wgid: &str) -> (usize, u64) {
+        let dir = self.inbox_dir(recipient_wgid);
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if e.path().extension().and_then(|x| x.to_str()) == Some("json") {
+                    count += 1;
+                    if let Ok(m) = e.metadata() {
+                        bytes += m.len();
+                    }
+                }
+            }
+        }
+        (count, bytes)
+    }
+
+    /// Whether a specific event id is already present in a recipient's inbox — a cheap
+    /// path-stat used to allow an idempotent re-delivery (overwrite) even at the flood
+    /// quota, while still refusing a *new* id (audit B1/M4).
+    pub fn inbox_event_exists(&self, recipient_wgid: &str, event_id: &str) -> bool {
+        self.inbox_dir(recipient_wgid)
+            .join(format!("{}.json", sanitize(event_id)))
+            .exists()
+    }
+
+    /// Retention GC (audit M4): delete every inbox event older than `max_age` across
+    /// all recipients, so an inbox cannot grow without bound even if recipients never
+    /// ack. Returns the number reclaimed. Mtime-based (the node writes events as it
+    /// receives them); robust to a missing inbox dir.
+    pub fn gc_inboxes(&self, max_age: std::time::Duration) -> usize {
+        let now = std::time::SystemTime::now();
+        let inbox_root = self.root.join("inbox");
+        let mut reclaimed = 0usize;
+        let recipients = match std::fs::read_dir(&inbox_root) {
+            Ok(rd) => rd,
+            Err(_) => return 0,
+        };
+        for rcpt in recipients.flatten() {
+            let rd = match std::fs::read_dir(rcpt.path()) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            for ev in rd.flatten() {
+                let path = ev.path();
+                if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                    continue;
+                }
+                let too_old = ev
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| now.duration_since(t).ok())
+                    .map(|age| age > max_age)
+                    .unwrap_or(false);
+                if too_old && std::fs::remove_file(&path).is_ok() {
+                    reclaimed += 1;
+                }
+            }
+        }
+        reclaimed
     }
 }
 
@@ -188,6 +294,18 @@ impl FedStore for FileStore {
             }
         }
         Ok(out)
+    }
+
+    fn delete_event(&self, recipient_wgid: &str, event_id: &str) -> Result<()> {
+        let path = self
+            .inbox_dir(recipient_wgid)
+            .join(format!("{}.json", sanitize(event_id)));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            // Acking an already-gone event is success (idempotent).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("deleting inbox event {event_id}")),
+        }
     }
 
     fn put_attestation(&self, wgid: &str, bytes: &[u8]) -> Result<()> {
@@ -307,6 +425,27 @@ impl FedStore for HttpStore {
         if !resp.status().is_success() {
             bail!(
                 "node rejected delivery to {recipient_wgid}: HTTP {}",
+                resp.status()
+            );
+        }
+        Ok(())
+    }
+
+    fn delete_event(&self, recipient_wgid: &str, event_id: &str) -> Result<()> {
+        let url = self.url(&format!(
+            "/inbox/{}/{}",
+            sanitize(recipient_wgid),
+            sanitize(event_id)
+        ));
+        let resp = self
+            .client
+            .delete(&url)
+            .send()
+            .with_context(|| format!("DELETE {url} (ack/reclaim)"))?;
+        // A 404 means it was already gone — an ack is idempotent.
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            bail!(
+                "node rejected ack-delete for {recipient_wgid}/{event_id}: HTTP {}",
                 resp.status()
             );
         }
@@ -434,6 +573,7 @@ mod tests {
             record: "b3:rec".into(),
             snapshots: vec!["b3:snap".into()],
             attestation: Some("b3:att".into()),
+            sig: String::new(),
         };
         s.put_head("wgid:zAlice", &head).unwrap();
         let got = s.get_head("wgid:zAlice").unwrap();
