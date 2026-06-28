@@ -155,7 +155,11 @@ fn decode_pub(pub_hex: &str) -> Result<[u8; 32]> {
 
 /// Resolved sensitivity of a task (ADR-E2 D1/D4). An **`Unlabeled`** task is not a
 /// silent `Normal`: it **fails closed** (refuse / route to C, never A — D-i).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is **`Unlabeled`** on purpose: any path that deserializes a sensitivity
+/// from an older record (a pre-`exec-harden` claim/ledger with no field) lands on the
+/// fail-closed value, never a silent `Normal` (M17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Sensitivity {
     /// Explicitly + inferably normal — the only class eligible for the A (plaintext) tier.
@@ -165,6 +169,7 @@ pub enum Sensitivity {
     /// Requires confidentiality — routes to attested-C or is refused (never A/B).
     Confidential,
     /// No label resolved — fails closed (D-i): never auto-routed to A.
+    #[default]
     Unlabeled,
 }
 
@@ -183,6 +188,19 @@ impl Sensitivity {
             Sensitivity::High => "high",
             Sensitivity::Confidential => "confidential",
             Sensitivity::Unlabeled => "unlabeled",
+        }
+    }
+
+    /// A **strictness rank** (higher = more protected): `Normal(0) < High(1) <
+    /// Confidential(2) < Unlabeled(3)`. `Unlabeled` ranks strictest so a downgrade check
+    /// fails closed. Used to detect a provider trying to **downgrade** a signed offer's
+    /// sensitivity in its claim (M17) — `rank(claim) < rank(authoritative)` is a downgrade.
+    pub fn strictness_rank(self) -> u8 {
+        match self {
+            Sensitivity::Normal => 0,
+            Sensitivity::High => 1,
+            Sensitivity::Confidential => 2,
+            Sensitivity::Unlabeled => 3,
         }
     }
 }
@@ -447,6 +465,13 @@ pub struct Claim {
     pub provider: String,
     /// The provider's signed capability advertisement (model + isolation + attested).
     pub capability: CapabilityAd,
+    /// The sensitivity the provider **echoes back** from the authorizer's signed offer
+    /// (M17 — sensitivity carried into the Claim, signed by the provider). The authorizer
+    /// re-derives the AUTHORITATIVE sensitivity from its own ledger at grant; this field is
+    /// the provider's signed acknowledgement, cross-checked there for a downgrade attempt.
+    /// `#[serde(default)]` ⇒ `Unlabeled` (fail-closed) for a pre-`exec-harden` claim.
+    #[serde(default)]
+    pub sensitivity: Sensitivity,
     pub created_at: String,
     #[serde(default)]
     pub sig: String,
@@ -682,6 +707,7 @@ impl Claim {
         task_id: &str,
         provider: &str,
         capability: CapabilityAd,
+        sensitivity: Sensitivity,
         created_at: &str,
     ) -> Self {
         Self {
@@ -691,6 +717,7 @@ impl Claim {
             task_id: task_id.to_string(),
             provider: provider.to_string(),
             capability,
+            sensitivity,
             created_at: created_at.to_string(),
             sig: String::new(),
         }

@@ -226,8 +226,14 @@ wgb --json provider grant --as-name boss --claim "$scratch/claim.json" --task-in
     --store "$L" --out "$scratch/grant.json" >/dev/null 2>"$scratch/grant.err" ||
     loud_fail "IC2: grant failed: $(cat "$scratch/grant.err")"
 # The box produces a CORRUPTED result (plants a backdoor + edits the test to hide it).
-wgx --json provider run --as-name box --grant "$scratch/grant.json" --store "$L" \
-    --out "$scratch/result.json" --corrupt >/dev/null 2>"$scratch/run.err" ||
+# Drive a REAL worker via a credential-free command backend (the exec-real-run worker
+# resolves a model handler otherwise — claude:opus, which needs a login this credential-free
+# gate must not require); --corrupt grafts the hostile hunk onto its output regardless.
+WR_WORKER="$scratch/wr_worker.sh"
+printf '#!/usr/bin/env sh\nprintf -- "+fn check(tok: &str) -> bool { verify(tok) }\\n"\n' >"$WR_WORKER"
+chmod +x "$WR_WORKER"
+WG_EXEC_WORKER_CMD="sh $WR_WORKER" wgx --json provider run --as-name box --grant "$scratch/grant.json" \
+    --store "$L" --out "$scratch/result.json" --corrupt >/dev/null 2>"$scratch/run.err" ||
     loud_fail "IC2: run --corrupt failed: $(cat "$scratch/run.err")"
 
 # Default-on accept REJECTS the poisoned work product before the write.

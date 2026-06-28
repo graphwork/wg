@@ -197,13 +197,18 @@ python3 -c "import json,sys; wp=json.load(open('$good'))['work_product']; sys.ex
 echo "STEP 2 ok: real command-backend run; exact usage out=$GOOD_OUT_TOK (not the 340 constant)"
 
 # ───────────────────────────────────────────────────────────────────────────────
-# STEP 3 — The genuine result is accepted; its real usage flows through.
+# STEP 3 — The genuine result is accepted; its real usage flows through. P is enrolled
+#          provisional (the B/verified-overflow tier), so the hardened accept GATES on the
+#          integrity re-run (audit B4 — exec-harden): accept runs the pinned executable
+#          re-run BEFORE committing, and the genuine result passes (the eval-gate is not an
+#          over-block). A low-trust accept with NO --pinned-spec would (correctly) refuse.
 # ───────────────────────────────────────────────────────────────────────────────
-aout=$(wga --json provider accept --result "$good" --store "$L") || loud_fail "STEP 3: accept errored: $aout"
+aout=$(wga --json provider accept --result "$good" --store "$L" \
+    --pinned-spec "$SPEC" --verifier "$Q_WGID") || loud_fail "STEP 3: accept errored: $aout"
 [ "$(jfield "['accepted']" <<<"$aout")" = "True" ] || loud_fail "STEP 3: genuine result not accepted: $aout"
 [ "$(jfield "['usage']['output_tokens']" <<<"$aout")" = "12" ] ||
     loud_fail "STEP 3 FAILED: the real usage did not flow through accept"
-echo "STEP 3 ok: genuine result accepted, real usage carried"
+echo "STEP 3 ok: genuine result accepted via the B4 re-run gate, real usage carried"
 
 # ───────────────────────────────────────────────────────────────────────────────
 # STEP 4 — The disjoint re-run on Q ACTUALLY EXECUTES the pinned test and ACCEPTS.

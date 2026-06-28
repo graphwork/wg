@@ -133,6 +133,33 @@ pub struct LeaseState {
     /// The highest renewal epoch the authorizer has accepted (liveness).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_renewal_epoch: Option<u64>,
+    /// The authorizer's signed-offer sensitivity for this placement (M17). Re-read at
+    /// grant (re-derive the leash with the real label, not a hardcoded `Normal`) and at
+    /// accept (the fail-closed confidential/unlabeled gate + the verification depth). The
+    /// authorizer's OWN record — a provider's claim never sets it. `#[serde(default)]` ⇒
+    /// `Unlabeled` (fail-closed) for a pre-`exec-harden` ledger.
+    #[serde(default)]
+    pub sensitivity: super::Sensitivity,
+    /// Whether the task's deliverable is **checkable** (eval-gateable, S7). The B
+    /// (verified-overflow) tier's only integrity lever is the trusted-domain re-run, which
+    /// needs checkable code; a non-checkable task may not ride the B tier. Default `true`
+    /// (most code work is checkable).
+    #[serde(default = "default_true")]
+    pub checkable: bool,
+    /// The lease term (seconds without an accepted renewal ⇒ reclaimable) decided by the
+    /// leash at grant time (M16). `0` until a grant sets it.
+    #[serde(default)]
+    pub term_secs: i64,
+    /// RFC3339 of when the lease was granted (M16 — the deadline anchor before any renewal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<String>,
+    /// RFC3339 of the last accepted renewal/commit (M16 — refreshes the expiry deadline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_renewal_at: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The canonical lease ledger — the authorizer's single-writer record of every task's
@@ -157,9 +184,49 @@ impl LeaseLedger {
             provider: provider.to_string(),
             committed: false,
             last_renewal_epoch: None,
+            sensitivity: super::Sensitivity::Unlabeled,
+            checkable: true,
+            term_secs: 0,
+            granted_at: None,
+            last_renewal_at: None,
         });
         st.provider = provider.to_string();
         st.epoch
+    }
+
+    /// Record the authorizer's signed-offer sensitivity + checkability for a placed task
+    /// (M17/S7). Called at offer time so grant + accept re-derive the leash from the
+    /// authorizer's OWN authoritative label, never a hardcoded `Normal` or a
+    /// provider-supplied value. No-op if the task was never placed.
+    pub fn record_offer_terms(
+        &mut self,
+        task_id: &str,
+        sensitivity: super::Sensitivity,
+        checkable: bool,
+    ) {
+        if let Some(st) = self.tasks.get_mut(task_id) {
+            st.sensitivity = sensitivity;
+            st.checkable = checkable;
+        }
+    }
+
+    /// Record the lease term + grant timestamp the leash decided (M16). The deadline anchor
+    /// the timeout sweep measures against until a renewal refreshes it.
+    pub fn set_lease_terms(&mut self, task_id: &str, term_secs: i64, granted_at: &str) {
+        if let Some(st) = self.tasks.get_mut(task_id) {
+            st.term_secs = term_secs;
+            st.granted_at = Some(granted_at.to_string());
+        }
+    }
+
+    /// The authorizer's sensitivity for a placed task (M17). `None` if unplaced.
+    pub fn sensitivity_of(&self, task_id: &str) -> Option<super::Sensitivity> {
+        self.tasks.get(task_id).map(|s| s.sensitivity)
+    }
+
+    /// Whether a placed task's deliverable is checkable (S7). `None` if unplaced.
+    pub fn checkable_of(&self, task_id: &str) -> Option<bool> {
+        self.tasks.get(task_id).map(|s| s.checkable)
     }
 
     /// **Reclaim** task T: bump the epoch (`e → e+1`), clear `committed`, re-assign the
@@ -211,11 +278,14 @@ impl LeaseLedger {
     }
 
     /// Accept a signed renewal only if its epoch matches the current epoch (a stale
-    /// renewal after reclaim is rejected). Records the liveness signal.
+    /// renewal after reclaim is rejected). Records the liveness signal **and refreshes the
+    /// expiry deadline** (`last_renewal_at = at`) so the timeout sweep (M16) treats the
+    /// lease as live again.
     pub fn accept_renewal(
         &mut self,
         task_id: &str,
         presented_epoch: u64,
+        at: &str,
     ) -> Result<(), FenceError> {
         let st = self.tasks.get_mut(task_id).ok_or(FenceError::NoPlacement)?;
         if presented_epoch != st.epoch {
@@ -228,7 +298,66 @@ impl LeaseLedger {
             st.last_renewal_epoch
                 .map_or(presented_epoch, |p| p.max(presented_epoch)),
         );
+        st.last_renewal_at = Some(at.to_string());
         Ok(())
+    }
+
+    /// **Auto-reclaim every expired lease (M16 — the timeout runtime).** A placement is
+    /// *expired* when it is uncommitted, has a granted lease term (`term_secs > 0` and a
+    /// `granted_at`), and `now` is past its deadline — `max(last_renewal_at, granted_at) +
+    /// term_secs`. Each expired task is reclaimed (epoch bumped, the resurrected worker's
+    /// later write is fenced out exactly like a manual `reclaim`). Returns the
+    /// `(task_id, new_epoch)` pairs reclaimed. A committed lease is never reclaimed; a
+    /// lease with no term (legacy / never-granted) is left alone.
+    ///
+    /// This is the loop a heartbeat thread / coordinator tick calls; `now` is injected so
+    /// the behaviour is deterministic and testable. `reassign_to` is the placeholder
+    /// provider stamped on the reclaimed lease (the real reassignment re-places later).
+    pub fn sweep_expired(
+        &mut self,
+        now: chrono::DateTime<chrono::Utc>,
+        reassign_to: &str,
+    ) -> Vec<(String, u64)> {
+        let mut reclaimed = Vec::new();
+        // Collect first to avoid borrowing self mutably while iterating.
+        let expired: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, st)| st.is_expired(now))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for task_id in expired {
+            if let Ok(epoch) = self.reclaim(&task_id, reassign_to) {
+                reclaimed.push((task_id, epoch));
+            }
+        }
+        reclaimed
+    }
+}
+
+impl LeaseState {
+    /// Whether this lease has timed out at `now` (M16). Uncommitted + a granted term +
+    /// `now` past `deadline = max(last_renewal_at, granted_at) + term_secs`. A bad
+    /// timestamp parse is treated as **not expired** (we never reclaim on unparseable data
+    /// — reclaiming a live worker is the costlier mistake; the fence makes a true stale
+    /// write safe anyway).
+    pub fn is_expired(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        if self.committed || self.term_secs <= 0 {
+            return false;
+        }
+        let anchor = self
+            .last_renewal_at
+            .as_deref()
+            .or(self.granted_at.as_deref());
+        let Some(anchor) = anchor else {
+            return false;
+        };
+        let Ok(anchor_ts) = chrono::DateTime::parse_from_rfc3339(anchor) else {
+            return false;
+        };
+        let deadline =
+            anchor_ts.with_timezone(&chrono::Utc) + chrono::Duration::seconds(self.term_secs);
+        now > deadline
     }
 }
 
@@ -447,14 +576,65 @@ mod tests {
     fn renewal_after_reclaim_is_stale() {
         let mut led = LeaseLedger::new();
         led.place("T", "wgid:zP");
-        assert!(led.accept_renewal("T", 1).is_ok());
+        assert!(led.accept_renewal("T", 1, "2026-06-28T00:00:00Z").is_ok());
         led.reclaim("T", "wgid:zQ").unwrap();
         assert_eq!(
-            led.accept_renewal("T", 1),
+            led.accept_renewal("T", 1, "2026-06-28T00:01:00Z"),
             Err(FenceError::StaleEpoch {
                 presented: 1,
                 current: 2
             })
+        );
+    }
+
+    #[test]
+    fn sweep_reclaims_an_expired_uncommitted_lease_but_not_a_live_or_committed_one() {
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-06-28T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut led = LeaseLedger::new();
+        // Expired: granted at t0 with a 60s term, no renewal.
+        led.place("expired", "wgid:zP");
+        led.set_lease_terms("expired", 60, "2026-06-28T00:00:00Z");
+        // Live: granted with a long term.
+        led.place("live", "wgid:zP");
+        led.set_lease_terms("live", 3600, "2026-06-28T00:00:00Z");
+        // Committed: should never be reclaimed even if past term.
+        led.place("committed", "wgid:zP");
+        led.set_lease_terms("committed", 60, "2026-06-28T00:00:00Z");
+        led.try_commit("committed", 1).unwrap();
+        // No-term legacy lease: left alone.
+        led.place("legacy", "wgid:zP");
+
+        let now = t0 + chrono::Duration::seconds(120); // 2 min later
+        let reclaimed = led.sweep_expired(now, "wgid:reassign");
+        assert_eq!(reclaimed, vec![("expired".to_string(), 2)]);
+        // The expired lease's epoch bumped (the old worker is now fenced).
+        assert_eq!(led.current_epoch("expired"), Some(2));
+        // Live / committed / legacy untouched.
+        assert_eq!(led.current_epoch("live"), Some(1));
+        assert_eq!(led.current_epoch("committed"), Some(1));
+        assert_eq!(led.current_epoch("legacy"), Some(1));
+    }
+
+    #[test]
+    fn an_accepted_renewal_keeps_a_lease_alive_past_its_original_term() {
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-06-28T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut led = LeaseLedger::new();
+        led.place("T", "wgid:zP");
+        led.set_lease_terms("T", 60, "2026-06-28T00:00:00Z");
+        // A renewal 30s in refreshes the deadline.
+        led.accept_renewal("T", 1, "2026-06-28T00:00:30Z").unwrap();
+        // 90s after t0 (but only 60s after the renewal) ⇒ still live.
+        let now = t0 + chrono::Duration::seconds(90);
+        assert!(led.sweep_expired(now, "wgid:reassign").is_empty());
+        // Without a further renewal it eventually expires.
+        let later = t0 + chrono::Duration::seconds(120);
+        assert_eq!(
+            led.sweep_expired(later, "wgid:reassign"),
+            vec![("T".to_string(), 2)]
         );
     }
 

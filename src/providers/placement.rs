@@ -245,6 +245,28 @@ pub struct TaskRequirements {
     pub required_model: String,
     pub min_isolation: IsolationClass,
     pub sensitivity: Sensitivity,
+    /// Whether the deliverable is **checkable** (eval-gateable) — the S7 B-tier
+    /// precondition. A non-checkable task may not ride the **verified-overflow (B)** pool,
+    /// whose only integrity lever is the trusted-domain re-run (which needs checkable
+    /// code). Default `true` (most code work is checkable).
+    pub checkable: bool,
+}
+
+/// The placement **tier** a provider's trust maps to (S7 — the distinct pools, ADR-E1 D4).
+///
+/// - `"A"` (**trusted pool**) — `Verified`: own/trusted boxes; non-checkable work allowed
+///   on trust; verification is attribution + the eval-gate.
+/// - `"B"` (**verified-overflow pool**) — `Provisional`: vouched/overflow capacity,
+///   distinct from the trusted pool; **checkable work only**, eval-gated by the
+///   trusted-domain re-run at accept.
+/// - `"refuse"` — `Unknown`: a stranger is below the `Normal` floor, so it is refused at
+///   placement (never silently runs your work).
+pub fn pool_tier(trust: TrustLevel) -> &'static str {
+    match trust {
+        TrustLevel::Verified => "A",
+        TrustLevel::Provisional => "B",
+        TrustLevel::Unknown => "refuse",
+    }
 }
 
 /// The verdict of matching one provider to a task (ADR-E1 D3 filter, then leash).
@@ -317,6 +339,24 @@ pub fn evaluate_placement(
                 trust_str(provider_trust),
                 trust_str(decision.trust_floor),
                 req.sensitivity.as_str()
+            ),
+        ));
+    }
+
+    // S7 — the verified-overflow (B) tier is checkable-only. A non-checkable task may run
+    // on the trusted (A) pool on trust, but NEVER on a B (vouched-overflow) provider: the
+    // only integrity lever there is the trusted-domain re-run / eval-gate, which a
+    // non-checkable deliverable cannot satisfy (it would silently accept on "found
+    // nothing"). Fail closed — keep it on A or refuse.
+    if !req.checkable && pool_tier(provider_trust) == "B" {
+        return PlacementVerdict::Refused(LeashRefusal::new(
+            "overflow-requires-checkable",
+            format!(
+                "a non-checkable task may not ride the verified-overflow (B) pool \
+                 (provider trust {}): the B tier's only integrity lever is the \
+                 trusted-domain eval-gate re-run, which needs checkable code. Place it on \
+                 the trusted (A) pool or refuse.",
+                trust_str(provider_trust)
             ),
         ));
     }
@@ -442,6 +482,7 @@ mod tests {
             required_model: "claude:opus".into(),
             min_isolation: IsolationClass::Container,
             sensitivity: Sensitivity::High, // floor = Verified
+            checkable: true,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -467,6 +508,7 @@ mod tests {
             required_model: "claude:opus".into(),
             min_isolation: IsolationClass::Vm,
             sensitivity: Sensitivity::Normal,
+            checkable: true,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -486,6 +528,7 @@ mod tests {
             required_model: "claude:opus".into(),
             min_isolation: IsolationClass::Container,
             sensitivity: Sensitivity::Normal,
+            checkable: true,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -519,5 +562,41 @@ mod tests {
         assert_eq!(order[0], "wgid:zLive");
         // Deterministic across calls.
         assert_eq!(rank_eligible("T", cands), order);
+    }
+
+    #[test]
+    fn s7_non_checkable_refused_on_b_pool_but_allowed_on_a_pool() {
+        let non_checkable = |trust| {
+            let req = TaskRequirements {
+                task_id: "T".into(),
+                required_model: "claude:opus".into(),
+                min_isolation: IsolationClass::Container,
+                sensitivity: Sensitivity::Normal,
+                checkable: false,
+            };
+            let cap = CapabilityAd {
+                model: "claude:opus".into(),
+                isolation: IsolationClass::Container,
+                attested: false,
+            };
+            evaluate_placement(&req, trust, Some(&cap), PoolClass::Cooperative)
+        };
+        // B (verified-overflow / Provisional) refuses a non-checkable task — no eval-gate.
+        match non_checkable(TrustLevel::Provisional) {
+            PlacementVerdict::Refused(r) => assert_eq!(r.reason, "overflow-requires-checkable"),
+            _ => panic!("expected the B-tier checkable refusal"),
+        }
+        // A (trusted / Verified) takes non-checkable work on trust.
+        assert!(matches!(
+            non_checkable(TrustLevel::Verified),
+            PlacementVerdict::Eligible(_)
+        ));
+    }
+
+    #[test]
+    fn pool_tier_maps_trust_to_distinct_tiers() {
+        assert_eq!(pool_tier(TrustLevel::Verified), "A");
+        assert_eq!(pool_tier(TrustLevel::Provisional), "B");
+        assert_eq!(pool_tier(TrustLevel::Unknown), "refuse");
     }
 }

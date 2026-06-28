@@ -3554,9 +3554,35 @@ pub enum ProviderCommands {
         /// Sensitivity: normal | high | confidential. Absent ⇒ unlabeled (fails closed).
         #[arg(long)]
         sensitivity: Option<String>,
+        /// Mark the deliverable as NON-checkable (not eval-gateable). A non-checkable task
+        /// may not ride the verified-overflow (B) pool (S7) — it refuses there.
+        #[arg(long = "non-checkable")]
+        non_checkable: bool,
         /// The provider's `wgid:` this offer is pushed to.
         #[arg(long)]
         provider: String,
+        /// Where to write the signed offer JSON.
+        #[arg(long)]
+        out: String,
+    },
+
+    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH that
+    /// the planner tagged `exec-provider:<wgid>` onto that remote provider. Sources the
+    /// provider/model/sensitivity/checkability from the task, runs the fail-closed
+    /// leash+matcher, and emits the signed offer.
+    Place {
+        /// The authorizer/principal G's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The graph task id to place (must carry an `exec-provider:<wgid>` tag).
+        #[arg(long)]
+        task: String,
+        /// Override the task's sensitivity: normal | high | confidential.
+        #[arg(long)]
+        sensitivity: Option<String>,
+        /// Force the deliverable to be treated as NON-checkable (S7).
+        #[arg(long = "non-checkable")]
+        non_checkable: bool,
         /// Where to write the signed offer JSON.
         #[arg(long)]
         out: String,
@@ -3664,6 +3690,20 @@ pub enum ProviderCommands {
         /// on a non-`accept` verdict (received ≠ consumed).
         #[arg(long = "no-review")]
         no_review: bool,
+        /// The authorizer's pinned acceptance spec (JSON) for the B4 integrity gate. A
+        /// low-trust (B/verified-overflow) result is RE-RUN vs this spec in a trusted domain
+        /// before the epoch is consumed; without it a low-trust result is refused
+        /// (`verification-required`). A Verified+Normal (A) result does not need it.
+        #[arg(long = "pinned-spec")]
+        pinned_spec: Option<String>,
+        /// The disjoint verifier `wgid:` for the B4 re-run (MUST differ from the producer,
+        /// X-5). Absent ⇒ the authorizer/principal re-runs in its own trusted domain.
+        #[arg(long)]
+        verifier: Option<String>,
+        /// On success, mark the graph task Done (the coordinator finalizing a remote task),
+        /// so `wg spend` — which counts Done/Failed tasks — reflects the bridged usage (M15).
+        #[arg(long = "complete-task")]
+        complete_task: bool,
     },
 
     /// Reclaim a task, bumping the monotonic lease epoch. The old worker's epoch is now
@@ -3675,6 +3715,45 @@ pub enum ProviderCommands {
         /// The new provider to re-place onto (display only in the spark).
         #[arg(long = "new-provider")]
         new_provider: Option<String>,
+    },
+
+    /// The provider's signed lease heartbeat (M16): build + sign a `LeaseRenewal` for the
+    /// grant's lease epoch so the authorizer's liveness sweep keeps the lease alive.
+    Renew {
+        /// The provider's local identity handle.
+        #[arg(long)]
+        as_name: String,
+        /// The grant JSON whose lease is being renewed.
+        #[arg(long)]
+        grant: String,
+        /// Where to write the signed renewal JSON.
+        #[arg(long)]
+        out: String,
+    },
+
+    /// The authorizer accepts a signed `LeaseRenewal` and records liveness (M16). A forged
+    /// / unsigned renewal is rejected; a stale-epoch renewal (after reclaim) is fenced.
+    AcceptRenewal {
+        /// The renewal JSON to accept.
+        #[arg(long)]
+        renewal: String,
+        /// The dumb/untrusted store for identity resolution.
+        #[arg(long)]
+        store: String,
+        /// Override the clock (RFC3339).
+        #[arg(long)]
+        now: Option<String>,
+    },
+
+    /// The authorizer's auto-reclaim-on-timeout sweep (M16): reclaim every lease whose term
+    /// elapsed with no accepted renewal (the heartbeat loop a coordinator tick runs).
+    Sweep {
+        /// The placeholder provider stamped on a reclaimed lease.
+        #[arg(long = "new-provider")]
+        new_provider: Option<String>,
+        /// Override the clock (RFC3339) — inject "now" for a deterministic timeout sweep.
+        #[arg(long)]
+        now: Option<String>,
     },
 
     /// The integrity leash: attribution + a deterministic re-run in a TRUSTED DOMAIN

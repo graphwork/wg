@@ -24,7 +24,7 @@ use worksgood::identity::transport::open_store;
 use worksgood::providers::bundle::{ContextSlice, DepArtifact, SealedBundle, recipient_enc_key};
 use worksgood::providers::lease::{Lease, LeaseLedger};
 use worksgood::providers::placement::{
-    PlacementVerdict, TaskRequirements, evaluate_placement, leash,
+    PlacementVerdict, TaskRequirements, VerificationDepth, evaluate_placement, leash, pool_tier,
 };
 use worksgood::providers::verify::{
     Checkability, PinnedSpec, VerifyRequest, authorize_graph_write, verify_attribution,
@@ -32,7 +32,7 @@ use worksgood::providers::verify::{
 };
 use worksgood::providers::worker;
 use worksgood::providers::{
-    CapabilityAd, Claim, IsolationClass, PlacementOffer, PoolClass, ProviderRegistry,
+    CapabilityAd, Claim, IsolationClass, LeaseRenewal, PlacementOffer, PoolClass, ProviderRegistry,
     ResultEnvelope, Sensitivity, TrustLevel, WG_EXEC_COMPAT_VERSION, check_exec_compat,
     parse_trust, trust_str,
 };
@@ -155,6 +155,7 @@ pub fn run_offer(
     model: &str,
     isolation: &str,
     sensitivity: Option<&str>,
+    checkable: bool,
     provider_wgid: &str,
     out: &str,
     json: bool,
@@ -178,6 +179,7 @@ pub fn run_offer(
         required_model: model.to_string(),
         min_isolation: min_iso,
         sensitivity: sens,
+        checkable,
     };
 
     match evaluate_placement(
@@ -204,11 +206,15 @@ pub fn run_offer(
             Ok(())
         }
         PlacementVerdict::Eligible(decision) => {
-            // Reserve the lease epoch for this placement (epoch starts at 1). The
-            // exclusive lock serializes this read-modify-write against concurrent
-            // writers; the load refuses on a corrupt ledger (audit B3).
+            // Reserve the lease epoch for this placement (epoch starts at 1) AND record the
+            // authorizer's signed-offer sensitivity + checkability (M17/S7) on the lease.
+            // grant + accept re-derive the leash from THIS authoritative label, never a
+            // hardcoded `Normal` or a provider-supplied value. The exclusive lock
+            // serializes this read-modify-write against concurrent writers; the load
+            // refuses on a corrupt ledger (audit B3).
             let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
             let epoch = guard.ledger.place(task, provider_wgid);
+            guard.ledger.record_offer_terms(task, sens, checkable);
             guard.save()?;
 
             let mut offer = PlacementOffer::build(
@@ -234,6 +240,9 @@ pub fn run_offer(
                     "task": task,
                     "provider": provider_wgid,
                     "trust_floor": trust_str(decision.trust_floor),
+                    "pool_tier": pool_tier(provider_trust),
+                    "sensitivity": sens.as_str(),
+                    "checkable": checkable,
                     "lease_epoch": epoch,
                     "context_seal": decision.context_seal.as_str(),
                     "verification_depth": decision.verification_depth.as_str(),
@@ -241,7 +250,8 @@ pub fn run_offer(
                     "offer_file": out,
                 }),
                 &format!(
-                    "offered {task} to {provider_wgid} (epoch {epoch}, seal={}, verify={})",
+                    "offered {task} to {provider_wgid} (tier {}, epoch {epoch}, seal={}, verify={})",
+                    pool_tier(provider_trust),
                     decision.context_seal.as_str(),
                     decision.verification_depth.as_str()
                 ),
@@ -249,6 +259,69 @@ pub fn run_offer(
             Ok(())
         }
     }
+}
+
+// ── place (M5: the coordinator drives placement FROM the planner's graph task) ──
+
+/// `wg provider place` — the **coordinator-side placement driver** (audit M5). Where
+/// `offer` takes every parameter on the CLI, `place` sources them from a **task already in
+/// the authorizer's graph** that the planner tagged for remote execution
+/// (`exec-provider:<wgid>`): the placement target, the model, the sensitivity, and the
+/// checkability all come from the task. It then runs the SAME fail-closed leash+matcher and
+/// emits the signed offer. This is the wiring the audit flags as missing — `Placement::Provider`
+/// produced by the planner (the tag), turned into the first wire envelope by the coordinator.
+#[allow(clippy::too_many_arguments)]
+pub fn run_place(
+    workgraph_dir: &Path,
+    as_name: &str,
+    task_id: &str,
+    sensitivity_override: Option<&str>,
+    non_checkable: bool,
+    out: &str,
+    json: bool,
+) -> Result<()> {
+    let (graph, _path) = crate::commands::load_workgraph(workgraph_dir)?;
+    let task = graph
+        .get_task(task_id)
+        .ok_or_else(|| anyhow::anyhow!("no task {task_id:?} in the authorizer's graph"))?;
+
+    // The planner's placement decision: the `exec-provider:<wgid>` tag (the same signal
+    // `dispatch::plan_spawn` turns into `Placement::Provider`). No tag ⇒ not a remote task.
+    let provider_wgid = task
+        .tags
+        .iter()
+        .find_map(|t| t.strip_prefix("exec-provider:"))
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "task {task_id:?} is not placed on a remote provider — tag it \
+                 `exec-provider:<wgid>` (the planner's Placement::Provider signal)"
+            )
+        })?;
+    let model = task.model.as_deref().unwrap_or("claude:opus").to_string();
+    // Sensitivity: an explicit override wins, else an `exec-sensitivity:<level>` tag, else
+    // the fail-closed default (`unlabeled` ⇒ the leash refuses — label the task).
+    let sensitivity = sensitivity_override.map(|s| s.to_string()).or_else(|| {
+        task.tags
+            .iter()
+            .find_map(|t| t.strip_prefix("exec-sensitivity:").map(|s| s.to_string()))
+    });
+    // The deliverable is checkable unless the planner tagged it `exec-non-checkable` (or the
+    // operator passed --non-checkable).
+    let checkable = !(non_checkable || task.tags.iter().any(|t| t == "exec-non-checkable"));
+
+    run_offer(
+        workgraph_dir,
+        as_name,
+        task_id,
+        &model,
+        "container",
+        sensitivity.as_deref(),
+        checkable,
+        &provider_wgid,
+        out,
+        json,
+    )
 }
 
 // ── claim (provider → authorizer; a request, not an authorization) ──────────────
@@ -291,7 +364,16 @@ pub fn run_claim(
         isolation: offer.min_isolation,
         attested: false, // v1 attestation slot is empty — a spark provider is never attested.
     };
-    let mut claim = Claim::build(&offer.task_id, p.wgid(), cap, &Utc::now().to_rfc3339());
+    // Echo the authorizer's signed-offer sensitivity into the signed Claim (M17). The
+    // authorizer re-derives the authoritative value from its own ledger at grant and
+    // cross-checks this against a downgrade attempt.
+    let mut claim = Claim::build(
+        &offer.task_id,
+        p.wgid(),
+        cap,
+        offer.sensitivity,
+        &Utc::now().to_rfc3339(),
+    );
     claim.sign(&cust, &signer)?;
     std::fs::write(out, serde_json::to_string_pretty(&claim)?)
         .with_context(|| format!("writing claim to {out}"))?;
@@ -347,6 +429,28 @@ pub fn run_grant(
         .verify_sig(&provider_auth)
         .context("claim signature does not verify against the claimant's sigchain")?;
 
+    // Re-derive the AUTHORITATIVE sensitivity + checkability from the authorizer's OWN
+    // ledger record (set at offer time from the signed offer), NOT a hardcoded `Normal`
+    // (audit M17). This binds the fail-closed confidential/unlabeled gate at grant too, so
+    // grant can independently refuse — the gate no longer relies solely on offer having run
+    // first (X-1: floor before context).
+    let led_ro = load_ledger(workgraph_dir)?;
+    let sensitivity = led_ro
+        .sensitivity_of(&claim.task_id)
+        .unwrap_or(Sensitivity::Unlabeled);
+    let checkable = led_ro.checkable_of(&claim.task_id).unwrap_or(true);
+    // A provider must not DOWNGRADE the sensitivity in its signed claim (M17). Equal or
+    // stricter is fine (it cannot loosen the authorizer's label); strictly weaker is a
+    // downgrade attempt and is refused.
+    if claim.sensitivity.strictness_rank() < sensitivity.strictness_rank() {
+        bail!(
+            "refusing to grant — the claim's sensitivity {} is WEAKER than the authorizer's \
+             signed offer ({}): a provider may not downgrade sensitivity (M17)",
+            claim.sensitivity.as_str(),
+            sensitivity.as_str()
+        );
+    }
+
     // Re-run the fail-closed filter+leash with the authorizer's OWN trust record.
     let reg = load_registry(workgraph_dir);
     let provider_trust = reg.trust_of(&claim.provider);
@@ -355,7 +459,8 @@ pub fn run_grant(
         task_id: claim.task_id.clone(),
         required_model: claim.capability.model.clone(),
         min_isolation: claim.capability.isolation,
-        sensitivity: Sensitivity::Normal, // a granted task cleared the offer's sensitivity gate.
+        sensitivity,
+        checkable,
     };
     let decision = match evaluate_placement(
         &req,
@@ -450,6 +555,11 @@ pub fn run_grant(
         .ledger
         .current_epoch(task)
         .unwrap_or_else(|| guard.ledger.place(task, &claim.provider));
+    // Stamp the leash-decided lease term + grant time so the timeout sweep (M16) has a
+    // deadline anchor; a dead lease (no renewal within the term) auto-reclaims.
+    guard
+        .ledger
+        .set_lease_terms(task, decision.lease_term_secs, &now.to_rfc3339());
     guard.save()?;
     let mut lease = Lease::build(
         task,
@@ -659,19 +769,34 @@ pub fn run_worker_run(
     Ok(())
 }
 
-// ── accept (the canonical write boundary: attribution + scope + epoch fence) ─────
+// ── accept (the canonical write boundary: attribution + scope + verify + epoch fence) ──
 
 /// `wg provider accept` — the authorizer's canonical-write accept path: verify
 /// attribution (rejecting unsigned / wrong-signed / **expired**), authorize the write
 /// under the task-scoped graph-write UCAN (rejecting a write to a **different task**),
-/// then the **atomic epoch CAS** (rejecting a **stale** or **replayed** write). `--now`
-/// overrides the clock for the post-expiry assertion.
+/// screen the artifact (IC2 review), **gate on the integrity re-run when the leash demands
+/// it (audit B4)**, then the **atomic epoch CAS** (rejecting a **stale** or **replayed**
+/// write). On success, bridge the result's usage into the graph task's accounting (audit
+/// M15). `--now` overrides the clock for the post-expiry assertion.
+///
+/// **B4 — accept gates verify.** The leash's `verification_depth` is now consulted *at the
+/// canonical write boundary*, not in a decoupled manual `wg provider verify`. A Verified+
+/// Normal result (the A/trusted tier) commits on attribution+scope as before. A low-trust
+/// (B/verified-overflow) result requires a **trusted-domain re-run vs the authorizer's
+/// pinned spec** (`--pinned-spec`, on a `--verifier` disjoint from the producer, defaulting
+/// to the authorizer itself) to PASS before the epoch is consumed; a corrupted result is
+/// rejected and the producer's trust is lowered (the audit/revoke leg). A low-trust result
+/// with no pinned spec is refused (`verification-required`) — fail closed.
+#[allow(clippy::too_many_arguments)]
 pub fn run_accept(
     workgraph_dir: &Path,
     result_file: &str,
     store_loc: &str,
     now_override: Option<&str>,
     review: bool,
+    pinned_spec_file: Option<&str>,
+    verifier_wgid: Option<&str>,
+    complete_task: bool,
     json: bool,
 ) -> Result<()> {
     let result: ResultEnvelope = read_json(result_file)?;
@@ -711,6 +836,52 @@ pub fn run_accept(
         }
     }
 
+    // 2c. B4 — gate on the integrity re-run when the leash demands it. Recompute the leash
+    // from the producer's trust + the authorizer's OWN sensitivity record (M17) to learn
+    // the verification depth. A Verified+Normal result clears on attribution+eval-gate (no
+    // re-run); a low-trust result is re-run vs the pinned spec in a trusted domain BEFORE
+    // the epoch is consumed.
+    let reg = load_registry(workgraph_dir);
+    let producer_trust = reg.trust_of(&result.producer);
+    let attested = reg
+        .get(&result.producer)
+        .and_then(|e| e.capability.as_ref())
+        .map(|c| c.attested)
+        .unwrap_or(false);
+    let led_ro = load_ledger(workgraph_dir)?;
+    let sensitivity = led_ro
+        .sensitivity_of(&result.task_id)
+        .unwrap_or(Sensitivity::Unlabeled);
+    let checkable = led_ro.checkable_of(&result.task_id).unwrap_or(true);
+    match leash(
+        producer_trust,
+        sensitivity,
+        pool_for(producer_trust),
+        attested,
+    ) {
+        // The fail-closed confidential/unlabeled gate is re-asserted at accept too.
+        Err(refusal) => return reject(json, &refusal.reason, &refusal.detail),
+        Ok(decision) => match decision.verification_depth {
+            // A/trusted: attribution + eval-gate — no trusted-domain re-run needed.
+            VerificationDepth::AttributionPlusEvalGate => {}
+            // B/overflow or high-stakes: REQUIRE the trusted-domain re-run before commit.
+            VerificationDepth::ReRunInTrustedDomain | VerificationDepth::Escalate => {
+                if let Some((reason, detail)) = gate_on_rerun(
+                    workgraph_dir,
+                    &result,
+                    producer_trust,
+                    checkable,
+                    pinned_spec_file,
+                    verifier_wgid,
+                    now,
+                    &resolve,
+                ) {
+                    return reject(json, &reason, &detail);
+                }
+            }
+        },
+    }
+
     // 3. The atomic epoch CAS at the single canonical-write boundary (ADR-E3 D6). The
     // exclusive lock makes the compare-and-set a single serialized writer even across
     // concurrent processes; the load refuses on a corrupt ledger so a bad parse cannot
@@ -727,6 +898,12 @@ pub fn run_accept(
     reg.record_renewal(&result.producer, result.epoch, &now.to_rfc3339());
     save_registry(workgraph_dir, &reg)?;
 
+    // M15 — bridge the remote result's usage into the graph task's accounting so remote
+    // spend shows in `wg show` / `wg spend` / `wg stats` (best-effort; a no-op when the
+    // exec task id is not a graph task, e.g. the pure-exec spark tasks). `--complete-task`
+    // marks the task Done so `wg spend` (which counts Done/Failed) reflects it.
+    let accounted = bridge_usage_into_graph(workgraph_dir, &result, complete_task);
+
     emit(
         json,
         json!({
@@ -735,11 +912,13 @@ pub fn run_accept(
             "producer": result.producer,
             "task": result.task_id,
             "epoch": result.epoch,
+            "pool_tier": pool_tier(producer_trust),
             "usage": {
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
                 "cost_usd": result.usage.cost_usd,
             },
+            "usage_accounted_to_graph": accounted,
             "reason": "accepted",
         }),
         &format!(
@@ -748,6 +927,121 @@ pub fn run_accept(
         ),
     );
     Ok(())
+}
+
+/// B4 helper — the trusted-domain integrity re-run that `accept` requires for a low-trust
+/// (B-tier) result before consuming the epoch. Returns `Some((reason, detail))` to REJECT
+/// (no pinned spec, the re-run failed, or the X-5 same-domain guard fired), or `None` to
+/// let the commit proceed. On a failed re-run it lowers the producer's trust (the
+/// audit/revoke leg, ADR-E4 D4/D5) so its next item takes the deeper path.
+#[allow(clippy::too_many_arguments)]
+fn gate_on_rerun(
+    workgraph_dir: &Path,
+    result: &ResultEnvelope,
+    producer_trust: TrustLevel,
+    checkable: bool,
+    pinned_spec_file: Option<&str>,
+    verifier_wgid: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    resolve: &dyn Fn(&str) -> Result<worksgood::identity::sigchain::AuthorizedKeys>,
+) -> Option<(String, String)> {
+    let Some(spec_path) = pinned_spec_file else {
+        return Some((
+            "verification-required".to_string(),
+            "a low-trust (B/verified-overflow) result must be re-run vs the authorizer's \
+             pinned spec before commit (the eval-gate). Pass --pinned-spec (and optionally \
+             --verifier, a domain disjoint from the producer); the write is refused until \
+             it does (fail-closed, audit B4)."
+                .to_string(),
+        ));
+    };
+    let spec: PinnedSpec = match read_json(spec_path) {
+        Ok(s) => s,
+        Err(e) => return Some(("pinned-spec-unreadable".to_string(), e.to_string())),
+    };
+    // The re-run runs in a TRUSTED DOMAIN that is NOT the producer (X-5). Default to the
+    // authorizer/principal G (`result.agent`) — re-running authorizer-side is the
+    // canonical trusted domain; `--verifier` names a disjoint trusted provider instead.
+    let verifier = verifier_wgid.unwrap_or(&result.agent).to_string();
+    // S7: a non-checkable deliverable cannot be eval-gated — `verify_result` escalates
+    // (never accepts on "found nothing"), so a non-checkable low-trust result is refused.
+    let checkability = if checkable {
+        Checkability::Checkable
+    } else {
+        Checkability::NonCheckable
+    };
+    let req = VerifyRequest {
+        result,
+        producer: result.producer.clone(),
+        verifier,
+        trust: producer_trust,
+        checkability,
+        pinned_spec: &spec,
+    };
+    match verify_result(&req, now, &[], resolve) {
+        // X-5: verifier == producer — a re-run on the producing box is theatre, refused.
+        Err(e) => Some(("verifier-is-producer".to_string(), e.to_string())),
+        Ok(v) if !v.accepted => {
+            // A caught defection lowers the producer's trust (audit/revoke leg) — do NOT
+            // commit (the epoch is left unconsumed).
+            let mut reg = load_registry(workgraph_dir);
+            reg.lower_trust(&result.producer);
+            let _ = save_registry(workgraph_dir, &reg);
+            Some((
+                format!("integrity-{}", v.reason),
+                format!(
+                    "re-run on {} ({} / {}): {} — producer trust lowered, write refused",
+                    v.reran_on, v.rerun_mode, v.rerun_detail, v.reason
+                ),
+            ))
+        }
+        Ok(_) => None, // the eval-gate passed — proceed to the epoch CAS.
+    }
+}
+
+/// M15 — accumulate a remote result's usage into the graph task's `token_usage` so remote
+/// spend reaches `wg show` / `wg spend` / `wg stats` (the same surfaces local spend uses).
+/// Best-effort + gated: returns `false` (a no-op) when the exec task id is not a graph task.
+/// `complete` marks the task `Done` so `wg spend` (which counts Done/Failed tasks) reflects
+/// the remote run.
+fn bridge_usage_into_graph(workgraph_dir: &Path, result: &ResultEnvelope, complete: bool) -> bool {
+    use worksgood::graph::{Status, TokenUsage};
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    if !graph_path.exists() {
+        return false;
+    }
+    let mut accounted = false;
+    let usage = TokenUsage {
+        cost_usd: result.usage.cost_usd,
+        input_tokens: result.usage.input_tokens,
+        output_tokens: result.usage.output_tokens,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
+    let producer = result.producer.clone();
+    let _ = worksgood::modify_graph(&graph_path, |g| {
+        let Some(task) = g.get_task_mut(&result.task_id) else {
+            return false;
+        };
+        match task.token_usage.as_mut() {
+            Some(tu) => tu.accumulate(&usage),
+            None => task.token_usage = Some(usage.clone()),
+        }
+        if complete && task.status != Status::Done {
+            task.status = Status::Done;
+            task.log.push(worksgood::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: None,
+                user: Some(worksgood::current_user()),
+                message: format!(
+                    "remote exec completed by provider {producer} — usage bridged into accounting (M15)"
+                ),
+            });
+        }
+        accounted = true;
+        true
+    });
+    accounted
 }
 
 /// IC2 accept-seam review: screen the result's work product (the artifact / diff)
@@ -853,6 +1147,165 @@ pub fn run_reclaim(
         json,
         json!({ "reclaimed": true, "task": task, "new_epoch": new_epoch }),
         &format!("reclaimed {task} → epoch {new_epoch} (old epoch now stale)"),
+    );
+    Ok(())
+}
+
+// ── liveness runtime: renew (provider) → accept-renewal (authorizer) → sweep (M16) ──
+
+/// `wg provider renew` — the provider's signed lease **heartbeat** (audit M16). Reads the
+/// grant, builds a `LeaseRenewal` for the lease epoch it holds, signs it with its delegated
+/// signer (so a relay cannot fake "P is alive" — ADR-E3 D5), and writes it for the
+/// authorizer to accept. This is the verb that was missing: `LeaseRenewal` was a
+/// defined-but-unused wire type.
+pub fn run_renew(
+    workgraph_dir: &Path,
+    as_name: &str,
+    grant_file: &str,
+    out: &str,
+    json: bool,
+) -> Result<()> {
+    let p = load_local(workgraph_dir, as_name)?;
+    let p_auth = p.auth()?;
+    let cust = Custodian::new(p.name());
+    let signer = signing_kid(&p, &cust, &p_auth)?;
+
+    let grant: worksgood::providers::RunGrant = read_json(grant_file)?;
+    check_exec_compat(&grant.exec_compat)?;
+    if grant.provider != p.wgid() {
+        bail!(
+            "grant is for provider {} but this provider is {}",
+            grant.provider,
+            p.wgid()
+        );
+    }
+
+    let mut renewal = LeaseRenewal::build(
+        &grant.task_id,
+        grant.lease.epoch,
+        p.wgid(),
+        &Utc::now().to_rfc3339(),
+    );
+    renewal.sign(&cust, &signer)?;
+    std::fs::write(out, serde_json::to_string_pretty(&renewal)?)
+        .with_context(|| format!("writing renewal to {out}"))?;
+    emit(
+        json,
+        json!({
+            "renewed": true,
+            "task": grant.task_id,
+            "epoch": grant.lease.epoch,
+            "provider": p.wgid(),
+            "renewal_file": out,
+        }),
+        &format!(
+            "renewed lease for {} at epoch {} (provider {})",
+            grant.task_id,
+            grant.lease.epoch,
+            p.wgid()
+        ),
+    );
+    Ok(())
+}
+
+/// `wg provider accept-renewal` — the authorizer verifies a signed `LeaseRenewal` and
+/// records liveness (audit M16). The signature must verify against the provider's sigchain
+/// (an unsigned / forged "alive" is rejected), and the epoch must match the current lease
+/// epoch (a STALE renewal after reclaim is fenced, exactly like a stale write). On success
+/// it refreshes the lease's expiry deadline so the timeout sweep treats it as live.
+pub fn run_accept_renewal(
+    workgraph_dir: &Path,
+    renewal_file: &str,
+    store_loc: &str,
+    now_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let renewal: LeaseRenewal = read_json(renewal_file)?;
+    check_exec_compat(&renewal.exec_compat)?;
+    let now = now_or(now_override)?;
+    let store = open_store(store_loc)?;
+
+    // Authenticate: the renewal must be signed by the provider it names (no relay forgery).
+    let provider_auth = resolve_auth_cached(workgraph_dir, store.as_ref(), &renewal.provider)
+        .with_context(|| format!("resolving renewing provider {}", renewal.provider))?;
+    if renewal.verify_sig(&provider_auth).is_err() {
+        return reject(json, "renewal-unsigned-or-wrong-signed", &renewal.provider);
+    }
+
+    // Record liveness under the lock; a stale-epoch renewal (after reclaim) is fenced.
+    let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+    if let Err(fence) =
+        guard
+            .ledger
+            .accept_renewal(&renewal.task_id, renewal.epoch, &now.to_rfc3339())
+    {
+        return reject(json, fence_code(&fence), &fence.to_string());
+    }
+    guard.save()?;
+
+    let mut reg = load_registry(workgraph_dir);
+    reg.record_renewal(&renewal.provider, renewal.epoch, &now.to_rfc3339());
+    save_registry(workgraph_dir, &reg)?;
+
+    emit(
+        json,
+        json!({
+            "renewal_accepted": true,
+            "task": renewal.task_id,
+            "epoch": renewal.epoch,
+            "provider": renewal.provider,
+        }),
+        &format!(
+            "renewal accepted for {} at epoch {} (provider {} live)",
+            renewal.task_id, renewal.epoch, renewal.provider
+        ),
+    );
+    Ok(())
+}
+
+/// `wg provider sweep` — the authorizer's **auto-reclaim-on-timeout** runtime (audit M16):
+/// reclaim every lease whose term elapsed with no accepted renewal. The loop a heartbeat
+/// tick / coordinator runs periodically; `--now` injects the clock for a deterministic
+/// test. Each expired lease's epoch is bumped, so a resurrected worker's late write is
+/// fenced out (prefer-liveness: reclaiming a partitioned-but-live worker costs at most one
+/// wasted re-run, never a corrupt graph — ADR-E3 D6).
+pub fn run_sweep(
+    workgraph_dir: &Path,
+    new_provider: Option<&str>,
+    now_override: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let now = now_or(now_override)?;
+    let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+    let reclaimed = guard
+        .ledger
+        .sweep_expired(now, new_provider.unwrap_or("wgid:reassigned"));
+    if !reclaimed.is_empty() {
+        guard.save()?;
+    }
+    let rows: Vec<serde_json::Value> = reclaimed
+        .iter()
+        .map(|(task, epoch)| json!({ "task": task, "new_epoch": epoch }))
+        .collect();
+    emit(
+        json,
+        json!({ "swept": true, "reclaimed_count": reclaimed.len(), "reclaimed": rows }),
+        &format!(
+            "sweep: auto-reclaimed {} expired lease(s){}",
+            reclaimed.len(),
+            if reclaimed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " — {}",
+                    reclaimed
+                        .iter()
+                        .map(|(t, e)| format!("{t}→epoch {e}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        ),
     );
     Ok(())
 }
@@ -975,9 +1428,11 @@ pub fn run_show(
         .and_then(|e| e.capability.as_ref())
         .map(|c| c.attested)
         .unwrap_or(false);
+    // An explicit override wins; otherwise show the leash for the lease's RECORDED
+    // sensitivity (M17), not a hardcoded `Normal`.
     let sens = sensitivity
         .map(Sensitivity::parse)
-        .unwrap_or(Sensitivity::Normal);
+        .unwrap_or(st.sensitivity);
     let leash_v = match leash(trust, sens, pool_for(trust), attested) {
         Ok(d) => json!({
             "trust_floor": trust_str(d.trust_floor),
@@ -997,9 +1452,15 @@ pub fn run_show(
             "task": task,
             "provider": st.provider,
             "trust": trust_str(trust),
+            "pool_tier": pool_tier(trust),
+            "sensitivity": st.sensitivity.as_str(),
+            "checkable": st.checkable,
             "epoch": st.epoch,
             "committed": st.committed,
+            "term_secs": st.term_secs,
+            "granted_at": st.granted_at,
             "last_renewal_epoch": st.last_renewal_epoch,
+            "last_renewal_at": st.last_renewal_at,
             "leash": leash_v,
         }),
         &format!(
@@ -1030,6 +1491,9 @@ pub fn run_providers(workgraph_dir: &Path, json: bool) -> Result<()> {
         rows.push(json!({
             "wgid": wgid,
             "trust": trust_str(e.trust_level),
+            // S7: the placement tier this trust maps to — A (trusted pool) / B
+            // (verified-overflow) / refuse (a stranger, below the Normal floor).
+            "pool_tier": pool_tier(e.trust_level),
             "capability": e.capability.as_ref().map(|c| json!({
                 "model": c.model, "isolation": c.isolation.as_str(), "attested": c.attested,
             })),

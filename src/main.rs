@@ -4034,6 +4034,7 @@ fn main() -> Result<()> {
                 model,
                 isolation,
                 sensitivity,
+                non_checkable,
                 provider,
                 out,
             } => commands::exec_fed_cmd::run_offer(
@@ -4043,7 +4044,23 @@ fn main() -> Result<()> {
                 &model,
                 &isolation,
                 sensitivity.as_deref(),
+                !non_checkable,
                 &provider,
+                &out,
+                cli.json,
+            ),
+            cli::ProviderCommands::Place {
+                as_name,
+                task,
+                sensitivity,
+                non_checkable,
+                out,
+            } => commands::exec_fed_cmd::run_place(
+                &workgraph_dir,
+                &as_name,
+                &task,
+                sensitivity.as_deref(),
+                non_checkable,
                 &out,
                 cli.json,
             ),
@@ -4105,12 +4122,18 @@ fn main() -> Result<()> {
                 store,
                 now,
                 no_review,
+                pinned_spec,
+                verifier,
+                complete_task,
             } => commands::exec_fed_cmd::run_accept(
                 &workgraph_dir,
                 &result,
                 &store,
                 now.as_deref(),
                 !no_review,
+                pinned_spec.as_deref(),
+                verifier.as_deref(),
+                complete_task,
                 cli.json,
             ),
             cli::ProviderCommands::Reclaim { task, new_provider } => {
@@ -4118,6 +4141,32 @@ fn main() -> Result<()> {
                     &workgraph_dir,
                     &task,
                     new_provider.as_deref(),
+                    cli.json,
+                )
+            }
+            cli::ProviderCommands::Renew {
+                as_name,
+                grant,
+                out,
+            } => {
+                commands::exec_fed_cmd::run_renew(&workgraph_dir, &as_name, &grant, &out, cli.json)
+            }
+            cli::ProviderCommands::AcceptRenewal {
+                renewal,
+                store,
+                now,
+            } => commands::exec_fed_cmd::run_accept_renewal(
+                &workgraph_dir,
+                &renewal,
+                &store,
+                now.as_deref(),
+                cli.json,
+            ),
+            cli::ProviderCommands::Sweep { new_provider, now } => {
+                commands::exec_fed_cmd::run_sweep(
+                    &workgraph_dir,
+                    new_provider.as_deref(),
+                    now.as_deref(),
                     cli.json,
                 )
             }
