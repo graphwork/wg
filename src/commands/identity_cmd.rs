@@ -16,7 +16,8 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
-use worksgood::identity::custody::{self, LeashPolicy, Revocation, Scope};
+use worksgood::identity::custody::{self, LeashPolicy, Revocation, RevocationHead, Scope};
+use worksgood::identity::dedup::{self, DedupStore};
 use worksgood::identity::envelope::{
     AgentFields, Endpoint, IdentityRecord, SignedEvent, StateSnapshot, payload_cid,
 };
@@ -29,7 +30,8 @@ use worksgood::identity::sigchain::{
     self, AuthorizedKeys, KeyEntry, KeyRole, KeyStatus, SigchainLink,
 };
 use worksgood::identity::state_safety::{
-    KindClass, LoadDecision, ScanResult, classify_kind, evaluate, parse_trust, scan_transparent,
+    KindClass, LoadDecision, LoadedState, ScanResult, check_model_binding, classify_kind,
+    consume_payload, evaluate, parse_trust, scan_transparent,
 };
 use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
@@ -42,6 +44,15 @@ use worksgood::trust::{resolve_author_trust, strictest_trust};
 /// [`Revocation`]s into (Wave 6). It is a discovery *hint* only — `verify-cap` always
 /// re-checks each revocation's signature and authorization, never trusting the store.
 const REVOCATION_INBOX: &str = "wgfed:revocations";
+
+/// Reserved per-issuer store inbox holding that issuer's signed, monotonic-seq
+/// [`RevocationHead`] (audit M10). A fixed event id makes the publish an overwrite, so
+/// the latest head wins; the verifier freshness-gates it and fails closed on a stale /
+/// rolled-back head (a withheld revocation).
+const REVHEAD_EVENT_ID: &str = "head";
+fn revhead_inbox(issuer: &str) -> String {
+    format!("wgfed:revhead:{issuer}")
+}
 
 // ── Local identity state (public; private keys live only in custody) ───────────
 
@@ -126,6 +137,50 @@ fn freshness_seen_dir(workgraph_dir: &Path) -> PathBuf {
     identity_dir(workgraph_dir).join("freshness_seen")
 }
 
+/// Dir backing the consume-edge replay/dedup store (audit M9): one marker per
+/// already-consumed authenticated event id, per recipient. See [`DedupStore`].
+fn consumed_dir(workgraph_dir: &Path) -> PathBuf {
+    identity_dir(workgraph_dir).join("consumed")
+}
+
+/// Dir backing the equivocation/fork head-gossip memory (audit M12): per-identity
+/// per-seq cids the verifier has accepted. See [`worksgood::identity::equivocation`].
+fn gossip_dir(workgraph_dir: &Path) -> PathBuf {
+    identity_dir(workgraph_dir).join("head_gossip")
+}
+
+/// Dir tracking the highest revocation-head `seq` a verifier has accepted per issuer
+/// (audit M10): the monotonic backstop that catches a withheld revocation (a node
+/// serving an older head). Distinct from the freshness-attestation seen-seq dir.
+fn revhead_seen_dir(workgraph_dir: &Path) -> PathBuf {
+    identity_dir(workgraph_dir).join("revhead_seen")
+}
+
+/// Head-gossip fork guard (audit M12/B9): record `chain` for `wgid` against the
+/// verifier's persistent memory and **fail closed on a detected fork** — a relay (or
+/// the identity itself) presenting a divergent, validly-signed history is refused, not
+/// silently believed. `chain` must already be `sigchain::verify`-validated. A clean /
+/// consistent observation (incl. a linear extension) passes.
+fn fork_guard(workgraph_dir: &Path, wgid: &str, chain: &[SigchainLink]) -> Result<()> {
+    use worksgood::identity::equivocation::{Observation, observe};
+    match observe(&gossip_dir(workgraph_dir), wgid, chain)? {
+        Observation::Consistent { .. } => Ok(()),
+        Observation::Fork(ev) => bail!(
+            "refusing {wgid}: equivocation/forked history detected vs previously-accepted \
+             memory — {ev} (audit M12). A relay or the identity is showing two divergent \
+             validly-signed chains."
+        ),
+    }
+}
+
+/// One authenticated inbound event: the recovered author, its (possibly-decrypted)
+/// body, and the **authenticated** dedup key used by the consume-edge replay store.
+struct AuthedEvent {
+    from: String,
+    body: String,
+    dedup_key: String,
+}
+
 fn save_local(workgraph_dir: &Path, id: &LocalIdentity) -> Result<()> {
     let dir = identity_dir(workgraph_dir);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -179,6 +234,10 @@ pub struct RecoveryConfig {
     pub guardians: Vec<String>,
     pub threshold: u8,
     pub node_less: bool,
+    /// Optional time-boxed recovery window (audit B8): the offline recovery key is valid
+    /// only within `[window_not_before, window_expires]`. Both RFC3339; `None` = unbounded.
+    pub window_not_before: Option<String>,
+    pub window_expires: Option<String>,
 }
 
 impl RecoveryConfig {
@@ -237,6 +296,10 @@ fn mint(
             guardians: rec_cfg.guardians.clone(),
             threshold: rec_cfg.threshold,
             recovery_key,
+            // Optional time-boxed recovery window (audit B8): set via the
+            // `--recovery-window-secs` mint option, else unbounded (legacy default).
+            recovery_not_before: rec_cfg.window_not_before.clone(),
+            recovery_expires: rec_cfg.window_expires.clone(),
         };
         if rec_cfg.node_less {
             // The mandatory node-less ceremony: refuse to mint an unrecoverable id.
@@ -378,10 +441,16 @@ pub(crate) fn resolve_auth_cached(
     if let Some(local) = load_local_by_wgid(workgraph_dir, wgid) {
         // Re-verify the cached chain offline (do not trust the cache blindly).
         if let Ok(auth) = sigchain::verify(&local.sigchain, wgid) {
+            // Head-gossip our own cached view too, so a later store fork is caught
+            // against it (audit M12).
+            let _ = fork_guard(workgraph_dir, wgid, &local.sigchain);
             return Ok(auth);
         }
     }
-    Ok(resolve_bundle(store, wgid)?.auth)
+    // Store-fetched (untrusted relay) chain: fail closed on an equivocation vs memory.
+    let bundle = resolve_bundle(store, wgid)?;
+    fork_guard(workgraph_dir, wgid, &bundle.chain)?;
+    Ok(bundle.auth)
 }
 
 fn enc_pub_of(auth: &AuthorizedKeys) -> Result<(String, [u8; 32])> {
@@ -838,6 +907,9 @@ pub fn run_fetch(
     let store = open_store(store_loc)?;
 
     let bundle = resolve_bundle(store.as_ref(), &wgid)?;
+    // Head-gossip fork guard (audit M12): refuse a relay equivocating about this
+    // identity's history vs. what we have previously accepted.
+    fork_guard(workgraph_dir, &wgid, &bundle.chain)?;
 
     // Verify the published snapshot too, if any (step 2/7 completeness).
     let mut verified_snapshots = 0usize;
@@ -1046,10 +1118,14 @@ pub fn run_poll(
         Some(c) => Some(ActionClass::parse(c)?),
         None => None,
     };
+    // Consume-edge replay/dedup store (audit M9): an authenticated event already seen
+    // by this recipient is flagged a replay and not re-consumed (FR-M6 idempotence).
+    let dedup_store = DedupStore::new(consumed_dir(workgraph_dir));
 
     let mut verdicts: Vec<serde_json::Value> = Vec::new();
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut replayed = 0usize;
     // Review (IC4 auto-gate) tallies — only meaningful when `review` is set.
     let mut screened = 0usize;
     let mut consumable = 0usize;
@@ -1065,8 +1141,27 @@ pub fn run_poll(
             fresh_class,
         );
         match verdict {
-            Ok((from, body)) => {
+            Ok(AuthedEvent {
+                from,
+                body,
+                dedup_key,
+            }) => {
                 accepted += 1;
+                // Replay backstop (audit M9, FR-M6): authentication is idempotent (a
+                // re-polled genuine event still *authenticates* — `accepted` counts it),
+                // but an event this recipient has already SEEN is a **replay** and must
+                // not be re-CONSUMED. The first sight records its signature-pinned key;
+                // any later sight (re-delivery, re-poll, or a hostile relay's replay) is
+                // flagged. At the enforcing consume edge (`--review`) a replay's body is
+                // **withheld**; the raw primitive exposes it but reports `replayed` so a
+                // caller can dedup. A forged fresh id cannot bypass this — the key is
+                // signature-pinned (a sealed-sender event keys on its signed inner cid).
+                let is_replay = !dedup_store
+                    .check_and_record(&id.wgid, &dedup_key)
+                    .unwrap_or(true);
+                if is_replay {
+                    replayed += 1;
+                }
                 if review {
                     // ── IC4 ingest auto-gate (ENFORCING): screen the authenticated event
                     // BEFORE its body is exposed (received ≠ consumed). A non-accept
@@ -1074,7 +1169,9 @@ pub fn run_poll(
                     // consuming agent can never read un-screened bytes.
                     let r = review_inbound_event(workgraph_dir, &from, &body);
                     screened += 1;
-                    let consume = r.permits_consumption;
+                    // The consume edge: a non-accept verdict OR a replay (audit M9)
+                    // withholds the body. A replayed event is never re-delivered.
+                    let consume = r.permits_consumption && !is_replay;
                     if consume {
                         consumable += 1;
                     } else {
@@ -1084,6 +1181,7 @@ pub fn run_poll(
                         "verdict": "VERIFIED",
                         "from": from,
                         "consumable": consume,
+                        "replayed": is_replay,
                         "review": {
                             "verdict": r.verdict,
                             "reason": r.reason,
@@ -1101,32 +1199,35 @@ pub fn run_poll(
                         ev_json["body_withheld"] = serde_json::json!(true);
                     }
                     if !json {
+                        let tail = if is_replay {
+                            "BLOCKED (replay — body withheld; audit M9)"
+                        } else if consume {
+                            "CONSUMABLE"
+                        } else {
+                            "BLOCKED (body withheld; non-accept verdict)"
+                        };
                         if consume {
                             println!("VERIFIED from {from}: {body}");
                         } else {
-                            println!("VERIFIED from {from}: <body withheld — non-accept verdict>");
+                            println!("VERIFIED from {from}: <body withheld>");
                         }
                         println!(
-                            "  review: {} ({}, trust={}) → {}",
-                            r.verdict,
-                            r.reason,
-                            r.effective_trust,
-                            if consume {
-                                "CONSUMABLE"
-                            } else {
-                                "BLOCKED (body withheld; non-accept verdict)"
-                            }
+                            "  review: {} ({}, trust={}) → {tail}",
+                            r.verdict, r.reason, r.effective_trust,
                         );
                     }
                     verdicts.push(ev_json);
                 } else {
                     // Auto-gate disabled (`--no-review` / the raw `identity poll`
-                    // primitive): expose the authenticated body unscreened.
+                    // primitive): expose the authenticated body unscreened, but report
+                    // `replayed` so a caller may dedup (audit M9).
                     let ev_json = serde_json::json!({
                         "verdict": "VERIFIED", "from": from, "body": body,
+                        "replayed": is_replay,
                     });
                     if !json {
-                        println!("VERIFIED from {from}: {body}");
+                        let note = if is_replay { " (replay)" } else { "" };
+                        println!("VERIFIED from {from}: {body}{note}");
                     }
                     verdicts.push(ev_json);
                 }
@@ -1148,6 +1249,7 @@ pub fn run_poll(
             "wgid": id.wgid,
             "accepted": accepted,
             "rejected": rejected,
+            "replayed": replayed,
             "events": verdicts,
         });
         if review {
@@ -1160,7 +1262,7 @@ pub fn run_poll(
         println!("{out}");
     } else {
         println!(
-            "polled {} ({accepted} verified, {rejected} rejected)",
+            "polled {} ({accepted} verified, {rejected} rejected, {replayed} replay-refused)",
             id.wgid
         );
         if review {
@@ -1252,7 +1354,7 @@ fn authenticate_event(
     cust: &Custodian,
     workgraph_dir: &Path,
     fresh_class: Option<ActionClass>,
-) -> Result<(String, String)> {
+) -> Result<AuthedEvent> {
     let ev: SignedEvent = serde_json::from_slice(bytes).context("parsing inbox event")?;
 
     // Sealed-sender (Wave 6): the relay saw an anonymized `from`. Recover the real
@@ -1272,7 +1374,14 @@ fn authenticate_event(
         if !inner.to.iter().any(|t| t == &me.wgid) {
             bail!("sealed-sender event not addressed to {}", me.wgid);
         }
-        return Ok((inner.from, inner.body));
+        // Dedup key (audit M9): the inner signed payload's cid — the only
+        // authenticated handle on a sealed-sender event (the outer id is unsigned).
+        let dedup_key = dedup::dedup_key_for(&ev.id, Some(&inner.cid()));
+        return Ok(AuthedEvent {
+            from: inner.from,
+            body: inner.body,
+            dedup_key,
+        });
     }
 
     // Resolve and verify the *claimed* sender's identity (cache-first → store).
@@ -1300,7 +1409,14 @@ fn authenticate_event(
     if !ev.to.iter().any(|t| t == &me.wgid) {
         bail!("event not addressed to {}", me.wgid);
     }
-    Ok((ev.from, body))
+    // Dedup key (audit M9): the event's signature-pinned content id (`verify` rejects
+    // an id that does not match the core, so it cannot be forged into a fresh key).
+    let dedup_key = dedup::dedup_key_for(&ev.id, None);
+    Ok(AuthedEvent {
+        from: ev.from,
+        body,
+        dedup_key,
+    })
 }
 
 /// Fail-closed freshness gate for a high-value accept (ADR-fed-001 §OQ4). Re-fetches
@@ -1556,12 +1672,21 @@ pub fn run_recover(workgraph_dir: &Path, name: &str, store_loc: &str, json: bool
     let new_root = keys::gen_ed25519()?;
     let new_kid = keys::kid_for(&new_root.public);
     cust.store_signing_key(&new_kid, &new_root.seed)?;
+    // When the recovery slot is time-boxed (audit B8), assert the recovery time so the
+    // window check can validate it; verify fails closed if we are outside the window.
+    let recovery_at =
+        if recovery.recovery_not_before.is_some() || recovery.recovery_expires.is_some() {
+            Some(chrono::Utc::now().to_rfc3339())
+        } else {
+            None
+        };
     let rot = sigchain::rotate_root_via_recovery_key(
         &cust,
         id.sigchain.last().unwrap(),
         &rk_pub,
         &rk_kid,
         &new_root.public,
+        recovery_at.as_deref(),
     )?;
     id.sigchain.push(rot);
     id.active_root_kid = new_kid.clone();
@@ -1707,12 +1832,14 @@ pub fn run_enroll_signer(
 /// The pipeline is fail-closed — CAS integrity → signature/provenance → model_binding
 /// → kind dispatch → AI-input-safety scan → provenance-gate by `trust_level`. Low-trust
 /// or flagged state is **never silently consumed**.
+#[allow(clippy::too_many_arguments)]
 pub fn run_load_state(
     workgraph_dir: &Path,
     name: &str,
     store_loc: &str,
     from: Option<&str>,
     author_trust: &str,
+    runtime_model: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let me = load_local(workgraph_dir, name)?;
@@ -1753,6 +1880,32 @@ pub fn run_load_state(
     if snap.model_binding.is_none() && kind_class == KindClass::Opaque {
         bail!("opaque snapshot has no model_binding — fail closed (ADR-fed-004 §OQ1)");
     }
+    // Step 4b (model_binding ENFORCEMENT, audit M7/F5): compare the declared binding to
+    // the consuming runtime model (the `--runtime-model` flag or `$WG_MODEL`) and FAIL
+    // CLOSED on a mismatch — a snapshot bound to model A must never be loaded into model
+    // B. The prior code only checked presence; this compares it to the runtime.
+    let runtime = runtime_model
+        .map(str::to_string)
+        .or_else(|| std::env::var("WG_MODEL").ok())
+        .filter(|s| !s.trim().is_empty());
+    let mb = check_model_binding(snap.model_binding.as_ref(), runtime.as_deref());
+    if !mb.permits() {
+        return finish_load(
+            json,
+            &author_wgid,
+            same_self,
+            trust,
+            kind_class,
+            &ScanResult::default(),
+            &LoadDecision::Refuse {
+                reason: mb
+                    .reason()
+                    .unwrap_or_else(|| "model_binding gate failed".into()),
+            },
+            "refuse",
+            None,
+        );
+    }
 
     // Step 5 (kind dispatch): an unknown kind degrades gracefully and STOPS.
     if kind_class == KindClass::Unknown {
@@ -1771,6 +1924,7 @@ pub fn run_load_state(
                 ),
             },
             "degrade",
+            None,
         );
     }
 
@@ -1786,6 +1940,41 @@ pub fn run_load_state(
 
     // Step 7 (provenance gate): decide auto-load / human-in-loop / refuse.
     let decision = evaluate(trust, same_self, kind_class, &scan);
+
+    // Step 8 (real consumption, audit S13/F6): only on AutoLoad of a transparent kind,
+    // actually DECODE the payload into working state and persist it — the prior code
+    // only printed "LOADED" without consuming anything. The gate decided; this is the
+    // load. A held/refused decision (or an opaque kind, which is contained not inspected)
+    // consumes nothing.
+    let consumed = if decision.loads() && kind_class == KindClass::Transparent {
+        let payload_json: serde_json::Value =
+            serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
+        match consume_payload(&snap.payload_kind, &payload_json) {
+            Ok(loaded) => {
+                let path = write_loaded_state(workgraph_dir, name, &author_wgid, &loaded)?;
+                Some((loaded, path))
+            }
+            Err(e) => {
+                // Passed the gate but cannot be decoded into working state — fail closed.
+                return finish_load(
+                    json,
+                    &author_wgid,
+                    same_self,
+                    trust,
+                    kind_class,
+                    &scan,
+                    &LoadDecision::Refuse {
+                        reason: format!("accepted but unconsumable: {e}"),
+                    },
+                    "refuse",
+                    None,
+                );
+            }
+        }
+    } else {
+        None
+    };
+
     finish_load(
         json,
         &author_wgid,
@@ -1795,7 +1984,29 @@ pub fn run_load_state(
         &scan,
         &decision,
         decision.label(),
+        consumed,
     )
+}
+
+/// Persist a consumed payload's decoded working state (audit S13) so the resume is real
+/// — `<wgdir>/identity/loaded/<loader>__<author>.json`. Returns the written path.
+fn write_loaded_state(
+    workgraph_dir: &Path,
+    loader: &str,
+    author_wgid: &str,
+    loaded: &LoadedState,
+) -> Result<PathBuf> {
+    let dir = identity_dir(workgraph_dir).join("loaded");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let leaf = format!(
+        "{}__{}.json",
+        worksgood::identity::transport::sanitize(loader),
+        worksgood::identity::transport::sanitize(author_wgid)
+    );
+    let path = dir.join(leaf);
+    std::fs::write(&path, serde_json::to_vec_pretty(loaded)?)
+        .with_context(|| format!("writing loaded state {}", path.display()))?;
+    Ok(path)
 }
 
 /// Print the load decision and map it to a process outcome: `AutoLoad` ⇒ loaded /
@@ -1810,8 +2021,12 @@ fn finish_load(
     scan: &ScanResult,
     decision: &LoadDecision,
     label: &str,
+    consumed: Option<(LoadedState, PathBuf)>,
 ) -> Result<()> {
     let loaded = decision.loads();
+    // `consumed` is only Some on an AutoLoad that actually decoded the payload (S13);
+    // its presence is the proof the state was really consumed, not just "LOADED".
+    let consumed_state = consumed.as_ref().map(|(s, _)| s);
     if json {
         println!(
             "{}",
@@ -1822,6 +2037,10 @@ fn finish_load(
                 "kind_class": format!("{kind:?}"),
                 "decision": label,
                 "loaded": loaded,
+                "consumed": consumed_state.is_some(),
+                "consumed_turns": consumed_state.map(|s| s.turns),
+                "consumed_kind": consumed_state.map(|s| s.kind.clone()),
+                "consumed_path": consumed.as_ref().map(|(_, p)| p.display().to_string()),
                 "reason": decision.reason(),
                 "hard_hits": scan.hard_hits,
                 "soft_hits": scan.soft_hits,
@@ -1837,6 +2056,14 @@ fn finish_load(
         println!("  same-self: {same_self}; author trust: {trust:?}; kind: {kind:?}");
         if let Some(r) = decision.reason() {
             println!("  {r}");
+        }
+        if let Some((s, p)) = &consumed {
+            println!(
+                "  consumed: {} ({} turn(s)) → {}",
+                s.kind,
+                s.turns,
+                p.display()
+            );
         }
         for h in &scan.hard_hits {
             println!("  scan(block): {h}");
@@ -2059,6 +2286,64 @@ pub fn run_verify_cap(
         }
     }
 
+    // M10/D5: freshness-gate each chain issuer's signed revocation HEAD. A node that
+    // WITHHOLDS a newer revocation by serving a stale or rolled-back head is caught and
+    // we **fail closed** (refuse the cap) rather than honoring a possibly-revoked one;
+    // a fresh head's revoked set is merged in. First contact (no recorded seq) is TOFU.
+    let revhead_dir = revhead_seen_dir(workgraph_dir);
+    let mut issuers: Vec<String> = chain_iss.iter().map(|(_, iss)| iss.clone()).collect();
+    issuers.sort();
+    issuers.dedup();
+    for issuer in issuers {
+        let inbox = revhead_inbox(&issuer);
+        let last_seen = load_seen_seq(&revhead_dir, &issuer);
+        let head = match store.list_events(&inbox) {
+            Ok(events) => events
+                .iter()
+                .filter_map(|e| serde_json::from_slice::<RevocationHead>(&e.bytes).ok())
+                .max_by_key(|h| h.seq),
+            Err(_) => None,
+        };
+        match head {
+            Some(head) => {
+                let Ok(auth) = resolve_auth_cached(workgraph_dir, store.as_ref(), &issuer) else {
+                    continue;
+                };
+                head.verify_signature(&auth).with_context(|| {
+                    format!("revocation head for {issuer} failed signature verification")
+                })?;
+                match head.freshness(now, ActionClass::Routine, last_seen) {
+                    FreshVerdict::Fresh { seq, .. } => {
+                        record_seen_seq(&revhead_dir, &issuer, seq)?;
+                        for cid in &head.revoked {
+                            if !revoked.contains(cid) {
+                                revoked.push(cid.clone());
+                            }
+                        }
+                    }
+                    FreshVerdict::Stale { reason } | FreshVerdict::Rollback { reason } => {
+                        bail!(
+                            "revocation-head freshness gate FAILED CLOSED for issuer \
+                             {issuer}: {reason} (audit M10/D5) — refusing to honor the \
+                             capability while revocation status cannot be confirmed current"
+                        );
+                    }
+                }
+            }
+            None if last_seen.is_some() => {
+                // We previously accepted a revocation head for this issuer; a node now
+                // serving NONE is withholding it → fail closed (audit M10).
+                bail!(
+                    "issuer {issuer} previously published a revocation head (seq {}) but \
+                     the store now serves none — refusing the capability (withheld \
+                     revocation, fail closed, audit M10)",
+                    last_seen.unwrap()
+                );
+            }
+            None => {} // First contact, no head: TOFU, no revocations known.
+        }
+    }
+
     let resolve = |w: &str| resolve_auth_cached(workgraph_dir, store.as_ref(), w);
     let verdict = custody::verify(&cap, now, &revoked, &resolve);
 
@@ -2134,6 +2419,38 @@ pub fn run_revoke_cap(
     let store = open_store(store_loc)?;
     store.put_object(&rev.cid(), &rev_bytes)?;
     store.put_event(REVOCATION_INBOX, &rev.cid(), &rev_bytes)?;
+
+    // M10/D5: maintain a signed, monotonic-seq revocation HEAD for this issuer so a
+    // verifier can freshness-gate revocation status and a node cannot silently withhold
+    // a new revocation (a stale/rolled-back head fails closed at the verifier).
+    let inbox = revhead_inbox(&id.wgid);
+    let (mut revoked_set, prev_seq) = match store.list_events(&inbox) {
+        Ok(events) => {
+            let latest = events
+                .iter()
+                .filter_map(|e| serde_json::from_slice::<RevocationHead>(&e.bytes).ok())
+                .max_by_key(|h| h.seq);
+            match latest {
+                Some(h) => (h.revoked, h.seq),
+                None => (Vec::new(), 0),
+            }
+        }
+        Err(_) => (Vec::new(), 0),
+    };
+    if !revoked_set.contains(&rev.cap_cid) {
+        revoked_set.push(rev.cap_cid.clone());
+    }
+    let mut head = RevocationHead::build(
+        &id.wgid,
+        prev_seq + 1,
+        revoked_set,
+        now,
+        worksgood::identity::freshness::ROUTINE_DELTA_SECS,
+    );
+    head.sign(&cust, &id.signer_kid)?;
+    let head_bytes = serde_json::to_vec(&head)?;
+    store.put_object(&head.cid(), &head_bytes)?;
+    store.put_event(&inbox, REVHEAD_EVENT_ID, &head_bytes)?;
 
     if json {
         println!(

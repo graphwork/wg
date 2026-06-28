@@ -3172,6 +3172,12 @@ pub enum IdentityCommands {
         /// without it).
         #[arg(long = "node-less")]
         node_less: bool,
+        /// Time-box the offline recovery key to a window `[now, now+N]` seconds (audit
+        /// B8). A recovery after the window closes is refused (fail-closed). A negative
+        /// N back-dates the window (already-closed) to exercise the fail-closed path.
+        /// Omit ⇒ the legacy unbounded recovery window.
+        #[arg(long = "recovery-window-secs")]
+        recovery_window_secs: Option<i64>,
     },
 
     /// Show a local identity (public material only; never private keys).
@@ -3367,6 +3373,10 @@ pub enum IdentityCommands {
         /// unknown (default unknown — the TOFU/fail-closed default).
         #[arg(long = "author-trust", default_value = "unknown")]
         author_trust: String,
+        /// The consuming runtime's model id, enforced against the snapshot's
+        /// `model_binding` (audit M7 — a mismatch fails closed). Defaults to `$WG_MODEL`.
+        #[arg(long = "runtime-model")]
+        runtime_model: Option<String>,
     },
 
     /// Issue a UCAN-style capability — a signed, scoped, expiring "agent X may act for

@@ -675,6 +675,19 @@ pub fn backend_status(cfg: &SecretsConfig) -> String {
     }
     parts.push(format!("Keyring (OS native): {}", os_keyring_status()));
     parts.push("Keystore (file at ~/.wg/keystore/): always available (0600 perms)".to_string());
+    // WG-Fed custody at-rest protection state (audit M1/A3): are seeds encrypted at rest?
+    let at_rest = if std::env::var("WG_FED_KEYSTORE_PASSPHRASE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .is_some()
+    {
+        "ENCRYPTED at rest (KEK from WG_FED_KEYSTORE_PASSPHRASE)"
+    } else if os_keyring_available() {
+        "ENCRYPTED at rest (KEK from OS keyring)"
+    } else {
+        "PLAINTEXT at rest — set WG_FED_KEYSTORE_PASSPHRASE to encrypt (audit M1/A3)"
+    };
+    parts.push(format!("WG-Fed custody keys: {at_rest}"));
     if cfg.allow_plaintext {
         parts.push("Plaintext backend: enabled (allow_plaintext = true)".to_string());
     } else {
@@ -684,6 +697,158 @@ pub fn backend_status(cfg: &SecretsConfig) -> String {
         );
     }
     parts.join("\n")
+}
+
+// ── At-rest AEAD for custody key seeds (WG-Fed, audit M1/A3) ──────────────────
+//
+// The WG-Fed custody boundary (`identity::keys::Custodian`) stored root/signer/enc
+// **seeds as plaintext hex** in a 0600 keystore file (audit A3): anything that could
+// read the file or the process got the root key, defeating "download ≠ impersonation"
+// for the *local* attacker. This module wraps each seed in an XChaCha20-Poly1305
+// envelope under a **key-encryption key (KEK)** that lives in a *separate trust
+// domain* — an operator passphrase (never written) or the OS keyring (when genuinely
+// reachable). A reader of the keystore dir alone now holds only ciphertext.
+//
+// The KEK is NOT stored in the file keystore (that would put it next to the data it
+// protects). When neither a passphrase nor a reachable OS keyring is available
+// (headless CI, no secret-service), at-rest encryption is unavailable and the
+// custodian falls back — with a loud one-time warning — to the legacy plaintext store,
+// so existing identities keep working. Production deployments set a passphrase.
+
+pub mod at_rest {
+    use super::*;
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+
+    /// Versioned prefix marking a stored value as an at-rest AEAD envelope.
+    pub const AEAD_PREFIX: &str = "aead1:";
+    /// AAD bound into every at-rest envelope (domain separation).
+    const AT_REST_AAD: &[u8] = b"wgfed-at-rest-kek-v1";
+    /// Keyring entry holding the per-host random KEK (only ever in the OS keyring).
+    const KEK_KEYRING_NAME: &str = "wgfed-at-rest-kek";
+
+    /// Whether `stored` is an at-rest AEAD envelope (vs a legacy plaintext entry).
+    pub fn is_at_rest(stored: &str) -> bool {
+        stored.starts_with(AEAD_PREFIX)
+    }
+
+    /// Derive a 32-byte KEK from an operator passphrase (HKDF-SHA256, fixed domain
+    /// salt). A passphrase is never stored; the KEK is re-derived each process. (HKDF
+    /// has no work factor — a high-entropy passphrase is assumed; a future hardening is
+    /// argon2id, audit A3.)
+    pub fn derive_kek_from_passphrase(passphrase: &str) -> [u8; 32] {
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(
+            Some(b"wgfed-at-rest-kek-salt-v1"),
+            passphrase.as_bytes(),
+        );
+        let mut kek = [0u8; 32];
+        hk.expand(b"wgfed-kek", &mut kek)
+            .expect("HKDF expand of a 32-byte KEK never fails");
+        kek
+    }
+
+    /// Encrypt `plaintext` under `kek` into a stored `aead1:<nonce_hex>:<ct_hex>` string.
+    pub fn seal_at_rest(kek: &[u8; 32], plaintext: &[u8]) -> Result<String> {
+        let cipher = XChaCha20Poly1305::new_from_slice(kek)
+            .map_err(|e| anyhow::anyhow!("at-rest cipher init failed: {e}"))?;
+        let mut nonce = [0u8; 24];
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| anyhow::anyhow!("CSPRNG unavailable for at-rest nonce: {e}"))?;
+        let ct = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: plaintext,
+                    aad: AT_REST_AAD,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("at-rest AEAD encrypt failed: {e}"))?;
+        Ok(format!(
+            "{AEAD_PREFIX}{}:{}",
+            hex::encode(nonce),
+            hex::encode(ct)
+        ))
+    }
+
+    /// Decrypt an `aead1:<nonce_hex>:<ct_hex>` envelope under `kek`. Fails on a wrong KEK
+    /// or tampered ciphertext (the AEAD tag), and on a malformed envelope.
+    pub fn open_at_rest(kek: &[u8; 32], stored: &str) -> Result<Vec<u8>> {
+        let body = stored
+            .strip_prefix(AEAD_PREFIX)
+            .ok_or_else(|| anyhow::anyhow!("not an at-rest AEAD envelope"))?;
+        let (nonce_hex, ct_hex) = body
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("malformed at-rest envelope (no nonce:ct split)"))?;
+        let nonce = hex::decode(nonce_hex).context("at-rest nonce is not hex")?;
+        if nonce.len() != 24 {
+            bail!("at-rest nonce is {} bytes, expected 24", nonce.len());
+        }
+        let ct = hex::decode(ct_hex).context("at-rest ciphertext is not hex")?;
+        let cipher = XChaCha20Poly1305::new_from_slice(kek)
+            .map_err(|e| anyhow::anyhow!("at-rest cipher init failed: {e}"))?;
+        cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ct,
+                    aad: AT_REST_AAD,
+                },
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("at-rest AEAD decrypt failed — wrong KEK or tampered keystore")
+            })
+    }
+
+    /// Resolve the at-rest KEK from a separate trust domain, or `None` if unavailable:
+    /// 1. `WG_FED_KEYSTORE_PASSPHRASE` env (never stored) — the production-recommended path;
+    /// 2. a per-host random KEK in the **OS keyring** (only when the OS keyring is
+    ///    genuinely reachable — never the file-keystore fallback, which would sit next to
+    ///    the data it protects);
+    /// 3. `None` (headless, no passphrase, no keyring) — the caller falls back to the
+    ///    legacy plaintext store with a loud warning.
+    pub fn resolve_kek() -> Option<[u8; 32]> {
+        if let Ok(pass) = std::env::var("WG_FED_KEYSTORE_PASSPHRASE") {
+            let pass = pass.trim();
+            if !pass.is_empty() {
+                return Some(derive_kek_from_passphrase(pass));
+            }
+        }
+        // Only use the OS keyring if it is *genuinely* reachable — not the file fallback.
+        if os_keyring_available() {
+            if let Some(kek) = os_keyring_kek_get_or_create() {
+                return Some(kek);
+            }
+        }
+        None
+    }
+
+    /// Get-or-create the per-host random KEK in the OS keyring (never the file keystore).
+    fn os_keyring_kek_get_or_create() -> Option<[u8; 32]> {
+        match os_keyring_get(KEK_KEYRING_NAME) {
+            Ok(Some(hexed)) => decode_kek(&hexed),
+            Ok(None) => {
+                let mut kek = [0u8; 32];
+                if getrandom::getrandom(&mut kek).is_err() {
+                    return None;
+                }
+                if os_keyring_set(KEK_KEYRING_NAME, &hex::encode(kek)).is_err() {
+                    return None;
+                }
+                Some(kek)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn decode_kek(hexed: &str) -> Option<[u8; 32]> {
+        let b = hex::decode(hexed.trim()).ok()?;
+        if b.len() != 32 {
+            return None;
+        }
+        let mut kek = [0u8; 32];
+        kek.copy_from_slice(&b);
+        Some(kek)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -889,6 +1054,29 @@ mod tests {
         assert_eq!(Backend::from_str("plaintext").unwrap(), Backend::Plaintext);
         assert_eq!(Backend::from_str("plain").unwrap(), Backend::Plaintext);
         assert!(Backend::from_str("nonsense").is_err());
+    }
+
+    #[test]
+    fn test_at_rest_roundtrip_and_wrong_kek_fails() {
+        let kek = at_rest::derive_kek_from_passphrase("correct horse battery staple");
+        let secret = b"ed25519:deadbeefcafef00d";
+        let sealed = at_rest::seal_at_rest(&kek, secret).unwrap();
+        // The envelope is tagged and contains NO plaintext of the secret.
+        assert!(at_rest::is_at_rest(&sealed));
+        assert!(
+            !sealed.contains("deadbeef"),
+            "secret leaked into envelope: {sealed}"
+        );
+        // Correct KEK round-trips.
+        assert_eq!(at_rest::open_at_rest(&kek, &sealed).unwrap(), secret);
+        // A wrong KEK (different passphrase) fails the AEAD tag.
+        let wrong = at_rest::derive_kek_from_passphrase("wrong passphrase");
+        assert!(at_rest::open_at_rest(&wrong, &sealed).is_err());
+        // A tampered ciphertext fails.
+        let mut tampered = sealed.clone();
+        tampered.pop();
+        tampered.push(if sealed.ends_with('0') { '1' } else { '0' });
+        assert!(at_rest::open_at_rest(&kek, &tampered).is_err());
     }
 
     #[test]

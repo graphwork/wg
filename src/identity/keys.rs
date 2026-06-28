@@ -47,6 +47,27 @@ fn fill_random(buf: &mut [u8]) -> Result<()> {
     getrandom::getrandom(buf).map_err(|e| anyhow!("CSPRNG unavailable: {e}"))
 }
 
+/// Warn once (per process) that custody seeds are stored plaintext-at-rest because no
+/// KEK is available (audit M1). **Opt-in** via `WG_FED_WARN_PLAINTEXT_KEYS` so it never
+/// pollutes a JSON/stdout consumer by default; the state is always shown by
+/// `wg secret backend show`. Production should set `WG_FED_KEYSTORE_PASSPHRASE` or run
+/// on a host with a reachable OS keyring.
+fn warn_no_at_rest_kek_once() {
+    if std::env::var("WG_FED_WARN_PLAINTEXT_KEYS").is_err() {
+        return;
+    }
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        eprintln!(
+            "Warning: WG-Fed custody keys are stored PLAINTEXT at rest — no key-encryption \
+             key available (no WG_FED_KEYSTORE_PASSPHRASE and no reachable OS keyring). \
+             A reader of ~/.wg/keystore obtains the root key. Set \
+             WG_FED_KEYSTORE_PASSPHRASE to encrypt seeds at rest (audit M1/A3)."
+        );
+    });
+}
+
 /// Generate a fresh ed25519 keypair (root or signer tier).
 pub fn gen_ed25519() -> Result<Ed25519Keypair> {
     let mut seed = [0u8; 32];
@@ -208,38 +229,88 @@ pub struct Custodian {
     /// (`~/.wg/keystore`). Tests inject a unique dir so they need not mutate the
     /// process-global `$HOME` (not parallel-test-safe).
     keystore_dir: Option<PathBuf>,
+    /// At-rest key-encryption key (audit M1/A3). When `Some`, every stored seed is
+    /// wrapped in an XChaCha20-Poly1305 envelope before it touches disk and decrypted
+    /// transiently on use, so the keystore file holds only ciphertext. `None` = legacy
+    /// plaintext-at-rest (no KEK available; a loud warning is emitted once).
+    kek: Option<[u8; 32]>,
 }
 
 impl Custodian {
-    /// Bind a custodian to an identity name (the keystore namespace). Uses the
-    /// real `wg secret` keystore.
+    /// Bind a custodian to an identity name (the keystore namespace). Uses the real
+    /// `wg secret` keystore and **encrypts seeds at rest** under a KEK resolved from a
+    /// separate trust domain (operator passphrase or OS keyring; audit M1). When no KEK
+    /// is available it warns once and falls back to the legacy plaintext store.
     pub fn new(identity: &str) -> Self {
+        let kek = secret::at_rest::resolve_kek();
+        if kek.is_none() {
+            // Plaintext-at-rest fallback (no KEK). Off by default so it never pollutes
+            // JSON/stdout-captured callers; opt in with `WG_FED_WARN_PLAINTEXT_KEYS=1`.
+            // The at-rest protection state is always discoverable via
+            // `wg secret backend show`. (audit M1/A3)
+            warn_no_at_rest_kek_once();
+        }
         Self {
             identity: identity.to_string(),
             keystore_dir: None,
+            kek,
         }
     }
 
     /// Bind a custodian to an explicit keystore directory (test/isolation use).
+    /// Plaintext-at-rest (no KEK) — for at-rest tests use [`Custodian::with_keystore_dir_kek`].
     pub fn with_keystore_dir(identity: &str, dir: PathBuf) -> Self {
         Self {
             identity: identity.to_string(),
             keystore_dir: Some(dir),
+            kek: None,
+        }
+    }
+
+    /// Bind a custodian to an explicit keystore directory **with at-rest encryption**
+    /// under `kek` (test/isolation use — proves the M1 at-rest property hermetically).
+    pub fn with_keystore_dir_kek(identity: &str, dir: PathBuf, kek: [u8; 32]) -> Self {
+        Self {
+            identity: identity.to_string(),
+            keystore_dir: Some(dir),
+            kek: Some(kek),
         }
     }
 
     fn set(&self, name: &str, value: &str) -> Result<()> {
+        // Encrypt the seed at rest when a KEK is configured (audit M1); otherwise store
+        // the legacy plaintext value.
+        let to_store = match &self.kek {
+            Some(kek) => secret::at_rest::seal_at_rest(kek, value.as_bytes())?,
+            None => value.to_string(),
+        };
         match &self.keystore_dir {
-            Some(dir) => secret::keystore_set_in(dir, name, value),
-            None => secret::keystore_set(name, value),
+            Some(dir) => secret::keystore_set_in(dir, name, &to_store),
+            None => secret::keystore_set(name, &to_store),
         }
     }
 
     fn get(&self, name: &str) -> Result<Option<String>> {
-        match &self.keystore_dir {
-            Some(dir) => secret::keystore_get_in(dir, name),
-            None => secret::keystore_get(name),
+        let raw = match &self.keystore_dir {
+            Some(dir) => secret::keystore_get_in(dir, name)?,
+            None => secret::keystore_get(name)?,
+        };
+        let Some(stored) = raw else {
+            return Ok(None);
+        };
+        // Transparently decrypt an at-rest envelope (audit M1); a legacy plaintext entry
+        // (no `aead1:` prefix) is returned verbatim for back-compat.
+        if secret::at_rest::is_at_rest(&stored) {
+            let kek = self
+                .kek
+                .ok_or_else(|| anyhow!("keystore entry {name} is encrypted at rest but no KEK is available — set WG_FED_KEYSTORE_PASSPHRASE"))?;
+            let pt = secret::at_rest::open_at_rest(&kek, &stored)
+                .with_context(|| format!("decrypting at-rest custody entry {name}"))?;
+            let s = String::from_utf8(pt)
+                .with_context(|| format!("at-rest custody entry {name} is not UTF-8"))?;
+            return Ok(Some(s));
         }
+        Ok(Some(stored))
     }
 
     /// Store an ed25519 signing-key seed (root or signer tier) under its kid.
@@ -364,6 +435,66 @@ mod tests {
         let b32 = base32_lower_encode_for_test(&payload);
         let wgid_b = format!("wgid:b{b32}");
         assert_eq!(pubkey_from_wgid(&wgid_b).unwrap(), kp.public);
+    }
+
+    #[test]
+    fn signing_and_sealing_keys_encrypted_at_rest() {
+        // Audit M1/A3: a custodian with a KEK must NOT write plaintext seeds to disk;
+        // sign/agree still work (transparent decrypt); a wrong KEK cannot read them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let kek = [7u8; 32];
+        let cust = Custodian::with_keystore_dir_kek("atrest", dir.clone(), kek);
+
+        // Store a signing seed and an encryption secret.
+        let kp = gen_ed25519().unwrap();
+        let sign_kid = kid_for(&kp.public);
+        cust.store_signing_key(&sign_kid, &kp.seed).unwrap();
+        let xk = gen_x25519().unwrap();
+        let enc_kid = kid_for(&xk.public);
+        cust.store_sealing_key(&enc_kid, &xk.secret).unwrap();
+
+        // The raw keystore files must be at-rest AEAD envelopes with NO plaintext seed.
+        let sign_raw = std::fs::read_to_string(dir.join(entry_name("atrest", &sign_kid))).unwrap();
+        assert!(
+            sign_raw.starts_with("aead1:"),
+            "expected an at-rest envelope, got {sign_raw}"
+        );
+        assert!(
+            !sign_raw.contains(&hex::encode(kp.seed)),
+            "signing seed must NOT be plaintext-at-rest"
+        );
+        let enc_raw = std::fs::read_to_string(dir.join(entry_name("atrest", &enc_kid))).unwrap();
+        assert!(
+            !enc_raw.contains(&hex::encode(xk.secret)),
+            "encryption secret must NOT be plaintext-at-rest"
+        );
+
+        // sign_digest works through the transparent decrypt.
+        let digest = *blake3::hash(b"at-rest works").as_bytes();
+        let sig = cust.sign_digest(&sign_kid, &digest).unwrap();
+        assert!(verify_sig(&kp.public, &digest, &sig));
+        // agree() (ECDH for sealing) also works through the decrypt.
+        assert!(cust.agree(&enc_kid, &xk.public).is_ok());
+
+        // A custodian holding the WRONG KEK cannot use the keys (AEAD tag fails).
+        let wrong = Custodian::with_keystore_dir_kek("atrest", dir.clone(), [9u8; 32]);
+        assert!(
+            wrong.sign_digest(&sign_kid, &digest).is_err(),
+            "wrong KEK must not decrypt the seed"
+        );
+
+        // A legacy plaintext entry (no KEK custodian) is still readable by a KEK custodian
+        // (back-compat): write plaintext, then read through the at-rest custodian.
+        let legacy = Custodian::with_keystore_dir("legacy", dir.clone());
+        let lkp = gen_ed25519().unwrap();
+        let lkid = kid_for(&lkp.public);
+        legacy.store_signing_key(&lkid, &lkp.seed).unwrap();
+        let read_back = Custodian::with_keystore_dir_kek("legacy", dir.clone(), kek);
+        assert!(
+            read_back.sign_digest(&lkid, &digest).is_ok(),
+            "a KEK custodian must still read a legacy plaintext entry"
+        );
     }
 
     #[test]

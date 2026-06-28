@@ -225,13 +225,49 @@ pub struct SenderSealed {
     #[serde(default)]
     pub to: Vec<String>,
     pub body: String,
+    /// BLAKE3 commitment over the **outer** routing metadata (`to`, `created_at`,
+    /// `kind`, `refs`) this inner payload was sealed for (audit C3). Because it lives
+    /// inside the *signed* inner, a relay/MITM cannot tamper with the outer envelope
+    /// of a sealed-sender event without breaking the commitment — `open` re-derives it
+    /// from the visible outer fields and refuses a mismatch. (The non-sealed-sender
+    /// paths already authenticate the outer metadata via the outer signature.)
+    #[serde(default)]
+    pub outer_commitment: String,
     #[serde(default)]
     pub sig: String,
+}
+
+/// A BLAKE3 commitment (`b3:<hex>`) over a sealed-sender event's relay-visible **outer
+/// routing metadata** (`to`, `created_at`, `kind`, `refs`). Stored inside the signed
+/// inner payload and re-checked on open (audit C3). It deliberately excludes the
+/// envelope `id` (derived from the core, including the seal, so it cannot be folded
+/// back in without a cycle) and `from` (always [`ANON_SENDER`] on the wire); the
+/// authenticated `from` is the inner one.
+fn sealed_sender_outer_commitment(
+    to: &[String],
+    created_at: &str,
+    kind: &str,
+    refs: &[Value],
+) -> String {
+    let v = serde_json::json!({
+        "to": to,
+        "created_at": created_at,
+        "kind": kind,
+        "refs": refs,
+    });
+    content_cid(&v)
 }
 
 impl SenderSealed {
     fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("SenderSealed serializes")
+    }
+
+    /// Content id (`b3:<hex>`) of the inner signed payload. The recipient's only
+    /// **authenticated** handle on a sealed-sender event (the outer `id` is unsigned),
+    /// so it is the dedup key for the replay backstop (audit M9, see [`super::dedup`]).
+    pub fn cid(&self) -> String {
+        content_cid(&self.to_value())
     }
 
     fn sign(&mut self, custodian: &Custodian, signer_kid: &str) -> Result<()> {
@@ -401,6 +437,10 @@ impl SignedEvent {
             created_at: created_at.to_string(),
             to: to.to_vec(),
             body: body.to_string(),
+            // C3: commit to the outer routing metadata this event will carry (`refs`
+            // is empty here, matching the outer event built below) so a relay cannot
+            // rewrite the unsigned outer envelope undetected.
+            outer_commitment: sealed_sender_outer_commitment(to, created_at, kind, &[]),
             sig: String::new(),
         };
         inner.sign(custodian, signer_kid)?;
@@ -479,6 +519,8 @@ impl SignedEvent {
                 // The inner payload is a SenderSealed JSON, not raw body bytes.
                 let inner: SenderSealed = serde_json::from_slice(&plaintext)
                     .context("parsing sealed-sender inner payload")?;
+                // C3: refuse a relay-tampered outer envelope before returning the body.
+                self.enforce_outer_binding(&inner)?;
                 return Ok(inner.body);
             }
             return String::from_utf8(plaintext).context("sealed payload is not valid UTF-8");
@@ -502,7 +544,30 @@ impl SignedEvent {
             .filter(|e| e.sealed_sender)
             .ok_or_else(|| anyhow::anyhow!("event is not a sealed-sender envelope"))?;
         let plaintext = open_multi(env, custodian)?;
-        serde_json::from_slice(&plaintext).context("parsing sealed-sender inner payload")
+        let inner: SenderSealed =
+            serde_json::from_slice(&plaintext).context("parsing sealed-sender inner payload")?;
+        // C3: bind the recovered inner to the outer routing metadata BEFORE the caller
+        // trusts either. A relay that rewrote the unsigned outer `to`/`created_at`/
+        // `kind`/`refs` is caught here — the commitment is inside the signed inner, so
+        // it cannot be re-forged without the sender's key.
+        self.enforce_outer_binding(&inner)?;
+        Ok(inner)
+    }
+
+    /// Enforce that a recovered sealed-sender `inner` commits to **this** event's outer
+    /// routing metadata (audit C3). Cheap, pure, and called on every sealed-sender open.
+    fn enforce_outer_binding(&self, inner: &SenderSealed) -> Result<()> {
+        let expected =
+            sealed_sender_outer_commitment(&self.to, &self.created_at, &self.kind, &self.refs);
+        if inner.outer_commitment != expected {
+            bail!(
+                "sealed-sender outer routing metadata (to/created_at/kind/refs) does not \
+                 match the signed inner commitment — relay tampering detected, refused \
+                 (audit C3). Expected {expected}, inner committed {:?}",
+                inner.outer_commitment
+            );
+        }
+        Ok(())
     }
 }
 
@@ -995,5 +1060,56 @@ mod tests {
         forged.body = "i am alice".into();
         // No re-sign by alice's key is possible (mallory lacks it) → verify fails.
         assert!(forged.verify(&alice.auth).is_err());
+    }
+
+    #[test]
+    fn sealed_sender_outer_metadata_tamper_is_detected() {
+        // C3: the sealed-sender outer envelope carries no signature, so a relay could
+        // rewrite the routing metadata (`to`/`created_at`/`kind`/`refs`). The commitment
+        // folded into the signed inner + enforced on open catches every such tamper.
+        let (cust_alice, alice) = mint("alice_c3");
+        let (cust_bob, bob) = mint("bob_c3");
+
+        let recipients = vec![(bob.enc_kid.clone(), bob.enc_pub)];
+        let make = || {
+            SignedEvent::new_sealed_sender(
+                &alice.wgid,
+                &[bob.wgid.clone()],
+                "2026-06-25T00:00:00Z",
+                "msg",
+                "routing-bound secret",
+                &recipients,
+                &cust_alice,
+                &alice.signer_kid,
+            )
+            .unwrap()
+        };
+
+        // Genuine event: opens cleanly and binds.
+        let ev = make();
+        assert_eq!(ev.open(&cust_bob).unwrap(), "routing-bound secret");
+        assert!(ev.open_sender_sealed(&cust_bob).is_ok());
+
+        // Relay tampers the outer `to` (re-routes to a different victim) — caught.
+        let mut t_to = make();
+        t_to.to = vec!["wgid:zMallory".into()];
+        let err = t_to.open(&cust_bob).unwrap_err().to_string();
+        assert!(err.contains("C3") || err.contains("tampering"), "{err}");
+        assert!(t_to.open_sender_sealed(&cust_bob).is_err());
+
+        // Relay tampers the outer `kind` — caught.
+        let mut t_kind = make();
+        t_kind.kind = "task-ref".into();
+        assert!(t_kind.open_sender_sealed(&cust_bob).is_err());
+
+        // Relay tampers the outer `created_at` — caught.
+        let mut t_time = make();
+        t_time.created_at = "2030-01-01T00:00:00Z".into();
+        assert!(t_time.open(&cust_bob).is_err());
+
+        // Relay injects outer `refs` not present in the signed commitment — caught.
+        let mut t_refs = make();
+        t_refs.refs = vec![serde_json::json!({"evil": true})];
+        assert!(t_refs.open_sender_sealed(&cust_bob).is_err());
     }
 }

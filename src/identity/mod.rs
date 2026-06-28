@@ -36,7 +36,9 @@
 //!   `model_binding`-enforced, with human-in-loop for cross-trust loads.
 
 pub mod custody;
+pub mod dedup;
 pub mod envelope;
+pub mod equivocation;
 pub mod freshness;
 pub mod keys;
 pub mod node;
@@ -129,7 +131,14 @@ pub fn signing_digest(value: &Value) -> [u8; 32] {
 /// or sealed-sender event (it drops the unknown field → the signature no longer
 /// matches → it rejects), so it must fail the handshake loudly rather than mis-handle
 /// the new wire (S-7).
-pub const WG_FED_COMPAT_VERSION: &str = "0.3.0";
+///
+/// `0.3.0 → 0.4.0` (fed-harden): the federation-hardening pass changed several signed
+/// wire forms — the sealed-sender inner now carries a signed `outer_commitment` (M8),
+/// the sigchain gained a `SetRecovery` link type + a `recovery_at` field + a recovery
+/// window on `RecoverySlot` (M11), and a new signed `RevocationHead` rides the store
+/// (M10). All new fields are `#[serde(default)]` (forward-readable), but a 0.3.x peer
+/// cannot *produce or verify* them, so it must fail the handshake loudly (S-7).
+pub const WG_FED_COMPAT_VERSION: &str = "0.4.0";
 
 /// The only signing/identity algorithm the spark implements.
 ///
@@ -197,21 +206,23 @@ mod tests {
     #[test]
     fn compat_accepts_patch_bump() {
         // Same major.minor, different patch is fine even pre-1.0.
-        assert!(check_compat("0.3.99").is_ok());
+        assert!(check_compat("0.4.99").is_ok());
     }
 
     #[test]
     fn compat_rejects_minor_bump_pre_1_0() {
         // Pre-1.0 the wire format is not frozen, so a minor bump is incompatible.
-        let err = check_compat("0.4.0").unwrap_err().to_string();
+        let err = check_compat("0.5.0").unwrap_err().to_string();
         assert!(err.contains("FAILED"), "{err}");
-        assert!(err.contains("0.4.0"), "{err}");
+        assert!(err.contains("0.5.0"), "{err}");
         assert!(err.contains(WG_FED_COMPAT_VERSION), "{err}");
-        // The prior waves' wire (0.1.0 / 0.2.0) is also incompatible: Wave 5 changed
-        // rotate_root verification and Wave 6 added the sealed-multi / sealed-sender /
-        // UCAN wire, so an older peer must fail loud, not silently mis-handle it.
+        // Every prior wave's wire (0.1.0 / 0.2.0 / 0.3.0) is incompatible: Wave 5 changed
+        // rotate_root verification, Wave 6 added the sealed-multi / sealed-sender / UCAN
+        // wire, and fed-harden changed the sealed-sender inner + sigchain + revocation
+        // wire — an older peer must fail loud, not silently mis-handle it.
         assert!(check_compat("0.1.0").is_err());
         assert!(check_compat("0.2.0").is_err());
+        assert!(check_compat("0.3.0").is_err());
     }
 
     #[test]

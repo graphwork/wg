@@ -542,6 +542,114 @@ impl Revocation {
     }
 }
 
+// ── Freshness-gated revocation head (audit M10 / D5) ────────────────────────────
+
+/// A signed, **monotonic-seq** revocation head: the issuer's *current* set of revoked
+/// capability cids plus a freshness window (audit M10/D5). The prior design discovered
+/// revocations from an untrusted store list the node could simply **omit** — a
+/// revoked-but-unexpired cap was then honored. A verifier instead re-fetches this head
+/// and **fails closed** on a stale or rolled-back one: a node that withholds a newer
+/// revocation by serving an older head is caught by the monotonic `seq` (the same
+/// freeze/eclipse defense [`super::freshness`] applies to key status, here applied to
+/// revocation status). The freshness check reuses the tested [`super::freshness`] logic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevocationHead {
+    pub v: u16,
+    pub alg: String,
+    /// `wgid:` of the issuer whose revocations this head enumerates.
+    pub issuer: String,
+    /// Monotonic counter — bumped on every revocation. A verifier rejects a head with a
+    /// lower `seq` than the highest it has recorded for this issuer (a withheld revoke).
+    pub seq: u64,
+    /// The set of revoked capability cids (issuer-subtree revocation composes as before).
+    #[serde(default)]
+    pub revoked: Vec<String>,
+    /// RFC3339 instant the head was minted.
+    pub as_of: String,
+    /// RFC3339 expiry (`as_of + Δ`); past it a verifier fails closed and re-fetches.
+    pub expires: String,
+    #[serde(default)]
+    pub sig: String,
+}
+
+impl RevocationHead {
+    fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("RevocationHead serializes")
+    }
+
+    /// Content id (`b3:<hex>`).
+    pub fn cid(&self) -> String {
+        content_cid(&self.to_value())
+    }
+
+    /// Build a head for `issuer` listing `revoked`, valid for `ttl_secs` from `now`.
+    pub fn build(
+        issuer: &str,
+        seq: u64,
+        revoked: Vec<String>,
+        now: chrono::DateTime<chrono::Utc>,
+        ttl_secs: i64,
+    ) -> Self {
+        let expires = now + chrono::Duration::seconds(ttl_secs);
+        Self {
+            v: ENVELOPE_V,
+            alg: ALG_ED25519.to_string(),
+            issuer: issuer.to_string(),
+            seq,
+            revoked,
+            as_of: now.to_rfc3339(),
+            expires: expires.to_rfc3339(),
+            sig: String::new(),
+        }
+    }
+
+    /// Sign with `custodian`'s key `signer_kid` (an authorized signer of `issuer`).
+    pub fn sign(&mut self, custodian: &Custodian, signer_kid: &str) -> Result<()> {
+        let digest = signing_digest(&self.to_value());
+        self.sig = hex::encode(custodian.sign_digest(signer_kid, &digest)?);
+        Ok(())
+    }
+
+    /// Verify the head's signature against `issuer`'s authorized signer set, and that it
+    /// is *about* that issuer. (Offline; freshness judged separately by [`Self::freshness`].)
+    pub fn verify_signature(&self, issuer_auth: &AuthorizedKeys) -> Result<()> {
+        if self.issuer != keys::wgid_from_pubkey(&issuer_auth.root_pub) {
+            bail!("revocation head issuer does not match the resolved sigchain root");
+        }
+        let digest = signing_digest(&self.to_value());
+        verify_against_authorized(&digest, &self.sig, issuer_auth, "RevocationHead")
+    }
+
+    /// Whether `cap_cid` is named in this head's revoked set.
+    pub fn is_revoked(&self, cap_cid: &str) -> bool {
+        self.revoked.iter().any(|c| c == cap_cid)
+    }
+
+    /// Fail-closed freshness verdict for this head (audit M10), reusing the tested
+    /// [`super::freshness::check_fresh`] logic: a stale or rolled-back head (lower `seq`
+    /// than `last_seen_seq`) is refused, so a withheld revocation cannot be hidden by
+    /// serving an old head. The verifier records the accepted `seq` to ratchet forward.
+    pub fn freshness(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        class: super::freshness::ActionClass,
+        last_seen_seq: Option<u64>,
+    ) -> super::freshness::FreshVerdict {
+        // Reuse the freshness attestation algebra by viewing the head as one.
+        let shim = super::freshness::FreshnessAttestation {
+            v: self.v,
+            alg: self.alg.clone(),
+            identity: self.issuer.clone(),
+            head: self.cid(),
+            as_of: self.as_of.clone(),
+            expires: self.expires.clone(),
+            seq: self.seq,
+            sig: String::new(),
+        };
+        super::freshness::check_fresh(&shim, now, class, last_seen_seq)
+    }
+}
+
 // ── Verification ────────────────────────────────────────────────────────────────
 
 /// The result of verifying a capability chain.
@@ -1114,5 +1222,60 @@ mod tests {
         };
         cap.sign(&mallory.cust, &mallory.signer_kid).unwrap();
         assert!(verify(&cap, now(), &[], &resolver(&[&alice, &agent, &mallory])).is_err());
+    }
+
+    #[test]
+    fn withheld_revocation_is_caught_by_revocation_head_freshness() {
+        // M10/D5: an untrusted node that withholds a new revocation (serves an older
+        // head) is caught by the monotonic-seq freshness gate — fail-closed.
+        use crate::identity::freshness::{ActionClass, FreshVerdict, ROUTINE_DELTA_SECS};
+        let alice = mint("alice_revhead");
+        let cap_cid = "b3:revoked-cap";
+
+        // Alice has revoked `cap_cid`: her CURRENT head is seq=2, listing it.
+        let mut head2 = RevocationHead::build(
+            &alice.wgid,
+            2,
+            vec![cap_cid.into()],
+            now(),
+            ROUTINE_DELTA_SECS,
+        );
+        head2.sign(&alice.cust, &alice.signer_kid).unwrap();
+        head2.verify_signature(&alice.auth).unwrap();
+        assert!(head2.is_revoked(cap_cid));
+        let t = now() + chrono::Duration::seconds(30);
+        // The verifier accepts the current head (seq ≥ last seen) and would mark it revoked.
+        assert!(head2.freshness(t, ActionClass::Routine, Some(2)).is_fresh());
+
+        // A withholding node serves an OLDER head (seq=1) WITHOUT the revocation.
+        let mut head1 = RevocationHead::build(&alice.wgid, 1, vec![], now(), ROUTINE_DELTA_SECS);
+        head1.sign(&alice.cust, &alice.signer_kid).unwrap();
+        // The revocation is hidden in this old head…
+        assert!(!head1.is_revoked(cap_cid));
+        // …but a verifier that already saw seq=2 detects the rollback → FAIL CLOSED
+        // (the revoked cap is NOT silently honored).
+        let v = head1.freshness(t, ActionClass::Routine, Some(2));
+        assert!(
+            matches!(v, FreshVerdict::Rollback { .. }),
+            "a withheld revocation must be caught as a rollback: {v:?}"
+        );
+        assert!(!v.is_fresh());
+
+        // A genuinely stale (expired) head also fails closed, even at a higher seq.
+        let mut stale = RevocationHead::build(&alice.wgid, 3, vec![cap_cid.into()], now(), 0);
+        stale.sign(&alice.cust, &alice.signer_kid).unwrap();
+        let late = now() + chrono::Duration::minutes(10);
+        assert!(
+            matches!(
+                stale.freshness(late, ActionClass::Routine, None),
+                FreshVerdict::Stale { .. }
+            ),
+            "an expired revocation head must fail closed"
+        );
+
+        // A tampered head fails the signature check (cannot be forged by the node).
+        let mut tampered = head2.clone();
+        tampered.revoked.clear();
+        assert!(tampered.verify_signature(&alice.auth).is_err());
     }
 }

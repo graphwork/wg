@@ -59,6 +59,10 @@ pub enum LinkType {
     SetEndpoints,
     /// Bind a verifiable alias (Wave 6).
     SetAliasProof,
+    /// **Root-signed** replacement of the active recovery slot (audit B8): rotate the
+    /// offline recovery key and/or its window, or clear it. Makes a compromised recovery
+    /// key revocable — the prior genesis recovery slot was immutable.
+    SetRecovery,
 }
 
 /// The role a non-root key plays (ADR-fed-001 §D3).
@@ -117,6 +121,16 @@ pub struct RecoverySlot {
     /// recovery key is configured (e.g. an agent anchored purely to its custodian).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_key: Option<String>,
+    /// **Recovery window** start (RFC3339), audit B8. When either bound is set, a
+    /// recovery-key `rotate_root` is valid only if its asserted `recovery_at` falls
+    /// inside `[recovery_not_before, recovery_expires]`; outside the window the offline
+    /// recovery key is structurally powerless (the atproto-style time-boxed override the
+    /// doc claimed but never implemented). `None`/`None` = the legacy unbounded window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_not_before: Option<String>,
+    /// **Recovery window** end (RFC3339), audit B8. See [`RecoverySlot::recovery_not_before`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_expires: Option<String>,
 }
 
 impl RecoverySlot {
@@ -243,6 +257,11 @@ pub struct SigchainLink {
     /// signed by the current active root; present ⇒ a recovery path (§D5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_proof: Option<RecoveryProof>,
+    /// rotate_root via recovery key: the asserted recovery time (RFC3339), checked
+    /// against the active recovery window (audit B8). Required when the active recovery
+    /// slot declares a window; signed as part of the link so it is authenticated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_at: Option<String>,
     /// kid of the key that signed this link.
     pub signer_kid: String,
     /// public key of the signer, hex-encoded (cross-checked against the
@@ -342,6 +361,7 @@ fn genesis_with_parent(
         revoke_kid: None,
         new_root_pub: None,
         recovery_proof: None,
+        recovery_at: None,
         signer_kid: root_kid.to_string(),
         signer_pub: hex::encode(root_pub),
         sig: String::new(),
@@ -372,6 +392,7 @@ pub fn add_key(
         revoke_kid: None,
         new_root_pub: None,
         recovery_proof: None,
+        recovery_at: None,
         signer_kid: root_kid.to_string(),
         signer_pub: hex::encode(root_pub),
         sig: String::new(),
@@ -404,6 +425,41 @@ pub fn revoke_key(
         revoke_kid: Some(target_kid.to_string()),
         new_root_pub: None,
         recovery_proof: None,
+        recovery_at: None,
+        signer_kid: active_root_kid.to_string(),
+        signer_pub: hex::encode(active_root_pub),
+        sig: String::new(),
+    };
+    link.sign_with(custodian)?;
+    Ok(link)
+}
+
+/// Build and sign a **`SetRecovery`** link (audit B8) — the **root-signed** replacement
+/// of the active recovery slot. This makes the offline recovery key *revocable*: the
+/// legitimate active root can rotate out a compromised recovery key (or retune its
+/// window), which the immutable genesis slot could not. Passing `None` clears recovery
+/// entirely. Root-locked like `add_key`/`revoke_key` (a delegate cannot touch recovery).
+pub fn set_recovery(
+    custodian: &Custodian,
+    prev: &SigchainLink,
+    active_root_pub: &[u8; 32],
+    active_root_kid: &str,
+    new_recovery: Option<RecoverySlot>,
+) -> Result<SigchainLink> {
+    let mut link = SigchainLink {
+        v: ENVELOPE_V,
+        alg: ALG_ED25519.to_string(),
+        link_type: LinkType::SetRecovery,
+        seq: prev.seq + 1,
+        prev: Some(prev.cid()),
+        root_pub: None,
+        recovery: new_recovery,
+        parent: None,
+        key: None,
+        revoke_kid: None,
+        new_root_pub: None,
+        recovery_proof: None,
+        recovery_at: None,
         signer_kid: active_root_kid.to_string(),
         signer_pub: hex::encode(active_root_pub),
         sig: String::new(),
@@ -433,14 +489,20 @@ pub fn rotate_root(
 /// key registered at genesis (ADR-fed-003 §D5, the node default). The link is
 /// signed by the recovery key directly — a higher-priority override that recovers
 /// even against a hostile custodian. `recovery_kid` is the recovery key in custody.
+///
+/// `recovery_at` (RFC3339) is the asserted recovery time checked against the active
+/// recovery **window** (audit B8): it is **required** when the active recovery slot
+/// declares a window and ignored otherwise (legacy unbounded recovery passes `None`).
 pub fn rotate_root_via_recovery_key(
     custodian: &Custodian,
     prev: &SigchainLink,
     recovery_pub: &[u8; 32],
     recovery_kid: &str,
     new_root_pub: &[u8; 32],
+    recovery_at: Option<&str>,
 ) -> Result<SigchainLink> {
     let mut link = rotate_root_skeleton(prev, new_root_pub, Some(RecoveryProof::RecoveryKey));
+    link.recovery_at = recovery_at.map(|s| s.to_string());
     link.signer_kid = recovery_kid.to_string();
     link.signer_pub = hex::encode(recovery_pub);
     link.sign_with(custodian)?;
@@ -489,6 +551,7 @@ fn rotate_root_skeleton(
         revoke_kid: None,
         new_root_pub: Some(hex::encode(new_root_pub)),
         recovery_proof,
+        recovery_at: None,
         signer_kid: String::new(),
         signer_pub: String::new(),
         sig: String::new(),
@@ -644,7 +707,9 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
         bail!("genesis link signature is invalid");
     }
 
-    let recovery = g.recovery.clone();
+    // The **active** recovery slot starts at genesis and is replaced by any root-signed
+    // `SetRecovery` link (audit B8) — so a compromised recovery key can be rotated out.
+    let mut active_recovery = g.recovery.clone();
     let mut authorized: Vec<KeyEntry> = Vec::new();
     // The active signing root starts at genesis and rotates underneath the address.
     let mut active_root = root_pub;
@@ -667,13 +732,15 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
             bail!("sigchain link {} signature is invalid", link.seq);
         }
         match link.link_type {
-            LinkType::AddKey | LinkType::RevokeKey => {
-                // Hydra lock (S-4): only the active root mutates the key set.
+            // Hydra lock (S-4): only the active root mutates the key set OR the recovery
+            // slot. `SetRecovery` joins the root-locked set (audit B8) so a delegate can
+            // never rotate the recovery key behind the owner's back.
+            LinkType::AddKey | LinkType::RevokeKey | LinkType::SetRecovery => {
                 if signer_pub != active_root {
                     bail!(
                         "link {} ({:?}) is not signed by the active root — refused \
                          (hydra lock, S-4: a delegated signer cannot grow or shrink \
-                         the authorized key set)",
+                         the authorized key set or the recovery slot)",
                         link.seq,
                         link.link_type
                     );
@@ -739,17 +806,22 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
                     }
                     // Recovery via the offline recovery key (higher-priority override).
                     Some(RecoveryProof::RecoveryKey) => {
-                        let rk_hex = recovery
-                            .as_ref()
-                            .and_then(|r| r.recovery_key.as_deref())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "rotate_root link {} claims recovery-key authorization but \
-                                     genesis registered no recovery key",
-                                    link.seq
-                                )
-                            })?;
-                        let rk = pub32(rk_hex, "genesis recovery_key")?;
+                        let rec = active_recovery.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "rotate_root link {} claims recovery-key authorization but the \
+                                 active recovery slot registers no recovery key (it may have been \
+                                 rotated out by a SetRecovery link, audit B8)",
+                                link.seq
+                            )
+                        })?;
+                        let rk_hex = rec.recovery_key.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "rotate_root link {} claims recovery-key authorization but the \
+                                 active recovery slot registers no recovery key",
+                                link.seq
+                            )
+                        })?;
+                        let rk = pub32(rk_hex, "active recovery_key")?;
                         if signer_pub != rk {
                             bail!(
                                 "rotate_root link {} (recovery) is not signed by the \
@@ -757,13 +829,17 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
                                 link.seq
                             );
                         }
+                        // Recovery WINDOW enforcement (audit B8): when the active slot
+                        // declares a window, the link's asserted `recovery_at` must be
+                        // present and inside it — outside, the recovery key is powerless.
+                        check_recovery_window(rec, link)?;
                     }
                     // Recovery via M-of-N guardian quorum (the node-less ceremony).
                     Some(RecoveryProof::Guardians { endorsements }) => {
-                        let rec = recovery.as_ref().ok_or_else(|| {
+                        let rec = active_recovery.as_ref().ok_or_else(|| {
                             anyhow::anyhow!(
-                                "rotate_root link {} claims guardian recovery but genesis \
-                                 embedded no guardian set",
+                                "rotate_root link {} claims guardian recovery but the active \
+                                 recovery slot embeds no guardian set",
                                 link.seq
                             )
                         })?;
@@ -782,6 +858,12 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
                 }
                 active_root = new_root;
             }
+            // SetRecovery (audit B8): replace the active recovery slot. Already
+            // root-locked above; `None` clears recovery. The new window/key takes effect
+            // for every subsequent recovery-key rotate_root.
+            LinkType::SetRecovery => {
+                active_recovery = link.recovery.clone();
+            }
             LinkType::Genesis => bail!("duplicate genesis link at seq {}", link.seq),
             // Other link types carry no key-set change yet (delegate = Wave 6).
             _ => {}
@@ -794,8 +876,54 @@ pub fn verify(links: &[SigchainLink], expected_wgid: &str) -> Result<AuthorizedK
         active_root,
         keys: authorized,
         head: prev_link.cid(),
-        recovery,
+        recovery: active_recovery,
     })
+}
+
+/// Enforce the recovery **window** for a recovery-key `rotate_root` (audit B8). When the
+/// active recovery slot declares either bound, the link's signed `recovery_at` must be
+/// present and fall inside `[recovery_not_before, recovery_expires]`; outside it (or
+/// missing when a window is set) the recovery is refused. A slot with no window bounds is
+/// the legacy unbounded behavior (any `recovery_at`, or none, is accepted).
+fn check_recovery_window(rec: &RecoverySlot, link: &SigchainLink) -> Result<()> {
+    let has_window = rec.recovery_not_before.is_some() || rec.recovery_expires.is_some();
+    if !has_window {
+        return Ok(());
+    }
+    let at_str = link.recovery_at.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "rotate_root link {} via recovery key declares no recovery_at but the active \
+             recovery slot is time-boxed — refused (audit B8 window enforcement)",
+            link.seq
+        )
+    })?;
+    let at = parse_ts(at_str, "recovery_at")?;
+    if let Some(nbf) = rec.recovery_not_before.as_deref() {
+        if at < parse_ts(nbf, "recovery_not_before")? {
+            bail!(
+                "rotate_root link {} recovery_at {at_str} is before the recovery window opens \
+                 ({nbf}) — refused (audit B8)",
+                link.seq
+            );
+        }
+    }
+    if let Some(exp) = rec.recovery_expires.as_deref() {
+        if at > parse_ts(exp, "recovery_expires")? {
+            bail!(
+                "rotate_root link {} recovery_at {at_str} is after the recovery window closed \
+                 ({exp}) — the offline recovery key is expired/powerless (audit B8)",
+                link.seq
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Parse an RFC3339 instant (recovery-window bounds, audit B8).
+fn parse_ts(s: &str, what: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .map_err(|e| anyhow::anyhow!("{what} {s:?} is not RFC3339: {e}"))
 }
 
 /// Tiny helper so the guardian-quorum error names the offending link seq.
@@ -922,6 +1050,7 @@ mod tests {
             revoke_kid: None,
             new_root_pub: None,
             recovery_proof: None,
+            recovery_at: None,
             signer_kid: signer_kid.clone(),
             signer_pub: hex::encode(signer.public),
             sig: String::new(),
@@ -1106,6 +1235,7 @@ mod tests {
             revoke_kid: Some(f.signer_kid.clone()),
             new_root_pub: None,
             recovery_proof: None,
+            recovery_at: None,
             signer_kid: f.signer_kid.clone(),
             signer_pub: hex::encode(f.signer_pub),
             sig: String::new(),
@@ -1129,6 +1259,8 @@ mod tests {
             guardians: guardians.iter().map(hex::encode).collect(),
             threshold,
             recovery_key: recovery_key.map(hex::encode),
+            recovery_not_before: None,
+            recovery_expires: None,
         }
     }
 
@@ -1150,6 +1282,7 @@ mod tests {
             &rkey.public,
             &rkey_kid,
             &new_root.public,
+            None,
         )
         .unwrap();
         f.chain.push(rot);
@@ -1180,6 +1313,7 @@ mod tests {
             &imposter.public,
             &imp_kid,
             &new_root.public,
+            None,
         )
         .unwrap();
         f.chain.push(rot);
@@ -1325,6 +1459,166 @@ mod tests {
         assert!(verify(&[g], &parent.wgid).is_err());
     }
 
+    // ── M11/B8: windowed + revocable recovery ───────────────────────────────────
+
+    fn windowed_slot(recovery_key: [u8; 32], nbf: Option<&str>, exp: Option<&str>) -> RecoverySlot {
+        RecoverySlot {
+            guardians: vec![],
+            threshold: 0,
+            recovery_key: Some(hex::encode(recovery_key)),
+            recovery_not_before: nbf.map(|s| s.to_string()),
+            recovery_expires: exp.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn recovery_key_outside_window_is_rejected_within_is_accepted() {
+        // B8: a time-boxed recovery key may only rotate within its declared window.
+        let rkey = gen_ed25519().unwrap();
+        let slot = windowed_slot(
+            rkey.public,
+            Some("2026-06-01T00:00:00Z"),
+            Some("2026-07-01T00:00:00Z"),
+        );
+        let mut f = mint_full("recWin", Some(slot));
+        let rkey_kid = kid_for(&rkey.public);
+        f.cust.store_signing_key(&rkey_kid, &rkey.seed).unwrap();
+        let new_root = gen_ed25519().unwrap();
+        let new_kid = kid_for(&new_root.public);
+        f.cust.store_signing_key(&new_kid, &new_root.seed).unwrap();
+
+        let build = |at: Option<&str>| {
+            rotate_root_via_recovery_key(
+                &f.cust,
+                f.chain.last().unwrap(),
+                &rkey.public,
+                &rkey_kid,
+                &new_root.public,
+                at,
+            )
+            .unwrap()
+        };
+
+        // recovery_at AFTER the window closes → refused (the key is expired/powerless).
+        let mut after = f.chain.clone();
+        after.push(build(Some("2026-08-15T00:00:00Z")));
+        assert!(
+            verify(&after, &f.wgid).is_err(),
+            "recovery after the window must be refused"
+        );
+        // recovery_at BEFORE the window opens → refused.
+        let mut before = f.chain.clone();
+        before.push(build(Some("2026-01-01T00:00:00Z")));
+        assert!(verify(&before, &f.wgid).is_err());
+        // No recovery_at at all when a window is set → refused (fail-closed).
+        let mut missing = f.chain.clone();
+        missing.push(build(None));
+        assert!(verify(&missing, &f.wgid).is_err());
+
+        // recovery_at WITHIN the window → accepted.
+        f.chain.push(build(Some("2026-06-15T00:00:00Z")));
+        let auth = verify(&f.chain, &f.wgid).unwrap();
+        assert_eq!(
+            auth.active_root, new_root.public,
+            "in-window recovery rotates the root"
+        );
+        assert_eq!(auth.root_pub, f.root.public, "address unchanged");
+    }
+
+    #[test]
+    fn set_recovery_rotates_out_a_compromised_recovery_key() {
+        // B8: the root can SetRecovery to replace a compromised recovery key — the old
+        // key becomes powerless, the new one works, and a delegate cannot SetRecovery.
+        let old_rkey = gen_ed25519().unwrap();
+        let slot = windowed_slot(old_rkey.public, None, None);
+        let mut f = mint_full("recRevoke", Some(slot));
+        let old_kid = kid_for(&old_rkey.public);
+        f.cust.store_signing_key(&old_kid, &old_rkey.seed).unwrap();
+
+        // Root rotates out the old recovery key, installing a NEW one (root-signed).
+        let new_rkey = gen_ed25519().unwrap();
+        let new_slot = windowed_slot(new_rkey.public, None, None);
+        let sr = set_recovery(
+            &f.cust,
+            f.chain.last().unwrap(),
+            &f.root.public,
+            &f.root_kid,
+            Some(new_slot),
+        )
+        .unwrap();
+        f.chain.push(sr);
+        let auth = verify(&f.chain, &f.wgid).unwrap();
+        assert_eq!(
+            auth.recovery.as_ref().unwrap().recovery_key,
+            Some(hex::encode(new_rkey.public)),
+            "the active recovery key is the rotated-in one"
+        );
+
+        let target = gen_ed25519().unwrap();
+        let target_kid = kid_for(&target.public);
+        f.cust.store_signing_key(&target_kid, &target.seed).unwrap();
+
+        // The OLD (rotated-out) recovery key can NO LONGER recover.
+        let mut bad = f.chain.clone();
+        bad.push(
+            rotate_root_via_recovery_key(
+                &f.cust,
+                f.chain.last().unwrap(),
+                &old_rkey.public,
+                &old_kid,
+                &target.public,
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(
+            verify(&bad, &f.wgid).is_err(),
+            "a SetRecovery-rotated-out recovery key must be powerless"
+        );
+
+        // The NEW recovery key CAN recover.
+        let new_rkey_kid = kid_for(&new_rkey.public);
+        f.cust
+            .store_signing_key(&new_rkey_kid, &new_rkey.seed)
+            .unwrap();
+        f.chain.push(
+            rotate_root_via_recovery_key(
+                &f.cust,
+                f.chain.last().unwrap(),
+                &new_rkey.public,
+                &new_rkey_kid,
+                &target.public,
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            verify(&f.chain, &f.wgid).unwrap().active_root,
+            target.public
+        );
+
+        // A DELEGATE cannot SetRecovery (root-locked, hydra). Build one signed by the
+        // signer key instead of the active root → refused.
+        let mut delegate_sr = set_recovery(
+            &f.cust,
+            f.chain.last().unwrap(),
+            &target.public,
+            &target_kid,
+            None,
+        )
+        .unwrap();
+        delegate_sr.signer_kid = f.signer_kid.clone();
+        delegate_sr.signer_pub = hex::encode(f.signer_pub);
+        let digest = signing_digest(&delegate_sr.to_value());
+        delegate_sr.sig = hex::encode(f.cust.sign_digest(&f.signer_kid, &digest).unwrap());
+        let mut chain_del = f.chain.clone();
+        chain_del.push(delegate_sr);
+        assert!(
+            verify(&chain_del, &f.wgid).is_err(),
+            "a delegate cannot SetRecovery (hydra lock)"
+        );
+    }
+
     #[test]
     fn node_less_recovery_slot_validation() {
         // Missing recovery key → refused.
@@ -1332,6 +1626,8 @@ mod tests {
             guardians: vec![hex::encode(gen_ed25519().unwrap().public); 3],
             threshold: 2,
             recovery_key: None,
+            recovery_not_before: None,
+            recovery_expires: None,
         };
         assert!(only_guardians.validate_node_less().is_err());
         // M < 2 → refused.
@@ -1339,6 +1635,8 @@ mod tests {
             guardians: vec![hex::encode(gen_ed25519().unwrap().public)],
             threshold: 1,
             recovery_key: Some(hex::encode(gen_ed25519().unwrap().public)),
+            recovery_not_before: None,
+            recovery_expires: None,
         };
         assert!(lone.validate_node_less().is_err());
         // Both present, M ≥ 2, enough guardians → ok.
@@ -1346,6 +1644,8 @@ mod tests {
             guardians: vec![hex::encode(gen_ed25519().unwrap().public); 3],
             threshold: 2,
             recovery_key: Some(hex::encode(gen_ed25519().unwrap().public)),
+            recovery_not_before: None,
+            recovery_expires: None,
         };
         assert!(ok.validate_node_less().is_ok());
     }

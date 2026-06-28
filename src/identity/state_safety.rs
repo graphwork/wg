@@ -28,6 +28,7 @@
 //! its job is to raise the attacker's cost and catch the known/cheap attacks while
 //! the trust gate and human-in-loop carry the rest.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::graph::TrustLevel;
@@ -300,6 +301,166 @@ fn escalate(base: LoadDecision, soft_hit: &str) -> LoadDecision {
     }
 }
 
+// ── model_binding enforcement (audit M7 / S12, ADR-fed-004 §OQ1) ───────────────
+
+/// The outcome of checking a snapshot's `model_binding` against the consuming
+/// runtime's model. The audit (F5) found the prior code only checked *presence* of the
+/// field for opaque kinds and never compared it to the runtime — so a snapshot bound to
+/// model A could be loaded into a different model B. This makes the comparison real and
+/// **fail-closed** (mismatch / malformed ⇒ refuse).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelBindingVerdict {
+    /// No binding declared. Allowed only for transparent kinds (the caller still
+    /// fail-closes an *opaque* kind with no binding — that rule is unchanged).
+    Unbound,
+    /// Runtime model not known to the loader, so the binding cannot be compared. The
+    /// caller decides whether to proceed (skip) — enforcement requires a runtime model.
+    RuntimeUnknown { declared: String },
+    /// Binding present and the runtime model satisfies it.
+    Match { declared: String, runtime: String },
+    /// Binding present but the runtime model does not satisfy it — **fail closed**.
+    Mismatch { declared: String, runtime: String },
+    /// Binding present but malformed (no usable `model` field) — **fail closed**.
+    Malformed { reason: String },
+}
+
+impl ModelBindingVerdict {
+    /// Whether this verdict permits the load to proceed past the model-binding gate.
+    /// `Mismatch` and `Malformed` block (fail-closed); the rest pass.
+    pub fn permits(&self) -> bool {
+        !matches!(
+            self,
+            ModelBindingVerdict::Mismatch { .. } | ModelBindingVerdict::Malformed { .. }
+        )
+    }
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            ModelBindingVerdict::Mismatch { declared, runtime } => Some(format!(
+                "model_binding mismatch: snapshot bound to model {declared:?} but the \
+                 consuming runtime is {runtime:?} — fail closed (audit M7, ADR-fed-004 §OQ1)"
+            )),
+            ModelBindingVerdict::Malformed { reason } => Some(format!(
+                "model_binding malformed: {reason} — fail closed (audit M7)"
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Normalize a model id for comparison: lowercase, drop a handler/provider prefix
+/// (`claude:` / `codex:` / `nex:` / …) and all separators, so `claude-opus-4-8`,
+/// `claude:opus`, and `opus` compare as compatible while `gpt-5.5` does not.
+fn normalize_model(m: &str) -> String {
+    let after_prefix = m.rsplit(':').next().unwrap_or(m);
+    after_prefix
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Whether a `declared` binding model is satisfied by the `runtime` model. Compatible
+/// when one normalized form contains the other (e.g. `claudeopus48` ⊇ `claudeopus`),
+/// so a version-qualified binding still matches a coarser runtime id and vice-versa,
+/// but two distinct model families never match.
+fn models_compatible(declared: &str, runtime: &str) -> bool {
+    let d = normalize_model(declared);
+    let r = normalize_model(runtime);
+    if d.is_empty() || r.is_empty() {
+        return false;
+    }
+    d == r || d.contains(&r) || r.contains(&d)
+}
+
+/// Compare a snapshot's `model_binding` to the consuming `runtime_model` (audit M7).
+/// `runtime_model` is the loader's actual model (e.g. `$WG_MODEL`); `None` ⇒ the loader
+/// could not determine it (the verdict is `RuntimeUnknown`, enforcement deferred).
+pub fn check_model_binding(
+    binding: Option<&Value>,
+    runtime_model: Option<&str>,
+) -> ModelBindingVerdict {
+    let Some(binding) = binding else {
+        return ModelBindingVerdict::Unbound;
+    };
+    // Extract the declared model string from the binding object.
+    let declared = match binding.get("model").and_then(|v| v.as_str()) {
+        Some(m) if !m.trim().is_empty() => m.to_string(),
+        _ => {
+            return ModelBindingVerdict::Malformed {
+                reason: "binding has no non-empty string `model` field".into(),
+            };
+        }
+    };
+    let Some(runtime) = runtime_model.map(str::trim).filter(|s| !s.is_empty()) else {
+        return ModelBindingVerdict::RuntimeUnknown { declared };
+    };
+    if models_compatible(&declared, runtime) {
+        ModelBindingVerdict::Match {
+            declared,
+            runtime: runtime.to_string(),
+        }
+    } else {
+        ModelBindingVerdict::Mismatch {
+            declared,
+            runtime: runtime.to_string(),
+        }
+    }
+}
+
+// ── Real state consumption (audit S13, ADR-fed-004 V6 resume) ──────────────────
+
+/// The result of actually **consuming** a gated, accepted payload into working state.
+/// The S-5 gate decides *whether* to load; this is the *load* the audit (F6) found
+/// missing — `AutoLoad` previously only printed "LOADED" without decoding anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadedState {
+    /// The payload kind that was consumed.
+    pub kind: String,
+    /// Number of conversation turns decoded (`conv-cache-v1`), else 0.
+    pub turns: usize,
+    /// A short human summary of what was loaded (`summary-v1`'s text, or a synopsis).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The decoded working-state value the resuming agent would adopt.
+    pub working_state: Value,
+}
+
+/// Decode an **already-gated, accepted** transparent payload into working state (audit
+/// S13). Only called after [`evaluate`] returns `AutoLoad`; a refused/held payload is
+/// never reached here. Fails closed if the payload does not match its declared kind's
+/// shape (a structural surprise that slipped the scan).
+pub fn consume_payload(payload_kind: &str, payload: &Value) -> anyhow::Result<LoadedState> {
+    match payload_kind {
+        "conv-cache-v1" => {
+            let turns = payload
+                .get("turns")
+                .and_then(|t| t.as_array())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("conv-cache-v1 payload has no `turns` array to consume")
+                })?;
+            Ok(LoadedState {
+                kind: payload_kind.to_string(),
+                turns: turns.len(),
+                summary: Some(format!("restored {} conversation turn(s)", turns.len())),
+                working_state: payload.clone(),
+            })
+        }
+        "summary-v1" => {
+            let summary = payload
+                .get("summary")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            Ok(LoadedState {
+                kind: payload_kind.to_string(),
+                turns: 0,
+                summary,
+                working_state: payload.clone(),
+            })
+        }
+        other => anyhow::bail!("no consumer for transparent payload kind {other:?}"),
+    }
+}
+
 /// Parse a loader-supplied trust assessment of the author (`verified` / `provisional`
 /// / `unknown`; `untrusted` is accepted as an alias for `unknown`). Defaults are the
 /// caller's; this is strict.
@@ -481,5 +642,77 @@ mod tests {
         assert_eq!(parse_trust("verified").unwrap(), TrustLevel::Verified);
         assert_eq!(parse_trust("untrusted").unwrap(), TrustLevel::Unknown);
         assert!(parse_trust("bogus").is_err());
+    }
+
+    // ── model_binding enforcement (audit M7) ────────────────────────────────────
+
+    #[test]
+    fn model_binding_matches_compatible_runtime() {
+        let b = serde_json::json!({"model": "claude-opus-4-8"});
+        // Exact, coarser, and provider-prefixed runtime ids all satisfy the binding.
+        assert!(check_model_binding(Some(&b), Some("claude-opus-4-8")).permits());
+        assert!(check_model_binding(Some(&b), Some("claude:opus")).permits());
+        assert!(check_model_binding(Some(&b), Some("opus")).permits());
+        assert!(matches!(
+            check_model_binding(Some(&b), Some("claude-opus-4-8")),
+            ModelBindingVerdict::Match { .. }
+        ));
+    }
+
+    #[test]
+    fn model_binding_mismatch_fails_closed() {
+        let b = serde_json::json!({"model": "claude-opus-4-8"});
+        let v = check_model_binding(Some(&b), Some("gpt-5.5"));
+        assert!(matches!(v, ModelBindingVerdict::Mismatch { .. }));
+        assert!(!v.permits(), "a different model family must fail closed");
+        assert!(v.reason().unwrap().contains("mismatch"));
+    }
+
+    #[test]
+    fn model_binding_malformed_fails_closed() {
+        // Present but no usable model field → fail closed (not silently allowed).
+        let b = serde_json::json!({"min_reader": "conv-cache-v1"});
+        let v = check_model_binding(Some(&b), Some("claude-opus-4-8"));
+        assert!(matches!(v, ModelBindingVerdict::Malformed { .. }));
+        assert!(!v.permits());
+    }
+
+    #[test]
+    fn model_binding_unbound_or_unknown_runtime_permit() {
+        // No binding → Unbound (permits; transparent-kind rule handles opaque elsewhere).
+        assert!(check_model_binding(None, Some("opus")).permits());
+        // Binding present but runtime unknown → enforcement deferred (permits, flagged).
+        let b = serde_json::json!({"model": "claude-opus-4-8"});
+        assert!(matches!(
+            check_model_binding(Some(&b), None),
+            ModelBindingVerdict::RuntimeUnknown { .. }
+        ));
+    }
+
+    // ── real state consumption (audit S13) ──────────────────────────────────────
+
+    #[test]
+    fn consume_conv_cache_decodes_turns() {
+        let payload = serde_json::json!({
+            "kind": "conv-cache-v1",
+            "turns": [
+                {"role": "user", "text": "hi"},
+                {"role": "assistant", "text": "hello"}
+            ]
+        });
+        let loaded = consume_payload("conv-cache-v1", &payload).unwrap();
+        assert_eq!(loaded.kind, "conv-cache-v1");
+        assert_eq!(
+            loaded.turns, 2,
+            "the consumer must actually decode the turns"
+        );
+        assert_eq!(loaded.working_state, payload);
+    }
+
+    #[test]
+    fn consume_rejects_malformed_payload() {
+        // A payload missing its `turns` array cannot be consumed (fail closed).
+        let payload = serde_json::json!({"kind": "conv-cache-v1"});
+        assert!(consume_payload("conv-cache-v1", &payload).is_err());
     }
 }

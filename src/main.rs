@@ -3816,12 +3816,27 @@ fn main() -> Result<()> {
                 guardians,
                 threshold,
                 node_less,
+                recovery_window_secs,
             } => {
+                // Optional time-boxed recovery window (audit B8): [now, now+N] (or a
+                // back-dated/closed window for a negative N).
+                let (window_not_before, window_expires) = match recovery_window_secs {
+                    Some(secs) => {
+                        let now = chrono::Utc::now();
+                        (
+                            Some(now.to_rfc3339()),
+                            Some((now + chrono::Duration::seconds(secs)).to_rfc3339()),
+                        )
+                    }
+                    None => (None, None),
+                };
                 let rec_cfg = commands::identity_cmd::RecoveryConfig {
                     with_recovery_key: recovery,
                     guardians,
                     threshold: threshold.unwrap_or(0),
                     node_less,
+                    window_not_before,
+                    window_expires,
                 };
                 commands::identity_cmd::run_new(&workgraph_dir, &name, &rec_cfg, cli.json)
             }
@@ -3931,12 +3946,14 @@ fn main() -> Result<()> {
                 store,
                 from,
                 author_trust,
+                runtime_model,
             } => commands::identity_cmd::run_load_state(
                 &workgraph_dir,
                 &name,
                 &store,
                 from.as_deref(),
                 &author_trust,
+                runtime_model.as_deref(),
                 cli.json,
             ),
             cli::IdentityCommands::Delegate {
