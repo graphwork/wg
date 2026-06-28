@@ -444,6 +444,18 @@ fn review_inbound_impl(
         }
     }
 
+    // Observability (M20): tally the verdict by disposition and emit a trace event
+    // correlated by the content cid (the digest-pin doubles as the item's correlation id).
+    crate::obs::record_review_verdict(verdict.tag());
+    tracing::debug!(
+        cid = %content_cid,
+        class = content_class.tag(),
+        verdict = verdict.tag(),
+        reason = reason.tag(),
+        deciding_pass,
+        "review verdict"
+    );
+
     PipelineOutcome {
         verdict,
         reason,

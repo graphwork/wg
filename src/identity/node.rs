@@ -213,6 +213,7 @@ fn accept_loop(listener: TcpListener, store: Arc<FileStore>, limits: NodeLimits)
                 // burst of accepts can never race past the cap.
                 if active.load(Ordering::SeqCst) >= limits.max_connections {
                     let _ = stream.set_write_timeout(Some(limits.write_timeout));
+                    crate::obs::record_node_response("503 Service Unavailable");
                     let _ = write_response(
                         &mut stream,
                         "503 Service Unavailable",
@@ -319,7 +320,23 @@ fn handle_conn(mut stream: TcpStream, store: &FileStore, limits: &NodeLimits) ->
         Some(r) => r,
         None => return Ok(()),
     };
+    // Observability (M20): a correlation id per request + a one-line `info` access log so
+    // an operator can follow a single request across the two-host wire. `/metrics` is
+    // excluded from the access log (a scrape every few seconds would drown the signal),
+    // but it is still counted below like any other request.
+    let corr = crate::obs::new_correlation_id();
     let (status, ctype, body) = route(&req, store, limits);
+    crate::obs::record_node_response(status);
+    if !req.path.contains("/metrics") {
+        tracing::info!(
+            corr = %corr,
+            method = %req.method,
+            path = %req.path,
+            status,
+            bytes = body.len(),
+            "node request"
+        );
+    }
     write_response(&mut stream, status, ctype, &body)
 }
 
@@ -350,6 +367,15 @@ fn route(
             "200 OK",
             "text/plain",
             super::WG_FED_COMPAT_VERSION.as_bytes().to_vec(),
+        ),
+
+        // Observability (M20): Prometheus-format counters for verdicts / placements /
+        // refusals / freshness-failures + this node's own request volume. An operator
+        // scrapes this; the metric families are documented in `crate::obs`.
+        ("GET", ["metrics"]) => (
+            "200 OK",
+            "text/plain; version=0.0.4",
+            crate::obs::render_prometheus().into_bytes(),
         ),
 
         // M3: an object's CID must equal the hash of its bytes — on write AND read.

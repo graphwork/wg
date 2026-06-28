@@ -309,6 +309,38 @@ pub fn evaluate_placement(
     provider_cap: Option<&CapabilityAd>,
     pool_class: PoolClass,
 ) -> PlacementVerdict {
+    let verdict = evaluate_placement_inner(req, provider_trust, provider_cap, pool_class);
+    // Observability (M20): count the decision and emit a correlated trace event so an
+    // operator can see placement volume / refusal reasons without re-running with --json.
+    match &verdict {
+        PlacementVerdict::Eligible(d) => {
+            crate::obs::record_placement(true);
+            tracing::debug!(
+                task = %req.task_id,
+                tier = pool_tier(provider_trust),
+                depth = d.verification_depth.as_str(),
+                "exec placement eligible"
+            );
+        }
+        PlacementVerdict::Refused(r) => {
+            crate::obs::record_placement(false);
+            tracing::debug!(
+                task = %req.task_id,
+                reason = %r.reason,
+                detail = %r.detail,
+                "exec placement refused"
+            );
+        }
+    }
+    verdict
+}
+
+fn evaluate_placement_inner(
+    req: &TaskRequirements,
+    provider_trust: TrustLevel,
+    provider_cap: Option<&CapabilityAd>,
+    pool_class: PoolClass,
+) -> PlacementVerdict {
     // Compute the leash first to learn the trust-floor (and to re-assert the
     // fail-closed gates even if a capability is missing).
     let attested = provider_cap.map(|c| c.attested).unwrap_or(false);

@@ -83,6 +83,11 @@ csv = "1.3"
 cron = "0.12"
 log = "0.4"
 env_logger = "0.11"
+# Structured spans/events for the federation/exec/review planes (audit M20). The `log`
+# feature bridges every tracing event/span to a `log` record when no tracing Subscriber
+# is installed (WG installs none), so they surface through the existing `env_logger` with
+# zero subscriber wiring.
+tracing = { version = "0.1", features = ["log"] }
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
 # rquest releases in this range are yanked on crates.io, but the lockfile pins
 # the version WG currently uses. Keep local installs locked until this migrates.

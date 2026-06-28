@@ -968,6 +968,15 @@ pub fn run_accept(
     // marks the task Done so `wg spend` (which counts Done/Failed) reflects it.
     let accounted = bridge_usage_into_graph(workgraph_dir, &result, complete_task);
 
+    // Observability (M20): a committed result, correlated by the task id.
+    worksgood::obs::record_exec_result(true);
+    tracing::info!(
+        task = %result.task_id,
+        producer = %result.producer,
+        epoch = result.epoch,
+        "exec result accepted"
+    );
+
     emit(
         json,
         json!({
@@ -1181,6 +1190,9 @@ fn screen_accept_artifact(
 }
 
 fn reject(json: bool, reason: &str, detail: &str) -> Result<()> {
+    // Observability (M20): a refused result at the accept boundary.
+    worksgood::obs::record_exec_result(false);
+    tracing::info!(reason, detail, "exec result rejected");
     emit(
         json,
         json!({ "accepted": false, "reason": reason, "detail": detail }),

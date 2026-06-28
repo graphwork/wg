@@ -96,6 +96,19 @@ impl VerdictStore {
         self.dir.join("verdicts.jsonl")
     }
 
+    /// Sidecar advisory-lock path. Locked separately from the data file so the atomic
+    /// temp-file+rename append (which replaces the inode) does not invalidate the lock.
+    fn lock_path(&self) -> PathBuf {
+        self.dir.join("verdicts.lock")
+    }
+
+    /// Acquire the exclusive append lock (audit M23). Held for the returned guard's
+    /// lifetime, serializing concurrent `record` calls (in-process threads and
+    /// cross-process `wg review` invocations) at the single-writer boundary.
+    fn lock(&self) -> Result<ChainLock> {
+        ChainLock::acquire(&self.lock_path())
+    }
+
     fn trust_path(&self) -> PathBuf {
         self.dir.join("trust_overrides.json")
     }
@@ -130,6 +143,12 @@ impl VerdictStore {
     ) -> Result<VerdictRecord> {
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("creating {}", self.dir.display()))?;
+        // Serialize the read-modify-write under an exclusive advisory lock (audit M23,
+        // same fix class as the lease ledger's B3 lock). Without it, two concurrent
+        // recorders both load the chain at length N, both append "N+1", and the atomic
+        // rename of one clobbers the other — a lost verdict and a broken hash link. The
+        // lock is held for the whole load → hash-link → append critical section.
+        let _lock = self.lock()?;
         let chain = self.load_chain()?;
         let seq = chain.len() as u64;
         let prev = chain.last().map(|r| r.cid.clone()).unwrap_or_default();
@@ -298,6 +317,58 @@ pub fn lower_trust(t: &TrustLevel) -> TrustLevel {
         TrustLevel::Verified => TrustLevel::Provisional,
         TrustLevel::Provisional => TrustLevel::Unknown,
         TrustLevel::Unknown => TrustLevel::Unknown,
+    }
+}
+
+/// RAII exclusive advisory lock for the verdict-chain append (audit M23). Mirrors the
+/// lease ledger's `LedgerLock` (B3): `flock(LOCK_EX)` on a sidecar lock file with the
+/// project's transient-error retry policy; released on drop. A no-op on non-Unix.
+struct ChainLock {
+    #[cfg(unix)]
+    #[allow(dead_code)] // held for its RAII lock lifetime, not read
+    file: std::fs::File,
+}
+
+impl ChainLock {
+    #[cfg(unix)]
+    fn acquire(lock_path: &Path) -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .with_context(|| format!("opening verdict-chain lock {}", lock_path.display()))?;
+        let fd = file.as_raw_fd();
+        let policy = crate::lock::RetryPolicy::default();
+        crate::lock::retry_acquire(&policy, crate::lock::is_transient_blocking, || {
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        })
+        .with_context(|| format!("acquiring exclusive lock on {}", lock_path.display()))?;
+        Ok(Self { file })
+    }
+
+    #[cfg(not(unix))]
+    fn acquire(_lock_path: &Path) -> Result<Self> {
+        Ok(Self {})
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChainLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        // Best-effort release; the fd close on drop also releases the flock.
+        unsafe {
+            libc::flock(fd, libc::LOCK_UN);
+        }
     }
 }
 

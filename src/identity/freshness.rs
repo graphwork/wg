@@ -208,6 +208,29 @@ pub fn check_fresh(
     class: ActionClass,
     last_seen_seq: Option<u64>,
 ) -> FreshVerdict {
+    let verdict = check_fresh_inner(att, now, class, last_seen_seq);
+    // Observability (M20): tally the check and (on a fail-closed verdict) emit a trace
+    // event correlated by the attesting identity — freshness failures are exactly the
+    // class of event an operator wants alerting on (a withheld revoke / stale peer).
+    let fresh = verdict.is_fresh();
+    crate::obs::record_freshness(fresh);
+    if !fresh {
+        tracing::debug!(
+            identity = %att.identity,
+            class = ?class,
+            reason = verdict.reason().unwrap_or("stale"),
+            "freshness check failed closed"
+        );
+    }
+    verdict
+}
+
+fn check_fresh_inner(
+    att: &FreshnessAttestation,
+    now: chrono::DateTime<chrono::Utc>,
+    class: ActionClass,
+    last_seen_seq: Option<u64>,
+) -> FreshVerdict {
     // 1. Monotonic seq — rollback resistance, independent of clocks.
     if let Some(prev) = last_seen_seq {
         if att.seq < prev {

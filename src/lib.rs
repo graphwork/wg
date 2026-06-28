@@ -59,6 +59,7 @@ pub mod nex;
 pub mod nex_cli;
 pub mod nex_runtime;
 pub mod notify;
+pub mod obs;
 pub mod parser;
 pub mod pi_plugin;
 pub mod plan_validator;
