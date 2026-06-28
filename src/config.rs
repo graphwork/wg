@@ -1304,6 +1304,10 @@ pub enum DispatchRole {
     Placer,
     /// Chat compactor: summarizes per-coordinator conversation history
     ChatCompactor,
+    /// Content reviewer: the no-scope inbound-content safety reviewer (WG-Review
+    /// Pass 2 / fed S-5 / exec-integrity). An agency one-shot that resolves the
+    /// weak tier and escalates to the strong tier on uncertainty (never a human).
+    Reviewer,
 }
 
 impl std::fmt::Display for DispatchRole {
@@ -1323,6 +1327,7 @@ impl std::fmt::Display for DispatchRole {
             Self::CoordinatorEval => write!(f, "coordinator_eval"),
             Self::Placer => write!(f, "placer"),
             Self::ChatCompactor => write!(f, "chat_compactor"),
+            Self::Reviewer => write!(f, "reviewer"),
         }
     }
 }
@@ -1346,10 +1351,11 @@ impl std::str::FromStr for DispatchRole {
             "coordinator_eval" => Ok(Self::CoordinatorEval),
             "placer" => Ok(Self::Placer),
             "chat_compactor" => Ok(Self::ChatCompactor),
+            "reviewer" => Ok(Self::Reviewer),
             _ => Err(anyhow::anyhow!(
                 "Unknown dispatch role '{}'. Valid roles: default, task_agent, evaluator, \
                  flip_inference, flip_comparison, assigner, evolver, verification, triage, \
-                 creator, compactor, placer, chat_compactor",
+                 creator, compactor, placer, chat_compactor, reviewer",
                 s
             )),
         }
@@ -1371,6 +1377,7 @@ impl DispatchRole {
         Self::Compactor,
         Self::Placer,
         Self::ChatCompactor,
+        Self::Reviewer,
     ];
 
     /// Default quality tier for this role.
@@ -1389,6 +1396,7 @@ impl DispatchRole {
             Self::Assigner => Tier::Fast,
             Self::Compactor => Tier::Fast,
             Self::ChatCompactor => Tier::Fast,
+            Self::Reviewer => Tier::Fast,
             Self::CoordinatorEval => Tier::Fast,
             Self::Placer => Tier::Fast,
             Self::FlipInference => Tier::Fast,
@@ -1724,6 +1732,9 @@ pub struct ModelRoutingConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_compactor: Option<RoleModelConfig>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<RoleModelConfig>,
 }
 
 impl ModelRoutingConfig {
@@ -1744,6 +1755,7 @@ impl ModelRoutingConfig {
             DispatchRole::CoordinatorEval => self.evaluator.as_ref(),
             DispatchRole::Placer => self.placer.as_ref(),
             DispatchRole::ChatCompactor => self.chat_compactor.as_ref(),
+            DispatchRole::Reviewer => self.reviewer.as_ref(),
         }
     }
 
@@ -1764,6 +1776,7 @@ impl ModelRoutingConfig {
             DispatchRole::CoordinatorEval => &mut self.evaluator,
             DispatchRole::Placer => &mut self.placer,
             DispatchRole::ChatCompactor => &mut self.chat_compactor,
+            DispatchRole::Reviewer => &mut self.reviewer,
         }
     }
 
@@ -2864,6 +2877,18 @@ impl Config {
     /// `effective_tiers()` carries a hardcoded Anthropic fallback.
     pub fn weak_tier_spec(&self) -> Option<String> {
         self.effective_tiers().fast
+    }
+
+    /// The raw model spec for the **strong** two-tier label — the escalation target
+    /// for the content reviewer (WG-Review Pass 2). In the two-tier projection
+    /// (`design-two-tier-pi-profile.md`) `strong` is `premium + standard`; the
+    /// reviewer escalates to the strongest available, so this prefers `premium`
+    /// and falls back to `standard` (and finally the hardcoded Anthropic premium
+    /// default via `effective_tiers()`). Used by `run_review_llm_call` to get a
+    /// stronger second opinion on uncertainty / high sensitivity — never a human.
+    pub fn strong_tier_spec(&self) -> Option<String> {
+        let tiers = self.effective_tiers();
+        tiers.premium.or(tiers.standard)
     }
 
     /// Resolve a tier to a ResolvedModel via the tier config and registry.

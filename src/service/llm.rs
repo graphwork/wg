@@ -56,6 +56,7 @@ fn is_agency_oneshot_role(role: DispatchRole) -> bool {
             | DispatchRole::FlipInference
             | DispatchRole::FlipComparison
             | DispatchRole::Assigner
+            | DispatchRole::Reviewer
     )
 }
 
@@ -227,6 +228,108 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
     }
 
     dispatch
+}
+
+/// Whether a usable credential exists for the content reviewer's weak **or** strong
+/// tier. Used by `review::reviewer::model_review_available` to decide whether the
+/// live model-review path runs (a real deployment with a key) or the deterministic
+/// decode-then-detect fallback does (credential-free CI / claude-CLI-only).
+///
+/// Mirrors [`agency_native_creds_available`]: only native-HTTP providers that
+/// genuinely need a key are gated; the self-authenticating CLIs (claude / codex)
+/// report `false` here so a claude-CLI-only deployment stays on the deterministic
+/// path unless it explicitly opts in via `WG_REVIEW_MODEL=1`.
+pub fn review_native_creds_available(config: &Config) -> bool {
+    [config.weak_tier_spec(), config.strong_tier_spec()]
+        .into_iter()
+        .flatten()
+        .any(|spec| {
+            handler_for_model(&spec) == ExecutorKind::Native
+                && agency_native_creds_available(config, &spec)
+        })
+}
+
+/// Dispatch one content-review LLM call at the weak or strong tier (the real reviewer
+/// silicon). Weak resolves via [`resolve_agency_dispatch`] for
+/// [`DispatchRole::Reviewer`] (so an explicit `[models.reviewer]` override wins, else
+/// the weak two-tier label, with the same loud claude:haiku credential safety net);
+/// strong resolves [`Config::strong_tier_spec`] (premium → standard). On a native
+/// call failure the dispatch falls back to claude:haiku so the call still returns a
+/// reply — the *content* fail-closed decision is the caller's
+/// (`review::reviewer::review_with_llm`), here we only avoid a silent transport drop.
+pub fn run_review_llm_call(
+    config: &Config,
+    strong: bool,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    let dispatch = if strong {
+        let spec = config
+            .strong_tier_spec()
+            .unwrap_or_else(|| CLAUDE_OPUS_MODEL_ID.to_string());
+        agency_dispatch_for_spec(&spec)
+    } else {
+        resolve_agency_dispatch(config, DispatchRole::Reviewer)
+    };
+
+    match dispatch.handler {
+        ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Native => {
+            match agency_native_call_for_spec(config, &dispatch.raw_spec, prompt, timeout_secs) {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    eprintln!(
+                        "[review-dispatch] native {} reviewer call failed: {e:#} — \
+                         falling back to claude:haiku for the call",
+                        dispatch.raw_spec
+                    );
+                    call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs)
+                }
+            }
+        }
+        // Any other handler is not a sensible one-shot reviewer target — degrade to
+        // the safe default (claude CLI on haiku).
+        _ => call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs),
+    }
+}
+
+/// Make a native-HTTP one-shot call resolving the provider directly from a model
+/// **spec** (not a role). Used by the reviewer strong-tier path, where the model is
+/// the premium tier rather than the cascade-resolved role model.
+fn agency_native_call_for_spec(
+    config: &Config,
+    raw_spec: &str,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    let spec = parse_model_spec(raw_spec);
+    let provider = spec
+        .provider
+        .as_deref()
+        .map(crate::config::provider_to_resolved_provider)
+        .unwrap_or("anthropic");
+    match provider {
+        "anthropic" => call_anthropic_native(
+            config,
+            "anthropic",
+            &spec.model_id,
+            prompt,
+            timeout_secs,
+            None,
+            None,
+        ),
+        prov @ ("oai-compat" | "openai" | "openrouter" | "local") => call_openai_native(
+            config,
+            prov,
+            &spec.model_id,
+            prompt,
+            timeout_secs,
+            None,
+            None,
+        ),
+        other => anyhow::bail!("reviewer spec {raw_spec:?} provider {other:?} is not native HTTP"),
+    }
 }
 
 /// Make the native-HTTP lightweight call for an agency role whose weak tier

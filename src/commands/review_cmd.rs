@@ -9,10 +9,12 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use worksgood::config::Config;
 use worksgood::graph::TrustLevel;
 use worksgood::review::pass2_review::reviewer_scope;
 use worksgood::review::{
     ContentClass, Provenance, Sensitivity, VerdictStore, review_depth, review_inbound,
+    review_inbound_ctx,
 };
 
 /// Parse a trust level from the CLI; an unrecognized value is `Unknown`
@@ -76,7 +78,14 @@ pub fn run_check(
         trust: effective_trust.clone(),
     };
 
-    let outcome = review_inbound(content_class, &content, &provenance, self_sensitivity);
+    // Use the real model-driven reviewer when a model is available for this config
+    // (production); fall back to the deterministic pipeline otherwise (credential-free
+    // CI / smoke). `review_inbound_ctx` is byte-identical to `review_inbound` when no
+    // model is available, so the smoke gate stays deterministic.
+    let outcome = match Config::load_merged(workgraph_dir) {
+        Ok(cfg) => review_inbound_ctx(&cfg, content_class, &content, &provenance, self_sensitivity),
+        Err(_) => review_inbound(content_class, &content, &provenance, self_sensitivity),
+    };
     let record = store.record(&outcome, author, consumer_task)?;
 
     if json {

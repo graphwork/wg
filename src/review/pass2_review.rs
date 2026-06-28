@@ -35,7 +35,6 @@
 //! quorum at scale, and model-strength-by-depth are Review-Wave C; the structural
 //! bounds above are the durable design and are proven in full here.
 
-use super::pass1_lint::normalize;
 use super::{Confidence, ContentClass, ReasonCode, Verdict};
 
 /// The **only** capability the reviewer is granted (ADR-CS2 D1). A field-scan of
@@ -71,141 +70,31 @@ pub fn spotlight(content: &str) -> String {
     format!("<<WG-REVIEW-DATA {nonce}>>\n{content}\n<<WG-REVIEW-DATA-CLOSE {nonce}>>")
 }
 
-/// Run the Pass-2 reviewer with a quorum of `n` independent reviewers,
-/// **strictest-wins** (ADR-CS2 D4). The pipeline verdict is the strictest any
-/// reviewer reached; the reason is that reviewer's bounded code.
+/// Run the Pass-2 reviewer over the spotlighted span. The detection itself is the
+/// **one shared decode-then-detect engine** ([`super::detect::analyze`]) — the same
+/// implementation the fed S-5 scanner and the exec-integrity screen use — so there is
+/// no second classifier to drift. `n` is retained for API compatibility (the
+/// quorum / model-strength escalation now lives in the model path,
+/// [`super::reviewer`]); the deterministic engine is itself the strictest-wins
+/// classifier, so one pass over the spotlighted span suffices.
+///
+/// Historically this was a hand-rolled keyword matcher (two `fn` pointers cycling
+/// `n.contains("…")` over a frozen list). That was the fake detector this task
+/// replaced: it caught the literal seed strings and let every paraphrase / encoded /
+/// homoglyph / leet variant through. [`super::detect::analyze`] decodes and
+/// normalizes those channels before matching.
 pub fn review(class: ContentClass, content: &str, n: usize) -> ReviewVerdict {
-    // Spotlight + normalize once; every reviewer judges the same delimited span.
+    let _ = n; // quorum/escalation handled by the model path; see super::reviewer.
+    // Spotlight so a forged `---END UNTRUSTED---` in the payload stays inside the
+    // nonce-delimited span and is itself a reject signal (the detector treats it as
+    // data, never obeys it).
     let spotlighted = spotlight(content);
-    let n = n.max(1);
-
-    let reviewers: [fn(ContentClass, &str) -> ReviewVerdict; 2] =
-        [reviewer_signature, reviewer_intent];
-
-    let mut strictest = ReviewVerdict {
-        verdict: Verdict::Accept,
-        reason: ReasonCode::Clean,
-        confidence: Confidence::Low,
-    };
-    for i in 0..n {
-        // Independent reviewers: distinct detection logic (and, in production,
-        // distinct prompts/models). Cycle through the available variants.
-        let v = reviewers[i % reviewers.len()](class, &spotlighted);
-        if v.verdict > strictest.verdict {
-            strictest = v;
-        }
-    }
-    strictest
-}
-
-/// Reviewer A — signature-focused. Treats any attempt to *direct the reviewer* as a
-/// strong hostility signal (it never obeys content; the lure raises suspicion).
-fn reviewer_signature(class: ContentClass, spotlighted: &str) -> ReviewVerdict {
-    let n = normalize(spotlighted);
-
-    // RA-1a/RA-1b — content crafted to flip the reviewer itself. The reviewer reads
-    // this as *data describing an attack*, never as an instruction. → reject.
-    const REVIEWER_INJECTION: &[&str] = &[
-        "output verdict accept",
-        "verdict: accept",
-        "output accept",
-        "mark this as accept",
-        "reviewer: this is benign",
-        "reviewer, this is benign",
-        "this is benign documentation",
-        "end untrusted", // a forged delimiter attempt
-        "end-untrusted",
-        "ignore the content above",
-    ];
-    if REVIEWER_INJECTION.iter().any(|s| n.contains(s)) {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::ReviewerInjectionAttempt,
-            confidence: Confidence::High,
-        };
-    }
-
-    // Goal-hijack / exfil semantics as a second opinion over Pass 1.
-    if n.contains("publish") && (n.contains("secret") || n.contains("$wg_secret")) {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::ExfilPattern,
-            confidence: Confidence::High,
-        };
-    }
-    if class == ContentClass::Ic2Artifact && looks_backdoored(&n) {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::BackdoorShaped,
-            confidence: Confidence::High,
-        };
-    }
+    let d = super::detect::analyze(class, &spotlighted);
     ReviewVerdict {
-        verdict: Verdict::Accept,
-        reason: ReasonCode::Clean,
-        confidence: Confidence::Low,
+        verdict: d.verdict,
+        reason: d.reason,
+        confidence: d.confidence,
     }
-}
-
-/// Reviewer B — intent/structure-focused. **Independent** of reviewer A: it keys on
-/// instruction-in-data-position framing rather than literal lure strings, so a
-/// payload tuned to evade A's signature list still trips B (the quorum's value).
-fn reviewer_intent(class: ContentClass, spotlighted: &str) -> ReviewVerdict {
-    let n = normalize(spotlighted);
-
-    // Imperative directed at the agent embedded inside data ("your real task is",
-    // "you must", "instead of") — the goal-hijack intent, independent of A's list.
-    let imperative_hijack = (n.contains("your real task")
-        || n.contains("your actual task")
-        || n.contains("instead, ")
-        || n.contains("you must now")
-        || n.contains("disregard"))
-        && (n.contains("secret")
-            || n.contains("publish")
-            || n.contains("exfil")
-            || n.contains("http"));
-    if imperative_hijack {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::GoalHijack,
-            confidence: Confidence::High,
-        };
-    }
-
-    // A reviewer-directed verdict assertion, recognised structurally (a verdict word
-    // adjacent to an imperative) rather than by literal string.
-    let directs_reviewer = n.contains("reviewer")
-        || (n.contains("verdict") && (n.contains("accept") || n.contains("approve")));
-    if directs_reviewer {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::ReviewerInjectionAttempt,
-            confidence: Confidence::High,
-        };
-    }
-
-    if class == ContentClass::Ic2Artifact && looks_backdoored(&n) {
-        return ReviewVerdict {
-            verdict: Verdict::Reject,
-            reason: ReasonCode::BackdoorShaped,
-            confidence: Confidence::High,
-        };
-    }
-    ReviewVerdict {
-        verdict: Verdict::Accept,
-        reason: ReasonCode::Clean,
-        confidence: Confidence::Low,
-    }
-}
-
-fn looks_backdoored(n: &str) -> bool {
-    let fetches = n.contains("http://") || n.contains("https://") || n.contains("fetch(");
-    let executes = n.contains("command::new")
-        || n.contains("eval(")
-        || n.contains("exec(")
-        || n.contains("/bin/sh")
-        || n.contains("system(");
-    fetches && executes
 }
 
 #[cfg(test)]

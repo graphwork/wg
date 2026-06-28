@@ -1703,6 +1703,15 @@ description = "Pins fed-wave6 (WG-Fed Wave 6, encryption=ACL + UCAN delegation �
 timeout_seconds = 90
 
 [[scenario]]
+name = "real_review_evasion"
+script = "scenarios/real_review_evasion.sh"
+owners = [
+    "real-review",
+]
+description = "Pins real-review (the model-driven reviewer that replaces the fake keyword detectors; docs/prod-audit/audit-safety.md F1/F4/F5): the CLI-seam proof that the shared decode-then-detect engine — the one implementation behind WG-Review Pass 2, the fed S-5 scanner, and the WG-Exec integrity screen — is WIRED into the live `wg review check` pipeline and catches the obfuscation channels the old ~16-phrase keyword matcher let straight through. Credential-free, so Pass 2 is the deterministic engine (the weak→strong model escalation + fail-closed orchestration are proven by the review::reviewer::* lib tests, and the before/after delta vs the legacy keyword list by review::detect::evasion_corpus_before_after). To isolate 'the detector fired' from 'Unknown ⇒ quarantine-by-default', the hostile items use a VERIFIED author at HIGH sensitivity (Pass 2 with an accept-default, exactly the case the old matcher would have ACCEPTED). Falsifiable assertions: (1) a clean Verified+high item reaches Pass 2 and is ACCEPTED (must-not-over-block); (2) six obfuscations of an injection — base64, hex, Cyrillic homoglyph, leetspeak, punctuation-separator, and a curated paraphrase — are each BLOCKED (verdict reject/quarantine, not consumable, reason a bounded category code != clean), where the old keyword matcher would have accepted them. The model silicon is a scheduled wave (the eval-scheduled tag, WG_REVIEW_MODEL=1); this scenario proves the deterministic floor + the wiring."
+timeout_seconds = 60
+
+[[scenario]]
 name = "content_safety_spark"
 script = "scenarios/content_safety_spark.sh"
 owners = [

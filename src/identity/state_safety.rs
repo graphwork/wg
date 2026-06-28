@@ -83,34 +83,6 @@ const SECRET_TAGS: &[&str] = &[
     "\"seed\"",
 ];
 
-/// High-confidence prompt-injection signatures (ADR-fed-004 §OQ1 category 3) — a hit
-/// **blocks**. These are unambiguous system-prompt-override / role-confusion shapes.
-const INJECTION_BLOCK: &[&str] = &[
-    "ignore previous instructions",
-    "ignore all previous instructions",
-    "ignore the above",
-    "disregard previous instructions",
-    "disregard all previous",
-    "disregard the above",
-    "you are now",
-    "from now on you are",
-    "system prompt override",
-    "override your instructions",
-];
-
-/// Lower-confidence injection / exfiltration shapes — a hit **escalates** the trust
-/// gate one level (human-in-loop) rather than blocking outright.
-const INJECTION_ESCALATE: &[&str] = &[
-    "new instructions:",
-    "<system>",
-    "begin system",
-    "exfiltrate",
-    "send your api key",
-    "reveal the secret",
-    "curl http",
-    "rm -rf",
-];
-
 /// Scan a **transparent** payload (already CAS- and signature-verified) for the four
 /// ADR-fed-004 §OQ1 check categories. `payload` is the decoded JSON; `payload_kind`
 /// is its declared tag (must equal `expected_identity` for category 4 provenance is
@@ -164,21 +136,24 @@ pub fn scan_transparent(payload_kind: &str, payload: &Value) -> ScanResult {
         }
     }
 
-    // Category 3 — prompt-injection heuristics (the S-5 core; heuristic by
-    // construction — it cannot be complete).
-    for pat in INJECTION_BLOCK {
-        if lower.contains(pat) {
-            r.hard_hits.push(format!(
-                "prompt-injection (high-confidence): {pat:?} in a data position — blocking"
-            ));
-        }
-    }
-    for pat in INJECTION_ESCALATE {
-        if lower.contains(pat) {
-            r.soft_hits.push(format!(
-                "prompt-injection (lower-confidence): {pat:?} — escalating the trust gate"
-            ));
-        }
+    // Category 3 — prompt-injection / exfil. Delegated to the **one shared
+    // decode-then-detect reviewer engine** (`review::detect::analyze`) — the same
+    // implementation behind WG-Review Pass 2 and the WG-Exec integrity screen, so
+    // there is no second classifier to drift. This is the fix for the original
+    // "~10-phrase list" fake: a base64 / hex / homoglyph / leet / spacing-obfuscated
+    // injection in a snapshot is now caught here too, not just the literal seeds.
+    // A `Reject` is a hard block; a `Quarantine` escalates the trust gate.
+    let det = crate::review::detect::analyze(crate::review::ContentClass::Ic3State, &text);
+    match det.verdict {
+        crate::review::Verdict::Reject => r.hard_hits.push(format!(
+            "prompt-injection ({}): high-confidence — blocking the load",
+            det.reason.tag()
+        )),
+        crate::review::Verdict::Quarantine => r.soft_hits.push(format!(
+            "prompt-injection ({}): lower-confidence — escalating the trust gate",
+            det.reason.tag()
+        )),
+        crate::review::Verdict::Accept => {}
     }
 
     r

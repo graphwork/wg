@@ -40,8 +40,10 @@
 //! spotlighted input with no graph/network handle — see [`pass2_review`]).
 
 pub mod depth;
+pub mod detect;
 pub mod pass1_lint;
 pub mod pass2_review;
+pub mod reviewer;
 pub mod verdict;
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,7 @@ use serde::{Deserialize, Serialize};
 pub use depth::{ReviewDepth, review_depth};
 pub use verdict::{VerdictRecord, VerdictStore};
 
+use crate::config::Config;
 use crate::graph::TrustLevel;
 
 /// The inbound-content class the gate screens (ADR-CS1 D1, doc 01 §2).
@@ -203,6 +206,9 @@ pub enum ReasonCode {
     ProvenanceMissing,
     /// Content crafted to flip the reviewer itself (RA-1a/RA-1b) — contained.
     ReviewerInjectionAttempt,
+    /// The model reviewer was unreachable / timed out / replied unparseably — a loud
+    /// recorded SKIP that **fails closed** (blocks), never fails open (ADR-CS3 D2).
+    ReviewUnavailable,
 }
 
 impl ReasonCode {
@@ -222,6 +228,7 @@ impl ReasonCode {
             Self::UnlabeledSensitivity => "unlabeled-sensitivity",
             Self::ProvenanceMissing => "provenance-missing",
             Self::ReviewerInjectionAttempt => "reviewer-injection-attempt",
+            Self::ReviewUnavailable => "review-unavailable",
         }
     }
 }
@@ -306,6 +313,38 @@ pub fn review_inbound(
     provenance: &Provenance,
     self_sensitivity: Sensitivity,
 ) -> PipelineOutcome {
+    review_inbound_impl(None, content_class, content, provenance, self_sensitivity)
+}
+
+/// Config-aware variant of [`review_inbound`]: Pass 2 uses the **real model-driven**
+/// reviewer (weak→strong escalation, fail-closed — [`reviewer::review_content`]) when
+/// a model is available for `config` ([`reviewer::model_review_available`]), else the
+/// deterministic decode-then-detect engine. Behaviour is byte-identical to
+/// [`review_inbound`] in credential-free environments (CI / smoke), so the gate is a
+/// transparent upgrade where a model is configured.
+pub fn review_inbound_ctx(
+    config: &Config,
+    content_class: ContentClass,
+    content: &str,
+    provenance: &Provenance,
+    self_sensitivity: Sensitivity,
+) -> PipelineOutcome {
+    review_inbound_impl(
+        Some(config),
+        content_class,
+        content,
+        provenance,
+        self_sensitivity,
+    )
+}
+
+fn review_inbound_impl(
+    config: Option<&Config>,
+    content_class: ContentClass,
+    content: &str,
+    provenance: &Provenance,
+    self_sensitivity: Sensitivity,
+) -> PipelineOutcome {
     // The digest-pin: a verdict is over *these exact bytes* (ADR-CS3 D3 / MUST-2).
     let content_cid = crate::identity::content_cid(&serde_json::Value::String(content.to_string()));
 
@@ -315,7 +354,7 @@ pub fn review_inbound(
     // A signature proves *who*, never *safe* (the S-5 finding) — so Pass 0 is
     // necessary, never sufficient. A missing author fails closed toward Unknown.
     let effective_trust = if provenance.author.is_some() {
-        provenance.trust.clone()
+        provenance.trust
     } else {
         // No verifiable author → treat as Unknown (fail-closed, ADR-CS1 D3).
         TrustLevel::Unknown
@@ -375,17 +414,33 @@ pub fn review_inbound(
     // into the suspicious band (monotonic escalate-on-flag, ADR-CS1 D3 rule 2).
     let escalated_into_band = p1.verdict > Verdict::Accept;
     if depth.runs_pass2() || escalated_into_band {
-        let p2 = pass2_review::review(content_class, content, depth.quorum.max(1));
+        // The real reviewer: a weak-tier model call escalating to the strong tier on
+        // uncertainty / high sensitivity (never a human), failing closed on error,
+        // when a model is available; otherwise the shared deterministic
+        // decode-then-detect engine. Both route through the SAME implementation.
+        let use_model = config.is_some_and(reviewer::model_review_available);
+        let (p2_verdict, p2_reason, p2_confidence) = if use_model {
+            let req = reviewer::ReviewRequest::new(
+                content_class,
+                content.to_string(),
+                effective_sensitivity,
+            );
+            let out = reviewer::review_content(config.expect("use_model implies Some"), &req);
+            (out.verdict, out.reason, out.confidence)
+        } else {
+            let p2 = pass2_review::review(content_class, content, depth.quorum.max(1));
+            (p2.verdict, p2.reason, p2.confidence)
+        };
         trace.push(PassOutcome {
             pass: 2,
-            verdict: p2.verdict,
-            reason: p2.reason,
+            verdict: p2_verdict,
+            reason: p2_reason,
         });
-        if p2.verdict > verdict {
-            verdict = p2.verdict;
-            reason = p2.reason;
+        if p2_verdict > verdict {
+            verdict = p2_verdict;
+            reason = p2_reason;
             deciding_pass = 2;
-            confidence = p2.confidence;
+            confidence = p2_confidence;
         }
     }
 

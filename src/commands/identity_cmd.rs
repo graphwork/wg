@@ -33,7 +33,9 @@ use worksgood::identity::state_safety::{
 };
 use worksgood::identity::transport::{FedStore, Head, open_store};
 use worksgood::identity::{ALG_ED25519, ENVELOPE_V, WG_FED_COMPAT_VERSION};
-use worksgood::review::{ContentClass, Provenance, Sensitivity, VerdictStore, review_inbound};
+use worksgood::review::{
+    ContentClass, Provenance, Sensitivity, VerdictStore, review_inbound, review_inbound_ctx,
+};
 use worksgood::trust::{resolve_author_trust, strictest_trust};
 
 /// Reserved store "inbox" the C-tier revocation-list convenience publishes signed
@@ -1172,12 +1174,24 @@ fn review_inbound_event(workgraph_dir: &Path, from: &str, body: &str) -> IngestR
         author: Some(from.to_string()),
         trust: effective_trust.clone(),
     };
-    let outcome = review_inbound(
-        ContentClass::Ic4Message,
-        body,
-        &provenance,
-        Sensitivity::Unlabeled,
-    );
+    // Real model-driven review when a model is available (production); deterministic
+    // pipeline otherwise (credential-free CI / smoke). `review_inbound_ctx` is
+    // byte-identical to `review_inbound` when no model is available.
+    let outcome = match worksgood::config::Config::load_merged(workgraph_dir) {
+        Ok(cfg) => review_inbound_ctx(
+            &cfg,
+            ContentClass::Ic4Message,
+            body,
+            &provenance,
+            Sensitivity::Unlabeled,
+        ),
+        Err(_) => review_inbound(
+            ContentClass::Ic4Message,
+            body,
+            &provenance,
+            Sensitivity::Unlabeled,
+        ),
+    };
     // Audit leg: record on the hash-linked verdict sigchain (best-effort; a recording
     // failure must not crash the poll — the gate decision still stands).
     let _ = store.record(&outcome, Some(from), None);
