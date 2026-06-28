@@ -201,6 +201,83 @@ pub fn collect_transitive_dependents(
     }
 }
 
+/// **Cross-task poison (B7 / TC8) descendant re-run.** When an upstream artifact is later
+/// found bad (a `wg provider verify` rejection or a `wg review revoke`), enumerate every
+/// transitive descendant that consumed it and — when `reset` is true — reset the poisoned
+/// task **and** each finished descendant back to `Open` so the coordinator re-runs the whole
+/// blast radius on the corrected input, logging the poison source.
+///
+/// Returns the enumerated **descendant** ids in dependency order (the downstream blast
+/// radius, excluding the poisoned task itself), whether or not `reset` ran. A missing graph
+/// or an absent `poisoned_task` yields an empty list (no known descendants). Best-effort: a
+/// graph load/save failure returns the ids it could enumerate without erroring the caller's
+/// primary action.
+pub fn rerun_poison_descendants(dir: &Path, poisoned_task: &str, reset: bool) -> Vec<String> {
+    use worksgood::graph::{LogEntry, Status};
+    let path = graph_path(dir);
+    if !path.exists() {
+        return Vec::new();
+    }
+    let descendants = match worksgood::parser::load_graph(&path) {
+        Ok(g) => g.transitive_descendants(poisoned_task),
+        Err(_) => return Vec::new(),
+    };
+    if reset {
+        // The re-run set is the poisoned task itself (its output was bad) plus every
+        // transitive descendant that consumed it.
+        let mut targets: HashSet<&str> = descendants.iter().map(|s| s.as_str()).collect();
+        targets.insert(poisoned_task);
+        let poison = poisoned_task.to_string();
+        let _ = worksgood::parser::modify_graph(&path, |g| {
+            let mut changed = false;
+            for id in &targets {
+                let Some(t) = g.get_task_mut(id) else {
+                    continue;
+                };
+                // Only re-queue a task that has FINISHED (it may have built on the poison).
+                // An Open/InProgress task will pick up the corrected upstream on its own —
+                // don't disturb live work.
+                let finished = matches!(
+                    t.status,
+                    Status::Done
+                        | Status::Failed
+                        | Status::Abandoned
+                        | Status::Incomplete
+                        | Status::PendingValidation
+                        | Status::PendingEval
+                        | Status::FailedPendingEval
+                );
+                if !finished {
+                    continue;
+                }
+                t.status = Status::Open;
+                t.assigned = None;
+                t.started_at = None;
+                t.completed_at = None;
+                let what = if *id == poison.as_str() {
+                    "re-run: this task's artifact was found poisoned (cross-task poison \
+                     B7/TC8) — re-queued to reproduce a clean result"
+                        .to_string()
+                } else {
+                    format!(
+                        "re-run: upstream {poison} found poisoned (cross-task poison B7/TC8) \
+                         — descendant re-queued to rebuild on the corrected input"
+                    )
+                };
+                t.log.push(LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: None,
+                    user: Some(worksgood::current_user()),
+                    message: what,
+                });
+                changed = true;
+            }
+            changed
+        });
+    }
+    descendants
+}
+
 /// Best-effort notification to the service daemon that the graph has changed.
 /// Silently ignores all errors (daemon not running, socket unavailable, etc.)
 pub fn notify_graph_changed(dir: &Path) {

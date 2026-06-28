@@ -248,12 +248,51 @@ pub fn run_consume(workgraph_dir: &Path, content_file: &str, json: bool) -> Resu
     Ok(())
 }
 
-/// `wg review revoke` — the loud revoke leg (ADR-CS3 D4).
-pub fn run_revoke(workgraph_dir: &Path, cid: &str, json: bool) -> Result<()> {
+/// `wg review revoke` — the loud revoke leg (ADR-CS3 D4) + the cross-task-poison (B7/TC8)
+/// descendant re-run. Beyond lowering the author's trust and naming the single recorded
+/// consumer, this now walks the task graph from each recorded consumer and **re-runs the
+/// whole downstream blast radius** — every transitive `--after` descendant that consumed the
+/// poison — closing the F14 gap where revoke named only one hand-wired consumer. Pass
+/// `--no-rerun-descendants` to only enumerate (not re-queue) the descendants.
+pub fn run_revoke(
+    workgraph_dir: &Path,
+    cid: &str,
+    rerun_descendants: bool,
+    json: bool,
+) -> Result<()> {
     let store = VerdictStore::open(workgraph_dir);
     let out = store.revoke(cid)?;
+
+    // Cross-task poison (B7/TC8): expand the single recorded consumer to its full transitive
+    // descendant set and re-queue the consumer + every descendant. `rerun_poison_descendants`
+    // re-runs the named consumer itself and returns its downstream descendants.
+    let mut blast_radius: Vec<String> = Vec::new();
+    for consumer in &out.rerun_consumers {
+        if !blast_radius.contains(consumer) {
+            blast_radius.push(consumer.clone());
+        }
+        for d in
+            crate::commands::rerun_poison_descendants(workgraph_dir, consumer, rerun_descendants)
+        {
+            if !blast_radius.contains(&d) {
+                blast_radius.push(d);
+            }
+        }
+    }
+
     if json {
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        let mut v = serde_json::to_value(&out)?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "blast_radius".to_string(),
+                serde_json::to_value(&blast_radius)?,
+            );
+            obj.insert(
+                "descendants_requeued".to_string(),
+                serde_json::Value::Bool(rerun_descendants && !blast_radius.is_empty()),
+            );
+        }
+        println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
         println!(
             "REVOKE (loud) — poison digest {}",
@@ -264,10 +303,19 @@ pub fn run_revoke(workgraph_dir: &Path, cid: &str, json: bool) -> Result<()> {
             out.author, out.sigchain_pos
         );
         println!("  lowered trust to: {}", trust_tag(&out.lowered_trust));
-        if out.rerun_consumers.is_empty() {
+        if blast_radius.is_empty() {
             println!("  re-run consumers: (none recorded)");
         } else {
-            println!("  re-run consumers: {}", out.rerun_consumers.join(", "));
+            let verb = if rerun_descendants {
+                "re-queued"
+            } else {
+                "to re-run"
+            };
+            println!(
+                "  blast radius ({verb}): {} ({} task(s))",
+                blast_radius.join(", "),
+                blast_radius.len()
+            );
         }
     }
     Ok(())

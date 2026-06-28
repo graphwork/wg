@@ -30,6 +30,7 @@
 //! term/cadence together per task**.
 
 pub mod bundle;
+pub mod cross_task;
 pub mod lease;
 pub mod placement;
 pub mod verify;

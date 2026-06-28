@@ -3519,6 +3519,11 @@ pub enum ReviewCommands {
         /// The content digest (`b3:…`) of the poisoned item.
         #[arg(long)]
         cid: String,
+        /// Only ENUMERATE the downstream blast radius without re-queuing it. By default
+        /// revoke re-runs every transitive `--after` descendant that consumed the poison
+        /// (cross-task poison B7/TC8 — descendant re-run).
+        #[arg(long = "no-rerun-descendants")]
+        no_rerun_descendants: bool,
     },
 }
 
@@ -3785,6 +3790,11 @@ pub enum ProviderCommands {
         /// The dumb/untrusted store for identity resolution.
         #[arg(long)]
         store: String,
+        /// On a REJECTED result, only ENUMERATE the poisoned artifact's descendants without
+        /// re-queuing them. By default a rejection re-runs every transitive descendant that
+        /// consumed the poison (cross-task poison B7/TC8 — descendant re-run).
+        #[arg(long = "no-rerun-descendants")]
+        no_rerun_descendants: bool,
     },
 
     /// Surface the applied lease + (recomputed) leash for a task (`wg show` parity).

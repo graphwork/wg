@@ -2141,6 +2141,43 @@ impl WorkGraph {
             .ok_or(err)
     }
 
+    /// Every transitive **descendant** of `task_id` — the tasks that depend on it via
+    /// `after` edges, directly or through a chain — in breadth-first (dependency) order,
+    /// **excluding** `task_id` itself. Cycle-safe (a back-edge never revisits a node).
+    ///
+    /// This is the cross-task-poison (TC8 / audit B7) blast-radius enumeration: when an
+    /// upstream artifact is later found bad, these are exactly the tasks that (transitively)
+    /// consumed it and must be re-run. A task that is absent from the graph has no known
+    /// descendants and yields an empty list.
+    pub fn transitive_descendants(&self, task_id: &str) -> Vec<String> {
+        // Reverse index: task -> direct dependents (tasks whose `after` names it).
+        let mut dependents: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        for t in self.tasks() {
+            for dep in &t.after {
+                dependents.entry(dep.as_str()).or_default().push(&t.id);
+            }
+        }
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+        queue.push_back(task_id);
+        // Sort children for a deterministic BFS order (HashMap iteration is unordered).
+        while let Some(cur) = queue.pop_front() {
+            if let Some(children) = dependents.get(cur) {
+                let mut children = children.clone();
+                children.sort_unstable();
+                for child in children {
+                    if child != task_id && seen.insert(child) {
+                        out.push(child.to_string());
+                        queue.push_back(child);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Build a "Task not found" error, suggesting similar task IDs if any exist.
     fn task_not_found_error(&self, id: &str) -> anyhow::Error {
         let suggestion = self
@@ -3054,6 +3091,52 @@ mod tests {
         let graph = WorkGraph::new();
         assert!(graph.get_node("nonexistent").is_none());
         assert!(graph.get_task("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_transitive_descendants_enumerates_blast_radius() {
+        // root -> a -> c ; root -> b -> c ; c -> leaf  (a diamond into c, then a leaf).
+        let mut graph = WorkGraph::new();
+        let with_after = |id: &str, after: &[&str]| {
+            let mut t = make_task(id, id);
+            t.after = after.iter().map(|s| s.to_string()).collect();
+            Node::Task(t)
+        };
+        graph.add_node(with_after("root", &[]));
+        graph.add_node(with_after("a", &["root"]));
+        graph.add_node(with_after("b", &["root"]));
+        graph.add_node(with_after("c", &["a", "b"]));
+        graph.add_node(with_after("leaf", &["c"]));
+
+        // Every transitive consumer of `root` is in its blast radius; `root` itself is not.
+        let mut desc = graph.transitive_descendants("root");
+        desc.sort();
+        assert_eq!(desc, vec!["a", "b", "c", "leaf"]);
+
+        // A true leaf has no descendants.
+        assert!(graph.transitive_descendants("leaf").is_empty());
+
+        // A mid-graph node surfaces only what is downstream of it.
+        let mut from_c = graph.transitive_descendants("c");
+        from_c.sort();
+        assert_eq!(from_c, vec!["leaf"]);
+
+        // An absent task has no known descendants.
+        assert!(graph.transitive_descendants("nope").is_empty());
+    }
+
+    #[test]
+    fn test_transitive_descendants_is_cycle_safe() {
+        // A back-edge (x depends on y, y depends on x) must not loop forever.
+        let mut graph = WorkGraph::new();
+        let mut x = make_task("x", "x");
+        x.after = vec!["y".to_string()];
+        let mut y = make_task("y", "y");
+        y.after = vec!["x".to_string()];
+        graph.add_node(Node::Task(x));
+        graph.add_node(Node::Task(y));
+        // From x: y is downstream; x is excluded even though the cycle points back at it.
+        assert_eq!(graph.transitive_descendants("x"), vec!["y".to_string()]);
     }
 
     #[test]

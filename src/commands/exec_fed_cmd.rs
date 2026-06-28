@@ -22,6 +22,9 @@ use worksgood::identity::custody::{self, Ability, LeashPolicy, Scope};
 use worksgood::identity::keys::Custodian;
 use worksgood::identity::transport::open_store;
 use worksgood::providers::bundle::{ContextSlice, DepArtifact, SealedBundle, recipient_enc_key};
+use worksgood::providers::cross_task::{
+    GraphPosition, classify_position, inputs_crossing_trust_boundary,
+};
 use worksgood::providers::lease::{Lease, LeaseLedger};
 use worksgood::providers::placement::{
     PlacementVerdict, TaskRequirements, VerificationDepth, evaluate_placement, leash, pool_tier,
@@ -74,6 +77,19 @@ fn emit(json: bool, value: serde_json::Value, human: &str) {
         println!("{}", serde_json::to_string(&value).unwrap_or_default());
     } else {
         println!("{human}");
+    }
+}
+
+/// The task's **graph position** for the tier-by-graph-position floor (cross-task poison /
+/// TC8 / B7). A task with downstream descendants in the authorizer's graph is
+/// `Foundational` (its output feeds others ⇒ floors at Verified); one with none — or a task
+/// not in the graph (a pure-exec spark task has no known descendants) — is a `Leaf`. The
+/// classification uses the authorizer's *known* topology; an isolated task carries no known
+/// blast radius.
+fn graph_position(workgraph_dir: &Path, task_id: &str) -> GraphPosition {
+    match crate::commands::load_workgraph(workgraph_dir) {
+        Ok((g, _)) => classify_position(g.transitive_descendants(task_id).len()),
+        Err(_) => GraphPosition::Leaf,
     }
 }
 
@@ -174,12 +190,16 @@ pub fn run_offer(
     let provider_trust = reg.trust_of(provider_wgid);
     let provider_cap = reg.get(provider_wgid).and_then(|e| e.capability.clone());
 
+    // Tier-by-graph-position (B7/TC8): a foundational task (one with descendants) floors at
+    // the Verified (A) tier — only a leaf may be offered to a lower-trust provider.
+    let position = graph_position(workgraph_dir, task);
     let req = TaskRequirements {
         task_id: task.to_string(),
         required_model: model.to_string(),
         min_isolation: min_iso,
         sensitivity: sens,
         checkable,
+        position,
     };
 
     match evaluate_placement(
@@ -241,6 +261,7 @@ pub fn run_offer(
                     "provider": provider_wgid,
                     "trust_floor": trust_str(decision.trust_floor),
                     "pool_tier": pool_tier(provider_trust),
+                    "graph_position": position.as_str(),
                     "sensitivity": sens.as_str(),
                     "checkable": checkable,
                     "lease_epoch": epoch,
@@ -455,12 +476,17 @@ pub fn run_grant(
     let reg = load_registry(workgraph_dir);
     let provider_trust = reg.trust_of(&claim.provider);
     let provider_cap = reg.get(&claim.provider).and_then(|e| e.capability.clone());
+    // Tier-by-graph-position (B7/TC8): re-assert the foundational floor at grant too, so a
+    // foundational task can never be granted to a low-trust provider even if offer was
+    // bypassed (defense in depth — the floor is re-derived from the authorizer's own graph).
+    let position = graph_position(workgraph_dir, &claim.task_id);
     let req = TaskRequirements {
         task_id: claim.task_id.clone(),
         required_model: claim.capability.model.clone(),
         min_isolation: claim.capability.isolation,
         sensitivity,
         checkable,
+        position,
     };
     let decision = match evaluate_placement(
         &req,
@@ -477,6 +503,42 @@ pub fn run_grant(
             )
         }
     };
+
+    // Cross-task poison (B7/TC8) — **input re-verification across trust boundaries.** The
+    // consumer (this task, granted to a `provider_trust` box) must NOT consume an input
+    // produced by a STRICTLY LOWER-TRUST provider until that input has been independently
+    // re-verified in a trusted domain. Map each remote `--after` dep to its producing
+    // provider's trust from the authorizer's ledger; a dep that crossed the boundary
+    // downward and is not yet integrity-verified makes us REFUSE to seal it into the context
+    // (received ≠ consumed — the poison never reaches the consumer's bundle). A local input
+    // (absent from the exec ledger) carries no remote producer and is not gated here.
+    let led_inputs = load_ledger(workgraph_dir)?;
+    let upstream_producers: Vec<(String, TrustLevel)> = after
+        .iter()
+        .filter_map(|spec| spec.split_once('='))
+        .filter_map(|(dep, _)| {
+            led_inputs
+                .provider_of(dep)
+                .map(|p| (dep.to_string(), reg.trust_of(p)))
+        })
+        .collect();
+    let unverified: Vec<String> =
+        inputs_crossing_trust_boundary(provider_trust, &upstream_producers)
+            .into_iter()
+            .filter(|dep| !led_inputs.is_input_verified(dep))
+            .collect();
+    if !unverified.is_empty() {
+        bail!(
+            "refusing to grant — cross-trust-input-unverified: task {} (on a {} provider) \
+             consumes lower-trust input(s) [{}] that have not been re-verified across the \
+             trust boundary. Re-verify each in a trusted domain first \
+             (`wg provider verify --result <dep-result> --verifier <G> --pinned-spec <spec>`), \
+             then re-grant (B7/TC8).",
+            claim.task_id,
+            trust_str(provider_trust),
+            unverified.join(", ")
+        );
+    }
 
     let ttl = ucan_ttl_secs.unwrap_or(decision.delegation_ttl_secs);
     let task = &claim.task_id;
@@ -853,11 +915,13 @@ pub fn run_accept(
         .sensitivity_of(&result.task_id)
         .unwrap_or(Sensitivity::Unlabeled);
     let checkable = led_ro.checkable_of(&result.task_id).unwrap_or(true);
+    let position = graph_position(workgraph_dir, &result.task_id);
     match leash(
         producer_trust,
         sensitivity,
         pool_for(producer_trust),
         attested,
+        position,
     ) {
         // The fail-closed confidential/unlabeled gate is re-asserted at accept too.
         Err(refusal) => return reject(json, &refusal.reason, &refusal.detail),
@@ -995,7 +1059,16 @@ fn gate_on_rerun(
                 ),
             ))
         }
-        Ok(_) => None, // the eval-gate passed — proceed to the epoch CAS.
+        Ok(_) => {
+            // The eval-gate passed — record the integrity verification so a higher-trust
+            // downstream consumer can confirm this input was re-verified across the trust
+            // boundary (B7/TC8 input re-verification leg), then proceed to the epoch CAS.
+            if let Ok(mut guard) = LeaseLedger::open_locked(workgraph_dir) {
+                guard.ledger.mark_verified(&result.task_id);
+                let _ = guard.save();
+            }
+            None
+        }
     }
 }
 
@@ -1325,6 +1398,7 @@ pub fn run_verify(
     pinned_spec_file: &str,
     checkability: &str,
     store_loc: &str,
+    rerun_descendants: bool,
     json: bool,
 ) -> Result<()> {
     let result: ResultEnvelope = read_json(result_file)?;
@@ -1354,12 +1428,28 @@ pub fn run_verify(
 
     match verify_result(&req, now, &[], &resolve) {
         Ok(verdict) => {
-            // If a result is rejected as a forgery, lower the producer's trust so its next
-            // item takes the deeper path, and surface the descendants to re-run (D4/D6).
-            if !verdict.accepted {
+            let mut rerun = Vec::new();
+            if verdict.accepted {
+                // The integrity re-run PASSED — record it so a higher-trust downstream
+                // consumer can confirm this input was re-verified across the trust boundary
+                // (B7/TC8 input re-verification leg).
+                if let Ok(mut guard) = LeaseLedger::open_locked(workgraph_dir) {
+                    guard.ledger.mark_verified(&result.task_id);
+                    let _ = guard.save();
+                }
+            } else {
+                // REJECTED as a forgery/poison. Lower the producer's trust so its next item
+                // takes the deeper path AND actually enumerate + re-run the descendants that
+                // consumed this poisoned artifact (B7/TC8 — the comment was previously
+                // aspirational; this now does the graph walk + re-queue).
                 let mut reg = reg;
                 reg.lower_trust(&result.producer);
                 save_registry(workgraph_dir, &reg)?;
+                rerun = crate::commands::rerun_poison_descendants(
+                    workgraph_dir,
+                    &result.task_id,
+                    rerun_descendants,
+                );
             }
             emit(
                 json,
@@ -1374,9 +1464,11 @@ pub fn run_verify(
                     "test_poisoning_flagged": verdict.test_poisoning_flagged,
                     "provenance_producer": verdict.provenance_producer,
                     "reason": verdict.reason,
+                    "poison_descendants": rerun,
+                    "descendants_requeued": !verdict.accepted && rerun_descendants,
                 }),
                 &format!(
-                    "verify {} (reran on {}, test-poison={}): {}",
+                    "verify {} (reran on {}, test-poison={}): {}{}",
                     if verdict.accepted {
                         "ACCEPTED"
                     } else {
@@ -1384,7 +1476,20 @@ pub fn run_verify(
                     },
                     verdict.reran_on,
                     verdict.test_poisoning_flagged,
-                    verdict.reason
+                    verdict.reason,
+                    if rerun.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " — descendants {}: {}",
+                            if rerun_descendants {
+                                "re-queued"
+                            } else {
+                                "to re-run"
+                            },
+                            rerun.join(", ")
+                        )
+                    },
                 ),
             );
             Ok(())
@@ -1433,7 +1538,11 @@ pub fn run_show(
     let sens = sensitivity
         .map(Sensitivity::parse)
         .unwrap_or(st.sensitivity);
-    let leash_v = match leash(trust, sens, pool_for(trust), attested) {
+    // Recompute the leash with the task's real graph position so a displayed `trust_floor`
+    // reflects the tier-by-graph-position bump (B7/TC8), not just the sensitivity floor.
+    let position = graph_position(workgraph_dir, task);
+    let integrity_verified = st.integrity_verified;
+    let leash_v = match leash(trust, sens, pool_for(trust), attested, position) {
         Ok(d) => json!({
             "trust_floor": trust_str(d.trust_floor),
             "delegation_broad": d.delegation_broad,
@@ -1453,6 +1562,8 @@ pub fn run_show(
             "provider": st.provider,
             "trust": trust_str(trust),
             "pool_tier": pool_tier(trust),
+            "graph_position": position.as_str(),
+            "integrity_verified": integrity_verified,
             "sensitivity": st.sensitivity.as_str(),
             "checkable": st.checkable,
             "epoch": st.epoch,

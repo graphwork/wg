@@ -156,6 +156,14 @@ pub struct LeaseState {
     /// RFC3339 of the last accepted renewal/commit (M16 — refreshes the expiry deadline).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_renewal_at: Option<String>,
+    /// Whether this task's result has **passed an integrity verification** (the
+    /// trusted-domain re-run vs the pinned spec) — set on a passing accept-gate re-run or a
+    /// passing `wg provider verify`. Read by the cross-task-poison **input re-verification**
+    /// gate (B7/TC8): a higher-trust consumer refuses to seal an input produced by a
+    /// strictly-lower-trust provider until that input is verified. `#[serde(default)]` ⇒
+    /// `false` (fail-closed — an unverified input is treated as not-yet-re-verified).
+    #[serde(default)]
+    pub integrity_verified: bool,
 }
 
 fn default_true() -> bool {
@@ -189,6 +197,7 @@ impl LeaseLedger {
             term_secs: 0,
             granted_at: None,
             last_renewal_at: None,
+            integrity_verified: false,
         });
         st.provider = provider.to_string();
         st.epoch
@@ -229,6 +238,31 @@ impl LeaseLedger {
         self.tasks.get(task_id).map(|s| s.checkable)
     }
 
+    /// **Record that a task's result passed an integrity verification** (B7/TC8 — the
+    /// cross-task-poison input re-verification leg). Set on a passing accept-gate re-run or
+    /// a passing `wg provider verify`, so a higher-trust consumer of this task's output can
+    /// confirm it was re-verified before consuming it. No-op if the task was never placed.
+    pub fn mark_verified(&mut self, task_id: &str) {
+        if let Some(st) = self.tasks.get_mut(task_id) {
+            st.integrity_verified = true;
+        }
+    }
+
+    /// Whether a placed task's result has passed an integrity verification (B7/TC8). An
+    /// unplaced task reads `false` (fail-closed — no record ⇒ not re-verified).
+    pub fn is_input_verified(&self, task_id: &str) -> bool {
+        self.tasks
+            .get(task_id)
+            .map(|s| s.integrity_verified)
+            .unwrap_or(false)
+    }
+
+    /// The provider a task is placed on (its producer), if placed. Used by the
+    /// cross-trust-boundary gate to learn an upstream input's producing-provider trust.
+    pub fn provider_of(&self, task_id: &str) -> Option<&str> {
+        self.tasks.get(task_id).map(|s| s.provider.as_str())
+    }
+
     /// **Reclaim** task T: bump the epoch (`e → e+1`), clear `committed`, re-assign the
     /// provider. Returns the new epoch. The old worker's epoch is now stale (ADR-E3 D6).
     pub fn reclaim(&mut self, task_id: &str, new_provider: &str) -> Result<u64> {
@@ -240,6 +274,9 @@ impl LeaseLedger {
         st.committed = false;
         st.provider = new_provider.to_string();
         st.last_renewal_epoch = None;
+        // A reclaimed lease is re-run by a new worker; any prior integrity verification no
+        // longer applies (the new result is unverified until re-checked). Fail-closed.
+        st.integrity_verified = false;
         Ok(st.epoch)
     }
 
@@ -540,6 +577,22 @@ mod tests {
         assert_eq!(led.current_epoch("T"), Some(1));
         assert_eq!(led.reclaim("T", "wgid:zQ").unwrap(), 2);
         assert_eq!(led.current_epoch("T"), Some(2));
+    }
+
+    #[test]
+    fn mark_verified_records_and_reclaim_clears_it() {
+        let mut led = LeaseLedger::new();
+        // An unplaced task reads false (fail-closed); an unverified placed task too.
+        assert!(!led.is_input_verified("U"));
+        led.place("U", "wgid:zLow");
+        assert!(!led.is_input_verified("U"));
+        // A passing integrity verification records it.
+        led.mark_verified("U");
+        assert!(led.is_input_verified("U"));
+        assert_eq!(led.provider_of("U"), Some("wgid:zLow"));
+        // Reclaiming the lease invalidates the prior verification (the new run is unchecked).
+        led.reclaim("U", "wgid:zNew").unwrap();
+        assert!(!led.is_input_verified("U"));
     }
 
     #[test]

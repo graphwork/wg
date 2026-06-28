@@ -17,6 +17,7 @@
 use crate::context_scope::ContextScope;
 use crate::identity::custody::LeashPolicy;
 
+use super::cross_task::{GraphPosition, position_trust_floor, stricter_floor};
 use super::{
     CapabilityAd, IsolationClass, PoolClass, Sensitivity, TrustLevel, trust_rank, trust_str,
 };
@@ -133,18 +134,32 @@ const PER_TASK_GRACE_K: i64 = 3;
 ///
 /// `provider_attested` is `true` only for a **verified attestation quote** (never a
 /// self-advertised class — TC10).
+///
+/// `position` is the **tier-by-graph-position** input (cross-task poison / TC8 / B7): a
+/// `Foundational` task (one with downstream descendants) raises the trust-floor to
+/// `Verified` (A) so a poisoned foundational artifact can never originate on a low-trust
+/// provider. A `Leaf` imposes no positional floor. Position can only *raise* the floor.
 pub fn leash(
     provider_trust: TrustLevel,
     task_sensitivity: Sensitivity,
     pool_class: PoolClass,
     provider_attested: bool,
+    position: GraphPosition,
 ) -> Result<LeashDecision, LeashRefusal> {
     // 1. The trust-floor by sensitivity (the filter input). A higher floor refuses more.
-    let trust_floor = match task_sensitivity {
+    let sensitivity_floor = match task_sensitivity {
         Sensitivity::Normal => TrustLevel::Provisional,
         Sensitivity::High | Sensitivity::Confidential => TrustLevel::Verified,
         // Unlabeled fails closed below — set the strictest floor regardless.
         Sensitivity::Unlabeled => TrustLevel::Verified,
+    };
+    // 1b. Tier-by-graph-position (TC8/B7): fold in the positional floor. A foundational
+    // task floors at Verified regardless of its own (possibly low) sensitivity label — only
+    // a leaf may use a lower-trust provider. The stricter of the two wins (fail-closed: the
+    // positional floor can only raise the bar, never lower it).
+    let trust_floor = match position_trust_floor(position) {
+        Some(pf) => stricter_floor(sensitivity_floor, pf),
+        None => sensitivity_floor,
     };
 
     // 2. Fail-closed gates BEFORE any context decision (X-1: floor before context).
@@ -250,6 +265,9 @@ pub struct TaskRequirements {
     /// whose only integrity lever is the trusted-domain re-run (which needs checkable
     /// code). Default `true` (most code work is checkable).
     pub checkable: bool,
+    /// The task's **graph position** (cross-task poison / TC8 / B7). A `Foundational` task
+    /// (has descendants) floors at `Verified`; only a `Leaf` may use a lower-trust provider.
+    pub position: GraphPosition,
 }
 
 /// The placement **tier** a provider's trust maps to (S7 — the distinct pools, ADR-E1 D4).
@@ -294,7 +312,13 @@ pub fn evaluate_placement(
     // Compute the leash first to learn the trust-floor (and to re-assert the
     // fail-closed gates even if a capability is missing).
     let attested = provider_cap.map(|c| c.attested).unwrap_or(false);
-    let decision = match leash(provider_trust, req.sensitivity, pool_class, attested) {
+    let decision = match leash(
+        provider_trust,
+        req.sensitivity,
+        pool_class,
+        attested,
+        req.position,
+    ) {
         Ok(d) => d,
         Err(r) => return PlacementVerdict::Refused(r),
     };
@@ -411,6 +435,7 @@ mod tests {
             Sensitivity::Confidential,
             PoolClass::Private,
             false, // not attested
+            GraphPosition::Leaf,
         );
         let err = r.unwrap_err();
         assert_eq!(err.reason, "no-eligible-confidential-provider");
@@ -423,6 +448,7 @@ mod tests {
             Sensitivity::Confidential,
             PoolClass::Private,
             true, // attested
+            GraphPosition::Leaf,
         )
         .unwrap();
         assert_eq!(d.context_seal, ContextSeal::SealedToAttestation);
@@ -435,6 +461,7 @@ mod tests {
             Sensitivity::Unlabeled,
             PoolClass::Private,
             false,
+            GraphPosition::Leaf,
         );
         assert_eq!(r.unwrap_err().reason, "unlabeled-fails-closed");
     }
@@ -446,6 +473,7 @@ mod tests {
             Sensitivity::Normal,
             PoolClass::Private,
             false,
+            GraphPosition::Leaf,
         )
         .unwrap();
         assert!(d.delegation_broad);
@@ -464,6 +492,7 @@ mod tests {
             Sensitivity::Normal,
             PoolClass::Cooperative,
             false,
+            GraphPosition::Leaf,
         )
         .unwrap();
         assert!(!d.delegation_broad);
@@ -483,6 +512,7 @@ mod tests {
             min_isolation: IsolationClass::Container,
             sensitivity: Sensitivity::High, // floor = Verified
             checkable: true,
+            position: GraphPosition::Leaf,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -509,6 +539,7 @@ mod tests {
             min_isolation: IsolationClass::Vm,
             sensitivity: Sensitivity::Normal,
             checkable: true,
+            position: GraphPosition::Leaf,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -529,6 +560,7 @@ mod tests {
             min_isolation: IsolationClass::Container,
             sensitivity: Sensitivity::Normal,
             checkable: true,
+            position: GraphPosition::Leaf,
         };
         let cap = CapabilityAd {
             model: "claude:opus".into(),
@@ -573,6 +605,7 @@ mod tests {
                 min_isolation: IsolationClass::Container,
                 sensitivity: Sensitivity::Normal,
                 checkable: false,
+                position: GraphPosition::Leaf,
             };
             let cap = CapabilityAd {
                 model: "claude:opus".into(),
@@ -598,5 +631,80 @@ mod tests {
         assert_eq!(pool_tier(TrustLevel::Verified), "A");
         assert_eq!(pool_tier(TrustLevel::Provisional), "B");
         assert_eq!(pool_tier(TrustLevel::Unknown), "refuse");
+    }
+
+    // ── Tier-by-graph-position (cross-task poison / TC8 / B7) ────────────────────
+
+    #[test]
+    fn foundational_normal_floors_at_verified() {
+        // A Normal-sensitivity task would floor at Provisional — but a FOUNDATIONAL
+        // position (it has descendants) raises the floor to Verified. The blast-radius
+        // bound, independent of the task's own (low) sensitivity label.
+        let d = leash(
+            TrustLevel::Verified,
+            Sensitivity::Normal,
+            PoolClass::Private,
+            false,
+            GraphPosition::Foundational,
+        )
+        .unwrap();
+        assert_eq!(d.trust_floor, TrustLevel::Verified);
+        // A LEAF Normal task keeps the lower (Provisional) floor.
+        let leaf = leash(
+            TrustLevel::Verified,
+            Sensitivity::Normal,
+            PoolClass::Private,
+            false,
+            GraphPosition::Leaf,
+        )
+        .unwrap();
+        assert_eq!(leaf.trust_floor, TrustLevel::Provisional);
+    }
+
+    #[test]
+    fn foundational_task_refuses_low_trust_provider_but_leaf_admits_it() {
+        let req = |position| TaskRequirements {
+            task_id: "root".into(),
+            required_model: "claude:opus".into(),
+            min_isolation: IsolationClass::Container,
+            sensitivity: Sensitivity::Normal, // would otherwise floor at Provisional
+            checkable: true,
+            position,
+        };
+        let cap = CapabilityAd {
+            model: "claude:opus".into(),
+            isolation: IsolationClass::Container,
+            attested: false,
+        };
+        // A Provisional (B-tier) provider CLEARS the Normal/leaf floor...
+        assert!(matches!(
+            evaluate_placement(
+                &req(GraphPosition::Leaf),
+                TrustLevel::Provisional,
+                Some(&cap),
+                PoolClass::Cooperative,
+            ),
+            PlacementVerdict::Eligible(_)
+        ));
+        // ...but is REFUSED for a foundational task — the positional floor demands Verified.
+        match evaluate_placement(
+            &req(GraphPosition::Foundational),
+            TrustLevel::Provisional,
+            Some(&cap),
+            PoolClass::Cooperative,
+        ) {
+            PlacementVerdict::Refused(r) => assert_eq!(r.reason, "trust-floor-not-met"),
+            _ => panic!("a foundational task must refuse a low-trust provider"),
+        }
+        // A Verified (A-tier) provider runs the foundational task.
+        assert!(matches!(
+            evaluate_placement(
+                &req(GraphPosition::Foundational),
+                TrustLevel::Verified,
+                Some(&cap),
+                PoolClass::Private,
+            ),
+            PlacementVerdict::Eligible(_)
+        ));
     }
 }

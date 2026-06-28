@@ -4025,9 +4025,15 @@ fn main() -> Result<()> {
             cli::ReviewCommands::Consume { content_file } => {
                 commands::review_cmd::run_consume(&workgraph_dir, &content_file, cli.json)
             }
-            cli::ReviewCommands::Revoke { cid } => {
-                commands::review_cmd::run_revoke(&workgraph_dir, &cid, cli.json)
-            }
+            cli::ReviewCommands::Revoke {
+                cid,
+                no_rerun_descendants,
+            } => commands::review_cmd::run_revoke(
+                &workgraph_dir,
+                &cid,
+                !no_rerun_descendants,
+                cli.json,
+            ),
         },
         Commands::Provider { command } => match command {
             cli::ProviderCommands::Enroll {
@@ -4193,6 +4199,7 @@ fn main() -> Result<()> {
                 pinned_spec,
                 checkability,
                 store,
+                no_rerun_descendants,
             } => commands::exec_fed_cmd::run_verify(
                 &workgraph_dir,
                 &result,
@@ -4200,6 +4207,7 @@ fn main() -> Result<()> {
                 &pinned_spec,
                 &checkability,
                 &store,
+                !no_rerun_descendants,
                 cli.json,
             ),
             cli::ProviderCommands::Show { task, sensitivity } => commands::exec_fed_cmd::run_show(

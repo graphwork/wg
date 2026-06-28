@@ -1784,6 +1784,15 @@ description = "Pins wire-review (audit B6 / M18 / M19 — wire the AI review gat
 timeout_seconds = 120
 
 [[scenario]]
+name = "cross_task_poison"
+script = "scenarios/cross_task_poison.sh"
+owners = [
+    "cross-task-poison",
+]
+description = "Pins cross-task-poison (audit B7 / TC8 / D-iii — the WORST-RANKED threat in the adversarial study, jointly owned by the exec + review planes). Before this, only provenance + trust-lowering existed and a code comment overstated that descendants were surfaced; this builds the three structural defenses the study names. Credential-free (the worker is a real subprocess via WG_EXEC_WORKER_CMD); WG-A (authorizer + custodian of agent G + the canonical graph: root-found→mid→leaf-tail), two separately-owned providers P_low (B-tier) + P_high (A-tier), and a disjoint verifier Q, as isolated $HOME keystores + project --dirs over a dumb untrusted store L; reuses the WG-Fed identity/UCAN/seal substrate (no second system). Three falsifiable assertions: (1) TIER-BY-GRAPH-POSITION — a FOUNDATIONAL task (one with downstream descendants in the authorizer's graph) will NOT place on a low-trust provider: `wg provider offer` of root-found (foundational) to a Provisional (B) provider is REFUSED (trust-floor-not-met, no offer file written) while a LEAF task (leaf-tail, no descendants) on the SAME Provisional provider is PLACED (graph_position=leaf, pool_tier=B); the foundational task is admitted only on the trusted A (Verified) pool (graph_position=foundational, pool_tier=A). The leash now takes a graph-topology input (cross_task::GraphPosition) that raises the trust-floor to Verified for any task with descendants. (2) DESCENDANT RE-RUN — a CORRUPTED result for the upstream graph task root-found, rejected by `wg provider verify` vs the authorizer's pinned spec, ENUMERATES its transitive descendants (poison_descendants=[mid, leaf-tail]) and RE-RUNS them (descendants_requeued=true): descendants that had FINISHED (status=done) flip back to `open` so the coordinator rebuilds them on the corrected input. WorkGraph::transitive_descendants does the BFS `after`-edge walk; the previously-aspirational verify comment now performs the re-queue. (3) INPUT RE-VERIFICATION ACROSS TRUST BOUNDARIES — a higher-trust task re-verifies a strictly-lower-trust input before consuming it: `wg provider grant` of hi-cons on the Verified (A) box P_high, with an `--after` input low-up PRODUCED by the Provisional (B) box P_low, is REFUSED (cross-trust-input-unverified, no grant file written) until low-up is re-verified in a trusted domain (`wg provider verify --verifier Q`); the genuine input passes the eval-gate (no over-block), is recorded integrity_verified=true on the lease, and the SAME grant then SUCCEEDS. Prerequisite: the WG-Exec harden+wire (exec_harden_wire) — this adds the cross-task-poison defenses on top of the wired exec plane, it does not re-prove it."
+timeout_seconds = 120
+
+[[scenario]]
 name = "fed_harden_residuals"
 script = "scenarios/fed_harden_residuals.sh"
 owners = [
