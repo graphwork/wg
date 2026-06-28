@@ -448,6 +448,7 @@ mod tests {
             Some("Another project"),
             None,
             &[],
+            None,
         )
         .unwrap();
 
@@ -473,9 +474,18 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap();
-        let result = run_add(&wg_dir, "other", Some("/another/path"), None, None, &[]);
+        let result = run_add(
+            &wg_dir,
+            "other",
+            Some("/another/path"),
+            None,
+            None,
+            &[],
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
     }
@@ -485,7 +495,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wg_dir = setup_workgraph_dir(&tmp);
 
-        run_add(&wg_dir, "other", Some("/some/path"), None, None, &[]).unwrap();
+        run_add(&wg_dir, "other", Some("/some/path"), None, None, &[], None).unwrap();
         run_remove(&wg_dir, "other").unwrap();
 
         let config = federation::load_federation_config(&wg_dir).unwrap();
@@ -515,6 +525,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap();
         // Should not error
@@ -553,6 +564,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap();
 
@@ -597,6 +609,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap();
 
