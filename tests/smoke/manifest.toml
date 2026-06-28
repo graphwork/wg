@@ -1730,6 +1730,15 @@ description = "Pins exec-spark (WG-Exec Wave B, the EXECUTION SPARK PoC; docs/ex
 timeout_seconds = 90
 
 [[scenario]]
+name = "exec_ledger_crash_safe"
+script = "scenarios/exec_ledger_crash_safe.sh"
+owners = [
+    "wave0-fixes",
+]
+description = "Pins wave0-fixes audit B3 (the WG-Exec lease-ledger integrity backstop is crash-safe): the epoch fence is only as sound as the persistence of its ledger (<wgdir>/exec/leases.json), and the bug was a `fs::write` + `unwrap_or_default()` that SILENTLY RESET a corrupt/partial ledger to empty — dropping every task's epoch and re-opening the double-commit/replay the fence exists to close. Credential-free (offer/reclaim are pure crypto/ledger ops; no worker model is driven), an isolated $HOME keystore + scratch --dir, driven through `wg provider`. Three falsifiable assertions: (1) `wg provider offer` places task T and creates the ledger at epoch 1; (2) the ledger is corrupted to a partial JSON, and a mutating `wg provider reclaim --task T` FAILS CLOSED with the loud `REFUSING to reset` error (not a silent reset) AND leaves the corrupt bytes on disk unclobbered — never overwriting them with a fresh-empty ledger (the B3 regression guard); (3) a clean ledger round-trips through the locked, atomic read-modify-write — a reclaim monotonically bumps the epoch 1→2 and the atomic temp-file+rename write leaves no `.tmp` file behind. Pins the CLI-level fail-closed + atomic + locked behavior the unit tests cannot reach."
+timeout_seconds = 60
+
+[[scenario]]
 name = "exec_real_run_silicon"
 script = "scenarios/exec_real_run_silicon.sh"
 owners = [

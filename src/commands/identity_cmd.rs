@@ -16,7 +16,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
-use worksgood::identity::custody::{self, Capability, LeashPolicy, Revocation, Scope};
+use worksgood::identity::custody::{self, LeashPolicy, Revocation, Scope};
 use worksgood::identity::envelope::{
     AgentFields, Endpoint, IdentityRecord, SignedEvent, StateSnapshot, payload_cid,
 };
@@ -1931,8 +1931,9 @@ pub fn run_delegate(
         )?,
         Some(pfile) => {
             let pbytes = std::fs::read(pfile).with_context(|| format!("reading parent {pfile}"))?;
-            let parent_cap: Capability =
-                serde_json::from_slice(&pbytes).context("parsing parent capability")?;
+            // Depth-capped parse (audit M13): refuse an over-deep delegation chain.
+            let parent_cap =
+                custody::capability_from_slice(&pbytes).context("parsing parent capability")?;
             // The delegator must be the parent's audience (it sub-delegates its grant).
             if parent_cap.aud != id.wgid {
                 bail!(
@@ -2018,10 +2019,11 @@ pub fn run_verify_cap(
     store_loc: &str,
     json: bool,
 ) -> Result<()> {
-    let cap: Capability = serde_json::from_slice(
+    // Depth-capped parse (audit M13): refuse an over-deep delegation chain before the
+    // recursive verify can be driven into a stack overflow.
+    let cap = custody::capability_from_slice(
         &std::fs::read(cap_file).with_context(|| format!("reading {cap_file}"))?,
-    )
-    .context("parsing capability")?;
+    )?;
     let store = open_store(store_loc)?;
     let now = chrono::Utc::now();
 
@@ -2114,10 +2116,10 @@ pub fn run_revoke_cap(
     let cust = Custodian::new(from);
     require_signer(&id, &cust, "revoke a capability")?;
 
-    let cap: Capability = serde_json::from_slice(
+    // Depth-capped parse (audit M13).
+    let cap = custody::capability_from_slice(
         &std::fs::read(cap_file).with_context(|| format!("reading {cap_file}"))?,
-    )
-    .context("parsing capability")?;
+    )?;
     if cap.iss != id.wgid {
         bail!(
             "only the capability's issuer ({}) may revoke it; {from} is {}",

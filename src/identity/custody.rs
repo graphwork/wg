@@ -332,10 +332,56 @@ impl Capability {
         Ok(())
     }
 
-    /// The depth of the delegation chain (1 = a root grant).
+    /// The depth of the delegation chain (1 = a root grant). Computed **iteratively**
+    /// so counting the depth is itself never a recursion/stack-overflow vector (M13).
     pub fn chain_len(&self) -> usize {
-        1 + self.proof.as_ref().map(|p| p.chain_len()).unwrap_or(0)
+        let mut n = 1;
+        let mut cur = self;
+        while let Some(p) = cur.proof.as_deref() {
+            n += 1;
+            cur = p;
+        }
+        n
     }
+}
+
+/// Hard cap on a delegation chain's depth (audit M13). A capability arriving over the
+/// wire embeds its whole parent chain in `proof`; an attacker-supplied, pathologically
+/// deep chain would otherwise drive the recursive `verify`/`deserialize` into a stack
+/// overflow. A real delegation chain is a handful of links deep — 64 is far above any
+/// legitimate use and is refused loudly rather than recursed into.
+pub const MAX_CAP_CHAIN_DEPTH: usize = 64;
+
+/// Whether `leaf`'s embedded `proof` chain is deeper than `max`. Walks **iteratively**
+/// and stops as soon as the bound is exceeded, so even a pathologically deep in-memory
+/// structure is bounded to `max + 1` steps (M13).
+fn exceeds_max_depth(leaf: &Capability, max: usize) -> bool {
+    let mut cur = leaf;
+    let mut depth = 1usize;
+    while let Some(p) = cur.proof.as_deref() {
+        depth += 1;
+        if depth > max {
+            return true;
+        }
+        cur = p;
+    }
+    false
+}
+
+/// Deserialize a capability from wire bytes with the **depth cap enforced** (M13).
+/// `serde_json`'s own 128-level recursion limit prevents a stack overflow during the
+/// parse itself; this additionally refuses an over-deep (but parseable) chain before it
+/// reaches the recursive [`verify`], so the depth bound holds end-to-end.
+pub fn capability_from_slice(bytes: &[u8]) -> Result<Capability> {
+    let cap: Capability =
+        serde_json::from_slice(bytes).map_err(|e| anyhow::anyhow!("parsing capability: {e}"))?;
+    if exceeds_max_depth(&cap, MAX_CAP_CHAIN_DEPTH) {
+        bail!(
+            "capability delegation chain exceeds the maximum depth {MAX_CAP_CHAIN_DEPTH} \
+             — refused (DoS guard, audit M13)"
+        );
+    }
+    Ok(cap)
 }
 
 /// Parse an RFC3339 instant or bail loudly.
@@ -533,6 +579,15 @@ pub fn verify(
     revoked: &[String],
     resolve_auth: &dyn Fn(&str) -> Result<AuthorizedKeys>,
 ) -> Result<Verified> {
+    // Depth-cap BEFORE the recursive walk so an over-deep chain (e.g. a hand-built or
+    // wire-supplied capability whose `proof` nests thousands deep) is refused loudly
+    // rather than overflowing the stack in `verify_inner` (audit M13).
+    if exceeds_max_depth(leaf, MAX_CAP_CHAIN_DEPTH) {
+        bail!(
+            "capability delegation chain exceeds the maximum depth {MAX_CAP_CHAIN_DEPTH} \
+             — refused (DoS guard, audit M13)"
+        );
+    }
     verify_inner(leaf, now, revoked, resolve_auth)?;
     // Walk to the root to report the principal.
     let mut cur = leaf;
@@ -995,6 +1050,47 @@ mod tests {
             v.granted
                 .permits("act-as-agent", &format!("agent://{}", alice.wgid))
         );
+    }
+
+    #[test]
+    fn over_deep_chain_is_refused_not_overflowed() {
+        // M13 — an over-deep `proof` chain must be refused loudly (a DoS guard), never
+        // recursed into. Build a chain deeper than the cap WITHOUT signing each link
+        // (the depth guard fires before any signature/auth work) and assert verify bails.
+        let alice = mint("alice_depth");
+        let agent = mint("agent_depth");
+        let base = issue_root(
+            &alice.cust,
+            &alice.signer_kid,
+            &alice.wgid,
+            &agent.wgid,
+            Scope::broad_default(&alice.wgid),
+            Some(3600),
+            now(),
+            &LeashPolicy::birth_default(),
+            false,
+        )
+        .unwrap();
+        // Nest the same cap as its own `proof` past MAX_CAP_CHAIN_DEPTH.
+        let mut leaf = base.clone();
+        for _ in 0..(MAX_CAP_CHAIN_DEPTH + 5) {
+            let mut next = base.clone();
+            next.proof = Some(Box::new(leaf));
+            leaf = next;
+        }
+        assert!(exceeds_max_depth(&leaf, MAX_CAP_CHAIN_DEPTH));
+        let err = verify(&leaf, now(), &[], &resolver(&[&alice, &agent]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("maximum depth"), "{err}");
+
+        // The depth-capped deserializer refuses the same over-deep chain off the wire.
+        let bytes = serde_json::to_vec(&leaf).unwrap();
+        assert!(capability_from_slice(&bytes).is_err());
+
+        // A within-cap chain still deserializes fine.
+        let ok_bytes = serde_json::to_vec(&base).unwrap();
+        assert!(capability_from_slice(&ok_bytes).is_ok());
     }
 
     #[test]

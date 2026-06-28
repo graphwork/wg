@@ -45,10 +45,6 @@ fn exec_dir(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("exec")
 }
 
-fn ledger_path(workgraph_dir: &Path) -> PathBuf {
-    exec_dir(workgraph_dir).join("leases.json")
-}
-
 fn load_registry(workgraph_dir: &Path) -> ProviderRegistry {
     // Delegate to the single canonical reader so the leash and the review gate read the
     // SAME persisted trust dial (see `worksgood::trust`).
@@ -65,21 +61,12 @@ fn save_registry(workgraph_dir: &Path, reg: &ProviderRegistry) -> Result<()> {
     Ok(())
 }
 
-fn load_ledger(workgraph_dir: &Path) -> LeaseLedger {
-    std::fs::read_to_string(ledger_path(workgraph_dir))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_ledger(workgraph_dir: &Path, led: &LeaseLedger) -> Result<()> {
-    let dir = exec_dir(workgraph_dir);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    std::fs::write(
-        ledger_path(workgraph_dir),
-        serde_json::to_string_pretty(led)?,
-    )?;
-    Ok(())
+/// Read-only ledger load (audit B3). Refuses on a corrupt/partial parse rather than
+/// silently resetting to empty — a reset would drop the epoch fence. Mutating paths use
+/// [`LeaseLedger::open_locked`] instead, which holds an exclusive lock across the whole
+/// read-modify-write.
+fn load_ledger(workgraph_dir: &Path) -> Result<LeaseLedger> {
+    LeaseLedger::load(workgraph_dir)
 }
 
 fn emit(json: bool, value: serde_json::Value, human: &str) {
@@ -217,10 +204,12 @@ pub fn run_offer(
             Ok(())
         }
         PlacementVerdict::Eligible(decision) => {
-            // Reserve the lease epoch for this placement (epoch starts at 1).
-            let mut led = load_ledger(workgraph_dir);
-            let epoch = led.place(task, provider_wgid);
-            save_ledger(workgraph_dir, &led)?;
+            // Reserve the lease epoch for this placement (epoch starts at 1). The
+            // exclusive lock serializes this read-modify-write against concurrent
+            // writers; the load refuses on a corrupt ledger (audit B3).
+            let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+            let epoch = guard.ledger.place(task, provider_wgid);
+            guard.save()?;
 
             let mut offer = PlacementOffer::build(
                 task,
@@ -454,12 +443,14 @@ pub fn run_grant(
         &now.to_rfc3339(),
     )?;
 
-    // The lease (epoch reserved at offer time; reuse it).
-    let mut led = load_ledger(workgraph_dir);
-    let epoch = led
+    // The lease (epoch reserved at offer time; reuse it). Locked read-modify-write so a
+    // concurrent grant cannot lose this placement (audit B3).
+    let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+    let epoch = guard
+        .ledger
         .current_epoch(task)
-        .unwrap_or_else(|| led.place(task, &claim.provider));
-    save_ledger(workgraph_dir, &led)?;
+        .unwrap_or_else(|| guard.ledger.place(task, &claim.provider));
+    guard.save()?;
     let mut lease = Lease::build(
         task,
         g.wgid(),
@@ -720,12 +711,16 @@ pub fn run_accept(
         }
     }
 
-    // 3. The atomic epoch CAS at the single canonical-write boundary (ADR-E3 D6).
-    let mut led = load_ledger(workgraph_dir);
-    if let Err(fence) = led.try_commit(&result.task_id, result.epoch) {
+    // 3. The atomic epoch CAS at the single canonical-write boundary (ADR-E3 D6). The
+    // exclusive lock makes the compare-and-set a single serialized writer even across
+    // concurrent processes; the load refuses on a corrupt ledger so a bad parse cannot
+    // silently reset the fence and re-open double-commit/replay (audit B3). On a fenced
+    // (rejected) commit we return WITHOUT saving — the guard drops, releasing the lock.
+    let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+    if let Err(fence) = guard.ledger.try_commit(&result.task_id, result.epoch) {
         return reject(json, fence_code(&fence), &fence.to_string());
     }
-    save_ledger(workgraph_dir, &led)?;
+    guard.save()?;
 
     // Record the provider's liveness (an accepted write implies an accepted renewal).
     let mut reg = load_registry(workgraph_dir);
@@ -846,11 +841,14 @@ pub fn run_reclaim(
     new_provider: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let mut led = load_ledger(workgraph_dir);
-    let new_epoch = led
+    // Locked read-modify-write: the epoch bump is serialized so a concurrent commit
+    // cannot race the reclaim (audit B3).
+    let mut guard = LeaseLedger::open_locked(workgraph_dir)?;
+    let new_epoch = guard
+        .ledger
         .reclaim(task, new_provider.unwrap_or("wgid:reassigned"))
         .with_context(|| format!("reclaiming {task}"))?;
-    save_ledger(workgraph_dir, &led)?;
+    guard.save()?;
     emit(
         json,
         json!({ "reclaimed": true, "task": task, "new_epoch": new_epoch }),
@@ -965,7 +963,7 @@ pub fn run_show(
     sensitivity: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let led = load_ledger(workgraph_dir);
+    let led = load_ledger(workgraph_dir)?;
     let st = led
         .tasks
         .get(task)
@@ -1019,7 +1017,7 @@ pub fn run_show(
 /// observed liveness (ADR-E1 D6 / ADR-E3 D5).
 pub fn run_providers(workgraph_dir: &Path, json: bool) -> Result<()> {
     let reg = load_registry(workgraph_dir);
-    let led = load_ledger(workgraph_dir);
+    let led = load_ledger(workgraph_dir)?;
     let mut rows = Vec::new();
     for (wgid, e) in &reg.providers {
         // A provider is "live" if it has an accepted renewal at/after any task's current

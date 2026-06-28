@@ -134,15 +134,25 @@ fn scan_text(n: &str) -> LintResult {
 /// IC2 code / artifact checks (ADR-CS1 OQ1 code category): test-file-rewrite (X-6),
 /// committed-secret scan, backdoor-shaped code.
 fn scan_code(n: &str) -> LintResult {
-    // X-6 — a diff that rewrites a test file (disables the test that would catch it).
-    // A test-file edit that *weakens* an assertion is a hard block.
+    // X-6 — a diff that rewrites a test file to disable the test that would catch it.
+    // Require evidence of a *removed or disabled* assertion (audit M27). The old check
+    // matched the bare word `assert`, which fires on EVERY honest test-touching diff —
+    // including ones that only ADD assertions — and hard-rejected legitimate work. The
+    // narrower shape (mirrors `detect.rs::test_file_rewrite`): a removed `-assert` line
+    // with no matching added one, OR an explicit disable/skip marker.
     let touches_test =
         n.contains("tests/") || n.contains("_test.") || n.contains("test_") || n.contains("spec.");
-    let weakens_assert = n.contains("// disabled")
-        || n.contains("assert")
+    // `normalize` collapses whitespace, so a removed `-  assert_eq!(…)` reads as either
+    // `-assert…` or `- assert…`; an added one as `+assert…` / `+ assert…`.
+    let removed_assert = (n.contains("-assert") || n.contains("- assert"))
+        && !(n.contains("+assert") || n.contains("+ assert"));
+    let disabled_assert = n.contains("assertion disabled")
+        || n.contains("// disabled")
+        || n.contains("# disabled")
+        || n.contains("disable")
         || n.contains("skip")
         || n.contains("xfail");
-    if touches_test && weakens_assert {
+    if touches_test && (removed_assert || disabled_assert) {
         return LintResult::hard(ReasonCode::TestFileRewrite);
     }
     // Backdoor-shaped: exec/eval of fetched/remote input.
@@ -248,6 +258,30 @@ mod tests {
     fn test_file_rewrite_is_caught() {
         let diff =
             "--- a/tests/auth_test.rs\n+++ b/tests/auth_test.rs\n-assert!(ok);\n+// disabled";
+        let r = scan(ContentClass::Ic2Artifact, diff);
+        assert_eq!(r.verdict, Verdict::Reject);
+        assert_eq!(r.reason, ReasonCode::TestFileRewrite);
+    }
+
+    #[test]
+    fn honest_assertion_adding_test_diff_is_not_flagged() {
+        // M27 — the false positive: an honest test edit that ADDS assertions must NOT
+        // be hard-rejected. The old bare-`assert` match flagged every test-touching diff.
+        let diff = "--- a/tests/auth_test.rs\n+++ b/tests/auth_test.rs\n+    assert!(token.is_valid());\n+    assert_eq!(status, 200);";
+        let r = scan(ContentClass::Ic2Artifact, diff);
+        assert_eq!(
+            r.verdict,
+            Verdict::Accept,
+            "adding assertions to a test must not be flagged (M27)"
+        );
+        assert_eq!(r.reason, ReasonCode::Clean);
+    }
+
+    #[test]
+    fn indented_removed_assertion_is_still_caught() {
+        // The narrower check still catches a genuinely *weakened* test: a removed
+        // assertion line (with real indentation) and no added one.
+        let diff = "--- a/src/auth_test.rs\n+++ b/src/auth_test.rs\n-    assert_eq!(status, 200);\n+    // (check dropped)";
         let r = scan(ContentClass::Ic2Artifact, diff);
         assert_eq!(r.verdict, Verdict::Reject);
         assert_eq!(r.reason, ReasonCode::TestFileRewrite);

@@ -9,6 +9,7 @@
 //!
 //! ```text
 //!   GET    /wgfed/v1/health                      → "ok"
+//!   GET    /wgfed/v1/version                      → WG_FED_COMPAT_VERSION (S-7 handshake)
 //!   PUT    /wgfed/v1/objects/<cid>               ← store a content-addressed object
 //!   GET    /wgfed/v1/objects/<cid>               → object bytes (404 if absent)
 //!   PUT    /wgfed/v1/heads/<wgid>                ← publish a head pointer (owner-signed)
@@ -342,6 +343,14 @@ fn route(
 
     match (method, segs.as_slice()) {
         ("GET", ["health"]) => ("200 OK", "text/plain", b"ok".to_vec()),
+
+        // S-7 compat handshake (audit M2): advertise this build's WG-Fed wire version so
+        // a client can negotiate it via `HttpStore::handshake` and loud-fail on mismatch.
+        ("GET", ["version"]) => (
+            "200 OK",
+            "text/plain",
+            super::WG_FED_COMPAT_VERSION.as_bytes().to_vec(),
+        ),
 
         // M3: an object's CID must equal the hash of its bytes — on write AND read.
         ("PUT", ["objects", cid]) => {

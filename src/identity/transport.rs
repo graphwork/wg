@@ -23,6 +23,41 @@ use std::path::PathBuf;
 /// Wire-path prefix shared by [`HttpStore`] and the node server ([`super::node`]).
 pub const API_PREFIX: &str = "/wgfed/v1";
 
+/// Hard cap on a single HTTP response body the client will buffer (audit M13). The node
+/// is **untrusted**: a malicious or buggy peer could otherwise stream an unbounded body
+/// into `resp.bytes()` and OOM the client. 64 MiB is far above any legitimate
+/// object / head / inbox-event the node serves; a larger body is refused, not buffered.
+pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read a response body bounded by [`MAX_RESPONSE_BYTES`] (audit M13). Rejects early on
+/// an advertised oversize `Content-Length`, then **streams under a hard cap** so a
+/// chunked (length-less) body cannot exceed the bound either — the unbounded
+/// `resp.bytes()` / `resp.json()` reads are all routed through here.
+fn read_capped(resp: reqwest::blocking::Response) -> Result<Vec<u8>> {
+    if let Some(len) = resp.content_length() {
+        if len > MAX_RESPONSE_BYTES {
+            bail!(
+                "node response advertises {len} bytes > cap {MAX_RESPONSE_BYTES} — \
+                 refused (DoS guard, audit M13)"
+            );
+        }
+    }
+    use std::io::Read;
+    let mut buf = Vec::new();
+    // take(cap + 1) so an exact-cap body still reads fully while an over-cap one trips
+    // the check below even when no Content-Length was advertised.
+    resp.take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .context("reading node response body")?;
+    if buf.len() as u64 > MAX_RESPONSE_BYTES {
+        bail!(
+            "node response exceeded cap {MAX_RESPONSE_BYTES} bytes — refused \
+             (DoS guard, audit M13)"
+        );
+    }
+    Ok(buf)
+}
+
 /// Map a content id / wgid / event id to a filesystem-and-URL-safe leaf name.
 ///
 /// Identical to the spark's `sanitize` (the smoke `san()` helper mirrors it), so a
@@ -124,6 +159,14 @@ pub trait FedStore {
     fn put_attestation(&self, wgid: &str, bytes: &[u8]) -> Result<()>;
     /// Fetch the freshness attestation for a `wgid`, or `None` if none published.
     fn get_attestation(&self, wgid: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Negotiate the WG-Fed wire compatibility version with the peer (S-7 handshake,
+    /// audit M2). The network rung ([`HttpStore`]) fetches the node's advertised
+    /// `WG_FED_COMPAT_VERSION` and **loud-fails on an incompatible mismatch**; the local
+    /// directory rung ([`FileStore`]) has no peer to negotiate with and is a no-op.
+    fn handshake(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Open a `--store` reference into a concrete transport rung.
@@ -135,7 +178,12 @@ pub trait FedStore {
 /// **and** newly with an `http://` node — the Wave-3 surface is forward-compatible.
 pub fn open_store(reference: &str) -> Result<Box<dyn FedStore>> {
     if reference.starts_with("http://") || reference.starts_with("https://") {
-        Ok(Box::new(HttpStore::new(reference)))
+        let store = HttpStore::new(reference);
+        // S-7 compat handshake on the wire (audit M2): negotiate the version up-front so
+        // every fetch/poll/publish against a node loud-fails on an incompatible peer
+        // rather than mis-handling a wire format it does not understand.
+        store.handshake()?;
+        Ok(Box::new(store))
     } else {
         Ok(Box::new(FileStore::new(reference)))
     }
@@ -376,7 +424,7 @@ impl FedStore for HttpStore {
         if !resp.status().is_success() {
             bail!("object {cid} not found at node: HTTP {}", resp.status());
         }
-        Ok(resp.bytes()?.to_vec())
+        read_capped(resp)
     }
 
     fn put_head(&self, wgid: &str, head: &Head) -> Result<()> {
@@ -406,7 +454,7 @@ impl FedStore for HttpStore {
                 resp.status()
             );
         }
-        let bytes = resp.bytes()?;
+        let bytes = read_capped(resp)?;
         serde_json::from_slice(&bytes).context("parsing head pointer from node")
     }
 
@@ -470,7 +518,9 @@ impl FedStore for HttpStore {
             #[serde(default)]
             events: Vec<String>,
         }
-        let index: Index = resp.json().context("parsing inbox index from node")?;
+        let index_bytes = read_capped(resp)?;
+        let index: Index =
+            serde_json::from_slice(&index_bytes).context("parsing inbox index from node")?;
         let mut out = Vec::with_capacity(index.events.len());
         let mut ids = index.events;
         ids.sort();
@@ -491,7 +541,7 @@ impl FedStore for HttpStore {
             }
             out.push(InboxEvent {
                 id,
-                bytes: r.bytes()?.to_vec(),
+                bytes: read_capped(r)?,
             });
         }
         Ok(out)
@@ -527,7 +577,33 @@ impl FedStore for HttpStore {
         if !resp.status().is_success() {
             bail!("fetching attestation for {wgid}: HTTP {}", resp.status());
         }
-        Ok(Some(resp.bytes()?.to_vec()))
+        Ok(Some(read_capped(resp)?))
+    }
+
+    /// S-7 compat handshake (audit M2): fetch the node's advertised
+    /// `WG_FED_COMPAT_VERSION` and verify it against ours. An unreachable or
+    /// non-advertising peer, or an incompatible version, is a **loud, hard failure** —
+    /// we refuse to talk a wire format the peer cannot.
+    fn handshake(&self) -> Result<()> {
+        let url = self.url("/version");
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .with_context(|| format!("GET {url} (WG-Fed S-7 compat handshake)"))?;
+        if !resp.status().is_success() {
+            bail!(
+                "WG-Fed compat handshake FAILED: node at {} did not advertise a compat \
+                 version (HTTP {}) — refusing to talk to an unversioned/unknown peer \
+                 (audit M2)",
+                self.base,
+                resp.status()
+            );
+        }
+        let body = read_capped(resp)?;
+        let peer = String::from_utf8_lossy(&body);
+        super::check_compat(peer.trim())
+            .with_context(|| format!("WG-Fed S-7 compat handshake with node {}", self.base))
     }
 }
 
@@ -593,6 +669,104 @@ mod tests {
         // empty inbox is not an error
         assert!(s.list_events("wgid:zNobody").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal stub HTTP server: answers `GET …/version` with `version_body`, and any
+    /// other GET with either an advertised (over-cap) `Content-Length` and no body
+    /// (when `object_len` is set) or a `404`. Lets the transport tests drive the S-7
+    /// handshake (M2) and the response size-cap (M13) without a full node.
+    fn spawn_http_stub(version_body: String, object_len: Option<u64>) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut s = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                s.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                let path = {
+                    let mut reader = BufReader::new(match s.try_clone() {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    });
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line);
+                    loop {
+                        let mut h = String::new();
+                        match reader.read_line(&mut h) {
+                            Ok(0) => break,
+                            Ok(_) if h.trim().is_empty() => break,
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                    line.split_whitespace().nth(1).unwrap_or("").to_string()
+                };
+                if path.ends_with("/version") {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        version_body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                    let _ = s.write_all(version_body.as_bytes());
+                } else if let Some(len) = object_len {
+                    // Advertise an over-cap length but send NO body — a correct client
+                    // refuses on the advertised length without buffering it.
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                } else {
+                    let _ = s.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+                let _ = s.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn handshake_succeeds_on_matching_version() {
+        // M2: open_store performs the S-7 handshake on the wire; a matching version
+        // negotiates cleanly.
+        let base = spawn_http_stub(crate::identity::WG_FED_COMPAT_VERSION.to_string(), None);
+        assert!(open_store(&base).is_ok());
+    }
+
+    #[test]
+    fn handshake_loud_fails_on_incompatible_version() {
+        // M2: an incompatible peer version is a loud, hard failure — open_store refuses.
+        let base = spawn_http_stub("9.9.9".to_string(), None);
+        let err = match open_store(&base) {
+            Ok(_) => panic!("expected the compat handshake to fail loudly"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("FAILED") || err.contains("handshake"),
+            "expected a loud compat-handshake failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn oversize_response_body_is_refused() {
+        // M13: the handshake passes, but an object GET advertises an over-cap body — the
+        // client refuses it instead of buffering an unbounded response.
+        let base = spawn_http_stub(
+            crate::identity::WG_FED_COMPAT_VERSION.to_string(),
+            Some(MAX_RESPONSE_BYTES + 4096),
+        );
+        let store = open_store(&base).unwrap();
+        let err = store.get_object("b3:whatever").unwrap_err().to_string();
+        assert!(
+            err.contains("cap") || err.contains("DoS"),
+            "expected an over-cap refusal, got: {err}"
+        );
     }
 
     #[test]

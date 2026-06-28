@@ -12,7 +12,9 @@
 //! the fence makes safe: reclaiming a live-but-partitioned worker costs at most one
 //! wasted re-run, never a corrupt graph.
 
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::keys::verify_sig;
@@ -230,6 +232,159 @@ impl LeaseLedger {
     }
 }
 
+// ── Crash-safe on-disk persistence (audit B3) ───────────────────────────────────
+//
+// The ledger is the authorizer's integrity backstop for the epoch fence. A silent
+// reset of it — the old `unwrap_or_default()` on a corrupt/partial parse — drops every
+// task's epoch back to "no placement", re-opening exactly the double-commit / replay
+// the fence exists to close. The old `fs::write` was also non-atomic + unlocked, so a
+// crash mid-write or a concurrent writer could truncate/clobber it. Persistence is
+// therefore hardened three ways:
+//
+//   1. **atomic write** (temp-file + fsync + rename) so a crash mid-write never leaves
+//      a half-written ledger at the canonical path;
+//   2. an **advisory exclusive lock** held across the whole read-modify-write, so two
+//      concurrent `wg provider` processes serialize at the single-writer boundary
+//      (the CAS stays one serialized writer, ADR-E3 D6);
+//   3. **refuse — never reset — on a corrupt/partial parse**: a present-but-unparseable
+//      ledger is a hard error, NOT an empty default, so the fence fails closed.
+
+impl LeaseLedger {
+    /// The canonical ledger path under `<wgdir>/exec/leases.json`.
+    pub fn path(workgraph_dir: &Path) -> PathBuf {
+        workgraph_dir.join("exec").join("leases.json")
+    }
+
+    /// Sidecar advisory-lock path. Locking a sidecar (not the data file) keeps the
+    /// atomic temp-file+rename write — which replaces the inode — from invalidating a
+    /// lock taken on the ledger itself. Mirrors `parser.rs`'s `graph.lock` convention.
+    fn lock_path(workgraph_dir: &Path) -> PathBuf {
+        workgraph_dir.join("exec").join("leases.lock")
+    }
+
+    /// Load the ledger, **refusing (Err) on a corrupt/partial parse** rather than
+    /// silently resetting to empty (audit B3). An ABSENT file is the legitimate empty
+    /// ledger (`Ok(default)`); a present-but-unparseable one is a hard error so the
+    /// epoch fence fails closed instead of forgetting every placement.
+    pub fn load(workgraph_dir: &Path) -> Result<Self> {
+        let path = Self::path(workgraph_dir);
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
+                format!(
+                    "lease ledger at {} is corrupt or partially written — REFUSING to \
+                     reset it (a silent reset drops the epoch fence and re-opens \
+                     double-commit/replay; audit B3). Inspect it and move it aside \
+                     manually before retrying.",
+                    path.display()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("reading lease ledger at {}", path.display())),
+        }
+    }
+
+    /// Persist the ledger atomically (temp-file + fsync + rename; audit B3). Never a
+    /// bare `fs::write`, so a crash mid-write cannot leave a truncated ledger that the
+    /// next [`load`](Self::load) would (correctly) refuse.
+    pub fn save(&self, workgraph_dir: &Path) -> Result<()> {
+        let path = Self::path(workgraph_dir);
+        let body = serde_json::to_string_pretty(self).context("serializing lease ledger")?;
+        crate::atomic_file::write_atomic(&path, body.as_bytes())
+            .with_context(|| format!("atomically writing lease ledger at {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Open the ledger under an **exclusive advisory lock** held for the returned
+    /// guard's lifetime — the entry point for any read-modify-write (place / grant /
+    /// commit / reclaim). The lock serializes concurrent writers so the epoch CAS stays
+    /// a single serialized writer (ADR-E3 D6); the load refuses on corruption, so a
+    /// mutator never overwrites a corrupt ledger with a fresh-empty one.
+    pub fn open_locked(workgraph_dir: &Path) -> Result<LedgerGuard> {
+        let dir = workgraph_dir.join("exec");
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating exec dir {}", dir.display()))?;
+        let lock = LedgerLock::acquire(&Self::lock_path(workgraph_dir))?;
+        // Load AFTER taking the lock: the read + the later write are one critical
+        // section, so no other writer can interleave between our read and our save.
+        let ledger = Self::load(workgraph_dir)?;
+        Ok(LedgerGuard {
+            dir: workgraph_dir.to_path_buf(),
+            ledger,
+            _lock: lock,
+        })
+    }
+}
+
+/// An exclusive-locked, crash-safe handle to the on-disk lease ledger (audit B3). The
+/// advisory lock is held until the guard drops, so the entire load → mutate → save runs
+/// as one serialized critical section against other processes. Mutate `ledger` in
+/// place, then call [`save`](Self::save) (still under the lock).
+pub struct LedgerGuard {
+    dir: PathBuf,
+    pub ledger: LeaseLedger,
+    _lock: LedgerLock,
+}
+
+impl LedgerGuard {
+    /// Persist the (mutated) ledger atomically while still holding the lock.
+    pub fn save(&self) -> Result<()> {
+        self.ledger.save(&self.dir)
+    }
+}
+
+/// RAII advisory **exclusive** file lock (audit B3). Unix: `flock(LOCK_EX)` on a
+/// sidecar lock file with the project's transient-error retry policy (MooseFS `EIO`
+/// etc.); released on drop. A no-op on non-Unix (WG targets Unix), matching the
+/// graph-lock convention in `parser.rs`.
+struct LedgerLock {
+    #[cfg(unix)]
+    #[allow(dead_code)] // held for its RAII lock lifetime, not read
+    file: std::fs::File,
+}
+
+impl LedgerLock {
+    #[cfg(unix)]
+    fn acquire(lock_path: &Path) -> Result<Self> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .with_context(|| format!("opening lease lock {}", lock_path.display()))?;
+        let fd = file.as_raw_fd();
+        let policy = crate::lock::RetryPolicy::default();
+        crate::lock::retry_acquire(&policy, crate::lock::is_transient_blocking, || {
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+            if ret == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        })
+        .with_context(|| format!("acquiring exclusive lock on {}", lock_path.display()))?;
+        Ok(Self { file })
+    }
+
+    #[cfg(not(unix))]
+    fn acquire(_lock_path: &Path) -> Result<Self> {
+        Ok(Self {})
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        // Best-effort release; the fd close on drop also releases the flock.
+        unsafe {
+            libc::flock(fd, libc::LOCK_UN);
+        }
+    }
+}
+
 /// Verify a `LeaseRenewal`'s signature against the worker's delegated signer key set
 /// (ADR-E3 D5): a relay cannot fake "P is alive". The `auth` is the key set authorized
 /// by the renewal's signer (the act-as-agent UCAN's `aud` provider).
@@ -307,5 +462,137 @@ mod tests {
     fn commit_without_placement_is_no_placement() {
         let mut led = LeaseLedger::new();
         assert_eq!(led.try_commit("ghost", 1), Err(FenceError::NoPlacement));
+    }
+
+    // ── B3: crash-safe persistence (atomic + lock + refuse-on-corrupt) ───────────
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "wg-lease-ledger-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn absent_ledger_loads_as_empty_ok() {
+        let dir = scratch_dir("absent");
+        // No exec/leases.json yet → the legitimate empty ledger, not an error.
+        let led = LeaseLedger::load(&dir).expect("absent ledger is Ok(empty)");
+        assert!(led.tasks.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_then_load_roundtrips_and_is_atomic() {
+        let dir = scratch_dir("roundtrip");
+        let mut led = LeaseLedger::new();
+        led.place("T", "wgid:zP");
+        led.reclaim("T", "wgid:zQ").unwrap(); // epoch → 2
+        led.save(&dir).unwrap();
+
+        // Round-trips with the epoch preserved.
+        let got = LeaseLedger::load(&dir).unwrap();
+        assert_eq!(got.current_epoch("T"), Some(2));
+
+        // Atomicity: no temp file is left behind in the exec dir.
+        let exec = dir.join("exec");
+        let leftover_tmp: Vec<_> = std::fs::read_dir(&exec)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftover_tmp.is_empty(),
+            "atomic write left a temp file behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_ledger_refuses_and_does_not_reset_to_empty() {
+        let dir = scratch_dir("corrupt");
+        // First persist a real placement at epoch 3.
+        let mut led = LeaseLedger::new();
+        led.place("T", "wgid:zP");
+        led.reclaim("T", "wgid:zQ").unwrap(); // → 2
+        led.reclaim("T", "wgid:zR").unwrap(); // → 3
+        led.save(&dir).unwrap();
+
+        // Simulate a crash-mid-write / corruption: truncate the file to a partial JSON.
+        let path = LeaseLedger::path(&dir);
+        std::fs::write(&path, b"{ \"tasks\": { \"T\": { \"epoch\":").unwrap();
+
+        // load REFUSES — it does not silently `unwrap_or_default()` to an empty ledger
+        // (which would reset the epoch fence and re-open replay/double-commit).
+        let err = LeaseLedger::load(&dir).expect_err("corrupt ledger must refuse");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("REFUSING"),
+            "expected a loud refuse, got: {msg}"
+        );
+
+        // open_locked also refuses, so a mutator never overwrites the corrupt file with
+        // a fresh-empty one — the fence does not reset to empty on a bad parse.
+        assert!(LeaseLedger::open_locked(&dir).is_err());
+
+        // The corrupt bytes are still on disk (not clobbered to empty by a reset).
+        let still = std::fs::read(&path).unwrap();
+        assert!(!still.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_writers_serialize_without_losing_updates() {
+        // Two threads each take the exclusive lock and place a distinct task. The lock
+        // serializes the read-modify-write, so NEITHER update is lost (the classic
+        // lost-update race the unlocked `fs::write` allowed). Repeat to widen the race
+        // window.
+        let dir = scratch_dir("concurrent");
+        let rounds = 20;
+        std::thread::scope(|s| {
+            for t in 0..2 {
+                let dir = dir.clone();
+                s.spawn(move || {
+                    for r in 0..rounds {
+                        let mut guard = LeaseLedger::open_locked(&dir).unwrap();
+                        guard.ledger.place(&format!("task-{t}-{r}"), "wgid:zP");
+                        guard.save().unwrap();
+                    }
+                });
+            }
+        });
+        let led = LeaseLedger::load(&dir).unwrap();
+        // Every placement from both threads survives — no lost update under contention.
+        assert_eq!(led.tasks.len(), 2 * rounds);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn locked_guard_commit_survives_reload() {
+        // The fence state set under the lock persists across processes (load).
+        let dir = scratch_dir("guard-commit");
+        {
+            let mut g = LeaseLedger::open_locked(&dir).unwrap();
+            g.ledger.place("T", "wgid:zP");
+            g.save().unwrap();
+        }
+        {
+            let mut g = LeaseLedger::open_locked(&dir).unwrap();
+            assert!(g.ledger.try_commit("T", 1).is_ok());
+            g.save().unwrap();
+        }
+        // A replay after reload is fenced (committed state survived the round trip).
+        let mut g = LeaseLedger::open_locked(&dir).unwrap();
+        assert_eq!(
+            g.ledger.try_commit("T", 1),
+            Err(FenceError::AlreadyCommitted { epoch: 1 })
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
