@@ -3627,12 +3627,20 @@ pub enum ProviderCommands {
         /// ⇒ the grant's own task.
         #[arg(long = "target-task")]
         target_task: Option<String>,
-        /// Produce the hostile corrupted diff (backdoor + test-poisoning) for step 5.
+        /// Produce the hostile corrupted diff (backdoor + test-poisoning) for step 5 by
+        /// grafting a poisoned hunk onto the REAL worker output (simulates a defector).
         #[arg(long)]
         corrupt: bool,
         /// A probe string the test seeds outside the slice; assert it never leaks (step 2).
         #[arg(long = "scope-probe")]
         scope_probe: Option<String>,
+        /// The REAL worker backend: a shell command run over the task slice (fed the task
+        /// input on stdin + WG_EXEC_TASK_INPUT), whose stdout is the work product (with an
+        /// optional trailing `@@WG_EXEC_USAGE@@ {json}` usage line). Falls back to
+        /// WG_EXEC_WORKER_CMD, then the model handler the grant named. There is no built-in
+        /// constant diff — a provider must drive a real backend.
+        #[arg(long = "worker-cmd")]
+        worker_cmd: Option<String>,
     },
 
     /// The authorizer's canonical-write accept: attribution (rejecting unsigned /

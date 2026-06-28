@@ -98,6 +98,25 @@ wgm() { wgrun "$M_HOME" "$M_DIR" "$@"; }   # Mallory
 jfield() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 san() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
 
+# Luca's borrowed box runs a REAL worker backend (no built-in constant diff — the
+# exec-real-run change): a real subprocess fed the task input on stdin, emitting the work
+# product + a canonical usage marker. Exported so every `wg provider run` resolves it.
+WORKER="$scratch/worker.sh"
+cat >"$WORKER" <<'WORKEOF'
+#!/usr/bin/env sh
+# A real worker: emit the plan diff implementing check(tok)=verify(tok), then usage.
+cat <<'DIFF'
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@
+-fn check(tok: &str) -> bool { todo!() }
++fn check(tok: &str) -> bool { verify(tok) }
+DIFF
+printf '@@WG_EXEC_USAGE@@ {"input_tokens":64,"output_tokens":40,"cost_usd":0.0011}\n'
+WORKEOF
+chmod +x "$WORKER"
+export WG_EXEC_WORKER_CMD="sh $WORKER"
+
 # Start the relay node on an ephemeral port; capture its base URL.
 wgrun "$R_HOME" "$R_DIR" fed-node serve --addr 127.0.0.1:0 --store "$R_STORE" \
     >"$scratch/R.log" 2>&1 &

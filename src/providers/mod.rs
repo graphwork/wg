@@ -33,6 +33,7 @@ pub mod bundle;
 pub mod lease;
 pub mod placement;
 pub mod verify;
+pub mod worker;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -464,6 +465,13 @@ pub struct RunGrant {
     pub task_id: String,
     pub authorizer: String,
     pub provider: String,
+    /// The model/handler the authorizer expects the provider to drive for this task
+    /// (echoes the offer's `required_model`). The **real worker** (`wg provider run`)
+    /// reads this to drive the live model handler when no explicit `--worker-cmd`
+    /// backend is configured — so the authorizer, not the provider, names the silicon.
+    /// `#[serde(default)]` for backward compatibility with pre-`exec-real-run` grants.
+    #[serde(default)]
+    pub model: String,
     /// "run task T as agent G" — the impersonation surface, intent-bound + expiring.
     pub act_as_agent_ucan: crate::identity::custody::Capability,
     /// "graph/write on graph://task/T only" — the integrity surface; the structural

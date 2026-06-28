@@ -74,6 +74,26 @@ wgq() { wgrun "$Q_HOME" "$Q_DIR" "$@"; }
 
 jfield() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
 
+# `wg provider run` drives a REAL worker backend (no built-in constant diff anymore —
+# the exec-real-run change). Here the backend is a real subprocess fed the task input on
+# stdin; it emits the implementation diff + a canonical usage marker. Exported so every
+# `wg provider run` below resolves it via WG_EXEC_WORKER_CMD.
+WORKER="$scratch/worker.sh"
+cat >"$WORKER" <<'WORKEOF'
+#!/usr/bin/env sh
+# A real worker: implement check(tok)=verify(tok), then report canonical token usage.
+cat <<'DIFF'
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@
+-fn check(tok: &str) -> bool { todo!() }
++fn check(tok: &str) -> bool { verify(tok) }
+DIFF
+printf '@@WG_EXEC_USAGE@@ {"input_tokens":48,"output_tokens":24,"cost_usd":0.0007}\n'
+WORKEOF
+chmod +x "$WORKER"
+export WG_EXEC_WORKER_CMD="sh $WORKER"
+
 # ── Setup: mint + publish the three identities (the WG-Fed substrate, reused) ────
 agentG_json="$scratch/agentG.json"
 wga --json identity new agentG >"$agentG_json" 2>"$scratch/agentG.err" ||

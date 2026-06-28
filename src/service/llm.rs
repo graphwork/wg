@@ -294,6 +294,41 @@ pub fn run_review_llm_call(
     }
 }
 
+/// Drive a one-shot model call for an **arbitrary model spec** (the handler is resolved
+/// from the spec's leading token via [`agency_dispatch_for_spec`]), returning the reply
+/// text + token usage.
+///
+/// This is the lib-crate primitive the **WG-Exec real worker** (`wg provider run`) uses
+/// to drive the model the authorizer named in the grant — replacing the constant-diff
+/// stub (audit-exec F10) with a genuine model-handler call whose usage is the real
+/// per-call accounting (FR-V3), not a canned figure. CLI handlers (`claude` / `codex`)
+/// self-authenticate; a `native` spec needs its provider key (else the call errors and
+/// the caller surfaces the failure — there is no silent constant fallback). Any other
+/// handler is not a sensible one-shot worker target and is a hard error.
+///
+/// Like the review reviewer path, this is exercised credential-free only when a worker
+/// command backend is configured; the live-LLM path here runs in a real deployment with
+/// a key (or a self-authenticating CLI).
+pub fn run_model_oneshot(
+    config: &Config,
+    model_spec: &str,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    let dispatch = agency_dispatch_for_spec(model_spec);
+    match dispatch.handler {
+        ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Native => {
+            agency_native_call_for_spec(config, &dispatch.raw_spec, prompt, timeout_secs)
+        }
+        other => anyhow::bail!(
+            "model spec {model_spec:?} resolves to handler {other:?}, which is not a supported \
+             one-shot worker backend (use a claude/codex/native model, or set --worker-cmd)"
+        ),
+    }
+}
+
 /// Make a native-HTTP one-shot call resolving the provider directly from a model
 /// **spec** (not a role). Used by the reviewer strong-tier path, where the model is
 /// the premium tier rather than the cascade-resolved role model.

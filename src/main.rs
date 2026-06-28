@@ -4083,6 +4083,7 @@ fn main() -> Result<()> {
                 target_task,
                 corrupt,
                 scope_probe,
+                worker_cmd,
             } => commands::exec_fed_cmd::run_worker_run(
                 &workgraph_dir,
                 &as_name,
@@ -4092,6 +4093,7 @@ fn main() -> Result<()> {
                 target_task.as_deref(),
                 corrupt,
                 scope_probe.as_deref(),
+                worker_cmd.as_deref(),
                 cli.json,
             ),
             cli::ProviderCommands::Accept { result, store, now } => {
