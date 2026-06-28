@@ -1020,11 +1020,14 @@ pub fn run_send(
 /// custody-held encryption key. When `require_fresh` is set, accepting an event is
 /// **gated on a fresh attestation** for the sender and **fails closed on stale**.
 ///
-/// When `review` is set, this is the **live IC4 ingest auto-gate** (Review-Wave C, the
-/// `auto-wire-the` seam): every *authenticated* inbound event is additionally screened
-/// through the [`review_inbound`] pipeline with author-trust **derived** from the
-/// canonical [`resolve_author_trust`] dial (federation peer registry + WG-Exec pool) —
-/// no hand-passed `--trust` flag — and a non-`accept` verdict **refuses consumption**
+/// When `review` is set, this is the **live IC4 ingest auto-gate** (the IC4 seam, ON BY
+/// DEFAULT for `wg msg poll`; opt-in for the raw `wg identity poll` primitive): every
+/// *authenticated* inbound event is additionally screened through the [`review_inbound`]
+/// pipeline with author-trust **derived** from the canonical [`resolve_author_trust`]
+/// dial (federation peer registry + WG-Exec pool) — no hand-passed `--trust` flag. The
+/// gate is **ENFORCING**, not advisory: a non-`accept` verdict **withholds the body** —
+/// the bytes are never printed or returned (`body` is null + `body_withheld:true`,
+/// `consumable:false`), so a consuming agent can never read un-screened content
 /// (received ≠ consumed, ADR-CS1 D1). Each verdict is recorded to the verdict sigchain
 /// (the audit leg). Authentication counts (`accepted`/`rejected`) are unchanged; a
 /// forged/tampered event never reaches the gate (it is rejected at auth).
@@ -1064,45 +1067,69 @@ pub fn run_poll(
         match verdict {
             Ok((from, body)) => {
                 accepted += 1;
-                let mut ev_json = serde_json::json!({
-                    "verdict": "VERIFIED", "from": from, "body": body,
-                });
-                if !json {
-                    println!("VERIFIED from {from}: {body}");
-                }
-                // ── IC4 ingest auto-gate: screen BEFORE consumption (received ≠ consumed)
                 if review {
+                    // ── IC4 ingest auto-gate (ENFORCING): screen the authenticated event
+                    // BEFORE its body is exposed (received ≠ consumed). A non-accept
+                    // verdict WITHHOLDS the body — it is never printed or returned, so a
+                    // consuming agent can never read un-screened bytes.
                     let r = review_inbound_event(workgraph_dir, &from, &body);
                     screened += 1;
-                    if r.permits_consumption {
+                    let consume = r.permits_consumption;
+                    if consume {
                         consumable += 1;
                     } else {
                         quarantined += 1;
                     }
+                    let mut ev_json = serde_json::json!({
+                        "verdict": "VERIFIED",
+                        "from": from,
+                        "consumable": consume,
+                        "review": {
+                            "verdict": r.verdict,
+                            "reason": r.reason,
+                            "effective_trust": r.effective_trust,
+                            "permits_consumption": r.permits_consumption,
+                            "content_cid": r.content_cid,
+                            "trust_derived": true,
+                        },
+                    });
+                    if consume {
+                        ev_json["body"] = serde_json::json!(body);
+                    } else {
+                        // Withheld: the bytes are not handed downstream.
+                        ev_json["body"] = serde_json::Value::Null;
+                        ev_json["body_withheld"] = serde_json::json!(true);
+                    }
                     if !json {
+                        if consume {
+                            println!("VERIFIED from {from}: {body}");
+                        } else {
+                            println!("VERIFIED from {from}: <body withheld — non-accept verdict>");
+                        }
                         println!(
                             "  review: {} ({}, trust={}) → {}",
                             r.verdict,
                             r.reason,
                             r.effective_trust,
-                            if r.permits_consumption {
+                            if consume {
                                 "CONSUMABLE"
                             } else {
-                                "BLOCKED (held un-consumed; non-accept verdict)"
+                                "BLOCKED (body withheld; non-accept verdict)"
                             }
                         );
                     }
-                    ev_json["consumable"] = serde_json::json!(r.permits_consumption);
-                    ev_json["review"] = serde_json::json!({
-                        "verdict": r.verdict,
-                        "reason": r.reason,
-                        "effective_trust": r.effective_trust,
-                        "permits_consumption": r.permits_consumption,
-                        "content_cid": r.content_cid,
-                        "trust_derived": true,
+                    verdicts.push(ev_json);
+                } else {
+                    // Auto-gate disabled (`--no-review` / the raw `identity poll`
+                    // primitive): expose the authenticated body unscreened.
+                    let ev_json = serde_json::json!({
+                        "verdict": "VERIFIED", "from": from, "body": body,
                     });
+                    if !json {
+                        println!("VERIFIED from {from}: {body}");
+                    }
+                    verdicts.push(ev_json);
                 }
-                verdicts.push(ev_json);
             }
             Err(e) => {
                 rejected += 1;

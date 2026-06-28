@@ -18,18 +18,36 @@
 //!
 //! 1. **The federation peer registry** (`federation.yaml` peers, `wg peer add
 //!    --trust`) — the correspondent/sender's trust. The inbound author of a cross-graph
-//!    message is a peer.
+//!    message is a peer. **This is the author dial** — the only home that can *vouch for
+//!    authorship*.
 //! 2. **The WG-Exec provider pool** (`exec/registry.json`, `wg provider enroll
 //!    --trust`) — the SAME map the placement leash reads, loaded through the one
-//!    canonical [`ProviderRegistry::load`].
+//!    canonical [`ProviderRegistry::load`]. **This is the provider dial** — it asserts
+//!    that a *box* is trustworthy to *run compute*, which is a different question from
+//!    whether content the box authors is safe to consume.
 //!
-//! An author may carry an opinion in either home (or neither). [`resolve_author_trust`]
-//! returns the **most-trusting present opinion** — both are positive "I vouch for this
-//! identity at level X" assertions, and absence is *no opinion*, not distrust — and
-//! **fails closed to [`TrustLevel::Unknown`]** when neither home vouches. The
-//! per-author *revoke* demotion (the review gate's `trust_overrides`, the exec pool's
-//! `lower_trust`) is applied **on top** of this baseline by the consuming caller as a
-//! strictest-wins fold, so a revoked author's next item still takes the deep path.
+//! ## M18 — the two dials are SPLIT, folded fail-closed (min), never most-trusting
+//!
+//! These two assertions are about **different things** and must not be conflated. The
+//! original resolver took the **most-trusting** of the two opinions, so enrolling a box
+//! as a `Verified` *provider* auto-granted it `Verified` *author* trust — and that
+//! cleared the deep author review (audit M18). [`resolve_author_trust`] now keeps them
+//! split:
+//!
+//! - The **author trust** is sourced from the peer registry and **fails closed to
+//!   [`TrustLevel::Unknown`]** when no peer entry vouches (a bare `wg peer add` with no
+//!   `--trust` is *Unknown*, not Provisional — it records "I've heard of this peer," not
+//!   "I vouch for it").
+//! - The **provider dial folds in fail-closed (min): it can only *lower*, never *raise*
+//!   the review-depth input.** A box's execution trust cannot upgrade its authorship, so
+//!   a `Verified`-provider/unknown-peer identity resolves to `Unknown` and takes the deep
+//!   path; a low provider trust on a high peer only tightens review. The exec *leash*
+//!   still reads the provider dial directly ([`ProviderRegistry`]), so the split is real:
+//!   the leash sees provider trust, the review gate sees author trust.
+//!
+//! The per-author *revoke* demotion (the review gate's `trust_overrides`, the exec
+//! pool's `lower_trust`) is applied **on top** of this baseline by the consuming caller
+//! as a strictest-wins fold, so a revoked author's next item still takes the deep path.
 
 use std::path::Path;
 
@@ -48,16 +66,6 @@ pub fn trust_rank(t: TrustLevel) -> u8 {
     }
 }
 
-/// The **more-trusting** of two opinions (`None` = no opinion). Used to fold a peer
-/// vouch against an exec-pool vouch about the same identity.
-fn most_trusting(a: Option<TrustLevel>, b: Option<TrustLevel>) -> Option<TrustLevel> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(if trust_rank(x) >= trust_rank(y) { x } else { y }),
-        (Some(x), None) | (None, Some(x)) => Some(x),
-        (None, None) => None,
-    }
-}
-
 /// The **less-trusting** (strictest) of two trust levels. The caller folds a
 /// revoke-lowered override against the resolved baseline with this, so a demotion can
 /// only tighten, never loosen (ADR-CS3 D4).
@@ -73,15 +81,18 @@ fn normalize(s: &str) -> Option<String> {
         .map(|pk| crate::identity::keys::wgid_from_pubkey(&pk))
 }
 
-/// The federation peer registry's trust opinion about an author `wgid` (home 1).
-/// `Some(level)` iff a peer entry carries this `wgid:`; an enrolled-but-unvouched peer
-/// resolves to `Provisional` (TOFU). `None` means "not a peer".
+/// The federation peer registry's trust opinion about an author `wgid` (home 1, the
+/// **author dial**). `Some(level)` iff a peer entry carries this `wgid:`; an
+/// enrolled-but-unvouched peer (a bare `wg peer add` with no `--trust`) resolves to
+/// **[`TrustLevel::Unknown`]** — fail-closed: a peer entry records "I've heard of this
+/// identity," NOT "I vouch for it" (M18: bare peer-add must not silently clear the
+/// review floor via a TOFU `Provisional`). `None` means "not a peer at all".
 pub fn peer_trust_opinion(workgraph_dir: &Path, wgid: &str) -> Option<TrustLevel> {
     let canon = normalize(wgid)?;
     let cfg = load_federation_config(workgraph_dir).ok()?;
     cfg.peers.values().find_map(|peer| {
         let pw = peer.wgid.as_deref().and_then(normalize)?;
-        (pw == canon).then(|| peer.trust.unwrap_or(TrustLevel::Provisional))
+        (pw == canon).then(|| peer.trust.unwrap_or(TrustLevel::Unknown))
     })
 }
 
@@ -92,17 +103,25 @@ pub fn provider_trust_opinion(workgraph_dir: &Path, wgid: &str) -> Option<TrustL
     ProviderRegistry::load(workgraph_dir).opinion_of(&canon)
 }
 
-/// Resolve the canonical author-trust for a `wgid:` — the most-trusting present opinion
-/// across the federation peer registry and the WG-Exec provider pool, **fail-closed to
-/// [`TrustLevel::Unknown`]** when neither vouches. This is the single source the
-/// inbound review gate reads for depth; it is the same data the exec leash reads, so
-/// the two planes share one dial.
+/// Resolve the canonical **author**-trust for a `wgid:` — the input the inbound review
+/// gate reads for depth (M18: SPLIT from provider trust, folded fail-closed).
+///
+/// The **author dial** (the peer registry) is the *source*: it is the only home that can
+/// vouch for authorship, and it **fails closed to [`TrustLevel::Unknown`]** when no peer
+/// entry vouches. The **provider dial** (the exec pool) folds in **min (strictest-wins)
+/// — it can only *lower*, never *raise*** the result: enrolling a box as a `Verified`
+/// provider must NOT auto-clear its author review (the M18 conflation bug), so a
+/// provider-only identity resolves to `Unknown` and takes the deep path. The exec leash
+/// reads the provider dial directly via [`ProviderRegistry`], so the two planes stay
+/// genuinely split — same persisted assertions, two distinct questions.
 pub fn resolve_author_trust(workgraph_dir: &Path, wgid: &str) -> TrustLevel {
-    most_trusting(
-        peer_trust_opinion(workgraph_dir, wgid),
-        provider_trust_opinion(workgraph_dir, wgid),
-    )
-    .unwrap_or(TrustLevel::Unknown)
+    // The author dial is the source; absence is fail-closed Unknown.
+    let author = peer_trust_opinion(workgraph_dir, wgid).unwrap_or(TrustLevel::Unknown);
+    // The provider dial folds in min — it can only tighten, never loosen.
+    match provider_trust_opinion(workgraph_dir, wgid) {
+        Some(provider) => strictest_trust(author, provider),
+        None => author,
+    }
 }
 
 #[cfg(test)]
@@ -159,47 +178,67 @@ mod tests {
     }
 
     #[test]
-    fn enrolled_but_unvouched_peer_is_provisional_tofu() {
+    fn bare_peer_add_is_unknown_fail_closed() {
+        // M18: a bare `wg peer add` (no `--trust`) records the peer with no vouch — it
+        // must resolve to Unknown (deep review), NOT a TOFU Provisional.
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let w = a_wgid();
         add_peer(dir, "newpeer", &w, None);
-        assert_eq!(resolve_author_trust(dir, &w), TrustLevel::Provisional);
+        assert_eq!(peer_trust_opinion(dir, &w), Some(TrustLevel::Unknown));
+        assert_eq!(resolve_author_trust(dir, &w), TrustLevel::Unknown);
     }
 
     #[test]
-    fn exec_pool_trust_is_visible_to_the_canonical_resolver() {
-        // The unification: a provider enrolled ONLY in the exec pool is seen by the
-        // author-trust resolver at the SAME level the leash reads.
+    fn verified_provider_does_not_clear_author_review() {
+        // M18, the central split: a box enrolled as a Verified *provider* (no peer
+        // vouch) is trusted to RUN compute (the leash reads Verified) but is NOT thereby
+        // a trusted *author* — author trust stays Unknown so its content takes the deep
+        // review path. The provider dial can never raise author trust.
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let w = a_wgid();
         enroll_provider(dir, &w, TrustLevel::Verified);
-        assert_eq!(
-            provider_trust_opinion(dir, &w),
-            Some(TrustLevel::Verified),
-            "exec pool opinion must be readable"
-        );
-        assert_eq!(
-            resolve_author_trust(dir, &w),
-            TrustLevel::Verified,
-            "canonical resolver must read the same exec-pool dial"
-        );
-        // And it equals what the leash itself reads (`trust_of`) — one dial.
+        // The provider/leash dial DOES see Verified — that half is unchanged.
+        assert_eq!(provider_trust_opinion(dir, &w), Some(TrustLevel::Verified));
         assert_eq!(
             ProviderRegistry::load(dir).trust_of(&w),
-            TrustLevel::Verified
+            TrustLevel::Verified,
+            "the exec leash still reads provider trust directly"
+        );
+        // But the AUTHOR dial is Unknown — the conflation is gone.
+        assert_eq!(
+            resolve_author_trust(dir, &w),
+            TrustLevel::Unknown,
+            "a Verified provider must NOT auto-clear author review (M18)"
         );
     }
 
     #[test]
-    fn most_trusting_vouch_wins_across_both_homes() {
+    fn provider_dial_folds_in_min_can_only_lower() {
+        // The fail-closed min-fold: a Verified peer who is ALSO a Provisional provider
+        // resolves to the STRICTER (Provisional) — the provider dial tightens, never
+        // loosens. And the reverse (peer absent) cannot be raised by the provider.
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let w = a_wgid();
-        // Peer vouches Verified; exec pool only Provisional → the higher vouch wins.
         add_peer(dir, "p", &w, Some(TrustLevel::Verified));
         enroll_provider(dir, &w, TrustLevel::Provisional);
+        assert_eq!(
+            resolve_author_trust(dir, &w),
+            TrustLevel::Provisional,
+            "min-fold: the lower provider trust tightens the Verified peer"
+        );
+    }
+
+    #[test]
+    fn verified_peer_alone_stays_verified() {
+        // The legit light-path case must survive the split: a Verified peer with no
+        // provider entry resolves to Verified (no spurious lowering).
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let w = a_wgid();
+        add_peer(dir, "sara", &w, Some(TrustLevel::Verified));
         assert_eq!(resolve_author_trust(dir, &w), TrustLevel::Verified);
     }
 

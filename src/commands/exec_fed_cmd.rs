@@ -680,6 +680,7 @@ pub fn run_accept(
     result_file: &str,
     store_loc: &str,
     now_override: Option<&str>,
+    review: bool,
     json: bool,
 ) -> Result<()> {
     let result: ResultEnvelope = read_json(result_file)?;
@@ -705,6 +706,18 @@ pub fn run_accept(
         &resolve,
     ) {
         return reject(json, "graph-write-scope-violation", &e.to_string());
+    }
+
+    // 2b. IC2 ingest review (ENFORCING, on by default): screen the work product through
+    // the AI review pipeline BEFORE the canonical write is committed. Attribution proves
+    // *who* produced the bytes, never that the bytes are *safe* — a malicious-but-correct
+    // diff (a backdoor that passes its own tests) is caught here. A non-accept verdict
+    // WITHHOLDS the bytes: the write is refused before it consumes the epoch (received ≠
+    // consumed). `--no-review` opts out for a deliberately-unscreened accept.
+    if review {
+        if let Some((reason, detail)) = screen_accept_artifact(workgraph_dir, &result) {
+            return reject(json, &reason, &detail);
+        }
     }
 
     // 3. The atomic epoch CAS at the single canonical-write boundary (ADR-E3 D6).
@@ -740,6 +753,69 @@ pub fn run_accept(
         ),
     );
     Ok(())
+}
+
+/// IC2 accept-seam review: screen the result's work product (the artifact / diff)
+/// through the AI review pipeline. The depth input here is the **provider dial** — the
+/// producing box's execution trust in the WG-Exec pool ([`ProviderRegistry::trust_of`],
+/// the SAME dial the placement leash reads) — *not* the author dial: for an artifact the
+/// relevant question is "do I trust this box's output," which is exactly what the
+/// provider trust answers (M18 keeps the two dials split — the author dial governs IC4
+/// message ingest, the provider dial governs IC2 artifact ingest). The poison protection
+/// (a malicious-but-correct diff / a backdoor that passes its own tests) comes from the
+/// content detectors, which fire regardless of trust (strictest-wins, monotonic), so
+/// even a Verified box's backdoor is rejected. A non-`accept` verdict means the bytes are
+/// WITHHELD and the write must be refused; returns `Some((reason, detail))` to reject, or
+/// `None` to proceed. The verdict is recorded to the verdict sigchain (audit leg)
+/// regardless. Real model-driven review when a model is configured; the shared
+/// deterministic decode-then-detect engine otherwise (credential-free CI / smoke).
+fn screen_accept_artifact(
+    workgraph_dir: &Path,
+    result: &ResultEnvelope,
+) -> Option<(String, String)> {
+    use worksgood::review::{
+        ContentClass, Provenance, Sensitivity as RevSensitivity, VerdictStore, review_inbound,
+        review_inbound_ctx,
+    };
+    let trust = load_registry(workgraph_dir).trust_of(&result.producer);
+    let provenance = Provenance {
+        author: Some(result.producer.clone()),
+        trust,
+    };
+    let outcome = match worksgood::config::Config::load_merged(workgraph_dir) {
+        Ok(cfg) => review_inbound_ctx(
+            &cfg,
+            ContentClass::Ic2Artifact,
+            &result.work_product,
+            &provenance,
+            RevSensitivity::Unlabeled,
+        ),
+        Err(_) => review_inbound(
+            ContentClass::Ic2Artifact,
+            &result.work_product,
+            &provenance,
+            RevSensitivity::Unlabeled,
+        ),
+    };
+    // Audit leg (best-effort; a recording failure must not crash accept — the gate
+    // decision still stands).
+    let _ = VerdictStore::open(workgraph_dir).record(
+        &outcome,
+        Some(&result.producer),
+        Some(&result.task_id),
+    );
+    if outcome.verdict.permits_consumption() {
+        None
+    } else {
+        Some((
+            format!("review-{}", outcome.verdict.tag()),
+            format!(
+                "IC2 artifact review returned {} ({}) — bytes withheld, write refused (received ≠ consumed)",
+                outcome.verdict.tag(),
+                outcome.reason.tag()
+            ),
+        ))
+    }
 }
 
 fn reject(json: bool, reason: &str, detail: &str) -> Result<()> {

@@ -6,7 +6,14 @@ use worksgood::provenance;
 
 use super::trace_export::TraceExport;
 
-pub fn run(dir: &Path, file: &str, source: Option<&str>, dry_run: bool, json: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    file: &str,
+    source: Option<&str>,
+    dry_run: bool,
+    review: bool,
+    json: bool,
+) -> Result<()> {
     // Read and deserialize the export file
     let contents =
         std::fs::read_to_string(file).with_context(|| format!("Failed to read '{}'", file))?;
@@ -66,10 +73,70 @@ pub fn run(dir: &Path, file: &str, source: Option<&str>, dry_run: bool, json: bo
     std::fs::create_dir_all(&import_dir)
         .with_context(|| format!("Failed to create import dir: {}", import_dir.display()))?;
 
+    // ── IC1 ingest review (ENFORCING, on by default) ─────────────────────────────
+    // Screen each imported task's text BEFORE it is written into the graph as
+    // consumable context (a poisoned imported task description is a prompt-injection a
+    // later agent reads via `wg context`). Author-trust is DERIVED from the source tag:
+    // a `wgid:` source resolves through the canonical peer/provider dial; any other tag
+    // is an un-vouched source and screens as Unknown (deep, fail-closed). A non-`accept`
+    // verdict WITHHOLDS that task — it is NOT written (received ≠ consumed). `--no-review`
+    // writes everything unscreened.
+    let mut withheld: Vec<(String, String, String)> = Vec::new(); // (orig id, verdict, reason)
+    let kept: Vec<_> = if review {
+        let import_trust = worksgood::trust::resolve_author_trust(dir, &source_tag);
+        let cfg = worksgood::config::Config::load_merged(dir).ok();
+        let store = worksgood::review::VerdictStore::open(dir);
+        export
+            .tasks
+            .iter()
+            .filter(|t| {
+                let text = match &t.description {
+                    Some(d) => format!("{}\n\n{}", t.title, d),
+                    None => t.title.clone(),
+                };
+                let prov = worksgood::review::Provenance {
+                    author: Some(source_tag.clone()),
+                    trust: import_trust.clone(),
+                };
+                let outcome = match &cfg {
+                    Some(c) => worksgood::review::review_inbound_ctx(
+                        c,
+                        worksgood::review::ContentClass::Ic1Task,
+                        &text,
+                        &prov,
+                        worksgood::review::Sensitivity::Unlabeled,
+                    ),
+                    None => worksgood::review::review_inbound(
+                        worksgood::review::ContentClass::Ic1Task,
+                        &text,
+                        &prov,
+                        worksgood::review::Sensitivity::Unlabeled,
+                    ),
+                };
+                // Audit leg (best-effort): record the verdict on the sigchain.
+                let consumer = format!("imported/{}/{}", source_tag, t.id);
+                let _ = store.record(&outcome, Some(&source_tag), Some(&consumer));
+                if outcome.verdict.permits_consumption() {
+                    true
+                } else {
+                    withheld.push((
+                        t.id.clone(),
+                        outcome.verdict.tag().to_string(),
+                        outcome.reason.tag().to_string(),
+                    ));
+                    false
+                }
+            })
+            .collect()
+    } else {
+        export.tasks.iter().collect()
+    };
+    let imported_count = kept.len();
+    let withheld_count = withheld.len();
+
     // Import tasks as namespaced YAML
     let tasks_path = import_dir.join("tasks.yaml");
-    let imported_tasks: Vec<ImportedTask> = export
-        .tasks
+    let imported_tasks: Vec<ImportedTask> = kept
         .iter()
         .map(|t| ImportedTask {
             id: format!("imported/{}/{}", source_tag, t.id),
@@ -145,20 +212,42 @@ pub fn run(dir: &Path, file: &str, source: Option<&str>, dry_run: bool, json: bo
     );
 
     // Output result
+    let withheld_json: Vec<serde_json::Value> = withheld
+        .iter()
+        .map(|(id, verdict, reason)| {
+            serde_json::json!({ "id": id, "verdict": verdict, "reason": reason })
+        })
+        .collect();
     if json {
         let out = serde_json::json!({
             "source": source_tag,
             "import_dir": import_dir.display().to_string(),
             "task_count": task_count,
+            "imported_count": imported_count,
+            "withheld_count": withheld_count,
+            "withheld": withheld_json,
             "evaluation_count": eval_count,
             "operation_count": op_count,
+            "reviewed": review,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         println!(
-            "Imported {} tasks, {} evaluations, {} operations from '{}'",
-            task_count, eval_count, op_count, source_tag
+            "Imported {} of {} tasks, {} evaluations, {} operations from '{}'",
+            imported_count, task_count, eval_count, op_count, source_tag
         );
+        if withheld_count > 0 {
+            println!(
+                "WITHHELD {withheld_count} task(s) on a non-accept review verdict (bytes not written):"
+            );
+            for (id, verdict, reason) in &withheld {
+                println!("  - {id}: {verdict} ({reason})");
+            }
+            println!(
+                "  To import an un-vouched source, enroll it (`wg peer add <name> --wgid <wgid> --trust verified`) \
+                 or re-run with --no-review to accept the risk."
+            );
+        }
         println!("Import directory: {}", import_dir.display());
     }
 
@@ -332,6 +421,7 @@ mod tests {
             export_path.to_str().unwrap(),
             Some("test-source"),
             true,  // dry_run
+            true,  // review
             false, // json
         );
         assert!(result.is_ok());

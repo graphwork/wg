@@ -1519,11 +1519,13 @@ fn main() -> Result<()> {
                 file,
                 source,
                 dry_run,
+                no_review,
             } => commands::trace_import::run(
                 &workgraph_dir,
                 &file,
                 source.as_deref(),
                 dry_run,
+                !no_review,
                 cli.json,
             ),
             // Hidden aliases: print deprecation warning then delegate
@@ -1839,23 +1841,25 @@ fn main() -> Result<()> {
                     store,
                     require_fresh,
                     review,
+                    no_review,
                 } => {
                     if let Some(as_identity) = as_identity {
-                        // Cross-graph node-inbox poll (Wave 4) — `--review` auto-gates IC4.
+                        // Cross-graph node-inbox poll (Wave 4) — the IC4 ingest seam. The
+                        // review auto-gate is ON BY DEFAULT (screening is the default;
+                        // received ≠ consumed); `--no-review` opts out. A non-accept
+                        // verdict withholds the body. `--review` is a redundant no-op.
+                        let do_review = review || !no_review;
                         commands::msg::run_poll_fed(
                             &workgraph_dir,
                             &as_identity,
                             store.as_deref(),
                             require_fresh.as_deref(),
-                            review,
+                            do_review,
                             cli.json,
                         )
                     } else {
-                        if review {
-                            anyhow::bail!(
-                                "`--review` is for cross-graph ingest (use it with `--as <identity>`)"
-                            );
-                        }
+                        // Local task poll has no federation author; the review flags do
+                        // not apply (no screening, no body to withhold).
                         let task_id = task_id.ok_or_else(|| {
                             anyhow::anyhow!("local `wg msg poll` needs a <task-id> (or use --as)")
                         })?;
@@ -4096,15 +4100,19 @@ fn main() -> Result<()> {
                 worker_cmd.as_deref(),
                 cli.json,
             ),
-            cli::ProviderCommands::Accept { result, store, now } => {
-                commands::exec_fed_cmd::run_accept(
-                    &workgraph_dir,
-                    &result,
-                    &store,
-                    now.as_deref(),
-                    cli.json,
-                )
-            }
+            cli::ProviderCommands::Accept {
+                result,
+                store,
+                now,
+                no_review,
+            } => commands::exec_fed_cmd::run_accept(
+                &workgraph_dir,
+                &result,
+                &store,
+                now.as_deref(),
+                !no_review,
+                cli.json,
+            ),
             cli::ProviderCommands::Reclaim { task, new_provider } => {
                 commands::exec_fed_cmd::run_reclaim(
                     &workgraph_dir,

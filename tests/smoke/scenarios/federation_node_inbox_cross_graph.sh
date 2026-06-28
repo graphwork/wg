@@ -169,7 +169,10 @@ wgrun "$B_HOME" "$B_DIR" --json identity fetch "$ALICE" --store "$NODE_A" --save
 [ "$(jfield "['has_attestation']" <"$scratch/fetchA.json")" = "True" ] ||
     loud_fail "STEP 5 FAILED: fetched bundle reports no freshness attestation"
 
-wgrun "$B_HOME" "$B_DIR" --json msg poll --as bob --store "$NODE_B" \
+# `--no-review`: STEP 5 exercises the sealed-body TRANSPORT (the raw decrypted body is
+# asserted below); the ENFORCING ingest auto-gate (default-on for `wg msg poll`, which
+# would WITHHOLD an un-vouched sender's body) is proven in e2e_autowire_ingest_gate.sh.
+wgrun "$B_HOME" "$B_DIR" --json msg poll --as bob --store "$NODE_B" --no-review \
     >"$scratch/poll1.json" 2>"$scratch/poll1.err" ||
     loud_fail "bob cross-graph poll failed: $(cat "$scratch/poll1.err")"
 [ "$(jfield "['accepted']" <"$scratch/poll1.json")" = "1" ] ||

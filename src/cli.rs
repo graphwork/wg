@@ -3645,7 +3645,8 @@ pub enum ProviderCommands {
 
     /// The authorizer's canonical-write accept: attribution (rejecting unsigned /
     /// wrong-signed / expired) + task-scoped graph-write authorization (rejecting a
-    /// different-task write) + the atomic epoch CAS (rejecting stale / replayed writes).
+    /// different-task write) + IC2 artifact review (rejecting a poisoned work product) +
+    /// the atomic epoch CAS (rejecting stale / replayed writes).
     Accept {
         /// The result JSON to accept.
         #[arg(long)]
@@ -3656,6 +3657,13 @@ pub enum ProviderCommands {
         /// Override the clock (RFC3339) — used for the post-expiry assertion (step 4ii).
         #[arg(long)]
         now: Option<String>,
+        /// Opt OUT of the default IC2 artifact review of the work product. NOT
+        /// recommended: the bytes are committed UNSCREENED. The review is on by default —
+        /// it screens the work product through the pipeline (author-trust DERIVED from the
+        /// producing box's provider-pool trust) and WITHHOLDS the write (refuses accept)
+        /// on a non-`accept` verdict (received ≠ consumed).
+        #[arg(long = "no-review")]
+        no_review: bool,
     },
 
     /// Reclaim a task, bumping the monotonic lease epoch. The old worker's epoch is now
@@ -3935,11 +3943,18 @@ pub enum MsgCommands {
         #[arg(long)]
         require_fresh: Option<String>,
 
-        /// Auto-gate inbound (cross-graph only): screen each authenticated event
-        /// through the review pipeline with author-trust DERIVED from the peer/provider
-        /// trust dial (no `--trust` flag); a non-`accept` verdict refuses consumption.
+        /// (Deprecated — the auto-gate is now ON BY DEFAULT.) Kept so existing scripts
+        /// passing `--review` still parse; it is a no-op (screening already runs).
         #[arg(long)]
         review: bool,
+
+        /// Opt OUT of the default inbound review auto-gate (cross-graph only). NOT
+        /// recommended: the bytes are then handed to the consumer UNSCREENED. The gate
+        /// is on by default — it screens each authenticated event (IC4) through the
+        /// review pipeline with author-trust DERIVED from the peer/provider trust dial
+        /// and WITHHOLDS the body on a non-`accept` verdict (received ≠ consumed).
+        #[arg(long = "no-review")]
+        no_review: bool,
     },
 }
 
@@ -4361,12 +4376,20 @@ pub enum TraceCommands {
     Import {
         /// Path to the trace export JSON file
         file: String,
-        /// Source tag for imported data (e.g. "peer:alice", "team:platform")
+        /// Source tag for imported data (e.g. "peer:alice", "team:platform"). A `wgid:`
+        /// source derives author-trust from the peer/provider dial; any other tag is an
+        /// un-vouched source and screens as Unknown (deep review, fail-closed).
         #[arg(long)]
         source: Option<String>,
         /// Show what would be imported without making changes
         #[arg(long)]
         dry_run: bool,
+        /// Opt OUT of the default IC1 review of imported tasks. NOT recommended: task
+        /// text is written UNSCREENED. The review is on by default — it screens each
+        /// imported task (title + description) through the pipeline and WITHHOLDS (skips
+        /// writing) any task with a non-`accept` verdict (received ≠ consumed).
+        #[arg(long = "no-review")]
+        no_review: bool,
     },
 
     // Hidden aliases for backward compatibility (wg trace <cmd> → wg func <cmd>)

@@ -214,7 +214,10 @@ wgm --json msg send --to "$BRUNO" --from mallory --body "$HOSTILE_TASK" --seal -
     loud_fail "LINK 2: Mallory's planted send failed: $(cat "$scratch/send_hostile.err")"
 
 # Bruno polls his node inbox; both events arrive and are authenticated by key.
-wgb --json msg poll --as bruno --store "$R" >"$scratch/poll1.json" 2>"$scratch/poll1.err" ||
+# `--no-review` here because LINK 2 exercises the TRANSPORT/auth (raw bodies needed for
+# the MANUAL review demonstration at LINK 3); the ENFORCING auto-gate (default-on,
+# withholds non-accept bodies) is proven in e2e_autowire_ingest_gate.sh.
+wgb --json msg poll --as bruno --store "$R" --no-review >"$scratch/poll1.json" 2>"$scratch/poll1.err" ||
     loud_fail "LINK 2: Bruno poll failed: $(cat "$scratch/poll1.err")"
 [ "$(jfield "['accepted']" <"$scratch/poll1.json")" = "2" ] ||
     loud_fail "LINK 2: expected 2 authenticated inbound events (got $(jfield "['accepted']" <"$scratch/poll1.json"))"
