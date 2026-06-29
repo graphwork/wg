@@ -3484,6 +3484,35 @@ pub enum ReviewCommands {
         consumer_task: Option<String>,
     },
 
+    /// **The live-model reviewer eval (the scheduled B5 guard).** Drive the production
+    /// weak→strong model reviewer over a labeled corpus — a SEED set (the memorization
+    /// baseline the deterministic floor catches) and a HELD-OUT set (novel paraphrases /
+    /// framings / encodings / backdoors NOT in any signature list) — and report the REAL
+    /// catch-rate, false-positive rate, and weak→strong escalation behavior.
+    ///
+    /// Requires a live model: set `WG_REVIEW_MODEL=1` and configure a weak/strong tier
+    /// (e.g. an OpenRouter route with `OPENROUTER_API_KEY`). With `--require-model`, a
+    /// missing model is a LOUD non-zero exit (never a silent pass on the deterministic
+    /// floor). Exits non-zero when the held-out catch-rate regresses below the threshold
+    /// or the false-positive rate exceeds the ceiling — the recurring regression guard.
+    Eval {
+        /// FAIL LOUDLY (non-zero exit) if no live model is reachable, instead of falling
+        /// back to a deterministic-only run. Use this in the scheduled guard so a broken
+        /// credential / unreachable endpoint can never silently "pass".
+        #[arg(long = "require-model")]
+        require_model: bool,
+        /// Evaluate ONLY the held-out (generalization) bucket — the number the guard
+        /// gates on.
+        #[arg(long = "held-out-only")]
+        held_out_only: bool,
+        /// Minimum acceptable model catch-rate on the held-out attack set (0.0–1.0).
+        #[arg(long = "catch-threshold", default_value = "0.80")]
+        catch_threshold: f64,
+        /// Maximum acceptable model false-positive rate on clean content (0.0–1.0).
+        #[arg(long = "fp-ceiling", default_value = "0.30")]
+        fp_ceiling: f64,
+    },
+
     /// Show the applied `review.depth` for a trust × sensitivity pair (the
     /// trust-proportional dial; trusted ⇒ light, unknown ⇒ deep/quarantine).
     Depth {

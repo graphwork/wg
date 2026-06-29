@@ -4015,6 +4015,19 @@ fn main() -> Result<()> {
                 consumer_task.as_deref(),
                 cli.json,
             ),
+            cli::ReviewCommands::Eval {
+                require_model,
+                held_out_only,
+                catch_threshold,
+                fp_ceiling,
+            } => commands::review_cmd::run_eval(
+                &workgraph_dir,
+                require_model,
+                held_out_only,
+                catch_threshold,
+                fp_ceiling,
+                cli.json,
+            ),
             cli::ReviewCommands::Depth { trust, sensitivity } => {
                 commands::review_cmd::run_depth(&trust, sensitivity.as_deref(), cli.json)
             }

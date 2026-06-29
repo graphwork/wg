@@ -11,7 +11,9 @@ use std::path::Path;
 
 use worksgood::config::Config;
 use worksgood::graph::TrustLevel;
+use worksgood::review::eval::{self, Bucket, EvalReport, Thresholds};
 use worksgood::review::pass2_review::reviewer_scope;
+use worksgood::review::reviewer::{AgencyReviewLlm, model_review_available};
 use worksgood::review::{
     ContentClass, Provenance, Sensitivity, VerdictStore, review_depth, review_inbound,
     review_inbound_ctx,
@@ -143,6 +145,190 @@ pub fn run_check(
         println!("cid:       {}", outcome.content_cid);
     }
     Ok(())
+}
+
+/// `wg review eval` — the live-model reviewer eval + recurring regression guard
+/// (closes `docs/prod-audit/01` B5). Drives the production weak→strong model reviewer
+/// over the seed + held-out corpus and reports the real catch-rate / false-positive
+/// rate / escalation behavior. Fails LOUDLY (non-zero exit) when:
+///   - `require_model` is set and no live model is reachable (never a silent pass on
+///     the deterministic floor), or
+///   - the held-out catch-rate regresses below `catch_threshold`, or
+///   - the false-positive rate exceeds `fp_ceiling`.
+pub fn run_eval(
+    workgraph_dir: &Path,
+    require_model: bool,
+    held_out_only: bool,
+    catch_threshold: f64,
+    fp_ceiling: f64,
+    json: bool,
+) -> Result<()> {
+    let config = Config::load_merged(workgraph_dir).unwrap_or_default();
+    let live = model_review_available(&config);
+
+    // Loud fail when a live model is required but unreachable — the B5 "never silently
+    // pass on the deterministic floor" guarantee.
+    if require_model && !live {
+        anyhow::bail!(
+            "LIVE MODEL UNREACHABLE — `wg review eval --require-model` was asked to validate the \
+             production weak-tier reviewer, but no model is available (set WG_REVIEW_MODEL=1 and \
+             configure a weak/strong tier with credentials, e.g. an OpenRouter route with \
+             OPENROUTER_API_KEY). Refusing to report a pass on the deterministic floor."
+        );
+    }
+
+    let mut items = eval::corpus();
+    if held_out_only {
+        items.retain(|i| i.bucket == Bucket::HeldOut);
+    }
+
+    let thresholds = Thresholds {
+        held_out_catch_min: catch_threshold,
+        fp_ceiling,
+    };
+
+    // Run against the live model when available; otherwise a clearly-labeled
+    // deterministic-floor REFERENCE (only reachable without --require-model).
+    let report = if live {
+        let llm = AgencyReviewLlm { config: &config };
+        eval::run_eval(&llm, &items)
+    } else {
+        eprintln!(
+            "[review-eval] LIVE MODEL UNREACHABLE — running the DETERMINISTIC-FLOOR reference \
+             only. This does NOT validate the production weak-tier LLM; pass --require-model to \
+             make this a hard failure in a scheduled guard."
+        );
+        eval::run_eval_floor(&items)
+    };
+
+    let mode = if live {
+        "live-model"
+    } else {
+        "deterministic-floor"
+    };
+    let regression = report.regression(&thresholds);
+
+    if json {
+        print_eval_json(&report, mode, &thresholds, regression.as_deref());
+    } else {
+        print_eval_text(&report, mode, &thresholds, regression.as_deref());
+    }
+
+    if let Some(reason) = regression {
+        anyhow::bail!("REVIEWER EVAL REGRESSION ({mode}): {reason}");
+    }
+    Ok(())
+}
+
+fn print_eval_json(report: &EvalReport, mode: &str, t: &Thresholds, regression: Option<&str>) {
+    let bucket_json = |b: &eval::BucketStats| {
+        serde_json::json!({
+            "attacks_total": b.attacks_total,
+            "attacks_caught": b.attacks_caught,
+            "attacks_caught_floor": b.attacks_caught_floor,
+            "catch_rate": b.catch_rate(),
+            "floor_catch_rate": b.floor_catch_rate(),
+            "clean_total": b.clean_total,
+            "clean_false_pos": b.clean_false_pos,
+            "clean_false_pos_floor": b.clean_false_pos_floor,
+            "false_pos_rate": b.false_pos_rate(),
+            "floor_false_pos_rate": b.floor_false_pos_rate(),
+        })
+    };
+    let v = serde_json::json!({
+        "mode": mode,
+        "thresholds": { "held_out_catch_min": t.held_out_catch_min, "fp_ceiling": t.fp_ceiling },
+        "seed": bucket_json(&report.seed),
+        "held_out": bucket_json(&report.held_out),
+        "overall": bucket_json(&report.overall),
+        "escalations": report.escalations,
+        "source_counts": report.source_counts,
+        "generalization_delta": report.generalization_delta,
+        "missed_attacks": report.missed_attacks.iter().map(|r| serde_json::json!({
+            "id": r.id, "kind": r.kind, "bucket": r.bucket.tag(),
+            "verdict": r.model_verdict.tag(), "source": r.model_source.tag(),
+        })).collect::<Vec<_>>(),
+        "false_positives": report.false_positives.iter().map(|r| serde_json::json!({
+            "id": r.id, "kind": r.kind, "bucket": r.bucket.tag(),
+            "verdict": r.model_verdict.tag(), "floor_also_blocked": r.floor_blocked,
+        })).collect::<Vec<_>>(),
+        "regression": regression,
+        "passed": regression.is_none(),
+    });
+    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+fn print_eval_text(report: &EvalReport, mode: &str, t: &Thresholds, regression: Option<&str>) {
+    let pct = |x: f64| format!("{:.1}%", x * 100.0);
+    println!("=== live-model reviewer eval ({mode}) ===");
+    let row = |name: &str, b: &eval::BucketStats| {
+        println!(
+            "  {name:<9}  attacks {:>2}/{:<2} caught ({:>6})  [floor {:>6}]   clean FP {:>2}/{:<2} ({:>6})  [floor {:>6}]",
+            b.attacks_caught,
+            b.attacks_total,
+            pct(b.catch_rate()),
+            pct(b.floor_catch_rate()),
+            b.clean_false_pos,
+            b.clean_total,
+            pct(b.false_pos_rate()),
+            pct(b.floor_false_pos_rate()),
+        );
+    };
+    row("seed", &report.seed);
+    row("held-out", &report.held_out);
+    row("overall", &report.overall);
+    println!(
+        "  generalization delta: {} held-out attack(s) the floor MISSED but the model CAUGHT",
+        report.generalization_delta
+    );
+    println!(
+        "  escalations (weak→strong): {} / {}",
+        report.escalations,
+        report.results.len()
+    );
+    print!("  verdict sources:");
+    for (src, n) in &report.source_counts {
+        print!(" {src}={n}");
+    }
+    println!();
+    if !report.missed_attacks.is_empty() {
+        println!("  MISSED attacks ({}):", report.missed_attacks.len());
+        for r in &report.missed_attacks {
+            println!(
+                "    - {} [{}] {} → {}",
+                r.id,
+                r.bucket.tag(),
+                r.kind,
+                r.model_verdict.tag()
+            );
+        }
+    }
+    if !report.false_positives.is_empty() {
+        println!("  FALSE POSITIVES ({}):", report.false_positives.len());
+        for r in &report.false_positives {
+            println!(
+                "    - {} [{}] {} → {}{}",
+                r.id,
+                r.bucket.tag(),
+                r.kind,
+                r.model_verdict.tag(),
+                if r.floor_blocked {
+                    " (floor also blocked)"
+                } else {
+                    ""
+                },
+            );
+        }
+    }
+    println!(
+        "  thresholds: held-out catch ≥ {}, false-positive ≤ {}",
+        pct(t.held_out_catch_min),
+        pct(t.fp_ceiling),
+    );
+    match regression {
+        None => println!("  RESULT: PASS"),
+        Some(reason) => println!("  RESULT: FAIL — {reason}"),
+    }
 }
 
 /// `wg review depth` — show the applied review depth for a trust × sensitivity pair.

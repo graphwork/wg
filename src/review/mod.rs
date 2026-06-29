@@ -41,6 +41,7 @@
 
 pub mod depth;
 pub mod detect;
+pub mod eval;
 pub mod pass1_lint;
 pub mod pass2_review;
 pub mod reviewer;
