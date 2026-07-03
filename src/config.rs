@@ -2957,8 +2957,15 @@ impl Config {
             Tier::Premium => tiers.premium.as_deref(),
         }?;
 
-        // Parse provider:model prefix if present
-        let spec = parse_model_spec(model_id);
+        // Parse provider:model prefix if present. Strip a leading `nex:` /
+        // `native:` HANDLER token first (handler-first inner re-parse, design
+        // §6.3) so a canonical `nex:openrouter:<model>` tier spec resolves to
+        // provider=openrouter — NOT the `oai-compat` localhost default the
+        // lenient parse would pick from the bare `nex` prefix (which sent the
+        // agency `.flip`/`.assign`/`.evaluate` one-shot to the wrong wire with a
+        // bogus `openrouter:<model>` id). Mirrors `native_provider_for_spec` in
+        // `src/service/llm.rs` and the executor's `provider.rs` strip.
+        let spec = parse_model_spec(strip_native_handler_prefix(model_id));
         let lookup_id = &spec.model_id;
 
         if let Some(entry) = self.registry_lookup(lookup_id) {
@@ -3012,12 +3019,18 @@ impl Config {
         // `coordinator.model = "openrouter:anthropic/claude-sonnet-4-6"`
         // the OpenRouter provider cascades to ALL roles (eval, FLIP, verification)
         // without needing explicit `[models.default].provider` config.
+        // Strip a leading `nex:` / `native:` handler token before deriving the
+        // cascade provider hint: a full handler-first profile whose
+        // `agent.model` / `coordinator.model` is `nex:openrouter:<model>` must
+        // yield an `openrouter` hint, not the `oai-compat` the bare `nex` prefix
+        // would give — otherwise this cascade would re-pollute the (now
+        // correctly openrouter) tier-resolved provider back to localhost.
         let coordinator_model_provider = self.coordinator.model.as_deref().and_then(|m| {
-            parse_model_spec(m)
+            parse_model_spec(strip_native_handler_prefix(m))
                 .provider
                 .map(|p| provider_to_resolved_provider(&p).to_string())
         });
-        let agent_model_provider = parse_model_spec(&self.agent.model)
+        let agent_model_provider = parse_model_spec(strip_native_handler_prefix(&self.agent.model))
             .provider
             .map(|p| provider_to_resolved_provider(&p).to_string());
 
@@ -3045,8 +3058,9 @@ impl Config {
         if let Some(role_cfg) = self.models.get_role(role)
             && let Some(ref model) = role_cfg.model
         {
-            // Parse provider:model prefix from the model string
-            let spec = parse_model_spec(model);
+            // Parse provider:model prefix from the model string (handler-first
+            // strip first, so `nex:openrouter:<model>` → provider=openrouter).
+            let spec = parse_model_spec(strip_native_handler_prefix(model));
             let spec_provider = spec
                 .provider
                 .as_deref()
@@ -3107,7 +3121,7 @@ impl Config {
         if let Some(default_cfg) = self.models.get_role(DispatchRole::Default)
             && let Some(ref model) = default_cfg.model
         {
-            let spec = parse_model_spec(model);
+            let spec = parse_model_spec(strip_native_handler_prefix(model));
             let spec_provider = spec
                 .provider
                 .as_deref()
@@ -3133,7 +3147,7 @@ impl Config {
         }
 
         // 5. Global fallback
-        let fallback_spec = parse_model_spec(&self.agent.model);
+        let fallback_spec = parse_model_spec(strip_native_handler_prefix(&self.agent.model));
         let fallback_provider = fallback_spec
             .provider
             .as_deref()
@@ -6436,6 +6450,73 @@ model = "claude:haiku"
             Some("openrouter".to_string()),
             "Default provider should cascade to tier-resolved roles"
         );
+    }
+
+    #[test]
+    fn test_resolve_tier_strips_handler_first_nex_openrouter_prefix() {
+        // fix-agency-flip: a canonical handler-first weak-tier spec
+        // `nex:openrouter:<model>` must resolve to provider=openrouter with the
+        // INNER model id — NOT the `oai-compat` localhost default the bare `nex`
+        // prefix would pick (which routed the agency .flip/.assign/.evaluate
+        // one-shot to the wrong wire with a bogus `openrouter:<model>` id).
+        let mut config = Config::default();
+        config.tiers.fast = Some("nex:openrouter:openai/gpt-4o-mini".to_string());
+        let resolved = config.resolve_tier(Tier::Fast).expect("fast tier resolves");
+        assert_eq!(resolved.provider.as_deref(), Some("openrouter"));
+        assert_eq!(resolved.model, "openai/gpt-4o-mini");
+
+        // The legacy `native:` handler alias strips identically.
+        config.tiers.fast = Some("native:openrouter:openai/gpt-4o-mini".to_string());
+        let resolved = config.resolve_tier(Tier::Fast).expect("fast tier resolves");
+        assert_eq!(resolved.provider.as_deref(), Some("openrouter"));
+        assert_eq!(resolved.model, "openai/gpt-4o-mini");
+
+        // The bare `openrouter:<model>` form (no handler token) was already
+        // correct and stays so.
+        config.tiers.fast = Some("openrouter:openai/gpt-4o-mini".to_string());
+        let resolved = config.resolve_tier(Tier::Fast).expect("fast tier resolves");
+        assert_eq!(resolved.provider.as_deref(), Some("openrouter"));
+        assert_eq!(resolved.model, "openai/gpt-4o-mini");
+
+        // A bare in-process `nex:<model>` (NO inner provider) is NOT stripped —
+        // it stays on the localhost oai-compat wire, unchanged.
+        config.tiers.fast = Some("nex:local-qwen-model".to_string());
+        let resolved = config.resolve_tier(Tier::Fast).expect("fast tier resolves");
+        assert_eq!(resolved.provider.as_deref(), Some("oai-compat"));
+        assert_eq!(resolved.model, "local-qwen-model");
+    }
+
+    #[test]
+    fn test_resolve_agency_roles_strip_handler_first_weak_tier() {
+        // fix-agency-flip: the full agency one-shot resolution
+        // (agency_native_lightweight_call -> resolve_model_for_role -> Fast tier)
+        // for a handler-first Pi-style profile — both tiers `nex:openrouter:...`.
+        // Evaluator/Assigner must resolve to provider=openrouter + inner model
+        // id, and the provider-cascade derived from `agent.model` (also
+        // handler-first) must NOT re-pollute it back to oai-compat/localhost.
+        let mut config = Config::default();
+        config.tiers.fast = Some("nex:openrouter:openai/gpt-4o-mini".to_string());
+        // Strong tier / agent.model is also handler-first (full Pi profile).
+        config.agent.model = "nex:openrouter:z-ai/glm-5.2".to_string();
+
+        for role in [DispatchRole::Evaluator, DispatchRole::Assigner] {
+            let resolved = config.resolve_model_for_role(role);
+            assert_eq!(
+                resolved.provider.as_deref(),
+                Some("openrouter"),
+                "{role:?} weak-tier must resolve provider=openrouter, not oai-compat"
+            );
+            assert_eq!(
+                resolved.model, "openai/gpt-4o-mini",
+                "{role:?} weak-tier model id must be the inner id, not `openrouter:<model>`"
+            );
+        }
+
+        // The bare `openrouter:<model>` weak-tier form resolves identically.
+        config.tiers.fast = Some("openrouter:openai/gpt-4o-mini".to_string());
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.provider.as_deref(), Some("openrouter"));
+        assert_eq!(resolved.model, "openai/gpt-4o-mini");
     }
 
     #[test]

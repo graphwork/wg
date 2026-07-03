@@ -228,6 +228,14 @@ mod tests {
             ExecutorKind::Native
         );
         assert_eq!(handler_for_model("nex:ollama:llama3"), ExecutorKind::Native);
+        // fix-agency-flip non-regression: stripping the handler prefix in the
+        // agency one-shot RESOLVER (resolve_tier/resolve_model_for_role) must
+        // NOT change worker-spawn HANDLER routing — this spec still selects the
+        // native (in-process) executor for a spawned worker.
+        assert_eq!(
+            handler_for_model("nex:openrouter:openai/gpt-4o-mini"),
+            ExecutorKind::Native
+        );
     }
 
     #[test]
