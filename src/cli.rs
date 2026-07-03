@@ -2454,6 +2454,28 @@ pub enum Commands {
         command: ProviderCommands,
     },
 
+    /// WG-Pilot — turnkey family-team federation deploy (the deploy/UX wrapper over the
+    /// verified WG-Fed + WG-Review + WG-Exec substrate; ships no new substrate).
+    ///
+    /// One command stands up the real family-team pilot on the verified v1 profile
+    /// (configured-peer, non-confidential-remote, block-don't-triage): mint the four
+    /// `wgid:` identities into `wg secret` custody, start the `wg fed-node` inbox, wire
+    /// the configured cross-host peers, apply the fail-closed / slack-leash / split-trust
+    /// SAFE defaults, optionally wire per-agent Telegram bots, and run a live end-to-end
+    /// check (a task crosses to the other host → content-reviewed → runs under a scoped
+    /// UCAN → signed result back).
+    ///
+    /// Quick start:
+    ///   wg pilot up --dry-run                 # local two-dir rehearsal (no hosts/creds)
+    ///   wg pilot up --config pilot.toml       # real per-host stand-up from a filled config
+    ///   wg pilot status                       # show what's running
+    ///   wg pilot down                         # stop nodes (keep identities)
+    ///   wg pilot down --wipe-identities       # stop + wipe the rehearsal identities
+    Pilot {
+        #[command(subcommand)]
+        command: PilotCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex(NexArgs),
 
@@ -3455,6 +3477,51 @@ pub enum FedNodeCommands {
     },
     /// Print the default node store directory (scriptable).
     StorePath,
+}
+
+#[derive(Subcommand)]
+pub enum PilotCommands {
+    /// Stand up the family-team pilot from a filled config and run the live end-to-end
+    /// check. With `--dry-run`, stand the whole thing up LOCALLY (two isolated dirs + one
+    /// relay node, no real hosts/credentials) as a rehearsal — the smoke-tested path.
+    Up {
+        /// Path to the filled pilot config (see `pilot.example.toml`). Optional for
+        /// `--dry-run`, which defaults every operator-supplied field to a safe local value.
+        #[arg(long)]
+        config: Option<String>,
+        /// Rehearse locally: model both hosts as two isolated dirs on localhost sharing one
+        /// relay node. Needs no remote hosts, no OpenRouter key, no Telegram tokens.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Where to keep the pilot's runtime state (node pid/url, minted identities).
+        /// Default: `<workgraph_dir>/pilot`.
+        #[arg(long = "state-dir")]
+        state_dir: Option<String>,
+        /// Stand up the nodes + wiring but SKIP the live end-to-end check (faster; for a
+        /// pure connectivity bring-up).
+        #[arg(long = "no-check")]
+        no_check: bool,
+    },
+
+    /// Show the pilot's current state — node URL/pid, minted identities, applied safe
+    /// defaults — read from the state dir.
+    Status {
+        /// The pilot state dir (default: `<workgraph_dir>/pilot`).
+        #[arg(long = "state-dir")]
+        state_dir: Option<String>,
+    },
+
+    /// Tear down the pilot: stop the fed-node(s). Idempotent — a `down` with nothing
+    /// running is a clean no-op. By default identities are KEPT (in `wg secret` custody).
+    Down {
+        /// The pilot state dir (default: `<workgraph_dir>/pilot`).
+        #[arg(long = "state-dir")]
+        state_dir: Option<String>,
+        /// Also wipe the minted identities/keystore + graph state (the rehearsal cleanup).
+        /// Off by default — real deploys keep their custodied roots.
+        #[arg(long = "wipe-identities")]
+        wipe_identities: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -6256,6 +6323,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Session { .. } => "session",
         Commands::Review { .. } => "review",
         Commands::Provider { .. } => "provider",
+        Commands::Pilot { .. } => "pilot",
     }
 }
 
@@ -6342,6 +6410,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Identity { .. }
             | Commands::Review { .. }
             | Commands::Provider { .. }
+            | Commands::Pilot { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]

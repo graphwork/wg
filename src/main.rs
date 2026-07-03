@@ -4233,6 +4233,34 @@ fn main() -> Result<()> {
                 commands::exec_fed_cmd::run_providers(&workgraph_dir, cli.json)
             }
         },
+
+        Commands::Pilot { command } => match command {
+            cli::PilotCommands::Up {
+                config,
+                dry_run,
+                state_dir,
+                no_check,
+            } => commands::pilot_cmd::run_up(
+                &workgraph_dir,
+                config.as_deref(),
+                dry_run,
+                state_dir.as_deref(),
+                no_check,
+                cli.json,
+            ),
+            cli::PilotCommands::Status { state_dir } => {
+                commands::pilot_cmd::run_status(&workgraph_dir, state_dir.as_deref(), cli.json)
+            }
+            cli::PilotCommands::Down {
+                state_dir,
+                wipe_identities,
+            } => commands::pilot_cmd::run_down(
+                &workgraph_dir,
+                state_dir.as_deref(),
+                wipe_identities,
+                cli.json,
+            ),
+        },
     }
 }
 

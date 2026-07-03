@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pilot.example.toml — turnkey family-team federation pilot.
+#
+# Copy to `pilot.toml`, fill ONLY the operator-supplied bits below, then run:
+#
+#     wg pilot up --config pilot.toml       # stand up THIS host
+#     wg pilot status                       # what's running
+#     wg pilot down                         # stop the node (keep identities)
+#
+# Rehearse the WHOLE flow locally first — no hosts, no keys, no tokens needed:
+#
+#     wg pilot up --dry-run
+#
+# Everything not listed here is defaulted SAFE (fail-closed gate, slack-but-bounded
+# leash, split trust, configured-peer, confidential-remote refused). You should not
+# need to touch the [defaults] section; changing a knob to an unsafe value is
+# refused loudly at `wg pilot up`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[pilot]
+# Which host THIS file is being run on. The family team spans two hosts:
+#   "home" — Sara (human requester) + Luca (operates the borrowed compute box)
+#   "chef" — Bruno (chef agent, authorizer) + Nora (dietitian, disjoint verifier)
+# Run `wg pilot up --config pilot.toml` once on each host with the matching role.
+# (Ignored by `--dry-run`, which stands up BOTH hosts locally in two dirs.)
+role = "home"
+
+# ── The two hosts: node bind (local) + endpoint (what peers dial). ──
+# The node port must be reachable from the other host (open the firewall / map it).
+[hosts.home]
+bind = "0.0.0.0:8443"
+endpoint = "http://home.example:8443"
+
+[hosts.chef]
+bind = "0.0.0.0:8443"
+endpoint = "http://chef.example:8443"
+
+# ── Credentials. ──
+[credentials]
+# Path to the OpenRouter API key file (used by the live-tier reviewer + remote
+# workers). The dry-run rehearsal needs no key; a real deploy does.
+openrouter_key_path = "/home/bot/.openrouter.key"
+
+# ── Optional per-agent Telegram bots (the multi-bot feature). ──
+# Omit a bot (or leave bot_token empty) to skip it. Each agent gets its own
+# @…_bot identity; created via @BotFather. Only THIS host's agents are wired.
+# [telegram.bots.sara]
+# bot_token = "123456:ABC-your-sara-bot-token"
+# chat_id   = "78901234"
+# [telegram.bots.bruno]
+# bot_token = "654321:XYZ-your-bruno-bot-token"
+# chat_id   = "78901234"
+
+# ── Trust defaults (split-trust). ──
+[trust]
+# Family identities vouched Verified when wired as peers; everyone else is Unknown.
+# Leave as-is for the standard four-member family team.
+verified_peers = ["sara", "luca", "bruno", "nora"]
+
+# ── Cross-host peers (real deploy only). ──
+# A real host can only wire a peer once it knows the peer's `wgid:`, which the peer
+# host prints when it runs `wg pilot up`. After BOTH hosts have run `up`, paste the
+# OTHER host's printed wgids here and re-run `up`, or add them with
+# `wg peer add <name> --wgid <W> --endpoint <U> --trust verified`.
+# [[peers]]
+# name = "bruno"
+# wgid = "wgid:z6Mk…"
+# endpoint = "http://chef.example:8443"
+# trust = "verified"
+
+# ── SAFE defaults — you do not need to touch this. Unsafe values are refused. ──
+[defaults]
+review_gate = "enforcing"          # fail-closed content gate (block, don't triage)
+leash_max_ttl_secs = 3600          # exec leash: slack by default, bounded
+confidential_remote = "refuse"     # never ship a confidential task to a non-attested box
+peer_discovery = "configured"      # configured peers only (no DHT in v1)

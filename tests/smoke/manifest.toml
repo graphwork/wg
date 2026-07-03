@@ -1793,6 +1793,15 @@ description = "Pins auto-wire-the (Review-Wave C — auto-wiring the review gate
 timeout_seconds = 120
 
 [[scenario]]
+name = "pilot_dry_run"
+script = "scenarios/pilot_dry_run.sh"
+owners = [
+    "pilot-deploy",
+]
+description = "Pins pilot-deploy (the TURNKEY family-team pilot deploy — the deploy/UX wrapper `wg pilot up/down/status` over the verified WG-Fed + WG-Review + WG-Exec substrate; ships NO new substrate). `wg pilot up --dry-run` is the ONE-command stand-up modelling BOTH hosts locally as two FS-isolated dirs sharing a single relay `wg fed-node`, and runs the whole family-team live flow end to end as the deploy wrapper (the same flow e2e_family_team proves, driven from the deploy path). Credential-free (the dry-run worker + deterministic Pass-2 reviewer need no OpenRouter key / Telegram token); reuses the substrate with NO second trust system and NO new compat const. Four falsifiable assertions: (1) ONE command stands up the pilot and the live family-team check PASSES — `wg pilot up --dry-run --json` mints the 4 family wgids into custody (identities=4), cross-verifies them across the wall, wires the configured peers with split trust, and the embedded live check (Sara's task crosses to the chef host → auto-review gate blocks Mallory's Unknown injection while Sara's Verified task is consumable → borrowed-box exec under two scoped UCANs, no root/no blanket write, task-scoped graph-write, minimal 'task' slice → signed result accepted + attributed, wrong-signed rejected → confidential task to the non-attested box REFUSED, context never shipped) all hold, so check_passed=true and the relay /health is reachable; (2) the SAFE defaults are applied (safe_defaults: review_gate=enforcing fail-closed/block-don't-triage, confidential_remote=refuse, peer_discovery=configured no-DHT, split_trust=true, leash_max_ttl_secs>0 slack-bounded) — no unsafe knob on by default; (3) teardown is real + idempotent — `wg pilot down` SIGTERMs the node (the recorded pid is gone afterward) and clears the state file, and a second down with nothing up is a clean no-op ('nothing to tear down', exit 0); (4) an explicitly-unsafe config ([defaults].confidential_remote='allow') is REFUSED loudly ('unsafe default refused') BEFORE any node/identity is stood up (no state file written). Prerequisite: the substrate sparks + e2e_family_team — this wraps them in a one-command deploy, it does not re-prove each in isolation."
+timeout_seconds = 180
+
+[[scenario]]
 name = "wire_review_seams"
 script = "scenarios/wire_review_seams.sh"
 owners = [

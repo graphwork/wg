@@ -146,6 +146,72 @@ These are operationally real and bite anyone running a node **from this repo tre
 
 ---
 
+## 6. Turnkey pilot deploy (`wg pilot`)
+
+`wg pilot` is the **one-command stand-up** of the family-team federation over the verified
+substrate above. It ships **no new substrate** — it sequences `wg identity` / `wg fed-node`
+/ `wg peer` / `wg msg` / `wg review` / `wg provider` and applies the SAFE defaults. It
+targets the verified **v1 profile**: configured-peer, non-confidential-remote,
+block-don't-triage (no DHT, no TEE, no human-in-loop).
+
+**The cast** — humans **Sara** (requester) + **Luca** (runs the borrowed compute box) on the
+*home* host; agents **Bruno** (chef, authorizer) + **Nora** (dietitian, disjoint verifier)
+on the *chef* host. Each is a `wgid:` identity.
+
+### What YOU provide vs what's AUTOMATED
+
+| You provide (in `pilot.toml`) | Automated by `wg pilot up` |
+|---|---|
+| 2 hosts reachable on the node port (`[hosts.home]` / `[hosts.chef]` bind + endpoint) | Minting the 4 `wgid:` identities into `wg secret` custody (roots never leave the host) |
+| An OpenRouter key path (`[credentials]`, for the live-tier reviewer/workers) | Starting the `wg fed-node` inbox + publishing each identity to it |
+| *(optional)* per-agent Telegram bot tokens (`[telegram.bots.<name>]`) | Wiring the configured cross-host peers (`wg peer add --wgid --endpoint`) with split trust |
+| *(leave as-is)* trust + `[defaults]` (already SAFE) | Applying the fail-closed / slack-leash / split-trust / confidential-refuse defaults |
+|  | Wiring each agent's Telegram bot (if a token is given) |
+|  | Running a live end-to-end check (task crosses the wall → content-reviewed → runs under a scoped UCAN → signed result back) |
+
+Copy `pilot.example.toml` → `pilot.toml`, fill only the operator-supplied bits, then:
+
+```sh
+# Rehearse the WHOLE flow locally first — no hosts, keys, or tokens needed. This is the
+# smoke-tested path (tests/smoke/scenarios/pilot_dry_run.sh): it models BOTH hosts as two
+# FS-isolated dirs sharing one relay node and runs the full family-team live check.
+wg pilot up --dry-run
+
+# Real deploy — run once on EACH host with the matching [pilot].role:
+wg pilot up --config pilot.toml         # role="home" on the home host; role="chef" on the chef host
+```
+
+Each real `up` prints its host's minted `wgid:`s. Paste the OTHER host's wgids into this
+host's `[[peers]]` (or `wg peer add <name> --wgid <W> --endpoint <U> --trust verified`) and
+re-run `up`; the full cross-host family-team check runs once both hosts are up and peered.
+
+### Verify
+
+```sh
+wg pilot status                 # node UP/down, minted identities, applied defaults, check result
+curl -s http://<host>:<port>/wgfed/v1/health   # → ok
+```
+
+The dry-run's `--json` output (and `status --json`) carry `check_passed: true` and the
+applied `safe_defaults` (`review_gate=enforcing`, `confidential_remote=refuse`,
+`peer_discovery=configured`, `split_trust=true`, a bounded `leash_max_ttl_secs`). An
+explicitly-unsafe knob (e.g. `confidential_remote="allow"`) is **refused loudly before
+anything is stood up** — there is no unsafe default.
+
+### Tear down
+
+```sh
+wg pilot down                   # stop the node; KEEP identities (custodied roots stay put)
+wg pilot down --wipe-identities # stop + wipe the rehearsal's identities + state dir
+```
+
+`down` is **idempotent** — a `down` with nothing running is a clean no-op. Real deploys
+should `down` **without** `--wipe-identities`: the custodied roots are the crown jewels
+(see §3 Backup / §4 recovery); wiping them without a registered recovery key/guardian set
+means the identity can only be *forked*, never continued.
+
+---
+
 ## Quick triage
 
 | Symptom | First check |
@@ -156,3 +222,6 @@ These are operationally real and bite anyone running a node **from this repo tre
 | Node `413`s | body over `WG_FED_NODE_MAX_BODY` — expected for oversize; raise if legitimate |
 | `exec_results_rejected_total` rising | attribution/integrity rejects at accept — inspect `RUST_LOG=info` reject lines |
 | Lease ledger won't load | corrupt/partial (B3 refuses) — restore `exec/leases.json` from backup, don't delete |
+| `wg pilot up` says "already up" | a prior node is still running — `wg pilot down` first (or `--state-dir` a fresh dir) |
+| `wg pilot up` "unsafe default refused" | a `[defaults]` knob is set to an unsafe value — restore it to the `pilot.example.toml` default |
+| Real `wg pilot up` "peer node NOT reachable" | the other host's node port isn't open/mapped — check `[hosts].endpoint` + firewall |
