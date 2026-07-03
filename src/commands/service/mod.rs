@@ -2465,6 +2465,15 @@ pub fn run_daemon(
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
+    // Dispatch watchdog (fix-wedge): count consecutive ticks that found ready
+    // tasks but spawned nothing AND have zero live agents. That combination is
+    // the signature of a starved/wedged dispatcher (e.g. a stuck coordinator
+    // sub-loop) — normal "at capacity" ticks have live agents, and normal idle
+    // ticks have no ready tasks. After WATCHDOG_STALL_TICKS we log LOUDLY so the
+    // wedge is diagnosable instead of silently looping until a manual restart.
+    const WATCHDOG_STALL_TICKS: u32 = 5;
+    let mut no_dispatch_progress_ticks: u32 = 0;
+
     // Settling deadline: when a GraphChanged event arrives, we schedule a tick
     // after a settling delay. Each subsequent GraphChanged resets the deadline,
     // debouncing burst additions so the coordinator sees the full graph.
@@ -3012,6 +3021,29 @@ pub fn run_daemon(
                         "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}",
                         coord_state.ticks, result.agents_alive, result.tasks_ready, result.agents_spawned
                     ));
+
+                    // Dispatch watchdog (fix-wedge): detect a starved dispatcher —
+                    // ready tasks present, yet nothing spawned and no live agents.
+                    if result.tasks_ready > 0
+                        && result.agents_spawned == 0
+                        && result.agents_alive == 0
+                    {
+                        no_dispatch_progress_ticks = no_dispatch_progress_ticks.saturating_add(1);
+                        if no_dispatch_progress_ticks == WATCHDOG_STALL_TICKS
+                            || (no_dispatch_progress_ticks > WATCHDOG_STALL_TICKS
+                                && no_dispatch_progress_ticks.is_multiple_of(WATCHDOG_STALL_TICKS))
+                        {
+                            logger.warn(&format!(
+                                "DISPATCH WATCHDOG: {} consecutive ticks with {} ready task(s) but \
+                                 0 spawned and 0 live agents — dispatcher appears wedged. Check for a \
+                                 stuck coordinator sub-loop / stale session sentinels; `wg service \
+                                 restart` clears it if this persists.",
+                                no_dispatch_progress_ticks, result.tasks_ready
+                            ));
+                        }
+                    } else {
+                        no_dispatch_progress_ticks = 0;
+                    }
 
                     // Dispatch notifications for task state changes (failures, blocks)
                     try_dispatch_notifications(&dir, &logger);

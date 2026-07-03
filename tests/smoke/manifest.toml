@@ -407,6 +407,15 @@ description = "fix-nex-chat 2026-06-15: real daemon/supervisor flow for a Nex ch
 timeout_seconds = 90
 
 [[scenario]]
+name = "coordinator_wedge_recycled_sentinel_selfheal"
+script = "scenarios/coordinator_wedge_recycled_sentinel_selfheal.sh"
+owners = [
+    "fix-wedge",
+]
+description = "fix-wedge: the recurring multi-day coordinator wedge — a `.tui-driven` sentinel AND a `.handler.pid` lock whose PIDs were OS-recycled to live foreign processes (simulated by live `sleep` PIDs) made the bare kill(0) liveness probe report 'alive' forever, so the chat supervisor logged 'TUI sentinel alive ... deferring respawn 5s' on a 5s loop and never brought a real handler back until a manual restart. Asserts the identity-aware liveness check reaps the recycled sentinel + recovers the recycled lock so a FRESH real handler self-heals (pid is a live wg/nex process, not either sleep), the sentinel is cleared, 'deferring respawn' does not loop, and the background dispatcher keeps ticking (with a ready user task visible) throughout — dispatch is never gated by TUI-sentinel state. Credential-free (native chat + WG_FAKE_LLM)."
+timeout_seconds = 120
+
+[[scenario]]
 name = "tui_plus_opencode_model_fuzzy"
 script = "scenarios/tui_plus_opencode_model_fuzzy.sh"
 owners = [

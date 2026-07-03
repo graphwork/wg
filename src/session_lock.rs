@@ -164,6 +164,20 @@ impl SessionLock {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Someone else has it. Decide: recover (stale) or fail.
                 match read_holder_at(&path)? {
+                    Some(holder) if holder.alive && pid_reused_by_foreign(holder.pid) => {
+                        // Alive by kill(0), but the PID was recycled to a
+                        // foreign process (multi-day uptime). Treat as stale and
+                        // recover instead of refusing forever — otherwise a
+                        // respawn triggered by the fix-wedge reap would just hit
+                        // this "held by live handler" error and give up.
+                        eprintln!(
+                            "[session-lock] recovering recycled lock (pid={} is a foreign process) at {:?}",
+                            holder.pid, path
+                        );
+                        std::fs::remove_file(&path)
+                            .with_context(|| format!("remove recycled lock {:?}", path))?;
+                        Self::acquire(chat_dir, kind)
+                    }
                     Some(holder) if holder.alive => Err(anyhow!(
                         "session lock held by live handler pid={} kind={} started={}",
                         holder.pid,
@@ -418,13 +432,16 @@ pub fn clear_tui_driver_sentinel(chat_dir: &Path) {
 /// returns `None` so callers can respawn normally.
 pub fn active_tui_driver_pid(chat_dir: &Path) -> Option<u32> {
     let tui = read_tui_driver_sentinel(chat_dir).ok().flatten()?;
-    if !tui.alive {
+    // `tui.alive` is a bare `kill(pid, 0)` probe; also reject a PID that has
+    // been recycled to a foreign process (fix-wedge). Either way the sentinel
+    // is stale and the supervisor must respawn rather than defer forever.
+    if !pid_is_live_ours(tui.pid) {
         clear_tui_driver_sentinel(chat_dir);
         return None;
     }
 
     match read_holder(chat_dir) {
-        Ok(Some(holder)) if holder.alive => {}
+        Ok(Some(holder)) if pid_is_live_ours(holder.pid) => {}
         Ok(Some(_)) => {
             clear_tui_driver_sentinel(chat_dir);
             return None;
@@ -496,6 +513,83 @@ fn pid_is_alive(_pid: u32) -> bool {
     // recovery a no-op on Windows, which is acceptable until we add
     // proper Windows support.
     true
+}
+
+/// Best-effort process *identity* string for `pid` (comm + cmdline), used only
+/// to defeat PID reuse. Linux-only; returns `None` when identity can't be
+/// established (no `/proc`, unreadable) so callers fall back to bare liveness.
+#[cfg(target_os = "linux")]
+fn pid_process_identity(pid: u32) -> Option<String> {
+    // `/proc/<pid>/comm` is the (15-char-truncated) executable/thread name;
+    // `/proc/<pid>/cmdline` is the full nul-separated argv. Both are readable
+    // for any process by any user on a default Linux, so a recycled PID owned
+    // by another user is still identifiable.
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok();
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).replace('\0', " "));
+    match (comm, cmdline) {
+        (None, None) => None,
+        (c, cl) => Some(format!(
+            "{} {}",
+            c.unwrap_or_default().trim(),
+            cl.unwrap_or_default().trim()
+        )),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_process_identity(_pid: u32) -> Option<String> {
+    None
+}
+
+/// True when `pid` is *positively* a foreign (OS-recycled) process — i.e. not
+/// our own PID and not a `wg`/`nex`-family process.
+///
+/// Over multi-day daemon uptime a PID recorded in a stale `.tui-driven`
+/// sentinel or `.handler.pid` lock can be recycled by the kernel to an
+/// unrelated process. The bare `kill(pid, 0)` liveness probe then reports
+/// "alive" forever, which wedged the coordinator supervisor into an endless
+/// respawn-deferral loop (the `fix-wedge` incident). This narrows the notion
+/// of "alive" enough to break out of that loop.
+///
+/// Fails **safe**: it returns `false` (not-foreign, preserve legacy behavior)
+/// whenever identity cannot be established — no `/proc`, unreadable, or the
+/// name plausibly belongs to our own process family. It only returns `true`
+/// when it can affirmatively read a name that is clearly something else, so a
+/// genuinely-live handler is never misread as stale.
+fn pid_reused_by_foreign(pid: u32) -> bool {
+    if pid == 0 || pid == std::process::id() {
+        return false; // ourselves / invalid — never foreign
+    }
+    let Some(target) = pid_process_identity(pid) else {
+        return false; // undeterminable → preserve pre-fix behavior
+    };
+    let target_l = target.to_ascii_lowercase();
+    // wg/nex family? Covers `wg`, `wg tui`, `wg nex --chat`, `wg <handler>`,
+    // the standalone `nex`, and any path that mentions them. Biased toward
+    // "ours" so we never reap a real handler.
+    if target_l.contains("wg") || target_l.contains("nex") {
+        return false;
+    }
+    // Same executable as us? In dev/test the driving process is the test
+    // harness binary (not named `wg`); recognizing our own comm keeps that
+    // path — and any oddly-named production binary — from being reaped.
+    if let Some(mine) = pid_process_identity(std::process::id()) {
+        let mine_comm = mine.split_whitespace().next().unwrap_or_default();
+        let their_comm = target.split_whitespace().next().unwrap_or_default();
+        if !mine_comm.is_empty() && mine_comm == their_comm {
+            return false;
+        }
+    }
+    true
+}
+
+/// Liveness that also defeats PID reuse: alive by `kill(pid, 0)` AND not a
+/// positively-foreign recycled process. Use at stale-sentinel / stale-lock
+/// decision points where a recycled PID would otherwise wedge a respawn loop.
+fn pid_is_live_ours(pid: u32) -> bool {
+    pid_is_alive(pid) && !pid_reused_by_foreign(pid)
 }
 
 #[cfg(test)]
@@ -703,5 +797,98 @@ mod tests {
         assert_eq!(info.pid, 999999);
         assert!(!info.alive);
         assert!(!tui_driver_sentinel_alive(dir.path()));
+    }
+
+    #[test]
+    fn foreign_pid_identity_defeats_pid_reuse() {
+        // Our own PID and pid 0 are never foreign.
+        assert!(!pid_reused_by_foreign(0));
+        assert!(!pid_reused_by_foreign(std::process::id()));
+
+        // A live, unrelated (non-wg) process IS foreign — this is the
+        // multi-day PID-reuse shape that used to wedge the supervisor.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let sleep_pid = child.id();
+        assert!(pid_is_alive(sleep_pid), "sleep child should be alive");
+        if cfg!(target_os = "linux") {
+            assert!(
+                pid_reused_by_foreign(sleep_pid),
+                "a live `sleep` process must be recognized as a foreign (recycled) PID"
+            );
+            assert!(
+                !pid_is_live_ours(sleep_pid),
+                "foreign PID must not count as a live handler of ours"
+            );
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn active_tui_driver_reaps_recycled_sentinel_pid() {
+        // Sentinel points at a LIVE but foreign PID (`sleep`), and a genuine
+        // live handler lock is held. Pre-fix this returned Some(foreign_pid)
+        // forever (the wedge); now the recycled sentinel is reaped.
+        let dir = tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let sleep_pid = child.id();
+
+        let _lock = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex).unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            tui_driver_sentinel_path(dir.path()),
+            format!("{sleep_pid}\n2020-01-01T00:00:00Z\n"),
+        )
+        .unwrap();
+
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                active_tui_driver_pid(dir.path()),
+                None,
+                "a sentinel whose PID was recycled to a foreign process must be reaped, not deferred"
+            );
+            assert!(
+                read_tui_driver_sentinel(dir.path()).unwrap().is_none(),
+                "recycled sentinel should be cleared"
+            );
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn acquire_recovers_lock_held_by_recycled_foreign_pid() {
+        // A lock file whose PID is alive but foreign (recycled) must be
+        // recovered on acquire, not treated as a live handler forever.
+        let dir = tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let sleep_pid = child.id();
+
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            SessionLock::lock_path(dir.path()),
+            format!("{sleep_pid}\n2020-01-01T00:00:00Z\nchat-nex\n"),
+        )
+        .unwrap();
+
+        let acquired = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex);
+        if cfg!(target_os = "linux") {
+            assert!(
+                acquired.is_ok(),
+                "acquire must recover a lock held by a recycled foreign PID: {:?}",
+                acquired.err()
+            );
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

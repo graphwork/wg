@@ -77,6 +77,22 @@ const LOCK_CONTENTION_BACKOFF_MAX_SECS: u64 = 60;
 /// on any non-contention exit.
 const MAX_CONSECUTIVE_LOCK_CONTENTIONS: u32 = 6;
 
+/// Log the "deferring respawn" line on the 1st deferral of a streak and then
+/// only once per this many further deferrals. At the 5s deferral cadence this
+/// caps the message at ~once/minute so a genuinely-live TUI that legitimately
+/// owns a chat for hours can never let this line dominate the daemon log —
+/// the fix-wedge symptom. (Stale/recycled sentinels are reaped at the source
+/// by `session_lock::active_tui_driver_pid`, so this only rate-limits the
+/// healthy, still-deferring case.)
+const TUI_DEFERRAL_LOG_EVERY: u32 = 12;
+
+/// Whether to emit the "deferring respawn" log line for the `n`-th consecutive
+/// TUI-sentinel deferral (1-based). Pulled out so the dedupe policy is
+/// unit-testable independent of the supervisor loop's IO.
+fn should_log_tui_deferral(n: u32) -> bool {
+    n == 1 || (n > 0 && n.is_multiple_of(TUI_DEFERRAL_LOG_EVERY))
+}
+
 /// Classification of a coordinator child exit, used by the supervisor loop
 /// to decide whether the exit counts toward the rate-limit budget, against
 /// the contention back-off, or against neither.
@@ -746,6 +762,10 @@ fn subprocess_coordinator_loop(
     // non-contention exit so a single non-contention iteration always
     // restores the supervisor to its base state.
     let mut lock_contention_count: u32 = 0;
+    // Count of CONSECUTIVE TUI-sentinel respawn deferrals, used only to
+    // rate-limit the "deferring respawn" log so it cannot dominate the daemon
+    // log (fix-wedge). Reset to 0 whenever we stop deferring.
+    let mut tui_deferrals: u32 = 0;
 
     loop {
         // Rate-limit restarts in a sliding window, same policy as the
@@ -872,14 +892,26 @@ fn subprocess_coordinator_loop(
         };
         let chat_ref = format!("chat-{}", coordinator_id);
         let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+        // A live TUI owning this chat legitimately defers the daemon's own
+        // respawn. `tui_driver_deferral_pid` already reaps a stale/recycled
+        // sentinel (returns None), so reaching this branch means a genuinely
+        // live TUI is driving the chat — deferring is correct. We only
+        // rate-limit the log so a long-lived TUI session can't spam the daemon
+        // log every 5s (fix-wedge). The counter resets the moment we stop
+        // deferring.
         if let Some(tui_pid) = tui_driver_deferral_pid(&chat_dir) {
-            logger.info(&format!(
-                "Coordinator-{}: TUI sentinel alive (pid={}) — deferring respawn 5s",
-                coordinator_id, tui_pid
-            ));
+            tui_deferrals = tui_deferrals.saturating_add(1);
+            if should_log_tui_deferral(tui_deferrals) {
+                logger.info(&format!(
+                    "Coordinator-{}: TUI sentinel alive (pid={}) — deferring respawn 5s \
+                     (deferral #{}; identical deferrals now logged ~once/min)",
+                    coordinator_id, tui_pid, tui_deferrals
+                ));
+            }
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
+        tui_deferrals = 0;
         // Hot-swap support: re-read CoordinatorState each iteration
         // so `wg service set-executor <cid> ...` takes effect on the
         // next supervisor restart. Explicit overrides beat the
@@ -1970,5 +2002,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
+    }
+
+    #[test]
+    fn test_tui_deferral_log_is_rate_limited() {
+        // First deferral of a streak always logs (visibility), then only once
+        // per TUI_DEFERRAL_LOG_EVERY so a long-lived TUI can't spam the log.
+        assert!(should_log_tui_deferral(1), "first deferral must be logged");
+        assert!(!should_log_tui_deferral(2));
+        assert!(!should_log_tui_deferral(TUI_DEFERRAL_LOG_EVERY - 1));
+        assert!(
+            should_log_tui_deferral(TUI_DEFERRAL_LOG_EVERY),
+            "periodic heartbeat must be logged"
+        );
+        assert!(!should_log_tui_deferral(TUI_DEFERRAL_LOG_EVERY + 1));
+        assert!(should_log_tui_deferral(TUI_DEFERRAL_LOG_EVERY * 2));
+
+        // Over a long deferral streak the log fires a bounded, small number of
+        // times — never once per iteration.
+        let logged = (1..=600).filter(|&n| should_log_tui_deferral(n)).count();
+        assert!(
+            logged <= 600 / TUI_DEFERRAL_LOG_EVERY as usize + 1,
+            "log must be deduped, got {logged} lines over 600 deferrals"
+        );
     }
 }
