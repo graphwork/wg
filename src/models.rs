@@ -135,6 +135,24 @@ impl ModelRegistry {
                 ],
                 tier: ModelTier::Frontier,
             },
+            // Fable 5 — frontier model, peer of opus. Runs on the claude CLI
+            // handler (self-authenticates via Claude Max — no key). `provider =
+            // "anthropic"` makes `config_spec()` render `claude:claude-fable-5`.
+            ModelEntry {
+                id: "anthropic/claude-fable-5".into(),
+                provider: "anthropic".into(),
+                cost_per_1m_input: 5.0,
+                cost_per_1m_output: 25.0,
+                context_window: 1_000_000,
+                capabilities: vec![
+                    "coding".into(),
+                    "analysis".into(),
+                    "creative".into(),
+                    "reasoning".into(),
+                    "tool_use".into(),
+                ],
+                tier: ModelTier::Frontier,
+            },
             ModelEntry {
                 id: "anthropic/claude-sonnet-4-6".into(),
                 provider: "openrouter".into(),

@@ -387,9 +387,11 @@ fn spawn_claude_process(
     cmd.args(["--allowedTools", "Bash(wg:*)"]);
 
     if let Some(m) = model {
-        // Strip provider prefix (e.g., "claude:opus" → "opus") for the CLI
+        // Strip provider prefix (e.g., "claude:opus" → "opus") for the CLI, then
+        // expand friendly aliases with no CLI shortcut (`fable` → `claude-fable-5`).
         let spec = worksgood::config::parse_model_spec(m);
-        cmd.args(["--model", &spec.model_id]);
+        let model_arg = worksgood::config::claude_cli_model_arg(&spec.model_id);
+        cmd.args(["--model", &model_arg]);
     }
 
     cmd.current_dir(workgraph_dir.parent().unwrap_or(workgraph_dir));

@@ -12,8 +12,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::{
-    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
-    ModelRegistryEntry, parse_model_spec,
+    CLAUDE_FABLE_MODEL_ID, CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
+    Config, DispatchRole, ModelRegistryEntry, parse_model_spec,
 };
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
@@ -84,6 +84,14 @@ pub struct AgencyDispatch {
 fn claude_cli_alias_for_model(model_id: &str) -> Option<&'static str> {
     let lower = model_id.to_ascii_lowercase();
     let claude_part = lower.strip_prefix("anthropic/").unwrap_or(lower.as_str());
+
+    // Fable 5 has no bare CLI shortcut: both the friendly alias `fable` and any
+    // dated id (`claude-fable-5`, `anthropic/claude-fable-5`) resolve to the
+    // full CLI model id. Unlike opus/sonnet/haiku, `fable` alone does NOT start
+    // with "claude", so it is matched before the "claude" gate below.
+    if claude_part == "fable" || claude_part.contains("fable") {
+        return Some(CLAUDE_FABLE_MODEL_ID);
+    }
 
     if !claude_part.starts_with("claude") {
         return None;
@@ -1336,6 +1344,35 @@ mod tests {
             normalize_claude_cli_model("qwen/qwen3-coder"),
             "qwen/qwen3-coder"
         );
+    }
+
+    #[test]
+    fn test_claude_cli_model_normalization_fable() {
+        // Fable has no bare CLI shortcut: the friendly alias and every dated
+        // spelling normalize to the full CLI id `claude-fable-5`.
+        assert_eq!(normalize_claude_cli_model("fable"), CLAUDE_FABLE_MODEL_ID);
+        assert_eq!(
+            normalize_claude_cli_model("claude-fable-5"),
+            CLAUDE_FABLE_MODEL_ID
+        );
+        assert_eq!(
+            normalize_claude_cli_model("anthropic/claude-fable-5"),
+            CLAUDE_FABLE_MODEL_ID
+        );
+    }
+
+    #[test]
+    fn test_agency_dispatch_claude_fable_routes_to_claude_cli() {
+        // `claude:fable` as an explicit agency role override must dispatch on
+        // the claude CLI handler with the expanded `claude-fable-5` model id.
+        let dispatch = agency_dispatch_for_spec("claude:fable");
+        assert_eq!(dispatch.handler, ExecutorKind::Claude);
+        assert_eq!(dispatch.model_id, CLAUDE_FABLE_MODEL_ID);
+
+        // A full anthropic/openrouter spelling also routes to the claude CLI.
+        let dispatch = agency_dispatch_for_spec("openrouter:anthropic/claude-fable-5");
+        assert_eq!(dispatch.handler, ExecutorKind::Claude);
+        assert_eq!(dispatch.model_id, CLAUDE_FABLE_MODEL_ID);
     }
 
     #[test]

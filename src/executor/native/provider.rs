@@ -136,12 +136,12 @@ pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Prov
 /// `"sonnet"`, `"haiku"`, and `"claude-sonnet-4-6"`.
 ///
 /// Case-insensitive. Returns true for:
-/// - `"opus"`, `"sonnet"`, `"haiku"` (short aliases for the three tiers)
+/// - `"opus"`, `"sonnet"`, `"haiku"`, `"fable"` (short aliases for the tiers)
 /// - Anything starting with `"claude"` (e.g. `"claude-sonnet-4-6"`,
-///   `"claude-opus-4-6"`, `"claude3"`, `"Claude-Sonnet"`)
+///   `"claude-opus-4-6"`, `"claude-fable-5"`, `"claude3"`, `"Claude-Sonnet"`)
 fn looks_like_claude_model(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    matches!(lower.as_str(), "opus" | "sonnet" | "haiku") || lower.starts_with("claude")
+    matches!(lower.as_str(), "opus" | "sonnet" | "haiku" | "fable") || lower.starts_with("claude")
 }
 
 /// Parse the `<endpoint>:<model>` shorthand in the model string.

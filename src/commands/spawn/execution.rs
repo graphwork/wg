@@ -2221,14 +2221,13 @@ fn resolve_model_via_registry(
             .and_then(|e| e.endpoint.clone());
         // CLI-backed executors do not understand provider:model format; pass only
         // the bare model ID. Native/API-backed executors preserve the full spec
-        // so downstream provider resolution can re-parse the prefix.
-        let effective = if matches!(
-            worksgood::config::provider_to_executor(provider_prefix),
-            "claude" | "codex"
-        ) {
-            spec.model_id.clone()
-        } else {
-            model_str.clone()
+        // so downstream provider resolution can re-parse the prefix. For the
+        // claude CLI, expand friendly aliases with no CLI shortcut
+        // (`claude:fable` → `claude-fable-5`); opus/sonnet/haiku pass through.
+        let effective = match worksgood::config::provider_to_executor(provider_prefix) {
+            "claude" => worksgood::config::claude_cli_model_arg(&spec.model_id),
+            "codex" => spec.model_id.clone(),
+            _ => model_str.clone(),
         };
         return Ok((Some(effective), native_provider, endpoint));
     }
@@ -2482,7 +2481,7 @@ fn handle_cost_cap_violation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worksgood::config::CLAUDE_OPUS_MODEL_ID;
+    use worksgood::config::{CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID};
 
     // --- executor_uses_auto_prompt tests ---
 
@@ -3343,6 +3342,46 @@ mod tests {
             Some("anthropic".to_string()),
             "Should find provider from builtin registry entry"
         );
+    }
+
+    #[test]
+    fn test_registry_claude_fable_expands_to_full_cli_id() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        // `claude:fable` has the claude provider prefix → the claude CLI branch
+        // must expand the friendly alias `fable` to the full CLI model id
+        // `claude-fable-5` (the CLI has no bare `fable` shortcut).
+        let (model, provider, _endpoint) = resolve_model_via_registry(
+            Some("claude:fable".to_string()),
+            Some(&"claude:fable".to_string()),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model,
+            Some(CLAUDE_FABLE_MODEL_ID.to_string()),
+            "claude:fable must resolve to the full CLI id claude-fable-5"
+        );
+        assert_eq!(
+            provider,
+            Some("anthropic".to_string()),
+            "claude provider prefix maps to the anthropic native provider"
+        );
+
+        // Bare `fable` (no prefix) resolves via the builtin registry entry,
+        // whose model field also carries the full CLI id.
+        let (bare_model, _p, _e) = resolve_model_via_registry(
+            Some("fable".to_string()),
+            Some(&"fable".to_string()),
+            &config,
+            dir,
+        )
+        .unwrap();
+        assert_eq!(bare_model, Some(CLAUDE_FABLE_MODEL_ID.to_string()));
     }
 
     #[test]

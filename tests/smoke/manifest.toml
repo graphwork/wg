@@ -806,6 +806,15 @@ description = "Evaluator one-shot roles configured with Claude registry/OpenRout
 timeout_seconds = 60
 
 [[scenario]]
+name = "model_fable_routes_to_claude_cli"
+script = "scenarios/model_fable_routes_to_claude_cli.sh"
+owners = [
+    "enable-fable",
+]
+description = "Pins enable-fable: Fable 5 is a first-class claude model. `wg model list` / `wg models list` surface `claude-fable-5` (config registry aliases `fable` + `claude:fable`, plus models.yaml `anthropic/claude-fable-5` in the frontier tier), and `claude:fable` routes to the claude CLI handler with the friendly alias expanded to `--model claude-fable-5` (the CLI has no bare `fable` shortcut). Credential-free: a fake `claude` on PATH fails loudly on any model string other than `claude-fable-5`."
+timeout_seconds = 60
+
+[[scenario]]
 name = "dispatcher_kick_bypasses_settling_delay"
 script = "scenarios/dispatcher_kick_bypasses_settling_delay.sh"
 owners = [

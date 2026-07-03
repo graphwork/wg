@@ -17,6 +17,32 @@ pub const CLAUDE_HAIKU_MODEL_ID: &str = "haiku";
 pub const CLAUDE_SONNET_MODEL_ID: &str = "sonnet";
 pub const CLAUDE_OPUS_MODEL_ID: &str = "opus";
 
+/// Fable 5's full claude CLI model id.
+///
+/// Unlike `opus`/`sonnet`/`haiku` — which the claude CLI accepts as bare
+/// shortcuts and resolves to the current production model — Fable 5 has **no**
+/// bare CLI shortcut, so the friendly alias `fable` must be expanded to this
+/// dated id before it is handed to `claude --model`. See [`claude_cli_model_arg`].
+pub const CLAUDE_FABLE_MODEL_ID: &str = "claude-fable-5";
+
+/// Expand a bare claude model id/alias into the exact string passed to
+/// `claude --model`.
+///
+/// The claude CLI ships built-in shortcuts for `opus`/`sonnet`/`haiku`, so
+/// those pass through verbatim (the CLI resolves them to the current
+/// production model). Fable 5 has no such shortcut, so the friendly alias
+/// `fable` is expanded to its full CLI model id [`CLAUDE_FABLE_MODEL_ID`]
+/// (`claude-fable-5`). Everything else — already-dated ids, non-claude names —
+/// is returned unchanged, so this is safe to apply at every claude `--model`
+/// construction site.
+pub fn claude_cli_model_arg(model_id: &str) -> String {
+    if model_id.eq_ignore_ascii_case("fable") {
+        CLAUDE_FABLE_MODEL_ID.to_string()
+    } else {
+        model_id.to_string()
+    }
+}
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -2749,6 +2775,23 @@ impl Config {
                 cache_write_premium: 1.25,
                 ..Default::default()
             },
+            // Fable 5 — frontier model, peer of opus. The claude CLI has no
+            // bare `fable` shortcut, so the `model` field carries the full CLI
+            // id `claude-fable-5` (see `claude_cli_model_arg`).
+            ModelRegistryEntry {
+                id: "fable".into(),
+                provider: "anthropic".into(),
+                model: CLAUDE_FABLE_MODEL_ID.into(),
+                tier: Tier::Premium,
+                context_window: 200_000,
+                max_output_tokens: 32000,
+                cost_per_input_mtok: 15.0,
+                cost_per_output_mtok: 75.0,
+                prompt_caching: true,
+                cache_read_discount: 0.1,
+                cache_write_premium: 1.25,
+                ..Default::default()
+            },
             // New colon-separated format entries
             ModelRegistryEntry {
                 id: "claude:haiku".into(),
@@ -2782,6 +2825,20 @@ impl Config {
                 id: "claude:opus".into(),
                 provider: "anthropic".into(),
                 model: CLAUDE_OPUS_MODEL_ID.into(),
+                tier: Tier::Premium,
+                context_window: 200_000,
+                max_output_tokens: 32000,
+                cost_per_input_mtok: 15.0,
+                cost_per_output_mtok: 75.0,
+                prompt_caching: true,
+                cache_read_discount: 0.1,
+                cache_write_premium: 1.25,
+                ..Default::default()
+            },
+            ModelRegistryEntry {
+                id: "claude:fable".into(),
+                provider: "anthropic".into(),
+                model: CLAUDE_FABLE_MODEL_ID.into(),
                 tier: Tier::Premium,
                 context_window: 200_000,
                 max_output_tokens: 32000,
@@ -6435,13 +6492,19 @@ model = "claude:haiku"
     fn test_effective_registry_returns_builtins_when_empty() {
         let config = Config::default();
         let registry = config.effective_registry();
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 8);
         assert!(registry.iter().any(|e| e.id == "haiku"));
         assert!(registry.iter().any(|e| e.id == "sonnet"));
         assert!(registry.iter().any(|e| e.id == "opus"));
+        assert!(registry.iter().any(|e| e.id == "fable"));
         assert!(registry.iter().any(|e| e.id == "claude:haiku"));
         assert!(registry.iter().any(|e| e.id == "claude:sonnet"));
         assert!(registry.iter().any(|e| e.id == "claude:opus"));
+        assert!(registry.iter().any(|e| e.id == "claude:fable"));
+        // Fable carries its full CLI id (no bare `fable` shortcut exists).
+        let fable = registry.iter().find(|e| e.id == "fable").unwrap();
+        assert_eq!(fable.model, CLAUDE_FABLE_MODEL_ID);
+        assert_eq!(fable.tier, Tier::Premium);
     }
 
     #[test]
@@ -6455,8 +6518,8 @@ model = "claude:haiku"
             ..Default::default()
         }];
         let registry = config.effective_registry();
-        // 6 built-in + 1 custom = 7
-        assert_eq!(registry.len(), 7);
+        // 8 built-in + 1 custom = 9
+        assert_eq!(registry.len(), 9);
         assert!(registry.iter().any(|e| e.id == "custom"));
         assert!(registry.iter().any(|e| e.id == "haiku"));
     }
@@ -6472,8 +6535,8 @@ model = "claude:haiku"
             ..Default::default()
         }];
         let registry = config.effective_registry();
-        // 5 remaining built-ins + 1 override = 6
-        assert_eq!(registry.len(), 6);
+        // 7 remaining built-ins + 1 override = 8
+        assert_eq!(registry.len(), 8);
         let haiku = registry.iter().find(|e| e.id == "haiku").unwrap();
         assert_eq!(haiku.model, "my-haiku");
         assert_eq!(haiku.provider, "local");
@@ -9474,6 +9537,31 @@ fetch_max_chars = 16000
     // ── Bare-alias contract tests ────────────────────────────────────
 
     #[test]
+    fn test_claude_cli_model_arg_expands_fable_only() {
+        // Fable has no bare CLI shortcut → expand the friendly alias.
+        assert_eq!(claude_cli_model_arg("fable"), CLAUDE_FABLE_MODEL_ID);
+        assert_eq!(claude_cli_model_arg("fable"), "claude-fable-5");
+        assert_eq!(claude_cli_model_arg("FABLE"), "claude-fable-5");
+        // Already-dated fable id passes through unchanged (idempotent).
+        assert_eq!(claude_cli_model_arg("claude-fable-5"), "claude-fable-5");
+        // opus/sonnet/haiku are CLI shortcuts — pass through verbatim.
+        assert_eq!(claude_cli_model_arg("opus"), "opus");
+        assert_eq!(claude_cli_model_arg("sonnet"), "sonnet");
+        assert_eq!(claude_cli_model_arg("haiku"), "haiku");
+        // Non-claude names are untouched.
+        assert_eq!(claude_cli_model_arg("gpt-5.5"), "gpt-5.5");
+    }
+
+    #[test]
+    fn test_claude_fable_parses_to_claude_provider() {
+        let spec = parse_model_spec("claude:fable");
+        assert_eq!(spec.provider.as_deref(), Some("claude"));
+        assert_eq!(spec.model_id, "fable");
+        // The claude handler expands the bare model id to the CLI arg.
+        assert_eq!(claude_cli_model_arg(&spec.model_id), "claude-fable-5");
+    }
+
+    #[test]
     fn test_alias_claude_opus_resolves_to_bare_opus() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
@@ -9515,6 +9603,13 @@ fetch_max_chars = 16000
         let registry = config.effective_registry();
         for entry in &registry {
             if entry.provider == "anthropic" {
+                // Fable 5 is the deliberate exception: the claude CLI has no
+                // bare `fable` shortcut, so its registry model MUST be the full
+                // CLI id `claude-fable-5`. Every other anthropic entry uses a
+                // bare alias the CLI resolves to the current production model.
+                if entry.model == CLAUDE_FABLE_MODEL_ID {
+                    continue;
+                }
                 assert!(
                     !entry.model.contains('-'),
                     "Anthropic registry entry '{}' has model '{}' — \

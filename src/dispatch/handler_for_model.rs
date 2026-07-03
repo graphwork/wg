@@ -125,6 +125,8 @@ mod tests {
     fn test_claude_prefix_routes_to_claude_handler() {
         assert_eq!(handler_for_model("claude:opus"), ExecutorKind::Claude);
         assert_eq!(handler_for_model("claude:sonnet-4-6"), ExecutorKind::Claude);
+        // Fable 5 runs on the claude CLI handler, same as opus.
+        assert_eq!(handler_for_model("claude:fable"), ExecutorKind::Claude);
     }
 
     #[test]
@@ -133,6 +135,7 @@ mod tests {
         assert_eq!(handler_for_model("opus"), ExecutorKind::Claude);
         assert_eq!(handler_for_model("sonnet"), ExecutorKind::Claude);
         assert_eq!(handler_for_model("haiku"), ExecutorKind::Claude);
+        assert_eq!(handler_for_model("fable"), ExecutorKind::Claude);
     }
 
     #[test]
