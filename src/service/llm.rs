@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::config::{
     CLAUDE_FABLE_MODEL_ID, CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
-    Config, DispatchRole, ModelRegistryEntry, parse_model_spec,
+    Config, DispatchRole, ModelRegistryEntry, parse_model_spec, strip_native_handler_prefix,
 };
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
@@ -134,6 +134,28 @@ fn agency_dispatch_for_spec(raw_spec: &str) -> AgencyDispatch {
     }
 }
 
+/// Resolve the native-HTTP provider label a raw agency / reviewer model spec
+/// targets.
+///
+/// Applies the **handler-first inner re-parse** (design §6.3) FIRST: a leading
+/// `nex:` / `native:` names the in-process native handler, so the actual
+/// provider lives in the INNER dialect. `nex:openrouter:<model>` therefore
+/// resolves to `"openrouter"` — NOT the `oai-compat` localhost default the
+/// lenient `parse_model_spec` would pick from the bare `nex` prefix (which sent
+/// the canonical handler-first tier spec the rest of the codebase pushes to the
+/// wrong wire and fail-closed every reviewer item). A bare in-process
+/// `nex:<model>` (no inner provider) stays `"oai-compat"`; a prefix-less spec
+/// defaults to `"anthropic"`. Shared by [`agency_native_creds_available`] and
+/// [`agency_native_call_for_spec`] so the credential decision and the actual
+/// call agree on which wire they hit. Mirrors `src/executor/native/provider.rs`.
+fn native_provider_for_spec(raw_spec: &str) -> &'static str {
+    parse_model_spec(strip_native_handler_prefix(raw_spec))
+        .provider
+        .as_deref()
+        .map(crate::config::provider_to_resolved_provider)
+        .unwrap_or("anthropic")
+}
+
 /// Whether a native-HTTP agency model has a usable API key available.
 ///
 /// Mirrors the key resolution that [`call_openai_native`] / [`call_anthropic_native`]
@@ -143,12 +165,7 @@ fn agency_dispatch_for_spec(raw_spec: &str) -> AgencyDispatch {
 /// providers (`local`, OAI-compat `nex` endpoints) and the self-authenticating
 /// CLIs are never blocked.
 fn agency_native_creds_available(config: &Config, raw_spec: &str) -> bool {
-    let spec = parse_model_spec(raw_spec);
-    let provider = spec
-        .provider
-        .as_deref()
-        .map(crate::config::provider_to_resolved_provider)
-        .unwrap_or("anthropic");
+    let provider = native_provider_for_spec(raw_spec);
 
     let env_present = |vars: &[&str]| -> bool {
         vars.iter()
@@ -346,12 +363,16 @@ fn agency_native_call_for_spec(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    let spec = parse_model_spec(raw_spec);
-    let provider = spec
-        .provider
-        .as_deref()
-        .map(crate::config::provider_to_resolved_provider)
-        .unwrap_or("anthropic");
+    // Handler-first inner re-parse (design §6.3): unwrap a leading `nex:` /
+    // `native:` handler prefix so a wire-distinct inner provider drives
+    // resolution (`nex:openrouter:<model>` → provider `openrouter`, model_id
+    // `<model>`). Without this the lenient `parse_model_spec` reads `nex` as
+    // the provider and the call collapses to the oai-compat localhost default
+    // (bogus model id `openrouter:<model>`) instead of hitting OpenRouter —
+    // fail-closing every reviewer item. `native_provider_for_spec` and this
+    // `model_id` both derive from the same stripped spec so they stay in sync.
+    let spec = parse_model_spec(strip_native_handler_prefix(raw_spec));
+    let provider = native_provider_for_spec(raw_spec);
     match provider {
         "anthropic" => call_anthropic_native(
             config,
@@ -1777,6 +1798,60 @@ mod tests {
         assert!(agency_native_creds_available(
             &config,
             "openrouter:deepseek/deepseek-chat"
+        ));
+    }
+
+    #[test]
+    fn test_native_provider_for_spec_strips_handler_first_prefix() {
+        // The regression this task fixes: the canonical handler-first spec
+        // `nex:openrouter:<model>` must resolve to the OpenRouter native client,
+        // NOT the oai-compat localhost default (what the lenient parse yields
+        // from the bare `nex` prefix) and NOT anthropic.
+        assert_eq!(
+            native_provider_for_spec("nex:openrouter:openai/gpt-4o-mini"),
+            "openrouter"
+        );
+        // `native:` is the legacy handler alias — same unwrap.
+        assert_eq!(
+            native_provider_for_spec("native:openrouter:openai/gpt-4o-mini"),
+            "openrouter"
+        );
+        // The bare (already-working) form resolves identically — parity so
+        // `wg config`'s recommended `nex:` form and the legacy bare form agree.
+        assert_eq!(
+            native_provider_for_spec("openrouter:openai/gpt-4o-mini"),
+            "openrouter"
+        );
+        // A bare in-process nex model (no inner provider) still targets the
+        // oai-compat localhost wire — the strip is a no-op here.
+        assert_eq!(
+            native_provider_for_spec("nex:qwen3-coder-30b"),
+            "oai-compat"
+        );
+        // A prefix-less spec defaults to anthropic-native, unchanged.
+        assert_eq!(native_provider_for_spec("some-bare-model"), "anthropic");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_agency_native_creds_available_handler_first_openrouter() {
+        // With the handler-first `nex:openrouter:` spec, the credential gate must
+        // behave exactly like the bare `openrouter:` spec: unavailable with no
+        // key (proves it resolves to openrouter, NOT the ungated oai-compat
+        // localhost path and NOT anthropic), available once the key is present.
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let _a = EnvGuard::set("OPENAI_API_KEY", None);
+        let config = Config::default();
+
+        assert!(!agency_native_creds_available(
+            &config,
+            "nex:openrouter:openai/gpt-4o-mini"
+        ));
+
+        let _k = EnvGuard::set("OPENROUTER_API_KEY", Some("sk-or-x"));
+        assert!(agency_native_creds_available(
+            &config,
+            "nex:openrouter:openai/gpt-4o-mini"
         ));
     }
 }

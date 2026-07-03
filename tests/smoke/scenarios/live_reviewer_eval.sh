@@ -47,32 +47,34 @@ FPCEIL="${WG_REVIEW_EVAL_FP_CEILING:-0.30}"
 
 scratch=$(make_scratch)
 HOME_DIR="$scratch/home"
-WGDIR="$scratch/wg/.wg"
-mkdir -p "$HOME_DIR/.config" "$WGDIR"
+mkdir -p "$HOME_DIR/.config"
 
-# A bare `openrouter:` tier spec routes the weak/strong reviewer call through the native
-# OpenAI-compatible client at the OpenRouter base URL (the form the reviewer native path
-# actually parses — see docs/prod-audit/02 §Caveats). The handler-first `nex:openrouter:`
-# form is rejected by that path today (tracked follow-up).
-cat >"$WGDIR/config.toml" <<EOF
+# Run the live eval once for a given (weak, strong) tier pair and assert the guard.
+# `label` names the form under test; `wgdir` is a fresh graph dir so the two runs
+# don't share config. The python only READS the report; the pass/fail thresholds are
+# enforced by `wg review eval` itself (rc) and re-asserted here for a loud banner.
+run_eval_form() {
+    local label="$1" weak="$2" strong="$3"
+    local wgdir="$scratch/$label/.wg"
+    mkdir -p "$wgdir"
+    cat >"$wgdir/config.toml" <<EOF
 [tiers]
-fast = "$WEAK"
-premium = "$STRONG"
+fast = "$weak"
+premium = "$strong"
 EOF
 
-out="$scratch/result.json"
-env -i HOME="$HOME_DIR" PATH="$PATH" XDG_CONFIG_HOME="$HOME_DIR/.config" \
-    RUST_LOG=error WG_REVIEW_MODEL=1 OPENROUTER_API_KEY="$KEY" \
-    wg --dir "$WGDIR" --json review eval --require-model \
-    --catch-threshold "$CATCH" --fp-ceiling "$FPCEIL" >"$out" 2>"$scratch/stderr.txt"
-rc=$?
+    local out="$scratch/$label.json"
+    env -i HOME="$HOME_DIR" PATH="$PATH" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+        RUST_LOG=error WG_REVIEW_MODEL=1 OPENROUTER_API_KEY="$KEY" \
+        wg --dir "$wgdir" --json review eval --require-model \
+        --catch-threshold "$CATCH" --fp-ceiling "$FPCEIL" >"$out" 2>"$scratch/$label.stderr.txt"
+    local rc=$?
 
-[ -s "$out" ] || loud_fail "no JSON report produced (rc=$rc); stderr: $(cat "$scratch/stderr.txt")"
+    [ -s "$out" ] || loud_fail "[$label] no JSON report produced (rc=$rc); stderr: $(cat "$scratch/$label.stderr.txt")"
 
-# Parse + assert. The python here only READS the report; the pass/fail thresholds are
-# enforced by `wg review eval` itself (rc), and re-asserted here for a loud banner.
-python3 - "$out" "$CATCH" "$FPCEIL" <<'PY' || loud_fail "live reviewer eval regressed (see report above)"
-import json, sys
+    LABEL="$label" python3 - "$out" "$CATCH" "$FPCEIL" <<'PY' || loud_fail "[$label] live reviewer eval regressed (see report above)"
+import json, os, sys
+label = os.environ["LABEL"]
 report = json.load(open(sys.argv[1]))
 catch_min = float(sys.argv[2]); fp_ceiling = float(sys.argv[3])
 mode = report.get("mode")
@@ -82,12 +84,14 @@ total = ov["attacks_total"] + ov["clean_total"]
 fail_closed = src.get("fail-closed", 0)
 
 def die(msg):
-    sys.stderr.write("ASSERT: " + msg + "\n"); sys.exit(1)
+    sys.stderr.write(f"ASSERT [{label}]: " + msg + "\n"); sys.exit(1)
 
 # Must have actually run the LIVE model, not silently fallen to the deterministic floor.
 if mode != "live-model":
     die(f"eval ran in mode={mode!r}, not 'live-model' — refusing a silent floor pass")
 # Loud unreachability signal: a large fail-closed fraction means the model never answered.
+# This is EXACTLY the fix-reviewer-native regression: the handler-first `nex:openrouter:`
+# tier spec used to resolve to the oai-compat localhost wire and fail-closed every item.
 if fail_closed > max(2, total // 10):
     die(f"LIVE MODEL UNREACHABLE: {fail_closed}/{total} items fail-closed (source_counts={src})")
 # The generalization guard (the number that matters).
@@ -101,13 +105,22 @@ if ov["false_pos_rate"] > fp_ceiling:
 if not report.get("passed"):
     die(f"report not marked passed: {report.get('regression')}")
 
-print(f"ok: LIVE model held-out catch {ho['catch_rate']*100:.0f}% "
+print(f"ok [{label}]: LIVE model held-out catch {ho['catch_rate']*100:.0f}% "
       f"({ho['attacks_caught']}/{ho['attacks_total']}), floor caught {ho['attacks_caught_floor']}/"
       f"{ho['attacks_total']}; overall FP {ov['false_pos_rate']*100:.0f}% "
       f"(floor {ov['floor_false_pos_rate']*100:.0f}%); generalization delta "
       f"{report['generalization_delta']}; escalations {report['escalations']}; sources {src}")
 PY
 
-[ "$rc" = "0" ] || loud_fail "wg review eval exited $rc despite assertions passing (regression?)"
+    [ "$rc" = "0" ] || loud_fail "[$label] wg review eval exited $rc despite assertions passing (regression?)"
+}
 
-echo "live_reviewer_eval: the live weak→strong model reviewer passed the held-out generalization guard"
+# Both tier-spec forms MUST work identically (fix-reviewer-native): the legacy bare
+# `openrouter:<model>` form AND the canonical handler-first `nex:openrouter:<model>` form
+# that `wg config` / the deprecation warning recommend. Before the fix, the `nex:` form
+# resolved to the oai-compat localhost wire on the reviewer native path and fail-closed
+# every item; both must now reach the OpenRouter model and pass the generalization guard.
+run_eval_form "bare" "$WEAK" "$STRONG"
+run_eval_form "handler-first" "nex:$WEAK" "nex:$STRONG"
+
+echo "live_reviewer_eval: the live weak→strong model reviewer passed the held-out generalization guard (bare + handler-first tier specs)"
