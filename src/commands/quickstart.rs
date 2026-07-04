@@ -8,7 +8,7 @@ const QUICKSTART_TEXT: &str = r###"
 GETTING STARTED
 ─────────────────────────────────────────
   wg init                     # Create a .wg directory
-  wg setup                    # Interactive config wizard (5 routes: claude-cli, openrouter, codex-cli, local, nex-custom)
+  wg setup                    # Interactive config wizard (routes: claude-cli, openrouter, codex-cli, pi, local, nex-custom)
   wg setup --route claude-cli --yes   # Non-interactive: pick a route and accept defaults
   wg agency init              # Bootstrap roles, tradeoffs, and a default agent
   wg service start            # Start the dispatcher daemon
