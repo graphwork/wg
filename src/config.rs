@@ -1216,7 +1216,7 @@ fn is_false(b: &bool) -> bool {
 impl EndpointsConfig {
     /// Returns true when there are no configured endpoints.
     pub fn is_empty(&self) -> bool {
-        self.endpoints.is_empty()
+        self.endpoints.is_empty() && !self.inherit_global
     }
 
     /// Find the best endpoint for a given provider name.

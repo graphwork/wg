@@ -221,6 +221,21 @@ pub fn run_with_route(
         }
     }
 
+    if route == SetupRoute::Openrouter {
+        println!();
+        println!("OpenRouter auth");
+        println!(
+            "  `wg init --route openrouter` writes the project route, but WG-managed auth is separate."
+        );
+        println!("  Next independent login step: wg login openrouter");
+        println!(
+            "  WG-managed auth powers `openrouter:` / `nex:openrouter:` routes, `wg models fetch --no-cache`, and `wg model-scout --no-cache`."
+        );
+        println!(
+            "  Pi keeps its own provider login separately; `pi:` routes may still need `/login` inside pi."
+        );
+    }
+
     Ok(())
 }
 

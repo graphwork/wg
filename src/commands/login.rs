@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use worksgood::config::{Config, EndpointConfig};
 use worksgood::secret::{self, Backend, SecretsConfig};
 
-const OPENROUTER_ENDPOINT_NAME: &str = "openrouter";
+pub(crate) const OPENROUTER_ENDPOINT_NAME: &str = "openrouter";
 const OPENROUTER_PROVIDER: &str = "openrouter";
-const OPENROUTER_ENV_VAR: &str = "OPENROUTER_API_KEY";
+pub const OPENROUTER_ENV_VAR: &str = "OPENROUTER_API_KEY";
 
 pub fn run(workgraph_dir: &Path, command: &LoginCommands) -> Result<()> {
     match command {
@@ -43,13 +43,13 @@ pub fn run(workgraph_dir: &Path, command: &LoginCommands) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigScope {
+pub enum ConfigScope {
     Global,
     Local,
 }
 
 impl ConfigScope {
-    fn from_flags(global: bool, local: bool) -> Result<Self> {
+    pub fn from_flags(global: bool, local: bool) -> Result<Self> {
         if global && local {
             bail!("Choose only one of --global or --local");
         }
@@ -62,18 +62,27 @@ impl ConfigScope {
 }
 
 #[derive(Debug, Clone)]
-struct OpenRouterLoginOptions {
-    check: bool,
-    from_stdin: bool,
-    env_var: Option<String>,
-    backend: Option<String>,
-    scope: ConfigScope,
-    set_default: bool,
-    reset_endpoint: bool,
+pub enum OpenRouterCredentialSource {
+    SecretValue {
+        value: String,
+        backend: Option<Backend>,
+    },
+    EnvVar(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenRouterLoginOptions {
+    pub check: bool,
+    pub from_stdin: bool,
+    pub env_var: Option<String>,
+    pub backend: Option<String>,
+    pub scope: ConfigScope,
+    pub set_default: bool,
+    pub reset_endpoint: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum CredentialMode {
+pub enum CredentialMode {
     StoredSecret {
         api_key_ref: String,
         backend: Backend,
@@ -85,20 +94,30 @@ enum CredentialMode {
     },
 }
 
-#[derive(Debug, Clone)]
-struct CheckReport {
-    wg_ref_label: String,
-    wg_secret_present: bool,
-    endpoint_name: String,
-    endpoint_url: String,
-    endpoint_default: bool,
-    auth_ok: Option<bool>,
-    auth_detail: String,
-    pi_auth_present: bool,
-    pi_auth_path: PathBuf,
+impl CredentialMode {
+    pub fn api_key_ref(&self) -> &str {
+        match self {
+            Self::StoredSecret { api_key_ref, .. } | Self::EnvRef { api_key_ref, .. } => {
+                api_key_ref
+            }
+        }
+    }
 }
 
-fn run_openrouter(workgraph_dir: &Path, options: &OpenRouterLoginOptions) -> Result<()> {
+#[derive(Debug, Clone)]
+pub struct CheckReport {
+    pub wg_ref_label: String,
+    pub wg_secret_present: bool,
+    pub endpoint_name: String,
+    pub endpoint_url: String,
+    pub endpoint_default: bool,
+    pub auth_ok: Option<bool>,
+    pub auth_detail: String,
+    pub pi_auth_present: bool,
+    pub pi_auth_path: PathBuf,
+}
+
+pub fn run_openrouter(workgraph_dir: &Path, options: &OpenRouterLoginOptions) -> Result<()> {
     if options.check {
         let report = build_openrouter_check_report(workgraph_dir)?;
         print_check_report(&report);
@@ -111,18 +130,14 @@ fn run_openrouter(workgraph_dir: &Path, options: &OpenRouterLoginOptions) -> Res
         return Ok(());
     }
 
-    let cfg = SecretsConfig::load_global();
-    let credential_mode = resolve_credential_mode(options, &cfg)?;
-    let mut config = load_target_config(workgraph_dir, options.scope)?;
-    upsert_openrouter_endpoint(
-        &mut config,
-        &credential_mode,
+    let credential_mode = resolve_credential_mode(options, &SecretsConfig::load_global())?;
+    let report = apply_openrouter_login(
+        workgraph_dir,
+        options.scope,
+        credential_mode,
         options.set_default,
         options.reset_endpoint,
     )?;
-    save_target_config(&config, workgraph_dir, options.scope)?;
-
-    let report = build_openrouter_check_report(workgraph_dir)?;
     print_check_report(&report);
     if !matches!(report.auth_ok, Some(true)) {
         bail!("OpenRouter login saved config, but the credential check did not succeed.");
@@ -135,44 +150,81 @@ fn resolve_credential_mode(
     secrets_cfg: &SecretsConfig,
 ) -> Result<CredentialMode> {
     if let Some(var_name) = options.env_var.as_deref() {
-        let value = std::env::var(var_name).with_context(|| {
-            format!(
-                "Environment variable '{}' is not set. Export it first, then rerun `wg login openrouter --env {}`.",
-                var_name, var_name
-            )
-        })?;
-        if value.trim().is_empty() {
-            bail!(
-                "Environment variable '{}' is set but empty. Refusing to configure an unusable OpenRouter credential.",
-                var_name
-            );
-        }
-        return Ok(CredentialMode::EnvRef {
-            api_key_ref: format!("env:{var_name}"),
-            var_name: var_name.to_string(),
-        });
+        return credential_mode_from_source(
+            OpenRouterCredentialSource::EnvVar(var_name.to_string()),
+            secrets_cfg,
+        );
     }
 
-    let backend = if let Some(backend) = options.backend.as_deref() {
-        backend.parse::<Backend>()?
-    } else {
-        secrets_cfg.default_backend.clone()
-    };
     let secret_value = read_secret_value(options.from_stdin)?;
-    if secret_value.trim().is_empty() {
-        bail!("OpenRouter API key cannot be empty");
-    }
-    secret::set(
-        OPENROUTER_ENDPOINT_NAME,
-        &secret_value,
-        &backend,
+    let backend = options
+        .backend
+        .as_deref()
+        .map(str::parse::<Backend>)
+        .transpose()?;
+    credential_mode_from_source(
+        OpenRouterCredentialSource::SecretValue {
+            value: secret_value,
+            backend,
+        },
         secrets_cfg,
-    )?;
-    Ok(CredentialMode::StoredSecret {
-        api_key_ref: api_key_ref_for_backend(&backend, OPENROUTER_ENDPOINT_NAME),
+    )
+}
+
+fn credential_mode_from_source(
+    source: OpenRouterCredentialSource,
+    secrets_cfg: &SecretsConfig,
+) -> Result<CredentialMode> {
+    match source {
+        OpenRouterCredentialSource::EnvVar(var_name) => {
+            let value = std::env::var(&var_name).with_context(|| {
+                format!(
+                    "Environment variable '{}' is not set. Export it first, then rerun `wg login openrouter --env {}`.",
+                    var_name, var_name
+                )
+            })?;
+            if value.trim().is_empty() {
+                bail!(
+                    "Environment variable '{}' is set but empty. Refusing to configure an unusable OpenRouter credential.",
+                    var_name
+                );
+            }
+            Ok(CredentialMode::EnvRef {
+                api_key_ref: format!("env:{var_name}"),
+                var_name,
+            })
+        }
+        OpenRouterCredentialSource::SecretValue { value, backend } => {
+            if value.trim().is_empty() {
+                bail!("OpenRouter API key cannot be empty");
+            }
+            let backend = backend.unwrap_or_else(|| secrets_cfg.default_backend.clone());
+            secret::set(OPENROUTER_ENDPOINT_NAME, &value, &backend, secrets_cfg)?;
+            Ok(CredentialMode::StoredSecret {
+                api_key_ref: api_key_ref_for_backend(&backend, OPENROUTER_ENDPOINT_NAME),
+                backend,
+                secret_name: OPENROUTER_ENDPOINT_NAME.to_string(),
+            })
+        }
+    }
+}
+
+pub fn resolve_openrouter_credential_mode(
+    from_stdin: bool,
+    env_var: Option<String>,
+    backend: Option<String>,
+) -> Result<CredentialMode> {
+    let cfg = SecretsConfig::load_global();
+    let options = OpenRouterLoginOptions {
+        check: false,
+        from_stdin,
+        env_var,
         backend,
-        secret_name: OPENROUTER_ENDPOINT_NAME.to_string(),
-    })
+        scope: ConfigScope::Global,
+        set_default: false,
+        reset_endpoint: false,
+    };
+    resolve_credential_mode(&options, &cfg)
 }
 
 fn api_key_ref_for_backend(backend: &Backend, name: &str) -> String {
@@ -223,6 +275,36 @@ fn save_target_config(config: &Config, workgraph_dir: &Path, scope: ConfigScope)
         ConfigScope::Global => config.save_global(),
         ConfigScope::Local => config.save(workgraph_dir),
     }
+}
+
+fn apply_openrouter_login(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    credential_mode: CredentialMode,
+    set_default: bool,
+    reset_endpoint: bool,
+) -> Result<CheckReport> {
+    let mut config = load_target_config(workgraph_dir, scope)?;
+    upsert_openrouter_endpoint(&mut config, &credential_mode, set_default, reset_endpoint)?;
+    save_target_config(&config, workgraph_dir, scope)?;
+    build_openrouter_check_report_for_scope(workgraph_dir, scope)
+}
+
+pub fn configure_openrouter_credential(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    credential: OpenRouterCredentialSource,
+    set_default: bool,
+    reset_endpoint: bool,
+) -> Result<CheckReport> {
+    let credential_mode = credential_mode_from_source(credential, &SecretsConfig::load_global())?;
+    apply_openrouter_login(
+        workgraph_dir,
+        scope,
+        credential_mode,
+        set_default,
+        reset_endpoint,
+    )
 }
 
 fn upsert_openrouter_endpoint(
@@ -300,8 +382,23 @@ fn upsert_openrouter_endpoint(
     Ok(())
 }
 
-fn build_openrouter_check_report(workgraph_dir: &Path) -> Result<CheckReport> {
+pub fn build_openrouter_check_report(workgraph_dir: &Path) -> Result<CheckReport> {
     let config = Config::load_merged(workgraph_dir)?;
+    build_openrouter_check_report_from_config(&config, workgraph_dir)
+}
+
+fn build_openrouter_check_report_for_scope(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+) -> Result<CheckReport> {
+    let config = load_target_config(workgraph_dir, scope)?;
+    build_openrouter_check_report_from_config(&config, workgraph_dir)
+}
+
+fn build_openrouter_check_report_from_config(
+    config: &Config,
+    workgraph_dir: &Path,
+) -> Result<CheckReport> {
     let endpoint = config
         .llm_endpoints
         .find_by_name(OPENROUTER_ENDPOINT_NAME)
@@ -404,8 +501,9 @@ fn redact_error(message: &str) -> String {
     }
 }
 
-fn print_check_report(report: &CheckReport) {
+pub fn print_check_report(report: &CheckReport) {
     println!("OpenRouter (WG)");
+    println!("  scope: WG-managed auth for `openrouter:` / `nex:openrouter:` routes");
     let secret_status = if report.wg_secret_present {
         "present"
     } else {
@@ -427,6 +525,7 @@ fn print_check_report(report: &CheckReport) {
     }
     println!();
     println!("OpenRouter (Pi)");
+    println!("  scope: Pi-managed auth for `pi:` routes only");
     if report.pi_auth_present {
         println!("  auth: present in {}", report.pi_auth_path.display());
     } else {

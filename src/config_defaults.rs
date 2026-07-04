@@ -1,7 +1,7 @@
 //! Per-route default configurations for `wg setup` / `wg init`.
 //!
-//! Five named routes that each produce a complete, working `Config`:
-//! `openrouter`, `claude-cli`, `codex-cli`, `local`, `nex-custom`.
+//! Six named routes that each produce a complete, working `Config`:
+//! `openrouter`, `claude-cli`, `codex-cli`, `pi`, `local`, `nex-custom`.
 //!
 //! Every route fills in `[agent]`, `[dispatcher]`, `[tiers]` (all three
 //! tiers — fast / standard / premium), `[models]` evaluator + assigner,
@@ -24,6 +24,8 @@ pub enum SetupRoute {
     ClaudeCli,
     /// codex executor → local `codex` CLI login.
     CodexCli,
+    /// pi executor → self-auth pi handler for strong work, optional WG OpenRouter for agency/meta.
+    Pi,
     /// nex executor → local OAI-compatible endpoint (Ollama default).
     Local,
     /// nex executor → user-supplied URL + key + model.
@@ -37,6 +39,7 @@ impl SetupRoute {
             Self::Openrouter => "openrouter",
             Self::ClaudeCli => "claude-cli",
             Self::CodexCli => "codex-cli",
+            Self::Pi => "pi",
             Self::Local => "local",
             Self::NexCustom => "nex-custom",
         }
@@ -48,6 +51,7 @@ impl SetupRoute {
             Self::Openrouter => "OpenRouter — one API key, every major provider (uses nex)",
             Self::ClaudeCli => "Claude Code CLI — local `claude` login, Anthropic models",
             Self::CodexCli => "OpenAI Codex CLI — local `codex` login, OpenAI models",
+            Self::Pi => "Pi — self-auth pi worker/chat routes, optional WG OpenRouter for agency",
             Self::Local => "Local — Ollama / vLLM / llama.cpp on localhost (uses nex)",
             Self::NexCustom => {
                 "Custom — bring your own OAI-compatible URL + key + model (uses nex)"
@@ -61,6 +65,7 @@ impl SetupRoute {
             "openrouter" | "openrouter-cli" | "or" => Some(Self::Openrouter),
             "claude-cli" | "claude" | "anthropic" => Some(Self::ClaudeCli),
             "codex-cli" | "codex" | "openai-cli" => Some(Self::CodexCli),
+            "pi" => Some(Self::Pi),
             "local" | "ollama" | "llama" | "vllm" => Some(Self::Local),
             "nex-custom" | "nex" | "custom" | "oai-compat" => Some(Self::NexCustom),
             _ => None,
@@ -73,6 +78,7 @@ impl SetupRoute {
             Self::Openrouter,
             Self::ClaudeCli,
             Self::CodexCli,
+            Self::Pi,
             Self::Local,
             Self::NexCustom,
         ]
@@ -84,6 +90,7 @@ impl SetupRoute {
             Self::Openrouter | Self::Local | Self::NexCustom => "native",
             Self::ClaudeCli => "claude",
             Self::CodexCli => "codex",
+            Self::Pi => "pi",
         }
     }
 
@@ -109,6 +116,7 @@ impl SetupRoute {
         match executor {
             "claude" => Some(Self::ClaudeCli),
             "codex" => Some(Self::CodexCli),
+            "pi" => Some(Self::Pi),
             "native" | "nex" => Some(Self::Openrouter),
             _ => None,
         }
@@ -141,6 +149,7 @@ pub fn config_for_route(route: SetupRoute, params: RouteParams) -> Config {
         SetupRoute::Openrouter => openrouter_config(&params),
         SetupRoute::ClaudeCli => claude_cli_config(&params),
         SetupRoute::CodexCli => codex_cli_config(&params),
+        SetupRoute::Pi => pi_config(&params),
         SetupRoute::Local => local_config(&params),
         SetupRoute::NexCustom => nex_custom_config(&params),
     };
@@ -316,6 +325,59 @@ fn codex_cli_config(params: &RouteParams) -> Config {
     };
     config.models.flip_inference = Some(flip_role.clone());
     config.models.flip_comparison = Some(flip_role);
+
+    config
+}
+
+fn pi_config(params: &RouteParams) -> Config {
+    let mut config: Config =
+        toml::from_str(crate::profile::named::STARTER_PI).expect("pi starter must parse");
+
+    config.coordinator.executor = Some("pi".to_string());
+    config.agent.executor = "pi".to_string();
+
+    if let Some(model) = params.model.clone() {
+        let strong = if model.starts_with("pi:") {
+            model
+        } else if let Some(inner) = model.strip_prefix("openrouter:") {
+            format!("pi:{inner}")
+        } else {
+            format!("pi:{model}")
+        };
+        config.agent.model = strong.clone();
+        config.coordinator.model = Some(strong.clone());
+        config.tiers.standard = Some(strong.clone());
+        config.tiers.premium = Some(strong.clone());
+        if let Some(task_agent) = &mut config.models.task_agent {
+            task_agent.model = Some(strong.clone());
+        }
+        if let Some(default_model) = &mut config.models.default {
+            default_model.model = Some(strong);
+        }
+    }
+
+    if params.api_key_env.is_some() || params.api_key_file.is_some() || params.url.is_some() {
+        config.llm_endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![EndpointConfig {
+                name: "openrouter".to_string(),
+                provider: "openrouter".to_string(),
+                url: Some(
+                    params
+                        .url
+                        .clone()
+                        .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
+                ),
+                model: None,
+                api_key: None,
+                api_key_file: params.api_key_file.clone(),
+                api_key_env: params.api_key_env.clone(),
+                api_key_ref: None,
+                is_default: true,
+                context_window: None,
+            }],
+        };
+    }
 
     config
 }

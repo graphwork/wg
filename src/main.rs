@@ -3402,6 +3402,8 @@ fn main() -> Result<()> {
             skip_validation,
             yes,
             dry_run,
+            from_stdin,
+            backend,
         } => {
             let args = commands::setup::SetupArgs {
                 route,
@@ -3414,6 +3416,8 @@ fn main() -> Result<()> {
                 skip_validation,
                 yes,
                 dry_run,
+                from_stdin,
+                backend,
             };
             commands::setup::run_with_args(&args)
         }

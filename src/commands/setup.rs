@@ -6,12 +6,18 @@ use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, Input, Select};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use worksgood::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::models::ModelRegistry;
 use worksgood::notify::config as notify_config;
+
+use crate::commands::login::{
+    self, ConfigScope as LoginConfigScope, OPENROUTER_ENV_VAR, OpenRouterCredentialSource,
+};
+use worksgood::secret::{Backend, SecretsConfig, resolve_ref};
 
 /// Marker used to detect whether WG directives are already present in agent guides.
 const CLAUDE_MD_MARKER: &str = "<!-- WG-managed -->";
@@ -71,6 +77,10 @@ pub struct SetupArgs {
     pub yes: bool,
     /// Print the config that would be written but don't write it.
     pub dry_run: bool,
+    /// Read a provider API key from stdin for secret-backed setup flows.
+    pub from_stdin: bool,
+    /// Secret backend for stored provider credentials.
+    pub backend: Option<String>,
 }
 
 /// Where `wg setup` should write the config.
@@ -148,6 +158,8 @@ pub struct SetupChoices {
     pub max_agents: usize,
     /// Endpoint config for non-Anthropic providers
     pub endpoint: Option<EndpointChoices>,
+    /// Reuse inherited global endpoints from repo-local config.
+    pub inherit_global_endpoints: bool,
     /// Model registry entries to add
     pub model_registry_entries: Vec<ModelRegistryEntry>,
 }
@@ -158,6 +170,7 @@ pub struct EndpointChoices {
     pub name: String,
     pub provider: String,
     pub url: String,
+    pub api_key_ref: Option<String>,
     pub api_key_env: Option<String>,
     pub api_key_file: Option<String>,
 }
@@ -197,13 +210,18 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
             api_key: None,
             api_key_file: ep.api_key_file.clone(),
             api_key_env: ep.api_key_env.clone(),
-            api_key_ref: None,
+            api_key_ref: ep.api_key_ref.clone(),
             is_default: true,
             context_window: None,
         };
         config.llm_endpoints = EndpointsConfig {
-            inherit_global: false,
+            inherit_global: choices.inherit_global_endpoints,
             endpoints: vec![endpoint],
+        };
+    } else if choices.inherit_global_endpoints {
+        config.llm_endpoints = EndpointsConfig {
+            inherit_global: true,
+            endpoints: vec![],
         };
     }
 
@@ -353,6 +371,9 @@ pub fn format_summary(choices: &SetupChoices) -> String {
         lines.push(format!("  name = \"{}\"", ep.name));
         lines.push(format!("  provider = \"{}\"", ep.provider));
         lines.push(format!("  url = \"{}\"", ep.url));
+        if let Some(ref api_key_ref) = ep.api_key_ref {
+            lines.push(format!("  api_key_ref = \"{}\"", api_key_ref));
+        }
         if let Some(ref env) = ep.api_key_env {
             lines.push(format!("  api_key_env = \"{}\"", env));
         }
@@ -792,6 +813,7 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
             name: provider.to_string(),
             provider: provider.to_string(),
             url: url.to_string(),
+            api_key_ref: None,
             api_key_env: args.api_key_env.clone(),
             api_key_file: args.api_key_file.clone(),
         })
@@ -806,6 +828,7 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
         agency_enabled: existing.agency.auto_assign,
         max_agents: existing.coordinator.max_agents,
         endpoint,
+        inherit_global_endpoints: false,
         model_registry_entries: model_registry_entries.clone(),
     };
 
@@ -980,6 +1003,15 @@ fn resolve_key_from_args(args: &SetupArgs) -> Result<Option<String>> {
 
 /// Resolve an API key from EndpointChoices (reading env var or key file).
 fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
+    if let Some(ref api_key_ref) = ep.api_key_ref {
+        let cfg = SecretsConfig::load_global();
+        if let Ok(Some(key)) = resolve_ref(api_key_ref, &cfg) {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
     if let Some(ref env_var) = ep.api_key_env
         && let Ok(key) = std::env::var(env_var)
     {
@@ -1008,6 +1040,222 @@ fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
     None
 }
 
+fn setup_workgraph_dir() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".wg")
+}
+
+fn setup_openrouter_login_scopes(scope: SetupScope) -> Vec<LoginConfigScope> {
+    match scope {
+        SetupScope::Global => vec![LoginConfigScope::Global],
+        SetupScope::Local => vec![LoginConfigScope::Local],
+        SetupScope::Both => vec![LoginConfigScope::Global, LoginConfigScope::Local],
+    }
+}
+
+fn read_setup_api_key_file(path: &str) -> Result<Option<String>> {
+    let expanded = if path.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            home.join(path.strip_prefix("~/").unwrap_or(path))
+        } else {
+            PathBuf::from(path)
+        }
+    } else {
+        PathBuf::from(path)
+    };
+    if !expanded.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&expanded)
+        .with_context(|| format!("Failed to read {}", expanded.display()))?;
+    let key = content.trim().to_string();
+    if key.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(key))
+    }
+}
+
+fn maybe_complete_openrouter_login(
+    api_key_env: Option<&str>,
+    api_key_file: Option<&str>,
+    scope: SetupScope,
+) -> Result<bool> {
+    let workgraph_dir = setup_workgraph_dir();
+    let login_scopes = setup_openrouter_login_scopes(scope);
+
+    if let Some(path) = api_key_file
+        && let Some(secret) = read_setup_api_key_file(path)?
+    {
+        let mut report = None;
+        for login_scope in login_scopes {
+            report = Some(login::configure_openrouter_credential(
+                &workgraph_dir,
+                login_scope,
+                OpenRouterCredentialSource::SecretValue {
+                    value: secret.clone(),
+                    backend: None,
+                },
+                true,
+                false,
+            )?);
+        }
+        println!();
+        println!("WG-managed OpenRouter login completed during setup.");
+        if let Some(report) = report.as_ref() {
+            login::print_check_report(report);
+        }
+        return Ok(true);
+    }
+
+    if let Some(var_name) = api_key_env
+        && std::env::var(var_name)
+            .ok()
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        let mut report = None;
+        for login_scope in login_scopes {
+            report = Some(login::configure_openrouter_credential(
+                &workgraph_dir,
+                login_scope,
+                OpenRouterCredentialSource::EnvVar(var_name.to_string()),
+                true,
+                false,
+            )?);
+        }
+        println!();
+        println!(
+            "WG-managed OpenRouter login completed during setup via env:{}.",
+            var_name
+        );
+        if let Some(report) = report.as_ref() {
+            login::print_check_report(report);
+        }
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn print_openrouter_login_next_step(scope: SetupScope) {
+    println!();
+    println!("OpenRouter auth");
+    println!(
+        "  WG-managed auth is not configured yet for this {} setup.",
+        scope.as_name()
+    );
+    println!("  Next independent login step: wg login openrouter");
+    println!(
+        "  This powers WG-native `openrouter:` / `nex:openrouter:` routes, `wg models fetch --no-cache`, and `wg model-scout --no-cache`."
+    );
+    println!("  Pi keeps its own provider login separately.");
+    println!(
+        "  WG-managed auth covers WG-native traffic; `pi:` routes may still need `/login` inside pi."
+    );
+    println!("  After login, run:");
+    println!("    wg login openrouter --check");
+    println!("    wg models fetch --no-cache");
+    println!("    wg model-scout --no-cache");
+    println!("    wg profile pi");
+    println!(
+        "  Automation: printf '%s' \"$OPENROUTER_API_KEY\" | wg login openrouter --from-stdin"
+    );
+}
+
+fn finalize_openrouter_onboarding(
+    api_key_env: Option<&str>,
+    api_key_file: Option<&str>,
+    scope: SetupScope,
+) -> Result<()> {
+    if !maybe_complete_openrouter_login(api_key_env, api_key_file, scope)? {
+        print_openrouter_login_next_step(scope);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct OpenRouterExistingLogin {
+    api_key_ref: String,
+    url: String,
+}
+
+fn configured_openrouter_login(config: &Config) -> Option<OpenRouterExistingLogin> {
+    let endpoint = config
+        .llm_endpoints
+        .find_by_name("openrouter")
+        .or_else(|| config.llm_endpoints.find_for_provider("openrouter"))?;
+    let api_key_ref = endpoint.api_key_ref.clone().or_else(|| {
+        endpoint
+            .api_key_env
+            .as_ref()
+            .map(|env| format!("env:{env}"))
+    })?;
+    Some(OpenRouterExistingLogin {
+        api_key_ref,
+        url: endpoint
+            .url
+            .clone()
+            .unwrap_or_else(|| EndpointConfig::default_url_for_provider("openrouter").to_string()),
+    })
+}
+
+fn configured_openrouter_login_at(path: &Path) -> Option<OpenRouterExistingLogin> {
+    let content = fs::read_to_string(path).ok()?;
+    let value = toml::from_str::<toml::Value>(&content).ok()?;
+    let endpoints = value
+        .get("llm_endpoints")
+        .and_then(|v| v.get("endpoints"))
+        .and_then(|v| v.as_array())?;
+    for endpoint in endpoints {
+        let provider = endpoint
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = endpoint.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if provider != "openrouter" && name != "openrouter" {
+            continue;
+        }
+        let api_key_ref = endpoint
+            .get("api_key_ref")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                endpoint
+                    .get("api_key_env")
+                    .and_then(|v| v.as_str())
+                    .map(|env| format!("env:{env}"))
+            })?;
+        let url = endpoint
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or(EndpointConfig::default_url_for_provider("openrouter"))
+            .to_string();
+        return Some(OpenRouterExistingLogin { api_key_ref, url });
+    }
+    None
+}
+
+fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
+    let options = &[
+        format!("Use default secret backend ({default_backend})"),
+        "Store in OS keyring".to_string(),
+        "Store in WG keystore".to_string(),
+    ];
+    let idx = Select::new()
+        .with_prompt("Where should WG store the OpenRouter key?")
+        .items(options)
+        .default(0)
+        .interact()?;
+    let backend = match idx {
+        1 => Some("keyring".to_string()),
+        2 => Some("keystore".to_string()),
+        _ => None,
+    };
+    Ok(backend)
+}
+
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
 pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     // New route-driven path: when --route is given (or --yes / --dry-run),
@@ -1033,7 +1281,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
         anyhow::anyhow!(
             "--route is required for non-interactive setup. \
-             Valid routes: openrouter, claude-cli, codex-cli, local, nex-custom"
+             Valid routes: openrouter, claude-cli, codex-cli, pi, local, nex-custom"
         )
     })?;
 
@@ -1047,6 +1295,10 @@ fn run_route(args: &SetupArgs) -> Result<()> {
                     "Note: --api-key-env / --api-key-file not given; defaulting to OPENROUTER_API_KEY."
                 );
             }
+        }
+        SetupRoute::Pi => {
+            // Pi self-auths its strong worker/chat route; WG-side OpenRouter
+            // credentials are optional and are reused/configured below.
         }
         SetupRoute::Local => {
             if args.url.is_none() {
@@ -1081,12 +1333,117 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         url: args.url.clone(),
         model: args.model.clone(),
     };
-    let new_config = config_for_route(route, params);
-
     // Resolve scope: explicit --scope wins; otherwise default to global
     // (non-interactive run_route is reached only when --route or --yes
     // is given, in which case "global" is the canonical target).
     let scope = args.resolved_scope()?.unwrap_or(SetupScope::Global);
+    let mut new_config = config_for_route(route, params);
+
+    let global_openrouter =
+        configured_openrouter_login_at(&Config::global_config_path()?).or_else(|| {
+            Config::load_global()
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(configured_openrouter_login)
+        });
+    match route {
+        SetupRoute::Openrouter => {
+            if args.from_stdin {
+                let mode = super::login::resolve_openrouter_credential_mode(
+                    true,
+                    None,
+                    args.backend.clone(),
+                )?;
+                new_config.llm_endpoints.inherit_global = false;
+                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: Some(args.url.clone().unwrap_or_else(|| {
+                        EndpointConfig::default_url_for_provider("openrouter").to_string()
+                    })),
+                    model: None,
+                    api_key: None,
+                    api_key_file: None,
+                    api_key_env: None,
+                    api_key_ref: Some(mode.api_key_ref().to_string()),
+                    is_default: true,
+                    context_window: None,
+                }];
+            } else if args.api_key_env.is_none()
+                && args.api_key_file.is_none()
+                && matches!(scope, SetupScope::Local)
+                && global_openrouter.is_some()
+            {
+                new_config.llm_endpoints.inherit_global = true;
+                new_config.llm_endpoints.endpoints.clear();
+            } else if args.api_key_env.is_none()
+                && args.api_key_file.is_none()
+                && matches!(scope, SetupScope::Global)
+                && let Some(existing) = global_openrouter.clone()
+            {
+                new_config.llm_endpoints.inherit_global = false;
+                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: Some(existing.url),
+                    model: None,
+                    api_key: None,
+                    api_key_file: None,
+                    api_key_env: None,
+                    api_key_ref: Some(existing.api_key_ref),
+                    is_default: true,
+                    context_window: None,
+                }];
+            }
+        }
+        SetupRoute::Pi => {
+            if args.from_stdin {
+                let mode = super::login::resolve_openrouter_credential_mode(
+                    true,
+                    None,
+                    args.backend.clone(),
+                )?;
+                new_config.llm_endpoints.inherit_global = false;
+                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: Some(args.url.clone().unwrap_or_else(|| {
+                        EndpointConfig::default_url_for_provider("openrouter").to_string()
+                    })),
+                    model: None,
+                    api_key: None,
+                    api_key_file: None,
+                    api_key_env: None,
+                    api_key_ref: Some(mode.api_key_ref().to_string()),
+                    is_default: true,
+                    context_window: None,
+                }];
+            } else if args.api_key_env.is_none()
+                && args.api_key_file.is_none()
+                && matches!(scope, SetupScope::Local)
+                && global_openrouter.is_some()
+            {
+                new_config.llm_endpoints.inherit_global = true;
+                new_config.llm_endpoints.endpoints.clear();
+            } else if let Some(existing) = global_openrouter.clone() {
+                new_config.llm_endpoints.inherit_global = false;
+                new_config.llm_endpoints.endpoints = vec![EndpointConfig {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: Some(existing.url),
+                    model: None,
+                    api_key: None,
+                    api_key_file: None,
+                    api_key_env: None,
+                    api_key_ref: Some(existing.api_key_ref),
+                    is_default: true,
+                    context_window: None,
+                }];
+            }
+        }
+        _ => {}
+    }
 
     let global_path = Config::global_config_path()?;
     let local_path = std::env::current_dir()
@@ -1157,6 +1514,13 @@ fn run_route(args: &SetupArgs) -> Result<()> {
 
     println!();
     println!("{}", format_delta_summary(&new_config));
+    if route == SetupRoute::Openrouter
+        && !args.from_stdin
+        && !new_config.llm_endpoints.inherit_global
+    {
+        let auth_env = args.api_key_env.as_deref().or(Some(OPENROUTER_ENV_VAR));
+        finalize_openrouter_onboarding(auth_env, args.api_key_file.as_deref(), scope)?;
+    }
     Ok(())
 }
 
@@ -1303,12 +1667,16 @@ pub fn run() -> Result<()> {
         );
     }
 
-    // Load existing global config for defaults
-    let existing = Config::load_global()?.unwrap_or_default();
     let global_path = Config::global_config_path()?;
+    let local_path = std::env::current_dir()
+        .map(|p| p.join(".wg").join("config.toml"))
+        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
+
+    let existing_global = Config::load_global()?.unwrap_or_default();
+    let existing_local = load_config_at(&local_path).unwrap_or_default();
 
     println!("Hey! Welcome to WG setup.");
-    println!("We'll get you configured at {}", global_path.display());
+    println!("We'll get this repo wired to a working backend and auth flow.");
     println!("(Press Ctrl-C at any prompt to exit without saving.)");
     println!();
 
@@ -1317,10 +1685,38 @@ pub fn run() -> Result<()> {
     println!("{}", format_detection_summary(&detection));
     println!();
 
-    // If existing config, show what's there
-    if detection.global_config {
-        println!("Current configuration:");
-        println!("{}", check_existing_config(&existing));
+    let scope_labels = vec![
+        format!("Project only ({})", local_path.display()),
+        format!("Global only ({})", global_path.display()),
+    ];
+    let default_scope = if detection.local_config {
+        SetupScope::Local
+    } else {
+        SetupScope::Global
+    };
+    let scope_idx = Select::new()
+        .with_prompt("Where should this setup apply?")
+        .items(&scope_labels)
+        .default(if matches!(default_scope, SetupScope::Local) {
+            0
+        } else {
+            1
+        })
+        .interact()?;
+    let scope = if scope_idx == 0 {
+        SetupScope::Local
+    } else {
+        SetupScope::Global
+    };
+    let (existing, target_path, target_exists) = match scope {
+        SetupScope::Local => (&existing_local, &local_path, detection.local_config),
+        _ => (&existing_global, &global_path, detection.global_config),
+    };
+
+    if target_exists {
+        println!();
+        println!("Current configuration at {}:", target_path.display());
+        println!("{}", check_existing_config(existing));
         println!();
     }
 
@@ -1335,7 +1731,7 @@ pub fn run() -> Result<()> {
     // API keys, falling back to claude-cli (the most common starting point).
     let current_route = if let Some(ref exec) = existing.coordinator.executor {
         SetupRoute::from_executor(exec)
-    } else if detection.openrouter_key {
+    } else if configured_openrouter_login(&existing_global).is_some() || detection.openrouter_key {
         SetupRoute::Openrouter
     } else if detection.claude_cli {
         SetupRoute::ClaudeCli
@@ -1361,6 +1757,7 @@ pub fn run() -> Result<()> {
         SetupRoute::Openrouter => "openrouter".to_string(),
         SetupRoute::ClaudeCli => "anthropic".to_string(),
         SetupRoute::CodexCli => "openai".to_string(),
+        SetupRoute::Pi => "pi".to_string(),
         SetupRoute::Local => "local".to_string(),
         SetupRoute::NexCustom => "custom".to_string(),
     };
@@ -1368,6 +1765,7 @@ pub fn run() -> Result<()> {
     // 2. Auto-set executor based on provider, with override option
     let default_executor = match provider.as_str() {
         "anthropic" => "claude",
+        "pi" => "pi",
         "openrouter" | "oai-compat" | "openai" | "local" => "native",
         _ => "native",
     };
@@ -1433,13 +1831,15 @@ pub fn run() -> Result<()> {
     };
 
     // 3. Provider-specific configuration
-    let (endpoint, mut model_registry_entries, model) = match provider.as_str() {
-        "openrouter" => configure_openrouter(&existing)?,
-        "openai" => configure_openai(&existing)?,
-        "local" => configure_local(&existing)?,
-        "custom" => configure_custom_provider(&existing)?,
-        _ => configure_anthropic(&existing)?,
-    };
+    let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =
+        match provider.as_str() {
+            "openrouter" => configure_openrouter(existing, scope, &existing_global)?,
+            "pi" => configure_pi(scope, &existing_global, existing)?,
+            "openai" => configure_openai(existing)?,
+            "local" => configure_local(existing)?,
+            "custom" => configure_custom_provider(existing)?,
+            _ => configure_anthropic(existing)?,
+        };
 
     // 3b. Validate API key if an endpoint is configured
     if let Some(ref ep) = endpoint {
@@ -1527,6 +1927,7 @@ pub fn run() -> Result<()> {
         agency_enabled,
         max_agents,
         endpoint,
+        inherit_global_endpoints,
         model_registry_entries,
     };
 
@@ -1547,7 +1948,7 @@ pub fn run() -> Result<()> {
     println!();
 
     let confirm = Confirm::new()
-        .with_prompt(format!("Write to {}?", global_path.display()))
+        .with_prompt(format!("Write to {}?", target_path.display()))
         .default(true)
         .interact()?;
 
@@ -1564,7 +1965,16 @@ pub fn run() -> Result<()> {
         config.tiers = auto_map_tiers(&choices.model_registry_entries);
     }
 
-    config.save_global()?;
+    match scope {
+        SetupScope::Local => {
+            let local_dir = target_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".wg"));
+            config.save(&local_dir)?;
+        }
+        _ => config.save_global()?,
+    }
 
     record_setup_history(&choices, "cli");
 
@@ -1607,8 +2017,32 @@ pub fn run() -> Result<()> {
     println!("  Skill:          {}", skill_status);
     println!("  CLAUDE.md:      {}", claude_md_status);
     println!("  Notifications:  {}", notify_status);
+    if choices.provider == "openrouter" && !choices.inherit_global_endpoints {
+        let auth_env = choices
+            .endpoint
+            .as_ref()
+            .and_then(|ep| ep.api_key_env.as_deref())
+            .or(Some(OPENROUTER_ENV_VAR));
+        finalize_openrouter_onboarding(
+            auth_env,
+            choices
+                .endpoint
+                .as_ref()
+                .and_then(|ep| ep.api_key_file.as_deref()),
+            scope,
+        )?;
+    }
     println!();
-    println!("Run `wg init` in a project directory to get started, or `wg setup` again to update.");
+    println!("Next verification commands:");
+    println!("  wg setup --help");
+    println!("  wg status");
+    if choices.provider == "openrouter" || choices.provider == "pi" {
+        println!("  wg login openrouter --check");
+        println!("  wg models fetch --no-cache");
+    }
+    if choices.provider == "pi" {
+        println!("  wg profile pi --show");
+    }
 
     Ok(())
 }
@@ -1616,40 +2050,150 @@ pub fn run() -> Result<()> {
 /// Configure OpenRouter provider: API key, model selection, endpoint.
 fn configure_openrouter(
     existing: &Config,
-) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
+    scope: SetupScope,
+    existing_global: &Config,
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
     println!();
     println!("OpenRouter configuration");
     println!("────────────────────────");
 
-    // API key setup
-    let api_key_options = &[
-        "Environment variable (OPENROUTER_API_KEY)",
-        "Key file (e.g., ~/.config/openrouter/key)",
-    ];
-    let key_idx = Select::new()
-        .with_prompt("How should the API key be provided?")
-        .items(api_key_options)
-        .default(0)
-        .interact()?;
-
-    let (api_key_env, api_key_file) = if key_idx == 0 {
-        // Check if the env var is already set
-        if std::env::var("OPENROUTER_API_KEY").is_ok() {
-            println!("  OPENROUTER_API_KEY is set in your environment.");
+    let existing_global_login = configured_openrouter_login(existing_global);
+    let default_backend = SecretsConfig::load_global().default_backend;
+    let (endpoint, inherit_global_endpoints) =
+        if matches!(scope, SetupScope::Local) && existing_global_login.is_some() {
+            let options = &[
+                "Reuse existing global OpenRouter login (recommended)",
+                "Configure a repo-local OpenRouter login now",
+                "Use OPENROUTER_API_KEY for this repo",
+            ];
+            let idx = Select::new()
+                .with_prompt("How should this repo authenticate to OpenRouter?")
+                .items(options)
+                .default(0)
+                .interact()?;
+            match idx {
+                0 => (None, true),
+                1 => {
+                    let backend = prompt_secret_backend(&default_backend)?;
+                    let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+                    (
+                        Some(EndpointChoices {
+                            name: "openrouter".to_string(),
+                            provider: "openrouter".to_string(),
+                            url: "https://openrouter.ai/api/v1".to_string(),
+                            api_key_ref: Some(mode.api_key_ref().to_string()),
+                            api_key_env: None,
+                            api_key_file: None,
+                        }),
+                        false,
+                    )
+                }
+                _ => (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: "https://openrouter.ai/api/v1".to_string(),
+                        api_key_ref: Some(format!("env:{OPENROUTER_ENV_VAR}")),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                ),
+            }
+        } else if let Some(existing_login) = existing_global_login {
+            let options = &[
+                "Use the existing global OpenRouter login",
+                "Update the stored OpenRouter login now",
+                "Use OPENROUTER_API_KEY instead",
+            ];
+            let idx = Select::new()
+                .with_prompt("How should WG authenticate to OpenRouter?")
+                .items(options)
+                .default(0)
+                .interact()?;
+            match idx {
+                0 => (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: existing_login.url,
+                        api_key_ref: Some(existing_login.api_key_ref),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                ),
+                1 => {
+                    let backend = prompt_secret_backend(&default_backend)?;
+                    let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+                    (
+                        Some(EndpointChoices {
+                            name: "openrouter".to_string(),
+                            provider: "openrouter".to_string(),
+                            url: "https://openrouter.ai/api/v1".to_string(),
+                            api_key_ref: Some(mode.api_key_ref().to_string()),
+                            api_key_env: None,
+                            api_key_file: None,
+                        }),
+                        false,
+                    )
+                }
+                _ => (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: "https://openrouter.ai/api/v1".to_string(),
+                        api_key_ref: Some(format!("env:{OPENROUTER_ENV_VAR}")),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                ),
+            }
         } else {
-            println!("  Set OPENROUTER_API_KEY in your shell profile before running agents.");
-            println!("  Example: export OPENROUTER_API_KEY=sk-or-...");
-        }
-        (Some("OPENROUTER_API_KEY".to_string()), None)
-    } else {
-        let default_path = "~/.config/openrouter/key".to_string();
-        let key_path: String = Input::new()
-            .with_prompt("Path to API key file")
-            .default(default_path)
-            .interact_text()?;
-        println!("  Make sure the key file exists and contains your OpenRouter API key.");
-        (None, Some(key_path))
-    };
+            let options = &[
+                "Store an OpenRouter key in WG now (recommended)",
+                "Use OPENROUTER_API_KEY",
+            ];
+            let idx = Select::new()
+                .with_prompt("How should WG authenticate to OpenRouter?")
+                .items(options)
+                .default(0)
+                .interact()?;
+            match idx {
+                0 => {
+                    let backend = prompt_secret_backend(&default_backend)?;
+                    let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+                    (
+                        Some(EndpointChoices {
+                            name: "openrouter".to_string(),
+                            provider: "openrouter".to_string(),
+                            url: "https://openrouter.ai/api/v1".to_string(),
+                            api_key_ref: Some(mode.api_key_ref().to_string()),
+                            api_key_env: None,
+                            api_key_file: None,
+                        }),
+                        false,
+                    )
+                }
+                _ => (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: "https://openrouter.ai/api/v1".to_string(),
+                        api_key_ref: Some(format!("env:{OPENROUTER_ENV_VAR}")),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                ),
+            }
+        };
 
     // Model selection
     println!();
@@ -1704,21 +2248,143 @@ fn configure_openrouter(
         (model, entries)
     };
 
-    let endpoint = EndpointChoices {
-        name: "openrouter".to_string(),
-        provider: "openrouter".to_string(),
-        url: "https://openrouter.ai/api/v1".to_string(),
-        api_key_env,
-        api_key_file,
+    Ok((endpoint, inherit_global_endpoints, registry_entries, model))
+}
+
+fn configure_pi(
+    scope: SetupScope,
+    existing_global: &Config,
+    _existing: &Config,
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
+    println!();
+    println!("Pi configuration");
+    println!("────────────────");
+    println!("Pi handles its own auth for `pi:` worker/chat routes.");
+    println!(
+        "WG only needs its own OpenRouter login for WG-native traffic like model scouting and agency one-shots."
+    );
+
+    let existing_global_login = configured_openrouter_login(existing_global);
+    let default_backend = SecretsConfig::load_global().default_backend;
+
+    let (endpoint, inherit_global_endpoints) = if matches!(scope, SetupScope::Local)
+        && existing_global_login.is_some()
+    {
+        let options = &[
+            "Reuse the existing global WG OpenRouter login for this repo (recommended)",
+            "Configure a repo-local WG OpenRouter login now",
+            "Skip WG-managed OpenRouter for now",
+        ];
+        let idx = Select::new()
+            .with_prompt("How should WG handle Pi's native OpenRouter side?")
+            .items(options)
+            .default(0)
+            .interact()?;
+        match idx {
+            0 => (None, true),
+            1 => {
+                let backend = prompt_secret_backend(&default_backend)?;
+                let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+                (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: "https://openrouter.ai/api/v1".to_string(),
+                        api_key_ref: Some(mode.api_key_ref().to_string()),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                )
+            }
+            _ => (None, false),
+        }
+    } else if let Some(existing_login) = existing_global_login {
+        let use_existing = Confirm::new()
+                .with_prompt("Reuse the existing global WG OpenRouter login for Pi's agency/model-scout traffic?")
+                .default(true)
+                .interact()?;
+        if use_existing {
+            (
+                Some(EndpointChoices {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: existing_login.url,
+                    api_key_ref: Some(existing_login.api_key_ref),
+                    api_key_env: None,
+                    api_key_file: None,
+                }),
+                false,
+            )
+        } else {
+            let configure_now = Confirm::new()
+                .with_prompt("Configure a new WG-managed OpenRouter login now?")
+                .default(true)
+                .interact()?;
+            if configure_now {
+                let backend = prompt_secret_backend(&default_backend)?;
+                let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+                (
+                    Some(EndpointChoices {
+                        name: "openrouter".to_string(),
+                        provider: "openrouter".to_string(),
+                        url: "https://openrouter.ai/api/v1".to_string(),
+                        api_key_ref: Some(mode.api_key_ref().to_string()),
+                        api_key_env: None,
+                        api_key_file: None,
+                    }),
+                    false,
+                )
+            } else {
+                (None, false)
+            }
+        }
+    } else {
+        let configure_now = Confirm::new()
+            .with_prompt("Configure WG-managed OpenRouter now for Pi's agency/model-scout traffic?")
+            .default(true)
+            .interact()?;
+        if configure_now {
+            let backend = prompt_secret_backend(&default_backend)?;
+            let mode = login::resolve_openrouter_credential_mode(false, None, backend)?;
+            (
+                Some(EndpointChoices {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: "https://openrouter.ai/api/v1".to_string(),
+                    api_key_ref: Some(mode.api_key_ref().to_string()),
+                    api_key_env: None,
+                    api_key_file: None,
+                }),
+                false,
+            )
+        } else {
+            (None, false)
+        }
     };
 
-    Ok((Some(endpoint), registry_entries, model))
+    Ok((
+        endpoint,
+        inherit_global_endpoints,
+        vec![],
+        "pi:openrouter/z-ai/glm-5.2".to_string(),
+    ))
 }
 
 /// Configure OpenAI provider.
 fn configure_openai(
     existing: &Config,
-) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
     println!();
     println!("OpenAI configuration");
     println!("────────────────────");
@@ -1763,17 +2429,23 @@ fn configure_openai(
         name: "openai".to_string(),
         provider: "openai".to_string(),
         url: "https://api.openai.com/v1".to_string(),
+        api_key_ref: None,
         api_key_env,
         api_key_file,
     };
 
-    Ok((Some(endpoint), vec![entry], model_id))
+    Ok((Some(endpoint), false, vec![entry], model_id))
 }
 
 /// Configure local provider (Ollama/vLLM).
 fn configure_local(
     existing: &Config,
-) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
     println!();
     println!("Local LLM configuration (Ollama/vLLM)");
     println!("──────────────────────────────────────");
@@ -1801,17 +2473,23 @@ fn configure_local(
         name: "local".to_string(),
         provider: "local".to_string(),
         url,
+        api_key_ref: None,
         api_key_env: None,
         api_key_file: None,
     };
 
-    Ok((Some(endpoint), vec![entry], model_id))
+    Ok((Some(endpoint), false, vec![entry], model_id))
 }
 
 /// Configure custom provider.
 fn configure_custom_provider(
     existing: &Config,
-) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
     println!();
     println!("Custom provider configuration");
     println!("─────────────────────────────");
@@ -1848,6 +2526,7 @@ fn configure_custom_provider(
         name: provider_name.clone(),
         provider: provider_name,
         url,
+        api_key_ref: None,
         api_key_env: if api_key_env.is_empty() {
             None
         } else {
@@ -1856,13 +2535,18 @@ fn configure_custom_provider(
         api_key_file: None,
     };
 
-    Ok((Some(endpoint), vec![entry], model_id))
+    Ok((Some(endpoint), false, vec![entry], model_id))
 }
 
 /// Configure Anthropic (direct) provider — uses existing model registry flow.
 fn configure_anthropic(
     existing: &Config,
-) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
+) -> Result<(
+    Option<EndpointChoices>,
+    bool,
+    Vec<ModelRegistryEntry>,
+    String,
+)> {
     println!();
     let registry = ModelRegistry::with_defaults();
     let route_defaults: Vec<(String, String)> = registry
@@ -1906,7 +2590,7 @@ fn configure_anthropic(
 
     let model = entries[idx].model.clone();
 
-    Ok((None, vec![], model))
+    Ok((None, false, vec![], model))
 }
 
 /// Default OpenRouter model registry entries for Claude models.
@@ -2351,9 +3035,11 @@ mod tests {
                     name: "openrouter".to_string(),
                     provider: "openrouter".to_string(),
                     url: "https://openrouter.ai/api/v1".to_string(),
+                    api_key_ref: None,
                     api_key_env: Some("OPENROUTER_API_KEY".to_string()),
                     api_key_file: None,
                 }),
+                inherit_global_endpoints: false,
                 model_registry_entries: vec![],
             };
 
@@ -2392,6 +3078,7 @@ mod tests {
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2419,6 +3106,7 @@ mod tests {
             agency_enabled: true,
             max_agents: 2,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2446,6 +3134,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2463,6 +3152,7 @@ mod tests {
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2480,6 +3170,7 @@ mod tests {
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2500,6 +3191,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 8,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2518,6 +3210,7 @@ mod tests {
             agency_enabled: true,
             max_agents: 6,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2541,6 +3234,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 3,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
         let summary = format_summary(&choices);
@@ -2565,6 +3259,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 1,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -2588,9 +3283,11 @@ mod tests {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
                 url: "https://openrouter.ai/api/v1".to_string(),
+                api_key_ref: None,
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
                 api_key_file: None,
             }),
+            inherit_global_endpoints: false,
             model_registry_entries: default_openrouter_registry(),
         };
 
@@ -2638,9 +3335,11 @@ mod tests {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
                 url: "https://openrouter.ai/api/v1".to_string(),
+                api_key_ref: None,
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
                 api_key_file: None,
             }),
+            inherit_global_endpoints: false,
             model_registry_entries: default_openrouter_registry(),
         };
 
@@ -2672,9 +3371,11 @@ mod tests {
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
                 url: "https://openrouter.ai/api/v1".to_string(),
+                api_key_ref: None,
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
                 api_key_file: None,
             }),
+            inherit_global_endpoints: false,
             model_registry_entries: default_openrouter_registry(),
         };
 
@@ -2696,6 +3397,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: vec![],
         };
 
@@ -3232,6 +3934,7 @@ mod tests {
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,
+            inherit_global_endpoints: false,
             model_registry_entries: entries.clone(),
         };
 

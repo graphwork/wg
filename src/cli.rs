@@ -2202,8 +2202,8 @@ pub enum Commands {
 
     /// Interactive configuration wizard for first-time setup
     Setup {
-        /// One of the 5 named routes: openrouter, claude-cli, codex-cli, local, nex-custom.
-        /// Picks a complete, working config end-to-end (executor + tiers + endpoint
+        /// One of the named routes: openrouter, claude-cli, codex-cli, pi, local, nex-custom.
+        /// Picks a complete, working config end-to-end (executor + tiers + login/profile wiring
         /// when applicable). Use with `--yes` for non-interactive setup.
         #[arg(long)]
         route: Option<String>,
@@ -2238,6 +2238,12 @@ pub enum Commands {
         /// Print the config that would be written but don't write it.
         #[arg(long)]
         dry_run: bool,
+        /// Read a provider API key from stdin for secret-backed onboarding.
+        #[arg(long)]
+        from_stdin: bool,
+        /// Secret backend for stored provider credentials (keyring|keystore|plaintext).
+        #[arg(long)]
+        backend: Option<String>,
     },
 
     /// Print a concise cheat sheet for agent onboarding

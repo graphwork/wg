@@ -521,6 +521,7 @@ pub fn render_minimal_config(
                     R::ClaudeCli => "claude:opus",
                     R::CodexCli => "codex:gpt-5.5",
                     R::Openrouter => "openrouter:anthropic/claude-opus-4-7",
+                    R::Pi => "pi:openrouter/z-ai/glm-5.2",
                     R::Local => "nex:qwen2.5-coder:7b",
                     R::NexCustom => "nex:custom-model",
                 };
@@ -585,6 +586,24 @@ pub fn render_minimal_config(
              is_default = true\n",
         ),
 
+        (R::Pi, ConfigScope::Global) => format!(
+            "{header}\
+             [agent]\n\
+             model = \"pi:openrouter/z-ai/glm-5.2\"\n\
+             \n\
+             [tiers]\n\
+             fast = \"openrouter:deepseek/deepseek-chat\"\n\
+             standard = \"pi:openrouter/z-ai/glm-5.2\"\n\
+             premium = \"pi:openrouter/z-ai/glm-5.2\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"openrouter\"\n\
+             provider = \"openrouter\"\n\
+             url = \"https://openrouter.ai/api/v1\"\n\
+             api_key_env = \"OPENROUTER_API_KEY\"\n\
+             is_default = true\n",
+        ),
+
         (R::NexCustom, ConfigScope::Global) => format!(
             "{header}\
              # Edit endpoint url + api_key_env to match your provider.\n\
@@ -633,6 +652,22 @@ pub fn render_minimal_config(
              \n\
              [agent]\n\
              model = \"codex:gpt-5.5\"\n",
+        ),
+
+        (R::Pi, ConfigScope::Local) => format!(
+            "{header}\
+             [project]\n\
+             name = \"\"\n\
+             \n\
+             [agent]\n\
+             model = \"pi:openrouter/z-ai/glm-5.2\"\n\
+             \n\
+             [[llm_endpoints.endpoints]]\n\
+             name = \"openrouter\"\n\
+             provider = \"openrouter\"\n\
+             url = \"https://openrouter.ai/api/v1\"\n\
+             api_key_env = \"OPENROUTER_API_KEY\"\n\
+             is_default = true\n",
         ),
 
         (R::Local, ConfigScope::Local) => format!(
