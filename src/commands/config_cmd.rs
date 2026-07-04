@@ -143,7 +143,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("========================");
         println!();
         println!("[agent]");
-        println!("  executor = \"{}\"", config.agent.executor);
+        println!(
+            "  executor = \"{}\"",
+            worksgood::dispatch::handler_for_model(&config.agent.model).as_str()
+        );
         println!(
             "  model = \"{}\"{}",
             config.agent.model,
@@ -165,7 +168,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  poll_interval = {}", config.coordinator.poll_interval);
         println!(
             "  executor = \"{}\"",
-            config.coordinator.effective_executor()
+            config.effective_dispatcher_executor()
         );
         if let Some(ref m) = config.coordinator.model {
             println!("  model = \"{}\"{}", m, handler_first_annotation(m));

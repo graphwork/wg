@@ -2376,6 +2376,25 @@ pub fn provider_to_executor(provider: &str) -> &'static str {
     match provider {
         "claude" => "claude",
         "codex" => "codex",
+        // Handler-first model specs: the leading token names an external CLI
+        // handler, so it maps to itself. This keeps `effective_executor()`
+        // (and every status/reload/TUI surface that reads it) in lock-step
+        // with `handler_for_model` — the single source of truth for routing —
+        // so a `pi:openrouter/...` model surfaces as `executor=pi` instead of
+        // the legacy `native`/`claude` default. `enforce_model_compat` already
+        // routes the actual spawn through these handlers, so the display now
+        // matches the real route instead of labeling a deprecated key.
+        "pi" => "pi",
+        "opencode" => "opencode",
+        "aider" => "aider",
+        "goose" => "goose",
+        "qwen" => "qwen",
+        "cline" => "cline",
+        "crush" => "crush",
+        "amplifier" => "amplifier",
+        "octomind" => "octomind",
+        "dexto" => "dexto",
+        "shell" => "shell",
         _ => "native",
     }
 }
@@ -4027,16 +4046,20 @@ impl CoordinatorConfig {
     /// the claude executor only works with Anthropic's API). Falls back to "claude".
     pub fn effective_executor(&self) -> String {
         if let Some(ref executor) = self.executor {
-            // Explicitly set in config — honour it
+            // Explicitly set in config — honour it (one-release deprecation
+            // window; the explicit key still warns at load time).
             executor.clone()
         } else if let Some(ref model) = self.model {
-            // Infer executor from provider:model prefix (preferred path)
-            let spec = parse_model_spec(model);
-            if let Some(ref prefix) = spec.provider {
-                provider_to_executor(prefix).to_string()
-            } else {
-                "claude".to_string()
-            }
+            // Handler-first: derive the executor from the model spec via the
+            // single source of truth `handler_for_model`. This recognizes
+            // external-CLI handler prefixes (`pi`, `opencode`, …) that
+            // `parse_model_spec` + `provider_to_executor` deliberately do NOT
+            // (an executor is not a *provider*), so a `pi:openrouter:...`
+            // model reports `executor=pi` instead of falling through to the
+            // legacy `claude` default. See `bug-handler-first-executor-display-spam`.
+            crate::dispatch::handler_for_model(model)
+                .as_str()
+                .to_string()
         } else if let Some(ref provider) = self.provider {
             // Deprecated: separate provider field fallback
             if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
@@ -5373,6 +5396,34 @@ impl Config {
             }
         }
         self.coordinator.compaction_token_threshold
+    }
+
+    /// Effective handler/executor for the dispatcher, derived from the model
+    /// spec via [`crate::dispatch::handler_for_model`] — the single source of
+    /// truth for routing.
+    ///
+    /// Falls back to `[agent].model` when `[dispatcher].model` is unset (the
+    /// dispatcher inherits the agent default — the same fallback
+    /// `strip_redundant_executor_keys` and `plan_spawn` apply). The legacy
+    /// `[dispatcher].executor` config key is deliberately **not** consulted
+    /// here: handler-first routing derives the handler from the model spec,
+    /// and `plan_spawn`'s `enforce_model_compat` already overrides a
+    /// contradictory legacy executor in the actual spawn path. Surfacing the
+    /// model-derived handler in status/reload/TUI keeps the display in
+    /// lock-step with the real route instead of labeling a deprecated key as
+    /// the active executor — the `bug-handler-first-executor-display-spam`
+    /// fix. Routing-adjacent callers that still need the legacy explicit-key
+    /// override should use [`CoordinatorConfig::effective_executor`].
+    pub fn effective_dispatcher_executor(&self) -> String {
+        let model = self
+            .coordinator
+            .model
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&self.agent.model);
+        crate::dispatch::handler_for_model(model)
+            .as_str()
+            .to_string()
     }
 
     /// Validate that all model fields use the `provider:model` format.
@@ -8059,6 +8110,128 @@ provider = "openrouter"
         assert_eq!(provider_to_executor("ollama"), "native");
         assert_eq!(provider_to_executor("local"), "native");
         assert_eq!(provider_to_executor("nex"), "native");
+    }
+
+    /// Handler-first: an external-CLI handler prefix maps to itself, so
+    /// `effective_executor()` (and the status/reload/TUI surfaces that read
+    /// it) reports the real handler for a `pi:...` / `opencode:...` model
+    /// instead of the legacy `native` default. This is the
+    /// `bug-handler-first-executor-display-spam` core fix.
+    #[test]
+    fn test_provider_to_executor_external_cli_handlers() {
+        assert_eq!(provider_to_executor("pi"), "pi");
+        assert_eq!(provider_to_executor("opencode"), "opencode");
+        assert_eq!(provider_to_executor("aider"), "aider");
+        assert_eq!(provider_to_executor("goose"), "goose");
+        assert_eq!(provider_to_executor("qwen"), "qwen");
+        assert_eq!(provider_to_executor("cline"), "cline");
+        assert_eq!(provider_to_executor("crush"), "crush");
+        assert_eq!(provider_to_executor("amplifier"), "amplifier");
+        assert_eq!(provider_to_executor("octomind"), "octomind");
+        assert_eq!(provider_to_executor("dexto"), "dexto");
+        assert_eq!(provider_to_executor("shell"), "shell");
+        // An unknown prefix still falls through to the in-process native handler.
+        assert_eq!(provider_to_executor("some-unknown-vendor"), "native");
+    }
+
+    /// A migrated-clean config with `model = "pi:openrouter:..."` and NO
+    /// legacy `[dispatcher].executor` key must surface the effective executor
+    /// as `pi` (the handler-first route), not the `native`/`claude` default.
+    #[test]
+    fn test_effective_executor_pi_handler_first_no_legacy_key() {
+        let mut config = Config::default();
+        config.coordinator.executor = None;
+        config.coordinator.provider = None;
+        config.coordinator.model = Some("pi:openrouter:anthropic/claude-opus-4-7".to_string());
+        assert_eq!(
+            config.coordinator.effective_executor(),
+            "pi",
+            "migrated clean config with pi: model must report executor=pi"
+        );
+        // The display-facing `effective_dispatcher_executor` agrees.
+        assert_eq!(config.effective_dispatcher_executor(), "pi");
+        // And it agrees with the routing single source of truth.
+        assert_eq!(
+            crate::dispatch::handler_for_model("pi:openrouter:anthropic/claude-opus-4-7").as_str(),
+            "pi"
+        );
+    }
+
+    /// When `[dispatcher].model` is unset, the dispatcher inherits
+    /// `[agent].model` — `effective_dispatcher_executor` must derive the
+    /// handler from that fallback so a `pi:...` agent model still surfaces as
+    /// `executor=pi` in `wg status` / `wg config --show`.
+    #[test]
+    fn test_effective_dispatcher_executor_agent_model_fallback() {
+        let mut config = Config::default();
+        config.coordinator.executor = None;
+        config.coordinator.model = None;
+        config.coordinator.provider = None;
+        config.agent.model = "pi:openrouter/z-ai/glm-4.6".to_string();
+        // The legacy field-based `effective_executor` cannot see agent.model
+        // and would fall back to "claude" — the display-facing resolver must
+        // not repeat that mistake.
+        assert_eq!(
+            config.effective_dispatcher_executor(),
+            "pi",
+            "agent.model fallback must derive the pi handler for display"
+        );
+    }
+
+    /// A migrated-clean config (no explicit `executor = …` keys anywhere)
+    /// must not emit any deprecated-executor warnings — the
+    /// `bug-handler-first-executor-display-spam` requirement that the TUI /
+    /// status surfaces not spam warnings after migration.
+    #[test]
+    fn test_migrated_clean_config_emits_no_deprecated_executor_warning() {
+        let toml_str = r#"
+[agent]
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+
+[dispatcher]
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+"#;
+        let warnings = deprecated_executor_warnings_for_toml(toml_str);
+        assert!(
+            warnings.is_empty(),
+            "migrated config with no executor keys must not warn, got: {warnings:?}"
+        );
+        // And loading it produces a pi handler for both surfaces.
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.effective_dispatcher_executor(), "pi");
+    }
+
+    /// The deprecated-executor warning is precise: it fires only when the
+    /// explicit `executor = …` KEY is present, and its message names that key
+    /// (not the concept of a running handler). Restoring a deprecated
+    /// `executor` key to "fix" the display must remain the wrong move.
+    #[test]
+    fn test_deprecated_executor_warning_precise_about_explicit_key() {
+        let toml_str = r#"
+[dispatcher]
+executor = "claude"
+model = "pi:openrouter:anthropic/claude-opus-4-7"
+"#;
+        let warnings = deprecated_executor_warnings_for_toml(toml_str);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly one warning for the explicit key"
+        );
+        let w = &warnings[0];
+        assert!(
+            w.contains("dispatcher.executor"),
+            "warning must name the explicit config key, got: {w}"
+        );
+        assert!(
+            w.contains("deprecated"),
+            "warning must call the key deprecated, got: {w}"
+        );
+        // It must NOT tell the user to keep the deprecated key to fix display.
+        assert!(
+            !w.contains("restore") && !w.contains("add the explicit"),
+            "warning must not recommend restoring the deprecated key, got: {w}"
+        );
     }
 
     #[test]

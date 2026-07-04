@@ -1082,9 +1082,16 @@ fn handle_reconfigure(
         match Config::load_merged(dir) {
             Ok(config) => {
                 daemon_cfg.max_agents = config.coordinator.max_agents;
-                daemon_cfg.executor = config.coordinator.effective_executor();
+                // Handler-first: derive the effective handler from the model
+                // spec (with agent.model fallback) so a migrated clean config
+                // with `model = "pi:..."` reports `executor=pi` here and in
+                // the persisted coordinator state — not a stale legacy default.
+                daemon_cfg.executor = config.effective_dispatcher_executor();
                 daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
-                daemon_cfg.model = config.coordinator.model;
+                daemon_cfg.model = config.coordinator.model.clone().or_else(|| {
+                    let m = config.agent.model.clone();
+                    if m.trim().is_empty() { None } else { Some(m) }
+                });
                 daemon_cfg.provider = config.coordinator.provider;
                 daemon_cfg.settling_delay =
                     Duration::from_millis(config.coordinator.settling_delay_ms);
@@ -2284,11 +2291,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
 
-        // Write a config.toml
+        // Write a migrated-clean config.toml: no deprecated `executor` key,
+        // just a handler-first `model` spec. `wg service reload` must surface
+        // the model-derived handler (here `pi`) as the effective executor
+        // instead of a stale legacy default — the
+        // `bug-handler-first-executor-display-spam` fix.
         let config_content = r#"
-[coordinator]
+[dispatcher]
 max_agents = 10
-executor = "shell"
+model = "pi:openrouter:anthropic/claude-opus-4-7"
 poll_interval = 120
 "#;
         fs::write(dir.join("config.toml"), config_content).unwrap();
@@ -2318,11 +2329,16 @@ poll_interval = 120
         let resp = handle_reconfigure(dir, &mut cfg, None, None, None, None, &logger);
         assert!(resp.ok);
         assert_eq!(cfg.max_agents, 10);
-        assert_eq!(cfg.executor, "shell");
+        // Handler-first: the effective executor is derived from the model spec
+        // (`pi:...` -> `pi`), not the legacy default `claude` that the prior
+        // `coordinator.effective_executor()` would have returned for a `pi:`
+        // model (since `parse_model_spec` does not recognize `pi` as a provider).
+        assert_eq!(cfg.executor, "pi");
         assert_eq!(cfg.poll_interval, Duration::from_secs(120));
-        // cfg.model may be None (no global config) or Some(...) (from global config merge).
-        // The local config.toml in the test doesn't set a model, so any value here
-        // comes from the host's global config — which is expected after the merge fix.
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some("pi:openrouter:anthropic/claude-opus-4-7")
+        );
     }
 
     #[test]

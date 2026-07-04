@@ -206,20 +206,48 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     // Try to get runtime state from coordinator (if daemon is running)
     if let Some(coord) = CoordinatorState::load_for(dir, 0) {
+        // Derive the effective handler from the persisted model via the
+        // single-source-of-truth `handler_for_model`, so the display reflects
+        // handler-first routing instead of the legacy `executor` field that
+        // `enforce_model_compat` may have overridden at spawn time. This is
+        // the `bug-handler-first-executor-display-spam` fix: a `pi:...` model
+        // shows `executor=pi`, not a stale persisted `executor=claude`.
+        let executor = coord
+            .model
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|m| {
+                worksgood::dispatch::handler_for_model(m)
+                    .as_str()
+                    .to_string()
+            })
+            .unwrap_or_else(|| coord.executor.clone());
         return CoordinatorInfo {
             max_agents: coord.max_agents,
-            executor: coord.executor,
+            executor,
             model: coord.model,
             poll_interval: coord.poll_interval,
         };
     }
 
-    // Fall back to config file
+    // Fall back to config file. Use the handler-first effective dispatcher
+    // executor (model-derived, with agent.model fallback) so a migrated clean
+    // config with `model = "pi:..."` and no legacy executor key shows the
+    // real handler instead of the deprecated default.
     let config = worksgood::config::Config::load_or_default(dir);
+    let model = config
+        .coordinator
+        .model
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let m = config.agent.model.clone();
+            if m.trim().is_empty() { None } else { Some(m) }
+        });
     CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
-        executor: config.coordinator.effective_executor(),
-        model: config.coordinator.model,
+        executor: config.effective_dispatcher_executor(),
+        model,
         poll_interval: config.coordinator.poll_interval,
     }
 }

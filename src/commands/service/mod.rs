@@ -151,12 +151,21 @@ fn resolve_service_coordinator_settings(
     cli_model: Option<&str>,
     no_coordinator_agent: bool,
 ) -> Result<(String, Option<String>)> {
+    // Handler-first: derive the effective handler from the model spec (with
+    // agent.model fallback) via `Config::effective_dispatcher_executor`, so the
+    // daemon's startup log + persisted coordinator state report the real
+    // handler (`pi` for a `pi:...` model) instead of a stale legacy default.
+    // An explicit `--executor` CLI flag still wins for one release.
     let effective_executor = cli_executor
         .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.coordinator.effective_executor());
+        .unwrap_or_else(|| config.effective_dispatcher_executor());
     let explicit_model = cli_model
         .map(std::string::ToString::to_string)
-        .or_else(|| config.coordinator.model.clone());
+        .or_else(|| config.coordinator.model.clone())
+        .or_else(|| {
+            let m = config.agent.model.clone();
+            if m.trim().is_empty() { None } else { Some(m) }
+        });
 
     if no_coordinator_agent || !config.coordinator.coordinator_agent {
         return Ok((effective_executor, explicit_model));
@@ -1025,7 +1034,7 @@ pub fn run_tick(
     let max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let executor = executor
         .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.coordinator.effective_executor());
+        .unwrap_or_else(|| config.effective_dispatcher_executor());
 
     let graph_path = graph_path(dir);
     if !graph_path.exists() {
@@ -1399,10 +1408,14 @@ pub fn run_start(
     let eff_poll_interval = interval.unwrap_or(config.coordinator.poll_interval);
     let eff_executor = executor
         .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.coordinator.effective_executor());
+        .unwrap_or_else(|| config.effective_dispatcher_executor());
     let eff_model = model
         .map(std::string::ToString::to_string)
-        .or_else(|| config.coordinator.model.clone());
+        .or_else(|| config.coordinator.model.clone())
+        .or_else(|| {
+            let m = config.agent.model.clone();
+            if m.trim().is_empty() { None } else { Some(m) }
+        });
 
     let log_path_str = log_path.to_string_lossy().to_string();
 
@@ -3533,9 +3546,19 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         } else {
             ""
         };
+        // Derive the effective handler from the persisted model (handler-first
+        // routing) rather than echoing the legacy `coord.executor` field, so a
+        // `pi:...` model shows `executor=pi` here too (the
+        // `bug-handler-first-executor-display-spam` fix).
+        let executor_display = coord
+            .model
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|m| worksgood::dispatch::handler_for_model(m).as_str())
+            .unwrap_or(coord.executor.as_str());
         println!(
             "Dispatcher: enabled{}, max_agents={}, poll_interval={}s, executor={}, model={}",
-            state_str, coord.max_agents, coord.poll_interval, coord.executor, model_str
+            state_str, coord.max_agents, coord.poll_interval, executor_display, model_str
         );
         if coord.frozen && !coord.frozen_pids.is_empty() {
             println!("  Frozen PIDs: {:?}", coord.frozen_pids);

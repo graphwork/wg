@@ -1882,3 +1882,12 @@ owners = [
 ]
 description = "Pins prod-verify (the closing production-readiness gate): closes the lib-vs-bin CI blind spot. CI runs only `cargo test --lib` / `--doc` / `--test integration_*` and NEVER compiles the `wg` binary crate's `#[cfg(test)]` modules, so a broken bin unit test ships GREEN. prod-verify found exactly this: the M18/wire-review split-trust work grew `peer::run_add` a 7th `trust: Option<&str>` param but left all seven `#[cfg(test)]` callers in src/commands/peer.rs at 6 args — invisible to every CI gate. This scenario compiles the binary test target (`cargo test --bin wg --no-run`) and FAILS if it does not build, so any future signature change that breaks a bin `#[cfg(test)]` caller is caught at the smoke gate instead of rotting undetected. Loud SKIP (77) when cargo/the workspace manifest is unavailable."
 timeout_seconds = 180
+
+[[scenario]]
+name = "handler_first_executor_display"
+script = "scenarios/handler_first_executor_display.sh"
+owners = [
+    "bug-handler-first-executor-display-spam",
+]
+description = "Pins bug-handler-first-executor-display-spam: a migrated-clean config with `model = \"pi:openrouter:...\"` and NO legacy `executor` key must surface the effective executor/handler as `pi` in `wg config --show` / `wg status` / `wg config --models`, and must NOT emit any deprecated-executor-key warnings (no TUI/status spam after migration). Before the fix, `provider_to_executor(\"pi\")` returned `native` and `CoordinatorConfig::effective_executor` fell through to `claude` (since `parse_model_spec` deliberately does not recognize external-CLI handler prefixes), so `wg service reload` / `wg status` printed `executor=claude, model=pi:...` even though `handler=pi` — tempting users to restore the deprecated `executor` key, which then spammed the TUI with deprecation warnings on every config load. Credential-free; isolated $HOME + XDG so the host global config cannot leak a stale executor key."
+timeout_seconds = 60
