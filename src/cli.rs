@@ -2361,6 +2361,12 @@ pub enum Commands {
         command: KeyCommands,
     },
 
+    /// One-command provider login / credential setup
+    Login {
+        #[command(subcommand)]
+        command: LoginCommands,
+    },
+
     /// Manage secrets (API keys) in the credential store
     ///
     /// Secrets are stored outside env vars, config files, and shell history.
@@ -3990,6 +3996,48 @@ pub enum SecretBackendCommands {
     Set {
         /// Backend name: keyring, keystore, or plaintext
         backend: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LoginCommands {
+    /// Configure WG's OpenRouter credential + endpoint
+    Openrouter {
+        /// Show whether WG has a usable OpenRouter credential and endpoint.
+        /// Also reports whether Pi has its own OpenRouter auth file.
+        #[arg(long)]
+        check: bool,
+
+        /// Read the OpenRouter API key from stdin (shell-safe / automation).
+        #[arg(long, conflicts_with = "env")]
+        from_stdin: bool,
+
+        /// Reference an existing environment variable instead of copying the
+        /// key into WG's secret store.
+        #[arg(long, value_name = "VAR", conflicts_with = "from_stdin")]
+        env: Option<String>,
+
+        /// Override the secret backend used for stored credentials.
+        /// Defaults to the configured `wg secret` backend.
+        #[arg(long)]
+        backend: Option<String>,
+
+        /// Write to global config (`~/.wg/config.toml`). Default behavior.
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Write to local config (`.wg/config.toml`) instead of global.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Make the configured OpenRouter endpoint the default endpoint.
+        #[arg(long)]
+        set_default: bool,
+
+        /// Reset the canonical OpenRouter endpoint's URL/provider fields to
+        /// their hosted defaults before saving the credential ref.
+        #[arg(long)]
+        reset_endpoint: bool,
     },
 }
 
@@ -6303,6 +6351,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ModelScout { .. } => "model-scout",
         Commands::Model { .. } => "model",
         Commands::Key { .. } => "key",
+        Commands::Login { .. } => "login",
         Commands::Secret { .. } => "secret",
         Commands::Identity { .. } => "identity",
         Commands::FedNode { .. } => "fed-node",
@@ -6406,6 +6455,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Models { .. }
             | Commands::Model { .. }
             | Commands::Key { .. }
+            | Commands::Login { .. }
             | Commands::Secret { .. }
             | Commands::Identity { .. }
             | Commands::Review { .. }

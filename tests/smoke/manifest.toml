@@ -1196,6 +1196,15 @@ description = "api_key_ref resolution in endpoint config: store a secret via --f
 timeout_seconds = 60
 
 [[scenario]]
+name = "login_openrouter_from_stdin"
+script = "scenarios/login_openrouter_from_stdin.sh"
+owners = [
+    "impl-wg-login-openrouter",
+]
+description = "Pins `wg login openrouter`'s non-interactive happy path: read the key from stdin, store/reference it via `api_key_ref` instead of embedding `api_key`, verify the endpoint auth check succeeds, and prove `wg models fetch --no-cache` resolves the configured secret-backed credential."
+timeout_seconds = 90
+
+[[scenario]]
 name = "secret_keystore_explicit"
 script = "scenarios/secret_keystore_explicit.sh"
 owners = [

@@ -384,3 +384,47 @@ Pi note:
 If you want `pi:` routes to use Pi's own stored login, run `/login` inside pi.
 WG and Pi keep provider auth separately by design.
 ```
+
+## Manual smoke notes
+
+Exact user-facing commands for the intended flow:
+
+```bash
+# Interactive secure prompt
+wg login openrouter
+
+# Shell-safe automation
+printf '%s' "$OPENROUTER_API_KEY" | wg login openrouter --from-stdin
+
+# Verify WG's OpenRouter setup and Pi-auth visibility
+wg login openrouter --check
+
+# Refresh WG's OpenRouter-backed model cache
+wg models fetch --no-cache
+
+# Re-scout the current OpenRouter catalog for Pi's strong/weak tiers
+wg model-scout --no-cache
+
+# Then inspect or activate the Pi profile
+wg profile use pi
+wg profile pi
+```
+
+## Setup integration follow-up
+
+`wg login openrouter` is intended to be the reusable primitive, not the final
+onboarding surface.
+
+Follow-up integration points for `wg setup` / init-style onboarding:
+
+1. When the user selects an OpenRouter-backed route, setup should offer the
+   same secure key-entry flow inline instead of sending them to manual
+   `wg secret` / endpoint editing steps.
+2. When the selected route is Pi-backed, setup should distinguish:
+   - WG-managed OpenRouter login (`wg login openrouter`) for WG-native traffic
+   - Pi-managed provider login (`/login` inside pi) when Pi needs its own auth
+3. Setup's completion text should leave the user with exact next commands:
+   - `wg login openrouter --check`
+   - `wg models fetch --no-cache`
+   - `wg model-scout --no-cache`
+   - `wg profile pi`

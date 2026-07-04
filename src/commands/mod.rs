@@ -74,6 +74,7 @@ pub mod kill;
 pub mod link;
 pub mod list;
 pub mod log;
+pub mod login;
 pub mod match_cmd;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;

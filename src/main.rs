@@ -3767,6 +3767,7 @@ fn main() -> Result<()> {
             }
             KeyCommands::List => commands::key::run_list(&workgraph_dir, cli.json),
         },
+        Commands::Login { command } => commands::login::run(&workgraph_dir, &command),
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }

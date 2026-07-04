@@ -1145,6 +1145,8 @@ impl EndpointConfig {
             _ => {
                 if self.api_key_file.is_some() {
                     "(from file)".to_string()
+                } else if self.api_key_ref.is_some() {
+                    "(from secret ref)".to_string()
                 } else if let Some(ref env_name) = self.api_key_env {
                     format!("(from env: {})", env_name)
                 } else {
@@ -1160,6 +1162,8 @@ impl EndpointConfig {
             "inline".to_string()
         } else if let Some(ref file_path) = self.api_key_file {
             format!("file: {}", file_path)
+        } else if let Some(ref api_key_ref) = self.api_key_ref {
+            api_key_ref.clone()
         } else if let Some(ref env_name) = self.api_key_env {
             format!("env: {}", env_name)
         } else {
@@ -7272,6 +7276,24 @@ model = "claude:haiku"
             context_window: None,
         };
         assert_eq!(ep.masked_key(), "(from file)");
+    }
+
+    #[test]
+    fn test_masked_key_with_secret_ref() {
+        let ep = EndpointConfig {
+            name: "test".to_string(),
+            provider: "openrouter".to_string(),
+            url: None,
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: Some("keystore:openrouter".to_string()),
+            is_default: false,
+            context_window: None,
+        };
+        assert_eq!(ep.masked_key(), "(from secret ref)");
+        assert_eq!(ep.key_source(), "keystore:openrouter");
     }
 
     // ---- Endpoint routing tests ----
