@@ -1918,3 +1918,30 @@ owners = [
 ]
 description = "Pins bug-task-timeout-edit-publish-block: a task carrying a hidden/stale per-task `timeout` field can be INSPECTED via `wg show` (which names the field + the exact `wg edit <TASK> --timeout` repair command), REPAIRED via `wg edit --timeout`/`--verify-timeout`, and CLEARED with an empty string — recovering the task IN PLACE without abandoning or superseding it. Also pins that an invalid timeout value is rejected with an actionable message naming the field and the clear escape hatch, and that the invalid edit does not corrupt the field. Live human-flow simulation against the real `wg` CLI binary in an isolated scratch graph (no workers spawned, credential-free)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "cron_weekly_wakeup_becomes_ready"
+script = "scenarios/cron_weekly_wakeup_becomes_ready.sh"
+owners = [
+    "repro-weekly-wakeup-heartbeat",
+]
+description = "Pins weekly-cron wakeup + missed-trigger catch-up (repro-weekly-wakeup-heartbeat). A cron-enabled task with next_cron_fire in the FUTURE is NOT ready (is_time_ready→is_cron_due gate); with next_cron_fire in the PAST it surfaces in `wg ready` after a coordinator tick (weekly wakeup); and a fire missed while the daemon was STOPPED (next_cron_fire already past at restart) is caught up on the FIRST tick after restart — not silently dropped. Uses a Monday 09:00 UTC cron (dow=2; see cron_dow_mapping_is_nonstandard_one_indexed_sunday unit test for the non-standard mapping). Credential-free: max-agents=0 so no worker spawns; graph.jsonl next_cron_fire is rewritten directly via python3 to simulate past/future fire times."
+timeout_seconds = 90
+
+[[scenario]]
+name = "cron_paused_state_skips_dispatch"
+script = "scenarios/cron_paused_state_skips_dispatch.sh"
+owners = [
+    "repro-weekly-wakeup-heartbeat",
+]
+description = "Pins paused/waiting state interaction with recurring cron triggers (repro-weekly-wakeup-heartbeat). A cron task that is DUE (next_cron_fire in the past) must still respect task-state gates: a PAUSED cron task is NOT ready (ready_tasks_with_peers_cycle_aware filters task.paused before is_time_ready), and a Waiting-status cron task is NOT ready (the Open|Incomplete status filter holds). An operator who pauses a weekly cron for a maintenance window will NOT have it auto-dispatched at fire time. Credential-free: pure graph-state + `wg ready`."
+timeout_seconds = 60
+
+[[scenario]]
+name = "heartbeat_external_interop_no_resurrect"
+script = "scenarios/heartbeat_external_interop_no_resurrect.sh"
+owners = [
+    "repro-weekly-wakeup-heartbeat",
+]
+description = "Pins external-heartbeat ↔ service-reaper interop (repro-weekly-wakeup-heartbeat). An external `wg heartbeat agent-N` on a LIVE agent (real PID) refreshes last_heartbeat and the agent SURVIVES the next `wg service tick` (keep-alive works). An external heartbeat on a DEAD agent (PID gone) does NOT resurrect it — `triage::detect_dead_reason` checks `is_process_alive(pid)` BEFORE heartbeat, so a fresh heartbeat for a gone process is ineffective and the next tick reaps it (ProcessExited). This is the 'external heartbeat does not fight the service' guarantee. Credential-free: registry seeded directly with a real `sleep` PID; uses `wg service tick` (single tick, no daemon loop)."
+timeout_seconds = 90

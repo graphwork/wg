@@ -583,4 +583,164 @@ mod tests {
         let next = calculate_next_fire(&schedule, from).unwrap();
         assert_eq!(next, Utc.with_ymd_and_hms(2024, 1, 1, 2, 0, 0).unwrap());
     }
+
+    // ── Weekly Monday-cron wakeup semantics (repro-weekly-wakeup-heartbeat) ─
+    //
+    // A weekly cron intended to fire every Monday. NOTE: the `cron` crate
+    // (0.12.x) uses a NON-STANDARD day-of-week mapping — see
+    // `cron_dow_mapping_is_nonstandard_one_indexed_sunday` below — where
+    // dow=1 is Sunday and dow=2 is Monday (standard cron is 0=Sun, 1=Mon).
+    // So to fire on Monday we use `0 0 9 * * 2`. This pins the weekly
+    // day-of-week contract so a future parser change (or a crate upgrade
+    // that re-aligns to standard cron) is caught.
+    #[test]
+    fn weekly_monday_cron_fires_only_on_monday_utc() {
+        let schedule = parse_cron_expression("0 0 9 * * 2").unwrap(); // Mon 09:00 UTC
+
+        // Sunday 2024-01-07 09:00 → next fire is Monday 2024-01-08 09:00
+        let sun = Utc.with_ymd_and_hms(2024, 1, 7, 9, 0, 0).unwrap();
+        let next = calculate_next_fire(&schedule, sun).unwrap();
+        assert_eq!(next, Utc.with_ymd_and_hms(2024, 1, 8, 9, 0, 0).unwrap());
+
+        // Monday 2024-01-08 08:59 → next fire is today 09:00
+        let mon_before = Utc.with_ymd_and_hms(2024, 1, 8, 8, 59, 0).unwrap();
+        let next = calculate_next_fire(&schedule, mon_before).unwrap();
+        assert_eq!(next, Utc.with_ymd_and_hms(2024, 1, 8, 9, 0, 0).unwrap());
+
+        // Monday 2024-01-08 09:01 → next fire is NEXT Monday 2024-01-15 09:00
+        let mon_after = Utc.with_ymd_and_hms(2024, 1, 8, 9, 1, 0).unwrap();
+        let next = calculate_next_fire(&schedule, mon_after).unwrap();
+        assert_eq!(next, Utc.with_ymd_and_hms(2024, 1, 15, 9, 0, 0).unwrap());
+
+        // Tuesday 2024-01-09 09:00 → next fire is Monday 2024-01-15 09:00
+        let tue = Utc.with_ymd_and_hms(2024, 1, 9, 9, 0, 0).unwrap();
+        let next = calculate_next_fire(&schedule, tue).unwrap();
+        assert_eq!(next, Utc.with_ymd_and_hms(2024, 1, 15, 9, 0, 0).unwrap());
+    }
+
+    // ── DISCOVERED FAILURE: non-standard day-of-week mapping ──────────────
+    //
+    // The `cron` crate (0.12.x) maps dow=1 → Sunday, dow=2 → Monday, …,
+    // dow=7 → Saturday. This is the OPPOSITE of standard cron (0=Sun,
+    // 1=Mon). A user who writes `0 0 9 * * 1` intending "Monday 09:00"
+    // gets **Sunday** 09:00 — the weekly trigger fires on the WRONG DAY.
+    //
+    // This is pinned here so the surprising mapping is documented in code,
+    // and so a future crate upgrade or a local remapping layer that aligns
+    // to standard cron (0=Sun, 1=Mon) flips this test and is forced to be
+    // intentional. Acceptance criteria for a downstream fix (see
+    // impl-recurring-heartbeat-diagnostics / design-durable-recurring-
+    // process-graphs): either remap dow on input so `1` means Monday as
+    // users expect, OR surface the mapping loudly in `wg add --cron` /
+    // `wg list` output so users don't silently schedule the wrong day.
+    #[test]
+    fn cron_dow_mapping_is_nonstandard_one_indexed_sunday() {
+        // From Sunday 2024-01-07 00:00 UTC, the next fire for each dow:
+        let from = Utc.with_ymd_and_hms(2024, 1, 7, 0, 0, 0).unwrap(); // Sunday
+
+        // dow=1 fires TODAY (Sunday) — proves dow=1 means Sunday, not Monday.
+        let s1 = parse_cron_expression("0 0 9 * * 1").unwrap();
+        assert_eq!(
+            calculate_next_fire(&s1, from).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 7, 9, 0, 0).unwrap(),
+            "dow=1 must fire on Sunday — the cron crate's non-standard mapping"
+        );
+
+        // dow=2 fires Monday 2024-01-08 — proves dow=2 means Monday.
+        let s2 = parse_cron_expression("0 0 9 * * 2").unwrap();
+        assert_eq!(
+            calculate_next_fire(&s2, from).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 8, 9, 0, 0).unwrap(),
+            "dow=2 must fire on Monday"
+        );
+
+        // dow=7 fires Saturday 2024-01-13 — proves 7=Saturday (1-indexed week).
+        let s7 = parse_cron_expression("0 0 9 * * 7").unwrap();
+        assert_eq!(
+            calculate_next_fire(&s7, from).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 13, 9, 0, 0).unwrap(),
+            "dow=7 must fire on Saturday"
+        );
+    }
+
+    // ── Timezone / DST gap (repro-weekly-wakeup-heartbeat) ────────────────
+    //
+    // DOCUMENTED BEHAVIOUR (not a bug to fix here — pinned so a future
+    // change is intentional): WG cron expressions evaluate in **UTC only**.
+    // `is_cron_due` takes `DateTime<Utc>` and the cron crate schedules in
+    // UTC. A user who writes `0 0 9 * * 2` expecting "every Monday 09:00
+    // local" gets 09:00 UTC — which is a different local wall-clock under
+    // any non-UTC zone, and shifts by an hour across DST transitions
+    // without the expression changing. There is no local-tz cron mode.
+    //
+    // Acceptance criteria for a future "local cron" feature (downstream
+    // task design-durable-recurring-process-graphs):
+    //   - a TZ-aware cron would fire at a fixed LOCAL wall-clock that does
+    //     NOT shift across DST; OR the schedule stores an explicit zone.
+    // Until then, this test pins the UTC-only contract.
+    #[test]
+    fn cron_evaluates_in_utc_no_local_dst_shift() {
+        // `0 0 9 * * 2` = Monday 09:00 UTC (dow=2 is Monday in this crate —
+        // see cron_dow_mapping_is_nonstandard_one_indexed_sunday).
+        let task = Task {
+            id: "weekly-utc".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * 2".to_string()),
+            // No next_cron_fire → schedule-based check via `schedule.includes(now)`
+            next_cron_fire: None,
+            last_cron_fire: None,
+            ..Default::default()
+        };
+
+        // Monday 2024-01-08 08:59 UTC → NOT due (one minute before 09:00)
+        let before = Utc.with_ymd_and_hms(2024, 1, 8, 8, 59, 0).unwrap();
+        assert!(!is_cron_due(&task, before));
+
+        // Monday 2024-01-08 09:00 UTC → due (matches the minute)
+        let at = Utc.with_ymd_and_hms(2024, 1, 8, 9, 0, 0).unwrap();
+        assert!(is_cron_due(&task, at));
+
+        // Monday 2024-01-08 09:01 UTC → NOT due (minute 1 != 0; the
+        // 6-field expr `0 0 9 * * 2` pins min=0, so only 09:00:00 matches)
+        let after = Utc.with_ymd_and_hms(2024, 1, 8, 9, 1, 0).unwrap();
+        assert!(
+            !is_cron_due(&task, after),
+            "09:01 UTC on Monday must NOT be due — the 6-field expr `0 0 9 * * 2` pins min=0, so only 09:00:00 matches; this pins the UTC minute-exact contract"
+        );
+
+        // Sunday 2024-01-07 09:00 UTC → NOT due (wrong day — Monday cron)
+        let sun = Utc.with_ymd_and_hms(2024, 1, 7, 9, 0, 0).unwrap();
+        assert!(
+            !is_cron_due(&task, sun),
+            "Sunday must NOT match a Monday cron — pins the UTC day-of-week gate"
+        );
+    }
+
+    // ── Missed-trigger catch-up (repro-weekly-wakeup-heartbeat) ───────────
+    //
+    // If the daemon was DOWN across the scheduled fire time, `next_cron_fire`
+    // is already in the past when the daemon restarts. `is_cron_due` must
+    // return true so the FIRST tick wakes the task — the missed fire is
+    // caught up (fired late), NOT silently dropped. This is the unit-level
+    // pin for the smoke scenario `cron_weekly_wakeup_becomes_ready.sh`.
+    #[test]
+    fn missed_cron_fire_is_caught_up_when_next_fire_is_past() {
+        // next_cron_fire was set to last Monday 09:00; the daemon was down
+        // across that time and is restarting now (well past it).
+        let past_fire = Utc.with_ymd_and_hms(2024, 1, 8, 9, 0, 0).unwrap();
+        let task = Task {
+            id: "weekly-missed".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * 1".to_string()),
+            next_cron_fire: Some(past_fire.to_rfc3339()),
+            ..Default::default()
+        };
+
+        // Restart happens two days after the missed fire — must be due.
+        let restart = Utc.with_ymd_and_hms(2024, 1, 10, 12, 0, 0).unwrap();
+        assert!(
+            is_cron_due(&task, restart),
+            "a cron task whose next_cron_fire is in the past must be due (missed-trigger catch-up)"
+        );
+    }
 }
