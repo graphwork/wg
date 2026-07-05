@@ -1909,3 +1909,12 @@ owners = [
 ]
 description = "Pins bug-profile-use-preserve-openrouter-endpoint: `wg profile use pi` must NOT clobber a configured OpenRouter endpoint (api_key_ref) and must NOT reintroduce deprecated `dispatcher.poll_interval` or removed compaction/verify keys. Pre-fix, profile activation was a byte-for-byte swap that dropped the endpoint set by `wg login openrouter --global`, and the pinned-model path's `Config::save_global` round-trip re-emitted deprecated field names with serde defaults. Post-fix, profile activation is an OVERLAY: the profile's routing keys merge onto the existing global config (preserving `[[llm_endpoints]]`), and the merged file is canonicalized via the same predicates as `wg migrate config`. Credential-free; isolated $HOME + WG_GLOBAL_DIR so the host global config is untouched. Falsifiable assertions: (1) the OpenRouter endpoint (name/provider/api_key_ref/URL/default flag) survives the pi swap; (2) the pi strong-tier route takes effect; (3) no deprecated/removed keys are reintroduced (no poll_interval, compactor_interval, compaction_token_threshold, verify_autospawn_enabled, verify_mode); (4) `wg config lint --global` reports zero migrate findings (removed/renamed/rewritten all empty)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "task_timeout_edit_publish_recover"
+script = "scenarios/task_timeout_edit_publish_recover.sh"
+owners = [
+    "bug-task-timeout-edit-publish-block",
+]
+description = "Pins bug-task-timeout-edit-publish-block: a task carrying a hidden/stale per-task `timeout` field can be INSPECTED via `wg show` (which names the field + the exact `wg edit <TASK> --timeout` repair command), REPAIRED via `wg edit --timeout`/`--verify-timeout`, and CLEARED with an empty string — recovering the task IN PLACE without abandoning or superseding it. Also pins that an invalid timeout value is rejected with an actionable message naming the field and the clear escape hatch, and that the invalid edit does not corrupt the field. Live human-flow simulation against the real `wg` CLI binary in an isolated scratch graph (no workers spawned, credential-free)."
+timeout_seconds = 60

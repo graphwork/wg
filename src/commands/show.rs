@@ -110,6 +110,14 @@ struct TaskDetails {
     context_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exec_mode: Option<String>,
+    /// Per-task worker hard timeout (e.g., `30m`, `4h`). Surfaces the hidden
+    /// `wg add --timeout` field so a stuck task can be diagnosed and repaired
+    /// with `wg edit <TASK> --timeout ...`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout: Option<String>,
+    /// Per-task verify timeout override (e.g., `15m`, `900s`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verify_timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     token_usage: Option<TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,6 +555,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         visibility: task.visibility.clone(),
         context_scope: task.context_scope.clone(),
         exec_mode: task.exec_mode.clone(),
+        timeout: task.timeout.clone(),
+        verify_timeout: task.verify_timeout.clone(),
         token_usage,
         session_id: task.session_id.clone(),
         wait_condition: task.wait_condition.clone(),
@@ -602,6 +612,15 @@ fn print_human_readable(details: &TaskDetails) {
 
     if let Some(ref mode) = details.exec_mode {
         println!("Exec mode: {}", mode);
+    }
+    if let Some(ref t) = details.timeout {
+        println!(
+            "Timeout: {} (worker hard timeout; edit with: wg edit {} --timeout <val|\"\">)",
+            t, details.id
+        );
+    }
+    if let Some(ref t) = details.verify_timeout {
+        println!("Verify timeout: {} (override for wg done verify gate)", t);
     }
 
     if let Some(ref assigned) = details.assigned {
@@ -1387,6 +1406,8 @@ mod tests {
             visibility: "internal".to_string(),
             context_scope: None,
             exec_mode: None,
+            timeout: None,
+            verify_timeout: None,
             cycle_config: None,
             token_usage: None,
             session_id: None,

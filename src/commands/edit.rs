@@ -36,6 +36,8 @@ pub fn run(
     not_before: Option<&str>,
     verify: Option<&str>,
     cron: Option<&str>,
+    timeout: Option<&str>,
+    verify_timeout: Option<&str>,
     allow_phantom: bool,
     allow_cycle: bool,
 ) -> Result<()> {
@@ -533,6 +535,63 @@ pub fn run(
             }
         }
 
+        // Set or clear the per-task worker timeout. An empty string clears
+        // the field (recovering a task stuck on a stale/bad timeout value); a
+        // non-empty value is validated with `parse_delay`, the same parser
+        // `wg add --timeout` uses, so an accepted-at-add-time value is never
+        // rejected here.
+        if let Some(t) = timeout {
+            if t.is_empty() {
+                let old = task.timeout.clone();
+                task.timeout = None;
+                field_changes
+                    .push(serde_json::json!({"field": "timeout", "old": old, "new": null}));
+                println!("Cleared timeout (will fall back to executor/coordinator default)");
+                changed = true;
+            } else if parse_delay(t).is_none() {
+                error = Some(anyhow::anyhow!(
+                    "Invalid timeout '{}'. Use format: 30s, 5m, 1h, 4h, 1d (or empty string to clear)",
+                    t
+                ));
+                return false;
+            } else {
+                let old = task.timeout.clone();
+                task.timeout = Some(t.to_string());
+                field_changes
+                    .push(serde_json::json!({"field": "timeout", "old": old, "new": t}));
+                println!("Set timeout: {}", t);
+                changed = true;
+            }
+        }
+
+        // Set or clear the per-task verify timeout override (same empty-clear
+        // semantics as --timeout). Used by the `wg done` verify gate.
+        if let Some(t) = verify_timeout {
+            if t.is_empty() {
+                let old = task.verify_timeout.clone();
+                task.verify_timeout = None;
+                field_changes.push(
+                    serde_json::json!({"field": "verify_timeout", "old": old, "new": null}),
+                );
+                println!("Cleared verify_timeout (will fall back to coordinator default)");
+                changed = true;
+            } else if parse_delay(t).is_none() {
+                error = Some(anyhow::anyhow!(
+                    "Invalid verify_timeout '{}'. Use format: 30s, 5m, 1h, 4h, 1d (or empty string to clear)",
+                    t
+                ));
+                return false;
+            } else {
+                let old = task.verify_timeout.clone();
+                task.verify_timeout = Some(t.to_string());
+                field_changes.push(
+                    serde_json::json!({"field": "verify_timeout", "old": old, "new": t}),
+                );
+                println!("Set verify_timeout: {}", t);
+                changed = true;
+            }
+        }
+
         // Reset spawn failure counter on any edit — the user may have fixed
         // the root cause (e.g., exec_mode mismatch), so the circuit breaker
         // should give the task a fresh set of attempts.
@@ -827,6 +886,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -869,6 +930,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -911,6 +974,8 @@ mod tests {
             None,
             None,
             None,  // cron
+            None,  // timeout
+            None,  // verify_timeout
             true,  // allow_phantom: dep2 doesn't exist in test graph
             false, // allow_cycle: tests should not allow cycles by default
         );
@@ -954,6 +1019,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -996,6 +1063,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1039,6 +1108,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1081,6 +1152,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1123,6 +1196,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1166,6 +1241,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1208,6 +1285,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1246,6 +1325,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1283,6 +1364,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1327,6 +1410,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1375,6 +1460,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         )
@@ -1407,6 +1494,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         );
@@ -1464,6 +1553,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         )
@@ -1529,6 +1620,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         )
@@ -1575,6 +1668,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         )
@@ -1616,6 +1711,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false,
         )
@@ -1685,6 +1782,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             false, // allow_cycle = false
         );
@@ -1751,6 +1850,8 @@ mod tests {
             None,
             None,
             None, // cron
+            None, // timeout
+            None, // verify_timeout
             false,
             true, // allow_cycle = true
         );
@@ -1762,5 +1863,303 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task_a = graph.get_task("task-a").unwrap();
         assert!(task_a.after.contains(&"task-b".to_string()));
+    }
+
+    /// Reproduction for bug-task-timeout-edit-publish-block: a task carrying
+    /// a stale/hidden `timeout` field can be inspected, repaired, and cleared
+    /// via `wg edit --timeout`/`--verify-timeout` instead of being abandoned.
+    /// This exercises the exact recovery flow the user report said was missing.
+    #[test]
+    fn test_edit_timeout_set_clear_and_verify_timeout() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let graph_path = graph_path(dir);
+        fs::write(&graph_path, "").unwrap();
+
+        // Create a task WITH a per-task timeout (the "hidden field" the user
+        // could not previously repair).
+        crate::commands::add::run(
+            dir,
+            "Stuck Task",
+            Some("stuck-task"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None, // max_retries
+            None, // model
+            None, // provider
+            None, // verify
+            None, // verify_timeout
+            None,
+            None,
+            None, // validation, validator_agent, validator_model
+            None,
+            None,
+            None, // max_iterations, cycle_guard, cycle_delay
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            Some("4h"), // --timeout 4h
+            None,       // exec_mode
+            false,
+            false, // paused, no_place
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
+            false, // subtask
+        )
+        .unwrap();
+
+        // Confirm the hidden field landed and is visible via the graph.
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("stuck-task").unwrap();
+        assert_eq!(task.timeout.as_deref(), Some("4h"));
+        assert!(task.verify_timeout.is_none());
+
+        // Edit the timeout to a new value.
+        let result = run(
+            dir,
+            "stuck-task",
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,        // verify
+            None,        // cron
+            Some("90m"), // --timeout 90m
+            None,        // verify_timeout
+            false,
+            false,
+        );
+        assert!(result.is_ok());
+        let graph = load_graph(&graph_path).unwrap();
+        assert_eq!(
+            graph.get_task("stuck-task").unwrap().timeout.as_deref(),
+            Some("90m")
+        );
+
+        // Set verify_timeout too.
+        let result = run(
+            dir,
+            "stuck-task",
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,        // timeout unchanged
+            Some("15m"), // --verify-timeout 15m
+            false,
+            false,
+        );
+        assert!(result.is_ok());
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("stuck-task").unwrap();
+        assert_eq!(task.timeout.as_deref(), Some("90m"));
+        assert_eq!(task.verify_timeout.as_deref(), Some("15m"));
+
+        // RECOVERY: clear the stale timeout with an empty string. This is the
+        // exact repair the user could not perform before — the task is recovered
+        // in place, NOT abandoned/superseded.
+        let result = run(
+            dir,
+            "stuck-task",
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(""), // --timeout "" clears
+            Some(""), // --verify-timeout "" clears
+            false,
+            false,
+        );
+        assert!(result.is_ok());
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("stuck-task").unwrap();
+        assert!(task.timeout.is_none(), "timeout should be cleared");
+        assert!(
+            task.verify_timeout.is_none(),
+            "verify_timeout should be cleared"
+        );
+        // The task is still present and recoverable — not abandoned/superseded.
+        assert_eq!(task.status, worksgood::graph::Status::Open);
+        assert!(task.superseded_by.is_empty());
+        assert!(task.supersedes.is_none());
+    }
+
+    /// An invalid timeout value must be rejected with a message naming the
+    /// field and the accepted format — no silent corruption of the field.
+    #[test]
+    fn test_edit_timeout_rejects_invalid_value() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir).unwrap();
+        let graph_path = graph_path(dir);
+        fs::write(&graph_path, "").unwrap();
+
+        crate::commands::add::run(
+            dir,
+            "Task",
+            Some("task-x"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None, // max_retries
+            None, // model
+            None, // provider
+            None, // verify
+            None, // verify_timeout
+            None,
+            None,
+            None, // validation, validator_agent, validator_model
+            None,
+            None,
+            None, // max_iterations, cycle_guard, cycle_delay
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None, // timeout
+            None, // exec_mode
+            false,
+            false, // paused, no_place
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
+            false, // subtask
+        )
+        .unwrap();
+
+        let result = run(
+            dir,
+            "task-x",
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("not-a-duration"), // invalid
+            None,
+            false,
+            false,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timeout"),
+            "error must name the timeout field: {err}"
+        );
+        assert!(
+            err.contains("empty string to clear"),
+            "error must mention the clear escape hatch: {err}"
+        );
+
+        // The invalid edit must NOT have corrupted the field.
+        let graph = load_graph(&graph_path).unwrap();
+        assert!(graph.get_task("task-x").unwrap().timeout.is_none());
     }
 }

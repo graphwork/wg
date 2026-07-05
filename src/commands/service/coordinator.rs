@@ -6725,6 +6725,8 @@ mod tests {
             None,         // not_before
             None,         // verify
             None,         // cron
+            None,         // timeout
+            None,         // verify_timeout
             false,        // allow_phantom
             false,        // allow_cycle
         )

@@ -485,6 +485,19 @@ pub enum Commands {
         #[arg(long)]
         cron: Option<String>,
 
+        /// Set or clear the per-task worker hard timeout (e.g., `30m`, `4h`, `1d`).
+        /// Takes priority over executor/coordinator timeout at spawn time. An
+        /// empty string `""` clears the field so the task falls back to defaults
+        /// — use this to recover a task stuck on a stale/bad timeout value.
+        #[arg(long)]
+        timeout: Option<String>,
+
+        /// Set or clear the per-task verify timeout override (e.g., `15m`,
+        /// `900s`). Empty string `""` clears it, restoring the coordinator
+        /// verify default. Used by `wg done`'s verify gate.
+        #[arg(long = "verify-timeout")]
+        verify_timeout: Option<String>,
+
         /// Allow phantom (forward-reference) dependencies without error
         #[arg(long = "allow-phantom")]
         allow_phantom: bool,

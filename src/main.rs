@@ -1114,6 +1114,8 @@ fn main() -> Result<()> {
             not_before,
             verify,
             cron,
+            timeout,
+            verify_timeout,
             allow_phantom,
             allow_cycle,
         } => commands::edit::run(
@@ -1142,6 +1144,8 @@ fn main() -> Result<()> {
             not_before.as_deref(),
             verify.as_deref(),
             cron.as_deref(),
+            timeout.as_deref(),
+            verify_timeout.as_deref(),
             allow_phantom,
             allow_cycle,
         ),

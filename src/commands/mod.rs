@@ -487,6 +487,8 @@ mod provenance_coverage_tests {
             None,
             None,  // verify
             None,  // cron
+            None,  // timeout
+            None,  // verify_timeout
             false, // allow_phantom
             false, // allow_cycle
         )
@@ -1136,6 +1138,8 @@ mod provenance_coverage_tests {
             None,
             None,  // verify
             None,  // cron
+            None,  // timeout
+            None,  // verify_timeout
             false, // allow_phantom
             false, // allow_cycle
         )

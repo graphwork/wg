@@ -537,7 +537,13 @@ pub(crate) fn spawn_agent_inner(
         if t.is_empty() {
             None
         } else {
-            Some(parse_timeout_secs(t).context("Invalid task timeout value")?)
+            Some(parse_timeout_secs(t).context(format!(
+                "Invalid task timeout value '{}'. \
+                 Run `wg show {}` to inspect, then repair with \
+                 `wg edit {} --timeout <30m|4h|1d>` or clear with \
+                 `wg edit {} --timeout ''`.",
+                t, task_id, task_id, task_id
+            ))?)
         }
     } else if let Some(t) = settings.timeout {
         if t == 0 { None } else { Some(t) }
