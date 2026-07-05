@@ -3,11 +3,14 @@
 //! Storage: `~/.wg/profiles/<name>.toml` (one file per profile).
 //! Active pointer: `~/.wg/active-profile` (one-line, absent = no profile).
 //!
-//! Design pivot (2026-05): profiles are no longer overlays. Each profile file
-//! is a *complete* `Config` snapshot. `wg profile use <name>` writes the
-//! profile file as `~/.wg/config.toml` (the global config), full stop. No
-//! merge logic, no resolution chain — what's in the profile file is exactly
-//! what runs.
+//! Design pivot (2026-07): profiles are **overlays**, not byte-for-byte
+//! swaps. Each profile file is a `Config` TOML snapshot whose *routing* keys
+//! (`description`, `[agent].model`, `[dispatcher].model`/`max_agents`,
+//! `[tiers]`, `[models]`, and `[llm_endpoints]` when declared) are overlaid
+//! onto the existing `~/.wg/config.toml`. Unrelated global state — notably a
+//! configured OpenRouter endpoint / credential — survives a `wg profile use
+//! <name>`, and the merged file is canonicalized (the same predicates as `wg
+//! migrate config`) so no deprecated/removed keys are (re)introduced.
 //!
 //! `wg profile use <name>` also removes project-local model-routing keys that
 //! would shadow the selected profile. Unrelated local settings remain local.
@@ -297,24 +300,40 @@ pub fn profile_path(name: &str) -> Result<PathBuf> {
     Ok(profiles_dir()?.join(format!("{}.toml", name)))
 }
 
-// ── Profile-swap (the new core operation) ────────────────────────────────────
+// ── Profile-overlay (the new core operation) ────────────────────────────────────
 
-/// Apply a profile to the global config: copy `~/.wg/profiles/<name>.toml`
-/// to `~/.wg/config.toml`, byte-for-byte, after backing up any pre-existing
-/// global config.
+/// Apply a profile to the global config by **overlaying** the profile's
+/// routing keys onto the existing `~/.wg/config.toml`, preserving unrelated
+/// global state (notably `[[llm_endpoints]]` credentials/endpoints such as
+/// an OpenRouter login), then writing the merged, canonicalized result.
 ///
-/// This is the single source of truth for what `wg profile use` does. The
-/// profile file IS the global config. No merge, no overlay, no resolution
-/// chain. Returns the destination path written.
+/// This is an **overlay, not a byte-for-byte swap**. The profile owns a
+/// well-defined set of routing keys — `description`, `[agent].model`,
+/// `[dispatcher].model` / `max_agents`, `[tiers]`, `[models]`, and (when the
+/// profile declares it) `[llm_endpoints]`. Everything else in the existing
+/// global config (credentials/endpoints, agency flags, TUI settings, …)
+/// survives a `wg profile use <name>`. A profile with no `[llm_endpoints]`
+/// (the `pi` / `claude` / `codex` starters) therefore leaves a configured
+/// OpenRouter endpoint untouched; a profile that ships its own endpoint
+/// (the `nex` starter's localhost) installs it.
+///
+/// The merged document is canonicalized via the same predicates as
+/// `wg migrate config` (drop deprecated keys, rename `poll_interval` →
+/// `safety_interval`, fix stale model strings, drop orphaned `[openrouter]`)
+/// before writing, so the result is lint-clean and never *reintroduces*
+/// deprecated/removed keys the way a `Config::save_global` round-trip would.
+///
+/// The pre-existing global config is backed up once per swap so a typo'd
+/// `wg profile use` doesn't silently lose hand-tuned keys.
 pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
     let src = profile_path(name)?;
     if !src.exists() {
         // Built-in starter self-bootstrap: `wg profile use pi` (and the
         // other starters) should work out of the box without a prior
         // `wg profile init-starters`. Materialize the in-binary snapshot to
-        // `~/.wg/profiles/<name>.toml` so the byte-for-byte copy below has a
-        // source. An on-disk file (user customization) is never overwritten —
-        // we only reach here when the file is absent.
+        // `~/.wg/profiles/<name>.toml` so the overlay below has a source. An
+        // on-disk file (user customization) is never overwritten — we only
+        // reach here when the file is absent.
         if let Some(template) = starter_template(name) {
             save_raw(name, template).with_context(|| {
                 format!("Failed to materialize built-in starter profile '{}'", name)
@@ -348,14 +367,177 @@ pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
         std::fs::copy(&dst, &bak)
             .with_context(|| format!("Failed to back up {} to {}", dst.display(), bak.display()))?;
     }
-    std::fs::copy(&src, &dst).with_context(|| {
+
+    // Load the existing global config as a TOML tree (or an empty table when
+    // there is no prior global config). Parse failures fall back to an empty
+    // table rather than aborting: a corrupt global config should not block a
+    // profile swap (the backup above preserves the corrupt file for repair).
+    let existing: toml::Value = if dst.exists() {
+        std::fs::read_to_string(&dst)
+            .with_context(|| format!("Failed to read existing global config {}", dst.display()))?
+            .parse::<toml::Value>()
+            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let profile_content = std::fs::read_to_string(&src)
+        .with_context(|| format!("Failed to read profile {}", src.display()))?;
+    let profile: toml::Value = profile_content
+        .parse()
+        .with_context(|| format!("Failed to parse profile {} as TOML", src.display()))?;
+
+    // Overlay the profile's routing keys onto the existing global config.
+    let mut merged = overlay_profile_onto_global(existing, &profile);
+
+    // Canonicalize the merged document so the written config is lint-clean and
+    // never reintroduces deprecated/removed keys (the bug: a `Config::save_global`
+    // round-trip re-emits `dispatcher.poll_interval` and removed compaction/verify
+    // keys with their serde defaults).
+    crate::config_migrate::canonicalize_in_place(&mut merged);
+
+    let content = toml::to_string_pretty(&merged)
+        .context("Failed to serialize merged profile + global config")?;
+    std::fs::write(&dst, content)
+        .with_context(|| format!("Failed to write merged global config to {}", dst.display()))?;
+    Ok(dst)
+}
+
+/// The set of top-level TOML keys a profile is authoritative for. Everything
+/// outside this set in the existing global config is preserved verbatim by
+/// [`overlay_profile_onto_global`].
+const PROFILE_ROUTING_TOP_KEYS: &[&str] = &[
+    "description",
+    "profile",
+    "agent",
+    "dispatcher",
+    "tiers",
+    "models",
+];
+
+/// Overlay a profile's routing keys onto an existing global config TOML tree,
+/// preserving unrelated global state (endpoints/credentials, agency flags, …).
+///
+/// Merge rules:
+/// - Scalar top-level routing keys (`description`, `profile`): profile wins,
+///   replace.
+/// - Subtable routing keys (`agent`, `dispatcher`, `tiers`, `models`): merge
+///   field-by-field with the profile winning on conflict, so an existing
+///   `dispatcher.safety_interval` or `agent.interval` survives a swap while
+///   the profile's `model` / `max_agents` / tier / role pins take effect.
+/// - `llm_endpoints`: when the profile declares it, the profile owns the
+///   endpoint set (replace) — this lets the `nex` starter install its
+///   localhost endpoint. When the profile omits it (the `pi` / `claude` /
+///   `codex` starters), the existing global endpoints are preserved — this
+///   is the fix for the OpenRouter-login-clobbering bug.
+/// - Any other top-level key in the existing config (agency, tui, checkpoint,
+///   log, …) is left untouched.
+fn overlay_profile_onto_global(mut existing: toml::Value, profile: &toml::Value) -> toml::Value {
+    let prof_table = match profile.as_table() {
+        Some(t) => t,
+        None => return existing,
+    };
+    let dst = match existing.as_table_mut() {
+        Some(t) => t,
+        None => return existing,
+    };
+
+    // Scalar top-level routing keys: profile wins (replace).
+    for key in ["description", "profile"] {
+        if let Some(v) = prof_table.get(key) {
+            dst.insert(key.to_string(), v.clone());
+        }
+    }
+
+    // Subtable routing keys: merge field-by-field (profile wins on conflict).
+    for key in ["agent", "dispatcher", "tiers", "models"] {
+        if let Some(prof_sub) = prof_table.get(key) {
+            let entry = dst
+                .entry(key.to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            merge_tables_field_by_field(entry, prof_sub);
+        }
+    }
+
+    // `llm_endpoints`: profile-declared → replace; profile-omitted → preserve
+    // existing (the OpenRouter-login-clobbering fix).
+    if let Some(prof_ep) = prof_table.get("llm_endpoints") {
+        dst.insert("llm_endpoints".to_string(), prof_ep.clone());
+    }
+
+    let _ = PROFILE_ROUTING_TOP_KEYS; // single source of truth for the key set
+    existing
+}
+
+/// Recursively merge `profile` into `existing` field-by-field, with `profile`
+/// winning on conflict. For (Table, Table) pairs both sides' keys survive; for
+/// any other shape (or a non-table `existing`) `profile` replaces it.
+fn merge_tables_field_by_field(existing: &mut toml::Value, profile: &toml::Value) {
+    match (existing.as_table_mut(), profile.as_table()) {
+        (Some(dst), Some(src)) => {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        _ => {
+            *existing = profile.clone();
+        }
+    }
+}
+
+/// Patch a pinned default-route model into the freshly-written global config
+/// (`~/.wg/config.toml`) in place, then re-canonicalize. Used by model-qualified
+/// profile activation (`wg profile use claude:opus` / `codex:gpt-5.5` /
+/// `nex:<model>`) to pin the strong-tier route without round-tripping through
+/// `Config::save_global` (which re-emits deprecated field names).
+///
+/// Pins exactly the [`Config::PI_STRONG_TOML_KEYS`] set. The companion default
+/// (fast tier + agency roles) is left alone — after `apply_profile_as_global_config`
+/// merged the starter template, those already hold the matching provider's
+/// starter values, so [`Config::pin_provider_companion_defaults`] would be a
+/// no-op; pinning only the strong keys reproduces `pin_default_route_model`
+/// for the same-provider activations `parse_profile_use_target` emits.
+pub fn patch_global_pinned_model(model: &str) -> Result<()> {
+    let dst = Config::global_config_path()?;
+    let content = std::fs::read_to_string(&dst)
+        .with_context(|| format!("Failed to read global config {} for pin", dst.display()))?;
+    let mut doc: toml::Value = content.parse().with_context(|| {
         format!(
-            "Failed to copy profile {} to {}",
-            src.display(),
+            "Failed to parse global config {} after profile apply",
             dst.display()
         )
     })?;
-    Ok(dst)
+    for dotted in Config::PI_STRONG_TOML_KEYS {
+        set_dotted_string(&mut doc, dotted, model);
+    }
+    crate::config_migrate::canonicalize_in_place(&mut doc);
+    let body = toml::to_string_pretty(&doc).context("Failed to serialize pinned global config")?;
+    std::fs::write(&dst, body)
+        .with_context(|| format!("Failed to write pinned global config {}", dst.display()))?;
+    Ok(())
+}
+
+/// Set a dotted TOML key (`table.key` / `table.sub.key`, or a bare top-level
+/// `key`) to a string value inside `doc`, creating intermediate tables as
+/// needed. Used by [`patch_global_pinned_model`] to pin the strong-tier route
+/// on the parsed TOML tree (the file is `toml::to_string_pretty` output, so
+/// this lossless tree edit is preferred over the line patcher).
+fn set_dotted_string(doc: &mut toml::Value, dotted: &str, value: &str) {
+    let segments: Vec<&str> = dotted.split('.').collect();
+    let (path_segs, leaf) = segments.split_at(segments.len() - 1);
+    let leaf = leaf[0];
+    let mut cursor = doc;
+    for seg in path_segs {
+        let entry = cursor
+            .as_table_mut()
+            .expect("config tree must be table-valued at every routing prefix")
+            .entry(seg.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        cursor = entry;
+    }
+    if let Some(table) = cursor.as_table_mut() {
+        table.insert(leaf.to_string(), toml::Value::String(value.to_string()));
+    }
 }
 
 /// Remove project-local model/provider routing keys that would shadow an
@@ -421,7 +603,18 @@ pub fn clear_local_profile_routing_overrides(
         &mut removed_keys,
     );
 
-    if removed_keys.is_empty() {
+    // Canonicalize the local config so it cannot conflict with the canonical
+    // GLOBAL config the profile overlay just wrote. Without this, a local
+    // `[dispatcher] poll_interval` (written by `wg init`'s `Config::save`,
+    // which serializes the deprecated field name) survives alongside a GLOBAL
+    // `[dispatcher] safety_interval` (canonicalized by `apply_profile_as_global_config`),
+    // and the merged-config deserialize fails with "duplicate field `poll_interval`"
+    // — exactly the regression the bug report calls out.
+    let canon = crate::config_migrate::canonicalize_in_place(&mut value);
+    let canon_changed =
+        !canon.removed.is_empty() || !canon.renamed.is_empty() || !canon.rewritten.is_empty();
+
+    if removed_keys.is_empty() && !canon_changed {
         return Ok(None);
     }
 
@@ -435,6 +628,11 @@ pub fn clear_local_profile_routing_overrides(
     })?;
     std::fs::write(&path, cleaned)
         .with_context(|| format!("Failed to write cleaned local config {}", path.display()))?;
+
+    // Fold the canonicalization renames into the reported removed-keys list so
+    // the user sees what changed (e.g. `dispatcher.poll_interval` removed as
+    // part of canonicalization).
+    removed_keys.extend(canon.removed);
 
     Ok(Some(LocalRoutingCleanup {
         path,
@@ -1021,17 +1219,13 @@ is_default = true
     }
 
     #[test]
-    fn test_apply_profile_as_global_config_writes_file_byte_for_byte() {
+    fn test_apply_profile_overlays_routing_keys_canonically() {
         let _tmp = with_home(|| {
             // Install the codex starter into the temp HOME's profiles dir.
             save_raw("codex", STARTER_CODEX).unwrap();
             let dst = apply_profile_as_global_config("codex").unwrap();
             assert!(dst.exists(), "global config must exist after apply");
             let written = std::fs::read_to_string(&dst).unwrap();
-            assert_eq!(
-                written, STARTER_CODEX,
-                "global config must be byte-identical to the profile snapshot"
-            );
             // Sanity: ensure the actual [agent].model line in the written file
             // names codex, not claude. This is the verbatim check the task
             // validation calls for (`grep 'model = ' ~/.wg/config.toml`).
@@ -1045,6 +1239,118 @@ is_default = true
                 "global config must not retain any claude models after codex swap. Got:\n{}",
                 written,
             );
+            // Canonicalization: profile activation must NOT reintroduce
+            // deprecated `dispatcher.poll_interval` or removed compaction/verify
+            // keys (the regression: a `Config::save_global` round-trip re-emits
+            // them with serde defaults).
+            assert!(
+                !written.contains("poll_interval"),
+                "canonical global config must not carry deprecated poll_interval. Got:\n{}",
+                written,
+            );
+            assert!(
+                !written.contains("compactor_interval")
+                    && !written.contains("compaction_token_threshold")
+                    && !written.contains("verify_autospawn_enabled")
+                    && !written.contains("verify_mode"),
+                "canonical global config must not carry removed compaction/verify keys. Got:\n{}",
+                written,
+            );
+            // Re-loading the written config must reflect codex everywhere.
+            let cfg = Config::load_global()
+                .unwrap()
+                .expect("global must be present");
+            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+        });
+    }
+
+    #[test]
+    fn test_apply_profile_preserves_openrouter_endpoint() {
+        // The bug: `wg profile use pi` overwrote `~/.wg/config.toml` byte-for-byte,
+        // dropping a configured OpenRouter endpoint. With profile-as-overlay the
+        // endpoint must survive a `pi` swap (the pi starter has no `llm_endpoints`).
+        let _tmp = with_home(|| {
+            save_raw("pi", STARTER_PI).unwrap();
+            // Pre-seed the global config with an OpenRouter endpoint + the
+            // deprecated keys `wg login openrouter --global`'s `save_global`
+            // round-trip would write, so we also exercise canonicalization.
+            let dst = Config::global_config_path().unwrap();
+            std::fs::write(
+                &dst,
+                r#"
+[agent]
+model = "claude:opus"
+
+[dispatcher]
+model = "claude:opus"
+poll_interval = 5
+compaction_token_threshold = 50000
+verify_autospawn_enabled = true
+
+[[llm_endpoints.endpoints]]
+name = "openrouter"
+provider = "openrouter"
+url = "https://openrouter.ai/api/v1"
+api_key_ref = "keyring:openrouter"
+is_default = true
+"#,
+            )
+            .unwrap();
+            apply_profile_as_global_config("pi").unwrap();
+
+            let written = std::fs::read_to_string(&dst).unwrap();
+            // The OpenRouter endpoint must survive the pi swap.
+            assert!(
+                written.contains("name = \"openrouter\""),
+                "OpenRouter endpoint name must survive profile swap. Got:\n{}",
+                written,
+            );
+            assert!(
+                written.contains("api_key_ref = \"keyring:openrouter\""),
+                "OpenRouter api_key_ref must survive profile swap. Got:\n{}",
+                written,
+            );
+            assert!(
+                written.contains("https://openrouter.ai/api/v1"),
+                "OpenRouter endpoint URL must survive profile swap. Got:\n{}",
+                written,
+            );
+            // The pi profile's routing keys must take effect.
+            assert!(
+                written.contains("pi:openrouter/z-ai/glm-5.2"),
+                "pi strong-tier route must be present. Got:\n{}",
+                written,
+            );
+            // Deprecated/removed keys must be canonicalized away.
+            assert!(
+                !written.contains("poll_interval"),
+                "deprecated poll_interval must be renamed away. Got:\n{}",
+                written,
+            );
+            assert!(
+                !written.contains("verify_autospawn_enabled")
+                    && !written.contains("compaction_token_threshold"),
+                "removed compaction/verify keys must be dropped. Got:\n{}",
+                written,
+            );
+            // The merged config must load and report the OpenRouter endpoint.
+            let cfg = Config::load_global()
+                .unwrap()
+                .expect("global must be present");
+            assert_eq!(cfg.agent.model, "pi:openrouter/z-ai/glm-5.2");
+            let ep = cfg
+                .llm_endpoints
+                .find_by_name("openrouter")
+                .expect("OpenRouter endpoint must survive profile swap");
+            assert_eq!(ep.provider, "openrouter");
+            assert_eq!(
+                ep.api_key_ref.as_deref(),
+                Some("keyring:openrouter"),
+                "api_key_ref must survive profile swap",
+            );
+            assert!(ep.is_default, "endpoint must remain default");
         });
     }
 

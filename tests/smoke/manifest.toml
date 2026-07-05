@@ -1900,3 +1900,12 @@ owners = [
 ]
 description = "Pins bug-flip-pi-route-uses-claude-cli: a handler-first `pi:` weak tier (`tiers.fast = \"pi:openrouter:deepseek/deepseek-chat\"`) must dispatch the agency one-shot roles (Evaluator / FlipInference / FlipComparison / Assigner) to the Pi handler — NOT the claude-CLI catch-all in `run_lightweight_llm_call`. The bug silently routed `pi:` specs to claude CLI, which then failed with \"Claude CLI call failed ... subscription access disabled\" instead of honoring pi. Credential-free; stubs both `pi` (records invocation + emits canned NDJSON `translate_pi_stream` parses into a valid evaluator JSON reply) and `claude` (fails LOUDLY with the regression's own error signature if ever invoked). Falsifiable assertions: (1) `wg evaluate run` succeeds; (2) the stub `pi` was invoked (invocation marker file exists); (3) the stub `claude` was NOT invoked (no claude marker) and the regression signature string \"Claude CLI call failed\" is absent from the evaluate log — proving the pi handler path was taken, not the claude fallback."
 timeout_seconds = 60
+
+[[scenario]]
+name = "profile_use_preserve_openrouter_endpoint"
+script = "scenarios/profile_use_preserve_openrouter_endpoint.sh"
+owners = [
+    "bug-profile-use-preserve-openrouter-endpoint",
+]
+description = "Pins bug-profile-use-preserve-openrouter-endpoint: `wg profile use pi` must NOT clobber a configured OpenRouter endpoint (api_key_ref) and must NOT reintroduce deprecated `dispatcher.poll_interval` or removed compaction/verify keys. Pre-fix, profile activation was a byte-for-byte swap that dropped the endpoint set by `wg login openrouter --global`, and the pinned-model path's `Config::save_global` round-trip re-emitted deprecated field names with serde defaults. Post-fix, profile activation is an OVERLAY: the profile's routing keys merge onto the existing global config (preserving `[[llm_endpoints]]`), and the merged file is canonicalized via the same predicates as `wg migrate config`. Credential-free; isolated $HOME + WG_GLOBAL_DIR so the host global config is untouched. Falsifiable assertions: (1) the OpenRouter endpoint (name/provider/api_key_ref/URL/default flag) survives the pi swap; (2) the pi strong-tier route takes effect; (3) no deprecated/removed keys are reintroduced (no poll_interval, compactor_interval, compaction_token_threshold, verify_autospawn_enabled, verify_mode); (4) `wg config lint --global` reports zero migrate findings (removed/renamed/rewritten all empty)."
+timeout_seconds = 60

@@ -594,6 +594,11 @@ fn print_one(r: &ConfigMigrateResult, dry_run: bool) {
     }
 }
 
+/// Canonicalization pipeline + report, re-exported from the worksgood lib so
+/// the wg-binary migrate command and lib-side profile activation share one
+/// transform. See `worksgood::config_migrate`.
+pub(crate) use worksgood::config_migrate::{CanonicalizeReport, canonicalize_in_place};
+
 /// Read one config file, compute the canonical form, and (unless dry-run)
 /// write it back with a `.pre-migrate.<timestamp>` backup.
 ///
@@ -624,26 +629,17 @@ pub(crate) fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateRes
         }
     };
 
-    let mut removed: Vec<String> = Vec::new();
-    let mut renamed: Vec<(String, String)> = Vec::new();
-    let mut rewritten: Vec<(String, String, String)> = Vec::new();
-
-    // 1. Drop deprecated/no-op keys.
-    drop_deprecated(&mut doc, &mut removed);
-
-    // 2. Rename legacy field names (chat_agent → coordinator_agent, etc).
-    rename_legacy_fields(&mut doc, &mut renamed);
-
-    // 3. Fix known stale model strings (claude-sonnet-4 → -4-6, etc).
-    fix_stale_model_strings(&mut doc, &mut rewritten);
-
-    // 4. Strip orphaned [openrouter] section when the project has no
-    //    openrouter usage. Default-only [openrouter] is just log spam:
-    //    the registry-refresh job will probe OpenRouter every poll if a
-    //    section is present, even on claude-cli / codex-cli projects
-    //    that have no API key. Idempotent — running again on a config
-    //    where it was already removed is a no-op.
-    drop_orphaned_openrouter(&mut doc, &mut removed);
+    // Run the full canonicalization pipeline (drop deprecated keys, rename
+    // legacy fields, fix stale model strings, drop orphaned [openrouter]) and
+    // capture what changed. This is the single shared entry point used by
+    // both `wg migrate config` (which writes the file) and profile activation
+    // (which writes canonical config without round-tripping through `Config`
+    // serialization — see `profile::named::apply_profile_as_global_config`).
+    let CanonicalizeReport {
+        removed,
+        renamed,
+        rewritten,
+    } = canonicalize_in_place(&mut doc);
 
     result.removed_keys = removed;
     result.renamed_keys = renamed;
@@ -673,286 +669,6 @@ pub(crate) fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateRes
     result.wrote = true;
 
     Ok(result)
-}
-
-/// Top-level [section].key pairs that the migration removes outright.
-/// These are deprecated/no-op as of the audit and are never written by
-/// the canonical defaults or by `wg config init`.
-const DEPRECATED_KEYS: &[(&str, &str)] = &[
-    // Handler is now derived from model spec's provider prefix.
-    ("agent", "executor"),
-    ("dispatcher", "executor"),
-    ("coordinator", "executor"),
-    // Compactor (.compact-N) cycle was retired.
-    ("dispatcher", "compactor_interval"),
-    ("dispatcher", "compactor_ops_threshold"),
-    ("dispatcher", "compaction_token_threshold"),
-    ("dispatcher", "compaction_threshold_ratio"),
-    ("coordinator", "compactor_interval"),
-    ("coordinator", "compactor_ops_threshold"),
-    ("coordinator", "compaction_token_threshold"),
-    ("coordinator", "compaction_threshold_ratio"),
-    // Verify-shadow-task auto-spawn was replaced by .evaluate-* + wg rescue.
-    ("dispatcher", "verify_autospawn_enabled"),
-    ("coordinator", "verify_autospawn_enabled"),
-    // Legacy verify_mode predates the ## Validation pattern.
-    ("dispatcher", "verify_mode"),
-    ("coordinator", "verify_mode"),
-    // Old FLIP threshold knob — replaced by per-agent eval thresholds.
-    ("agency", "flip_verification_threshold"),
-];
-
-fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) {
-    let table = match doc.as_table_mut() {
-        Some(t) => t,
-        None => return,
-    };
-    for (section, key) in DEPRECATED_KEYS {
-        if let Some(toml::Value::Table(sec)) = table.get_mut(*section)
-            && sec.remove(*key).is_some()
-        {
-            removed.push(format!("{}.{}", section, key));
-        }
-        // Also drop empty sections we just emptied.
-        if let Some(toml::Value::Table(sec)) = table.get(*section)
-            && sec.is_empty()
-        {
-            table.remove(*section);
-            removed.push(format!("{} (empty section)", section));
-        }
-    }
-}
-
-/// Remove the `[openrouter]` section when nothing in the config actually
-/// uses OpenRouter. "Uses" means: a top-level model spec / tier / endpoint
-/// references the `openrouter:` provider prefix. If anything points at
-/// openrouter we leave the section alone — the cost-cap settings inside
-/// might be intentional.
-///
-/// This catches the common case where an old `wg init` (before the
-/// fix-remove-openrouter change) wrote a default `[openrouter]` block
-/// into a claude-cli or codex-cli project. The default block has no
-/// API key, so the daemon's registry-refresh job spins on auth errors.
-fn drop_orphaned_openrouter(doc: &mut toml::Value, removed: &mut Vec<String>) {
-    let table = match doc.as_table_mut() {
-        Some(t) => t,
-        None => return,
-    };
-    if !table.contains_key("openrouter") {
-        return;
-    }
-
-    // Scan for any string in the doc that mentions "openrouter" — model
-    // specs, tier values, endpoint provider/url, etc. The check has to
-    // skip the [openrouter] section itself, otherwise a default section
-    // would always look "in use".
-    let mut uses_openrouter = false;
-    for (k, v) in table.iter() {
-        if k == "openrouter" {
-            continue;
-        }
-        if value_mentions_openrouter(v) {
-            uses_openrouter = true;
-            break;
-        }
-    }
-    if uses_openrouter {
-        return;
-    }
-
-    table.remove("openrouter");
-    removed.push("openrouter (orphaned section — no openrouter usage in config)".to_string());
-}
-
-/// Recursive predicate: returns true if any string-leaf inside `v`
-/// mentions "openrouter" — model specs, endpoint provider names, URLs,
-/// etc. Used by [`drop_orphaned_openrouter`] to decide whether the
-/// section is still load-bearing.
-fn value_mentions_openrouter(v: &toml::Value) -> bool {
-    match v {
-        toml::Value::String(s) => s.contains("openrouter"),
-        toml::Value::Array(arr) => arr.iter().any(value_mentions_openrouter),
-        toml::Value::Table(t) => t.values().any(value_mentions_openrouter),
-        _ => false,
-    }
-}
-
-fn rename_legacy_fields(doc: &mut toml::Value, renamed: &mut Vec<(String, String)>) {
-    let table = match doc.as_table_mut() {
-        Some(t) => t,
-        None => return,
-    };
-    // Rename top-level [coordinator] section to [dispatcher] when no
-    // [dispatcher] section already exists. If both exist, leave them
-    // alone — the user has manually split them and we don't want to
-    // silently merge.
-    if table.contains_key("coordinator") && !table.contains_key("dispatcher") {
-        if let Some(v) = table.remove("coordinator") {
-            table.insert("dispatcher".to_string(), v);
-            renamed.push(("[coordinator]".to_string(), "[dispatcher]".to_string()));
-        }
-    }
-
-    // Within [dispatcher], rename chat_agent → coordinator_agent + max_chats → max_coordinators.
-    if let Some(toml::Value::Table(disp)) = table.get_mut("dispatcher") {
-        for (old, new) in &[
-            ("chat_agent", "coordinator_agent"),
-            ("max_chats", "max_coordinators"),
-        ] {
-            if disp.contains_key(*old) && !disp.contains_key(*new) {
-                if let Some(v) = disp.remove(*old) {
-                    disp.insert(new.to_string(), v);
-                    renamed.push((format!("dispatcher.{}", old), format!("dispatcher.{}", new)));
-                }
-            }
-        }
-    }
-
-    // `poll_interval` remains accepted by config deserialization for one
-    // release, but `safety_interval` is the canonical key. Keep migration and
-    // lint in sync with the daemon's startup deprecation scan.
-    for section in ["dispatcher", "coordinator"] {
-        if let Some(toml::Value::Table(sec)) = table.get_mut(section)
-            && let Some(v) = sec.remove("poll_interval")
-        {
-            if !sec.contains_key("safety_interval") {
-                sec.insert("safety_interval".to_string(), v);
-            }
-            renamed.push((
-                format!("{}.poll_interval", section),
-                format!("{}.safety_interval", section),
-            ));
-        }
-    }
-}
-
-/// Stale model string rewrites: maps `<old>` → `<new>` substrings inside
-/// any string field anywhere in the config. Conservative — only matches
-/// exact full strings, not arbitrary substrings, to avoid surprising
-/// rewrites of unrelated values.
-const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
-    (
-        "openrouter:anthropic/claude-sonnet-4",
-        "openrouter:anthropic/claude-sonnet-4-6",
-    ),
-    (
-        "openrouter:anthropic/claude-haiku-4",
-        "openrouter:anthropic/claude-haiku-4-5",
-    ),
-    (
-        "openrouter:anthropic/claude-opus-4",
-        "openrouter:anthropic/claude-opus-4-7",
-    ),
-    ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-6"),
-    ("anthropic/claude-haiku-4", "anthropic/claude-haiku-4-5"),
-    ("anthropic/claude-opus-4", "anthropic/claude-opus-4-7"),
-    // Codex / OpenAI model rewrites (2026-04-28):
-    // o1-pro deprecated 2026-10-23; gpt-5.4 remains the balanced catalog entry.
-    ("codex:o1-pro", "codex:gpt-5.4"),
-    // Old tier names predating the gpt-5.4 generation.
-    ("codex:gpt-5-mini", "codex:gpt-5.4-mini"),
-    ("codex:gpt-5", "codex:gpt-5.4"),
-    // gpt-5-codex sunsets 2026-07-23; gpt-5.4 is the direct replacement.
-    ("codex:gpt-5-codex", "codex:gpt-5.4"),
-    // gpt-5.4-pro superseded by gpt-5.5 (newer, cheaper at $5/$30 vs $30/$180).
-    ("codex:gpt-5.4-pro", "codex:gpt-5.5"),
-];
-
-fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, String, String)>) {
-    walk_strings(doc, "", &mut |path, s| {
-        if let Some(new_str) = rewrite_stale_default_route_pin(path, s) {
-            rewritten.push((path.to_string(), s.clone(), new_str.clone()));
-            return Some(new_str);
-        }
-        for (old, new) in STALE_MODEL_REWRITES {
-            // Match exact full string only (not substring) so e.g.
-            // `claude-sonnet-4` doesn't fire when the value is already
-            // `claude-sonnet-4-6`. The `-4` suffix is a prefix of `-4-6`,
-            // so a naive substring match would loop.
-            if s == *old {
-                let new_str = (*new).to_string();
-                rewritten.push((path.to_string(), s.clone(), new_str.clone()));
-                return Some(new_str);
-            }
-        }
-        // Handler-first rewrite for deprecated **leading** provider prefixes
-        // (docs/design-handler-first-model-spec.md §5.2): the leading token
-        // must name a handler, never a bare provider. Two rewrite shapes:
-        //   - swap (pure aliases of the nex wire): `oai-compat:X`/`openai:X`/
-        //     `local:X`/`native:X` → `nex:X` (drop the prefix);
-        //   - prepend (wire-distinct providers): `openrouter:X`/`ollama:X`/
-        //     `vllm:X`/`llamacpp:X`/`gemini:X` → `nex:<prefix>:X` (keep it as
-        //     the inner dialect).
-        // The `local:`/`oai-compat:` swap behavior is unchanged (it is now a
-        // subset of `handler_first_rewrite`). Already handler-first specs
-        // (`claude:`, `codex:`, `nex:`, `pi:…`) and bare aliases are no-ops.
-        if let Some(new_str) = worksgood::config::handler_first_rewrite(s) {
-            rewritten.push((path.to_string(), s.clone(), new_str.clone()));
-            return Some(new_str);
-        }
-        None
-    });
-}
-
-/// Upgrade stale default/task-agent pins to the current top worker defaults.
-///
-/// This is intentionally path-scoped: lower-cost models can still appear in
-/// fast tiers, registries, or explicit role overrides. The regression was stale
-/// default worker routing, not the existence of cheaper catalog entries.
-fn rewrite_stale_default_route_pin(path: &str, value: &str) -> Option<String> {
-    const DEFAULT_ROUTE_PATHS: &[&str] = &[
-        "agent.model",
-        "dispatcher.model",
-        "coordinator.model",
-        "models.default.model",
-        "models.task_agent.model",
-        "tiers.standard",
-        "tiers.premium",
-    ];
-    if !DEFAULT_ROUTE_PATHS.contains(&path) {
-        return None;
-    }
-
-    match value {
-        "codex:gpt-5.4" | "gpt-5.4" | "codex:gpt-5" | "gpt-5" | "codex:o1-pro" | "o1-pro"
-        | "codex:gpt-5-codex" | "gpt-5-codex" => Some("codex:gpt-5.5".to_string()),
-        "claude:sonnet" | "sonnet" => Some("claude:opus".to_string()),
-        _ => None,
-    }
-}
-
-/// Walk every string value in a TOML doc, calling `f(path, &value)`.
-/// If `f` returns `Some(new)`, replace the value with `new`. The path
-/// uses dotted notation: `"agent.model"`, `"tiers.standard"`, etc.
-fn walk_strings(
-    val: &mut toml::Value,
-    path: &str,
-    f: &mut dyn FnMut(&str, &String) -> Option<String>,
-) {
-    match val {
-        toml::Value::String(s) => {
-            if let Some(new) = f(path, s) {
-                *s = new;
-            }
-        }
-        toml::Value::Array(arr) => {
-            for (i, child) in arr.iter_mut().enumerate() {
-                let child_path = format!("{}[{}]", path, i);
-                walk_strings(child, &child_path, f);
-            }
-        }
-        toml::Value::Table(tbl) => {
-            for (k, child) in tbl.iter_mut() {
-                let child_path = if path.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{}.{}", path, k)
-                };
-                walk_strings(child, &child_path, f);
-            }
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]

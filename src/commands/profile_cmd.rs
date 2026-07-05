@@ -709,14 +709,21 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
 
 // ── Named profile commands ────────────────────────────────────────────────────
 
-/// Activate a named profile: copy `~/.wg/profiles/<name>.toml` over
-/// `~/.wg/config.toml` (the global config), remove project-local routing keys
-/// that would shadow the profile, update the active-pointer file, and
+/// Activate a named profile: overlay the profile's routing keys onto
+/// `~/.wg/config.toml` (the global config), remove project-local routing
+/// keys that would shadow the profile, update the active-pointer file, and
 /// hot-reload the daemon.
 ///
-/// **Profile-as-swap, not overlay** (2026-05 pivot): the profile file IS the
-/// global config. No merge logic, no resolution chain. What's in the profile
-/// file is exactly what runs. Local non-routing settings are preserved.
+/// **Profile-as-overlay** (2026-07): the profile's routing keys (`description`,
+/// `[agent].model`, `[dispatcher].model`/`max_agents`, `[tiers]`, `[models]`,
+/// and, when the profile declares it, `[llm_endpoints]`) are overlaid onto the
+/// existing global config. Unrelated global state — notably a configured
+/// OpenRouter endpoint / credential — survives a `wg profile use <name>`, so
+/// `wg login openrouter --global` followed by `wg profile use pi` no longer
+/// drops the endpoint. The merged file is canonicalized (the same predicates
+/// as `wg migrate config`) so no deprecated `dispatcher.poll_interval` or
+/// removed compaction/verify keys are (re)introduced. Local non-routing
+/// settings are preserved.
 pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool) -> Result<()> {
     if clear || name.is_none() {
         let prev = named_profile::active().unwrap_or(None);
@@ -770,9 +777,14 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     let prev = named_profile::active().unwrap_or(None);
     let written = named_profile::apply_profile_as_global_config(profile_name)?;
     if let Some(ref pinned_model) = target.pinned_model {
-        let mut config = Config::load_global()?.unwrap_or_else(|| prof.config.clone());
-        config.pin_default_route_model(pinned_model);
-        config.save_global()?;
+        // Patch the pinned default-route model into the freshly-written global
+        // config TOML directly (comment-preserving), then re-canonicalize. This
+        // avoids a `Config::load_global` + `save_global` round-trip, which
+        // re-serializes every field and re-emits deprecated field names like
+        // `dispatcher.poll_interval` and removed compaction/verify keys with
+        // their serde defaults — undoing the canonical form
+        // `apply_profile_as_global_config` just wrote.
+        named_profile::patch_global_pinned_model(pinned_model)?;
     }
     let local_cleanup = named_profile::clear_local_profile_routing_overrides(dir)?;
     named_profile::set_active(Some(profile_name))?;

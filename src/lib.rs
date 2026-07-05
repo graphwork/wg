@@ -27,6 +27,7 @@ pub mod chat_sessions;
 pub mod check;
 pub mod config;
 pub mod config_defaults;
+pub mod config_migrate;
 pub mod context_scope;
 pub mod cron;
 pub mod cycle;
