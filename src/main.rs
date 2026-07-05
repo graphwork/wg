@@ -1280,6 +1280,7 @@ fn main() -> Result<()> {
             commands::cleanup::run(args)
         }
         Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
+        Commands::Cron { json } => commands::cron_cmd::run(&workgraph_dir, json),
         Commands::List {
             status,
             paused,

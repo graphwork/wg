@@ -95,9 +95,26 @@ pub fn run(
                     obj["cron_enabled"] = serde_json::json!(true);
                     if let Some(ref sched) = t.cron_schedule {
                         obj["cron_schedule"] = serde_json::json!(sched);
+                        if let Some(desc) = worksgood::cron::describe_cron(sched) {
+                            obj["cron_summary"] = serde_json::json!(desc.summary);
+                            if let Some(wd) = desc.weekdays {
+                                obj["cron_weekdays"] = serde_json::json!(wd);
+                            }
+                            if let Some(tu) = desc.time_utc {
+                                obj["cron_time_utc"] = serde_json::json!(tu);
+                            }
+                        }
                     }
                     if let Some(ref nf) = t.next_cron_fire {
                         obj["next_cron_fire"] = serde_json::json!(nf);
+                    }
+                    if let Some(ref lf) = t.last_cron_fire {
+                        obj["last_cron_fire"] = serde_json::json!(lf);
+                    }
+                    if let Some(missed) =
+                        worksgood::cron::missed_fires_before_reset(t, chrono::Utc::now())
+                    {
+                        obj["missed_fires"] = serde_json::json!(missed);
                     }
                 }
                 obj
@@ -135,7 +152,13 @@ pub fn run(
             };
             let cron_str = if task.cron_enabled {
                 if let Some(ref sched) = task.cron_schedule {
-                    format!(" \x1b[36m[cron: {}]\x1b[0m", sched)
+                    // Surface the resolved weekday + UTC time-of-day so the
+                    // `cron` crate's non-standard 1=Sunday mapping is visible
+                    // at list time (impl-recurring-heartbeat-diagnostics).
+                    let resolved = worksgood::cron::describe_cron(sched)
+                        .map(|d| d.summary)
+                        .unwrap_or_else(|| sched.clone());
+                    format!(" \x1b[36m[cron: {}]\x1b[0m", resolved)
                 } else {
                     " \x1b[36m[cron]\x1b[0m".to_string()
                 }

@@ -881,6 +881,14 @@ pub enum Commands {
     /// Analyze structural cycles in after edges (Tarjan's SCC)
     Cycles,
 
+    /// Diagnose recurring cron-scheduled tasks: next/last fire, weekday, due /
+    /// overdue / paused state, and missed-fire count. (`impl-recurring-heartbeat-diagnostics`)
+    Cron {
+        /// Output as JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List all tasks
     List {
         /// Filter by status
@@ -6285,6 +6293,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Doctor => "doctor",
         Commands::Cleanup { .. } => "cleanup",
         Commands::Cycles => "cycles",
+        Commands::Cron { .. } => "cron",
         Commands::List { .. } => "list",
         Commands::Viz { .. } => "viz",
         Commands::GraphExport { .. } => "graph-export",
@@ -6461,6 +6470,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Check
             | Commands::Cleanup { .. }
             | Commands::Cycles
+            | Commands::Cron { .. }
             | Commands::Viz { .. }
             | Commands::Quickstart
             | Commands::DevCheck

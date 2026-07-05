@@ -40,6 +40,7 @@ pub mod coordinate;
 pub mod coordinator_cmd;
 pub mod cost;
 pub mod critical_path;
+pub mod cron_cmd;
 pub mod cycles;
 pub mod dead_agents;
 pub mod dev_check;

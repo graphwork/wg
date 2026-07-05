@@ -26,12 +26,33 @@ pub fn is_agent_id(id: &str) -> bool {
 /// Record heartbeat for an agent
 ///
 /// Validates the ID is an agent ID (agent-N format) before recording.
+///
+/// External-trigger interop (impl-recurring-heartbeat-diagnostics): the ONLY
+/// safe external heartbeat contract is `wg heartbeat agent-N` against a
+/// LIVE agent PID the caller owns. Anything else (host cron doing `wg add`,
+/// `wg done`, or graph edits to "poke" a recurring task) races the dispatcher
+/// and is rejected here with a diagnostic pointing at the safe path. See
+/// `docs/research/recurring-wakeup-heartbeat-gaps.md` §4.4 and
+/// `docs/repro-weekly-wakeup-heartbeat.md` (external heartbeat interop).
 pub fn run_auto(dir: &Path, id: &str) -> Result<()> {
     if is_agent_id(id) {
         run_agent(dir, id)
     } else {
         anyhow::bail!(
-            "Unknown ID '{}'. Actor nodes have been removed. Use agent IDs (e.g., agent-1).",
+            "Unknown ID '{}'. `wg heartbeat` is an AGENT-PROCESS liveness ping, \
+             not a recurring-task trigger. Actor nodes have been removed; only \
+             agent IDs (e.g. agent-1) are accepted.\n\
+             \n\
+             External-trigger interop contract:\n\
+             \n  • To keep a long-running agent alive from outside: `wg heartbeat \
+             agent-N` (refreshes last_heartbeat; the service reaper respects \
+             it ONLY while the agent PID is alive — a heartbeat for a gone \
+             process does NOT resurrect it).\n  • To diagnose why a recurring \
+             cron task did or did not wake: `wg cron` (next/last fire, weekday, \
+             due/overdue/paused state, missed-fire count).\n  • Do NOT poke a \
+             recurring task via `wg add` / `wg done` / graph edits from a host \
+             cron — the dispatcher tick reverts those writes and the two loops \
+             fight (the 'heartbeat fights the agent' symptom).",
             id
         )
     }

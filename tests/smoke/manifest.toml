@@ -1954,3 +1954,12 @@ owners = [
 ]
 description = "Pins duplicate-prevention / idempotency for recurring cron wakeups (impl-recurring-wakeup-reliability). A Done cron task whose next_cron_fire is in the PAST (a fire that already ran, or a missed window being caught up) is reset to Open EXACTLY ONCE by a coordinator tick — reset_cron_task only acts on status==Done, so a second tick does not re-reset it. After the reset, next_cron_fire is advanced to the NEXT schedule slot (the FUTURE, with jitter), so the same window is NOT re-fired: the task does NOT appear in `wg ready` until the next real window. A second tick is idempotent (task stays Open, next_cron_fire unchanged, still not ready). This is the 'recurring/lagged loops avoid duplicate execution while still catching up' guarantee. Credential-free: the task is never ready (Done, then Open+future fire), so `wg service tick --max-agents 1` runs the maintenance phases (incl. Phase 2.95 cron reset) without spawning any worker."
 timeout_seconds = 60
+
+[[scenario]]
+name = "cron_diagnostics_surface_missed_and_paused_state"
+script = "scenarios/cron_diagnostics_surface_missed_and_paused_state.sh"
+owners = [
+    "impl-recurring-heartbeat-diagnostics",
+]
+description = "Pins the recurring-wakeup DIAGNOSTICS surface (impl-recurring-heartbeat-diagnostics). `wg cron` lists every cron-enabled task with schedule, resolved weekday + UTC time-of-day (naming the cron crate's non-standard 1=Sunday mapping so a Monday-intent `1` shows as Sunday), next/last fire, due/overdue/paused state, and the missed-fire count across daemon downtime. `wg list` renders the resolved weekday inside the [cron: …] tag (wrong-day bug visible at list time, no per-row spam). `wg show <cron-task>` prints a 'Recurring (cron):' block with schedule, resolved summary, next/last fire, DUE/OVERDUE/paused state, and missed-fire count. `wg status` prints exactly one compact 'Recurring (cron):' summary (count, due/overdue/paused, soonest next-fire). `wg heartbeat <non-agent-id>` rejects the external-trigger attempt with a diagnostic pointing at the safe path (`wg heartbeat agent-N`, `wg cron`) so a host cron does not silently fight the dispatcher. Credential-free: pure graph-state + CLI output; no worker spawn."
+timeout_seconds = 90

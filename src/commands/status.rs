@@ -132,9 +132,63 @@ pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else {
         print_status(&status);
+        // Recurring-cron summary (impl-recurring-heartbeat-diagnostics). Compact,
+        // single-section, no per-task spam — points the user at `wg cron` for the
+        // full diagnostic. Skipped entirely when there are no cron tasks.
+        print_cron_summary(dir);
     }
 
     Ok(())
+}
+
+/// Print a compact recurring-cron summary for `wg status` — count of cron
+/// tasks, how many are due / overdue / paused, and the soonest next-fire
+/// across the graph. Empty when there are no cron tasks (no noisy spam).
+fn print_cron_summary(dir: &Path) {
+    let Ok((graph, _)) = super::load_workgraph(dir) else {
+        return;
+    };
+    let now = chrono::Utc::now();
+    let cron_tasks: Vec<_> = graph.tasks().filter(|t| t.cron_enabled).collect();
+    if cron_tasks.is_empty() {
+        return;
+    }
+    let total = cron_tasks.len();
+    let due = cron_tasks
+        .iter()
+        .filter(|t| worksgood::query::is_time_ready(t))
+        .count();
+    let overdue = cron_tasks
+        .iter()
+        .filter(|t| {
+            worksgood::query::is_time_ready(t) && worksgood::cron::overdue_secs(t, now).is_some()
+        })
+        .count();
+    let paused = cron_tasks.iter().filter(|t| t.paused).count();
+    // Soonest next-fire across the graph.
+    let soonest = cron_tasks
+        .iter()
+        .filter_map(|t| t.next_cron_fire.as_deref())
+        .filter_map(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+        .min();
+    println!();
+    println!("Recurring (cron): {}", total);
+    let mut bits = vec![format!("{} due", due)];
+    if overdue > 0 {
+        bits.push(format!("\x1b[31m{} overdue\x1b[0m", overdue));
+    }
+    if paused > 0 {
+        bits.push(format!("\x1b[33m{} paused\x1b[0m", paused));
+    }
+    println!("  {}", bits.join(", "));
+    if let Some(s) = soonest {
+        println!(
+            "  next fire: {} ({})",
+            s.to_rfc3339(),
+            worksgood::cron::format_countdown(&s.to_rfc3339(), now)
+        );
+    }
+    println!("  run `wg cron` for full diagnostics (weekday, last fire, missed fires).");
 }
 
 fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {

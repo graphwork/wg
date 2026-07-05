@@ -157,6 +157,40 @@ struct TaskDetails {
     /// resume in-place vs `wg retry --fresh`.
     #[serde(skip_serializing_if = "Option::is_none")]
     worktree_state: Option<WorktreeStateInfo>,
+    /// Recurring-cron diagnostics (impl-recurring-heartbeat-diagnostics).
+    /// Populated only for cron-enabled tasks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cron: Option<CronDiagnosticsInfo>,
+}
+
+/// Recurring-cron diagnostics block for `wg show` — schedule, resolved
+/// weekday/time, next/last fire, due/overdue/paused state, and missed-fire
+/// count. Mirrors the `wg cron doctor` row.
+#[derive(Debug, Clone, Serialize)]
+struct CronDiagnosticsInfo {
+    cron_schedule: String,
+    /// One-line human summary naming the actual weekday + UTC time-of-day
+    /// (so the non-standard 1=Sunday mapping is visible).
+    summary: String,
+    /// True when the day-of-week field is present (non-standard mapping in play).
+    has_dow_field: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cron_fire: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_cron_fire: Option<String>,
+    /// True when the task is currently due to run.
+    due: bool,
+    /// Seconds overdue (when due but not yet dispatched past its fire time).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overdue_secs: Option<i64>,
+    /// Missed fire windows across daemon downtime since the last run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missed_fires: Option<u32>,
+    /// Whether the task is paused (will not dispatch even when due).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    paused: bool,
+    /// Human-readable current blocking state.
+    blocking_state: String,
 }
 
 /// Snapshot of a task's worktree dir + branch.
@@ -319,6 +353,56 @@ fn gather_task_runtime_info(
     };
 
     (actual_executor, actual_model, native_compaction)
+}
+
+/// Gather recurring-cron diagnostics for a task (impl-recurring-heartbeat-
+/// diagnostics). Returns `None` for non-cron tasks. Mirrors the `wg cron
+/// doctor` row so `wg show` surfaces schedule, resolved weekday/time, next /
+/// last fire, due/overdue/paused state, and missed-fire count in one place.
+fn gather_cron_diagnostics(task: &Task) -> Option<CronDiagnosticsInfo> {
+    if !task.cron_enabled {
+        return None;
+    }
+    let raw = task.cron_schedule.clone()?;
+    let now = chrono::Utc::now();
+    let desc = worksgood::cron::describe_cron(&raw).unwrap_or(worksgood::cron::CronDescription {
+        raw: raw.clone(),
+        weekdays: None,
+        time_utc: None,
+        has_dow_field: false,
+        summary: format!("[unparseable: {}]", raw),
+    });
+    let due = worksgood::query::is_time_ready(task);
+    let overdue = if due {
+        worksgood::cron::overdue_secs(task, now)
+    } else {
+        None
+    };
+    let missed = worksgood::cron::missed_fires_before_reset(task, now);
+    let blocking_state = if task.paused {
+        "paused".to_string()
+    } else if due {
+        match task.status {
+            Status::Waiting | Status::PendingValidation => "waiting".to_string(),
+            Status::Blocked => "blocked".to_string(),
+            Status::Open if overdue.is_some() => "overdue".to_string(),
+            _ => "due".to_string(),
+        }
+    } else {
+        String::new()
+    };
+    Some(CronDiagnosticsInfo {
+        cron_schedule: raw,
+        summary: desc.summary,
+        has_dow_field: desc.has_dow_field,
+        next_cron_fire: task.next_cron_fire.clone(),
+        last_cron_fire: task.last_cron_fire.clone(),
+        due,
+        overdue_secs: overdue,
+        missed_fires: missed,
+        paused: task.paused,
+        blocking_state,
+    })
 }
 
 /// Gather worktree state for a task, if a worktree exists for it. Returns
@@ -575,6 +659,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
         worktree_state: gather_worktree_state(dir, id),
+        cron: gather_cron_diagnostics(&task),
     };
 
     if json {
@@ -949,6 +1034,56 @@ fn print_human_readable(details: &TaskDetails) {
             ready_after,
             format_countdown(ready_after)
         );
+    }
+
+    // Recurring-cron diagnostics block (impl-recurring-heartbeat-diagnostics).
+    // Surfaces schedule, resolved weekday/time, next/last fire, due/overdue/
+    // paused state, and missed-fire count so a user can debug why a recurring
+    // job did or did not wake up.
+    if let Some(ref cron) = details.cron {
+        println!();
+        println!("Recurring (cron):");
+        println!("  Schedule: {}", cron.cron_schedule);
+        println!("  Resolved: {}", cron.summary);
+        if let Some(ref nf) = cron.next_cron_fire {
+            println!("  Next fire: {}{}", nf, format_countdown(nf));
+        } else {
+            println!("  Next fire: unknown (will be computed on next tick)");
+        }
+        if let Some(ref lf) = cron.last_cron_fire {
+            println!("  Last fire: {}{}", lf, format_countdown(lf));
+        } else {
+            println!("  Last fire: never");
+        }
+        let state_tag: String = if cron.paused {
+            "\x1b[33mpaused\x1b[0m (will not dispatch even when due)".to_string()
+        } else if cron.due {
+            match cron.blocking_state.as_str() {
+                "overdue" => format!(
+                    "\x1b[31mDUE + OVERDUE\x1b[0m ({}s past fire time)",
+                    cron.overdue_secs.unwrap_or(0)
+                ),
+                "waiting" => "\x1b[33mdue (waiting)\x1b[0m".to_string(),
+                "blocked" => "\x1b[33mdue (blocked)\x1b[0m".to_string(),
+                _ => "\x1b[32mDUE\x1b[0m".to_string(),
+            }
+        } else {
+            "scheduled (not yet due)".to_string()
+        };
+        println!("  State: {}", state_tag);
+        if let Some(missed) = cron.missed_fires
+            && missed > 0
+        {
+            println!(
+                "  \x1b[33mMissed fires: {}\x1b[0m (daemon was down or spawning paused across scheduled window(s))",
+                missed
+            );
+        }
+        if cron.has_dow_field {
+            println!(
+                "  \x1b[33mnote:\x1b[0m day-of-week uses the cron crate's non-standard mapping (1=Sun, 2=Mon, …, 7=Sat) — verify the resolved weekday above matches your intent."
+            );
+        }
     }
 
     // Token usage
@@ -1427,6 +1562,7 @@ mod tests {
             meta_eval_attempts: 0,
             evaluations: vec![],
             worktree_state: None,
+            cron: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

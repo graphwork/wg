@@ -1,5 +1,5 @@
-use crate::graph::Task;
-use chrono::{DateTime, Duration, Utc};
+use crate::graph::{LogEntry, Task};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use cron::Schedule;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -152,6 +152,18 @@ pub fn calculate_next_fire_with_jitter(
 ///
 /// # Returns
 /// * `bool` - true if the task was reset, false if not applicable
+/// Reset a cron task after completion: set status to Open, update fire times.
+///
+/// If the daemon was down across one or more scheduled fire windows since the
+/// last run, a `cron_fire_missed` audit entry is appended to `task.log` naming
+/// the missed-fire count and the elapsed delta — so `wg show` surfaces *why*
+/// a recurring wakeup fired late instead of silently catching up.
+///
+/// # Arguments
+/// * `task` - The task to reset (must be cron-enabled and Done)
+///
+/// # Returns
+/// * `bool` - true if the task was reset, false if not applicable
 pub fn reset_cron_task(task: &mut Task) -> bool {
     if !task.cron_enabled || task.cron_schedule.is_none() {
         return false;
@@ -167,6 +179,35 @@ pub fn reset_cron_task(task: &mut Task) -> bool {
     };
 
     let now = Utc::now();
+
+    // Record a `cron_fire_missed` audit entry when this reset is catching up
+    // one or more MISSED fire windows (the daemon was down across scheduled
+    // fire times). `missed_fires_before_reset` counts scheduled fires strictly
+    // between the last run and now, EXCLUDING the one being caught up by this
+    // reset — so a fresh on-time reset logs nothing, and a 6-day daemon outage
+    // on a weekly cron logs the missed windows. See
+    // `docs/repro-weekly-wakeup-heartbeat.md` (catch-up caveat) and
+    // `docs/research/recurring-wakeup-heartbeat-gaps.md` §4.1/§4.7.
+    if let Some(missed) = missed_fires_before_reset(task, now)
+        && missed > 0
+    {
+        let last_str = task
+            .last_cron_fire
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        task.log.push(LogEntry {
+            timestamp: now.to_rfc3339(),
+            actor: Some("cron".to_string()),
+            user: None,
+            message: format!(
+                "cron_fire_missed: caught up {} missed fire(s) since last run \
+                 (last_cron_fire={}). The WG daemon was likely down or spawning \
+                 was paused across the scheduled fire window(s); this reset fires \
+                 late instead of dropping the run.",
+                missed, last_str
+            ),
+        });
+    }
 
     // Record last fire time
     task.last_cron_fire = Some(now.to_rfc3339());
@@ -250,6 +291,239 @@ pub fn is_cron_due(task: &Task, now: DateTime<Utc>) -> bool {
         Some(next_fire) => next_fire <= now,
         None => false,
     }
+}
+
+// ── Diagnostics surface (impl-recurring-heartbeat-diagnostics) ──────────
+//
+// These helpers power the `wg cron doctor` / `wg list` / `wg show` cron
+// diagnostics. They resolve the *actual* weekday(s) and UTC time-of-day a
+// cron expression will fire, count missed fires across daemon downtime, and
+// describe the schedule in one human-readable line — so a user scheduling
+// "Monday" does not silently get "Sunday" (the `cron` crate's
+// non-standard 1=Sunday mapping — see
+// `cron_dow_mapping_is_nonstandard_one_indexed_sunday`).
+
+/// Weekday names in calendar order (Sunday first), matching the `cron`
+/// crate's day-of-week numbering (1=Sunday … 7=Saturday).
+const WEEKDAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
+fn weekday_short(name: &str) -> &'static str {
+    match name {
+        "Sunday" => "Sun",
+        "Monday" => "Mon",
+        "Tuesday" => "Tue",
+        "Wednesday" => "Wed",
+        "Thursday" => "Thu",
+        "Friday" => "Fri",
+        "Saturday" => "Sat",
+        _ => "???",
+    }
+}
+
+/// A resolved, human-readable description of a cron expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronDescription {
+    /// The raw expression as stored on the task.
+    pub raw: String,
+    /// Resolved weekday(s) the expression fires on (e.g. `["Sunday"]`).
+    /// `None` when the expression has no day-of-week constraint (fires every
+    /// day). Sorted in calendar order, de-duplicated.
+    pub weekdays: Option<Vec<String>>,
+    /// Resolved UTC `HH:MM` time-of-day the expression fires at. `None` when
+    /// the expression fires more than once a day or has no fixed time.
+    pub time_utc: Option<String>,
+    /// True when the day-of-week field is present in the raw expression — i.e.
+    /// the non-standard 1=Sunday mapping is in play and a user might be
+    /// surprised. Surfaced as a warning in `wg list` / `wg show` / `wg cron`.
+    pub has_dow_field: bool,
+    /// One-line human summary, e.g. `"Sun 09:00 UTC (cron dow=1 = Sunday)"`.
+    pub summary: String,
+}
+
+/// Resolve a cron expression into a human-readable description.
+///
+/// Samples the next 14 fire times from `now` to infer the weekday(s) and
+/// UTC time-of-day the expression actually fires on. Returns `None` if the
+/// expression cannot be parsed.
+///
+/// This is the diagnostic that makes the `cron` crate's non-standard
+/// day-of-week mapping (1=Sunday, 2=Monday, …, 7=Saturday) *visible* — a
+/// user who writes `0 0 9 * * 1` intending "Monday 09:00" sees
+/// `"Sun 09:00 UTC (cron dow: 1=Sun … 7=Sat)"` and catches the wrong-day bug.
+pub fn describe_cron(expr: &str) -> Option<CronDescription> {
+    let schedule = parse_cron_expression(expr).ok()?;
+    let now = Utc::now();
+
+    // Sample the next 14 fires (≈ two weeks) to gather distinct weekdays +
+    // times-of-day. For weekly crons 14 samples cover two fires; for daily
+    // crons they cover two weeks of the same weekday/time.
+    let mut weekday_set: Vec<u32> = Vec::new();
+    let mut time_set: Vec<(u32, u32)> = Vec::new();
+    let mut upcoming = schedule.after(&now);
+    for _ in 0..14 {
+        let Some(t) = upcoming.next() else {
+            break;
+        };
+        let dow = t.weekday().num_days_from_sunday(); // 0=Sunday
+        if !weekday_set.contains(&dow) {
+            weekday_set.push(dow);
+        }
+        let hm = (t.hour(), t.minute());
+        if !time_set.contains(&hm) {
+            time_set.push(hm);
+        }
+    }
+    weekday_set.sort_unstable();
+
+    // Determine whether the raw expression has a day-of-week field. Both 5-
+    // and 6-field forms are supported by `parse_cron_expression`; the dow is
+    // the LAST field in both (5-field: min hour day month dow; 6-field:
+    // sec min hour day month dow). A `*` dow means every day — not a
+    // user-specified weekday, so no warning.
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+    let dow_field = parts.last().copied().unwrap_or("");
+    let has_dow_field = parts.len() >= 5 && dow_field != "*";
+
+    let weekdays: Option<Vec<String>> = if has_dow_field {
+        let names: Vec<String> = weekday_set
+            .iter()
+            .map(|&i| WEEKDAY_NAMES[i as usize].to_string())
+            .collect();
+        if names.is_empty() { None } else { Some(names) }
+    } else {
+        None
+    };
+
+    let time_utc: Option<String> = if time_set.len() == 1 {
+        let (h, m) = time_set[0];
+        Some(format!("{:02}:{:02}", h, m))
+    } else {
+        None
+    };
+
+    let summary = build_cron_summary(expr, &weekdays, time_utc.as_deref(), has_dow_field);
+
+    Some(CronDescription {
+        raw: expr.to_string(),
+        weekdays,
+        time_utc,
+        has_dow_field,
+        summary,
+    })
+}
+
+fn build_cron_summary(
+    expr: &str,
+    weekdays: &Option<Vec<String>>,
+    time_utc: Option<&str>,
+    has_dow_field: bool,
+) -> String {
+    let day_part = match weekdays {
+        Some(names) if !names.is_empty() => {
+            let shorts: Vec<&str> = names.iter().map(|n| weekday_short(n)).collect();
+            shorts.join("/")
+        }
+        _ => "daily".to_string(),
+    };
+    let time_part = time_utc.unwrap_or("varied");
+    let dow_note = if has_dow_field {
+        // Name the non-standard mapping so a user who wrote `1` for "Monday"
+        // sees that `1` means Sunday in this crate.
+        let mapping = "cron dow: 1=Sun 2=Mon … 7=Sat";
+        format!(" ({})", mapping)
+    } else {
+        String::new()
+    };
+    format!("{} {} UTC{} [{}]", day_part, time_part, dow_note, expr)
+}
+
+/// Count the number of scheduled fire windows *missed* between the task's
+/// last run (`last_cron_fire`) and `now`, EXCLUDING the one being caught up
+/// by a reset (so a fresh on-time reset returns 0).
+///
+/// Returns `None` when the count cannot be computed (no schedule, no
+/// `last_cron_fire`, or unparseable timestamp). Returns `Some(0)` when no
+/// windows were missed (on-time reset, or `now` is before/at the last fire).
+///
+/// This is the unit-level primitive behind the `cron_fire_missed` audit
+/// entry written by `reset_cron_task` and the `missed_fires` column in
+/// `wg cron doctor`.
+pub fn missed_fires_before_reset(task: &Task, now: DateTime<Utc>) -> Option<u32> {
+    let expr = task.cron_schedule.as_ref()?;
+    let schedule = parse_cron_expression(expr).ok()?;
+    let last_str = task.last_cron_fire.as_ref()?;
+    let last = DateTime::parse_from_rfc3339(last_str)
+        .ok()?
+        .with_timezone(&Utc);
+    if last >= now {
+        return Some(0);
+    }
+    let mut count = 0u32;
+    let mut upcoming = schedule.after(&last);
+    while let Some(t) = upcoming.next() {
+        if t > now {
+            break;
+        }
+        count += 1;
+        if count > 10_000 {
+            break; // safety valve against pathological schedules
+        }
+    }
+    // `count` includes the fire being caught up by the current reset (the
+    // most recent scheduled window at-or-before `now`). Missed windows are
+    // the ones BEFORE that — i.e. count − 1.
+    Some(count.saturating_sub(1))
+}
+
+/// Number of seconds a due cron task has been waiting past its scheduled
+/// fire time (`now - next_cron_fire` when `next_cron_fire <= now`), or `None`
+/// when not computable / not yet due. Used by `wg cron doctor` to surface
+/// "this task is due but has not dispatched" latency.
+pub fn overdue_secs(task: &Task, now: DateTime<Utc>) -> Option<i64> {
+    let nf_str = task.next_cron_fire.as_ref()?;
+    let nf = DateTime::parse_from_rfc3339(nf_str)
+        .ok()?
+        .with_timezone(&Utc);
+    if nf > now {
+        return None;
+    }
+    Some((now - nf).num_seconds())
+}
+
+/// Human-readable "in N" / "N ago" countdown for a fire timestamp, used by
+/// `wg cron doctor` and `wg list` so a user can see at a glance whether the
+/// next fire is imminent or the task is overdue.
+pub fn format_countdown(target: &str, now: DateTime<Utc>) -> String {
+    let Ok(ts) = target.parse::<DateTime<Utc>>() else {
+        return String::new();
+    };
+    let secs = (ts - now).num_seconds();
+    if secs == 0 {
+        return "now".to_string();
+    }
+    let (abs, suffix) = if secs < 0 {
+        ((-secs) as i64, "ago")
+    } else {
+        (secs, "in")
+    };
+    let human = if abs < 60 {
+        format!("{}s", abs)
+    } else if abs < 3600 {
+        format!("{}m {}s", abs / 60, abs % 60)
+    } else if abs < 86400 {
+        format!("{}h {}m", abs / 3600, (abs % 3600) / 60)
+    } else {
+        format!("{}d {}h", abs / 86400, (abs % 86400) / 3600)
+    };
+    format!("{} {}", suffix, human)
 }
 
 #[cfg(test)]
@@ -742,5 +1016,230 @@ mod tests {
             is_cron_due(&task, restart),
             "a cron task whose next_cron_fire is in the past must be due (missed-trigger catch-up)"
         );
+    }
+
+    // ── Diagnostics surface (impl-recurring-heartbeat-diagnostics) ──────
+    //
+    // `describe_cron` resolves the *actual* weekday/time a cron expression
+    // fires, making the `cron` crate's non-standard 1=Sunday mapping
+    // visible so a user who writes `1` for "Monday" sees "Sunday" before
+    // the weekly trigger fires on the wrong day.
+    #[test]
+    fn describe_cron_names_actual_weekday_for_dow_1() {
+        // dow=1 fires on Sunday in this crate (NOT Monday). The description
+        // MUST name Sunday so the wrong-day bug is visible at add time.
+        let desc = describe_cron("0 0 9 * * 1").expect("parses");
+        assert!(
+            desc.summary.contains("Sun"),
+            "summary must name Sunday for dow=1, got: {}",
+            desc.summary
+        );
+        assert!(
+            desc.summary.contains("09:00"),
+            "summary must name 09:00 UTC, got: {}",
+            desc.summary
+        );
+        assert!(desc.has_dow_field, "dow=1 is a user-specified weekday");
+        let weekdays = desc.weekdays.expect("weekdays resolved");
+        assert_eq!(weekdays, vec!["Sunday".to_string()]);
+        assert_eq!(desc.time_utc.as_deref(), Some("09:00"));
+    }
+
+    #[test]
+    fn describe_cron_names_monday_for_dow_2() {
+        // dow=2 is Monday in this crate — the value a user MUST use to fire
+        // on Monday.
+        let desc = describe_cron("0 0 9 * * 2").expect("parses");
+        assert!(
+            desc.summary.contains("Mon"),
+            "summary must name Monday for dow=2, got: {}",
+            desc.summary
+        );
+        assert_eq!(desc.weekdays.as_deref(), Some(&["Monday".to_string()][..]));
+    }
+
+    #[test]
+    fn describe_cron_weekday_range_resolves_all_days() {
+        // dow=1-5 in this crate is Sun..Thu (1=Sun..5=Thu). The description
+        // must list all five, not just one.
+        let desc = describe_cron("0 0 9 * * 1-5").expect("parses");
+        let weekdays = desc.weekdays.expect("weekdays resolved");
+        assert_eq!(
+            weekdays,
+            vec![
+                "Sunday".to_string(),
+                "Monday".to_string(),
+                "Tuesday".to_string(),
+                "Wednesday".to_string(),
+                "Thursday".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn describe_cron_no_dow_field_is_daily() {
+        // No dow constraint → fires every day, no warning.
+        let desc = describe_cron("0 0 2 * * *").expect("parses");
+        assert!(!desc.has_dow_field, "no dow field for daily cron");
+        assert!(desc.weekdays.is_none(), "daily cron has no weekday list");
+        assert!(
+            desc.summary.contains("daily"),
+            "summary must say daily, got: {}",
+            desc.summary
+        );
+    }
+
+    #[test]
+    fn describe_cron_invalid_returns_none() {
+        assert!(describe_cron("not a cron").is_none());
+    }
+
+    // ── missed-fire counting (impl-recurring-heartbeat-diagnostics) ─────
+    //
+    // `missed_fires_before_reset` counts scheduled windows the daemon was
+    // down across, EXCLUDING the one being caught up by the current reset.
+    // It powers the `cron_fire_missed` audit entry in `reset_cron_task` and
+    // the `missed` column in `wg cron doctor`.
+    #[test]
+    fn missed_fires_zero_when_on_time() {
+        // last_cron_fire = yesterday 09:00; now = today 09:05 (just fired on
+        // time). One scheduled window occurred (today 09:00), being caught
+        // up now → missed = 0.
+        let last = Utc.with_ymd_and_hms(2024, 1, 7, 9, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2024, 1, 8, 9, 5, 0).unwrap();
+        let task = Task {
+            id: "daily".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            last_cron_fire: Some(last.to_rfc3339()),
+            ..Default::default()
+        };
+        assert_eq!(missed_fires_before_reset(&task, now), Some(0));
+    }
+
+    #[test]
+    fn missed_fires_counts_downtime_windows_for_daily_cron() {
+        // Daily cron; daemon down for 3 days. last_cron_fire = Jan 7 09:00,
+        // now = Jan 10 09:05. Scheduled windows at Jan 8/9/10 09:00 = 3.
+        // The Jan 10 window is being caught up now → missed = 2.
+        let last = Utc.with_ymd_and_hms(2024, 1, 7, 9, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2024, 1, 10, 9, 5, 0).unwrap();
+        let task = Task {
+            id: "daily-down".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            last_cron_fire: Some(last.to_rfc3339()),
+            ..Default::default()
+        };
+        assert_eq!(missed_fires_before_reset(&task, now), Some(2));
+    }
+
+    #[test]
+    fn missed_fires_none_without_last_cron_fire() {
+        // First-ever reset: no last_cron_fire → cannot compute.
+        let now = Utc.with_ymd_and_hms(2024, 1, 10, 9, 5, 0).unwrap();
+        let task = Task {
+            id: "first".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            last_cron_fire: None,
+            ..Default::default()
+        };
+        assert_eq!(missed_fires_before_reset(&task, now), None);
+    }
+
+    #[test]
+    fn reset_cron_task_logs_missed_fire_audit_on_catchup() {
+        // A Done cron task whose last_cron_fire is multiple daily-windows
+        // behind now must, on reset, append a `cron_fire_missed` LogEntry
+        // naming the count. We use a 5-day-stale last_cron_fire so real-now
+        // is several daily windows ahead — guaranteeing missed >= 1.
+        let stale = (Utc::now() - chrono::Duration::days(5)).to_rfc3339();
+        let mut task = Task {
+            id: "catchup-audit".to_string(),
+            status: crate::graph::Status::Done,
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            last_cron_fire: Some(stale.clone()),
+            ..Default::default()
+        };
+        let log_len_before = task.log.len();
+        assert!(reset_cron_task(&mut task), "reset should apply");
+        assert!(
+            task.log.len() > log_len_before,
+            "a missed-fire audit entry must be appended on catch-up reset"
+        );
+        let audit = task.log.last().expect("audit entry present");
+        assert_eq!(audit.actor.as_deref(), Some("cron"));
+        assert!(
+            audit.message.contains("cron_fire_missed"),
+            "audit message must start with cron_fire_missed: {}",
+            audit.message
+        );
+    }
+
+    #[test]
+    fn reset_cron_task_no_audit_on_fresh_first_reset() {
+        // First-ever reset (no last_cron_fire) must NOT log a missed-fire
+        // audit — there is no prior window to have missed.
+        let mut task = Task {
+            id: "first-reset".to_string(),
+            status: crate::graph::Status::Done,
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            last_cron_fire: None,
+            ..Default::default()
+        };
+        let log_len_before = task.log.len();
+        assert!(reset_cron_task(&mut task));
+        assert_eq!(
+            task.log.len(),
+            log_len_before,
+            "first-ever reset must not log a missed-fire audit"
+        );
+    }
+
+    #[test]
+    fn overdue_secs_none_when_not_yet_due() {
+        let future = (Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        let task = Task {
+            id: "future".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            next_cron_fire: Some(future),
+            ..Default::default()
+        };
+        assert!(overdue_secs(&task, Utc::now()).is_none());
+    }
+
+    #[test]
+    fn overdue_secs_some_when_past_due() {
+        let past = (Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let task = Task {
+            id: "past".to_string(),
+            cron_enabled: true,
+            cron_schedule: Some("0 0 9 * * *".to_string()),
+            next_cron_fire: Some(past),
+            ..Default::default()
+        };
+        let overdue = overdue_secs(&task, Utc::now()).expect("past due");
+        assert!(
+            overdue >= 7100 && overdue <= 7300,
+            "overdue ~= 2h, got {}",
+            overdue
+        );
+    }
+
+    #[test]
+    fn format_countdown_future_and_past() {
+        let now = Utc::now();
+        let future = (now + chrono::Duration::hours(2)).to_rfc3339();
+        let past = (now - chrono::Duration::minutes(5)).to_rfc3339();
+        let f = format_countdown(&future, now);
+        assert!(f.starts_with("in "), "future countdown: {}", f);
+        let p = format_countdown(&past, now);
+        assert!(p.starts_with("ago "), "past countdown: {}", p);
+        // Invalid timestamp → empty string (no noisy spam).
+        assert_eq!(format_countdown("not-a-ts", now), "");
     }
 }
