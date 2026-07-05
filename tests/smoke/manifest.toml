@@ -1945,3 +1945,12 @@ owners = [
 ]
 description = "Pins external-heartbeat ↔ service-reaper interop (repro-weekly-wakeup-heartbeat). An external `wg heartbeat agent-N` on a LIVE agent (real PID) refreshes last_heartbeat and the agent SURVIVES the next `wg service tick` (keep-alive works). An external heartbeat on a DEAD agent (PID gone) does NOT resurrect it — `triage::detect_dead_reason` checks `is_process_alive(pid)` BEFORE heartbeat, so a fresh heartbeat for a gone process is ineffective and the next tick reaps it (ProcessExited). This is the 'external heartbeat does not fight the service' guarantee. Credential-free: registry seeded directly with a real `sleep` PID; uses `wg service tick` (single tick, no daemon loop)."
 timeout_seconds = 90
+
+[[scenario]]
+name = "cron_recurring_no_duplicate_fire"
+script = "scenarios/cron_recurring_no_duplicate_fire.sh"
+owners = [
+    "impl-recurring-wakeup-reliability",
+]
+description = "Pins duplicate-prevention / idempotency for recurring cron wakeups (impl-recurring-wakeup-reliability). A Done cron task whose next_cron_fire is in the PAST (a fire that already ran, or a missed window being caught up) is reset to Open EXACTLY ONCE by a coordinator tick — reset_cron_task only acts on status==Done, so a second tick does not re-reset it. After the reset, next_cron_fire is advanced to the NEXT schedule slot (the FUTURE, with jitter), so the same window is NOT re-fired: the task does NOT appear in `wg ready` until the next real window. A second tick is idempotent (task stays Open, next_cron_fire unchanged, still not ready). This is the 'recurring/lagged loops avoid duplicate execution while still catching up' guarantee. Credential-free: the task is never ready (Done, then Open+future fire), so `wg service tick --max-agents 1` runs the maintenance phases (incl. Phase 2.95 cron reset) without spawning any worker."
+timeout_seconds = 60
