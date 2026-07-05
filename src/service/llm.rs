@@ -313,6 +313,23 @@ pub fn run_review_llm_call(
                 }
             }
         }
+        ExecutorKind::Pi => {
+            // Handler-first `pi:` route — drive `pi` as a one-shot, falling
+            // back to claude:haiku on any failure so the reviewer transport is
+            // never silently dropped (the content fail-closed decision stays
+            // the caller's). Mirrors the agency one-shot pi arm.
+            match call_pi_cli(config, &dispatch.raw_spec, prompt, timeout_secs) {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    eprintln!(
+                        "[review-dispatch] pi {} reviewer call failed: {e:#} — \
+                         falling back to claude:haiku for the call",
+                        dispatch.raw_spec
+                    );
+                    call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs)
+                }
+            }
+        }
         // Any other handler is not a sensible one-shot reviewer target — degrade to
         // the safe default (claude CLI on haiku).
         _ => call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs),
@@ -514,6 +531,29 @@ pub fn run_lightweight_llm_call(
                     }
                 }
             }
+            ExecutorKind::Pi => {
+                // Handler-first `pi:` route (e.g.
+                // `pi:openrouter:deepseek/deepseek-chat`). Drive `pi` as a
+                // one-shot `--mode json` call and parse the NDJSON stream. On
+                // ANY failure (no key, no binary, 5xx, empty reply) fall back
+                // to claude:haiku so the agency verdict is never silently
+                // dropped — mirroring the native handler's safety net. This is
+                // the fix for the bug where a `pi:` weak tier silently fell
+                // into the claude-CLI catch-all below and failed with
+                // "Claude CLI call failed" instead of honoring the pi route.
+                match call_pi_cli(config, &dispatch.raw_spec, prompt, timeout_secs) {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        eprintln!(
+                            "[agency-dispatch] pi weak-tier call for role={role} \
+                             (spec={spec}) failed: {e:#} — falling back to claude:haiku so the \
+                             agency verdict is not dropped",
+                            spec = dispatch.raw_spec,
+                        );
+                        return call_claude_cli(CLAUDE_HAIKU_MODEL_ID, prompt, timeout_secs);
+                    }
+                }
+            }
             ExecutorKind::Shell
             | ExecutorKind::OpenCode
             | ExecutorKind::Aider
@@ -524,7 +564,6 @@ pub fn run_lightweight_llm_call(
             | ExecutorKind::Amplifier
             | ExecutorKind::Octomind
             | ExecutorKind::Dexto
-            | ExecutorKind::Pi
             | ExecutorKind::RemoteRunner => {
                 // Shell, external task/chat executors, and the WG-Exec remote runner do
                 // not make sense for a lightweight one-shot LLM call; degrade to the
@@ -813,6 +852,196 @@ fn call_codex_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCal
         anyhow::bail!("Empty response from codex CLI");
     }
     Ok(LlmCallResult { text, token_usage })
+}
+
+/// The `--provider`/`--model` argv pair pi expects for a one-shot agency call.
+struct PiOneShotModelArg {
+    provider: String,
+    model: String,
+}
+
+/// Parse a handler-first pi spec (`pi:openrouter:<vendor>/<model>` or a bare
+/// `<vendor>/<model>` OpenRouter route) into the `--provider`/`--model` argv
+/// pi expects. Mirrors `commands::pi_handler::pi_model_arg` (binary crate) —
+/// kept inline here in the lib crate so the agency one-shot path can drive pi
+/// without a binary-crate dependency. Returns `None` when no provider can be
+/// resolved (a bare single-token alias gives pi no provider to target).
+fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
+    let raw = raw_spec.trim();
+    let inner = raw.strip_prefix("pi:").unwrap_or(raw).trim();
+    if inner.is_empty() {
+        return None;
+    }
+    let spec = parse_model_spec(inner);
+    let (provider, model_id) = match spec.provider.as_deref() {
+        Some(prov) => {
+            let native = crate::config::provider_to_native_provider(prov);
+            let id = if native == "openrouter" {
+                spec.model_id
+                    .strip_prefix("openrouter/")
+                    .unwrap_or(&spec.model_id)
+                    .to_string()
+            } else {
+                spec.model_id.clone()
+            };
+            (native.to_string(), id)
+        }
+        None => {
+            let id = spec.model_id.as_str();
+            if let Some(route) = id.strip_prefix("openrouter/") {
+                ("openrouter".to_string(), route.to_string())
+            } else if id.contains('/') {
+                ("openrouter".to_string(), id.to_string())
+            } else {
+                return None;
+            }
+        }
+    };
+    if provider.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some(PiOneShotModelArg {
+        provider,
+        model: model_id,
+    })
+}
+
+/// Resolve the WG endpoint + api key for a pi provider and return the env var
+/// pairs to inject into the spawned pi process (credentials by env ONLY, never
+/// argv). Mirrors `commands::pi_handler::PiEndpointSecret` resolution: a
+/// matching provider endpoint → default endpoint → provider env vars only. The
+/// daemon's own ambient env (e.g. an exported `OPENROUTER_API_KEY`) is left
+/// untouched so pi's own provider clients still discover it.
+fn pi_env_pairs_for(
+    config: &Config,
+    workgraph_dir: Option<&std::path::Path>,
+    pi_provider: &str,
+) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let resolved_key = config
+        .llm_endpoints
+        .find_for_provider(pi_provider)
+        .and_then(|ep| {
+            let key = ep.resolve_api_key(workgraph_dir).ok().flatten();
+            key.map(|k| (ep.url.clone(), k))
+        })
+        .or_else(|| {
+            config.llm_endpoints.find_default().and_then(|ep| {
+                ep.resolve_api_key(workgraph_dir)
+                    .ok()
+                    .flatten()
+                    .map(|k| (ep.url.clone(), k))
+            })
+        });
+    if let Some((url, key)) = resolved_key {
+        for var_name in crate::config::EndpointConfig::env_var_names_for_provider(pi_provider) {
+            pairs.push((var_name.to_string(), key.clone()));
+        }
+        if let Some(url) = url {
+            pairs.push(("WG_ENDPOINT_URL".to_string(), url));
+        }
+    }
+    pairs
+}
+
+/// One-shot LLM call via the Pi CLI (`pi --mode json --print`).
+///
+/// The agency / FLIP one-shot path honors a handler-first `pi:` route (e.g.
+/// `pi:openrouter:deepseek/deepseek-chat`) by driving `pi` as a NON-interactive
+/// one-shot — NOT the long-lived `--mode rpc` worker used for chat/task agents.
+/// We parse the NDJSON `--mode json` stream with `translate_pi_stream` to
+/// recover the final assistant text and the summed per-turn usage. Tools are
+/// disabled (`--no-tools`) and the session is not persisted (`--no-session`),
+/// matching the no-tool-use contract of the other agency one-shot callers.
+///
+/// Credentials are supplied by environment ONLY (never `--api-key`): a
+/// WG-resolved endpoint key is injected as the provider's env var
+/// (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / …) so pi's own provider
+/// clients discover it, mirroring `wg pi-handler`. When no WG endpoint key
+/// resolves, pi falls back to its own auth (env / OAuth / `~/.pi` login).
+fn call_pi_cli(
+    config: &Config,
+    raw_spec: &str,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
+    use std::io::Write as _;
+
+    let marg = pi_one_shot_model_arg(raw_spec).with_context(|| {
+        format!("pi one-shot could not resolve provider/model from {raw_spec:?} — expected a `pi:<provider>/<model>` or `<vendor>/<model>` spec")
+    })?;
+
+    let workgraph_dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.join(".workgraph"))
+        .filter(|p| p.exists());
+    let env_pairs = pi_env_pairs_for(config, workgraph_dir.as_deref(), &marg.provider);
+
+    let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
+        "pi",
+        |cmd| {
+            cmd.arg("--mode")
+                .arg("json")
+                .arg("--print")
+                .arg("--no-tools")
+                .arg("--no-session")
+                .arg("--provider")
+                .arg(&marg.provider)
+                .arg("--model")
+                .arg(&marg.model)
+                .stdin(process::Stdio::piped())
+                .stdout(process::Stdio::piped())
+                .stderr(process::Stdio::piped());
+            for (k, v) in &env_pairs {
+                cmd.env(k, v);
+            }
+            cmd
+        },
+        timeout_secs,
+    )
+    .context("Failed to spawn pi CLI for lightweight LLM call")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .context("Failed to write prompt to pi CLI stdin")?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("Failed to wait for pi CLI output")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "Pi CLI call failed (exit {:?}): stderr={:?} stdout={:?}",
+            output.status.code(),
+            stderr.chars().take(500).collect::<String>(),
+            stdout.chars().take(500).collect::<String>(),
+        );
+    }
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let translation = crate::stream_event::translate_pi_stream(&stdout_str, None, true);
+    let text = translation
+        .final_text
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if text.is_empty() {
+        anyhow::bail!("Empty response from pi CLI");
+    }
+    let token_usage = TokenUsage {
+        cost_usd: translation.total.cost_usd.unwrap_or(0.0),
+        input_tokens: translation.total.input_tokens,
+        output_tokens: translation.total.output_tokens,
+        cache_read_input_tokens: translation.total.cache_read_input_tokens.unwrap_or(0),
+        cache_creation_input_tokens: translation.total.cache_creation_input_tokens.unwrap_or(0),
+    };
+    Ok(LlmCallResult {
+        text,
+        token_usage: Some(token_usage),
+    })
 }
 
 /// Parse stream-json output from Claude CLI to extract text content and token usage.
@@ -1830,6 +2059,76 @@ mod tests {
         );
         // A prefix-less spec defaults to anthropic-native, unchanged.
         assert_eq!(native_provider_for_spec("some-bare-model"), "anthropic");
+    }
+
+    #[test]
+    fn test_agency_dispatch_for_spec_routes_pi_handler_first() {
+        // The bug this task fixes: a handler-first `pi:` agency spec (e.g.
+        // `pi:openrouter:deepseek/deepseek-chat`) MUST resolve to the Pi
+        // handler — NOT the claude CLI catch-all in `run_lightweight_llm_call`.
+        // The previous bug silently fell into the claude-CLI arm and failed
+        // with "Claude CLI call failed ... subscription access disabled".
+        let dispatch = agency_dispatch_for_spec("pi:openrouter:deepseek/deepseek-chat");
+        assert_eq!(
+            dispatch.handler,
+            ExecutorKind::Pi,
+            "pi:* agency specs must dispatch via the pi handler, not claude CLI"
+        );
+        assert_eq!(dispatch.raw_spec, "pi:openrouter:deepseek/deepseek-chat");
+        // `parse_model_spec` only recognizes provider prefixes (claude/codex/
+        // openrouter/...); `pi:` is a handler, so the full spec is preserved as
+        // the model_id. `call_pi_cli` re-parses `raw_spec` via
+        // `pi_one_shot_model_arg`, so the handler-first inner route is honored.
+        assert_eq!(dispatch.model_id, "pi:openrouter:deepseek/deepseek-chat");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_agency_dispatch_weak_tier_pi_routes_to_pi_handler() {
+        // Two-tier Pi profile writes `pi:openrouter:deepseek/deepseek-chat` into
+        // tiers.fast. ALL agency one-shot roles must resolve to the Pi handler
+        // (NOT claude CLI, NOT native). The credential safety net only redirects
+        // keyless *native* providers; a `pi:` route self-authenticates via env
+        // / pi OAuth, so it is never redirected to claude:haiku at resolve time.
+        let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
+        let _a = EnvGuard::set("OPENAI_API_KEY", None);
+        let mut config = Config::default();
+        config.tiers.fast = Some("pi:openrouter:deepseek/deepseek-chat".to_string());
+
+        for role in ALL_AGENCY_ROLES {
+            let dispatch = resolve_agency_dispatch(&config, role);
+            assert_eq!(
+                dispatch.handler,
+                ExecutorKind::Pi,
+                "role {role:?}: pi:* weak tier must dispatch via the pi handler, not claude CLI",
+            );
+            assert_eq!(dispatch.raw_spec, "pi:openrouter:deepseek/deepseek-chat");
+        }
+    }
+
+    #[test]
+    fn test_pi_one_shot_model_arg_resolves_handler_first_spec() {
+        // The argv pi expects for a one-shot agency call, mirroring
+        // `commands::pi_handler::pi_model_arg`.
+        let marg = pi_one_shot_model_arg("pi:openrouter:deepseek/deepseek-chat").unwrap();
+        assert_eq!(marg.provider, "openrouter");
+        assert_eq!(marg.model, "deepseek/deepseek-chat");
+
+        // A bare vendor/model (no provider prefix) is an OpenRouter route.
+        let marg = pi_one_shot_model_arg("deepseek/deepseek-chat").unwrap();
+        assert_eq!(marg.provider, "openrouter");
+        assert_eq!(marg.model, "deepseek/deepseek-chat");
+
+        // A redundant `openrouter/` prefix on the model id is stripped once
+        // (mirrors `commands::pi_handler::pi_model_arg`).
+        let marg =
+            pi_one_shot_model_arg("pi:openrouter:openrouter/deepseek/deepseek-chat").unwrap();
+        assert_eq!(marg.provider, "openrouter");
+        assert_eq!(marg.model, "deepseek/deepseek-chat");
+
+        // A bare single-token alias gives pi no provider to target — unresolved.
+        assert!(pi_one_shot_model_arg("pi:haiku").is_none());
+        assert!(pi_one_shot_model_arg("haiku").is_none());
     }
 
     #[test]
