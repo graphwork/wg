@@ -833,7 +833,14 @@ pub fn render_flip_inference_prompt(input: &FlipInferenceInput) -> String {
            \"inferred_prompt\": \"<your reconstruction of the original task description, \
          including goal, requirements, and acceptance criteria>\"\n\
          }\n\
-         ```\n",
+         ```\n\n",
+    );
+    out.push_str(
+        "**IMPORTANT:** `inferred_prompt` MUST be a single JSON **string** — not an \
+         object, not an array. Write the full reconstruction as one prose string \
+         (you may use newlines and bullets inside the string). Do NOT return \
+         `{\"goal\": ..., \"requirements\": ...}` — flatten it into the `inferred_prompt` \
+         string field.\n\n",
     );
 
     out

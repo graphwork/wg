@@ -1004,8 +1004,10 @@ pub fn run_flip(
         (json, token_usage)
     };
 
-    let parsed_inference: FlipInferenceOutput = serde_json::from_str(&inference_json)
-        .with_context(|| format!("Failed to parse FLIP inference JSON:\n{}", inference_json))?;
+    let parsed_inference: FlipInferenceOutput =
+        serde_json::from_str(&inference_json).map_err(|err| {
+            anyhow::anyhow!("{}", flip_inference_parse_diagnostic(&inference_json, &err))
+        })?;
 
     println!(
         "  Inferred prompt length: {} chars",
@@ -1231,9 +1233,175 @@ fn combine_token_usage(usages: &[Option<TokenUsage>]) -> Option<TokenUsage> {
 }
 
 /// Output shape for FLIP inference phase.
-#[derive(serde::Deserialize)]
+///
+/// `inferred_prompt` is normally a string, but some inference models return a
+/// structured object (`{"goal": ..., "requirements": [...], ...}`) instead.
+/// We accept both forms and normalize the object form into a single semantic
+/// prompt string so a schema mismatch never strands a completed task in
+/// `pending-eval`. See `normalize_inferred_prompt` for the normalization rules.
+#[derive(serde::Deserialize, Debug)]
 struct FlipInferenceOutput {
+    #[serde(
+        deserialize_with = "deserialize_inferred_prompt",
+        alias = "inferredPrompt"
+    )]
     inferred_prompt: String,
+}
+
+/// Normalize a raw JSON value for `inferred_prompt` into a single prompt
+/// string.
+///
+/// Accepted forms:
+/// - A JSON string → returned as-is.
+/// - A JSON object with any of `goal` / `requirements` / `acceptance_criteria`
+///   / `context` (plus arbitrary extra keys) → flattened into a labeled prose
+///   prompt. `requirements` / `acceptance_criteria` may be a string or an
+///   array; arrays render as bullet lists.
+/// - Any other JSON type (number, array, bool, null) → error naming the
+///   expected schema.
+///
+/// Returns `Err(message)` on a malformed value so the caller can surface a
+/// diagnostic naming the expected schema and a repair/rerun path.
+fn normalize_inferred_prompt(value: serde_json::Value) -> std::result::Result<String, String> {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.trim().is_empty() {
+                return Err(
+                    "inferred_prompt string was empty; expected a reconstruction of the task description"
+                        .to_string(),
+                );
+            }
+            Ok(s)
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = String::new();
+            // Render the well-known fields in a stable, readable order first.
+            for (label, key) in [
+                ("Goal", "goal"),
+                ("Requirements", "requirements"),
+                ("Acceptance Criteria", "acceptance_criteria"),
+                ("Context", "context"),
+            ] {
+                if let Some(v) = map.get(key) {
+                    let rendered = render_prompt_field(v);
+                    if !rendered.trim().is_empty() {
+                        out.push_str(label);
+                        out.push_str(":\n");
+                        out.push_str(&rendered);
+                        if !rendered.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        out.push('\n');
+                    }
+                }
+            }
+            // Append any extra keys (camelCase variants like `acceptanceCriteria`
+            // or model-specific fields) so information is not silently dropped.
+            for (k, v) in &map {
+                if matches!(
+                    k.as_str(),
+                    "goal" | "requirements" | "acceptance_criteria" | "context"
+                ) {
+                    continue;
+                }
+                let rendered = render_prompt_field(v);
+                if !rendered.trim().is_empty() {
+                    out.push_str(&k);
+                    out.push_str(": ");
+                    // For single-line values, keep them inline; otherwise break.
+                    if rendered.contains('\n') {
+                        out.push('\n');
+                        out.push_str(&rendered);
+                    } else {
+                        out.push_str(rendered.trim());
+                    }
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                }
+            }
+            let trimmed = out.trim().to_string();
+            if trimmed.is_empty() {
+                return Err(
+                    "inferred_prompt object was empty; expected fields goal/requirements/acceptance_criteria/context"
+                        .to_string(),
+                );
+            }
+            Ok(trimmed)
+        }
+        other => Err(format!(
+            "inferred_prompt must be a JSON string or an object with \
+             goal/requirements/acceptance_criteria/context; got `{}`. \
+             Re-run the FLIP task (`wg evaluate --flip <task>` or let the \
+             coordinator re-dispatch the `.flip-` task) and ensure the model \
+             returns `inferred_prompt` as a single string.",
+            other
+        )),
+    }
+}
+
+/// Render a single field value (string, array, or other JSON) as a prose block
+/// suitable for embedding in the normalized inferred prompt.
+fn render_prompt_field(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => format!("- {}", s),
+                other => format!("- {}", other),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Object(map) => {
+            // Render nested objects as `key: value` lines.
+            map.iter()
+                .map(|(k, v)| format!("- {}: {}", k, v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        other => other.to_string(),
+    }
+}
+
+/// serde deserializer bridge for `FlipInferenceOutput::inferred_prompt`.
+fn deserialize_inferred_prompt<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    normalize_inferred_prompt(value).map_err(serde::de::Error::custom)
+}
+
+/// Build a human-readable diagnostic for a FLIP inference parse failure that
+/// names the expected schema and a repair/rerun path. Used by the call site
+/// so a parser mismatch never leaves the parent task stuck without an
+/// actionable recovery hint.
+fn flip_inference_parse_diagnostic(raw: &str, err: &serde_json::Error) -> String {
+    let mut msg = String::new();
+    msg.push_str("Failed to parse FLIP inference JSON.\n\n");
+    msg.push_str(&format!("Parse error: {}\n\n", err));
+    msg.push_str(
+        "Expected schema (inferred_prompt MUST be a JSON string, or an object \
+         with goal/requirements/acceptance_criteria/context which WG normalizes \
+         into a string):\n\
+         {\n  \"inferred_prompt\": \"<reconstructed task description>\"\n}\n\n\
+         or\n\n\
+         {\n  \"inferred_prompt\": {\n    \"goal\": \"...\",\n    \
+         \"requirements\": [\"...\"],\n    \"acceptance_criteria\": [\"...\"],\n    \
+         \"context\": \"...\"\n  }\n}\n\n",
+    );
+    msg.push_str(
+        "Repair path: re-run the FLIP evaluation with \
+         `wg evaluate --flip <task-id>` (or let the coordinator re-dispatch the \
+         `.flip-` task). The parent task remains in `pending-eval` until a \
+         valid FLIP evaluation is recorded.\n\n",
+    );
+    msg.push_str("Raw model output:");
+    msg.push_str(&raw);
+    msg
 }
 
 /// Output shape for FLIP comparison phase.
@@ -2544,5 +2712,129 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         // Status unchanged
         assert_eq!(graph.get_task("t1").unwrap().status, Status::Done);
+    }
+
+    // -------------------------------------------------------------------
+    // FLIP inferred_prompt normalization (bug-flip-inferred-prompt-object)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn flip_inferred_prompt_accepts_plain_string() {
+        let json =
+            r#"{"inferred_prompt": "Reconstruct the widget renderer so it handles RTL layouts."}"#;
+        let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.inferred_prompt,
+            "Reconstruct the widget renderer so it handles RTL layouts."
+        );
+    }
+
+    #[test]
+    fn flip_inferred_prompt_accepts_structured_object() {
+        // Models sometimes return a structured object instead of a string.
+        // This is exactly the failure observed on .flip-study-recurring-wakeup-
+        // heartbeat-gaps with deepseek-chat.
+        let json = r#"{
+            "inferred_prompt": {
+                "goal": "Investigate recurring wakeup heartbeat gaps",
+                "requirements": ["analyze logs", "identify root cause"],
+                "acceptance_criteria": ["report written", "root cause named"],
+                "context": "Production heartbeat service"
+            }
+        }"#;
+        let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
+        let s = parsed.inferred_prompt;
+        assert!(s.contains("Investigate recurring wakeup heartbeat gaps"));
+        assert!(s.contains("Requirements"));
+        assert!(s.contains("- analyze logs"));
+        assert!(s.contains("Acceptance Criteria"));
+        assert!(s.contains("- report written"));
+        assert!(s.contains("Context"));
+        assert!(s.contains("Production heartbeat service"));
+    }
+
+    #[test]
+    fn flip_inferred_prompt_object_string_requirements() {
+        // requirements/acceptance_criteria may be a single string, not a list.
+        let json = r#"{
+            "inferred_prompt": {
+                "goal": "Do the thing",
+                "requirements": "must be fast",
+                "acceptance_criteria": "tests pass"
+            }
+        }"#;
+        let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
+        assert!(parsed.inferred_prompt.contains("Goal:"));
+        assert!(parsed.inferred_prompt.contains("Do the thing"));
+        assert!(parsed.inferred_prompt.contains("must be fast"));
+        assert!(parsed.inferred_prompt.contains("tests pass"));
+    }
+
+    #[test]
+    fn flip_inferred_prompt_accepts_camel_case_keys() {
+        // Some models return camelCase; they should land in the "extra" bucket.
+        let json = r#"{
+            "inferred_prompt": {
+                "goal": "Ship the feature",
+                "acceptanceCriteria": ["works in prod"]
+            }
+        }"#;
+        let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
+        assert!(parsed.inferred_prompt.contains("Ship the feature"));
+        assert!(parsed.inferred_prompt.contains("acceptanceCriteria"));
+        assert!(parsed.inferred_prompt.contains("works in prod"));
+    }
+
+    #[test]
+    fn flip_inferred_prompt_rejects_number_with_schema_hint() {
+        let json = r#"{"inferred_prompt": 42}"#;
+        let err = serde_json::from_str::<FlipInferenceOutput>(json)
+            .expect_err("must error on non-string/object");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("inferred_prompt must be a JSON string or an object"),
+            "missing schema hint: {}",
+            msg
+        );
+        // Repair/rerun path must be named.
+        assert!(
+            msg.contains("wg evaluate --flip"),
+            "missing repair path: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn flip_inferred_prompt_rejects_empty_string() {
+        let json = r#"{"inferred_prompt": "   "}"#;
+        serde_json::from_str::<FlipInferenceOutput>(json)
+            .expect_err("empty string should be rejected");
+    }
+
+    #[test]
+    fn flip_inferred_prompt_rejects_empty_object() {
+        let json = r#"{"inferred_prompt": {}}"#;
+        serde_json::from_str::<FlipInferenceOutput>(json)
+            .expect_err("empty object should be rejected");
+    }
+
+    #[test]
+    fn flip_inference_parse_diagnostic_names_schema_and_repair_path() {
+        let raw = "{\"inferred_prompt\": 42}";
+        let err = serde_json::from_str::<FlipInferenceOutput>(raw).unwrap_err();
+        let diag = flip_inference_parse_diagnostic(raw, &err);
+        assert!(diag.contains("Expected schema"));
+        assert!(diag.contains("inferred_prompt"));
+        assert!(diag.contains("wg evaluate --flip"));
+        assert!(diag.contains("pending-eval"));
+        assert!(diag.contains("Raw model output"));
+    }
+
+    #[test]
+    fn flip_inferred_prompt_alias_camel_case_field() {
+        // Top-level field may be camelCase inferredPrompt (some model wires).
+        let json = r#"{"inferredPrompt": "reconstructed task"}"#;
+        let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.inferred_prompt, "reconstructed task");
     }
 }
