@@ -280,10 +280,59 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     // (re-read on every assignment so edits take effect without restart).
     let overlay = load_overlay();
     let roles_dir = agency_dir.join("cache/roles");
+    let components_dir = agency_dir.join("primitives/components");
     let all_agents = apply_caps(&overlay, &all_agents, &roles_dir);
 
+    // Front-door eligibility guard: if the task requires an implementation-
+    // capable worker, restrict the pool to implementation-capable agents so
+    // the max-score pick can't land on a review/evaluator-only persona. When
+    // the filter would empty the pool, fall back to the unfiltered pool (a
+    // possibly-stale reviewer is still better than stranding the task) with a
+    // loud warning. See `assignment_eligibility` and task
+    // `prevent-evaluator-reviewer`.
+    let task_impl = match graph.get_task(task_id) {
+        Some(t) => worksgood::assignment_eligibility::task_requires_implementation(t),
+        None => false,
+    };
+    let pool = if task_impl {
+        let capable: Vec<agency::Agent> = all_agents
+            .iter()
+            .filter(|a| {
+                if a.is_human() || !a.staleness_flags.is_empty() {
+                    return false;
+                }
+                let role = match agency::find_role_by_prefix(&roles_dir, &a.role_id) {
+                    Ok(r) => r,
+                    Err(_) => return false,
+                };
+                let names = worksgood::assignment_eligibility::resolve_role_component_names(
+                    &role,
+                    &components_dir,
+                );
+                worksgood::assignment_eligibility::role_implementation_capability_with_components(
+                    &role, &names,
+                ) == worksgood::assignment_eligibility::RoleCapability::ImplementationCapable
+            })
+            .cloned()
+            .collect();
+        if capable.is_empty() {
+            eprintln!(
+                "[assign] ELIGIBILITY GUARD: task '{}' requires an implementation-capable \
+                 worker, but NO implementation-capable agent is available. Falling back \
+                 to the unfiltered pool (a reviewer may be picked). Create an \
+                 implementation agent ('wg agent create') to fix this.",
+                task_id,
+            );
+            all_agents.clone()
+        } else {
+            capable
+        }
+    } else {
+        all_agents.clone()
+    };
+
     // Select the agent with the highest performance score, defaulting to the first agent
-    let selected_agent = all_agents
+    let selected_agent = pool
         .iter()
         .max_by(|a, b| {
             let a_score = a.performance.avg_score.unwrap_or(0.0);
@@ -321,6 +370,39 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         };
         format!("No agent matching '{}'. {}", agent_hash, hint)
     })?;
+
+    // Front-door eligibility guard (explicit pin): a human pin always wins,
+    // but warn loudly when the pinned agent is a review/evaluator-only persona
+    // for a task that requires implementation work. See `assignment_eligibility`
+    // and task `prevent-evaluator-reviewer`.
+    let graph = load_graph(path).ok();
+    if let Some(task) = graph.as_ref().and_then(|g| g.get_task(task_id)) {
+        if worksgood::assignment_eligibility::task_requires_implementation(task) {
+            let roles_dir = agency_dir.join("cache/roles");
+            let components_dir = agency_dir.join("primitives/components");
+            if let Ok(role) = agency::find_role_by_prefix(&roles_dir, &agent.role_id) {
+                let comp_names = worksgood::assignment_eligibility::resolve_role_component_names(
+                    &role,
+                    &components_dir,
+                );
+                if worksgood::assignment_eligibility::role_blocks_implementation_with_components(
+                    &role,
+                    &comp_names,
+                ) {
+                    eprintln!(
+                        "[assign] ELIGIBILITY GUARD WARNING (explicit pin kept): task '{}' \
+                         requires an implementation-capable worker, but pinned agent '{}' \
+                         has role '{}' ({}), which is review/evaluator-only. Consider \
+                         pinning an implementation-capable agent instead.",
+                        task_id,
+                        agent.name,
+                        role.name,
+                        agency::short_hash(&agent.id),
+                    );
+                }
+            }
+        }
+    }
 
     let agent_id_clone = agent.id.clone();
     let task_id_owned = task_id.to_string();
@@ -1078,5 +1160,268 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.performance.task_count, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Assignment eligibility guard regression tests (prevent-evaluator-reviewer)
+    // -----------------------------------------------------------------------
+
+    /// Seed starter roles (Programmer + Reviewer) and create one agent per
+    /// role, returning (programmer_agent_id, reviewer_agent_id). The
+    /// Programmer agent is given a higher score so the max-score heuristic
+    /// would pick it even without the guard — tests below flip the scores to
+    /// force the guard to be the deciding factor.
+    fn setup_programmer_and_reviewer(dir: &Path) -> (String, String) {
+        let agency_dir = dir.join("agency");
+        agency::seed_starters(&agency_dir).unwrap();
+
+        let roles_dir = agency_dir.join("cache/roles");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let agents_dir = agency_dir.join("cache/agents");
+
+        // Find the seeded Programmer and Reviewer roles.
+        let all_roles = agency::load_all_roles(&roles_dir).unwrap_or_default();
+        let programmer_role = all_roles
+            .iter()
+            .find(|r| r.name == "Programmer")
+            .unwrap()
+            .clone();
+        let reviewer_role = all_roles
+            .iter()
+            .find(|r| r.name == "Reviewer")
+            .unwrap()
+            .clone();
+
+        // A single shared tradeoff.
+        let tradeoff = agency::build_tradeoff(
+            "Careful",
+            "Prioritise correctness",
+            vec!["Slow".to_string()],
+            vec!["Unreliable".to_string()],
+        );
+        agency::save_tradeoff(&tradeoff, &tradeoffs_dir).unwrap();
+
+        let make_agent = |role: &agency::Role, name: &str, score: Option<f64>| -> String {
+            let id = agency::content_hash_agent(&role.id, &tradeoff.id);
+            let mut perf = PerformanceRecord::default();
+            perf.avg_score = score;
+            perf.task_count = if score.is_some() { 1 } else { 0 };
+            let agent = agency::Agent {
+                id: id.clone(),
+                role_id: role.id.clone(),
+                tradeoff_id: tradeoff.id.clone(),
+                name: name.to_string(),
+                performance: perf,
+                lineage: Lineage::default(),
+                capabilities: Vec::new(),
+                rate: None,
+                capacity: None,
+                trust_level: Default::default(),
+                contact: None,
+                executor: "claude".to_string(),
+                preferred_model: None,
+                preferred_provider: None,
+                attractor_weight: 1.0,
+                deployment_history: vec![],
+                staleness_flags: vec![],
+            };
+            agency::save_agent(&agent, &agents_dir).unwrap();
+            id
+        };
+
+        let prog_id = make_agent(&programmer_role, "prog-agent", Some(0.5));
+        let rev_id = make_agent(&reviewer_role, "review-agent", Some(0.99));
+        (prog_id, rev_id)
+    }
+
+    /// Regression: an implementation task with concrete deliverables + build
+    /// wording MUST NOT be auto-assigned to a reviewer-only agent, even when
+    /// the reviewer has a higher score than every implementation agent.
+    #[test]
+    fn auto_assign_impl_task_skips_reviewer_for_programmer() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("build-real-async", "Build the real async runtime");
+        task.deliverables = vec!["src/async.rs".to_string()];
+        task.exec_mode = Some("full".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        let (prog_id, _rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        // Reviewer has score 0.99 > Programmer 0.5; without the guard the
+        // max-score pick would be the reviewer. The guard must filter it out.
+        let result = run(dir_path, "build-real-async", None, false, true);
+        assert!(result.is_ok(), "auto-assign failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("build-real-async").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(prog_id.as_str()),
+            "implementation task must be assigned to the programmer, not the reviewer"
+        );
+    }
+
+    /// Regression: an `.evaluate-*` task still routes to the evaluator role —
+    /// the guard must not block evaluator assignment for system evaluation
+    /// tasks.
+    #[test]
+    fn evaluate_task_still_routes_to_evaluator() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // An .evaluate-* scaffold task.
+        let task = make_task(".evaluate-foo", "Evaluate foo");
+        setup_workgraph(dir_path, vec![task]);
+        // Build an Evaluator agent (special role) with a high score and a
+        // Programmer agent with a low score. The guard must NOT filter the
+        // evaluator out for an .evaluate-* task.
+        let agency_dir = dir_path.join("agency");
+        agency::seed_starters(&agency_dir).unwrap();
+        let roles_dir = agency_dir.join("cache/roles");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let agents_dir = agency_dir.join("cache/agents");
+
+        let evaluator_role = agency::special_agent_roles()
+            .into_iter()
+            .find(|r| r.name == "Evaluator")
+            .unwrap();
+        agency::save_role(&evaluator_role, &roles_dir).unwrap();
+        let programmer_role = agency::load_all_roles(&roles_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.name == "Programmer")
+            .unwrap();
+        let tradeoff = agency::build_tradeoff(
+            "Careful",
+            "x",
+            vec!["Slow".to_string()],
+            vec!["Bad".to_string()],
+        );
+        agency::save_tradeoff(&tradeoff, &tradeoffs_dir).unwrap();
+
+        let make_agent = |role: &agency::Role, name: &str, score: Option<f64>| -> String {
+            let id = agency::content_hash_agent(&role.id, &tradeoff.id);
+            let mut perf = PerformanceRecord::default();
+            perf.avg_score = score;
+            perf.task_count = if score.is_some() { 1 } else { 0 };
+            let agent = agency::Agent {
+                id: id.clone(),
+                role_id: role.id.clone(),
+                tradeoff_id: tradeoff.id.clone(),
+                name: name.to_string(),
+                performance: perf,
+                lineage: Lineage::default(),
+                capabilities: Vec::new(),
+                rate: None,
+                capacity: None,
+                trust_level: Default::default(),
+                contact: None,
+                executor: "claude".to_string(),
+                preferred_model: None,
+                preferred_provider: None,
+                attractor_weight: 1.0,
+                deployment_history: vec![],
+                staleness_flags: vec![],
+            };
+            agency::save_agent(&agent, &agents_dir).unwrap();
+            id
+        };
+        let eval_id = make_agent(&evaluator_role, "eval-agent", Some(0.99));
+        let _prog_id = make_agent(&programmer_role, "prog-agent", Some(0.1));
+
+        let result = run(dir_path, ".evaluate-foo", None, false, true);
+        assert!(result.is_ok(), "auto-assign failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task(".evaluate-foo").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(eval_id.as_str()),
+            ".evaluate-* task must still route to the evaluator role"
+        );
+    }
+
+    /// Regression: explicit human pinning to a valid implementation agent still
+    /// works (no warning, assignment proceeds).
+    #[test]
+    fn explicit_pin_to_programmer_on_impl_task_works() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("build-real-async", "Build the real async runtime");
+        task.deliverables = vec!["src/async.rs".to_string()];
+        setup_workgraph(dir_path, vec![task]);
+        let (prog_id, _rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        let result = run(dir_path, "build-real-async", Some(&prog_id), false, false);
+        assert!(result.is_ok(), "explicit pin failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("build-real-async").unwrap();
+        assert_eq!(task.agent.as_deref(), Some(prog_id.as_str()));
+    }
+
+    /// Regression: explicit human pinning to a REVIEWER for an implementation
+    /// task still proceeds (human wins) — the guard only warns, it does not
+    /// block explicit pins.
+    #[test]
+    fn explicit_pin_to_reviewer_on_impl_task_still_assigns() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("register-seed", "Register refreshed e97 seed latest");
+        task.exec_mode = Some("full".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        let (_prog_id, rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        // Human explicitly pinned the reviewer — must still assign (warn only).
+        let result = run(dir_path, "register-seed", Some(&rev_id), false, false);
+        assert!(
+            result.is_ok(),
+            "explicit reviewer pin failed: {:?}",
+            result.err()
+        );
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("register-seed").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(rev_id.as_str()),
+            "explicit human pin must win even on a guard mismatch"
+        );
+    }
+
+    /// Regression for the retry-after-evaluator failure mode: when the prior
+    /// attempt picked a reviewer (evaluator-style no-op behavior) for an
+    /// implementation task, the guard's fallback picker must return an
+    /// implementation-capable agent from the pool so the dispatcher can mutate
+    /// the assignment on retry. This exercises the same primitive the
+    /// dispatcher guard calls.
+    #[test]
+    fn retry_after_evaluator_no_op_picks_implementation_agent() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // No graph needed — this tests the guard primitive directly.
+        let (_prog_id, _rev_id) = setup_programmer_and_reviewer(dir_path);
+        let agency_dir = dir_path.join("agency");
+        let agents_dir = agency_dir.join("cache/agents");
+        let roles_dir = agency_dir.join("cache/roles");
+        let components_dir = agency_dir.join("primitives/components");
+
+        let all_agents = agency::load_all_agents_or_warn(&agents_dir);
+        assert!(all_agents.len() >= 2, "expected >=2 agents");
+
+        let pick = worksgood::assignment_eligibility::pick_implementation_capable_agent(
+            &all_agents,
+            &roles_dir,
+            &components_dir,
+        );
+        let pick = pick.expect("a fallback implementation agent must exist");
+        let role = agency::find_role_by_prefix(&roles_dir, &pick.role_id).unwrap();
+        assert_eq!(
+            role.name, "Programmer",
+            "retry fallback must be the implementation-capable Programmer, not the Reviewer"
+        );
     }
 }

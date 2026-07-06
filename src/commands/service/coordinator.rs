@@ -1594,16 +1594,83 @@ fn build_auto_assign_tasks(
         };
 
         // Resolve the agent hash from the verdict
-        let resolved_agent = match agency::find_agent_by_prefix(&agents_dir, &verdict.agent_hash) {
-            Ok(agent) => agent,
-            Err(e) => {
-                eprintln!(
-                    "[dispatcher] Assignment verdict agent '{}' not found for '{}': {}",
-                    verdict.agent_hash, source_id, e
+        let mut resolved_agent =
+            match agency::find_agent_by_prefix(&agents_dir, &verdict.agent_hash) {
+                Ok(agent) => agent,
+                Err(e) => {
+                    eprintln!(
+                        "[dispatcher] Assignment verdict agent '{}' not found for '{}': {}",
+                        verdict.agent_hash, source_id, e
+                    );
+                    continue;
+                }
+            };
+
+        // Front-door eligibility guard: an implementation task (exec_mode=full,
+        // deliverables, build/implement/register verbs, …) must NOT be handed
+        // to a review/evaluator-only persona (Reviewer / Evaluator / agency
+        // meta roles). When the LLM assigner picks such a persona, mutate the
+        // assignment to a fallback implementation-capable agent from the pool.
+        // See `assignment_eligibility` and task `prevent-evaluator-reviewer`.
+        if let Some(task) = graph.get_task(&source_id) {
+            let role = agency::find_role_by_prefix(&roles_dir, &resolved_agent.role_id).ok();
+            let components_dir = agency_dir.join("primitives/components");
+            let comp_names = role
+                .as_ref()
+                .map(|r| {
+                    worksgood::assignment_eligibility::resolve_role_component_names(
+                        r,
+                        &components_dir,
+                    )
+                })
+                .unwrap_or_default();
+            let blocks = role
+                .as_ref()
+                .map(|r| {
+                    worksgood::assignment_eligibility::role_blocks_implementation_with_components(
+                        r,
+                        &comp_names,
+                    )
+                })
+                .unwrap_or(false);
+            if blocks && worksgood::assignment_eligibility::task_requires_implementation(task) {
+                let original_name = resolved_agent.name.clone();
+                let original_role = role.as_ref().map(|r| r.name.clone()).unwrap_or_default();
+                let fallback = worksgood::assignment_eligibility::pick_implementation_capable_agent(
+                    &all_agents,
+                    &roles_dir,
+                    &components_dir,
                 );
-                continue;
+                match fallback {
+                    Some(fb) => {
+                        eprintln!(
+                            "[dispatcher] ELIGIBILITY GUARD: task '{}' requires an \
+                             implementation-capable worker, but the assigner picked \
+                             '{}' (role '{}', review/evaluator-only). Reassigning to \
+                             implementation-capable agent '{}' ({}).",
+                            source_id,
+                            original_name,
+                            original_role,
+                            fb.name,
+                            agency::short_hash(&fb.id),
+                        );
+                        resolved_agent = fb.clone();
+                    }
+                    None => {
+                        eprintln!(
+                            "[dispatcher] ELIGIBILITY GUARD: task '{}' requires an \
+                             implementation-capable worker and the assigner picked \
+                             '{}' (role '{}', review/evaluator-only), but NO \
+                             implementation-capable agent is available in the pool. \
+                             Proceeding with the original pick to avoid stranding the \
+                             task — create an implementation agent ('wg agent \
+                             create') to fix this.",
+                            source_id, original_name, original_role,
+                        );
+                    }
+                }
             }
-        };
+        }
 
         // Apply assignment to the source task
         if let Some(task) = graph.get_task_mut(&source_id) {

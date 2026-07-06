@@ -18,6 +18,7 @@
 extern crate self as worksgood;
 
 pub mod agency;
+pub mod assignment_eligibility;
 pub mod atomic_file;
 pub mod attempt_select;
 pub mod chat;
