@@ -150,6 +150,14 @@ pub enum FailureClass {
     /// block. A real, retryable failure — does NOT suppress cycle-failure-
     /// restart. Pairs with the deliverable preflight at `wg done` (guardrail G1).
     DeliverableMissing,
+    /// Agent exited cleanly / called `wg done`, produced no artifacts and no
+    /// file writes outside `log/`, but `output.log` is non-empty — i.e. the
+    /// agent "talked but didn't act" (observation/summary work only). The
+    /// weak-signal fallback for tasks without a parsed `## Deliverables`
+    /// block; pairs with the G3 retry mutation so a no-op run still breaks
+    /// the retry loop. A real, retryable failure — does NOT suppress
+    /// cycle-failure-restart. (guardrail G4)
+    NoOperationalOutput,
 }
 
 impl std::fmt::Display for FailureClass {
@@ -163,6 +171,7 @@ impl std::fmt::Display for FailureClass {
             FailureClass::ExecutorConfig => "executor-config",
             FailureClass::WrapperInternal => "wrapper-internal",
             FailureClass::DeliverableMissing => "deliverable-missing",
+            FailureClass::NoOperationalOutput => "no-operational-output",
         };
         write!(f, "{}", s)
     }
@@ -3027,6 +3036,17 @@ mod tests {
         // suppress cycle-failure-restart (only ExecutorConfig does).
         assert!(!FailureClass::DeliverableMissing.suppresses_cycle_failure_restart());
         assert!(FailureClass::ExecutorConfig.suppresses_cycle_failure_restart());
+    }
+
+    #[test]
+    fn test_failure_class_no_operational_output_kebab_and_not_suppressing() {
+        assert_eq!(
+            FailureClass::NoOperationalOutput.to_string(),
+            "no-operational-output"
+        );
+        // NoOperationalOutput is a real, retryable failure — it must NOT
+        // suppress cycle-failure-restart (only ExecutorConfig does).
+        assert!(!FailureClass::NoOperationalOutput.suppresses_cycle_failure_restart());
     }
 
     #[test]

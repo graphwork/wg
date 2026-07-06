@@ -1963,3 +1963,13 @@ owners = [
 ]
 description = "Pins the recurring-wakeup DIAGNOSTICS surface (impl-recurring-heartbeat-diagnostics). `wg cron` lists every cron-enabled task with schedule, resolved weekday + UTC time-of-day (naming the cron crate's non-standard 1=Sunday mapping so a Monday-intent `1` shows as Sunday), next/last fire, due/overdue/paused state, and the missed-fire count across daemon downtime. `wg list` renders the resolved weekday inside the [cron: …] tag (wrong-day bug visible at list time, no per-row spam). `wg show <cron-task>` prints a 'Recurring (cron):' block with schedule, resolved summary, next/last fire, DUE/OVERDUE/paused state, and missed-fire count. `wg status` prints exactly one compact 'Recurring (cron):' summary (count, due/overdue/paused, soonest next-fire). `wg heartbeat <non-agent-id>` rejects the external-trigger attempt with a diagnostic pointing at the safe path (`wg heartbeat agent-N`, `wg cron`) so a host cron does not silently fight the dispatcher. Credential-free: pure graph-state + CLI output; no worker spawn."
 timeout_seconds = 90
+
+[[scenario]]
+name = "intake_deliverable_preflight"
+script = "scenarios/intake_deliverable_preflight.sh"
+owners = [
+    "impl-retry-mutation",
+    "impl-deliverable-preflight",
+]
+description = "Pins guardrails G1+G3 from docs/research/prevent-intake-as-evaluator-design.md: an intake task with a `## Deliverables` block is refused at `wg done` (failure_class `deliverable-missing`) when the named deliverable is absent; on retry (retry_count=1, failure_class=deliverable-missing) the spawned worker prompt.txt leads with the G3 'PREVIOUS ATTEMPT FAILED — DO NOT REPEAT' directive naming the concrete deliverable (replacing the neutral 'continue from where they left off' framing); after the deliverable is produced `wg done` succeeds and clears the failure_class marker. The G3 directive-injection pure function is additionally pinned by the retry_mutates_prompt_on_deliverable_missing unit test. Credential-free: drives the real `wg done` + `wg spawn --executor claude` CLI paths (prompt.txt is written before any LLM subprocess launches); no claude CLI auth needed."
+timeout_seconds = 90

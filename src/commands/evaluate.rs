@@ -667,7 +667,15 @@ pub fn run(
     }
 
     // Step 8.6: Eval gate — reject the original task if score is below threshold
-    let rejected = check_eval_gate(dir, task_id, &task.tags, &evaluation, &config, json)?;
+    let rejected = check_eval_gate(
+        dir,
+        task_id,
+        &task.tags,
+        task.description.as_deref(),
+        &evaluation,
+        &config,
+        json,
+    )?;
     if rejected && !json {
         println!("  REJECTED: task '{}' failed by evaluation gate", task_id);
     }
@@ -1745,10 +1753,43 @@ fn extract_json(raw: &str) -> Option<String> {
 /// When rejecting, this function:
 /// - Fails the original task with a descriptive reason
 /// - Warns about any downstream tasks that are already in-progress
+///
+/// Guardrail G2: is this task opted into the evaluation gate?
+///
+/// A task is gated when ANY of:
+/// - `config.agency.eval_gate_all` is set (global opt-in), OR
+/// - the task carries the `eval-gate` tag (explicit per-task opt-in), OR
+/// - the task carries the `intake` tag (operational intake — the gate must
+///   score so a soft evaluator pass can't promote a no-deliverable run), OR
+/// - the task has a non-empty parsed `## Deliverables` list (a task that
+///   names concrete deliverables is operational and must be gated).
+///
+/// Research/review tasks (rubric `## Validation`, no deliverables, no
+/// `intake`/`eval-gate` tag) are NOT gated — preserves the fast default.
+fn task_is_eval_gated(
+    task_tags: &[String],
+    task_description: Option<&str>,
+    config: &Config,
+) -> bool {
+    if config.agency.eval_gate_all {
+        return true;
+    }
+    if task_tags.iter().any(|t| t == "eval-gate" || t == "intake") {
+        return true;
+    }
+    if let Some(desc) = task_description
+        && !crate::commands::deliverables::parse_deliverables(desc).is_empty()
+    {
+        return true;
+    }
+    false
+}
+
 fn check_eval_gate(
     dir: &Path,
     task_id: &str,
     task_tags: &[String],
+    task_description: Option<&str>,
     evaluation: &Evaluation,
     config: &Config,
     json: bool,
@@ -1758,8 +1799,12 @@ fn check_eval_gate(
         None => return Ok(false), // No threshold configured
     };
 
-    // Check if this task is gated
-    let is_gated = config.agency.eval_gate_all || task_tags.iter().any(|t| t == "eval-gate");
+    // Check if this task is gated. Guardrail G2: an `intake` tag OR a
+    // non-empty parsed-deliverable list opts the task into the gate (as if
+    // it carried `eval-gate`), so a soft evaluator pass can no longer
+    // promote a no-deliverable run to Done. Research/review tasks with no
+    // deliverables stay ungated and fast (no regression).
+    let is_gated = task_is_eval_gated(task_tags, task_description, config);
     if !is_gated {
         return Ok(false);
     }
@@ -2488,6 +2533,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
+            None,
             &eval,
             &config,
             true, // json mode silences stdout for tests
@@ -2536,6 +2582,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
+            None,
             &eval,
             &config,
             true,
@@ -2609,6 +2656,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
+            None,
             &eval,
             &config,
             true,
@@ -2655,6 +2703,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
+            None,
             &eval,
             &config,
             true,
@@ -2836,5 +2885,41 @@ mod tests {
         let json = r#"{"inferredPrompt": "reconstructed task"}"#;
         let parsed: FlipInferenceOutput = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.inferred_prompt, "reconstructed task");
+    }
+
+    #[test]
+    fn intake_task_is_eval_gated() {
+        // Guardrail G2: an `intake` tag OR a non-empty parsed-deliverable
+        // list opts the task into the gate (as if it carried `eval-gate`),
+        // so the configured threshold actually gates. Research/review tasks
+        // with no deliverables stay ungated.
+        let cfg = cfg_with_eval_gate(0.7, 3);
+
+        // `intake` tag alone gates.
+        assert!(task_is_eval_gated(&["intake".to_string()], None, &cfg));
+
+        // `eval-gate` tag still gates.
+        assert!(task_is_eval_gated(&["eval-gate".to_string()], None, &cfg));
+
+        // No tag but a `## Deliverables` block gates.
+        let desc = "## Description\nRefresh the seed.\n\n## Deliverables\n- latest.pt\n- seed/manifest.json\n";
+        assert!(task_is_eval_gated(&[], Some(desc), &cfg));
+
+        // No tag but a path-like `## Validation` fallback gates.
+        let desc2 = "## Validation\n- latest.pt exists\n";
+        assert!(task_is_eval_gated(&[], Some(desc2), &cfg));
+
+        // Research/review task: rubric `## Validation`, no path-like
+        // bullets, no tag → NOT gated (no regression).
+        let review = "## Validation\n- cargo test passes\n- write a report\n";
+        assert!(!task_is_eval_gated(&[], Some(review), &cfg));
+
+        // No tag, no description → NOT gated.
+        assert!(!task_is_eval_gated(&[], None, &cfg));
+
+        // eval_gate_all overrides everything (even a no-op task).
+        let mut cfg_all = cfg.clone();
+        cfg_all.agency.eval_gate_all = true;
+        assert!(task_is_eval_gated(&[], None, &cfg_all));
     }
 }

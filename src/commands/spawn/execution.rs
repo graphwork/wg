@@ -2012,6 +2012,24 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
         if [ "$LOG_COUNT" -lt 1 ] && [ "$ARTIFACT_COUNT" -lt 1 ] && [ "$DIFF_BYTES" -lt 50 ] && [ "$COMMITS_AHEAD" -lt 1 ]; then
             echo "[wrapper] FAIL-GATE: agent exited 0 with no logs, no artifacts, no diff, no commits — refusing to auto-mark done" >> "$OUTPUT_FILE"
             wg fail "$TASK_ID" --class "agent-no-work" --reason "Agent exited 0 without producing any work (no wg log, no artifacts, no diff, no commits)" 2>> "$OUTPUT_FILE" || true
+        elif [ "$ARTIFACT_COUNT" -lt 1 ] && [ "$DIFF_BYTES" -lt 50 ] && [ "$COMMITS_AHEAD" -lt 1 ]; then
+            # Guardrail G4 (NoOperationalOutput): the agent "talked but
+            # didn't act" — it wrote logs/prose (LOG_COUNT >= 1) but produced
+            # no artifacts and no file writes. Ask `wg classify-no-op` for the
+            # verdict (single source of truth: the Rust pure function
+            # `classify_no_operational_output` in raw_stream_classifier.rs,
+            # which also scans output.log for mutation tokens). On a positive
+            # verdict, fail with the machine-readable class so the retry path
+            # (G3) injects the no-op directive instead of repeating
+            # meta/observation work.
+            NO_OP_CLASS=$(wg classify-no-op --output-log "$OUTPUT_FILE" --clean-exit --artifacts-empty 2>/dev/null || echo none)
+            if [ "$NO_OP_CLASS" = "no-operational-output" ]; then
+                echo "[wrapper] FAIL-GATE: agent exited 0 with prose/logs but no artifacts and no file writes (no-operational-output) — refusing to auto-mark done" >> "$OUTPUT_FILE"
+                wg fail "$TASK_ID" --class "no-operational-output" --reason "Agent produced observation/summary work only (no artifacts, no file writes, non-empty output.log) — perform the concrete operational actions" 2>> "$OUTPUT_FILE" || true
+            else
+                echo "{complete_msg}" >> "$OUTPUT_FILE"
+                {complete_cmd}
+            fi
         else
             echo "{complete_msg}" >> "$OUTPUT_FILE"
             {complete_cmd}

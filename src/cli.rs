@@ -576,6 +576,35 @@ pub enum Commands {
         exit_code: i32,
     },
 
+    /// [Internal] Classify a NoOperationalOutput (guardrail G4) run from the
+    /// observable signals. Prints `no-operational-output` when the agent
+    /// "talked but didn't act" (clean exit / wg done, no artifacts, no file
+    /// writes, non-empty output.log), or `none` otherwise. Used by the
+    /// wrapper script's exit-0 branch so the retry path (G3) can break the
+    /// meta/observation loop. The pure logic lives in
+    /// `raw_stream_classifier::classify_no_operational_output`.
+    #[command(hide = true)]
+    ClassifyNoOp {
+        /// Path to the agent's output.log (read for non-empty + mutation scan)
+        #[arg(long, value_name = "PATH")]
+        output_log: String,
+
+        /// Agent exited 0 OR called `wg done`.
+        #[arg(long)]
+        clean_exit: bool,
+
+        /// `task.artifacts` is empty (no `wg artifact` calls).
+        #[arg(long)]
+        artifacts_empty: bool,
+
+        /// File writes detected outside `log/` via `git status` / commits
+        /// (wrapper-derived). The command ALSO scans output.log for
+        /// mutation tokens (`write_file`/`edit_file`/`wg add`/…) and ORs
+        /// them in, so either signal suffices.
+        #[arg(long)]
+        has_file_writes: bool,
+    },
+
     /// [Internal] Translate a finished pi agent's NDJSON stream into the
     /// canonical `stream.jsonl` (real token/cost usage) + `session-summary.md`.
     /// Used by the spawn wrapper after `pi --mode json` exits.
@@ -6268,6 +6297,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Done { .. } => "done",
         Commands::Fail { .. } => "fail",
         Commands::ClassifyFailure { .. } => "classify-failure",
+        Commands::ClassifyNoOp { .. } => "classify-no-op",
         Commands::PiStreamBridge { .. } => "pi-stream-bridge",
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",

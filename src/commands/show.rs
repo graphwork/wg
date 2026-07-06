@@ -854,6 +854,9 @@ fn print_human_readable(details: &TaskDetails) {
             DeliverableMissing => {
                 "agent exited cleanly but produced none of the named deliverables — re-run and produce the required files/ids"
             }
+            NoOperationalOutput => {
+                "agent talked but didn't act (no files/artifacts written, non-empty output.log) — re-run and perform the concrete operational work"
+            }
         };
         println!("  hint: {}", hint);
     }

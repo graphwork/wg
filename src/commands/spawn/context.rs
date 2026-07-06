@@ -1160,11 +1160,16 @@ pub(crate) fn build_previous_attempt_context(
     let archive_base = workgraph_dir.join("log").join("agents").join(&task.id);
     if !archive_base.exists() {
         let eval_context = build_eval_rationale_context(&task.id, workgraph_dir);
-        if !eval_context.is_empty() {
-            return format_previous_context(
+        // G3 directive can fire even without an archive (e.g. a no-output
+        // run recorded only via failure_class on the task).
+        let directive = build_g3_directive(task);
+        if !eval_context.is_empty() || directive.is_some() {
+            let combined = combine_with_eval_context(&eval_context, "");
+            return format_previous_attempt(
                 &chrono::Utc::now().to_rfc3339(),
-                &eval_context,
+                &combined,
                 max_bytes,
+                directive.as_deref(),
             );
         }
         return String::new();
@@ -1197,13 +1202,27 @@ pub(crate) fn build_previous_attempt_context(
     // before the archive-existence early-return).
     let eval_context = build_eval_rationale_context(&task.id, workgraph_dir);
 
+    // Guardrail G3: when the prior attempt failed with `DeliverableMissing`
+    // or `NoOperationalOutput`, inject an explicit "do the operational work,
+    // not the meta" directive at the TOP of the previous-attempt context —
+    // replacing the neutral "continue from where they left off" framing
+    // that a weak model reads as a summary to refine. The directive carries
+    // the concrete deliverable list (parsed from the task description via
+    // the shared G1 parser) so the retry prompt names the exact files.
+    let directive = build_g3_directive(task);
+
     // Priority 1: Look for checkpoint summary from the previous agent
     let checkpoint_context = find_checkpoint_for_task(task, workgraph_dir);
     if let Some(summary) = checkpoint_context
         && !summary.is_empty()
     {
         let combined = combine_with_eval_context(&summary, &eval_context);
-        return format_previous_context(&archive_timestamp, &combined, max_bytes);
+        return format_previous_attempt(
+            &archive_timestamp,
+            &combined,
+            max_bytes,
+            directive.as_deref(),
+        );
     }
 
     // Priority 2: Truncated output.log from the archive
@@ -1214,7 +1233,12 @@ pub(crate) fn build_previous_attempt_context(
     {
         let tail = truncate_to_tail(&content, max_bytes / 2);
         let combined = combine_with_eval_context(&tail, &eval_context);
-        return format_previous_context(&archive_timestamp, &combined, max_bytes);
+        return format_previous_attempt(
+            &archive_timestamp,
+            &combined,
+            max_bytes,
+            directive.as_deref(),
+        );
     }
 
     // Priority 3: Task log entries
@@ -1236,13 +1260,30 @@ pub(crate) fn build_previous_attempt_context(
         if !log_context.is_empty() {
             let truncated = truncate_to_tail(&log_context, max_bytes / 2);
             let combined = combine_with_eval_context(&truncated, &eval_context);
-            return format_previous_context(&archive_timestamp, &combined, max_bytes);
+            return format_previous_attempt(
+                &archive_timestamp,
+                &combined,
+                max_bytes,
+                directive.as_deref(),
+            );
         }
     }
 
     // Priority 4: Eval context alone (no archive output/checkpoint/logs, but eval exists)
     if !eval_context.is_empty() {
-        return format_previous_context(&archive_timestamp, &eval_context, max_bytes);
+        return format_previous_attempt(
+            &archive_timestamp,
+            &eval_context,
+            max_bytes,
+            directive.as_deref(),
+        );
+    }
+
+    // Priority 5: directive alone (no prior content, but the prior failure
+    // class warrants the no-op directive — e.g. a no-output run with no
+    // archived output.log). Better to inject the directive than nothing.
+    if let Some(d) = directive.as_deref() {
+        return format_previous_attempt(&archive_timestamp, "", max_bytes, Some(d));
     }
 
     String::new()
@@ -1356,21 +1397,112 @@ fn truncate_to_tail(s: &str, max_bytes: usize) -> String {
 }
 
 /// Format the previous attempt context section for injection into the prompt.
-fn format_previous_context(timestamp: &str, content: &str, max_bytes: usize) -> String {
+///
+/// When `directive` is `Some`, the G3 "do not repeat — do the operational
+/// work" directive block is emitted at the TOP (replacing the neutral
+/// "continue from where they left off" framing), and the prior attempt's
+/// content is appended under a reference header. When `directive` is `None`,
+/// the legacy neutral framing is used (unchanged behavior for non-deliverable
+/// retries).
+fn format_previous_attempt(
+    timestamp: &str,
+    content: &str,
+    max_bytes: usize,
+    directive: Option<&str>,
+) -> String {
     let truncated_content = if content.len() > max_bytes {
         truncate_to_tail(content, max_bytes)
     } else {
         content.to_string()
     };
 
-    format!(
-        "## Previous Attempt Context\n\
-         This task was previously attempted (archived at {}).\n\
-         Here is context from that attempt:\n\n\
-         {}\n\n\
-         Continue from where they left off. Do not repeat work already done.",
-        timestamp, truncated_content
-    )
+    if let Some(d) = directive {
+        // G3: directive-first framing. The directive dominates; the prior
+        // attempt's output is reference-only so the model sees what it
+        // already did (and thus should NOT repeat).
+        if truncated_content.trim().is_empty() {
+            format!("{}", d)
+        } else {
+            format!(
+                "{}\n\n## Previous Attempt Output (for reference — do not repeat)\n\
+                 Archived at {}. Do not refine this output; it is the prior \
+                 attempt's work.\n\n{}",
+                d, timestamp, truncated_content
+            )
+        }
+    } else {
+        format!(
+            "## Previous Attempt Context\n\
+             This task was previously attempted (archived at {}).\n\
+             Here is context from that attempt:\n\n\
+             {}\n\n\
+             Continue from where they left off. Do not repeat work already done.",
+            timestamp, truncated_content
+        )
+    }
+}
+
+/// Legacy formatter retained for call sites that have not migrated to the
+/// G3 directive path. Equivalent to `format_previous_attempt` with no
+/// directive.
+#[allow(dead_code)]
+fn format_previous_context(timestamp: &str, content: &str, max_bytes: usize) -> String {
+    format_previous_attempt(timestamp, content, max_bytes, None)
+}
+
+/// Build the G3 retry-mutation directive block for a task whose prior
+/// attempt failed with `DeliverableMissing` or `NoOperationalOutput`.
+///
+/// Returns `None` when the prior failure class is neither of those (the
+/// neutral retry framing applies). When the task has a parsed `## Deliverables`
+/// block, the directive lists the concrete paths/registry ids; otherwise
+/// (the `NoOperationalOutput` weak-fallback case) it emits a generic
+/// "perform the operational actions named in the task" directive.
+fn build_g3_directive(task: &worksgood::graph::Task) -> Option<String> {
+    use worksgood::graph::FailureClass;
+    let class = task.failure_class?;
+    if !matches!(
+        class,
+        FailureClass::DeliverableMissing | FailureClass::NoOperationalOutput
+    ) {
+        return None;
+    }
+
+    let attempt_n = (task.retry_count + task.rescue_count).max(1);
+    let deliverables = task
+        .description
+        .as_deref()
+        .map(crate::commands::deliverables::parse_deliverables)
+        .unwrap_or_default();
+
+    let deliverable_block = if deliverables.is_empty() {
+        // No parsed deliverable list (NoOperationalOutput weak fallback).
+        String::from(
+            "You MUST perform the concrete operational actions named in the task \
+             and write the resulting files/artifacts. Do not produce a summary, \
+             review, or analysis in place of the work. `wg done` will refuse a \
+             no-output run.",
+        )
+    } else {
+        let list = deliverables
+            .iter()
+            .map(|d| format!("  - {}", d.as_source()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "You MUST perform the concrete operational actions and produce:\n\
+             {}\n\
+             `wg done` will refuse unless these exist and are non-empty.",
+            list
+        )
+    };
+
+    Some(format!(
+        "## PREVIOUS ATTEMPT FAILED — DO NOT REPEAT\n\
+         Attempt #{attempt_n} performed observation/summary work only and \
+         produced NONE of the required deliverables. Do not write a review, \
+         summary, or analysis. {deliverable_block}"
+    ))
 }
 
 #[cfg(test)]
@@ -2099,6 +2231,147 @@ mod tests {
             "Should fall back to task log entries. Got: {}",
             result
         );
+    }
+
+    #[test]
+    fn retry_mutates_prompt_on_deliverable_missing() {
+        // Guardrail G3: when the prior attempt's failure class is
+        // `DeliverableMissing` (or `NoOperationalOutput`), the previous-
+        // attempt context must lead with the explicit "do the operational
+        // work, not the meta" directive block — NOT the neutral "continue
+        // from where they left off" framing that a weak model reads as a
+        // summary to refine. The directive names the concrete deliverables.
+        use worksgood::graph::FailureClass;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        // Prior attempt's output.log: plausible-sounding meta work.
+        std::fs::write(
+            archive_dir.join("output.txt"),
+            "Analyzed checkpoint metadata. The seed appears healthy. Summary: ready.",
+        )
+        .unwrap();
+
+        let mut task = make_task("t1", "register-refreshed-e97-seed");
+        task.retry_count = 1;
+        task.failure_class = Some(FailureClass::DeliverableMissing);
+        task.description = Some(
+            "## Description\nRefresh the e97 seed.\n\n## Deliverables\n- latest.pt\n- seed/manifest.json\n- registry:registry.json:e97\n".to_string(),
+        );
+
+        let result = build_previous_attempt_context(&task, wg_dir, 4096);
+
+        // The G3 directive block is present at the top.
+        assert!(
+            result.contains("PREVIOUS ATTEMPT FAILED — DO NOT REPEAT"),
+            "G3 directive header missing. Got: {}",
+            result
+        );
+        // It names each concrete deliverable.
+        assert!(
+            result.contains("latest.pt"),
+            "missing latest.pt: {}",
+            result
+        );
+        assert!(
+            result.contains("seed/manifest.json"),
+            "missing manifest: {}",
+            result
+        );
+        assert!(
+            result.contains("registry:registry.json:e97"),
+            "missing registry token: {}",
+            result
+        );
+        // The neutral framing is replaced.
+        assert!(
+            !result.contains("Continue from where they left off"),
+            "neutral framing should be replaced by directive. Got: {}",
+            result
+        );
+        // The prior attempt's meta output is retained as reference-only.
+        assert!(
+            result.contains("for reference — do not repeat"),
+            "prior output should be reference-only. Got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn retry_mutates_prompt_on_no_operational_output() {
+        // The NoOperationalOutput weak-signal fallback (no parsed deliverable
+        // list) must still inject the G3 directive — generic phrasing.
+        use worksgood::graph::FailureClass;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(
+            archive_dir.join("output.txt"),
+            "Reviewed the situation. Looks fine.",
+        )
+        .unwrap();
+
+        let mut task = make_task("t1", "do-the-thing");
+        task.retry_count = 1;
+        task.failure_class = Some(FailureClass::NoOperationalOutput);
+        // No `## Deliverables` block — the weak-fallback path.
+        task.description = Some("## Description\nDo the thing.\n".to_string());
+
+        let result = build_previous_attempt_context(&task, wg_dir, 4096);
+        assert!(
+            result.contains("PREVIOUS ATTEMPT FAILED — DO NOT REPEAT"),
+            "G3 directive should fire for NoOperationalOutput. Got: {}",
+            result
+        );
+        assert!(
+            result.contains("concrete operational actions"),
+            "generic directive phrasing missing. Got: {}",
+            result
+        );
+        assert!(!result.contains("Continue from where they left off"));
+    }
+
+    #[test]
+    fn retry_keeps_neutral_framing_for_other_failure_classes() {
+        // A non-deliverable failure (e.g. AgentExitNonzero) keeps the legacy
+        // neutral framing — G3 only mutates DeliverableMissing/
+        // NoOperationalOutput.
+        use worksgood::graph::FailureClass;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        let archive_dir = wg_dir
+            .join("log")
+            .join("agents")
+            .join("t1")
+            .join("2026-03-07T10:00:00Z");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("output.txt"), "crashed mid-run").unwrap();
+
+        let mut task = make_task("t1", "Test task");
+        task.retry_count = 1;
+        task.failure_class = Some(FailureClass::AgentExitNonzero);
+
+        let result = build_previous_attempt_context(&task, wg_dir, 2000);
+        assert!(
+            result.contains("Continue from where they left off"),
+            "neutral framing should be retained for non-deliverable failures. Got: {}",
+            result
+        );
+        assert!(!result.contains("PREVIOUS ATTEMPT FAILED — DO NOT REPEAT"));
     }
 
     #[test]

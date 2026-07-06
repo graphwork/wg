@@ -2425,10 +2425,13 @@ fn run_inner(
             transitioned_to_pending_eval = true;
         }
 
-        // Clear any prior deliverable-preflight refusal marker now that the
-        // run has produced its deliverables and is being promoted out of
-        // InProgress (guardrail G1 cleanup).
-        if task.failure_class == Some(FailureClass::DeliverableMissing) {
+        // Clear any prior deliverable-preflight / no-operational-output
+        // refusal marker now that the run has produced its deliverables and
+        // is being promoted out of InProgress (guardrail G1/G4 cleanup).
+        if matches!(
+            task.failure_class,
+            Some(FailureClass::DeliverableMissing) | Some(FailureClass::NoOperationalOutput)
+        ) {
             task.failure_class = None;
             task.failure_reason = None;
         }

@@ -62,6 +62,71 @@ pub fn classify_from_raw_stream(raw_stream: &Path, exit_code: i32) -> FailureCla
     FailureClass::AgentExitNonzero
 }
 
+/// Classify `NoOperationalOutput` (guardrail G4): the agent "talked but
+/// didn't act" — exited cleanly / called `wg done`, produced no artifacts,
+/// wrote no files outside `log/`, but left a non-empty `output.log`.
+///
+/// This is the *weak* fallback for tasks without a parsed `## Deliverables`
+/// block (the strong signal is G1's `DeliverableMissing` preflight). When the
+/// signature matches, the retry path (G3) injects the no-op directive block
+/// so the loop breaks instead of repeating meta/observation work.
+///
+/// # Arguments
+/// - `clean_exit_or_done`: exit code 0 OR the agent called `wg done`.
+/// - `artifacts_empty`: `task.artifacts` is empty (no `wg artifact` calls).
+/// - `has_file_writes`: files were written outside `log/` — true if
+///   `git status --porcelain` is non-empty OR `output.log` shows a mutation
+///   command (`write_file` / `edit_file` / `wg add` / shell-mutation). The
+///   caller may derive this from either signal per the G4 rule.
+/// - `output_log_nonempty`: `output.log` has non-whitespace content.
+pub fn classify_no_operational_output(
+    clean_exit_or_done: bool,
+    artifacts_empty: bool,
+    has_file_writes: bool,
+    output_log_nonempty: bool,
+) -> Option<FailureClass> {
+    if clean_exit_or_done && artifacts_empty && !has_file_writes && output_log_nonempty {
+        Some(FailureClass::NoOperationalOutput)
+    } else {
+        None
+    }
+}
+
+/// Scan an `output.log` body for evidence of filesystem mutation — the
+/// command tokens the agent shells out to write/edit files. Used by the G4
+/// classifier (via the wrapper) to derive `has_file_writes` from the log
+/// when `git status` is unavailable or unreliable.
+///
+/// Matches (case-insensitive, as substrings):
+/// - `write_file` / `edit_file` — the executor tool calls.
+/// - `wg add` — staging a file for commit.
+/// - `wg artifact` — recording an artifact (counts as a write for G4 since
+///   it implies the agent produced an output; the `artifacts_empty` signal
+///   already gates this, but the log token is a corroborating signal).
+/// - shell-mutation commands: `git commit`, `git mv`, `mkdir -p`, `curl`,
+///   `wget`, `cp `, `mv `, `tee ` — i.e. the operational verbs an intake
+///   task would use to produce its deliverables.
+///
+/// Returns `true` if ANY mutation token is present.
+pub fn output_log_has_mutations(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    const TOKENS: &[&str] = &[
+        "write_file",
+        "edit_file",
+        "wg add",
+        "wg artifact",
+        "git commit",
+        "git mv",
+        "mkdir -p",
+        "curl ",
+        "wget ",
+        "cp ",
+        "mv ",
+        "tee ",
+    ];
+    TOKENS.iter().any(|t| lower.contains(t))
+}
+
 /// Read up to TAIL_BYTES from the end of `path`, returning the string content.
 /// Returns None if the file doesn't exist, can't be read, or is empty.
 fn read_tail(path: &Path) -> Option<String> {
@@ -253,5 +318,61 @@ mod tests {
     #[test]
     fn test_extract_api_error_status_not_found() {
         assert_eq!(extract_api_error_status(r#"{"type":"result"}"#), None);
+    }
+
+    #[test]
+    fn classifier_detects_no_operational_output() {
+        // Full signature: clean exit, no artifacts, no file writes, non-empty
+        // output.log → NoOperationalOutput.
+        assert_eq!(
+            classify_no_operational_output(true, true, false, true),
+            Some(FailureClass::NoOperationalOutput)
+        );
+
+        // Non-clean exit (crash/timeout) → not no-op (it's a real failure).
+        assert_eq!(
+            classify_no_operational_output(false, true, false, true),
+            None
+        );
+
+        // Artifacts present → agent did produce something → not no-op.
+        assert_eq!(
+            classify_no_operational_output(true, false, false, true),
+            None
+        );
+
+        // File writes detected → agent acted → not no-op.
+        assert_eq!(classify_no_operational_output(true, true, true, true), None);
+
+        // Empty output.log → crash, not meta work → not no-op.
+        assert_eq!(
+            classify_no_operational_output(true, true, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn output_log_has_mutations_detects_write_tokens() {
+        // Executor tool calls.
+        assert!(output_log_has_mutations(
+            "Used write_file to create latest.pt"
+        ));
+        assert!(output_log_has_mutations("edit_file src/foo.rs"));
+        // wg add / artifact.
+        assert!(output_log_has_mutations("ran: wg add latest.pt"));
+        assert!(output_log_has_mutations("wg artifact t1 latest.pt"));
+        // Shell-mutation verbs.
+        assert!(output_log_has_mutations("git commit -m x"));
+        assert!(output_log_has_mutations("mkdir -p seed"));
+        assert!(output_log_has_mutations("curl -o x.bin URL"));
+        assert!(output_log_has_mutations("cp a b"));
+
+        // Pure meta/observation prose — no mutation tokens.
+        assert!(!output_log_has_mutations(
+            "Analyzed the task. The checkpoint metadata looks fine. Summary: ready."
+        ));
+        assert!(!output_log_has_mutations(""));
+        // Case-insensitivity.
+        assert!(output_log_has_mutations("WRITE_FILE latest.pt"));
     }
 }

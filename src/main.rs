@@ -1185,6 +1185,17 @@ fn main() -> Result<()> {
             raw_stream,
             exit_code,
         } => commands::classify_failure::run(raw_stream.as_deref(), exit_code),
+        Commands::ClassifyNoOp {
+            output_log,
+            clean_exit,
+            artifacts_empty,
+            has_file_writes,
+        } => commands::classify_failure::run_no_op(
+            &output_log,
+            clean_exit,
+            artifacts_empty,
+            has_file_writes,
+        ),
         Commands::PiStreamBridge {
             agent_dir,
             exit_code,
@@ -4286,6 +4297,7 @@ fn parse_failure_class(s: &str) -> Option<worksgood::graph::FailureClass> {
         "executor-config" => Some(FailureClass::ExecutorConfig),
         "wrapper-internal" => Some(FailureClass::WrapperInternal),
         "deliverable-missing" => Some(FailureClass::DeliverableMissing),
+        "no-operational-output" => Some(FailureClass::NoOperationalOutput),
         _ => None,
     }
 }
