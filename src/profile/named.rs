@@ -890,6 +890,175 @@ pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> R
     Ok(path)
 }
 
+/// Apply a per-role model override (`models.<role>.model`) to a named profile's
+/// TOML file, preserving comments, ordering, and every unrelated key.
+///
+/// The `dotted` key is the full dotted TOML path (e.g. `models.task_agent.model`).
+/// The model spec is written **verbatim** — no strong-tier `pi:` normalization,
+/// because a per-role override may legitimately be a native `openrouter:` route
+/// (the weak agency tier) or a `pi:` route; the caller (`wg profile set-model`)
+/// validates handler-first form before calling. When the profile file does not
+/// yet exist it is seeded from the baked-in starter template first, mirroring
+/// [`patch_pi_tiers`]. Returns the path written.
+///
+/// Used by `wg profile set-model <profile> <role> <model>` (the per-role escape
+/// hatch that wins over the two-tier strong/weak key-set).
+pub fn patch_role_model(name: &str, dotted: &str, model: &str) -> Result<PathBuf> {
+    let path = profile_path(name)?;
+    let mut content = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read profile file {}", path.display()))?
+    } else if let Some(template) = starter_template(name) {
+        template.to_string()
+    } else {
+        // Reuse load()'s closest-match / suggestion error.
+        load(name)?;
+        anyhow::bail!(
+            "Profile '{}' source file not found at {}",
+            name,
+            path.display()
+        );
+    };
+
+    content = set_toml_string_value(&content, dotted, model);
+
+    // Validate the patched content still parses as a Config so a malformed
+    // edit never leaves a broken profile on disk.
+    let _check: Config = toml::from_str(&content).map_err(|e| {
+        anyhow::anyhow!(
+            "Patched profile '{}' failed to parse as Config after setting {} = \"{}\": {}",
+            name,
+            dotted,
+            model,
+            e,
+        )
+    })?;
+
+    save_raw(name, &content)?;
+    Ok(path)
+}
+
+// ── Per-role model override (`wg profile set-model`) ──────────────────────────
+
+/// The durable outcome of a per-role model override write, surfaced to the
+/// caller (the `wg profile set-model` CLI) so it can print a consistent echo
+/// and decide on daemon reload. Built by [`set_role_model_override`].
+#[derive(Debug, Clone)]
+pub struct RoleModelOverrideOutcome {
+    /// Profile name the override was applied to.
+    pub profile: String,
+    /// Dispatch role display name (e.g. `task_agent`, `default`).
+    pub role: String,
+    /// Dotted TOML key that was written (e.g. `models.task_agent.model`).
+    pub dotted: String,
+    /// Model spec written verbatim (handler-first form preserved).
+    pub model: String,
+    /// Previous value at this dotted key, if any (`None` = newly created).
+    pub previous: Option<String>,
+    /// Whether the edited profile is the active one (so a re-apply is warranted).
+    pub is_active: bool,
+    /// Whether this was a dry-run (no files written).
+    pub dry_run: bool,
+    /// Path written, when not a dry-run.
+    pub wrote_path: Option<PathBuf>,
+    /// Whether the global config was re-applied (true only when active + not dry-run).
+    pub reapplied_global: bool,
+}
+
+/// Apply a per-role model override (`models.<role>.model`) to a named profile.
+///
+/// This is the durable, testable core of `wg profile set-model <profile> <role>
+/// <model>`. It lives in the lib (not the bin) so its HOME-mutating tests run
+/// in the lib's single test process alongside the other `with_home` tests,
+/// avoiding the cross-binary `HOME` race that two parallel test binaries
+/// (lib unit tests + bin unit tests) would otherwise hit.
+///
+/// Validates the role parses as a [`crate::config::DispatchRole`] and the model
+/// spec is handler-first ([`crate::config::parse_model_spec_strict`]), then —
+/// unless `dry_run` — patches `~/.wg/profiles/<profile>.toml` via the
+/// comment-preserving line patcher ([`patch_role_model`]) and, when the edited
+/// profile is the active one, re-applies it as the global config so the next
+/// spawned worker picks up the change.
+///
+/// Handler-first model specs are preserved **verbatim** — a `pi:openrouter/...`
+/// route stays a `pi:` route. We do NOT run the strong-tier `pi_strong_route`
+/// normalization, because a per-role override may legitimately be a native
+/// `openrouter:` route (the weak agency tier) or a `pi:` route; the user
+/// explicitly picks the route for this one role. Per-role overrides always win
+/// over the two-tier (`wg profile pi`) strong/weak key-set, so this is the
+/// escape hatch when a single role needs to diverge from its tier.
+///
+/// The caller (the CLI) is responsible for the daemon hot-reload IPC and the
+/// human-facing echo; this function returns the structured outcome.
+pub fn set_role_model_override(
+    profile: &str,
+    role: &str,
+    model: &str,
+    dry_run: bool,
+) -> Result<RoleModelOverrideOutcome> {
+    use crate::config::{DispatchRole, parse_model_spec_strict};
+
+    let dispatch_role: DispatchRole = role.parse().with_context(|| {
+        format!(
+            "Unknown role '{}'. Valid roles: default, task_agent, evaluator, \
+             flip_inference, flip_comparison, assigner, evolver, verification, \
+             triage, creator, compactor, placer, chat_compactor, reviewer.",
+            role,
+        )
+    })?;
+
+    parse_model_spec_strict(model).with_context(|| {
+        format!(
+            "Invalid model spec '{}'. Use handler-first provider:model format \
+             (e.g., 'claude:opus', 'pi:openrouter/z-ai/glm-5.2', \
+             'openrouter:deepseek/deepseek-chat').",
+            model,
+        )
+    })?;
+
+    let prof = load(profile)?;
+    let dotted = format!("models.{}.model", dispatch_role);
+    let previous = prof
+        .config
+        .models
+        .get_role(dispatch_role)
+        .and_then(|r| r.model.clone());
+    let is_active = active().unwrap_or(None).as_deref() == Some(profile);
+
+    if dry_run {
+        return Ok(RoleModelOverrideOutcome {
+            profile: profile.to_string(),
+            role: dispatch_role.to_string(),
+            dotted,
+            model: model.to_string(),
+            previous,
+            is_active,
+            dry_run: true,
+            wrote_path: None,
+            reapplied_global: false,
+        });
+    }
+
+    let wrote_path = patch_role_model(profile, &dotted, model)?;
+    let mut reapplied_global = false;
+    if is_active {
+        apply_profile_as_global_config(profile)?;
+        reapplied_global = true;
+    }
+
+    Ok(RoleModelOverrideOutcome {
+        profile: profile.to_string(),
+        role: dispatch_role.to_string(),
+        dotted,
+        model: model.to_string(),
+        previous,
+        is_active,
+        dry_run: false,
+        wrote_path: Some(wrote_path),
+        reapplied_global,
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1803,6 +1972,304 @@ assigner_agent = "local-agent"
             let (strong, weak) = cfg.pi_tiers();
             assert_eq!(strong.as_deref(), Some("strong:v1"), "strong untouched");
             assert_eq!(weak.as_deref(), Some("weak:v2"));
+        });
+    }
+
+    #[test]
+    fn test_patch_role_model_overrides_task_agent_preserving_handler_first_pi_route() {
+        // The motivating case for `wg profile set-model`: keep default on GLM
+        // while routing task_agent through a different pi: model. The pi:
+        // handler-first spec is written verbatim (no strong-tier normalization).
+        let _tmp = with_home(|| {
+            // pi.toml absent → seeds from the baked-in starter.
+            let path = patch_role_model(
+                "pi",
+                "models.task_agent.model",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+            )
+            .unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            // Comments survive.
+            assert!(content.contains("PLUGIN INSTALL"));
+            let cfg: Config = toml::from_str(&content).unwrap();
+            // default stays on the starter GLM route (untouched).
+            assert_eq!(
+                cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/z-ai/glm-5.2")
+            );
+            // task_agent now carries the override verbatim, pi: route preserved.
+            assert_eq!(
+                cfg.models
+                    .task_agent
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/deepseek/deepseek-v4-flash")
+            );
+            // The two-tier reader still reports the starter strong (agent.model
+            // is untouched by a per-role override) — per-role wins at dispatch.
+            let (strong, _weak) = cfg.pi_tiers();
+            assert_eq!(strong.as_deref(), Some("pi:openrouter/z-ai/glm-5.2"));
+        });
+    }
+
+    #[test]
+    fn test_patch_role_model_writes_native_openrouter_route_verbatim() {
+        // A weak-tier agency role override keeps its native openrouter: route
+        // (no pi: normalization) — the loud keyless-native fallback stays armed.
+        let _tmp = with_home(|| {
+            let path = patch_role_model(
+                "pi",
+                "models.evaluator.model",
+                "openrouter:deepseek/deepseek-chat",
+            )
+            .unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                cfg.models
+                    .evaluator
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("openrouter:deepseek/deepseek-chat")
+            );
+        });
+    }
+
+    #[test]
+    fn test_patch_role_model_creates_missing_role_table() {
+        // Setting a role whose [models.<role>] section is absent appends a new
+        // table at EOF rather than corrupting an existing one.
+        let _tmp = with_home(|| {
+            // claude starter has no [models.triage]; patching it must add one.
+            let path = patch_role_model("claude", "models.triage.model", "claude:haiku").unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                cfg.models.triage.as_ref().and_then(|m| m.model.as_deref()),
+                Some("claude:haiku")
+            );
+            // And the existing default is untouched.
+            assert_eq!(
+                cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
+                Some("claude:opus")
+            );
+        });
+    }
+
+    // ── set_role_model_override (the `wg profile set-model` core) ──────────────
+
+    #[test]
+    fn test_set_role_model_override_writes_pi_task_agent_verbatim() {
+        // The motivating case: default stays on GLM, task_agent moves to a
+        // different pi: model — written to ~/.wg/profiles/pi.toml verbatim.
+        let _tmp = with_home(|| {
+            let out = set_role_model_override(
+                "pi",
+                "task_agent",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+                false,
+            )
+            .unwrap();
+            assert_eq!(out.role, "task_agent");
+            assert_eq!(out.dotted, "models.task_agent.model");
+            assert_eq!(out.model, "pi:openrouter/deepseek/deepseek-v4-flash");
+            assert!(!out.dry_run);
+            assert!(out.wrote_path.is_some());
+
+            let cfg: Config =
+                toml::from_str(&std::fs::read_to_string(&out.wrote_path.unwrap()).unwrap())
+                    .unwrap();
+            assert_eq!(
+                cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/z-ai/glm-5.2"),
+                "default must stay on the starter GLM route"
+            );
+            assert_eq!(
+                cfg.models
+                    .task_agent
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                "task_agent override written verbatim (pi: route preserved)"
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_dry_run_writes_nothing() {
+        let _tmp = with_home(|| {
+            let out = set_role_model_override(
+                "pi",
+                "task_agent",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+                true,
+            )
+            .unwrap();
+            assert!(out.dry_run);
+            assert!(out.wrote_path.is_none());
+            let path = profile_path("pi").unwrap();
+            assert!(
+                !path.exists(),
+                "dry run must not materialize the profile file"
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_rejects_invalid_role() {
+        let _tmp = with_home(|| {
+            let err =
+                set_role_model_override("pi", "not_a_role", "claude:opus", false).unwrap_err();
+            assert!(err.to_string().contains("Unknown role"));
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_rejects_bare_model_name() {
+        // A bare model name (no handler prefix) is rejected by the strict
+        // parser — handler-first form is required.
+        let _tmp = with_home(|| {
+            let err = set_role_model_override("pi", "task_agent", "opus", false).unwrap_err();
+            assert!(err.to_string().contains("Invalid model spec"));
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_reapplies_when_active() {
+        // When the edited profile is active, the override must land in the
+        // materialized ~/.wg/config.toml too (so `wg config --models` shows it).
+        let _tmp = with_home(|| {
+            apply_profile_as_global_config("pi").unwrap();
+            set_active(Some("pi")).unwrap();
+
+            let out = set_role_model_override(
+                "pi",
+                "task_agent",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+                false,
+            )
+            .unwrap();
+            assert!(out.is_active);
+            assert!(
+                out.reapplied_global,
+                "active profile must re-apply global config"
+            );
+
+            let global = Config::global_config_path().unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&global).unwrap()).unwrap();
+            assert_eq!(
+                cfg.models
+                    .task_agent
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                "active profile override must be re-applied to the global config"
+            );
+            assert_eq!(
+                cfg.models.default.as_ref().and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/z-ai/glm-5.2"),
+                "default stays on GLM in the global config"
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_does_not_reapply_when_inactive() {
+        let _tmp = with_home(|| {
+            // pi not active (no active-pointer file).
+            let out = set_role_model_override(
+                "pi",
+                "task_agent",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+                false,
+            )
+            .unwrap();
+            assert!(!out.is_active);
+            assert!(!out.reapplied_global);
+            // Global config must NOT exist (nothing re-applied).
+            assert!(!Config::global_config_path().unwrap().exists());
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_survives_profile_use_round_trip() {
+        // Validation criterion: switching away (codex) and back (pi) preserves
+        // the Pi profile override. The override lives in the profile FILE, so a
+        // round-trip through `apply_profile_as_global_config` must restore it.
+        let _tmp = with_home(|| {
+            set_role_model_override(
+                "pi",
+                "task_agent",
+                "pi:openrouter/deepseek/deepseek-v4-flash",
+                false,
+            )
+            .unwrap();
+
+            // Switch away to codex (materializes + applies codex starter).
+            apply_profile_as_global_config("codex").unwrap();
+            set_active(Some("codex")).unwrap();
+            let codex_cfg: Config = toml::from_str(
+                &std::fs::read_to_string(&Config::global_config_path().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                codex_cfg
+                    .models
+                    .task_agent
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("codex:gpt-5.5"),
+                "codex is active — task_agent must be codex's"
+            );
+
+            // Switch back to pi — the override must survive in the file.
+            apply_profile_as_global_config("pi").unwrap();
+            set_active(Some("pi")).unwrap();
+            let pi_cfg: Config = toml::from_str(
+                &std::fs::read_to_string(&Config::global_config_path().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                pi_cfg
+                    .models
+                    .task_agent
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/deepseek/deepseek-v4-flash"),
+                "pi override must survive the codex round-trip"
+            );
+            assert_eq!(
+                pi_cfg
+                    .models
+                    .default
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("pi:openrouter/z-ai/glm-5.2"),
+                "default still on GLM after round-trip"
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_role_model_override_preserves_native_openrouter_route() {
+        // A weak-tier agency role override keeps its native openrouter: route
+        // (no pi: normalization) — the loud keyless-native fallback stays armed.
+        let _tmp = with_home(|| {
+            set_role_model_override(
+                "pi",
+                "evaluator",
+                "openrouter:deepseek/deepseek-chat",
+                false,
+            )
+            .unwrap();
+            let cfg: Config =
+                toml::from_str(&std::fs::read_to_string(&profile_path("pi").unwrap()).unwrap())
+                    .unwrap();
+            assert_eq!(
+                cfg.models
+                    .evaluator
+                    .as_ref()
+                    .and_then(|m| m.model.as_deref()),
+                Some("openrouter:deepseek/deepseek-chat")
+            );
         });
     }
 }

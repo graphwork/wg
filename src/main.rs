@@ -2597,6 +2597,20 @@ fn main() -> Result<()> {
                 dry_run,
                 no_reload,
             ),
+            ProfileCommands::SetModel {
+                profile,
+                role,
+                model,
+                dry_run,
+                no_reload,
+            } => commands::profile_cmd::set_model_profile(
+                &workgraph_dir,
+                &profile,
+                &role,
+                &model,
+                dry_run,
+                no_reload,
+            ),
         },
         Commands::Config {
             cmd: config_subcmd,

@@ -4484,6 +4484,43 @@ pub enum ProfileCommands {
         #[arg(long)]
         no_reload: bool,
     },
+    /// Set a per-role model override inside a named profile file.
+    ///
+    /// Updates `~/.wg/profiles/<profile>.toml` (the durable named-profile
+    /// definition), not just the materialized `~/.wg/config.toml`. When the
+    /// edited profile is the active one, it is re-applied as the global
+    /// config and the daemon is hot-reloaded so the next spawned worker sees
+    /// the change. Handler-first model specs are preserved exactly — a
+    /// `pi:openrouter/...` route stays a `pi:` route.
+    ///
+    ///   wg profile set-model pi task_agent pi:openrouter/deepseek/deepseek-v4-flash
+    ///
+    /// This is user-global profile state: it affects every project on this
+    /// host that activates the profile. Use `--dry-run` to preview. Per-role
+    /// overrides always win over the two-tier (`wg profile pi`) strong/weak
+    /// key-set, so this command is the escape hatch when a single role needs
+    /// to diverge from its tier.
+    SetModel {
+        /// Named profile to edit (e.g., pi, claude, codex, nex).
+        profile: String,
+
+        /// Dispatch role (e.g., default, task_agent, evaluator, assigner,
+        /// flip_inference, flip_comparison, evolver, verification, triage,
+        /// creator, compactor, placer, chat_compactor, reviewer).
+        role: String,
+
+        /// Model spec in handler-first form (e.g., `claude:opus`,
+        /// `pi:openrouter/z-ai/glm-5.2`, `openrouter:deepseek/deepseek-chat`).
+        model: String,
+
+        /// Print what would change without writing any files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Stage the write without hot-reloading the running daemon.
+        #[arg(long)]
+        no_reload: bool,
+    },
 }
 
 #[derive(Subcommand)]

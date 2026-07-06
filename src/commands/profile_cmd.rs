@@ -309,6 +309,19 @@ pub fn show(
         let prof = named_profile::load(name)?;
         let path = named_profile::profile_path(name)?;
         if json {
+            let mut models_map = serde_json::Map::new();
+            if let Some(ref d) = prof.config.models.default {
+                if let Some(ref m) = d.model {
+                    models_map.insert("default".to_string(), serde_json::Value::String(m.clone()));
+                }
+            }
+            for role in worksgood::config::DispatchRole::ALL {
+                if let Some(rc) = prof.config.models.get_role(*role) {
+                    if let Some(ref m) = rc.model {
+                        models_map.insert(role.to_string(), serde_json::Value::String(m.clone()));
+                    }
+                }
+            }
             let val = serde_json::json!({
                 "name": name,
                 "description": prof.description,
@@ -319,6 +332,7 @@ pub fn show(
                     "standard": prof.config.tiers.standard,
                     "premium": prof.config.tiers.premium,
                 },
+                "models": models_map,
                 "file": path.display().to_string(),
             });
             println!("{}", serde_json::to_string_pretty(&val)?);
@@ -341,26 +355,26 @@ pub fn show(
             if let Some(ref p) = prof.config.tiers.premium {
                 println!("  tiers.premium    = \"{}\"", p);
             }
-            if let Some(ref m) = prof.config.models.evaluator {
-                if let Some(ref ms) = m.model {
-                    println!("  models.evaluator.model       = \"{}\"", ms);
+            // Surface every per-role model override (default + all DispatchRole
+            // variants), not just the four agency one-shots, so `wg profile show
+            // <name>` reflects a `wg profile set-model <name> <role> <model>`
+            // override (e.g. task_agent on a different model than default).
+            let mut printed_any_role = false;
+            if let Some(ref d) = prof.config.models.default {
+                if let Some(ref ms) = d.model {
+                    println!("  models.default.model          = \"{}\"", ms);
+                    printed_any_role = true;
                 }
             }
-            if let Some(ref m) = prof.config.models.assigner {
-                if let Some(ref ms) = m.model {
-                    println!("  models.assigner.model        = \"{}\"", ms);
+            for role in worksgood::config::DispatchRole::ALL {
+                if let Some(rc) = prof.config.models.get_role(*role) {
+                    if let Some(ref ms) = rc.model {
+                        println!("  models.{:<19} = \"{}\"", format!("{}.model", role), ms);
+                        printed_any_role = true;
+                    }
                 }
             }
-            if let Some(ref m) = prof.config.models.flip_inference {
-                if let Some(ref ms) = m.model {
-                    println!("  models.flip_inference.model  = \"{}\"", ms);
-                }
-            }
-            if let Some(ref m) = prof.config.models.flip_comparison {
-                if let Some(ref ms) = m.model {
-                    println!("  models.flip_comparison.model = \"{}\"", ms);
-                }
-            }
+            let _ = printed_any_role;
             for endpoint in &prof.config.llm_endpoints.endpoints {
                 println!(
                     "  endpoint: {} ({}) url={}",
@@ -1411,9 +1425,112 @@ pub fn pi(
     Ok(())
 }
 
-/// Send a Reconfigure to the daemon and return a one-line note describing the
-/// outcome (rather than printing it, so the set echo controls ordering).
-fn daemon_reload_note(dir: &Path) -> String {
+// ── Per-role model override (`wg profile set-model`) ────────────────────────
+
+/// Set a per-role model override inside a named profile file.
+///
+/// Updates `~/.wg/profiles/<profile>.toml` (the durable named-profile
+/// definition) via the comment-preserving line patcher, then — when the edited
+/// profile is the active one — re-applies it as the global config and
+/// hot-reloads the daemon so the next spawned worker picks up the change.
+///
+/// Handler-first model specs are validated with `parse_model_spec_strict` and
+/// preserved exactly: a `pi:openrouter/...` route stays a `pi:` route (we do
+/// NOT run the strong-tier `pi_strong_route` normalization, because this is a
+/// per-role override, not the two-tier strong setter — the user explicitly
+/// picks the route for this one role).
+///
+/// This is user-global profile state: it affects every project on this host
+/// that activates the profile. Per-role overrides always win over the two-tier
+/// (`wg profile pi`) strong/weak key-set, so this is the escape hatch when a
+/// single role needs to diverge from its tier.
+pub fn set_model_profile(
+    dir: &Path,
+    profile: &str,
+    role: &str,
+    model: &str,
+    dry_run: bool,
+    no_reload: bool,
+) -> Result<()> {
+    let outcome = named_profile::set_role_model_override(profile, role, model, dry_run)?;
+
+    if dry_run {
+        println!("DRY RUN — no files written.");
+        println!(
+            "Set {} in profile '{}' ({})",
+            outcome.dotted,
+            outcome.profile,
+            named_profile::profile_path(&outcome.profile)?.display()
+        );
+        println!("  {} → {}", outcome.role, outcome.model);
+        println!(
+            "  (was: {})",
+            outcome
+                .previous
+                .as_deref()
+                .unwrap_or("(unset — would be created)")
+        );
+        if outcome.is_active {
+            println!(
+                "  profile '{}' is active — would re-apply as global config and \
+                 hot-reload the daemon.",
+                outcome.profile
+            );
+        } else {
+            println!(
+                "  profile '{}' is NOT active — takes effect on `wg profile use {}`.",
+                outcome.profile, outcome.profile
+            );
+        }
+        println!();
+        println!("Apply with:");
+        println!(
+            "  wg profile set-model {} {} {}",
+            outcome.profile, outcome.role, outcome.model
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Set {} = \"{}\" in profile '{}'",
+        outcome.dotted, outcome.model, outcome.profile,
+    );
+    if let Some(ref p) = outcome.wrote_path {
+        println!("  Wrote {}", p.display());
+    }
+    println!(
+        "  (was: {})",
+        outcome.previous.as_deref().unwrap_or("(unset — created)")
+    );
+    println!();
+    println!(
+        "  This is user-global profile state (~/.wg/profiles/{}.toml).",
+        outcome.profile
+    );
+    println!("  Per-role overrides win over the two-tier (wg profile pi) strong/weak key-set.");
+
+    if outcome.reapplied_global {
+        if no_reload {
+            println!(
+                "  staged (--no-reload): applies on next `wg service start` \
+                 (global config already updated)."
+            );
+        } else {
+            println!("  {}", daemon_reload_note_for(dir, &outcome.profile));
+        }
+    } else {
+        println!(
+            "  '{}' is not the active profile — takes effect on `wg profile use {}`.",
+            outcome.profile, outcome.profile
+        );
+    }
+
+    Ok(())
+}
+
+/// Send a Reconfigure to the daemon for a profile role-override write and
+/// return a one-line note describing the outcome.
+fn daemon_reload_note_for(dir: &Path, profile: &str) -> String {
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::{self, ServiceState};
     use worksgood::service::is_process_alive;
@@ -1427,19 +1544,26 @@ fn daemon_reload_note(dir: &Path) -> String {
         executor: None,
         poll_interval: None,
         model: None,
-        profile: Some(PI_PROFILE_NAME.to_string()),
+        profile: Some(profile.to_string()),
     };
     match service::send_request(dir, &req) {
-        Ok(resp) if resp.ok => {
-            "daemon reloaded — next worker uses the new tiers (in-flight workers keep theirs)"
-                .to_string()
-        }
+        Ok(resp) if resp.ok => "daemon reloaded — next worker uses the new role override \
+             (in-flight workers keep theirs)"
+            .to_string(),
         Ok(resp) => format!(
             "warning: daemon reconfigure returned error: {}",
             resp.error.unwrap_or_default()
         ),
         Err(e) => format!("warning: could not reach daemon: {e}. Applies on next start"),
     }
+}
+
+/// Send a Reconfigure to the daemon for the Pi two-tier write and return a
+/// one-line note describing the outcome (rather than printing it, so the set
+/// echo controls ordering). Delegates to [`daemon_reload_note_for`] with the
+/// Pi profile name.
+fn daemon_reload_note(dir: &Path) -> String {
+    daemon_reload_note_for(dir, PI_PROFILE_NAME)
 }
 
 /// Render the annotation for a tier line: `(old → new)`, `(unchanged)`, or
@@ -1833,4 +1957,15 @@ mod tests {
         );
         assert_eq!(pi_tier_annotation(&None, &Some(s("b")), true), "(new)");
     }
+
+    // ── wg profile set-model ──────────────────────────────────────────────────
+    //
+    // The HOME-mutating behavioural tests (file write, re-apply-when-active,
+    // codex round-trip preservation, dry-run, invalid role/model rejection)
+    // live in `profile::named::tests` against `set_role_model_override` — the
+    // lib core — so they run in the lib's single test process alongside the
+    // other `with_home` tests. Putting them here (bin unit tests) would spin
+    // up a second test binary that mutates `HOME` concurrently with the lib
+    // binary and race on the `~/.wg` global paths. The bin wrapper is a thin
+    // printing shell over the lib core, so the lib tests cover the behaviour.
 }
