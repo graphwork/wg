@@ -19,6 +19,7 @@ See `docs/KEY_DOCS.md` for the canonical list of documentation files to keep in 
 
 ```
 cargo install --path . --locked # rebuild global wg and nex binaries
+source ./env.sh && cargo install --force --path . --locked # Guix checkout env
 wg service stop                 # stop before rebuilding
 cargo test                      # run tests
 typst compile docs/manual/wg-manual.typ   # rebuild manual PDF

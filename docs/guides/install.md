@@ -140,6 +140,13 @@ Contributor checkouts can also keep using:
 cargo install --path . --locked
 ```
 
+If your system uses Guix, source the checkout environment first so Cargo sees
+the compiler, linker, and native library search paths from `manifest.scm`:
+
+```bash
+source ./env.sh && cargo install --force --path . --locked
+```
+
 Use `wg dev-check` after a source install to detect branch or binary freshness
 drift.
 
