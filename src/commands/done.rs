@@ -4,8 +4,8 @@ use std::path::Path;
 use worksgood::agency::capture_task_output;
 use worksgood::config::{Config, CoordinatorConfig};
 use worksgood::graph::{
-    LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
-    parse_wg_tokens, user_board_handle, user_board_seq,
+    FailureClass, LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration,
+    parse_token_usage, parse_wg_tokens, user_board_handle, user_board_seq,
 };
 use worksgood::graph::{Task, parse_delay};
 use worksgood::parser::modify_graph;
@@ -1497,6 +1497,50 @@ fn run_inner(
         check_agent_git_hygiene(dir, id, &tags);
     }
 
+    // Deliverable preflight (guardrail G1): before the smoke gate, parse a
+    // `## Deliverables` block (path-like `## Validation` lines as fallback)
+    // from the task description. If any named filesystem deliverable is
+    // absent/empty or any `registry:<file>:<id>` deliverable is missing,
+    // refuse `wg done` with a machine-readable `deliverable-missing` failure
+    // class instead of promoting a no-deliverable run to Done. Tasks with no
+    // parsed deliverables are unaffected (no regression for research/review).
+    let project_root = dir.parent().unwrap_or(dir);
+    let deliverables = graph
+        .get_task(id)
+        .and_then(|t| t.description.clone())
+        .map(|d| super::deliverables::parse_deliverables(&d))
+        .unwrap_or_default();
+    if !deliverables.is_empty() {
+        let report = super::deliverables::preflight(&deliverables, project_root);
+        if !report.is_clean() {
+            let id_owned = id.to_string();
+            let reason = format!("missing deliverables:\n{}", report.missing_summary());
+            let reason_for_log = reason.clone();
+            modify_graph(&path, |g| {
+                if let Some(t) = g.get_task_mut(&id_owned) {
+                    t.failure_class = Some(FailureClass::DeliverableMissing);
+                    t.failure_reason = Some(reason_for_log.clone());
+                    t.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("deliverable-preflight".to_string()),
+                        user: Some(worksgood::current_user()),
+                        message: format!("wg done refused: {}", reason_for_log),
+                    });
+                }
+                true
+            })
+            .context("Failed to save deliverable-preflight refusal")?;
+            super::notify_graph_changed(dir);
+            anyhow::bail!(
+                "Cannot mark '{}' as done: deliverable preflight refused — \
+                 required deliverables were not produced. `wg done` will keep \
+                 refusing until these exist and are non-empty:\n{}",
+                id,
+                report.missing_summary()
+            );
+        }
+    }
+
     // Smoke gate: a task cannot be marked done while a regression-protecting
     // smoke scenario it owns is failing. Refuse the agent escape hatch unless
     // a separate override is set, so an agent can't smother a real regression
@@ -2379,6 +2423,14 @@ fn run_inner(
         task.completed_at = Some(Utc::now().to_rfc3339());
         if target_status == Status::PendingEval {
             transitioned_to_pending_eval = true;
+        }
+
+        // Clear any prior deliverable-preflight refusal marker now that the
+        // run has produced its deliverables and is being promoted out of
+        // InProgress (guardrail G1 cleanup).
+        if task.failure_class == Some(FailureClass::DeliverableMissing) {
+            task.failure_class = None;
+            task.failure_reason = None;
         }
 
         if converged_accepted && !task.tags.contains(&"converged".to_string()) {
@@ -4566,5 +4618,141 @@ mod tests {
         // Non-chat tags do not skip — but with no git repo at the parent
         // dir the function silently no-ops, which is fine for this test.
         check_agent_git_hygiene(dir_path, "regular-task", &["other".to_string()]);
+    }
+
+    // ---- Deliverable preflight (guardrail G1) ----
+    //
+    // These tests use a nested layout: `project_root/.wg/graph.jsonl` so
+    // that deliverable paths resolve against `project_root` (==
+    // `wg_dir.parent()`), matching production where `wg done` runs against
+    // the `.wg` dir inside a repo root.
+    fn setup_with_project_root(project_root: &Path, tasks: Vec<worksgood::graph::Task>) -> PathBuf {
+        let wg_dir = project_root.join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        setup_workgraph(&wg_dir, tasks)
+    }
+
+    fn task_with_desc(id: &str, desc: &str) -> worksgood::graph::Task {
+        let mut t = make_task(id, id, Status::InProgress);
+        t.description = Some(desc.to_string());
+        t
+    }
+
+    #[test]
+    fn done_refuses_missing_deliverable() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Description\nRefresh the e97 seed.\n\n## Deliverables\n- latest.pt\n- seed/manifest.json\n- registry:registry.json:e97\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+
+        let wg_dir = project_root.join(".wg");
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"), "got: {err}");
+        assert!(err.contains("latest.pt"));
+        assert!(err.contains("seed/manifest.json"));
+        assert!(err.contains("registry:registry.json:e97"));
+
+        // Refusal recorded with class deliverable-missing; status unchanged.
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.failure_class, Some(FailureClass::DeliverableMissing));
+        assert!(
+            task.failure_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("latest.pt")
+        );
+        assert!(
+            task.log
+                .iter()
+                .any(|e| e.actor == Some("deliverable-preflight".to_string()))
+        );
+    }
+
+    #[test]
+    fn done_passes_when_deliverables_present() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        std::fs::write(project_root.join("latest.pt"), b"checkpoint").unwrap();
+        std::fs::create_dir_all(project_root.join("seed")).unwrap();
+        std::fs::write(project_root.join("seed/manifest.json"), b"{}").unwrap();
+        std::fs::write(project_root.join("registry.json"), b"{\"e97\": true}").unwrap();
+
+        let desc = "## Description\nRefresh the e97 seed.\n\n## Deliverables\n- latest.pt\n- seed/manifest.json\n- registry:registry.json:e97\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+
+        let wg_dir = project_root.join(".wg");
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        // Prior-refusal marker is cleared on success.
+        assert_eq!(task.failure_class, None);
+        assert_eq!(task.failure_reason, None);
+    }
+
+    #[test]
+    fn done_clears_prior_deliverable_missing_marker_on_success() {
+        // First refuse (no deliverables), then produce them and re-run.
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Deliverables\n- latest.pt\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+        let wg_dir = project_root.join(".wg");
+
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.failure_class, Some(FailureClass::DeliverableMissing));
+
+        // Now produce the deliverable.
+        std::fs::write(project_root.join("latest.pt"), b"ok").unwrap();
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.failure_class, None);
+    }
+
+    #[test]
+    fn done_ignores_tasks_without_deliverables() {
+        // No `## Deliverables` block; `## Validation` is a rubric, not a file
+        // list. Preflight must be a no-op (no regression for research/review).
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Description\nResearch the design.\n\n## Validation\n- write a structured report\n- cite specific files\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+        let wg_dir = project_root.join(".wg");
+
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_ok(), "got: {:?}", result.err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.failure_class, None);
+    }
+
+    #[test]
+    fn done_refuses_empty_deliverable_file() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        // File exists but is empty.
+        std::fs::write(project_root.join("latest.pt"), b"").unwrap();
+        let desc = "## Deliverables\n- latest.pt\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+        let wg_dir = project_root.join(".wg");
+
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"));
+        assert!(err.contains("latest.pt"));
     }
 }

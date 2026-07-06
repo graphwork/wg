@@ -43,6 +43,7 @@ pub mod critical_path;
 pub mod cron_cmd;
 pub mod cycles;
 pub mod dead_agents;
+pub mod deliverables;
 pub mod dev_check;
 pub mod discover;
 pub mod doctor;

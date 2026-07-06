@@ -851,6 +851,9 @@ fn print_human_readable(details: &TaskDetails) {
                 "executor/tool configuration failed before useful work began — fix executor config, then retry deliberately"
             }
             WrapperInternal => "wrapper-side issue — inspect the wrapper log (output.log)",
+            DeliverableMissing => {
+                "agent exited cleanly but produced none of the named deliverables — re-run and produce the required files/ids"
+            }
         };
         println!("  hint: {}", hint);
     }

@@ -4285,6 +4285,7 @@ fn parse_failure_class(s: &str) -> Option<worksgood::graph::FailureClass> {
         "agent-exit-nonzero" => Some(FailureClass::AgentExitNonzero),
         "executor-config" => Some(FailureClass::ExecutorConfig),
         "wrapper-internal" => Some(FailureClass::WrapperInternal),
+        "deliverable-missing" => Some(FailureClass::DeliverableMissing),
         _ => None,
     }
 }

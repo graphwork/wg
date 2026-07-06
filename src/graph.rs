@@ -145,6 +145,11 @@ pub enum FailureClass {
     ExecutorConfig,
     /// Wrapper-side issue (e.g., missing raw_stream.jsonl). Inspect wrapper log.
     WrapperInternal,
+    /// Agent exited cleanly / called `wg done` but produced none of the
+    /// deliverables named in its `## Deliverables` (or path-like `## Validation`)
+    /// block. A real, retryable failure — does NOT suppress cycle-failure-
+    /// restart. Pairs with the deliverable preflight at `wg done` (guardrail G1).
+    DeliverableMissing,
 }
 
 impl std::fmt::Display for FailureClass {
@@ -157,6 +162,7 @@ impl std::fmt::Display for FailureClass {
             FailureClass::AgentExitNonzero => "agent-exit-nonzero",
             FailureClass::ExecutorConfig => "executor-config",
             FailureClass::WrapperInternal => "wrapper-internal",
+            FailureClass::DeliverableMissing => "deliverable-missing",
         };
         write!(f, "{}", s)
     }
@@ -3009,6 +3015,18 @@ mod tests {
             title: title.to_string(),
             ..Task::default()
         }
+    }
+
+    #[test]
+    fn test_failure_class_deliverable_missing_kebab_and_not_suppressing() {
+        assert_eq!(
+            FailureClass::DeliverableMissing.to_string(),
+            "deliverable-missing"
+        );
+        // DeliverableMissing is a real, retryable failure — it must NOT
+        // suppress cycle-failure-restart (only ExecutorConfig does).
+        assert!(!FailureClass::DeliverableMissing.suppresses_cycle_failure_restart());
+        assert!(FailureClass::ExecutorConfig.suppresses_cycle_failure_restart());
     }
 
     #[test]
