@@ -256,7 +256,17 @@ pub fn resolve_handler(
     let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, &chat_ref);
     let journal_exists = chat_dir.join("conversation.jsonl").exists();
 
-    let model = Some(plan.model.raw.clone());
+    let plain_pi_chat = task
+        .tags
+        .iter()
+        .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+        && task.executor_preset_name.as_deref() == Some("pi")
+        && task.model.as_deref().is_none_or(|m| m.trim().is_empty());
+    let model = if plain_pi_chat && plan.executor == ExecutorKind::Pi {
+        None
+    } else {
+        Some(plan.model.raw.clone())
+    };
     let endpoint = plan.endpoint.as_ref().map(|e| e.name.clone());
 
     Ok(match plan.executor {
@@ -816,6 +826,62 @@ mod tests {
                 preview
             );
         });
+    }
+
+    #[test]
+    #[serial]
+    fn plain_pi_chat_does_not_inherit_config_model() {
+        with_env(Some("pi"), Some("pi:lunaroute:glm-5.2-nvfp4"), || {
+            let dir = tempfile::tempdir().unwrap();
+            let mut task = mktask(".chat-0");
+            task.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
+            task.executor_preset_name = Some("pi".to_string());
+
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            let preview = spec.command_preview();
+            match spec {
+                HandlerSpec::Pi { model, chat_ref } => {
+                    assert_eq!(chat_ref, "chat-0");
+                    assert_eq!(
+                        model, None,
+                        "plain Pi chat should not inherit WG_MODEL/config route"
+                    );
+                }
+                other => panic!("expected Pi handler, got {}", other.command_preview()),
+            }
+            assert_eq!(preview, "wg pi-handler --chat chat-0");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_pi_chat_model_is_preserved() {
+        with_env(
+            Some("pi"),
+            Some("pi:openrouter:anthropic/claude-haiku-4-5"),
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let mut task = mktask(".chat-1");
+                task.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
+                task.executor_preset_name = Some("pi".to_string());
+                task.model = Some("pi:lunaroute:glm-5.2-nvfp4".to_string());
+
+                let spec = resolve_handler(dir.path(), &task, None).unwrap();
+                let preview = spec.command_preview();
+                match spec {
+                    HandlerSpec::Pi { model, chat_ref } => {
+                        assert_eq!(chat_ref, "chat-1");
+                        assert_eq!(model.as_deref(), Some("lunaroute:glm-5.2-nvfp4"));
+                    }
+                    other => panic!("expected Pi handler, got {}", other.command_preview()),
+                }
+                assert!(
+                    preview.contains("-m lunaroute:glm-5.2-nvfp4"),
+                    "{}",
+                    preview
+                );
+            },
+        );
     }
 
     #[test]

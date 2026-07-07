@@ -22,13 +22,15 @@
 //! (prefer A when a `pi` binary is present — smallest delta; else B when the
 //! Node host + built bundle are present). `WG_PI_TOPOLOGY=rpc|node` forces one.
 //!
-//! ## Explicit-model contract
+//! ## Plain Pi and explicit model overrides
 //!
-//! Like the opencode handler, this ALWAYS resolves the model explicitly and
-//! refuses to start without one — it never lets pi fall back to its own default.
-//! The model becomes pi's `--provider <p> --model <m>` pair ([`pi_model_arg`]);
-//! credentials are supplied by environment only (`OPENROUTER_API_KEY` /
-//! `ANTHROPIC_API_KEY` / …), **never** via `--api-key`.
+//! A plain Pi chat may omit WG model routing entirely. In that case WG still
+//! loads the integration plumbing (`--mode rpc`, the embedded plugin, session
+//! ids/dirs), but does not pass `--provider` / `--model`; Pi uses its own
+//! configured/default model. When the user explicitly pins a model, it becomes
+//! pi's `--provider <p> --model <m>` pair ([`pi_model_arg`]); credentials are
+//! supplied by environment only (`OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` /
+//! …), **never** via `--api-key`.
 //!
 //! ## LF-only RPC framing
 //!
@@ -442,11 +444,11 @@ struct RpcTransport {
 
 impl RpcTransport {
     /// Spawn `pi --mode rpc` through [`PtyTerminalHost::open_protocol`] with
-    /// the resolved provider/model and a per-chat session dir (so a
+    /// the optional resolved provider/model and a per-chat session dir (so a
     /// crash/restart resumes the same `--session-id`).
     fn spawn(
         pi_binary: &Path,
-        marg: &PiModelArg,
+        marg: Option<&PiModelArg>,
         session_id: &str,
         session_dir: &Path,
         dist_entry: &Path,
@@ -591,8 +593,9 @@ impl Drop for RpcTransport {
 }
 
 /// Build the argv (excluding the `pi` binary) for a `--mode rpc` spawn. Factored
-/// out so tests can assert the model is always present, credentials are never
-/// passed via `--api-key`, and the hermetic plugin flags are present.
+/// out so tests can assert explicit models are represented, plain Pi omits
+/// provider/model flags, credentials are never passed via `--api-key`, and the
+/// hermetic plugin flags are present.
 ///
 /// `-e <dist_entry>` loads EXACTLY the embedded/version-locked plugin build by
 /// absolute path; `-ne` (`--no-extensions`) disables all discovery so neither a
@@ -602,18 +605,21 @@ impl Drop for RpcTransport {
 /// — closing the drift where Topology A relied on an ambient global plugin that
 /// was never installed.
 fn rpc_spawn_args(
-    marg: &PiModelArg,
+    marg: Option<&PiModelArg>,
     session_id: &str,
     session_dir: &Path,
     dist_entry: &Path,
 ) -> Vec<String> {
-    vec![
-        "--mode".to_string(),
-        "rpc".to_string(),
-        "--provider".to_string(),
-        marg.provider.clone(),
-        "--model".to_string(),
-        marg.model.clone(),
+    let mut args = vec!["--mode".to_string(), "rpc".to_string()];
+    if let Some(marg) = marg {
+        args.extend([
+            "--provider".to_string(),
+            marg.provider.clone(),
+            "--model".to_string(),
+            marg.model.clone(),
+        ]);
+    }
+    args.extend([
         "--session-id".to_string(),
         session_id.to_string(),
         "--session-dir".to_string(),
@@ -623,7 +629,8 @@ fn rpc_spawn_args(
         "-e".to_string(),
         dist_entry.to_string_lossy().to_string(),
         "-ne".to_string(),
-    ]
+    ]);
+    args
 }
 
 // --- Topology B: `node wg-pi-host.mjs` ---------------------------------------
@@ -645,7 +652,7 @@ impl NodeHostTransport {
     /// host loads the plugin in-process and bridges its event bus to stdio.
     fn spawn(
         host: &PiNodeHost,
-        marg: &PiModelArg,
+        marg: Option<&PiModelArg>,
         secret_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
@@ -660,10 +667,13 @@ impl NodeHostTransport {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::inherit());
         // The plugin/host reads provider+model + credentials from the
-        // environment (never an --api-key flag). Pass the resolved route so a
-        // future host can register the matching provider.
-        cmd.env("WG_PI_PROVIDER", &marg.provider);
-        cmd.env("WG_PI_MODEL", &marg.model);
+        // environment (never an --api-key flag) only when the user explicitly
+        // pinned a WG model route. Plain Pi chats leave these unset so Pi can
+        // use its own configured/default model.
+        if let Some(marg) = marg {
+            cmd.env("WG_PI_PROVIDER", &marg.provider);
+            cmd.env("WG_PI_MODEL", &marg.model);
+        }
         // WG-resolved endpoint/secret env (WG_API_KEY, WG_ENDPOINT_URL,
         // WG_PI_API_KEY, WG_PI_BASE_URL, OPENROUTER_API_KEY, …). Credentials
         // by env ONLY — never argv, never logged.
@@ -909,16 +919,14 @@ pub fn run(
 ) -> Result<()> {
     let _ = resume; // pi keeps server-side session state; we resume via --session-dir.
 
-    // Explicit-model contract: refuse to start without a resolved model rather
-    // than silently inheriting pi's internal default.
-    let marg = pi_model_arg(model).ok_or_else(|| {
-        anyhow::anyhow!(
-            "pi-handler requires an explicitly resolved model, but model resolution produced \
-             none. Pin a model on the chat/task (e.g. `pi:openrouter/anthropic/claude-3.5-haiku`), \
-             the active profile, or `[dispatcher].model` — this handler will not fall back to \
-             pi's default."
-        )
-    })?;
+    let explicit_model = model.is_some_and(|m| !m.trim().is_empty());
+    let marg = pi_model_arg(model);
+    if explicit_model && marg.is_none() {
+        anyhow::bail!(
+            "pi-handler could not resolve a provider/model from explicit model {:?}",
+            model
+        );
+    }
 
     let chat_dir = chat::chat_dir_for_ref(workgraph_dir, chat_ref);
     std::fs::create_dir_all(&chat_dir)
@@ -960,15 +968,18 @@ pub fn run(
     // credentials from WG config, NOT from ambient env or Pi's own login. This
     // is the WG contract — a configured WG endpoint/key is sufficient.
     let config = Config::load_or_default(workgraph_dir);
-    let secret = PiEndpointSecret::resolve(&config, workgraph_dir, &marg.provider);
+    let secret = marg
+        .as_ref()
+        .map(|marg| PiEndpointSecret::resolve(&config, workgraph_dir, &marg.provider))
+        .unwrap_or_default();
     logger.info(&format!(
         "pi-handler: WG endpoint/secret resolved: provider={:?}, has_key={}, has_base_url={} (env injection only — never argv, never logged)",
         secret.provider, secret.has_key(), secret.base_url.is_some()
     ));
-    if !secret.has_key() {
+    if marg.is_some() && !secret.has_key() {
         logger.warn(&format!(
             "pi-handler: no WG-resolved API key for provider {:?}; pi will only succeed if it has its own credentials (NOT the WG contract)",
-            marg.provider
+            marg.as_ref().map(|m| m.provider.as_str())
         ));
     }
     // Child env = WG-resolved credentials + the plugin tripwire/locator env +
@@ -981,8 +992,8 @@ pub fn run(
     ));
 
     logger.info(&format!(
-        "pi-handler starting: chat_ref={}, role={:?}, model={:?} -> provider={}/model={}, topology={:?}",
-        chat_ref, role, model, marg.provider, marg.model, topology
+        "pi-handler starting: chat_ref={}, role={:?}, model={:?} -> provider/model={:?}, topology={:?}",
+        chat_ref, role, model, marg.as_ref().map(|m| (&m.provider, &m.model)), topology
     ));
 
     let system_prompt = build_handler_system_prompt(workgraph_dir, chat_ref, role);
@@ -999,7 +1010,7 @@ pub fn run(
                 .expect("rpc topology implies a pi binary");
             Box::new(RpcTransport::spawn(
                 pi,
-                &marg,
+                marg.as_ref(),
                 chat_ref,
                 &session_dir,
                 &plugin.dist_entry,
@@ -1012,7 +1023,12 @@ pub fn run(
                 .node_host
                 .as_ref()
                 .expect("node-host topology implies a host triple");
-            Box::new(NodeHostTransport::spawn(host, &marg, &secret_env, &logger)?)
+            Box::new(NodeHostTransport::spawn(
+                host,
+                marg.as_ref(),
+                &secret_env,
+                &logger,
+            )?)
         }
     };
 
@@ -1310,8 +1326,13 @@ mod tests {
             model: "anthropic/claude-3.5-haiku".into(),
         };
         let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
-        let args = rpc_spawn_args(&marg, "coordinator-1", Path::new("/tmp/pi-sessions"), dist);
-        // Model + provider are always present and explicit.
+        let args = rpc_spawn_args(
+            Some(&marg),
+            "coordinator-1",
+            Path::new("/tmp/pi-sessions"),
+            dist,
+        );
+        // Model + provider are present when the user explicitly supplied a model.
         let pidx = args.iter().position(|a| a == "--provider").unwrap();
         assert_eq!(args[pidx + 1], "openrouter");
         let midx = args.iter().position(|a| a == "--model").unwrap();
@@ -1336,6 +1357,27 @@ mod tests {
             "credentials must never be passed via --api-key: {:?}",
             args
         );
+    }
+
+    #[test]
+    fn test_rpc_spawn_args_plain_pi_omits_provider_and_model() {
+        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let args = rpc_spawn_args(None, "chat-1", Path::new("/tmp/pi-sessions"), dist);
+        assert!(args.contains(&"--mode".to_string()) && args.contains(&"rpc".to_string()));
+        assert!(
+            !args.contains(&"--provider".to_string()),
+            "plain Pi must not pass provider override: {:?}",
+            args
+        );
+        assert!(
+            !args.contains(&"--model".to_string()),
+            "plain Pi must not pass model override: {:?}",
+            args
+        );
+        assert!(args.contains(&"--session-id".to_string()));
+        assert!(args.contains(&"--session-dir".to_string()));
+        assert!(args.contains(&"-e".to_string()));
+        assert!(args.contains(&"-ne".to_string()));
     }
 
     // --- explicit WG_DIR binding on the pi child env (fix-wg-pi) ---------------

@@ -138,6 +138,15 @@ description = "Pins fix-tui-pi: creating a Pi chat from the TUI launcher MUST at
 timeout_seconds = 60
 
 [[scenario]]
+name = "plain_pi_chat_default"
+script = "scenarios/plain_pi_chat_default.sh"
+owners = [
+    "add-plain-pi",
+]
+description = "Pins add-plain-pi: `wg chat create --exec pi` stores executor=pi with no model/endpoint override and `wg spawn-task --dry-run .chat-N` launches `wg pi-handler --chat ...` without `-m`, `--model`, or `--provider`, while an explicit `--model pi:...` chat still preserves and passes the route. Credential-free."
+timeout_seconds = 30
+
+[[scenario]]
 name = "tui_chat_composer_newlines_pty"
 script = "scenarios/tui_chat_composer_newlines_pty.sh"
 owners = [

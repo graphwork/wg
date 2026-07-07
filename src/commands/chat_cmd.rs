@@ -946,6 +946,62 @@ mod tests {
     }
 
     #[test]
+    fn create_plain_pi_chat_stores_pi_with_no_model() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(dir, Some("plain-pi"), None, Some("pi"), None, None, true).unwrap();
+
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
+        let chat = g
+            .tasks()
+            .find(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
+            .expect("chat task exists");
+        assert_eq!(chat.executor_preset_name.as_deref(), Some("pi"));
+        assert_eq!(chat.model, None);
+        assert_eq!(chat.endpoint, None);
+        assert_eq!(
+            chat.command_argv,
+            vec![
+                "wg".to_string(),
+                "pi-handler".to_string(),
+                "--chat".to_string(),
+                "chat".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn create_explicit_pi_chat_preserves_model() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(
+            dir,
+            Some("explicit-pi"),
+            Some("pi:lunaroute:glm-5.2-nvfp4"),
+            Some("pi"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        let g = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
+        let chat = g
+            .tasks()
+            .find(|t| t.tags.iter().any(|x| chat_id::is_chat_loop_tag(x)))
+            .expect("chat task exists");
+        assert_eq!(chat.executor_preset_name.as_deref(), Some("pi"));
+        assert_eq!(chat.model.as_deref(), Some("pi:lunaroute:glm-5.2-nvfp4"));
+        assert!(
+            chat.command_argv
+                .windows(2)
+                .any(|w| w[0] == "-m" && w[1] == "pi:lunaroute:glm-5.2-nvfp4"),
+            "{:?}",
+            chat.command_argv
+        );
+    }
+
+    #[test]
     fn migrate_legacy_preset_chat_writes_command_metadata() {
         let td = mk_workgraph_dir();
         let dir = td.path();

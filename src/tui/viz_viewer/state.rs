@@ -1899,10 +1899,9 @@ impl LauncherState {
     /// Built-in default presets shown in Default mode. Three first-class
     /// executor choices: codex, claude, and pi — all surfaced on the first
     /// page without drilling into Add new. The codex/claude models are
-    /// conventional constants; the Pi model is intentionally `String::new()`
-    /// and resolved at launcher-open time by [`Self::presets_with_pi_model`]
-    /// from the last-used / config-default Pi model (never a hard-coded
-    /// constant), so selecting Pi never silently pins a model.
+    /// conventional constants; the Pi model is intentionally empty so plain
+    /// Pi launches without a WG model route and uses Pi's own configured
+    /// default unless the user explicitly edits the preset model.
     pub fn default_presets() -> Vec<LauncherPreset> {
         vec![
             LauncherPreset {
@@ -1921,67 +1920,28 @@ impl LauncherState {
                 executor: "pi".to_string(),
                 model: String::new(),
                 label: "pi".to_string(),
-                description: "Pi (pi.dev) — model from last-used/config".to_string(),
+                description: "Pi (pi.dev)".to_string(),
             },
         ]
     }
 
-    /// Resolve the Pi model for the launcher from state, in priority order:
-    /// 1. Most recent `pi` executor entry in launcher history (LRU)
-    /// 2. Config `[coordinator].model` when the effective executor is `pi`
-    /// 3. `None` (launcher shows "— set model —" and the user must set one)
-    ///
-    /// Never returns a hard-coded constant — the model always comes from
-    /// current/default/last-used state.
+    /// Plain Pi defaults to no WG model override. Users can still explicitly
+    /// edit the preset model, but launcher-open state must not synthesize a
+    /// route from history or config.
     pub fn resolve_pi_model(
-        config: &worksgood::config::Config,
-        workgraph_dir: &std::path::Path,
+        _config: &worksgood::config::Config,
+        _workgraph_dir: &std::path::Path,
     ) -> Option<String> {
-        // 1. Last-used Pi model from launcher history (LRU).
-        if let Ok(combos) = worksgood::launcher_history::recent_combos(50) {
-            for entry in &combos {
-                if entry.executor == "pi" {
-                    if let Some(m) = &entry.model {
-                        if !m.is_empty() {
-                            return Some(m.clone());
-                        }
-                    }
-                }
-            }
-        }
-        // 2. Config default when the effective executor is pi.
-        let effective = config.coordinator.effective_executor();
-        if effective == "pi" {
-            if let Some(m) = config.coordinator.model.as_ref() {
-                if !m.is_empty() {
-                    return Some(m.clone());
-                }
-            }
-        }
-        // 3. Per-chat override for coordinator 0 (unlikely but cheap).
-        let _ = workgraph_dir; // suppress unused warning in test builds
         None
     }
 
-    /// Build the default presets with the Pi model resolved from
-    /// last-used/config state. Returns the same vec as
-    /// [`default_presets`] but with the Pi preset's `model`/`label`/
-    /// `description` filled in when a model is available.
+    /// Build the default presets. Plain Pi intentionally remains model-free;
+    /// this function is retained as the launcher-open hook for callers.
     pub fn presets_with_pi_model(
-        config: &worksgood::config::Config,
-        workgraph_dir: &std::path::Path,
+        _config: &worksgood::config::Config,
+        _workgraph_dir: &std::path::Path,
     ) -> Vec<LauncherPreset> {
-        let mut presets = Self::default_presets();
-        if let Some(pi_idx) = presets.iter().position(|p| p.executor == "pi") {
-            if let Some(model) = Self::resolve_pi_model(config, workgraph_dir) {
-                presets[pi_idx].model = model.clone();
-                presets[pi_idx].label = format!("pi:{}", model);
-                presets[pi_idx].description = format!("Pi (pi.dev) — {}", model);
-            } else {
-                presets[pi_idx].description = "Pi (pi.dev) — press m to set model".to_string();
-            }
-        }
-        presets
+        Self::default_presets()
     }
 
     /// True when the highlighted Default-mode row is "+ Add new...".
@@ -2505,18 +2465,17 @@ impl LauncherState {
         match self.mode {
             LauncherMode::Default => {
                 let preset = self.presets.get(self.default_selected)?;
-                // A preset with an empty model (e.g. Pi before the user sets
-                // one) cannot launch — the caller surfaces this as an error
-                // so the user is directed to set a model first.
-                if preset.model.is_empty() {
-                    return None;
-                }
-                Some((preset.executor.clone(), Some(preset.model.clone()), None))
+                let model = if preset.model.trim().is_empty() {
+                    None
+                } else {
+                    Some(preset.model.clone())
+                };
+                Some((preset.executor.clone(), model, None))
             }
             LauncherMode::AddNew => {
                 let executor = self.add_executor_choice().internal_executor.to_string();
                 let model_trimmed = self.add_model.trim();
-                if model_trimmed.is_empty() {
+                if model_trimmed.is_empty() && executor != "pi" {
                     return None;
                 }
                 if executor == "command" {
@@ -2532,7 +2491,12 @@ impl LauncherState {
                 } else {
                     None
                 };
-                Some((executor, Some(model_trimmed.to_string()), endpoint))
+                let model = if model_trimmed.is_empty() {
+                    None
+                } else {
+                    Some(model_trimmed.to_string())
+                };
+                Some((executor, model, endpoint))
             }
         }
     }
@@ -15558,45 +15522,47 @@ impl VizApp {
                     // .chat-39). Here we spawn the interactive `pi` binary
                     // directly in the pane's PTY, passing the same
                     // `--provider`/`--model`/`--session-id`/`--session-dir`
-                    // pair the RPC path uses, but WITHOUT `--mode rpc` and
-                    // WITHOUT `--no-approve` (interactive mode wants the
-                    // user's terminal for approvals, mirroring claude/codex).
-                    //
-                    // `pi_model_arg` resolves the WG `openrouter:<vendor>/<model>`
-                    // spec into pi's `--provider <p> --model <m>` pair; if it
-                    // returns `None` the explicit-model contract is violated
-                    // and we bail (same posture as the handler).
+                    // pair the RPC path uses when a model is explicitly pinned,
+                    // but WITHOUT `--mode rpc` and WITHOUT `--no-approve`
+                    // (interactive mode wants the user's terminal for
+                    // approvals, mirroring claude/codex). A plain Pi chat
+                    // omits provider/model entirely so Pi uses its own
+                    // configured/default model.
                     let project_root = self
                         .workgraph_dir
                         .parent()
                         .unwrap_or(&self.workgraph_dir)
                         .to_path_buf();
+                    let explicit_model =
+                        chat_model.as_deref().is_some_and(|m| !m.trim().is_empty());
                     let marg = crate::commands::pi_handler::pi_model_arg(chat_model.as_deref());
-                    let marg = match marg {
-                        Some(m) => m,
-                        None => {
-                            eprintln!(
-                                "[tui] pi chat pane: could not resolve a \
+                    if explicit_model && marg.is_none() {
+                        eprintln!(
+                            "[tui] pi chat pane: could not resolve a \
                                  provider/model from {:?}; refusing to spawn \
-                                 (explicit-model contract)",
-                                chat_model
-                            );
-                            return;
-                        }
-                    };
+                                 explicit model",
+                            chat_model
+                        );
+                        return;
+                    }
                     let session_dir = chat_dir.join("pi-sessions");
                     let _ = std::fs::create_dir_all(&session_dir);
                     let session_id = chat_ref.clone();
-                    let args = vec![
-                        "--provider".to_string(),
-                        marg.provider,
-                        "--model".to_string(),
-                        marg.model,
+                    let mut args = Vec::new();
+                    if let Some(marg) = marg {
+                        args.extend([
+                            "--provider".to_string(),
+                            marg.provider,
+                            "--model".to_string(),
+                            marg.model,
+                        ]);
+                    }
+                    args.extend([
                         "--session-id".to_string(),
                         session_id,
                         "--session-dir".to_string(),
                         session_dir.display().to_string(),
-                    ];
+                    ]);
                     ("pi".to_string(), args, Some(project_root))
                 }
                 "octomind" => {
@@ -27609,6 +27575,7 @@ mod launcher_redesign_tests {
         assert_eq!(presets[1].executor, "claude");
         assert_eq!(presets[1].model, "claude:opus");
         assert_eq!(presets[2].executor, "pi");
+        assert_eq!(presets[2].model, "");
     }
 
     #[test]
@@ -27627,6 +27594,16 @@ mod launcher_redesign_tests {
         let (executor, model, _) = state.resolved_launch_args().unwrap();
         assert_eq!(executor, "claude");
         assert_eq!(model.as_deref(), Some("claude:opus"));
+    }
+
+    #[test]
+    fn default_mode_resolves_plain_pi_preset_without_model() {
+        let mut state = make_state();
+        state.default_selected = 2;
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "pi");
+        assert_eq!(model, None);
+        assert_eq!(endpoint, None);
     }
 
     #[test]
@@ -27799,6 +27776,17 @@ mod launcher_redesign_tests {
         state.add_executor_idx = 1; // codex
         // No model typed.
         assert!(state.resolved_launch_args().is_none());
+    }
+
+    #[test]
+    fn add_new_pi_allows_missing_model() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = exec_idx("pi");
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "pi");
+        assert_eq!(model, None);
+        assert_eq!(endpoint, None);
     }
 
     #[test]

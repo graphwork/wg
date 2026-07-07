@@ -2688,8 +2688,9 @@ pub enum Commands {
     /// terminal takeover) and drives it over the JSONL RPC protocol;
     /// Topology B spawns `node pi-plugin/host/wg-pi-host.mjs`. The
     /// transport is auto-selected from what's installed (`WG_PI_TOPOLOGY`
-    /// forces `rpc`/`node`). ALWAYS passes the resolved model explicitly
-    /// via `--provider`/`--model`; credentials are read from the
+    /// forces `rpc`/`node`). Plain Pi chats omit provider/model overrides so
+    /// Pi can use its own configured/default model; explicit `--model` routes
+    /// are translated to `--provider`/`--model`. Credentials are read from the
     /// environment (never `--api-key`).
     #[command(name = "pi-handler")]
     PiHandler {

@@ -1263,11 +1263,9 @@ mod tui_editor_tests {
     /// recent-history list. Pre-redesign the dialog showed dozens of
     /// auto-discovered openrouter rows the user never asked for.
     ///
-    /// The pi preset resolves its model from `recent_combos` (global
-    /// launcher history); isolate that history to an empty tempfile so the
-    /// pi row shows "press m to set model" deterministically — otherwise a
-    /// real machine's history can resolve pi to an `openrouter:` route and
-    /// trip the "no openrouter dump" anti-assertion below.
+    /// The pi preset is deliberately plain/model-free; isolate launcher
+    /// history anyway so this render test stays independent of a real
+    /// machine's prior chats.
     #[test]
     #[serial_test::serial(launcher_history_env)]
     fn launcher_default_mode_render_shows_two_presets_and_add_new() {

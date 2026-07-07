@@ -201,6 +201,8 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
     //                                  not spawn task agents)
     //   - src/commands/resume.rs      (unit tests assert profile reload
     //                                  routing through plan_spawn)
+    //   - src/config.rs               (unit tests assert model-spec to
+    //                                  handler mapping; no argv is built)
     //   - src/tui/                    (the TUI builds `wg service start` argv
     //                                  for new chats; same as above —
     //                                  daemon launch, not agent spawn)
@@ -221,6 +223,7 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
         "src/commands/service/ipc.rs",
         "src/commands/service/mod.rs",
         "src/commands/resume.rs",
+        "src/config.rs",
         "src/service/llm.rs",
     ]
     .into_iter()

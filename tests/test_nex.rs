@@ -1264,7 +1264,8 @@ fn start_recording_oai_stub(num_requests: usize) -> (String, Arc<std::sync::Mute
     let bodies_clone = Arc::clone(&bodies);
 
     thread::spawn(move || {
-        for _ in 0..num_requests {
+        let mut handled = 0usize;
+        while handled < num_requests {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
@@ -1301,10 +1302,22 @@ fn start_recording_oai_stub(num_requests: usize) -> (String, Arc<std::sync::Mute
                 }
             }
 
-            if let Some(he) = header_end {
-                let body = String::from_utf8_lossy(&buf[he..]).to_string();
-                bodies_clone.lock().unwrap().push(body);
+            let Some(he) = header_end else {
+                continue;
+            };
+            let header_str = String::from_utf8_lossy(&buf[..he.saturating_sub(4)]).to_string();
+            let request_line = header_str.lines().next().unwrap_or("").to_string();
+            if !request_line.starts_with("POST ") || !request_line.contains("/chat/completions") {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let _ = stream.flush();
+                continue;
             }
+
+            let body = String::from_utf8_lossy(&buf[he..]).to_string();
+            bodies_clone.lock().unwrap().push(body);
+            handled += 1;
 
             // Reply with a minimal SSE stream that the OpenAI client
             // accepts: a content delta, a finish_reason chunk, then
@@ -1546,7 +1559,8 @@ fn start_recording_oai_stub_with_paths(
     let captured_clone = Arc::clone(&captured);
 
     thread::spawn(move || {
-        for _ in 0..num_requests {
+        let mut handled = 0usize;
+        while handled < num_requests {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
@@ -1581,13 +1595,22 @@ fn start_recording_oai_stub_with_paths(
                 }
             }
 
-            if let Some(he) = header_end {
-                // First line of the request is the request-line ("POST /v1/chat/completions HTTP/1.1").
-                let header_str = String::from_utf8_lossy(&buf[..he.saturating_sub(4)]).to_string();
-                let request_line = header_str.lines().next().unwrap_or("").to_string();
-                let body = String::from_utf8_lossy(&buf[he..]).to_string();
-                captured_clone.lock().unwrap().push((request_line, body));
+            let Some(he) = header_end else {
+                continue;
+            };
+            // First line of the request is the request-line ("POST /v1/chat/completions HTTP/1.1").
+            let header_str = String::from_utf8_lossy(&buf[..he.saturating_sub(4)]).to_string();
+            let request_line = header_str.lines().next().unwrap_or("").to_string();
+            if !request_line.starts_with("POST ") || !request_line.contains("/chat/completions") {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let _ = stream.flush();
+                continue;
             }
+            let body = String::from_utf8_lossy(&buf[he..]).to_string();
+            captured_clone.lock().unwrap().push((request_line, body));
+            handled += 1;
 
             let chunks = [
                 r#"{"id":"x","object":"chat.completion.chunk","model":"stub","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,

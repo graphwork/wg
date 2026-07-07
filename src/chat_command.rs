@@ -310,12 +310,10 @@ pub fn argv_for_preset(
         "pi" => {
             // Pi (pi.dev) is a chat-capable external CLI dispatched via the
             // `wg pi-handler` RPC/worker bridge (peer of claude-handler /
-            // codex-handler / opencode-handler). The handler resolves the
-            // provider + model from the WG `openrouter:<vendor>/<model>` spec
-            // via `pi_model_arg`; credentials are injected from WG config
-            // (never via argv). `--chat <ref>` is the per-session inbox alias
-            // (`chat-<N>`); `-m` carries the model so pi never falls back to
-            // its own default (explicit-model contract, pi_handler.rs §).
+            // codex-handler / opencode-handler). `--chat <ref>` is the
+            // per-session inbox alias (`chat-<N>`). A model is passed only
+            // when the user explicitly pins one on the chat; plain Pi chats
+            // intentionally let Pi use its own configured/default model.
             let mut argv = vec![wg_bin.to_string(), "pi-handler".to_string()];
             argv.push("--chat".to_string());
             // The caller (TUI launcher / `wg chat create`) substitutes the
@@ -399,6 +397,29 @@ mod tests {
         assert_eq!(
             opencode_model_arg("opencode:openrouter/stepfun/step-3.7-flash"),
             Some("openrouter/stepfun/step-3.7-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn argv_for_plain_pi_preset_omits_model_override() {
+        assert_eq!(
+            argv_for_preset("pi", None, None, "wg"),
+            vec!["wg", "pi-handler", "--chat", "chat"]
+        );
+    }
+
+    #[test]
+    fn argv_for_explicit_pi_preset_preserves_model_override() {
+        assert_eq!(
+            argv_for_preset("pi", Some("pi:lunaroute:glm-5.2-nvfp4"), None, "wg"),
+            vec![
+                "wg",
+                "pi-handler",
+                "--chat",
+                "chat",
+                "-m",
+                "pi:lunaroute:glm-5.2-nvfp4"
+            ]
         );
     }
 

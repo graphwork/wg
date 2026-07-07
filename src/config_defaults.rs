@@ -1053,6 +1053,7 @@ mod tests {
             Some(SetupRoute::ClaudeCli)
         );
         assert_eq!(SetupRoute::from_name("codex"), Some(SetupRoute::CodexCli));
+        assert_eq!(SetupRoute::from_name("pi"), Some(SetupRoute::Pi));
         assert_eq!(SetupRoute::from_name("local"), Some(SetupRoute::Local));
         assert_eq!(SetupRoute::from_name("ollama"), Some(SetupRoute::Local));
         assert_eq!(
@@ -1076,6 +1077,7 @@ mod tests {
         assert_eq!(SetupRoute::Openrouter.executor(), "native");
         assert_eq!(SetupRoute::ClaudeCli.executor(), "claude");
         assert_eq!(SetupRoute::CodexCli.executor(), "codex");
+        assert_eq!(SetupRoute::Pi.executor(), "pi");
         assert_eq!(SetupRoute::Local.executor(), "native");
         assert_eq!(SetupRoute::NexCustom.executor(), "native");
     }
@@ -1084,6 +1086,7 @@ mod tests {
     fn test_route_from_executor_reverse_mapping() {
         assert_eq!(SetupRoute::from_executor("claude"), SetupRoute::ClaudeCli);
         assert_eq!(SetupRoute::from_executor("codex"), SetupRoute::CodexCli);
+        assert_eq!(SetupRoute::from_executor("pi"), SetupRoute::Pi);
         assert_eq!(SetupRoute::from_executor("native"), SetupRoute::Openrouter);
         assert_eq!(SetupRoute::from_executor("nex"), SetupRoute::Openrouter);
         // Unknown -> claude-cli (sane default for new users)
