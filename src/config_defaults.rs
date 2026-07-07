@@ -14,7 +14,7 @@ use crate::config::{
     OpenRouterConfig, RoleModelConfig, Tier, TierConfig,
 };
 
-/// One of the five smooth setup routes. Each route returns a complete,
+/// One of the six smooth setup routes. Each route returns a complete,
 /// working `Config` end-to-end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupRoute {
@@ -72,7 +72,7 @@ impl SetupRoute {
         }
     }
 
-    /// All five routes, in display order.
+    /// All six routes, in display order.
     pub fn all() -> &'static [SetupRoute] {
         &[
             Self::Openrouter,
@@ -108,7 +108,7 @@ impl SetupRoute {
     }
 
     /// Conservative version of [`SetupRoute::from_executor`]: returns
-    /// `None` for executors that don't map to any of the 5 routes
+    /// `None` for executors that don't map to any of the six routes
     /// (e.g. `shell`, custom executor names). Callers should fall back
     /// to the legacy path when this returns `None` rather than
     /// substituting a default route.
@@ -1067,8 +1067,8 @@ mod tests {
     }
 
     #[test]
-    fn test_route_all_returns_five_routes() {
-        assert_eq!(SetupRoute::all().len(), 5);
+    fn test_route_all_returns_six_routes() {
+        assert_eq!(SetupRoute::all().len(), 6);
     }
 
     #[test]

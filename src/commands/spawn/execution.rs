@@ -617,6 +617,12 @@ pub(crate) fn spawn_agent_inner(
 
     // Add task ID and agent ID to environment
     cmd.env("WG_TASK_ID", task_id);
+    if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
+        cmd.env(
+            "WG_CHAT_REF",
+            worksgood::chat_id::format_chat_session_ref(chat_id),
+        );
+    }
     cmd.env("WG_AGENT_ID", &temp_agent_id);
     cmd.env("WG_EXECUTOR_TYPE", &settings.executor_type);
     // Time budget: inject timeout and spawn epoch for graceful completion

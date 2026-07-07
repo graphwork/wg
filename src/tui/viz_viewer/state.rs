@@ -15347,6 +15347,7 @@ impl VizApp {
                     "WG_DIR".to_string(),
                     self.workgraph_dir.display().to_string(),
                 ),
+                ("WG_CHAT_REF".to_string(), chat_ref.clone()),
                 ("WG_EXECUTOR_TYPE".to_string(), "command".to_string()),
                 ("TERM".to_string(), "xterm-256color".to_string()),
             ];
@@ -15664,6 +15665,7 @@ impl VizApp {
                 "WG_DIR".to_string(),
                 self.workgraph_dir.display().to_string(),
             ),
+            ("WG_CHAT_REF".to_string(), chat_ref.clone()),
             // Override inherited WG_EXECUTOR_TYPE so spawn-task
             // dispatches the same executor the TUI chose from config.
             ("WG_EXECUTOR_TYPE".to_string(), executor.clone()),

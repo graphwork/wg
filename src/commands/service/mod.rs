@@ -124,7 +124,7 @@ pub(crate) fn is_chat_active_on_disk(dir: &Path, chat_id: u32) -> bool {
 /// Best-effort: parse the chat ID the calling `wg` invocation thinks it is
 /// running inside, by reading `WG_CHAT_REF` / `WG_CHAT_ID` from env. Accepts:
 ///   - `.chat-N` / `.coordinator-N` task ids (parse_chat_task_id)
-///   - `coordinator-N` aliases
+///   - `chat-N` / `coordinator-N` aliases
 ///   - bare numeric `N`
 /// Returns `None` if no env var is set or the value is unparseable.
 /// CLI-side helper — the daemon itself never has these env vars set so it
@@ -133,7 +133,16 @@ pub(crate) fn detect_caller_chat_id_from_env() -> Option<u32> {
     let raw = std::env::var("WG_CHAT_REF")
         .ok()
         .or_else(|| std::env::var("WG_CHAT_ID").ok())?;
+    parse_chat_ref(&raw)
+}
+
+fn parse_chat_ref(raw: &str) -> Option<u32> {
     if let Some(id) = worksgood::chat_id::parse_chat_task_id(&raw) {
+        return Some(id);
+    }
+    if let Some(rest) = raw.strip_prefix("chat-")
+        && let Ok(id) = rest.parse::<u32>()
+    {
         return Some(id);
     }
     if let Some(rest) = raw.strip_prefix("coordinator-")
@@ -1134,6 +1143,8 @@ pub fn run_start(
     force: bool,
     no_coordinator_agent: bool,
 ) -> Result<()> {
+    guard_service_control_from_worker()?;
+
     // Handler-first: a bare-provider `--model` launch arg (the 14h-401
     // incident) must warn loudly here, on the user's terminal, before the
     // daemon is even forked.
@@ -3239,18 +3250,60 @@ pub fn run_daemon(
     Ok(())
 }
 
-/// Check if the caller is an agent and refuse stop/pause operations.
-/// Returns `Err` if `WG_AGENT_ID` is set, `Ok(())` otherwise.
-fn guard_agent_stop_pause() -> Result<()> {
-    if std::env::var("WG_AGENT_ID").is_ok() {
-        anyhow::bail!("agents cannot stop/pause the service. Use `wg service restart` instead.");
+/// Refuse service lifecycle/control operations from spawned task workers.
+///
+/// Chat agents are the user-facing control plane, so they are allowed to
+/// perform service lifecycle operations when the user directs them. Ordinary
+/// task workers are children of the supervisor and must not control it.
+#[cfg(not(test))]
+fn guard_service_control_from_worker() -> Result<()> {
+    let task_id = std::env::var("WG_TASK_ID").ok();
+    let agent_id = std::env::var("WG_AGENT_ID").ok();
+    let chat_ref = std::env::var("WG_CHAT_REF")
+        .ok()
+        .or_else(|| std::env::var("WG_CHAT_ID").ok());
+
+    check_service_control_context(task_id.as_deref(), agent_id.is_some(), chat_ref.as_deref())
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn guard_service_control_from_worker() -> Result<()> {
+    Ok(())
+}
+
+fn check_service_control_context(
+    task_id: Option<&str>,
+    agent_id_present: bool,
+    chat_ref: Option<&str>,
+) -> Result<()> {
+    if let Some(task_id) = task_id {
+        if worksgood::chat_id::parse_chat_task_id(task_id).is_some() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "worker agents cannot control the WG service (start/stop/restart/pause/resume/freeze/thaw). \
+             Chat agents may run service-control commands when user-directed; workers may use read-only commands like `wg service status`."
+        );
     }
+
+    if chat_ref.and_then(parse_chat_ref).is_some() {
+        return Ok(());
+    }
+
+    if agent_id_present {
+        anyhow::bail!(
+            "worker agents cannot control the WG service (start/stop/restart/pause/resume/freeze/thaw). \
+             Chat agents may run service-control commands when user-directed; workers may use read-only commands like `wg service status`."
+        );
+    }
+
     Ok(())
 }
 
 /// Stop the service daemon
 pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
-    guard_agent_stop_pause()?;
+    guard_service_control_from_worker()?;
     run_stop_inner(dir, force, kill_agents, json)
 }
 
@@ -3348,6 +3401,8 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
 /// poll_interval) before stopping, and passes it to the new daemon so the
 /// restart is transparent.
 pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
+    guard_service_control_from_worker()?;
+
     // Capture the current daemon's effective config before stopping.
     let prior_config = CoordinatorState::load(dir);
 
@@ -3600,6 +3655,8 @@ pub fn run_reload(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    guard_service_control_from_worker()?;
+
     // Handler-first: a bare-provider `--model` reload override would push the
     // same keyless-native mis-route onto a running daemon — warn loudly.
     warn_bare_provider_model_arg(model, "wg service reload");
@@ -3666,7 +3723,7 @@ pub fn run_reload(
 
 /// Pause the coordinator (no new agent spawns, running agents unaffected)
 pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
-    guard_agent_stop_pause()?;
+    guard_service_control_from_worker()?;
 
     let response = send_request(dir, &IpcRequest::Pause)?;
 
@@ -3696,6 +3753,8 @@ pub fn run_pause(dir: &Path, json: bool) -> Result<()> {
 
 /// Resume the coordinator (triggers immediate tick) and clear provider health pauses
 pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
+    guard_service_control_from_worker()?;
+
     // Clear provider health pause state before resuming coordinator
     match worksgood::service::ProviderHealth::load(dir) {
         Ok(mut provider_health) => {
@@ -3760,7 +3819,7 @@ pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
 
 /// Freeze all running agents (SIGSTOP) and pause the coordinator
 pub fn run_freeze(dir: &Path, json: bool) -> Result<()> {
-    guard_agent_stop_pause()?;
+    guard_service_control_from_worker()?;
 
     let response = send_request(dir, &IpcRequest::Freeze)?;
 
@@ -3807,6 +3866,8 @@ pub fn run_freeze(dir: &Path, json: bool) -> Result<()> {
 
 /// Thaw all frozen agents (SIGCONT) and resume the coordinator
 pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
+    guard_service_control_from_worker()?;
+
     let response = send_request(dir, &IpcRequest::Thaw)?;
 
     if !response.ok {
@@ -4824,27 +4885,43 @@ mod tests {
     }
 
     #[test]
-    fn test_guard_agent_stop_pause_blocks_when_agent() {
-        // SAFETY: test-only env manipulation; these tests are not parallel-safe
-        // but each test restores the var before returning.
-        unsafe { std::env::set_var("WG_AGENT_ID", "test-agent") };
-        let result = guard_agent_stop_pause();
-        unsafe { std::env::remove_var("WG_AGENT_ID") };
+    fn test_service_control_guard_allows_chat_task_context() {
+        assert!(check_service_control_context(Some(".chat-5"), true, None).is_ok());
+    }
 
+    #[test]
+    fn test_service_control_guard_allows_chat_env_without_task_context() {
+        assert!(check_service_control_context(None, false, Some("chat-7")).is_ok());
+    }
+
+    #[test]
+    fn test_service_control_guard_blocks_worker_task_context() {
+        let result = check_service_control_context(Some("allow-chat-agents"), true, None);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("agents cannot stop/pause the service"),
-            "Expected agent guard message, got: {msg}"
+            msg.contains("worker agents cannot control the WG service"),
+            "Expected worker guard message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Chat agents may run service-control commands when user-directed"),
+            "Expected chat-agent exception in message, got: {msg}"
         );
     }
 
     #[test]
-    fn test_guard_agent_stop_pause_allows_when_not_agent() {
-        // Ensure WG_AGENT_ID is not set
-        unsafe { std::env::remove_var("WG_AGENT_ID") };
-        let result = guard_agent_stop_pause();
-        assert!(result.is_ok());
+    fn test_service_control_guard_blocks_worker_spoofing_chat_ref() {
+        let result =
+            check_service_control_context(Some("ordinary-worker-task"), true, Some("chat-9"));
+        assert!(
+            result.is_err(),
+            "worker task context must win over spoofed WG_CHAT_REF"
+        );
+    }
+
+    #[test]
+    fn test_service_control_guard_allows_human_shell() {
+        assert!(check_service_control_context(None, false, None).is_ok());
     }
 
     #[test]
@@ -5789,44 +5866,11 @@ mod tests {
     /// back to None when the env var is missing or unparseable.
     #[test]
     fn test_detect_caller_chat_id_from_env_forms() {
-        // Use a mutex to guard the global env across parallel tests.
-        // Rust's test runner threads share env state; we set/unset within
-        // one test and then leave it clean.
-        // SAFETY: tests run with a shared env; we restore on exit.
-        let original_ref = std::env::var("WG_CHAT_REF").ok();
-        let original_id = std::env::var("WG_CHAT_ID").ok();
-
-        unsafe {
-            std::env::remove_var("WG_CHAT_REF");
-            std::env::remove_var("WG_CHAT_ID");
-        }
-        assert_eq!(detect_caller_chat_id_from_env(), None, "no env");
-
-        unsafe { std::env::set_var("WG_CHAT_REF", ".chat-5") };
-        assert_eq!(detect_caller_chat_id_from_env(), Some(5));
-
-        unsafe { std::env::set_var("WG_CHAT_REF", ".coordinator-3") };
-        assert_eq!(detect_caller_chat_id_from_env(), Some(3));
-
-        unsafe { std::env::set_var("WG_CHAT_REF", "coordinator-7") };
-        assert_eq!(detect_caller_chat_id_from_env(), Some(7));
-
-        unsafe { std::env::set_var("WG_CHAT_REF", "9") };
-        assert_eq!(detect_caller_chat_id_from_env(), Some(9));
-
-        unsafe { std::env::set_var("WG_CHAT_REF", "garbage-not-numeric") };
-        assert_eq!(detect_caller_chat_id_from_env(), None);
-
-        unsafe {
-            std::env::remove_var("WG_CHAT_REF");
-            match original_ref {
-                Some(v) => std::env::set_var("WG_CHAT_REF", v),
-                None => std::env::remove_var("WG_CHAT_REF"),
-            }
-            match original_id {
-                Some(v) => std::env::set_var("WG_CHAT_ID", v),
-                None => std::env::remove_var("WG_CHAT_ID"),
-            }
-        }
+        assert_eq!(parse_chat_ref(".chat-5"), Some(5));
+        assert_eq!(parse_chat_ref(".coordinator-3"), Some(3));
+        assert_eq!(parse_chat_ref("chat-6"), Some(6));
+        assert_eq!(parse_chat_ref("coordinator-7"), Some(7));
+        assert_eq!(parse_chat_ref("9"), Some(9));
+        assert_eq!(parse_chat_ref("garbage-not-numeric"), None);
     }
 }
