@@ -1,40 +1,62 @@
-//! Assignment eligibility guard — the front-door role/persona check.
+//! Assignment pool separation — the structural split between **work
+//! agents** and **system evaluation agents**.
 //!
-//! WG's lightweight LLM assigner occasionally picks an evaluator/reviewer-only
-//! persona for a task that requires real implementation work (build, register,
-//! write code, produce artifacts). The selected worker then behaves as an
-//! evaluator/reviewer, reports missing implementation/artifacts, and retries
-//! the same non-implementation behaviour until the task fails. Two recent
-//! failures of exactly this shape were `build-real-async` and
-//! `register-refreshed-e97-seed-latest`.
+//! WG has two agent pools that must never be mixed at assignment time:
 //!
-//! This module is a **small, understandable rule set** layered over the
-//! existing agency structures (role name + role components) — it does NOT
-//! invent a parallel capability system and does NOT hard-code a single agent
-//! name. It classifies:
+//! - the **work pool** — ordinary implementation/operation workers
+//!   (Programmer, Architect, Documenter, …) eligible for user/work task
+//!   assignment;
+//! - the **system evaluation pool** — the agency meta + review personas
+//!   (`Reviewer`, `Evaluator`, `Assigner`, `Evolver`, `Agent Creator`)
+//!   that exist to run the evaluation/review/assignment *primitives*, not
+//!   implementation work.
 //!
-//! - whether a [`Task`] requires an implementation-capable worker
-//!   ([`task_requires_implementation`]);
-//! - whether a [`Role`] is implementation-capable vs review/evaluator-only
-//!   ([`role_implementation_capability`]);
-//! - and produces an [`EligibilityVerdict`] the dispatcher / `wg assign` can
-//!   act on ([`check_assignment_eligibility`]).
+//! The observed failure mode this module prevents: WG creates many
+//! `.evaluate-*` / `.flip-*` / review tasks, so the system evaluation
+//! agents accumulate heavy historical usage and high scores. The lightweight
+//! LLM assigner sees that usage and then picks an evaluator/reviewer persona
+//! for an implementation/intake/build task — which then behaves as an
+//! evaluator (reports missing implementation, no-ops, retries) until the task
+//! fails. Two recent failures of exactly this shape were `build-real-async`
+//! and `register-refreshed-e97-seed-latest`.
 //!
-//! Design rules (kept deliberately narrow so the guard is predictable):
+//! The fix here is **structural, not heuristic**. The earlier
+//! `prevent-evaluator-reviewer` guard guessed at implementation verbs in the
+//! task title/tags and filtered the pool only when it thought the task
+//! "looked like" implementation work. That left every neutral-looking task
+//! ("Triage incoming issues", "Set up the intake pipeline", …) exposed to a
+//! system-agent pick whenever the evaluator/reviewer had the highest score.
+//! This module replaces that with a pool split keyed on the **task kind**:
 //!
-//! 1. **Implementation tasks** are signalled by `exec_mode == "full"`,
-//!    non-empty `deliverables`, implementation verbs in title/tags, OR
-//!    implementation-flavoured skills — **unless** the task is an explicit
-//!    evaluation/review task (`.evaluate-*` / `.flip-*` scaffold, or tagged
-//!    `review`/`evaluation`).
-//! 2. **Evaluation/review tasks** (`.evaluate-*`, `.flip-*`, or tagged
-//!    review/evaluation) MUST still route to evaluator/FLIP-style roles — the
-//!    guard never blocks those.
-//! 3. **Explicit human pinning wins**, but a mismatch warns loudly
-//!    ([`EligibilityVerdict::Warn`]) so the operator sees it.
-//! 4. **Auto-assignment** that picks a review-only persona for an
-//!    implementation task is mutated to [`EligibilityVerdict::Reassign`],
-//!    carrying a fallback implementation-capable agent when one exists.
+//! - **Evaluation/review primitives** ([`task_is_evaluation_or_review`]) —
+//!   `.evaluate-*`, `.flip-*`, `.assign-*` scaffolding, or any task tagged
+//!   `review` / `evaluation` / `evaluate` / `eval` — use the system
+//!   evaluation pool (or, in practice, the inline one-shot dispatch path).
+//! - **Everything else** ([`task_uses_work_pool`]) is a normal work task and
+//!   uses the **work pool only** — system evaluation agents are excluded
+//!   from the candidate set *before* the LLM assigner ever sees them,
+//!   regardless of historical frequency, recent success, or LLM preference.
+//!
+//! Design rules (kept deliberately narrow so the split is predictable):
+//!
+//! 1. **A normal work task never offers a system evaluation agent** as a
+//!    candidate — [`filter_work_pool_agents`] is the structural front door.
+//! 2. **An evaluation/review primitive** keeps access to the system pool —
+//!    the guard never blocks evaluator/FLIP routing.
+//! 3. **Explicit human pinning wins**, but a system agent pinned to a work
+//!    task warns loudly ([`EligibilityVerdict::Warn`]) so the operator sees
+//!    the role/pool mismatch.
+//! 4. **Auto-assignment** that nonetheless lands on a system agent for a work
+//!    task (e.g. an assigner that bypassed the filtered pool, or a stale
+//!    role resolution) is mutated to [`EligibilityVerdict::Reassign`],
+//!    carrying a fallback work agent when one exists. When no work agent is
+//!    available, the caller must **fail loudly** with a configuration error
+//!    — it must never silently keep the system agent.
+//!
+//! The earlier verb/tag implementation heuristic ([`task_requires_implementation`]
+//! and [`role_implementation_capability`]) is retained as a *secondary* hint
+//! (e.g. to surface a fallback implementation-capable worker), but it is no
+//! longer the gate — the pool kind is.
 
 use crate::agency::{Agent, Role};
 use crate::graph::{Task, is_agency_scaffold_task};
@@ -103,6 +125,25 @@ const META_ROLE_NAMES: &[&str] = &["Assigner", "Evaluator", "Evolver", "Agent Cr
 
 /// Role names that are explicitly review/evaluator-only personas.
 const REVIEW_ROLE_NAMES: &[&str] = &["Reviewer", "Evaluator"];
+
+/// **System evaluation role names** — the union of the agency meta personas
+/// and the review persona. An agent whose role name is in this set is a
+/// system evaluation agent and is excluded from the work pool. This is the
+/// structural split: it does NOT depend on task verb guessing.
+///
+/// This set is the single source of truth for "system evaluation agent" —
+/// [`crate::service::llm::is_agency_oneshot_role`] names the matching
+/// `DispatchRole` set (Evaluator / FlipInference / FlipComparison / Assigner /
+/// Reviewer) on the dispatch side; this constant names the matching *role*
+/// set on the assignment side. The two are kept in lock-step by the unit
+/// tests in this module and `service::llm`.
+pub(crate) const SYSTEM_EVALUATION_ROLE_NAMES: &[&str] = &[
+    "Reviewer",
+    "Evaluator",
+    "Assigner",
+    "Evolver",
+    "Agent Creator",
+];
 
 /// Role names that are explicitly implementation-capable personas.
 const IMPLEMENTATION_ROLE_NAMES: &[&str] = &[
@@ -214,6 +255,83 @@ pub fn task_is_evaluation_or_review(task: &Task) -> bool {
     false
 }
 
+/// Does this task use the **work pool** (system evaluation agents excluded)?
+///
+/// True for every task that is NOT an evaluation/review primitive. This is the
+/// structural split: any non-primitive task — whether it "looks like"
+/// implementation work or not — draws its candidates from the work pool only,
+/// so system evaluation agents (Reviewer / Evaluator / Assigner / Evolver /
+/// Agent Creator) can never be auto-assigned to it regardless of their
+/// historical usage or score.
+///
+/// This is the gate that replaces the earlier verb-guessing heuristic: the
+/// pool kind is decided by the task kind, not by whether the title happens to
+/// contain "build" or "implement".
+pub fn task_uses_work_pool(task: &Task) -> bool {
+    !task_is_evaluation_or_review(task)
+}
+
+/// Is this role a **system evaluation/agency persona** — i.e. excluded from
+/// the work pool? Name-only path; for custom / evolved roles use
+/// [`role_is_system_evaluation_with_components`].
+///
+/// True for the agency meta personas (`Assigner`, `Evaluator`, `Evolver`,
+/// `Agent Creator`) and the review persona (`Reviewer`). These run the
+/// evaluation/review/assignment *primitives*, not implementation work.
+pub fn role_is_system_evaluation(role: &Role) -> bool {
+    SYSTEM_EVALUATION_ROLE_NAMES.contains(&role.name.as_str())
+        || classify_role(&role.name, &[]) == RoleCapability::ReviewOnly
+}
+
+/// Component-aware system-pool check — resolves component content *names* for
+/// custom / evolved roles so a review-only custom role (every component is a
+/// review component) is also treated as a system evaluation agent.
+pub fn role_is_system_evaluation_with_components(role: &Role, component_names: &[String]) -> bool {
+    if SYSTEM_EVALUATION_ROLE_NAMES.contains(&role.name.as_str()) {
+        return true;
+    }
+    classify_role(&role.name, component_names) == RoleCapability::ReviewOnly
+}
+
+/// Convenience: is this agent a system evaluation agent? Requires the resolved
+/// [`Role`] (the caller looks it up by `agent.role_id`). `None` role ⇒ `false`
+/// (fail open — we can't classify without a role, and the caller should have
+/// resolved one).
+pub fn agent_is_system_evaluation(_agent: &Agent, role: Option<&Role>) -> bool {
+    role.is_some_and(|r| role_is_system_evaluation(r))
+}
+
+/// Build the **work pool** for a normal work task — the subset of `agents`
+/// whose role is NOT a system evaluation persona, excluding humans and stale
+/// agents. This is the structural front door: pass its output to the LLM
+/// assigner so system agents are never even candidates for a work task.
+///
+/// `components_dir` lets the classifier resolve component content names for
+/// custom / evolved roles; pass the agency `primitives/components` dir.
+///
+/// Returns owned agents so the caller can re-borrow freely. The order matches
+/// the input order (no re-sorting) — the caller picks by score.
+pub fn filter_work_pool_agents<'a>(
+    agents: &'a [Agent],
+    roles_dir: &Path,
+    components_dir: &Path,
+) -> Vec<&'a Agent> {
+    agents
+        .iter()
+        .filter(|a| {
+            if a.is_human() || !a.staleness_flags.is_empty() {
+                return false;
+            }
+            let role = match crate::agency::find_role_by_prefix(roles_dir, &a.role_id) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let comp_names = resolve_role_component_names(&role, components_dir);
+            !role_is_system_evaluation_with_components(&role, &comp_names)
+        })
+        .collect()
+}
+
 /// Classify a role's implementation capability from its name and components.
 ///
 /// Name-only path: covers the built-in starter + special roles. For custom /
@@ -317,7 +435,9 @@ pub fn check_assignment_eligibility(
     explicit: bool,
     fallback_agent_id: Option<String>,
 ) -> EligibilityVerdict {
-    if !task_requires_implementation(task) {
+    // Evaluation/review primitives use the system pool — system agents are
+    // the correct (and only) candidates there.
+    if task_is_evaluation_or_review(task) {
         return EligibilityVerdict::Allow;
     }
     // No role resolved — can't classify. Fail open (don't block) but the
@@ -325,13 +445,16 @@ pub fn check_assignment_eligibility(
     let Some(role) = role else {
         return EligibilityVerdict::Allow;
     };
-    if !role_blocks_implementation(role) {
+    // Structural pool separation: a system evaluation agent on a normal work
+    // task is a pool mismatch regardless of task wording, score, or usage.
+    if !role_is_system_evaluation(role) {
         return EligibilityVerdict::Allow;
     }
     let reason = format!(
-        "task '{}' requires implementation work but agent '{}' has role '{}' \
-         ({}), which is review/evaluator-only; an implementation-capable role \
-         is required",
+        "task '{}' is a normal work task and must draw from the work pool, but \
+         agent '{}' has system role '{}' ({}), which is an \
+         evaluation/review/agency persona excluded from work assignment; \
+         assign an implementation-capable worker instead",
         task.id,
         agent.name,
         role.name,
@@ -677,5 +800,153 @@ mod tests {
         let agent = agent_with("rev", &role);
         let verdict = check_assignment_eligibility(&task, &agent, None, false, None);
         assert_eq!(verdict, EligibilityVerdict::Allow);
+    }
+
+    // --- pool separation (system vs work) -----------------------------------
+
+    #[test]
+    fn system_evaluation_role_names_are_classified_as_system() {
+        // All five system evaluation personas must be recognised as system
+        // pool agents — the structural split does not depend on task wording.
+        for name in [
+            "Reviewer",
+            "Evaluator",
+            "Assigner",
+            "Evolver",
+            "Agent Creator",
+        ] {
+            assert!(
+                role_is_system_evaluation(&role_named(name)),
+                "{name} must be a system evaluation role"
+            );
+        }
+    }
+
+    #[test]
+    fn work_roles_are_not_system_evaluation() {
+        for name in [
+            "Programmer",
+            "Architect",
+            "Documenter",
+            "Implementer",
+            "Engineer",
+        ] {
+            assert!(
+                !role_is_system_evaluation(&role_named(name)),
+                "{name} must NOT be a system evaluation role"
+            );
+        }
+    }
+
+    #[test]
+    fn task_uses_work_pool_for_non_primitive_tasks() {
+        // Neutral work task (no impl verbs, no review tags) still uses the
+        // work pool — the gate is the task kind, not verb guessing.
+        assert!(task_uses_work_pool(&task_with(
+            "t1",
+            "Triage incoming issues"
+        )));
+        // Implementation-flavoured task.
+        assert!(task_uses_work_pool(&task_with("build-x", "Build x")));
+    }
+
+    #[test]
+    fn task_uses_work_pool_false_for_evaluation_primitives() {
+        assert!(!task_uses_work_pool(&task_with(
+            ".evaluate-foo",
+            "Evaluate foo"
+        )));
+        assert!(!task_uses_work_pool(&task_with(".flip-foo", "Flip foo")));
+        // A review-tagged task is an evaluation/review primitive.
+        let mut t = task_with("t1", "Look at this");
+        t.tags = vec!["review".to_string()];
+        assert!(!task_uses_work_pool(&t));
+    }
+
+    #[test]
+    fn system_agent_on_neutral_work_task_demands_reassign() {
+        // Acceptance #3: a normal task WITHOUT obvious implementation verbs
+        // still must not select an evaluator/reviewer — the pool split is
+        // structural, not verb-guessing.
+        let task = task_with("t1", "Triage incoming issues");
+        let role = role_named("Reviewer");
+        let agent = agent_with("reviewer-agent", &role);
+        let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
+        assert!(
+            matches!(verdict, EligibilityVerdict::Reassign { .. }),
+            "neutral work task must reassign a system agent, got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn evaluator_on_neutral_work_task_demands_reassign() {
+        // Same structural rule for the Evaluator meta persona — even though
+        // the task title says nothing about implementation.
+        let task = task_with("t1", "Organise the intake board");
+        let role = role_named("Evaluator");
+        let agent = agent_with("eval-agent", &role);
+        let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
+        assert!(
+            matches!(verdict, EligibilityVerdict::Reassign { .. }),
+            "Evaluator must be reassigned off a neutral work task"
+        );
+    }
+
+    #[test]
+    fn explicit_pin_of_evaluator_to_neutral_task_warns() {
+        // Acceptance #4: explicit human assignment to an evaluator/reviewer on
+        // a normal task emits a loud role-pool mismatch warning but remains
+        // possible.
+        let task = task_with("t1", "Triage incoming issues");
+        let role = role_named("Evaluator");
+        let agent = agent_with("eval-agent", &role);
+        let verdict = check_assignment_eligibility(&task, &agent, Some(&role), true, None);
+        match verdict {
+            EligibilityVerdict::Warn { reason } => {
+                assert!(
+                    reason.contains("work pool") || reason.contains("system role"),
+                    "warn reason should name the pool mismatch: {reason}"
+                );
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluator_on_evaluate_primitive_is_allowed() {
+        // Acceptance #2: .evaluate-* / .flip-* tasks still use the system pool.
+        let task = task_with(".flip-foo", "Flip foo");
+        let role = role_named("Evaluator");
+        let agent = agent_with("eval-agent", &role);
+        let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
+        assert_eq!(verdict, EligibilityVerdict::Allow);
+    }
+
+    #[test]
+    fn reviewer_on_review_tagged_task_is_allowed() {
+        // A task explicitly tagged review is an evaluation/review primitive —
+        // a Reviewer is the correct pool and must be allowed.
+        let mut task = task_with("t1", "Audit the auth flow");
+        task.tags = vec!["review".to_string()];
+        let role = role_named("Reviewer");
+        let agent = agent_with("rev-agent", &role);
+        let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
+        assert_eq!(verdict, EligibilityVerdict::Allow);
+    }
+
+    #[test]
+    fn assigner_meta_role_on_work_task_demands_reassign() {
+        // The agency meta personas (Assigner / Evolver / Agent Creator) are
+        // system agents too — they must not be auto-assigned to work tasks.
+        let task = task_with("t1", "Set up the intake pipeline");
+        for name in ["Assigner", "Evolver", "Agent Creator"] {
+            let role = role_named(name);
+            let agent = agent_with(&format!("{name}-agent"), &role);
+            let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
+            assert!(
+                matches!(verdict, EligibilityVerdict::Reassign { .. }),
+                "{name} must be reassigned off a work task, got {verdict:?}"
+            );
+        }
     }
 }

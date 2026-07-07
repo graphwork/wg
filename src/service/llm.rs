@@ -49,6 +49,17 @@ const AGENCY_CLAUDE_HAIKU_SPEC: &str = "claude:haiku";
 /// A user who *explicitly* sets `[models.<role>].provider` or
 /// `[models.<role>].model` for one of these roles still gets the
 /// configured native path — only cascade fallthrough is overridden.
+///
+/// This is the **dispatch-side** definition of the system evaluation roles.
+/// The **assignment-side** mirror lives in [`crate::assignment_eligibility`]
+/// — `SYSTEM_EVALUATION_ROLE_NAMES` (the role names `Reviewer` / `Evaluator` /
+/// `Assigner` / `Evolver` / `Agent Creator`) structurally excludes those agents
+/// from the ordinary work-task candidate pool, and `role_is_system_evaluation`
+/// is the membership check. The two notions name the system-evaluation
+/// personas from two angles (dispatch role vs role name); the assignment-side
+/// set is the broader union (it includes `Evolver` / `Agent Creator`, which
+/// are system meta personas but not one-shot LLM dispatch roles). See task
+/// `make-evaluator-and`.
 fn is_agency_oneshot_role(role: DispatchRole) -> bool {
     matches!(
         role,

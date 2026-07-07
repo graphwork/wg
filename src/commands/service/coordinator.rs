@@ -1572,11 +1572,47 @@ fn build_auto_assign_tasks(
             String::new()
         };
 
+        // Structural pool separation: for a normal work task (anything that
+        // is NOT an evaluation/review primitive), the LLM assigner must only
+        // see **work agents** — system evaluation personas (Reviewer /
+        // Evaluator / Assigner / Evolver / Agent Creator) are filtered out
+        // *before* the prompt so they can never be picked regardless of their
+        // historical usage or score. Evaluation/review primitives keep the full
+        // pool (system agents are the correct candidates there). See
+        // `assignment_eligibility` and task `make-evaluator-and`.
+        let components_dir = agency_dir.join("primitives/components");
+        let assignment_pool: Vec<agency::Agent> =
+            if worksgood::assignment_eligibility::task_uses_work_pool(&task_snapshot) {
+                let work_pool = worksgood::assignment_eligibility::filter_work_pool_agents(
+                    &all_agents,
+                    &roles_dir,
+                    &components_dir,
+                );
+                if work_pool.is_empty() {
+                    // No work agent — refuse to hand a system agent to a work
+                    // task. Skip this tick loudly so the task stays unassigned
+                    // rather than running an evaluator on a build task.
+                    eprintln!(
+                        "[dispatcher] POOL SEPARATION: task '{}' is a work task but the \
+                         work pool is empty (only system evaluation agents exist). \
+                         Skipping assignment this tick — create a work agent \
+                         (`wg agent create` with a work role, e.g. Programmer) to \
+                         unblock it. This is a configuration error, not a transient one.",
+                        source_id,
+                    );
+                    continue;
+                }
+                work_pool.into_iter().cloned().collect()
+            } else {
+                // Evaluation/review primitive — system agents are the correct pool.
+                all_agents.clone()
+            };
+
         // Run lightweight LLM call for assignment
         let (verdict, assign_token_usage) = match super::assignment::run_lightweight_assignment(
             config,
             &task_snapshot,
-            &all_agents,
+            &assignment_pool,
             &roles_dir,
             &tradeoffs_dir,
             &mode_context,
@@ -1606,15 +1642,16 @@ fn build_auto_assign_tasks(
                 }
             };
 
-        // Front-door eligibility guard: an implementation task (exec_mode=full,
-        // deliverables, build/implement/register verbs, …) must NOT be handed
-        // to a review/evaluator-only persona (Reviewer / Evaluator / agency
-        // meta roles). When the LLM assigner picks such a persona, mutate the
-        // assignment to a fallback implementation-capable agent from the pool.
-        // See `assignment_eligibility` and task `prevent-evaluator-reviewer`.
+        // Post-hoc pool-separation backstop: the pre-LLM filter already
+        // excludes system evaluation agents from the work-task candidate set,
+        // but defend against a bypass (stale role resolution, an agency-server
+        // verdict, or a future caller) — if a system evaluation persona landed
+        // on a normal work task, reassign to a fallback work agent. When no
+        // work agent exists, SKIP this tick loudly rather than running an
+        // evaluator on a work task. See `assignment_eligibility` and task
+        // `make-evaluator-and`.
         if let Some(task) = graph.get_task(&source_id) {
             let role = agency::find_role_by_prefix(&roles_dir, &resolved_agent.role_id).ok();
-            let components_dir = agency_dir.join("primitives/components");
             let comp_names = role
                 .as_ref()
                 .map(|r| {
@@ -1624,16 +1661,16 @@ fn build_auto_assign_tasks(
                     )
                 })
                 .unwrap_or_default();
-            let blocks = role
+            let is_system = role
                 .as_ref()
                 .map(|r| {
-                    worksgood::assignment_eligibility::role_blocks_implementation_with_components(
+                    worksgood::assignment_eligibility::role_is_system_evaluation_with_components(
                         r,
                         &comp_names,
                     )
                 })
                 .unwrap_or(false);
-            if blocks && worksgood::assignment_eligibility::task_requires_implementation(task) {
+            if is_system && worksgood::assignment_eligibility::task_uses_work_pool(task) {
                 let original_name = resolved_agent.name.clone();
                 let original_role = role.as_ref().map(|r| r.name.clone()).unwrap_or_default();
                 let fallback = worksgood::assignment_eligibility::pick_implementation_capable_agent(
@@ -1644,10 +1681,9 @@ fn build_auto_assign_tasks(
                 match fallback {
                     Some(fb) => {
                         eprintln!(
-                            "[dispatcher] ELIGIBILITY GUARD: task '{}' requires an \
-                             implementation-capable worker, but the assigner picked \
-                             '{}' (role '{}', review/evaluator-only). Reassigning to \
-                             implementation-capable agent '{}' ({}).",
+                            "[dispatcher] POOL SEPARATION: task '{}' is a work task but the \
+                             assigner picked '{}' (system role '{}', evaluation/review/agency \
+                             only). Reassigning to work agent '{}' ({}).",
                             source_id,
                             original_name,
                             original_role,
@@ -1658,15 +1694,15 @@ fn build_auto_assign_tasks(
                     }
                     None => {
                         eprintln!(
-                            "[dispatcher] ELIGIBILITY GUARD: task '{}' requires an \
-                             implementation-capable worker and the assigner picked \
-                             '{}' (role '{}', review/evaluator-only), but NO \
-                             implementation-capable agent is available in the pool. \
-                             Proceeding with the original pick to avoid stranding the \
-                             task — create an implementation agent ('wg agent \
-                             create') to fix this.",
+                            "[dispatcher] POOL SEPARATION: task '{}' is a work task and the \
+                             assigner picked '{}' (system role '{}'), but NO work agent is \
+                             available. Refusing to run a system evaluation agent on a work \
+                             task — skipping assignment this tick. Create a work agent \
+                             (`wg agent create` with a work role, e.g. Programmer). This is \
+                             a configuration error, not a transient one.",
                             source_id, original_name, original_role,
                         );
+                        continue;
                     }
                 }
             }

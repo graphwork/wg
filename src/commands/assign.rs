@@ -283,51 +283,67 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     let components_dir = agency_dir.join("primitives/components");
     let all_agents = apply_caps(&overlay, &all_agents, &roles_dir);
 
-    // Front-door eligibility guard: if the task requires an implementation-
-    // capable worker, restrict the pool to implementation-capable agents so
-    // the max-score pick can't land on a review/evaluator-only persona. When
-    // the filter would empty the pool, fall back to the unfiltered pool (a
-    // possibly-stale reviewer is still better than stranding the task) with a
-    // loud warning. See `assignment_eligibility` and task
-    // `prevent-evaluator-reviewer`.
-    let task_impl = match graph.get_task(task_id) {
-        Some(t) => worksgood::assignment_eligibility::task_requires_implementation(t),
-        None => false,
+    // Structural pool separation: a normal work task (anything that is NOT
+    // an evaluation/review primitive — `.evaluate-*` / `.flip-*` / `.assign-*`
+    // scaffold, or tagged `review`/`evaluation`) draws its candidates from the
+    // **work pool only** — system evaluation agents (Reviewer / Evaluator /
+    // Assigner / Evolver / Agent Creator) are excluded *before* the max-score
+    // pick, regardless of their historical usage or score. Evaluation/review
+    // primitives keep the full pool (system agents are the correct candidates
+    // there). See `assignment_eligibility` and task `make-evaluator-and`.
+    //
+    // If the work pool is empty for a work task, we do NOT silently fall back
+    // to a system agent — we try a default implementation-capable worker
+    // first, and if none exists we fail loudly with a configuration error so
+    // the operator creates one rather than running an evaluator on a work
+    // task.
+    let task_uses_work_pool = match graph.get_task(task_id) {
+        Some(t) => worksgood::assignment_eligibility::task_uses_work_pool(t),
+        None => true,
     };
-    let pool = if task_impl {
-        let capable: Vec<agency::Agent> = all_agents
-            .iter()
-            .filter(|a| {
-                if a.is_human() || !a.staleness_flags.is_empty() {
-                    return false;
-                }
-                let role = match agency::find_role_by_prefix(&roles_dir, &a.role_id) {
-                    Ok(r) => r,
-                    Err(_) => return false,
-                };
-                let names = worksgood::assignment_eligibility::resolve_role_component_names(
-                    &role,
-                    &components_dir,
-                );
-                worksgood::assignment_eligibility::role_implementation_capability_with_components(
-                    &role, &names,
-                ) == worksgood::assignment_eligibility::RoleCapability::ImplementationCapable
-            })
+    let pool: Vec<agency::Agent> = if task_uses_work_pool {
+        let work_pool: Vec<agency::Agent> =
+            worksgood::assignment_eligibility::filter_work_pool_agents(
+                &all_agents,
+                &roles_dir,
+                &components_dir,
+            )
+            .into_iter()
             .cloned()
             .collect();
-        if capable.is_empty() {
-            eprintln!(
-                "[assign] ELIGIBILITY GUARD: task '{}' requires an implementation-capable \
-                 worker, but NO implementation-capable agent is available. Falling back \
-                 to the unfiltered pool (a reviewer may be picked). Create an \
-                 implementation agent ('wg agent create') to fix this.",
-                task_id,
-            );
-            all_agents.clone()
+        if work_pool.is_empty() {
+            // No work agent available — try a default implementation-capable
+            // fallback before refusing, but NEVER silently pick a system
+            // evaluation agent.
+            if let Some(fb) = worksgood::assignment_eligibility::pick_implementation_capable_agent(
+                &all_agents,
+                &roles_dir,
+                &components_dir,
+            ) {
+                eprintln!(
+                    "[assign] POOL SEPARATION: task '{}' needs a work agent but the work \
+                     pool is empty — falling back to the default implementation-capable \
+                     worker '{}' ({}).",
+                    task_id,
+                    fb.name,
+                    agency::short_hash(&fb.id),
+                );
+                vec![fb.clone()]
+            } else {
+                anyhow::bail!(
+                    "No implementation-capable work agent available for task '{}' \
+                     (its work pool is empty and no system evaluation agent may be \
+                     auto-picked). Create one with `wg agent create` and a work role \
+                     (e.g. Programmer) — this is a configuration error, not a transient \
+                     one.",
+                    task_id,
+                );
+            }
         } else {
-            capable
+            work_pool
         }
     } else {
+        // Evaluation/review primitive — system agents are the correct pool.
         all_agents.clone()
     };
 
@@ -371,13 +387,16 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         format!("No agent matching '{}'. {}", agent_hash, hint)
     })?;
 
-    // Front-door eligibility guard (explicit pin): a human pin always wins,
-    // but warn loudly when the pinned agent is a review/evaluator-only persona
-    // for a task that requires implementation work. See `assignment_eligibility`
-    // and task `prevent-evaluator-reviewer`.
+    // Structural pool separation (explicit pin): a human pin always wins,
+    // but warn LOUDLY when the pinned agent is a system evaluation persona
+    // (Reviewer / Evaluator / Assigner / Evolver / Agent Creator) for a normal
+    // work task — that is a role/pool mismatch. Evaluation/review primitives
+    // (`.evaluate-*` / `.flip-*` / tagged `review`) keep their system agents
+    // without warning. See `assignment_eligibility` and task
+    // `make-evaluator-and`.
     let graph = load_graph(path).ok();
     if let Some(task) = graph.as_ref().and_then(|g| g.get_task(task_id)) {
-        if worksgood::assignment_eligibility::task_requires_implementation(task) {
+        if worksgood::assignment_eligibility::task_uses_work_pool(task) {
             let roles_dir = agency_dir.join("cache/roles");
             let components_dir = agency_dir.join("primitives/components");
             if let Ok(role) = agency::find_role_by_prefix(&roles_dir, &agent.role_id) {
@@ -385,15 +404,16 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
                     &role,
                     &components_dir,
                 );
-                if worksgood::assignment_eligibility::role_blocks_implementation_with_components(
+                if worksgood::assignment_eligibility::role_is_system_evaluation_with_components(
                     &role,
                     &comp_names,
                 ) {
                     eprintln!(
-                        "[assign] ELIGIBILITY GUARD WARNING (explicit pin kept): task '{}' \
-                         requires an implementation-capable worker, but pinned agent '{}' \
-                         has role '{}' ({}), which is review/evaluator-only. Consider \
-                         pinning an implementation-capable agent instead.",
+                        "[assign] POOL MISMATCH WARNING (explicit pin kept): task '{}' is a \
+                         normal work task and must use the work pool, but pinned agent '{}' \
+                         has system role '{}' ({}), which is an evaluation/review/agency \
+                         persona. This is a role/pool mismatch — consider pinning an \
+                         implementation-capable worker instead.",
                         task_id,
                         agent.name,
                         role.name,
@@ -1163,7 +1183,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Assignment eligibility guard regression tests (prevent-evaluator-reviewer)
+    // Pool-separation regression tests (make-evaluator-and; supersedes the
+    // prevent-evaluator-reviewer heuristic). These assert STRUCTURAL pool
+    // separation — system evaluation agents (Reviewer / Evaluator / Assigner
+    // / Evolver / Agent Creator) are excluded from the work-task candidate
+    // set regardless of score / historical usage / task wording, not merely
+    // filtered by verb guessing.
     // -----------------------------------------------------------------------
 
     /// Seed starter roles (Programmer + Reviewer) and create one agent per
@@ -1422,6 +1447,181 @@ mod tests {
         assert_eq!(
             role.name, "Programmer",
             "retry fallback must be the implementation-capable Programmer, not the Reviewer"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pool-separation regression tests (make-evaluator-and)
+    // -----------------------------------------------------------------------
+
+    /// Acceptance #1 + #3: when a Reviewer has the HIGHEST historical usage
+    /// / score in the pool, a normal implementation task is still assigned to
+    /// an implementation-capable worker (Programmer), never the Reviewer.
+    /// The gate is structural pool separation, not verb guessing.
+    #[test]
+    fn auto_assign_impl_task_skips_reviewer_even_when_reviewer_score_highest() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // An implementation task — but the structural guarantee does not even
+        // depend on the verbs; the work pool excludes the Reviewer regardless.
+        let mut task = make_task("build-real-async", "Build the real async runtime");
+        task.deliverables = vec!["src/async.rs".to_string()];
+        task.exec_mode = Some("full".to_string());
+        setup_workgraph(dir_path, vec![task]);
+        let (prog_id, _rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        // The Reviewer agent has the higher score (0.99 > 0.5); the guard
+        // must still pick the Programmer.
+        let result = run(dir_path, "build-real-async", None, false, true);
+        assert!(result.is_ok(), "auto-assign failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("build-real-async").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(prog_id.as_str()),
+            "highest-score reviewer must NOT be picked for an impl task"
+        );
+    }
+
+    /// Acceptance #3: a NEUTRAL work task (no implementation verbs, no review
+    /// tags, no deliverables) still must NOT pick a system evaluation agent,
+    /// even when the Reviewer has the highest score / historical usage. The
+    /// pool split is keyed on task KIND (work vs primitive), not verb guessing.
+    #[test]
+    fn neutral_work_task_skips_reviewer_even_without_impl_verbs() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        // A neutral work task — title says nothing about implementation,
+        // no deliverables, no tags. Under the old verb-guessing guard this
+        // would NOT have been flagged; under pool separation it must still
+        // exclude the system Reviewer.
+        let task = make_task("t1", "Triage incoming issues");
+        setup_workgraph(dir_path, vec![task]);
+        let (prog_id, _rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        // Reviewer score 0.99 > Programmer 0.5; without pool separation the
+        // max-score pick would land on the Reviewer.
+        let result = run(dir_path, "t1", None, false, true);
+        assert!(result.is_ok(), "auto-assign failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(prog_id.as_str()),
+            "neutral work task must pick the work agent, not the highest-score Reviewer"
+        );
+    }
+
+    /// Acceptance #1 for the Evaluator meta persona: a normal work task must
+    /// not pick an Evaluator even when it has the highest score. This mirrors
+    /// the Reviewer case for the Evaluator system role.
+    #[test]
+    fn neutral_work_task_skips_evaluator_meta_persona() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let task = make_task("t1", "Organise the intake board");
+        setup_workgraph(dir_path, vec![task]);
+
+        // Build an Evaluator agent (special role) with a high score and a
+        // Programmer agent with a low score — the Evaluator must be excluded
+        // from the work pool.
+        let agency_dir = dir_path.join("agency");
+        agency::seed_starters(&agency_dir).unwrap();
+        let roles_dir = agency_dir.join("cache/roles");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let agents_dir = agency_dir.join("cache/agents");
+
+        let evaluator_role = agency::special_agent_roles()
+            .into_iter()
+            .find(|r| r.name == "Evaluator")
+            .unwrap();
+        agency::save_role(&evaluator_role, &roles_dir).unwrap();
+        let programmer_role = agency::load_all_roles(&roles_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.name == "Programmer")
+            .unwrap();
+        let tradeoff = agency::build_tradeoff(
+            "Careful",
+            "x",
+            vec!["Slow".to_string()],
+            vec!["Bad".to_string()],
+        );
+        agency::save_tradeoff(&tradeoff, &tradeoffs_dir).unwrap();
+
+        let make_agent = |role: &agency::Role, name: &str, score: Option<f64>| -> String {
+            let id = agency::content_hash_agent(&role.id, &tradeoff.id);
+            let mut perf = PerformanceRecord::default();
+            perf.avg_score = score;
+            perf.task_count = if score.is_some() { 1 } else { 0 };
+            let agent = agency::Agent {
+                id: id.clone(),
+                role_id: role.id.clone(),
+                tradeoff_id: tradeoff.id.clone(),
+                name: name.to_string(),
+                performance: perf,
+                lineage: Lineage::default(),
+                capabilities: Vec::new(),
+                rate: None,
+                capacity: None,
+                trust_level: Default::default(),
+                contact: None,
+                executor: "claude".to_string(),
+                preferred_model: None,
+                preferred_provider: None,
+                attractor_weight: 1.0,
+                deployment_history: vec![],
+                staleness_flags: vec![],
+            };
+            agency::save_agent(&agent, &agents_dir).unwrap();
+            id
+        };
+        let _eval_id = make_agent(&evaluator_role, "eval-agent", Some(0.99));
+        let prog_id = make_agent(&programmer_role, "prog-agent", Some(0.1));
+
+        let result = run(dir_path, "t1", None, false, true);
+        assert!(result.is_ok(), "auto-assign failed: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(prog_id.as_str()),
+            "Evaluator meta persona must NOT be picked for a neutral work task"
+        );
+    }
+
+    /// Acceptance #4: explicit human pin to a Reviewer on a NEUTRAL work task
+    /// (no impl verbs) still assigns (human wins) but the pool-mismatch warning
+    /// fires — structural separation applies to neutral tasks too, not only
+    /// implementation-flavoured ones.
+    #[test]
+    fn explicit_pin_to_reviewer_on_neutral_task_warns_but_assigns() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let task = make_task("t1", "Triage incoming issues");
+        setup_workgraph(dir_path, vec![task]);
+        let (_prog_id, rev_id) = setup_programmer_and_reviewer(dir_path);
+
+        let result = run(dir_path, "t1", Some(&rev_id), false, false);
+        assert!(
+            result.is_ok(),
+            "explicit reviewer pin failed: {:?}",
+            result.err()
+        );
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(
+            task.agent.as_deref(),
+            Some(rev_id.as_str()),
+            "explicit human pin must win even on a pool mismatch"
         );
     }
 }
