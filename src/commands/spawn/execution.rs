@@ -269,7 +269,8 @@ pub(crate) fn spawn_agent_inner(
     // actual API model ID, provider, and endpoint. Built-in tier aliases
     // (haiku/sonnet/opus) are kept as-is for backward compatibility with the
     // Claude CLI, which understands them natively.
-    let (effective_model, registry_provider, registry_endpoint) = resolve_model_via_registry(
+    let (effective_model, registry_provider, registry_endpoint) = resolve_spawn_model_via_registry(
+        resolved_executor_name,
         resolved.model,
         resolved_model_for_spawn.as_ref(),
         &config,
@@ -282,7 +283,8 @@ pub(crate) fn spawn_agent_inner(
     let (effective_model, model_validation_warning) = {
         let mut model = effective_model;
         let mut warning: Option<String> = None;
-        if let Some(ref m) = model
+        if resolved_executor_name != "pi"
+            && let Some(ref m) = model
             && m.contains('/')
             && !BUILTIN_TIER_ALIASES.contains(&m.as_str())
         {
@@ -1076,6 +1078,21 @@ fn external_cli_model_args(
     let Some(style) = external_cli_model_style(executor_type) else {
         return ExternalCliModelArgs::default();
     };
+
+    if executor_type == "pi" {
+        let inner = model.strip_prefix("pi:").unwrap_or(model).trim();
+        if let Some((provider, model_id)) = inner.split_once(':').or_else(|| inner.split_once('/'))
+        {
+            let provider = provider.trim();
+            let model_id = model_id.trim();
+            if !provider.is_empty() && !model_id.is_empty() {
+                return ExternalCliModelArgs {
+                    provider: Some(("--provider", provider.to_string())),
+                    model: Some(("--model", model_id.to_string())),
+                };
+            }
+        }
+    }
 
     if let Some(openrouter_model) = openrouter_model_id(model, effective_provider) {
         return match style {
@@ -2220,6 +2237,19 @@ const BUILTIN_TIER_ALIASES: &[&str] = &["haiku", "sonnet", "opus"];
 /// - Otherwise (from executor/coordinator defaults) → pass through unchanged
 ///
 /// Returns `(effective_model, registry_provider, registry_endpoint)`.
+fn resolve_spawn_model_via_registry(
+    executor_name: &str,
+    effective_model: Option<String>,
+    task_model: Option<&String>,
+    config: &Config,
+    dir: &Path,
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
+    if executor_name == "pi" {
+        return Ok((effective_model, None, None));
+    }
+    resolve_model_via_registry(effective_model, task_model, config, dir)
+}
+
 fn resolve_model_via_registry(
     effective_model: Option<String>,
     task_model: Option<&String>,
@@ -2688,6 +2718,54 @@ mod tests {
                 executor_type
             );
         }
+    }
+
+    #[test]
+    fn test_pi_external_cli_model_args_split_custom_provider_colon_model() {
+        assert_eq!(
+            external_cli_model_args("pi", Some("lunaroute:glm-5.2-nvfp4"), None).to_vec(),
+            vec![
+                "--provider".to_string(),
+                "lunaroute".to_string(),
+                "--model".to_string(),
+                "glm-5.2-nvfp4".to_string(),
+            ],
+            "Pi custom provider:model routes must be split for pi argv"
+        );
+        assert_eq!(
+            external_cli_model_args("pi", Some("pi:lunaroute:glm-5.2-nvfp4"), None).to_vec(),
+            vec![
+                "--provider".to_string(),
+                "lunaroute".to_string(),
+                "--model".to_string(),
+                "glm-5.2-nvfp4".to_string(),
+            ],
+            "The Pi executor prefix should be accepted defensively too"
+        );
+        assert_eq!(
+            external_cli_model_args("pi", Some("pi:openai:gpt-4.1"), None).to_vec(),
+            vec![
+                "--provider".to_string(),
+                "openai".to_string(),
+                "--model".to_string(),
+                "gpt-4.1".to_string(),
+            ],
+            "Pi provider names are Pi-owned and must not be mapped through WG native aliases"
+        );
+    }
+
+    #[test]
+    fn test_pi_external_cli_model_args_keep_openrouter_slash_model() {
+        assert_eq!(
+            external_cli_model_args("pi", Some("pi:openrouter/test/model"), None).to_vec(),
+            vec![
+                "--provider".to_string(),
+                "openrouter".to_string(),
+                "--model".to_string(),
+                "test/model".to_string(),
+            ],
+            "Existing Pi OpenRouter provider/model spelling must keep working"
+        );
     }
 
     #[test]
@@ -3342,6 +3420,59 @@ mod tests {
             err.contains("wg model add"),
             "Error should suggest how to register: {}",
             err
+        );
+    }
+
+    #[test]
+    fn test_registry_bypass_for_pi_custom_provider_task_model() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let pi_model = "lunaroute:glm-5.2-nvfp4".to_string();
+        let (model, provider, endpoint) = resolve_spawn_model_via_registry(
+            "pi",
+            Some(pi_model.clone()),
+            Some(&pi_model),
+            &config,
+            dir,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model,
+            Some(pi_model),
+            "Pi owns provider:model resolution; WG must not consult its registry/cache"
+        );
+        assert_eq!(provider, None);
+        assert_eq!(endpoint, None);
+    }
+
+    #[test]
+    fn test_registry_still_rejects_custom_provider_colon_for_non_pi_task_model() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let custom_provider_model = "lunaroute:glm-5.2-nvfp4".to_string();
+        let result = resolve_spawn_model_via_registry(
+            "native",
+            Some(custom_provider_model.clone()),
+            Some(&custom_provider_model),
+            &config,
+            dir,
+        );
+
+        assert!(
+            result.is_err(),
+            "Non-Pi executors should still validate unknown task models against WG registry/cache"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not found in config"),
+            "Non-Pi validation should keep the existing registry/cache error"
         );
     }
 

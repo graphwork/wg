@@ -1626,8 +1626,9 @@ name = "pi_worker_one_shot_prompt_and_cred_error"
 script = "scenarios/pi_worker_one_shot_prompt_and_cred_error.sh"
 owners = [
     "pi-plugin-impl-smoke",
+    "fix-pi-custom-provider-model",
 ]
-description = "Pins the pi one-shot worker path: WG spawns `pi --mode json -p ... --provider openrouter --model ...` headlessly, pipes the assembled WG prompt on stdin, surfaces a fake credential error, and marks the task failed on the nonzero exit. This guards the worker side of the `-p`/print-mode contract separate from the chat handler."
+description = "Pins the pi one-shot worker path: WG spawns `pi --mode json -p ... --provider openrouter --model ...` and custom `pi:<provider>:<model>` routes headlessly, pipes the assembled WG prompt on stdin, surfaces a fake credential error, and marks the task failed on the nonzero exit. This guards the worker side of the `-p`/print-mode contract separate from the chat handler."
 timeout_seconds = 45
 
 [[scenario]]
