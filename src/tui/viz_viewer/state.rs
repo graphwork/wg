@@ -1173,8 +1173,8 @@ pub struct AddNewExecutorChoice {
 /// Order is user-visible in the new-chat radio: `claude`, `codex`, `pi`,
 /// then the remaining executors. Pi is intentionally third (after Claude
 /// and Codex, before Nex) per fix-tui-new-chat-pi-executor — this makes the
-/// implemented `wg pi-handler` path reachable from the normal create-chat
-/// flow instead of only via `--executor pi` on the CLI.
+/// implemented Pi chat path reachable from the normal create-chat flow instead
+/// of only via `--executor pi` on the CLI.
 pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     AddNewExecutorChoice {
         label: "claude",
@@ -1735,15 +1735,40 @@ pub fn resolve_chat_pty_executor_and_model(
     config: &Config,
     coordinator_id: u32,
 ) -> (String, Option<String>) {
+    let chat_task = worksgood::parser::load_graph(crate::commands::graph_path(workgraph_dir))
+        .ok()
+        .and_then(|g| {
+            g.get_task(&worksgood::chat_id::format_chat_task_id(coordinator_id))
+                .cloned()
+        });
     let coord_state =
         crate::commands::service::CoordinatorState::load_for(workgraph_dir, coordinator_id);
     let executor = coord_state
         .as_ref()
         .and_then(|s| s.executor_override.clone())
+        .or_else(|| {
+            chat_task
+                .as_ref()
+                .and_then(|task| task.executor_preset_name.clone())
+        })
         .unwrap_or_else(|| config.coordinator.effective_executor());
+
+    let plain_pi_chat = executor == "pi"
+        && coord_state
+            .as_ref()
+            .and_then(|s| s.model_override.as_deref())
+            .is_none_or(|m| m.trim().is_empty())
+        && chat_task
+            .as_ref()
+            .is_some_and(|task| task.model.as_deref().is_none_or(|m| m.trim().is_empty()));
+    if plain_pi_chat {
+        return (executor, None);
+    }
+
     let model = coord_state
         .as_ref()
         .and_then(|s| s.model_override.clone())
+        .or_else(|| chat_task.as_ref().and_then(|task| task.model.clone()))
         .or_else(|| config.coordinator.model.clone());
     (executor, model)
 }
@@ -29414,6 +29439,25 @@ mod chat_pty_executor_resolution_tests {
         state.save_for(dir, cid);
     }
 
+    fn write_chat_task(
+        dir: &std::path::Path,
+        cid: u32,
+        executor: Option<&str>,
+        model: Option<&str>,
+    ) {
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: worksgood::chat_id::format_chat_task_id(cid),
+            title: format!("Chat {}", cid),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            executor_preset_name: executor.map(String::from),
+            model: model.map(String::from),
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+    }
+
     /// Regression lock for chat-launched-with: when the user creates a
     /// chat via `wg chat create --executor codex --model codex:gpt-5`
     /// (or the TUI `+` launcher's codex pick), the per-chat overrides
@@ -29488,6 +29532,66 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "claude");
         assert_eq!(model.as_deref(), Some("claude:sonnet"));
+    }
+
+    #[test]
+    fn plain_pi_chat_task_does_not_inherit_codex_profile_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"codex\"\nmodel = \"codex:gpt-5.5\"\n",
+        )
+        .unwrap();
+        write_chat_task(wg_dir, 2, Some("pi"), None);
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 2);
+
+        assert_eq!(executor, "pi");
+        assert_eq!(
+            model, None,
+            "plain Pi chat task must not inherit codex:gpt-5.5 from config/profile"
+        );
+    }
+
+    #[test]
+    fn plain_pi_chat_task_does_not_inherit_pi_profile_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"pi\"\nmodel = \"pi:lunaroute:glm-5.2-nvfp4\"\n",
+        )
+        .unwrap();
+        write_chat_task(wg_dir, 3, Some("pi"), None);
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 3);
+
+        assert_eq!(executor, "pi");
+        assert_eq!(
+            model, None,
+            "plain Pi chat task must not inherit pi:lunaroute:glm-5.2-nvfp4 from config/profile"
+        );
+    }
+
+    #[test]
+    fn explicit_pi_chat_task_preserves_model_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"codex\"\nmodel = \"codex:gpt-5.5\"\n",
+        )
+        .unwrap();
+        write_chat_task(wg_dir, 4, Some("pi"), Some("pi:lunaroute:glm-5.2-nvfp4"));
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 4);
+
+        assert_eq!(executor, "pi");
+        assert_eq!(model.as_deref(), Some("pi:lunaroute:glm-5.2-nvfp4"));
     }
 }
 

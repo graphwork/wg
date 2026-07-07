@@ -116,11 +116,25 @@ impl HandlerSpec {
                 s
             }
             Self::Pi { chat_ref, model } => {
-                let mut s = format!("wg pi-handler --chat {}", chat_ref);
-                if let Some(m) = model {
-                    s.push_str(&format!(" -m {}", m));
+                let mut parts = vec![
+                    "pi".to_string(),
+                    "--session-id".to_string(),
+                    chat_ref.to_string(),
+                    "--session-dir".to_string(),
+                    format!("chat/{}/pi-sessions", chat_ref),
+                ];
+                if let Some(marg) = crate::commands::pi_handler::pi_model_arg(model.as_deref()) {
+                    parts.splice(
+                        1..1,
+                        [
+                            "--provider".to_string(),
+                            marg.provider,
+                            "--model".to_string(),
+                            marg.model,
+                        ],
+                    );
                 }
-                s
+                parts.join(" ")
             }
             Self::Gemini { chat_ref } => format!("gemini [TODO: adapter for session={}]", chat_ref),
         }
@@ -423,16 +437,24 @@ fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Res
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let self_exe =
-            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
-        let mut cmd = std::process::Command::new(&self_exe);
-        cmd.arg("pi-handler").arg("--chat").arg(chat_ref);
-        cmd.env("WG_DIR", workgraph_dir);
-        if let Some(m) = model {
-            cmd.arg("-m").arg(m);
+        let chat_dir = worksgood::chat::chat_dir_for_ref(workgraph_dir, chat_ref);
+        let session_dir = chat_dir.join("pi-sessions");
+        std::fs::create_dir_all(&session_dir)
+            .with_context(|| format!("create pi session dir {:?}", session_dir))?;
+        let mut cmd = std::process::Command::new("pi");
+        if let Some(marg) = crate::commands::pi_handler::pi_model_arg(model) {
+            cmd.arg("--provider")
+                .arg(marg.provider)
+                .arg("--model")
+                .arg(marg.model);
         }
+        cmd.arg("--session-id")
+            .arg(chat_ref)
+            .arg("--session-dir")
+            .arg(&session_dir);
+        cmd.env("WG_DIR", workgraph_dir);
         let err = cmd.exec();
-        Err(anyhow!("exec wg pi-handler failed: {}", err))
+        Err(anyhow!("exec pi failed: {}", err))
     }
     #[cfg(not(unix))]
     {
@@ -849,7 +871,14 @@ mod tests {
                 }
                 other => panic!("expected Pi handler, got {}", other.command_preview()),
             }
-            assert_eq!(preview, "wg pi-handler --chat chat-0");
+            assert!(
+                preview.starts_with("pi "),
+                "plain Pi chat should launch the Pi CLI directly: {}",
+                preview
+            );
+            assert!(!preview.contains("--mode rpc"), "{}", preview);
+            assert!(!preview.contains("--provider"), "{}", preview);
+            assert!(!preview.contains("--model"), "{}", preview);
         });
     }
 
@@ -876,7 +905,7 @@ mod tests {
                     other => panic!("expected Pi handler, got {}", other.command_preview()),
                 }
                 assert!(
-                    preview.contains("-m lunaroute:glm-5.2-nvfp4"),
+                    preview.contains("--provider lunaroute --model glm-5.2-nvfp4"),
                     "{}",
                     preview
                 );

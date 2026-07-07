@@ -5296,9 +5296,10 @@ pub enum ChatCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Live chat executor shortcut: "claude", "codex", "opencode",
+        /// Live chat executor shortcut: "claude", "codex", "pi", "opencode",
         /// "octomind", "dexto", or "nex"/"native". `opencode`, `octomind`,
         /// and `dexto` run an OpenRouter (or other supported) model route and
+        /// `pi` uses Pi's own default unless `--model` is supplied. They
         /// need no `--endpoint`; `nex`/`native` is the only executor that
         /// takes one. `octomind`/`dexto` are line-oriented (tmux-scrollback
         /// safe) and currently launch via the TUI live-chat PTY path.
@@ -6105,8 +6106,9 @@ pub enum ServiceCommands {
         /// Model for this chat agent (e.g., "openai:qwen3-coder-30b")
         #[arg(long)]
         model: Option<String>,
-        /// Executor for this chat agent: "claude", "codex", "opencode",
-        /// or "native"/"nex". `opencode` runs an OpenRouter model route
+        /// Executor for this chat agent: "claude", "codex", "pi",
+        /// "opencode", or "native"/"nex". `pi` uses Pi's own default unless
+        /// `--model` is supplied; `opencode` runs an OpenRouter model route
         /// with no endpoint; only "native"/"nex" uses `--endpoint`.
         #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,

@@ -308,19 +308,14 @@ pub fn argv_for_preset(
             ]
         }
         "pi" => {
-            // Pi (pi.dev) is a chat-capable external CLI dispatched via the
-            // `wg pi-handler` RPC/worker bridge (peer of claude-handler /
-            // codex-handler / opencode-handler). `--chat <ref>` is the
-            // per-session inbox alias (`chat-<N>`). A model is passed only
-            // when the user explicitly pins one on the chat; plain Pi chats
-            // intentionally let Pi use its own configured/default model.
-            let mut argv = vec![wg_bin.to_string(), "pi-handler".to_string()];
-            argv.push("--chat".to_string());
-            // The caller (TUI launcher / `wg chat create`) substitutes the
-            // real chat alias; the pure builder emits the conventional token.
-            argv.push("chat".to_string());
+            // Plain Pi chat is a terminal-hosted Pi CLI pane. It must not route
+            // through `wg pi-handler` / `pi --mode rpc`, and it must not inherit
+            // WG's active profile model. A model marker is stored only when the
+            // user explicitly supplied one; runtime launchers translate that
+            // explicit WG spec into Pi's provider/model flags.
+            let mut argv = vec!["pi".to_string()];
             if let Some(m) = model.filter(|m| !m.is_empty()) {
-                argv.push("-m".to_string());
+                argv.push("--model".to_string());
                 argv.push(m.to_string());
             }
             argv
@@ -402,24 +397,14 @@ mod tests {
 
     #[test]
     fn argv_for_plain_pi_preset_omits_model_override() {
-        assert_eq!(
-            argv_for_preset("pi", None, None, "wg"),
-            vec!["wg", "pi-handler", "--chat", "chat"]
-        );
+        assert_eq!(argv_for_preset("pi", None, None, "wg"), vec!["pi"]);
     }
 
     #[test]
     fn argv_for_explicit_pi_preset_preserves_model_override() {
         assert_eq!(
             argv_for_preset("pi", Some("pi:lunaroute:glm-5.2-nvfp4"), None, "wg"),
-            vec![
-                "wg",
-                "pi-handler",
-                "--chat",
-                "chat",
-                "-m",
-                "pi:lunaroute:glm-5.2-nvfp4"
-            ]
+            vec!["pi", "--model", "pi:lunaroute:glm-5.2-nvfp4"]
         );
     }
 

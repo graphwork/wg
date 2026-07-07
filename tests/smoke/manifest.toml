@@ -142,8 +142,9 @@ name = "plain_pi_chat_default"
 script = "scenarios/plain_pi_chat_default.sh"
 owners = [
     "add-plain-pi",
+    "fix-plain-pi",
 ]
-description = "Pins add-plain-pi: `wg chat create --exec pi` stores executor=pi with no model/endpoint override and `wg spawn-task --dry-run .chat-N` launches `wg pi-handler --chat ...` without `-m`, `--model`, or `--provider`, while an explicit `--model pi:...` chat still preserves and passes the route. Credential-free."
+description = "Pins add-plain-pi/fix-plain-pi: `wg chat create --exec pi` stores executor=pi with no model/endpoint override and `wg spawn-task --dry-run .chat-N` launches interactive `pi` CLI metadata without `--mode rpc`, `--provider`, `-m`, or `--model`, even when the active/default config is codex:gpt-5.5 or pi:lunaroute:glm-5.2-nvfp4. An explicit `--model pi:...` chat still preserves the route and intentionally passes Pi provider/model flags. Credential-free."
 timeout_seconds = 30
 
 [[scenario]]

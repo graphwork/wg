@@ -959,15 +959,7 @@ mod tests {
         assert_eq!(chat.executor_preset_name.as_deref(), Some("pi"));
         assert_eq!(chat.model, None);
         assert_eq!(chat.endpoint, None);
-        assert_eq!(
-            chat.command_argv,
-            vec![
-                "wg".to_string(),
-                "pi-handler".to_string(),
-                "--chat".to_string(),
-                "chat".to_string()
-            ]
-        );
+        assert_eq!(chat.command_argv, vec!["pi".to_string()]);
     }
 
     #[test]
@@ -995,7 +987,7 @@ mod tests {
         assert!(
             chat.command_argv
                 .windows(2)
-                .any(|w| w[0] == "-m" && w[1] == "pi:lunaroute:glm-5.2-nvfp4"),
+                .any(|w| w[0] == "--model" && w[1] == "pi:lunaroute:glm-5.2-nvfp4"),
             "{:?}",
             chat.command_argv
         );

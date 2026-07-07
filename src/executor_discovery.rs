@@ -145,7 +145,7 @@ const EXECUTORS: &[ExecutorSpec] = &[
     },
     ExecutorSpec {
         name: "pi",
-        description: "Experimental Pi CLI (pi.dev) chat-capable handler (`wg pi-handler`; `--mode rpc` live chat, `-p`/`--mode json` worker)",
+        description: "Experimental Pi CLI (pi.dev): plain chat panes launch interactive `pi`; `wg pi-handler` remains the RPC/worker bridge",
         binary_candidates: &["pi"],
     },
 ];

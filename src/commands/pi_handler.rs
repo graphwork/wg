@@ -229,6 +229,22 @@ pub fn pi_model_arg(model: Option<&str>) -> Option<PiModelArg> {
         return None;
     }
 
+    if let Some((provider, model_id)) = inner.split_once(':') {
+        let provider = provider.trim();
+        let model_id = model_id.trim();
+        if !provider.is_empty() && !model_id.is_empty() {
+            let provider = if worksgood::config::KNOWN_PROVIDERS.contains(&provider) {
+                worksgood::config::provider_to_native_provider(provider)
+            } else {
+                provider
+            };
+            return Some(PiModelArg {
+                provider: provider.to_string(),
+                model: model_id.to_string(),
+            });
+        }
+    }
+
     let spec = worksgood::config::parse_model_spec(inner);
     let (provider, model_id) = match spec.provider.as_deref() {
         Some(prov) => {
@@ -1289,6 +1305,16 @@ mod tests {
             Some(PiModelArg {
                 provider: "anthropic".into(),
                 model: "opus".into(),
+            })
+        );
+        // Shape 4: pi:<arbitrary-pi-provider>:<model>. Pi supports providers
+        // beyond WG's native provider list; explicit user overrides should
+        // pass those through instead of being treated as plain chat defaults.
+        assert_eq!(
+            pi_model_arg(Some("pi:lunaroute:glm-5.2-nvfp4")),
+            Some(PiModelArg {
+                provider: "lunaroute".into(),
+                model: "glm-5.2-nvfp4".into(),
             })
         );
         // Unresolved shapes.
