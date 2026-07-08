@@ -2797,8 +2797,8 @@ pub enum WorktreeCommand {
     },
 
     /// Garbage-collect stale worktrees. Dry-run by default — use --execute
-    /// to actually remove. Filters (at least one recommended) narrow which
-    /// worktrees qualify; with no filters, nothing is removed.
+    /// to actually remove clean matches. Dirty worktrees are blocked unless
+    /// --discard-uncommitted is passed to intentionally destroy local work.
     Gc {
         /// Actually perform the removal. Without this flag, prints what
         /// would be removed and exits.
@@ -2814,6 +2814,11 @@ pub enum WorktreeCommand {
         /// (process gone, registry status dead, or no registry entry).
         #[arg(long)]
         dead_only: bool,
+
+        /// DANGEROUS: remove dirty matching worktrees and permanently discard
+        /// their uncommitted changes. Prefer `wg worktree archive <agent-id> --remove`.
+        #[arg(long)]
+        discard_uncommitted: bool,
     },
 }
 

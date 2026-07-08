@@ -157,13 +157,18 @@ fn parse_registry(token: &str) -> Option<Deliverable> {
 
 /// A path-like token: non-empty, no whitespace, and contains either a `/`
 /// (directory separator) or a `.` (file extension). This deliberately
-/// excludes bare words like `latest` or `manifest` (no extension) so review
-/// rubric bullets don't get mis-parsed as paths.
+/// excludes bare words like `latest` or `manifest` (no extension) and
+/// slash-separated prose verbs like `Add/adjust` so review rubric bullets
+/// don't get mis-parsed as paths.
 fn is_path_like(token: &str) -> bool {
     !token.is_empty()
         && !token.contains(char::is_whitespace)
-        && (token.contains('/') || token.contains('.'))
+        && (token.contains('.') || (token.contains('/') && is_lowercase_path_token(token)))
         && !token.starts_with("registry:")
+}
+
+fn is_lowercase_path_token(token: &str) -> bool {
+    !token.chars().any(|c| c.is_ascii_uppercase())
 }
 
 /// Outcome of checking a parsed deliverable list against the filesystem.
@@ -289,6 +294,12 @@ mod tests {
                 Deliverable::Path("seed/manifest.json".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn validation_fallback_ignores_slash_separated_prose_verbs() {
+        let desc = "## Validation\n- Add/adjust Rust tests proving default GC skips dirty worktrees.\n- Add/adjust a smoke scenario for clean and dirty worktrees.\n";
+        assert!(parse_deliverables(desc).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! `wg worktree` subcommands — list, archive, gc, and inspect agent worktrees.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -158,7 +158,7 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
 
 pub(crate) fn has_uncommitted_changes(wt_path: &Path) -> bool {
     Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=no"])
+        .args(["status", "--porcelain"])
         .current_dir(wt_path)
         .output()
         .map(|o| !o.stdout.is_empty())
@@ -222,10 +222,15 @@ pub(crate) fn parse_duration(s: &str) -> Result<Duration> {
 ///
 /// Worktrees are sacred — this is the only bulk-removal path in WG,
 /// and it refuses to act without explicit filters to prevent accidental
-/// nuke-all. Per-worktree removal still goes through `archive --remove`
-/// so uncommitted work is committed to the agent's branch before the
-/// directory is dropped.
-pub fn gc(workgraph_dir: &Path, execute: bool, older: Option<&str>, dead_only: bool) -> Result<()> {
+/// nuke-all. Dirty matches are blocked by default and diagnostics point to
+/// `archive --remove`, which commits a preservation snapshot before removal.
+pub fn gc(
+    workgraph_dir: &Path,
+    execute: bool,
+    older: Option<&str>,
+    dead_only: bool,
+    discard_uncommitted: bool,
+) -> Result<()> {
     let project_root = workgraph_dir
         .parent()
         .context("Cannot determine project root from WG dir")?;
@@ -264,7 +269,8 @@ pub fn gc(workgraph_dir: &Path, execute: bool, older: Option<&str>, dead_only: b
         std::collections::HashSet::new()
     };
 
-    let mut candidates: Vec<(String, std::path::PathBuf, String, String)> = Vec::new(); // (agent_id, path, age_str, size_str)
+    let mut clean_candidates: Vec<GcCandidate> = Vec::new();
+    let mut dirty_candidates: Vec<GcCandidate> = Vec::new();
     let now = SystemTime::now();
 
     for entry in std::fs::read_dir(&worktrees_dir)? {
@@ -299,53 +305,121 @@ pub fn gc(workgraph_dir: &Path, execute: bool, older: Option<&str>, dead_only: b
             continue;
         }
 
-        candidates.push((
-            name.clone(),
-            path.clone(),
-            humanize_duration(age),
-            dir_size_human(&path),
-        ));
+        let candidate = GcCandidate {
+            agent_id: name.clone(),
+            path: path.clone(),
+            age: humanize_duration(age),
+            size: dir_size_human(&path),
+        };
+        if has_uncommitted_changes(&path) {
+            dirty_candidates.push(candidate);
+        } else {
+            clean_candidates.push(candidate);
+        }
     }
 
-    if candidates.is_empty() {
+    if clean_candidates.is_empty() && dirty_candidates.is_empty() {
         println!("No worktrees match the filters.");
         return Ok(());
     }
 
-    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    clean_candidates.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    dirty_candidates.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+
+    let total = clean_candidates.len() + dirty_candidates.len();
 
     if !execute {
-        println!("Would remove {} worktree(s) (dry-run):", candidates.len());
-        for (aid, _path, age, size) in &candidates {
-            println!("  {} — {} — {}", aid, size, age);
+        println!("Matched {} worktree(s) (dry-run):", total);
+        println!("  {} clean removable", clean_candidates.len());
+        println!("  {} dirty blocked", dirty_candidates.len());
+        if !clean_candidates.is_empty() {
+            println!();
+            println!("Clean removable worktrees:");
+            for c in &clean_candidates {
+                println!("  [remove] {} — {} — {}", c.agent_id, c.size, c.age);
+            }
+        }
+        if !dirty_candidates.is_empty() {
+            println!();
+            println!("Dirty blocked worktrees (uncommitted work is preserved):");
+            for c in &dirty_candidates {
+                println!("  [blocked] {} — {} — {}", c.agent_id, c.size, c.age);
+            }
+            println!();
+            println!(
+                "Preserve-first cleanup: `wg worktree archive <agent-id> --remove` commits a snapshot before removal."
+            );
+            println!(
+                "Destructive cleanup: re-run with --execute --discard-uncommitted to permanently discard dirty work."
+            );
         }
         println!();
-        println!("Re-run with --execute to actually archive and remove.");
+        println!("Re-run with --execute to remove clean worktrees.");
         return Ok(());
     }
 
     let mut ok = 0;
     let mut failed = 0;
-    for (aid, path, _age, _size) in &candidates {
-        let branch = find_branch_for_agent(project_root, aid)
-            .unwrap_or_else(|| format!("wg/{}/unknown", aid));
-        match crate::commands::spawn::worktree::remove_worktree(project_root, path, &branch) {
+    let removal_candidates: Vec<&GcCandidate> = if discard_uncommitted {
+        clean_candidates
+            .iter()
+            .chain(dirty_candidates.iter())
+            .collect()
+    } else {
+        clean_candidates.iter().collect()
+    };
+
+    if !dirty_candidates.is_empty() && !discard_uncommitted {
+        eprintln!(
+            "[worktree-gc] Refusing to remove {} dirty worktree(s) with uncommitted changes.",
+            dirty_candidates.len()
+        );
+        for c in &dirty_candidates {
+            eprintln!(
+                "[worktree-gc] skipped dirty {} — preserve with `wg worktree archive {} --remove`, or intentionally discard with --discard-uncommitted",
+                c.agent_id, c.agent_id
+            );
+        }
+    } else if !dirty_candidates.is_empty() {
+        eprintln!(
+            "[worktree-gc] DANGEROUS: --discard-uncommitted active; {} dirty worktree(s) will be destroyed.",
+            dirty_candidates.len()
+        );
+    }
+
+    for c in &removal_candidates {
+        let branch = find_branch_for_agent(project_root, &c.agent_id)
+            .unwrap_or_else(|| format!("wg/{}/unknown", c.agent_id));
+        match crate::commands::spawn::worktree::remove_worktree(project_root, &c.path, &branch) {
             Ok(()) => {
                 ok += 1;
+                println!("[removed] {}", c.agent_id);
             }
             Err(e) => {
-                eprintln!("[worktree-gc] {}: {}", aid, e);
+                eprintln!("[worktree-gc] {}: {}", c.agent_id, e);
                 failed += 1;
             }
         }
     }
     println!();
-    println!(
-        "Removed {} worktree(s); {} failed. Uncommitted agent work was NOT preserved — \
-         use `wg worktree archive <agent-id>` first if you want to save it.",
-        ok, failed
-    );
+    println!("Removed {} worktree(s); {} failed.", ok, failed);
+    if !dirty_candidates.is_empty() && !discard_uncommitted {
+        anyhow::bail!(
+            "cleanup incomplete: {} dirty worktree(s) skipped. Preserve with `wg worktree archive <agent-id> --remove`, or re-run with --discard-uncommitted to intentionally destroy uncommitted work.",
+            dirty_candidates.len()
+        );
+    }
+    if failed > 0 {
+        anyhow::bail!("cleanup incomplete: {} worktree removal(s) failed", failed);
+    }
     Ok(())
+}
+
+struct GcCandidate {
+    agent_id: String,
+    path: PathBuf,
+    age: String,
+    size: String,
 }
 
 /// Look up the `wg/<agent>/<task>` branch for an agent-id, if any.
@@ -368,6 +442,58 @@ fn find_branch_for_agent(project_root: &Path, agent_id: &str) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn run_git(project_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(project_root)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn fixture_repo(tmp: &TempDir) -> (PathBuf, PathBuf) {
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        run_git(
+            tmp.path(),
+            &["init", "-b", "main", project_root.to_str().unwrap()],
+        );
+        run_git(&project_root, &["config", "user.email", "test@example.com"]);
+        run_git(&project_root, &["config", "user.name", "WG Test"]);
+        std::fs::write(project_root.join("README.md"), "initial\n").unwrap();
+        run_git(&project_root, &["add", "README.md"]);
+        run_git(&project_root, &["commit", "-m", "initial"]);
+
+        let wg_dir = project_root.join(".wg");
+        std::fs::create_dir_all(wg_dir.join("service")).unwrap();
+        (project_root, wg_dir)
+    }
+
+    fn add_agent_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> PathBuf {
+        let wt_path = project_root.join(".wg-worktrees").join(agent_id);
+        std::fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+        let branch = format!("wg/{}/{}", agent_id, task_id);
+        run_git(
+            project_root,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                &branch,
+                "HEAD",
+            ],
+        );
+        wt_path
+    }
 
     #[test]
     fn parse_duration_supports_common_units() {
@@ -392,5 +518,59 @@ mod tests {
     #[test]
     fn parse_duration_rejects_empty() {
         assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn has_uncommitted_changes_counts_untracked_agent_work() {
+        let tmp = TempDir::new().unwrap();
+        let (project_root, _wg_dir) = fixture_repo(&tmp);
+        let wt_path = add_agent_worktree(&project_root, "agent-dirty", "task-dirty");
+
+        std::fs::write(wt_path.join("new-agent-file.txt"), "important WIP\n").unwrap();
+
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "untracked files are uncommitted agent work and must block GC"
+        );
+    }
+
+    #[test]
+    fn worktree_gc_execute_skips_dirty_and_removes_clean_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let (project_root, wg_dir) = fixture_repo(&tmp);
+        let clean = add_agent_worktree(&project_root, "agent-clean", "task-clean");
+        let dirty = add_agent_worktree(&project_root, "agent-dirty", "task-dirty");
+        std::fs::write(dirty.join("uncommitted.txt"), "preserve me\n").unwrap();
+
+        gc(&wg_dir, false, None, true, false).expect("dry-run should not fail");
+        assert!(clean.exists(), "dry-run must not remove clean worktree");
+        assert!(dirty.exists(), "dry-run must not remove dirty worktree");
+
+        let err = gc(&wg_dir, true, None, true, false).unwrap_err();
+        assert!(
+            err.to_string().contains("dirty worktree"),
+            "execute should report dirty blocked worktrees, got: {}",
+            err
+        );
+        assert!(!clean.exists(), "clean dead worktree should be removed");
+        assert!(
+            dirty.exists(),
+            "dirty dead worktree must survive by default"
+        );
+    }
+
+    #[test]
+    fn worktree_gc_discard_uncommitted_removes_dirty_opt_in() {
+        let tmp = TempDir::new().unwrap();
+        let (project_root, wg_dir) = fixture_repo(&tmp);
+        let dirty = add_agent_worktree(&project_root, "agent-discard", "task-discard");
+        std::fs::write(dirty.join("uncommitted.txt"), "discard me\n").unwrap();
+
+        gc(&wg_dir, true, None, true, true).expect("discard opt-in should remove dirty worktree");
+
+        assert!(
+            !dirty.exists(),
+            "--discard-uncommitted should intentionally remove dirty worktree"
+        );
     }
 }

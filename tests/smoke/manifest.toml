@@ -873,6 +873,16 @@ description = "Pins wg-done-silent: when an agent's worktree branch has 0 commit
 timeout_seconds = 30
 
 [[scenario]]
+name = "worktree_gc_preserves_dirty"
+script = "scenarios/worktree_gc_preserves_dirty.sh"
+owners = [
+    "fix-worktree-gc-preserve-uncommitted",
+    "smoke-gate-is",
+]
+description = "Pins fix-worktree-gc-preserve-uncommitted: `wg worktree gc --dead-only` dry-run distinguishes clean removable worktrees from dirty blocked worktrees; `--execute` removes the clean dead worktree but skips the dirty one and exits non-zero; only the explicit destructive `--discard-uncommitted` flag removes the dirty worktree, with loud output. Uses real git worktrees and no LLM credentials."
+timeout_seconds = 30
+
+[[scenario]]
 name = "chat_launched_with_codex_uses_codex"
 script = "scenarios/chat_launched_with_codex_uses_codex.sh"
 owners = [
