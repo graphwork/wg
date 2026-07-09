@@ -1618,6 +1618,7 @@ fn build_auto_assign_tasks(
             &mode_context,
             underspec_warning.as_deref(),
             &active_tasks_context,
+            Some(graph),
         ) {
             Ok(v) => v,
             Err(e) => {

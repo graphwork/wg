@@ -347,12 +347,33 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
         all_agents.clone()
     };
 
-    // Select the agent with the highest performance score, defaulting to the first agent
+    // Select the agent with the highest performance score in the same history
+    // partition the lightweight assigner uses. This keeps agency/system task
+    // wins from making evaluator/reviewer personas look experienced for
+    // ordinary work.
+    let history_class = crate::commands::service::assignment::history_class_for_assignment(task);
+    eprintln!(
+        "[assign] history_class={} for task '{}' (auto-rank uses only this class)",
+        history_class.label(),
+        task_id
+    );
     let selected_agent = pool
         .iter()
         .max_by(|a, b| {
-            let a_score = a.performance.avg_score.unwrap_or(0.0);
-            let b_score = b.performance.avg_score.unwrap_or(0.0);
+            let a_score = crate::commands::service::assignment::scoped_performance_for_agent(
+                a,
+                Some(&graph),
+                history_class,
+            )
+            .avg_score
+            .unwrap_or(0.0);
+            let b_score = crate::commands::service::assignment::scoped_performance_for_agent(
+                b,
+                Some(&graph),
+                history_class,
+            )
+            .avg_score
+            .unwrap_or(0.0);
             a_score
                 .partial_cmp(&b_score)
                 .unwrap_or(std::cmp::Ordering::Equal)

@@ -4,9 +4,127 @@
 
 use anyhow::{Context, Result};
 
-use worksgood::agency::{self, Agent, short_hash};
+use worksgood::agency::{self, Agent, EvaluationRef, short_hash};
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{Task, TokenUsage, WorkGraph, is_system_task};
+
+/// History partition used for assignment evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssignmentHistoryClass {
+    ActualWork,
+    SystemAgency,
+}
+
+impl AssignmentHistoryClass {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            AssignmentHistoryClass::ActualWork => "actual_work",
+            AssignmentHistoryClass::SystemAgency => "system_agency",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ScopedPerformance {
+    pub avg_score: Option<f64>,
+    pub task_count: u32,
+}
+
+/// Classify a graph task for assignment-history statistics.
+pub(crate) fn classify_task_history(task: &Task) -> AssignmentHistoryClass {
+    if task_history_id_is_system(&task.id) || task_history_tags_are_system(&task.tags) {
+        AssignmentHistoryClass::SystemAgency
+    } else {
+        AssignmentHistoryClass::ActualWork
+    }
+}
+
+/// Select the history bucket that should inform assignment for `task`.
+pub(crate) fn history_class_for_assignment(task: &Task) -> AssignmentHistoryClass {
+    if worksgood::assignment_eligibility::task_uses_work_pool(task) {
+        AssignmentHistoryClass::ActualWork
+    } else {
+        AssignmentHistoryClass::SystemAgency
+    }
+}
+
+fn classify_history_ref(
+    eval_ref: &EvaluationRef,
+    graph: Option<&WorkGraph>,
+) -> AssignmentHistoryClass {
+    if let Some(task) = graph.and_then(|g| g.get_task(&eval_ref.task_id)) {
+        classify_task_history(task)
+    } else if task_history_id_is_system(&eval_ref.task_id) {
+        AssignmentHistoryClass::SystemAgency
+    } else {
+        AssignmentHistoryClass::ActualWork
+    }
+}
+
+fn task_history_id_is_system(task_id: &str) -> bool {
+    is_system_task(task_id)
+        || task_id.starts_with("assign-")
+        || task_id.starts_with("flip-")
+        || task_id.starts_with("evaluate-")
+        || task_id.starts_with("review-")
+        || task_id.starts_with("agency-")
+}
+
+fn task_history_tags_are_system(tags: &[String]) -> bool {
+    tags.iter().any(|tag| {
+        matches!(
+            tag.to_ascii_lowercase().as_str(),
+            "assignment"
+                | "assign"
+                | "flip"
+                | "evaluation"
+                | "evaluate"
+                | "eval"
+                | "agency"
+                | "review"
+                | "reviewer"
+                | "evolution"
+                | "evolver"
+                | "system"
+        )
+    })
+}
+
+/// Compute an agent's performance using only the selected history class.
+pub(crate) fn scoped_performance_for_agent(
+    agent: &Agent,
+    graph: Option<&WorkGraph>,
+    history_class: AssignmentHistoryClass,
+) -> ScopedPerformance {
+    let scores: Vec<f64> = agent
+        .performance
+        .evaluations
+        .iter()
+        .filter(|eval_ref| classify_history_ref(eval_ref, graph) == history_class)
+        .map(|eval_ref| eval_ref.score)
+        .filter(|score| score.is_finite())
+        .collect();
+
+    if scores.is_empty() {
+        if history_class == AssignmentHistoryClass::SystemAgency
+            && agent.performance.evaluations.is_empty()
+            && agent.performance.task_count > 0
+        {
+            return ScopedPerformance {
+                avg_score: agent.performance.avg_score,
+                task_count: agent.performance.task_count,
+            };
+        }
+        return ScopedPerformance::default();
+    }
+
+    let sum: f64 = scores.iter().sum();
+    let avg = sum / scores.len() as f64;
+    ScopedPerformance {
+        avg_score: avg.is_finite().then_some(avg),
+        task_count: scores.len() as u32,
+    }
+}
 
 /// Placement decision: dependency edges to add to the source task.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -52,6 +170,7 @@ struct AgentEntry {
     tradeoff_name: String,
     avg_score: Option<f64>,
     task_count: u32,
+    history_class: AssignmentHistoryClass,
     capabilities: Vec<String>,
     _staleness_flags: Vec<String>,
 }
@@ -61,6 +180,8 @@ fn build_agent_catalog(
     agents: &[Agent],
     roles_dir: &std::path::Path,
     tradeoffs_dir: &std::path::Path,
+    graph: Option<&WorkGraph>,
+    history_class: AssignmentHistoryClass,
 ) -> Vec<AgentEntry> {
     agents
         .iter()
@@ -68,6 +189,7 @@ fn build_agent_catalog(
         .map(|a| {
             let role = agency::find_role_by_prefix(roles_dir, &a.role_id).ok();
             let tradeoff = agency::find_tradeoff_by_prefix(tradeoffs_dir, &a.tradeoff_id).ok();
+            let scoped = scoped_performance_for_agent(a, graph, history_class);
             let role_skills = role
                 .as_ref()
                 .map(|r| r.component_ids.to_vec())
@@ -78,8 +200,9 @@ fn build_agent_catalog(
                 role_name: role.as_ref().map(|r| r.name.clone()).unwrap_or_default(),
                 role_skills,
                 tradeoff_name: tradeoff.map(|t| t.name.clone()).unwrap_or_default(),
-                avg_score: a.performance.avg_score,
-                task_count: a.performance.task_count,
+                avg_score: scoped.avg_score,
+                task_count: scoped.task_count,
+                history_class,
                 capabilities: a.capabilities.clone(),
                 _staleness_flags: a
                     .staleness_flags
@@ -99,11 +222,12 @@ fn render_agent_catalog(entries: &[AgentEntry]) -> String {
     let mut out = String::new();
     for e in entries {
         out.push_str(&format!(
-            "- **{}** (hash: {}): role={}, tradeoff={}, score={}, tasks={}{}{}\n",
+            "- **{}** (hash: {}): role={}, tradeoff={}, history={}, score={}, tasks={}{}{}\n",
             e.name,
             e.hash,
             e.role_name,
             e.tradeoff_name,
+            e.history_class.label(),
             e.avg_score
                 .map(|s| format!("{:.2}", s))
                 .unwrap_or_else(|| "none".to_string()),
@@ -132,6 +256,7 @@ pub(crate) fn build_assignment_prompt(
     task: &Task,
     mode_context: &str,
     agent_catalog: &str,
+    history_class: AssignmentHistoryClass,
     underspec_warning: Option<&str>,
     active_tasks_context: &str,
     executor_type: &str,
@@ -228,11 +353,16 @@ If no placement changes are needed, set `placement` to null.
 ## Available Agents
 
 {agent_catalog}
+## Assignment History Class
+
+Using `{history_class}` history for candidate scores and task counts. Normal work tasks ignore
+`.assign-*`, `.flip-*`, `.evaluate-*`, `agency`, and reviewer/evaluator system history.
+
 ## Decision Criteria
 
 1. **Role fit**: Agent's role skills should overlap with task requirements.
 2. **Tradeoff fit**: Agent's operational style should match task nature (Careful for correctness-critical, Fast for routine, Thorough for complex).
-3. **Performance**: Prefer agents with higher avg_score on similar tasks.
+3. **Performance**: Prefer agents with higher avg_score in the selected history class only.
 4. **Capabilities**: Match agent capabilities to task tags/skills.
 5. **Cold start**: When agents have no scores, match on role and spread work across untested agents.
 
@@ -265,7 +395,8 @@ Respond with ONLY a JSON object (no markdown fences, no commentary):
 Always pick the closest match — never fail to assign. If no agent is a good fit
 (the task requires capabilities not represented by any existing agent), still assign
 the best available but set `"create_needed": true` to signal that new agent types
-should be created for future tasks like this."#
+should be created for future tasks like this."#,
+        history_class = history_class.label()
     )
 }
 
@@ -285,10 +416,13 @@ pub(crate) fn run_lightweight_assignment(
     mode_context: &str,
     underspec_warning: Option<&str>,
     active_tasks_context: &str,
+    graph: Option<&WorkGraph>,
 ) -> Result<(AssignmentVerdict, Option<TokenUsage>)> {
     let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
+    let history_class = history_class_for_assignment(task);
 
-    let catalog_entries = build_agent_catalog(agents, roles_dir, tradeoffs_dir);
+    let catalog_entries =
+        build_agent_catalog(agents, roles_dir, tradeoffs_dir, graph, history_class);
     let catalog_text = render_agent_catalog(&catalog_entries);
 
     let executor_type = config.coordinator.effective_executor();
@@ -296,9 +430,16 @@ pub(crate) fn run_lightweight_assignment(
         task,
         mode_context,
         &catalog_text,
+        history_class,
         underspec_warning,
         active_tasks_context,
         &executor_type,
+    );
+    eprintln!(
+        "[assignment] history_class={} task='{}' candidates={} (candidate score/task_count evidence filtered to this class)",
+        history_class.label(),
+        task.id,
+        catalog_entries.len()
     );
 
     let result = worksgood::service::llm::run_lightweight_llm_call(
@@ -441,7 +582,79 @@ fn extract_assignment_json(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worksgood::graph::{Status, Task};
+    use worksgood::agency::{Lineage, PerformanceRecord};
+    use worksgood::graph::{Node, Status, Task};
+
+    fn eval_ref(task_id: &str, score: f64) -> EvaluationRef {
+        EvaluationRef {
+            score,
+            task_id: task_id.to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            context_id: "role".to_string(),
+        }
+    }
+
+    fn agent_with_evals(name: &str, evals: Vec<EvaluationRef>) -> Agent {
+        let avg_score = agency::recalculate_avg_score(&evals);
+        Agent {
+            id: format!("agent-{name}"),
+            role_id: "role-programmer".to_string(),
+            tradeoff_id: "tradeoff-careful".to_string(),
+            name: name.to_string(),
+            performance: PerformanceRecord {
+                task_count: evals.len() as u32,
+                avg_score,
+                evaluations: evals,
+            },
+            lineage: Lineage::default(),
+            capabilities: Vec::new(),
+            rate: None,
+            capacity: None,
+            trust_level: Default::default(),
+            contact: None,
+            executor: "claude".to_string(),
+            preferred_model: None,
+            preferred_provider: None,
+            attractor_weight: 1.0,
+            deployment_history: Vec::new(),
+            staleness_flags: Vec::new(),
+        }
+    }
+
+    fn graph_with_history_tasks() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        let mut actual = Task {
+            id: "impl-success".to_string(),
+            title: "Implement feature".to_string(),
+            status: Status::Done,
+            ..Default::default()
+        };
+        actual.tags = vec!["implementation".to_string()];
+        graph.add_node(Node::Task(actual));
+
+        for id in [
+            ".assign-impl-success",
+            ".flip-impl-success",
+            ".evaluate-impl-success",
+        ] {
+            graph.add_node(Node::Task(Task {
+                id: id.to_string(),
+                title: id.to_string(),
+                status: Status::Done,
+                ..Default::default()
+            }));
+        }
+
+        let mut agency = Task {
+            id: "agency-review-pass".to_string(),
+            title: "Review agency output".to_string(),
+            status: Status::Done,
+            ..Default::default()
+        };
+        agency.tags = vec!["agency".to_string(), "review".to_string()];
+        graph.add_node(Node::Task(agency));
+        graph
+    }
 
     #[test]
     fn test_extract_assignment_json_plain() {
@@ -480,6 +693,7 @@ mod tests {
             &task,
             "## Mode\nPerformance",
             "- Agent1 (hash: abc)\n",
+            AssignmentHistoryClass::ActualWork,
             None,
             "",
             "claude",
@@ -507,14 +721,130 @@ mod tests {
             tradeoff_name: "Careful".to_string(),
             avg_score: Some(0.85),
             task_count: 10,
+            history_class: AssignmentHistoryClass::ActualWork,
             capabilities: vec!["rust".to_string()],
             _staleness_flags: vec![],
         }];
         let result = render_agent_catalog(&entries);
         assert!(result.contains("TestAgent"));
         assert!(result.contains("abc12345"));
+        assert!(result.contains("history=actual_work"));
         assert!(result.contains("0.85"));
         assert!(result.contains("rust"));
+    }
+
+    #[test]
+    fn actual_work_assignment_stats_ignore_system_agency_history() {
+        let graph = graph_with_history_tasks();
+        let evaluator = agent_with_evals(
+            "Default Evaluator",
+            vec![
+                eval_ref(".assign-impl-success", 1.0),
+                eval_ref(".flip-impl-success", 1.0),
+                eval_ref(".evaluate-impl-success", 1.0),
+                eval_ref("agency-review-pass", 1.0),
+            ],
+        );
+        let programmer =
+            agent_with_evals("Careful Programmer", vec![eval_ref("impl-success", 0.82)]);
+
+        let evaluator_actual = scoped_performance_for_agent(
+            &evaluator,
+            Some(&graph),
+            AssignmentHistoryClass::ActualWork,
+        );
+        let programmer_actual = scoped_performance_for_agent(
+            &programmer,
+            Some(&graph),
+            AssignmentHistoryClass::ActualWork,
+        );
+
+        assert_eq!(evaluator_actual, ScopedPerformance::default());
+        assert_eq!(programmer_actual.task_count, 1);
+        assert_eq!(programmer_actual.avg_score, Some(0.82));
+        assert!(
+            programmer_actual.avg_score.unwrap_or(0.0) > evaluator_actual.avg_score.unwrap_or(0.0),
+            "actual-work ranking should surface the programmer over system-only evaluator"
+        );
+    }
+
+    #[test]
+    fn system_assignment_stats_keep_system_agency_history() {
+        let graph = graph_with_history_tasks();
+        let evaluator = agent_with_evals(
+            "Default Evaluator",
+            vec![
+                eval_ref(".assign-impl-success", 0.9),
+                eval_ref(".evaluate-impl-success", 1.0),
+            ],
+        );
+        let programmer =
+            agent_with_evals("Careful Programmer", vec![eval_ref("impl-success", 0.82)]);
+
+        let evaluator_system = scoped_performance_for_agent(
+            &evaluator,
+            Some(&graph),
+            AssignmentHistoryClass::SystemAgency,
+        );
+        let programmer_system = scoped_performance_for_agent(
+            &programmer,
+            Some(&graph),
+            AssignmentHistoryClass::SystemAgency,
+        );
+
+        assert_eq!(evaluator_system.task_count, 2);
+        assert!((evaluator_system.avg_score.unwrap() - 0.95).abs() < f64::EPSILON);
+        assert_eq!(programmer_system, ScopedPerformance::default());
+    }
+
+    #[test]
+    fn real_work_prompt_catalog_excludes_system_task_scores() {
+        let graph = graph_with_history_tasks();
+        let evaluator = agent_with_evals(
+            "Default Evaluator",
+            vec![
+                eval_ref(".assign-impl-success", 1.0),
+                eval_ref(".flip-impl-success", 1.0),
+                eval_ref(".evaluate-impl-success", 1.0),
+                eval_ref("agency-review-pass", 1.0),
+            ],
+        );
+        let programmer =
+            agent_with_evals("Careful Programmer", vec![eval_ref("impl-success", 0.82)]);
+        let entries = build_agent_catalog(
+            &[evaluator, programmer],
+            std::path::Path::new("/missing/roles"),
+            std::path::Path::new("/missing/tradeoffs"),
+            Some(&graph),
+            AssignmentHistoryClass::ActualWork,
+        );
+        let catalog = render_agent_catalog(&entries);
+
+        assert!(catalog.contains("Default Evaluator"));
+        assert!(catalog.contains("history=actual_work, score=none, tasks=0"));
+        assert!(catalog.contains("Careful Programmer"));
+        assert!(catalog.contains("history=actual_work, score=0.82, tasks=1"));
+
+        let task = Task {
+            id: "build-widget".to_string(),
+            title: "Build widget".to_string(),
+            status: Status::Open,
+            tags: vec!["implementation".to_string()],
+            ..Default::default()
+        };
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            &catalog,
+            AssignmentHistoryClass::ActualWork,
+            None,
+            "",
+            "claude",
+        );
+        assert!(prompt.contains("Using `actual_work` history"));
+        assert!(prompt.contains("Normal work tasks ignore"));
+        assert!(prompt.contains("history=actual_work, score=none, tasks=0"));
+        assert!(!prompt.contains("history=actual_work, score=1.00"));
     }
 
     #[test]
@@ -530,6 +860,7 @@ mod tests {
             &task,
             "",
             "- Agent1 (hash: abc)\n",
+            AssignmentHistoryClass::ActualWork,
             None,
             active_ctx,
             "claude",
@@ -548,8 +879,15 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         };
-        let prompt =
-            build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "", "claude");
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            "- Agent1 (hash: abc)\n",
+            AssignmentHistoryClass::ActualWork,
+            None,
+            "",
+            "claude",
+        );
         assert!(!prompt.contains("Active Tasks"));
         assert!(!prompt.contains("Placement Instructions"));
     }
@@ -600,7 +938,15 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         };
-        let prompt = build_assignment_prompt(&task, "", "- Agent1\n", None, "", "claude");
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            "- Agent1\n",
+            AssignmentHistoryClass::ActualWork,
+            None,
+            "",
+            "claude",
+        );
         // Should mention the configured executor
         assert!(prompt.contains("Available executor:** claude"));
         // Should list valid modes for claude (bare, light, full — NOT shell)
@@ -621,7 +967,15 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         };
-        let prompt = build_assignment_prompt(&task, "", "- Agent1\n", None, "", "shell");
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            "- Agent1\n",
+            AssignmentHistoryClass::ActualWork,
+            None,
+            "",
+            "shell",
+        );
         // Should mention shell executor
         assert!(prompt.contains("Available executor:** shell"));
         // Should only list shell as valid mode
