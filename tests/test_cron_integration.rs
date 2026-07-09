@@ -277,6 +277,7 @@ fn create_test_task() -> Task {
         model: None,
         provider: None,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,

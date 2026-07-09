@@ -32,7 +32,7 @@ pub(crate) struct ScopedPerformance {
 
 /// Classify a graph task for assignment-history statistics.
 pub(crate) fn classify_task_history(task: &Task) -> AssignmentHistoryClass {
-    if task_history_id_is_system(&task.id) || task_history_tags_are_system(&task.tags) {
+    if task_history_id_is_system(&task.id) {
         AssignmentHistoryClass::SystemAgency
     } else {
         AssignmentHistoryClass::ActualWork
@@ -63,31 +63,6 @@ fn classify_history_ref(
 
 fn task_history_id_is_system(task_id: &str) -> bool {
     is_system_task(task_id)
-        || task_id.starts_with("assign-")
-        || task_id.starts_with("flip-")
-        || task_id.starts_with("evaluate-")
-        || task_id.starts_with("review-")
-        || task_id.starts_with("agency-")
-}
-
-fn task_history_tags_are_system(tags: &[String]) -> bool {
-    tags.iter().any(|tag| {
-        matches!(
-            tag.to_ascii_lowercase().as_str(),
-            "assignment"
-                | "assign"
-                | "flip"
-                | "evaluation"
-                | "evaluate"
-                | "eval"
-                | "agency"
-                | "review"
-                | "reviewer"
-                | "evolution"
-                | "evolver"
-                | "system"
-        )
-    })
 }
 
 /// Compute an agent's performance using only the selected history class.
@@ -742,7 +717,6 @@ mod tests {
                 eval_ref(".assign-impl-success", 1.0),
                 eval_ref(".flip-impl-success", 1.0),
                 eval_ref(".evaluate-impl-success", 1.0),
-                eval_ref("agency-review-pass", 1.0),
             ],
         );
         let programmer =
@@ -806,7 +780,6 @@ mod tests {
                 eval_ref(".assign-impl-success", 1.0),
                 eval_ref(".flip-impl-success", 1.0),
                 eval_ref(".evaluate-impl-success", 1.0),
-                eval_ref("agency-review-pass", 1.0),
             ],
         );
         let programmer =
@@ -845,6 +818,30 @@ mod tests {
         assert!(prompt.contains("Normal work tasks ignore"));
         assert!(prompt.contains("history=actual_work, score=none, tasks=0"));
         assert!(!prompt.contains("history=actual_work, score=1.00"));
+    }
+
+    #[test]
+    fn label_tagged_tasks_count_as_actual_work_history() {
+        let graph = graph_with_history_tasks();
+        let evaluator = agent_with_evals(
+            "Default Evaluator",
+            vec![eval_ref("agency-review-pass", 1.0)],
+        );
+
+        let actual = scoped_performance_for_agent(
+            &evaluator,
+            Some(&graph),
+            AssignmentHistoryClass::ActualWork,
+        );
+        let system = scoped_performance_for_agent(
+            &evaluator,
+            Some(&graph),
+            AssignmentHistoryClass::SystemAgency,
+        );
+
+        assert_eq!(actual.task_count, 1);
+        assert_eq!(actual.avg_score, Some(1.0));
+        assert_eq!(system, ScopedPerformance::default());
     }
 
     #[test]

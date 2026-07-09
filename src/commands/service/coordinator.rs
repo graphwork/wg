@@ -1933,6 +1933,7 @@ fn build_auto_assign_tasks(
                     model: Some(creator_resolved.model),
                     provider: creator_resolved.provider,
                     endpoint: None,
+                    remote_provider: None,
                     profile: None,
                     command_argv: vec![],
                     working_dir: None,
@@ -2035,16 +2036,13 @@ fn build_auto_evaluate_tasks(
 
     // Catch-all for tasks that weren't published with eager scaffolding
     // (backward compatibility). The eval_scaffold helper handles idempotency
-    // and tag checks, so this is safe to call even if publish already created
+    // structurally, so this is safe to call even if publish already created
     // the eval task.
     let tasks_needing_eval: Vec<_> = graph
         .tasks()
         .filter(|t| {
             // Skip paused/draft tasks — their pipeline is scaffolded at
             // `wg publish` time via scaffold_full_pipeline.  Creating
-            // .flip/.evaluate here prematurely would tag the source task
-            // as eval-scheduled, causing scaffold_full_pipeline to skip
-            // .place/.assign creation later.
             if t.paused {
                 return false;
             }
@@ -2052,14 +2050,7 @@ fn build_auto_evaluate_tasks(
             if graph.get_task(&eval_id).is_some() {
                 return false;
             }
-            let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags
-                .iter()
-                .any(|tag| dominated_tags.contains(&tag.as_str()))
-            {
-                return false;
-            }
-            if t.tags.iter().any(|tag| tag == "eval-scheduled") {
+            if worksgood::graph::is_system_task(&t.id) {
                 return false;
             }
             // Skip tasks assigned to human agents
@@ -2178,8 +2169,12 @@ fn build_flip_verification_tasks(
 
         // Skip tasks that would be handled by eval gate - let eval gate take precedence
         if let Some(eval_threshold) = config.agency.eval_gate_threshold {
-            let is_eval_gated =
-                config.agency.eval_gate_all || source_task.tags.iter().any(|t| t == "eval-gate");
+            let has_deliverables = source_task
+                .description
+                .as_deref()
+                .map(crate::commands::deliverables::parse_deliverables)
+                .is_some_and(|deliverables| !deliverables.is_empty());
+            let is_eval_gated = config.agency.eval_gate_all || has_deliverables;
             if is_eval_gated {
                 // Check if there's a regular evaluation for this task that scored below eval threshold
                 // But exclude system evaluations (infrastructure failures) from this check
@@ -2330,6 +2325,7 @@ fn build_flip_verification_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -2606,6 +2602,7 @@ fn build_separate_verify_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -2812,6 +2809,7 @@ fn build_auto_evolve_task(
         model: Some(evolver_resolved.model),
         provider: evolver_resolved.provider,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,
@@ -3021,6 +3019,7 @@ fn build_auto_create_task(
         model: Some(creator_resolved.model),
         provider: creator_resolved.provider,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,
@@ -4167,13 +4166,12 @@ fn spawn_agents_for_ready_tasks(
         // Evaluation, flip, and assignment tasks run inline: fork `wg evaluate`, `wg flip`, or `wg assign`
         // directly instead of going through the full spawn machinery
         // (run.sh, executor config, etc.)
-        let is_inline_task = task
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && task.exec.is_some();
+        let is_inline_task = task.exec.is_some()
+            && (task.id.starts_with(".evaluate-")
+                || task.id.starts_with(".flip-")
+                || task.id.starts_with(".assign-"));
         if is_inline_task {
-            let is_assignment = task.tags.iter().any(|t| t == "assignment");
+            let is_assignment = task.id.starts_with(".assign-");
             let eval_model = task.model.as_deref();
             let task_id = task.id.clone();
             let title = task.title.clone();
@@ -5111,27 +5109,32 @@ mod tests {
 
     #[test]
     fn test_eval_routing_condition() {
-        // The routing condition for inline eval: has "evaluation" tag AND exec is set
+        // Inline evaluator routing is structural: a dot-prefixed eval/flip/assign
+        // task with exec is inline. Tags are inert labels.
         let mut task = Task::default();
-        task.id = "evaluate-t1".to_string();
+        task.id = ".evaluate-t1".to_string();
         task.tags = vec!["evaluation".to_string(), "agency".to_string()];
         task.exec = Some("wg evaluate run t1".to_string());
 
-        let is_inline_eval = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
+        let is_inline_eval = task.exec.is_some()
+            && (task.id.starts_with(".evaluate-") || task.id.starts_with(".flip-"));
         assert!(is_inline_eval);
 
         // Non-eval exec task should NOT match
         let mut shell_task = Task::default();
+        shell_task.id = "evaluate-t1".to_string();
+        shell_task.tags = vec!["evaluation".to_string()];
         shell_task.exec = Some("bash run.sh".to_string());
-        let is_inline_eval2 =
-            shell_task.tags.iter().any(|t| t == "evaluation") && shell_task.exec.is_some();
+        let is_inline_eval2 = shell_task.exec.is_some()
+            && (shell_task.id.starts_with(".evaluate-") || shell_task.id.starts_with(".flip-"));
         assert!(!is_inline_eval2);
 
-        // Eval tag but no exec should NOT match
+        // Structural eval task but no exec should NOT match
         let mut no_exec = Task::default();
+        no_exec.id = ".evaluate-t2".to_string();
         no_exec.tags = vec!["evaluation".to_string()];
-        let is_inline_eval3 =
-            no_exec.tags.iter().any(|t| t == "evaluation") && no_exec.exec.is_some();
+        let is_inline_eval3 = no_exec.exec.is_some()
+            && (no_exec.id.starts_with(".evaluate-") || no_exec.id.starts_with(".flip-"));
         assert!(!is_inline_eval3);
     }
 
@@ -6221,11 +6224,11 @@ mod tests {
     // `dispatch::plan::resolve_executor`; see tests in src/dispatch/plan.rs.
     // -----------------------------------------------------------------------
 
-    ///.assign-* tasks with `assignment` tag and `exec` field are detected as inline
+    ///.assign-* tasks with an `exec` field are detected as inline
     /// tasks and spawned via the lightweight inline path, not as full Claude agents.
     #[test]
     fn test_assign_spawned_inline() {
-        // An .assign-* task with "assignment" tag + exec should be detected as inline
+        // A .assign-* task with exec should be detected as inline. Tags do not route it.
         let mut assign_task = Task::default();
         assign_task.id = ".assign-my-task".to_string();
         assign_task.title = "Assign agent for: My Task".to_string();
@@ -6233,18 +6236,17 @@ mod tests {
         assign_task.exec = Some("wg assign my-task --auto".to_string());
         assign_task.status = Status::Open;
 
-        let is_inline_task = assign_task
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && assign_task.exec.is_some();
+        let is_inline_task = assign_task.exec.is_some()
+            && (assign_task.id.starts_with(".evaluate-")
+                || assign_task.id.starts_with(".flip-")
+                || assign_task.id.starts_with(".assign-"));
         assert!(
             is_inline_task,
-            ".assign-* task with assignment tag + exec should be detected as inline"
+            ".assign-* task with exec should be detected as inline"
         );
 
         // Verify the assignment branch is taken (not eval)
-        let is_assignment = assign_task.tags.iter().any(|t| t == "assignment");
+        let is_assignment = assign_task.id.starts_with(".assign-");
         assert!(
             is_assignment,
             ".assign-* task should be routed to the assignment inline path"
@@ -6254,11 +6256,10 @@ mod tests {
         let mut no_exec_assign = Task::default();
         no_exec_assign.id = ".assign-other".to_string();
         no_exec_assign.tags = vec!["assignment".to_string()];
-        let is_inline_no_exec = no_exec_assign
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && no_exec_assign.exec.is_some();
+        let is_inline_no_exec = no_exec_assign.exec.is_some()
+            && (no_exec_assign.id.starts_with(".evaluate-")
+                || no_exec_assign.id.starts_with(".flip-")
+                || no_exec_assign.id.starts_with(".assign-"));
         assert!(
             !is_inline_no_exec,
             ".assign-* without exec should NOT be inline"
@@ -6267,15 +6268,19 @@ mod tests {
         // A regular task with exec but no assignment/eval/flip tag should NOT match
         let mut regular_exec = Task::default();
         regular_exec.id = "build-thing".to_string();
+        regular_exec.tags = vec![
+            "assignment".to_string(),
+            "evaluation".to_string(),
+            "flip".to_string(),
+        ];
         regular_exec.exec = Some("make build".to_string());
-        let is_inline_regular = regular_exec
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && regular_exec.exec.is_some();
+        let is_inline_regular = regular_exec.exec.is_some()
+            && (regular_exec.id.starts_with(".evaluate-")
+                || regular_exec.id.starts_with(".flip-")
+                || regular_exec.id.starts_with(".assign-"));
         assert!(
             !is_inline_regular,
-            "regular task with exec should NOT be inline"
+            "regular task with label tags and exec should NOT be inline"
         );
     }
 

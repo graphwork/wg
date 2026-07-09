@@ -1261,6 +1261,7 @@ fn handle_add_task(
         model: model.map(String::from),
         provider: None,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,

@@ -505,6 +505,11 @@ pub struct Task {
     /// Named endpoint for this task (matches a name in [llm_endpoints])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// WG-Exec remote provider placement target (`wgid:*`). This is typed
+    /// scheduler metadata; freeform tags are display/search labels only and
+    /// must not route a task to a provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_provider: Option<String>,
     /// Named profile pinned to this task's subgraph (see `wg publish --profile`).
     /// When set, dispatch resolves `{executor, model, endpoint}` from this
     /// profile's complete `Config` snapshot instead of the globally-active
@@ -739,6 +744,7 @@ impl Default for Task {
             model: None,
             provider: None,
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -1699,6 +1705,8 @@ struct TaskHelper {
     #[serde(default)]
     endpoint: Option<String>,
     #[serde(default)]
+    remote_provider: Option<String>,
+    #[serde(default)]
     profile: Option<String>,
     #[serde(default)]
     command_argv: Vec<String>,
@@ -1863,6 +1871,7 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             provider: helper.provider,
             endpoint: helper.endpoint,
+            remote_provider: helper.remote_provider,
             profile: helper.profile,
             command_argv: helper.command_argv,
             working_dir: helper.working_dir,

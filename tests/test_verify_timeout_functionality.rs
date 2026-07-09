@@ -57,6 +57,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         model: None,
         provider: None,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,

@@ -112,13 +112,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_registry: Vec<ModelRegistryEntry>,
 
-    /// Tag-based routing: assign a model (and optional executor) to
-    /// every task that has a given tag. Evaluated only when a task
-    /// lacks an explicit `model` — tag routing never overrides
-    /// explicit per-task settings. First matching rule wins (order
-    /// in config.toml determines priority). Useful for steering a
-    /// whole subgraph at once: tag tasks `frontend`, add a routing
-    /// rule, done.
+    /// Deprecated/inert legacy tag-routing entries.
+    ///
+    /// Freeform task tags are labels only; they do not route work or
+    /// select executors. The field remains deserializable for old
+    /// configs so `wg migrate config`/linting can inspect it without
+    /// rejecting the whole file.
     ///
     /// ```toml
     /// [[tag_routing]]
@@ -1685,19 +1684,13 @@ pub struct TagRoutingEntry {
     pub executor: Option<String>,
 }
 
-/// Resolve a model (and optional executor override) for a task via
-/// tag-based routing. Returns the first matching rule's settings,
-/// or `None` when no rule matches.
-///
-/// Call sites should only consult this when `task.model` is None:
-/// explicit per-task model always wins.
+/// Deprecated compatibility shim. Freeform tags are labels only, so
+/// tag routing never returns a runtime route.
 pub fn resolve_tag_routing<'a>(
-    routing: &'a [TagRoutingEntry],
-    task_tags: &[String],
+    _routing: &'a [TagRoutingEntry],
+    _task_tags: &[String],
 ) -> Option<&'a TagRoutingEntry> {
-    routing
-        .iter()
-        .find(|rule| task_tags.iter().any(|t| t == &rule.tag))
+    None
 }
 
 /// Per-role model+provider assignment.
@@ -3385,9 +3378,10 @@ pub struct AgencyConfig {
     pub auto_assign_grace_seconds: u64,
 
     /// Global evaluation gate threshold. When set, evaluations that score
-    /// below this threshold will reject (fail) the original task, blocking
-    /// its dependents. Only applies to tasks tagged with "eval-gate" unless
-    /// `eval_gate_all` is true. Range: 0.0–1.0. Default: 0.7 (enabled).
+    /// below this threshold can reject (fail) the original task, blocking
+    /// its dependents. The gate applies to tasks with parsed deliverables,
+    /// or to all tasks when `eval_gate_all` is true. Range: 0.0–1.0.
+    /// Default: 0.7 (enabled).
     #[serde(
         default = "default_eval_gate_threshold",
         skip_serializing_if = "Option::is_none"
@@ -3395,7 +3389,7 @@ pub struct AgencyConfig {
     pub eval_gate_threshold: Option<f64>,
 
     /// When true, apply the eval gate threshold to ALL evaluated tasks,
-    /// not just those tagged with "eval-gate". Default: false.
+    /// not just tasks with parsed deliverables. Default: false.
     #[serde(default)]
     pub eval_gate_all: bool,
 
@@ -5718,7 +5712,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn tag_routing_matches_first_rule_by_order() {
+    fn tag_routing_entries_are_inert_legacy_config() {
         let rules = vec![
             TagRoutingEntry {
                 tag: "frontend".into(),
@@ -5732,9 +5726,7 @@ mod tests {
             },
         ];
         let tags = vec!["frontend".to_string(), "urgent".to_string()];
-        let hit = resolve_tag_routing(&rules, &tags).expect("match");
-        assert_eq!(hit.model, "codex:gpt-5-codex");
-        assert_eq!(hit.executor.as_deref(), Some("codex"));
+        assert!(resolve_tag_routing(&rules, &tags).is_none());
     }
 
     #[test]
@@ -5745,28 +5737,6 @@ mod tests {
             executor: None,
         }];
         assert!(resolve_tag_routing(&rules, &["backend".to_string()]).is_none());
-    }
-
-    #[test]
-    fn tag_routing_first_rule_wins_when_task_has_multiple_tags() {
-        let rules = vec![
-            TagRoutingEntry {
-                tag: "urgent".into(),
-                model: "claude:opus".into(),
-                executor: None,
-            },
-            TagRoutingEntry {
-                tag: "frontend".into(),
-                model: "codex:gpt-5-codex".into(),
-                executor: None,
-            },
-        ];
-        let tags = vec!["frontend".to_string(), "urgent".to_string()];
-        // Declaration order wins: `urgent` is first.
-        assert_eq!(
-            resolve_tag_routing(&rules, &tags).unwrap().model,
-            "claude:opus"
-        );
     }
 
     #[test]
