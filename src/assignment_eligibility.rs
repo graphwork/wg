@@ -29,8 +29,7 @@
 //! This module replaces that with a pool split keyed on the **task kind**:
 //!
 //! - **Evaluation/review primitives** ([`task_is_evaluation_or_review`]) —
-//!   `.evaluate-*`, `.flip-*`, `.assign-*` scaffolding, or any task tagged
-//!   `review` / `evaluation` / `evaluate` / `eval` — use the system
+//!   `.evaluate-*`, `.flip-*`, `.assign-*` scaffolding use the system
 //!   evaluation pool (or, in practice, the inline one-shot dispatch path).
 //! - **Everything else** ([`task_uses_work_pool`]) is a normal work task and
 //!   uses the **work pool only** — system evaluation agents are excluded
@@ -86,24 +85,6 @@ const IMPLEMENTATION_TOKENS: &[&str] = &[
     "wire",
     "integrate",
 ];
-
-/// Tags that mark a task as implementation work (exact, case-insensitive).
-const IMPLEMENTATION_TAGS: &[&str] = &[
-    "implementation",
-    "implement",
-    "build",
-    "code",
-    "fix",
-    "feature",
-    "refactor",
-    "register",
-    "intake",
-];
-
-/// Tags that mark a task as evaluation/review work (exact, case-insensitive).
-/// These override the implementation signal — a task tagged `review` is a
-/// review task even if its title says "fix".
-const EVALUATION_TAGS: &[&str] = &["review", "evaluation", "evaluate", "eval"];
 
 /// Skills that signal implementation capability is required.
 const IMPLEMENTATION_SKILLS: &[&str] = &[
@@ -220,9 +201,6 @@ pub fn task_requires_implementation(task: &Task) -> bool {
     if !task.deliverables.is_empty() {
         return true;
     }
-    if tags_contain_any(&task.tags, IMPLEMENTATION_TAGS) {
-        return true;
-    }
     if skills_require_implementation(&task.skills) {
         return true;
     }
@@ -234,16 +212,12 @@ pub fn task_requires_implementation(task: &Task) -> bool {
 
 /// Is this task explicitly an evaluation / review task?
 ///
-/// True for `.evaluate-*` / `.flip-*` agency scaffold, or any task tagged
-/// `review` / `evaluation` / `evaluate` / `eval`. Such tasks MUST route to
-/// evaluator/FLIP roles and are never blocked by this guard.
+/// True for `.evaluate-*` / `.flip-*` / `.assign-*` agency scaffold. Freeform
+/// tags are inert labels and never move a normal task into the system pool.
 pub fn task_is_evaluation_or_review(task: &Task) -> bool {
     if is_agency_scaffold_task(&task.id)
         && (task.id.starts_with(".evaluate-") || task.id.starts_with(".flip-"))
     {
-        return true;
-    }
-    if tags_contain_any(&task.tags, EVALUATION_TAGS) {
         return true;
     }
     // `.assign-*` scaffolding is neither implementation nor evaluation — it is
@@ -298,7 +272,7 @@ pub fn role_is_system_evaluation_with_components(role: &Role, component_names: &
 /// (fail open — we can't classify without a role, and the caller should have
 /// resolved one).
 pub fn agent_is_system_evaluation(_agent: &Agent, role: Option<&Role>) -> bool {
-    role.is_some_and(|r| role_is_system_evaluation(r))
+    role.is_some_and(role_is_system_evaluation)
 }
 
 /// Build the **work pool** for a normal work task — the subset of `agents`
@@ -512,13 +486,6 @@ pub fn pick_implementation_capable_agent<'a>(
 // internals
 // ---------------------------------------------------------------------------
 
-fn tags_contain_any(tags: &[String], needles: &[&str]) -> bool {
-    tags.iter().any(|t| {
-        let lower = t.to_lowercase();
-        needles.iter().any(|n| n.eq_ignore_ascii_case(&lower))
-    })
-}
-
 fn skills_require_implementation(skills: &[String]) -> bool {
     skills.iter().any(|s| {
         let lower = s.to_lowercase();
@@ -624,13 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn implementation_task_detected_by_tag() {
-        let mut t = task_with("t1", "Some work");
-        t.tags = vec!["implementation".to_string()];
-        assert!(task_requires_implementation(&t));
-    }
-
-    #[test]
     fn non_implementation_neutral_task_not_flagged() {
         let t = task_with("t1", "Triage incoming issues");
         assert!(!task_requires_implementation(&t));
@@ -650,13 +610,13 @@ mod tests {
     }
 
     #[test]
-    fn review_tagged_task_is_evaluation_task_even_with_impl_title() {
+    fn review_tagged_task_remains_normal_work_even_with_impl_title() {
         let mut t = task_with("t1", "Fix the bug");
-        t.tags = vec!["review".to_string()];
-        assert!(task_is_evaluation_or_review(&t));
+        t.tags = vec!["review".to_string(), "evaluation".to_string()];
+        assert!(!task_is_evaluation_or_review(&t));
         assert!(
-            !task_requires_implementation(&t),
-            "review tag overrides impl title"
+            task_requires_implementation(&t),
+            "freeform labels must not override implementation signals"
         );
     }
 
@@ -857,10 +817,10 @@ mod tests {
             "Evaluate foo"
         )));
         assert!(!task_uses_work_pool(&task_with(".flip-foo", "Flip foo")));
-        // A review-tagged task is an evaluation/review primitive.
-        let mut t = task_with("t1", "Look at this");
-        t.tags = vec!["review".to_string()];
-        assert!(!task_uses_work_pool(&t));
+        assert!(!task_uses_work_pool(&task_with(
+            ".assign-foo",
+            "Assign foo"
+        )));
     }
 
     #[test]
@@ -923,15 +883,21 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_on_review_tagged_task_is_allowed() {
-        // A task explicitly tagged review is an evaluation/review primitive —
-        // a Reviewer is the correct pool and must be allowed.
+    fn reviewer_on_review_tagged_normal_task_is_reassigned() {
         let mut task = task_with("t1", "Audit the auth flow");
-        task.tags = vec!["review".to_string()];
+        task.tags = vec![
+            "agency".to_string(),
+            "assignment".to_string(),
+            "evaluation".to_string(),
+            "reviewer".to_string(),
+        ];
         let role = role_named("Reviewer");
         let agent = agent_with("rev-agent", &role);
         let verdict = check_assignment_eligibility(&task, &agent, Some(&role), false, None);
-        assert_eq!(verdict, EligibilityVerdict::Allow);
+        assert!(
+            matches!(verdict, EligibilityVerdict::Reassign { .. }),
+            "freeform labels must not route normal work into the system pool"
+        );
     }
 
     #[test]

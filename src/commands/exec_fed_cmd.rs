@@ -286,11 +286,11 @@ pub fn run_offer(
 
 /// `wg provider place` — the **coordinator-side placement driver** (audit M5). Where
 /// `offer` takes every parameter on the CLI, `place` sources them from a **task already in
-/// the authorizer's graph** that the planner tagged for remote execution
-/// (`exec-provider:<wgid>`): the placement target, the model, the sensitivity, and the
+/// the authorizer's graph** that carries typed remote execution metadata
+/// (`remote_provider = "wgid:*"`): the placement target, the model, and the
 /// checkability all come from the task. It then runs the SAME fail-closed leash+matcher and
 /// emits the signed offer. This is the wiring the audit flags as missing — `Placement::Provider`
-/// produced by the planner (the tag), turned into the first wire envelope by the coordinator.
+/// produced by the planner metadata, turned into the first wire envelope by the coordinator.
 #[allow(clippy::too_many_arguments)]
 pub fn run_place(
     workgraph_dir: &Path,
@@ -306,30 +306,26 @@ pub fn run_place(
         .get_task(task_id)
         .ok_or_else(|| anyhow::anyhow!("no task {task_id:?} in the authorizer's graph"))?;
 
-    // The planner's placement decision: the `exec-provider:<wgid>` tag (the same signal
-    // `dispatch::plan_spawn` turns into `Placement::Provider`). No tag ⇒ not a remote task.
+    // The planner's placement decision: typed `remote_provider` metadata (the same signal
+    // `dispatch::plan_spawn` turns into `Placement::Provider`). Tags are labels only.
     let provider_wgid = task
-        .tags
-        .iter()
-        .find_map(|t| t.strip_prefix("exec-provider:"))
+        .remote_provider
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "task {task_id:?} is not placed on a remote provider — tag it \
-                 `exec-provider:<wgid>` (the planner's Placement::Provider signal)"
+                "task {task_id:?} is not placed on a remote provider — set typed \
+                 `remote_provider` metadata (for example `wg add --remote-provider <wgid>`)"
             )
         })?;
     let model = task.model.as_deref().unwrap_or("claude:opus").to_string();
-    // Sensitivity: an explicit override wins, else an `exec-sensitivity:<level>` tag, else
-    // the fail-closed default (`unlabeled` ⇒ the leash refuses — label the task).
-    let sensitivity = sensitivity_override.map(|s| s.to_string()).or_else(|| {
-        task.tags
-            .iter()
-            .find_map(|t| t.strip_prefix("exec-sensitivity:").map(|s| s.to_string()))
-    });
-    // The deliverable is checkable unless the planner tagged it `exec-non-checkable` (or the
-    // operator passed --non-checkable).
-    let checkable = !(non_checkable || task.tags.iter().any(|t| t == "exec-non-checkable"));
+    // Sensitivity comes from the typed command argument. With no explicit value,
+    // placement stays fail-closed as `unlabeled`; freeform tags are ignored.
+    let sensitivity = sensitivity_override.map(|s| s.to_string());
+    // The deliverable is checkable unless the operator passes --non-checkable.
+    // Freeform tags are labels and do not control WG-Exec verification policy.
+    let checkable = !non_checkable;
 
     run_offer(
         workgraph_dir,

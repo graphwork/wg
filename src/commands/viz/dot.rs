@@ -466,13 +466,13 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Open;
         let mut assign = make_internal_task(
-            "assign-my-task",
+            ".assign-my-task",
             "Assign agent to my-task",
             "assignment",
             vec![],
         );
         assign.status = Status::InProgress;
-        parent.after = vec!["assign-my-task".to_string()];
+        parent.after = vec![".assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -487,7 +487,7 @@ mod tests {
 
         let result = generate_dot(&graph, &filtered, &task_ids, &critical_path, &annots);
 
-        assert!(!result.contains("assign-my-task"));
+        assert!(!result.contains(".assign-my-task"));
         assert!(result.contains("my-task"));
         assert!(result.contains("[⊞ assigning]"));
     }
@@ -498,13 +498,13 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Open;
         let mut assign = make_internal_task(
-            "assign-my-task",
+            ".assign-my-task",
             "Assign agent to my-task",
             "assignment",
             vec![],
         );
         assign.status = Status::InProgress;
-        parent.after = vec!["assign-my-task".to_string()];
+        parent.after = vec![".assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -519,7 +519,7 @@ mod tests {
 
         let result = generate_mermaid(&graph, &filtered, &task_ids, &critical_path, &annots);
 
-        assert!(!result.contains("assign-my-task"));
+        assert!(!result.contains(".assign-my-task"));
         assert!(result.contains("my-task"));
         assert!(result.contains("[⊞ assigning]"));
     }

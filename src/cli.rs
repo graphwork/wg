@@ -255,6 +255,10 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
+        /// Typed remote execution provider (`wgid:`). Freeform tags are labels only and do not route work.
+        #[arg(long = "remote-provider")]
+        remote_provider: Option<String>,
+
         /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
         /// task description; the agency evaluator scores against it.
         #[arg(long, hide = true)]
@@ -1836,12 +1840,12 @@ pub enum Commands {
         viz_edge_color: Option<String>,
 
         /// Set the evaluation gate threshold (0.0–1.0). Evaluations below this
-        /// score will reject (fail) the original task. Only applies to tasks
-        /// tagged 'eval-gate' unless --eval-gate-all is set.
+        /// score can reject tasks with parsed deliverables, or all tasks when
+        /// --eval-gate-all is set. Tags are labels only.
         #[arg(long, name = "eval-gate-threshold")]
         eval_gate_threshold: Option<f64>,
 
-        /// Apply eval gate to ALL evaluated tasks, not just those tagged 'eval-gate'
+        /// Apply eval gate to ALL evaluated tasks, not just tasks with deliverables
         #[arg(long, name = "eval-gate-all")]
         eval_gate_all: Option<bool>,
 
@@ -3745,15 +3749,15 @@ pub enum ProviderCommands {
         out: String,
     },
 
-    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH that
-    /// the planner tagged `exec-provider:<wgid>` onto that remote provider. Sources the
-    /// provider/model/sensitivity/checkability from the task, runs the fail-closed
-    /// leash+matcher, and emits the signed offer.
+    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH whose
+    /// typed `remote_provider` metadata names a remote provider. Sources the
+    /// provider/model from the task plus explicit placement flags, runs the
+    /// fail-closed leash+matcher, and emits the signed offer.
     Place {
         /// The authorizer/principal G's local identity handle.
         #[arg(long)]
         as_name: String,
-        /// The graph task id to place (must carry an `exec-provider:<wgid>` tag).
+        /// The graph task id to place (must carry typed `remote_provider` metadata).
         #[arg(long)]
         task: String,
         /// Override the task's sensitivity: normal | high | confidential.

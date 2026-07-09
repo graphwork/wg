@@ -95,14 +95,7 @@ fn test_auto_evaluate_creates_dot_prefixed_eval_tasks() {
             if mutable_graph.get_task(&eval_id).is_some() {
                 return false;
             }
-            let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags
-                .iter()
-                .any(|tag| dominated_tags.contains(&tag.as_str()))
-            {
-                return false;
-            }
-            if t.tags.iter().any(|tag| tag == "eval-scheduled") {
+            if is_system_task(&t.id) {
                 return false;
             }
             !matches!(t.status, Status::Abandoned)
@@ -124,13 +117,6 @@ fn test_auto_evaluate_creates_dot_prefixed_eval_tasks() {
         eval_task.exec = Some(format!("wg evaluate run {}", task_id));
         eval_task.exec_mode = Some("bare".to_string());
         mutable_graph.add_node(Node::Task(eval_task));
-
-        // Tag the source task
-        if let Some(source) = mutable_graph.get_task_mut(task_id)
-            && !source.tags.iter().any(|t| t == "eval-scheduled")
-        {
-            source.tags.push("eval-scheduled".to_string());
-        }
     }
 
     save_graph(&mutable_graph, &graph_path).unwrap();
@@ -146,11 +132,11 @@ fn test_auto_evaluate_creates_dot_prefixed_eval_tasks() {
     assert!(eval_task.tags.contains(&"evaluation".to_string()));
     assert_eq!(eval_task.exec_mode.as_deref(), Some("bare"));
 
-    // Source task should be tagged eval-scheduled
+    // Source task is not mutated with lifecycle tags; eval idempotency is structural.
     let source = final_graph.get_task("my-task").unwrap();
     assert!(
-        source.tags.contains(&"eval-scheduled".to_string()),
-        "Source task should be tagged eval-scheduled"
+        !source.tags.contains(&"eval-scheduled".to_string()),
+        "Source task should not be tagged eval-scheduled"
     );
 }
 
@@ -530,29 +516,16 @@ fn test_no_infinite_regress_for_system_tasks() {
     assert!(is_system_task(evolve_task_id));
     assert!(is_system_task(assign_task_id));
 
-    // Simulate coordinator filtering: tasks tagged evaluation/assignment/evolution
-    // are excluded from auto-evaluate
-    let dominated_tags = ["evaluation", "assignment", "evolution"];
+    // Simulate coordinator filtering: dot-prefixed system tasks are excluded
+    // from auto-evaluate regardless of tags.
+    for id in [eval_task_id, evolve_task_id, assign_task_id] {
+        assert!(is_system_task(id));
+    }
 
-    let eval_tags = vec!["evaluation".to_string(), "agency".to_string()];
+    let label_tagged_work_id = "agency-review-pass";
     assert!(
-        eval_tags
-            .iter()
-            .any(|t| dominated_tags.contains(&t.as_str()))
-    );
-
-    let evolve_tags = vec!["evolution".to_string(), "agency".to_string()];
-    assert!(
-        evolve_tags
-            .iter()
-            .any(|t| dominated_tags.contains(&t.as_str()))
-    );
-
-    let assign_tags = vec!["assignment".to_string(), "agency".to_string()];
-    assert!(
-        assign_tags
-            .iter()
-            .any(|t| dominated_tags.contains(&t.as_str()))
+        !is_system_task(label_tagged_work_id),
+        "label-like words in a normal task id do not make it system work"
     );
 }
 

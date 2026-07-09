@@ -269,6 +269,7 @@ pub fn run(
                 model: task_model,
                 provider: None,
                 endpoint: None,
+                remote_provider: None,
                 profile: None,
                 command_argv: vec![],
                 working_dir: None,

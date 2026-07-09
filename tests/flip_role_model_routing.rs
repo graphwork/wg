@@ -83,7 +83,7 @@ fn task_with_spawn_model(id: &str, model: &str) -> Task {
     }
 }
 
-/// FLIP requires either `agency.flip_enabled = true` or a `flip-eval` tag.
+/// FLIP requires `agency.flip_enabled = true`; freeform labels do not enable it.
 const FLIP_ENABLED_CONFIG: &str = r#"
 [agency]
 flip_enabled = true

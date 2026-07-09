@@ -1940,14 +1940,14 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Open;
         let mut assign = make_internal_task(
-            "assign-my-task",
+            ".assign-my-task",
             "Assign agent to my-task",
             "assignment",
             vec![],
         );
         assign.status = Status::InProgress;
         // assign task blocks parent (parent is blocked by assign)
-        parent.after = vec!["assign-my-task".to_string()];
+        parent.after = vec![".assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -1974,7 +1974,7 @@ mod tests {
         );
 
         // Internal task should NOT appear
-        assert!(!result.text.contains("assign-my-task"));
+        assert!(!result.text.contains(".assign-my-task"));
         // Parent task should appear with phase annotation
         assert!(result.text.contains("my-task"));
         assert!(result.text.contains("[⊞ assigning]"));
@@ -1986,7 +1986,7 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Done;
         let mut eval = make_internal_task(
-            "evaluate-my-task",
+            ".evaluate-my-task",
             "Evaluate my-task",
             "evaluation",
             vec!["my-task"],
@@ -2017,7 +2017,7 @@ mod tests {
             &HashMap::new(),
         );
 
-        assert!(!result.text.contains("evaluate-my-task"));
+        assert!(!result.text.contains(".evaluate-my-task"));
         assert!(result.text.contains("my-task"));
         assert!(result.text.contains("[∴ evaluating]"));
     }
@@ -2028,12 +2028,12 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::Open;
         let assign = make_internal_task(
-            "assign-my-task",
+            ".assign-my-task",
             "Assign agent to my-task",
             "assignment",
             vec![],
         );
-        parent.after = vec!["assign-my-task".to_string()];
+        parent.after = vec![".assign-my-task".to_string()];
         graph.add_node(Node::Task(parent));
         graph.add_node(Node::Task(assign));
 
@@ -2057,7 +2057,7 @@ mod tests {
         );
 
         // Both tasks should be visible
-        assert!(result.text.contains("assign-my-task"));
+        assert!(result.text.contains(".assign-my-task"));
         assert!(result.text.contains("my-task"));
         // No phase annotation when shown as literal nodes
         assert!(!result.text.contains("[⊞ assigning]"));
@@ -3771,7 +3771,7 @@ mod tests {
         let mut parent = make_task("my-task", "My Task");
         parent.status = Status::InProgress;
         let assign = Task {
-            id: "assign-my-task".to_string(),
+            id: ".assign-my-task".to_string(),
             title: "Assign my-task".to_string(),
             tags: vec!["assignment".to_string(), "agency".to_string()],
             status: Status::InProgress,
@@ -3806,7 +3806,7 @@ mod tests {
         );
         // Internal assign task should be filtered out.
         assert!(
-            !plain.contains("assign-my-task"),
+            !plain.contains(".assign-my-task"),
             "Internal task should be filtered. Plain: {}",
             plain
         );

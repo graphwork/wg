@@ -76,9 +76,8 @@ pub(crate) fn spawn_agent_inner(
     // The plan-derived endpoint is the only source consulted when assembling
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_or_default(dir);
-    // Get task model preference. When unset, consult tag_routing rules and
-    // task-level tier overrides so these existing spawn-time model fallbacks
-    // also flow through the authoritative SpawnPlan.
+    // Get task model preference. Freeform task tags are inert labels, so they
+    // never participate in executor/model routing.
     let task_model = task.model.clone().or_else(|| {
         if let Some(ref tier_str) = task.tier
             && let Ok(tier) = tier_str.parse::<worksgood::config::Tier>()
@@ -86,8 +85,7 @@ pub(crate) fn spawn_agent_inner(
         {
             return Some(resolved.model);
         }
-        worksgood::config::resolve_tag_routing(&config.tag_routing, &task.tags)
-            .map(|rule| rule.model.clone())
+        None
     });
     let plan_default_model = task_model.as_deref().or(model);
     let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;

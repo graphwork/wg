@@ -532,16 +532,14 @@ pub fn plan_spawn(
     };
 
     // ----- 4. Placement (ADR-E1 D6 / audit M5) -----
-    // The planner places a task on a separately-owned remote provider by tagging it
-    // `exec-provider:<wgid>`. That tag IS the `Placement::Provider` signal; the executor
-    // becomes `RemoteRunner` (the WG-Exec providers plane drives the wire — the two scoped
-    // UCANs + the epoch-fenced lease — not the local spawn-task handler). An untagged task
-    // stays `Placement::Local`, reproducing today's same-host spawn byte-for-byte (NFR-3).
+    // The planner places a task on a separately-owned remote provider through
+    // typed `remote_provider` metadata. Freeform tags are inert labels and
+    // cannot route a task to a provider.
     let placement = placement_from_task(task);
     let (executor, executor_source) = match &placement {
         Placement::Provider(wgid) => (
             ExecutorKind::RemoteRunner,
-            format!("placement: task tagged exec-provider:{wgid} (M5)"),
+            format!("placement: task remote_provider={wgid} (M5)"),
         ),
         Placement::Local => (executor, executor_source),
     };
@@ -574,15 +572,12 @@ pub fn plan_spawn(
     })
 }
 
-/// Derive a task's [`Placement`] from the planner's signal (audit M5). A task tagged
-/// `exec-provider:<wgid>` is placed on that remote provider over the WG-Exec wire; every
-/// other task runs `Local` (today's same-host spawn). The tag is the planner's decision —
-/// `plan_spawn` turns it into `Placement::Provider` + an `ExecutorKind::RemoteRunner` spawn,
-/// and the `wg provider place` coordinator driver reads the same tag to start the wire.
+/// Derive a task's [`Placement`] from typed planner metadata (audit M5). A task with
+/// `remote_provider = "wgid:*"` is placed on that remote provider over the WG-Exec wire;
+/// every other task runs `Local` (today's same-host spawn). Freeform tags are labels only.
 pub fn placement_from_task(task: &Task) -> Placement {
-    task.tags
-        .iter()
-        .find_map(|t| t.strip_prefix("exec-provider:"))
+    task.remote_provider
+        .as_deref()
         .filter(|w| !w.trim().is_empty())
         .map(|w| Placement::Provider(w.to_string()))
         .unwrap_or(Placement::Local)
@@ -1796,34 +1791,44 @@ mod tests {
         );
     }
 
-    // ── M5: the planner produces Placement::Provider from the exec-provider tag ──
+    // ── M5: the planner produces Placement::Provider from typed remote_provider metadata ──
 
     #[test]
-    fn placement_from_task_reads_the_exec_provider_tag() {
+    fn placement_from_task_reads_remote_provider_metadata() {
         let mut task = base_task("t1");
         assert_eq!(placement_from_task(&task), Placement::Local);
-        task.tags.push("exec-provider:wgid:zRemoteBox".to_string());
+        task.remote_provider = Some("wgid:zRemoteBox".to_string());
         assert_eq!(
             placement_from_task(&task),
             Placement::Provider("wgid:zRemoteBox".to_string())
         );
-        // An empty tag value does not place remotely (fail-safe to Local).
+        // An empty value does not place remotely (fail-safe to Local).
         let mut empty = base_task("t2");
-        empty.tags.push("exec-provider:".to_string());
+        empty.remote_provider = Some(String::new());
         assert_eq!(placement_from_task(&empty), Placement::Local);
+
+        let mut labeled = base_task("t3");
+        labeled
+            .tags
+            .push("exec-provider:wgid:zLabelOnly".to_string());
+        assert_eq!(
+            placement_from_task(&labeled),
+            Placement::Local,
+            "freeform labels must not route remote placement"
+        );
     }
 
     #[test]
-    fn plan_spawn_routes_a_provider_tagged_task_to_remote_runner() {
+    fn plan_spawn_routes_remote_provider_task_to_remote_runner() {
         let config = Config::default();
         let mut task = base_task("wed-remote");
-        task.tags.push("exec-provider:wgid:zRemoteBox".to_string());
+        task.remote_provider = Some("wgid:zRemoteBox".to_string());
 
         let plan = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
         assert_eq!(
             plan.placement,
             Placement::Provider("wgid:zRemoteBox".to_string()),
-            "a task tagged exec-provider must produce Placement::Provider"
+            "a task with remote_provider must produce Placement::Provider"
         );
         assert_eq!(
             plan.executor,
@@ -1835,7 +1840,7 @@ mod tests {
             Some("remote-runner"),
             "the spawned env must reflect the remote-runner executor"
         );
-        assert!(plan.provenance.executor_source.contains("exec-provider"));
+        assert!(plan.provenance.executor_source.contains("remote_provider"));
     }
 
     #[test]

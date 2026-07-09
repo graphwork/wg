@@ -974,6 +974,7 @@ fn main() -> Result<()> {
             max_retries,
             model,
             provider,
+            remote_provider,
             verify,
             verify_timeout,
             validation,
@@ -1041,7 +1042,7 @@ fn main() -> Result<()> {
                     cron.as_deref(),
                 )
             } else {
-                commands::add::run(
+                commands::add::run_with_remote_provider(
                     &workgraph_dir,
                     &title,
                     id.as_deref(),
@@ -1057,6 +1058,7 @@ fn main() -> Result<()> {
                     max_retries,
                     model.as_deref(),
                     provider.as_deref(),
+                    remote_provider.as_deref(),
                     verify.as_deref(),
                     verify_timeout.as_deref(),
                     validation.as_deref(),
