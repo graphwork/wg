@@ -5707,6 +5707,31 @@ pub enum AgentCommands {
         id: String,
     },
 
+    /// Show or set the persistent session bound to an agent (R2).
+    ///
+    /// A bound session is the agent's durable identity memory: at task
+    /// dispatch, the session's `session-summary.md` is injected into the
+    /// spawn prompt so the agent carries continuity across tasks.
+    ///
+    /// - `wg agent session <id>` — show the current binding, creating a
+    ///   fresh bound session if the agent has none.
+    /// - `wg agent session <id> --session <ref>` — bind the agent to an
+    ///   existing session (UUID, prefix, or alias).
+    /// - `wg agent session <id> --unbind` — remove the binding.
+    Session {
+        /// Agent ID (or prefix)
+        id: String,
+
+        /// Session reference (UUID, prefix, or alias) to bind. Omit to
+        /// show the binding (creating one if absent).
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Remove the agent's session binding instead of showing/creating.
+        #[arg(long, conflicts_with = "session")]
+        unbind: bool,
+    },
+
     /// Remove an agent definition
     Rm {
         /// Agent ID (or prefix)
