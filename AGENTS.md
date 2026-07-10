@@ -117,6 +117,17 @@ This writes `~/.wg/active-profile` and hot-reloads the daemon.
 cover the rest of the management surface. Profiles overlay onto the
 global+local merge but never clobber project-local config.
 
+#### Structured Pi reasoning (`--reasoning` → `--thinking`)
+
+Pi model identity stays `pi:<provider>:<model>`; reasoning is a separate
+inherited setting, set with `--reasoning off|minimal|low|medium|high|xhigh|max`
+on `wg config`, `wg add`, or `wg spawn`, or per role with
+`wg config --set-reasoning <role> <level>`. For Pi, resolved reasoning is passed
+as `pi --thinking <level>`; when unset, WG omits the flag so Pi keeps its own
+default. Do not encode reasoning as `model(high)` or a fourth colon suffix.
+Recommended policy: chat `medium`, standard workers `high`, premium/hard
+`xhigh`, weak agency one-shots `low`, and `max` only for explicit escalation.
+
 #### Picking Pi models: `wg profile pi` (two-tier strong/weak)
 
 The Pi profile splits its OpenRouter/Pi models into two stable tiers — **strong**

@@ -1,4 +1,4 @@
-use crate::config::{Config, ModelRegistryEntry};
+use crate::config::{Config, ModelRegistryEntry, ReasoningLevel};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -499,6 +499,10 @@ pub struct Task {
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Structured reasoning level for this task. Inherits independently from
+    /// model when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningLevel>,
     /// Provider override for this task (anthropic, openai, openrouter, local)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -742,6 +746,7 @@ impl Default for Task {
             failure_reason: None,
             failure_class: None,
             model: None,
+            reasoning: None,
             provider: None,
             endpoint: None,
             remote_provider: None,
@@ -1701,6 +1706,8 @@ struct TaskHelper {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    reasoning: Option<ReasoningLevel>,
+    #[serde(default)]
     provider: Option<String>,
     #[serde(default)]
     endpoint: Option<String>,
@@ -1869,6 +1876,7 @@ impl<'de> Deserialize<'de> for Task {
             failure_reason: helper.failure_reason,
             failure_class: helper.failure_class,
             model: helper.model,
+            reasoning: helper.reasoning,
             provider: helper.provider,
             endpoint: helper.endpoint,
             remote_provider: helper.remote_provider,
@@ -4452,5 +4460,35 @@ cache_read_discount = 0.5
         };
         let json = serde_json::to_string(&task).unwrap();
         assert!(json.contains("\"priority\":100"));
+    }
+
+    #[test]
+    fn test_task_reasoning_json_roundtrip_and_backward_compatibility() {
+        let old_json =
+            r#"{"id":"t-old","title":"Old","status":"open","model":"pi:openai-codex:gpt-5.6-sol"}"#;
+        let old_task: Task = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            old_task.model.as_deref(),
+            Some("pi:openai-codex:gpt-5.6-sol")
+        );
+        assert_eq!(
+            old_task.reasoning, None,
+            "old task JSON without reasoning must keep inheriting/omitting"
+        );
+
+        let task = Task {
+            id: "t-new".to_string(),
+            title: "New".to_string(),
+            model: Some("pi:openai-codex:gpt-5.6-sol".to_string()),
+            reasoning: Some(crate::config::ReasoningLevel::High),
+            ..Task::default()
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"reasoning\":\"high\""));
+        let roundtrip: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            roundtrip.reasoning,
+            Some(crate::config::ReasoningLevel::High)
+        );
     }
 }

@@ -34,10 +34,16 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
+    let home = wg_dir
+        .parent()
+        .expect("test .wg directory should have a temp parent");
     Command::new(wg_binary())
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
         .env_remove("WG_AGENT_ID")
         .env_remove("WG_TASK_ID")
         .env("WG_SMOKE_AGENT_OVERRIDE", "1")

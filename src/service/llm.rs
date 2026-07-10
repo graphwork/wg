@@ -13,7 +13,8 @@ use anyhow::{Context, Result};
 
 use crate::config::{
     CLAUDE_FABLE_MODEL_ID, CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
-    Config, DispatchRole, ModelRegistryEntry, parse_model_spec, strip_native_handler_prefix,
+    Config, DispatchRole, ModelRegistryEntry, ReasoningLevel, parse_model_spec,
+    strip_native_handler_prefix,
 };
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
@@ -86,6 +87,8 @@ pub struct AgencyDispatch {
     /// The bare model id (no provider prefix) — passed to `--model` on the
     /// CLI subprocess.
     pub model_id: String,
+    /// Structured reasoning level resolved independently from the model.
+    pub reasoning: Option<ReasoningLevel>,
 }
 
 /// Convert provider/model Claude IDs into the bare aliases accepted by the
@@ -129,7 +132,7 @@ fn normalize_claude_cli_model(model_id: &str) -> String {
 /// (even when written `anthropic/…` or `openrouter:anthropic/…`) route through
 /// the claude CLI with the bare family alias; everything else routes via
 /// `handler_for_model`.
-fn agency_dispatch_for_spec(raw_spec: &str) -> AgencyDispatch {
+fn agency_dispatch_for_spec(raw_spec: &str, reasoning: Option<ReasoningLevel>) -> AgencyDispatch {
     let spec = parse_model_spec(raw_spec);
     let claude_cli_alias = claude_cli_alias_for_model(&spec.model_id);
     let handler = if claude_cli_alias.is_some() {
@@ -142,6 +145,7 @@ fn agency_dispatch_for_spec(raw_spec: &str) -> AgencyDispatch {
         handler,
         raw_spec: raw_spec.to_string(),
         model_id: claude_cli_alias.unwrap_or(&spec.model_id).to_string(),
+        reasoning,
     }
 }
 
@@ -236,7 +240,8 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
     // Explicit per-role override ([models.evaluator] / [models.assigner] /
     // [models.flip_*]) wins and routes to its declared handler unconditionally.
     if let Some(spec) = config.models.get_role(role).and_then(|c| c.model.clone()) {
-        return agency_dispatch_for_spec(&spec);
+        let reasoning = config.resolve_reasoning_for_role(role);
+        return agency_dispatch_for_spec(&spec, reasoning);
     }
 
     // No override: resolve the WEAK tier (tiers.fast). `weak_tier_spec()` always
@@ -245,7 +250,7 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
     let raw_spec = config
         .weak_tier_spec()
         .unwrap_or_else(|| CLAUDE_HAIKU_MODEL_ID.to_string());
-    let dispatch = agency_dispatch_for_spec(&raw_spec);
+    let dispatch = agency_dispatch_for_spec(&raw_spec, config.resolve_reasoning_for_role(role));
 
     // Credential safety net for the default weak-tier path: a native-HTTP target
     // with no usable key would otherwise produce a confusing 401 (or a broken
@@ -260,7 +265,7 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
              so agency verdicts are not silently dropped. Configure the key (e.g. set \
              OPENROUTER_API_KEY or `wg endpoints add`) to run agency on the configured model."
         );
-        return agency_dispatch_for_spec(AGENCY_CLAUDE_HAIKU_SPEC);
+        return agency_dispatch_for_spec(AGENCY_CLAUDE_HAIKU_SPEC, None);
     }
 
     dispatch
@@ -303,7 +308,12 @@ pub fn run_review_llm_call(
         let spec = config
             .strong_tier_spec()
             .unwrap_or_else(|| CLAUDE_OPUS_MODEL_ID.to_string());
-        agency_dispatch_for_spec(&spec)
+        agency_dispatch_for_spec(
+            &spec,
+            config
+                .strong_tier_spec()
+                .and_then(|_| config.resolve_reasoning_for_role(DispatchRole::Verification)),
+        )
     } else {
         resolve_agency_dispatch(config, DispatchRole::Reviewer)
     };
@@ -329,7 +339,13 @@ pub fn run_review_llm_call(
             // back to claude:haiku on any failure so the reviewer transport is
             // never silently dropped (the content fail-closed decision stays
             // the caller's). Mirrors the agency one-shot pi arm.
-            match call_pi_cli(config, &dispatch.raw_spec, prompt, timeout_secs) {
+            match call_pi_cli(
+                config,
+                &dispatch.raw_spec,
+                dispatch.reasoning,
+                prompt,
+                timeout_secs,
+            ) {
                 Ok(result) => Ok(result),
                 Err(e) => {
                     eprintln!(
@@ -368,7 +384,7 @@ pub fn run_model_oneshot(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    let dispatch = agency_dispatch_for_spec(model_spec);
+    let dispatch = agency_dispatch_for_spec(model_spec, None);
     match dispatch.handler {
         ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
         ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, prompt, timeout_secs),
@@ -552,7 +568,13 @@ pub fn run_lightweight_llm_call(
                 // the fix for the bug where a `pi:` weak tier silently fell
                 // into the claude-CLI catch-all below and failed with
                 // "Claude CLI call failed" instead of honoring the pi route.
-                match call_pi_cli(config, &dispatch.raw_spec, prompt, timeout_secs) {
+                match call_pi_cli(
+                    config,
+                    &dispatch.raw_spec,
+                    dispatch.reasoning,
+                    prompt,
+                    timeout_secs,
+                ) {
                     Ok(result) => return Ok(result),
                     Err(e) => {
                         eprintln!(
@@ -871,6 +893,27 @@ struct PiOneShotModelArg {
     model: String,
 }
 
+fn pi_one_shot_command_args(
+    marg: &PiOneShotModelArg,
+    reasoning: Option<ReasoningLevel>,
+) -> Vec<String> {
+    let mut args = vec![
+        "--mode".to_string(),
+        "json".to_string(),
+        "--print".to_string(),
+        "--no-tools".to_string(),
+        "--no-session".to_string(),
+        "--provider".to_string(),
+        marg.provider.clone(),
+        "--model".to_string(),
+        marg.model.clone(),
+    ];
+    if let Some(reasoning) = reasoning {
+        args.extend(["--thinking".to_string(), reasoning.as_str().to_string()]);
+    }
+    args
+}
+
 /// Parse a handler-first pi spec (`pi:openrouter:<vendor>/<model>` or a bare
 /// `<vendor>/<model>` OpenRouter route) into the `--provider`/`--model` argv
 /// pi expects. Mirrors `commands::pi_handler::pi_model_arg` (binary crate) —
@@ -882,6 +925,26 @@ fn pi_one_shot_model_arg(raw_spec: &str) -> Option<PiOneShotModelArg> {
     let inner = raw.strip_prefix("pi:").unwrap_or(raw).trim();
     if inner.is_empty() {
         return None;
+    }
+    if let Some((provider, model_id)) = inner.split_once(':') {
+        let provider = provider.trim();
+        let model_id = model_id.trim();
+        if !provider.is_empty() && !model_id.is_empty() {
+            let provider = if crate::config::KNOWN_PROVIDERS.contains(&provider) {
+                crate::config::provider_to_native_provider(provider)
+            } else {
+                provider
+            };
+            let model_id = if provider == "openrouter" {
+                model_id.strip_prefix("openrouter/").unwrap_or(model_id)
+            } else {
+                model_id
+            };
+            return Some(PiOneShotModelArg {
+                provider: provider.to_string(),
+                model: model_id.to_string(),
+            });
+        }
     }
     let spec = parse_model_spec(inner);
     let (provider, model_id) = match spec.provider.as_deref() {
@@ -973,6 +1036,7 @@ fn pi_env_pairs_for(
 fn call_pi_cli(
     config: &Config,
     raw_spec: &str,
+    reasoning: Option<ReasoningLevel>,
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
@@ -991,16 +1055,10 @@ fn call_pi_cli(
     let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
         "pi",
         |cmd| {
-            cmd.arg("--mode")
-                .arg("json")
-                .arg("--print")
-                .arg("--no-tools")
-                .arg("--no-session")
-                .arg("--provider")
-                .arg(&marg.provider)
-                .arg("--model")
-                .arg(&marg.model)
-                .stdin(process::Stdio::piped())
+            for arg in pi_one_shot_command_args(&marg, reasoning) {
+                cmd.arg(arg);
+            }
+            cmd.stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped())
                 .stderr(process::Stdio::piped());
             for (k, v) in &env_pairs {
@@ -1626,12 +1684,12 @@ mod tests {
     fn test_agency_dispatch_claude_fable_routes_to_claude_cli() {
         // `claude:fable` as an explicit agency role override must dispatch on
         // the claude CLI handler with the expanded `claude-fable-5` model id.
-        let dispatch = agency_dispatch_for_spec("claude:fable");
+        let dispatch = agency_dispatch_for_spec("claude:fable", None);
         assert_eq!(dispatch.handler, ExecutorKind::Claude);
         assert_eq!(dispatch.model_id, CLAUDE_FABLE_MODEL_ID);
 
         // A full anthropic/openrouter spelling also routes to the claude CLI.
-        let dispatch = agency_dispatch_for_spec("openrouter:anthropic/claude-fable-5");
+        let dispatch = agency_dispatch_for_spec("openrouter:anthropic/claude-fable-5", None);
         assert_eq!(dispatch.handler, ExecutorKind::Claude);
         assert_eq!(dispatch.model_id, CLAUDE_FABLE_MODEL_ID);
     }
@@ -2079,7 +2137,7 @@ mod tests {
         // handler — NOT the claude CLI catch-all in `run_lightweight_llm_call`.
         // The previous bug silently fell into the claude-CLI arm and failed
         // with "Claude CLI call failed ... subscription access disabled".
-        let dispatch = agency_dispatch_for_spec("pi:openrouter:deepseek/deepseek-chat");
+        let dispatch = agency_dispatch_for_spec("pi:openrouter:deepseek/deepseek-chat", None);
         assert_eq!(
             dispatch.handler,
             ExecutorKind::Pi,
@@ -2091,6 +2149,29 @@ mod tests {
         // the model_id. `call_pi_cli` re-parses `raw_spec` via
         // `pi_one_shot_model_arg`, so the handler-first inner route is honored.
         assert_eq!(dispatch.model_id, "pi:openrouter:deepseek/deepseek-chat");
+    }
+
+    #[test]
+    fn test_pi_one_shot_codex_model_and_reasoning_args() {
+        let marg = pi_one_shot_model_arg("pi:openai-codex:gpt-5.6-sol")
+            .expect("pi codex route should resolve");
+        assert_eq!(marg.provider, "openai-codex");
+        assert_eq!(marg.model, "gpt-5.6-sol");
+
+        let high = pi_one_shot_command_args(&marg, Some(ReasoningLevel::High));
+        let tidx = high.iter().position(|a| a == "--thinking").unwrap();
+        assert_eq!(high[tidx + 1], "high");
+
+        let max = pi_one_shot_command_args(&marg, Some(ReasoningLevel::Max));
+        let tidx = max.iter().position(|a| a == "--thinking").unwrap();
+        assert_eq!(max[tidx + 1], "max");
+
+        let omitted = pi_one_shot_command_args(&marg, None);
+        assert!(
+            !omitted.contains(&"--thinking".to_string()),
+            "omitted reasoning must not emit --thinking: {:?}",
+            omitted
+        );
     }
 
     #[test]

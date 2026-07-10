@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use worksgood::agency;
-use worksgood::config::{CapBehavior, Config, EndpointConfig};
+use worksgood::config::{CapBehavior, Config, EndpointConfig, ReasoningLevel};
 use worksgood::dispatch::plan_spawn;
 use worksgood::graph::{LogEntry, Node, Status, Task, is_system_task};
 use worksgood::parser::{load_graph, modify_graph};
@@ -33,6 +33,27 @@ pub(crate) fn spawn_agent_inner(
     executor_name: &str,
     timeout: Option<&str>,
     model: Option<&str>,
+    spawned_by: &str,
+) -> Result<SpawnResult> {
+    spawn_agent_inner_with_reasoning(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        model,
+        None,
+        spawned_by,
+    )
+}
+
+/// Internal shared implementation for spawning an agent with structured reasoning.
+pub(crate) fn spawn_agent_inner_with_reasoning(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
     spawned_by: &str,
 ) -> Result<SpawnResult> {
     let graph_path = graph_path(dir);
@@ -88,6 +109,10 @@ pub(crate) fn spawn_agent_inner(
         None
     });
     let plan_default_model = task_model.as_deref().or(model);
+    let explicit_reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
     eprintln!(
         "[{}] {}: {}",
@@ -97,6 +122,7 @@ pub(crate) fn spawn_agent_inner(
     );
     let resolved_executor_name = plan.executor.as_str();
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
+    let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
 
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
@@ -511,12 +537,13 @@ pub(crate) fn spawn_agent_inner(
     }
 
     // Build the inner command string first (with optional fallback for session resume)
-    let (inner_command, fallback_command) = build_inner_command(
+    let (inner_command, fallback_command) = build_inner_command_with_reasoning(
         &settings,
         exec_mode,
         &output_dir,
         &effective_model,
         &effective_provider,
+        resolved_reasoning,
         &effective_endpoint,
         &effective_endpoint_url,
         &effective_api_key,
@@ -641,6 +668,9 @@ pub(crate) fn spawn_agent_inner(
     cmd.env("WG_USER", worksgood::current_user());
     if let Some(ref m) = effective_model {
         cmd.env("WG_MODEL", m);
+    }
+    if let Some(reasoning) = resolved_reasoning {
+        cmd.env("WG_REASONING", reasoning.as_str());
     }
     {
         let tier_str =
@@ -914,6 +944,7 @@ pub(crate) fn spawn_agent_inner(
         "task_id": task_id,
         "executor": resolved_executor_name,
         "model": &effective_model,
+        "reasoning": resolved_reasoning.map(|r| r.as_str()),
         "started_at": Utc::now().to_rfc3339(),
         "timeout_secs": effective_timeout_secs,
     });
@@ -931,6 +962,7 @@ pub(crate) fn spawn_agent_inner(
         executor_type: settings.executor_type.clone(),
         output_file: output_file_str,
         model: effective_model,
+        reasoning: resolved_reasoning.map(|r| r.to_string()),
     })
 }
 
@@ -1165,6 +1197,21 @@ fn append_external_cli_model_args(
     }
 }
 
+fn append_external_cli_reasoning_args(
+    cmd_parts: &mut Vec<String>,
+    existing_args: &[String],
+    executor_type: &str,
+    reasoning: Option<ReasoningLevel>,
+) {
+    if executor_type != "pi" || args_have_flag(existing_args, &["--thinking"]) {
+        return;
+    }
+    if let Some(level) = reasoning {
+        cmd_parts.push("--thinking".to_string());
+        cmd_parts.push(shell_escape(level.as_str()));
+    }
+}
+
 fn write_executor_prompt_file(
     output_dir: &Path,
     settings: &worksgood::service::executor::ExecutorSettings,
@@ -1185,6 +1232,7 @@ fn external_prompt_command(
     output_dir: &Path,
     effective_model: &Option<String>,
     effective_provider: &Option<String>,
+    resolved_reasoning: Option<ReasoningLevel>,
     delivery: ExternalPromptDelivery,
 ) -> Result<String> {
     // Explicit-model contract: external CLIs that take a `--model` flag MUST
@@ -1220,6 +1268,12 @@ fn external_prompt_command(
             effective_model.as_deref(),
             effective_provider.as_deref(),
         ),
+    );
+    append_external_cli_reasoning_args(
+        &mut cmd_parts,
+        &settings.args,
+        &settings.executor_type,
+        resolved_reasoning,
     );
 
     match delivery {
@@ -1443,6 +1497,37 @@ fn build_inner_command(
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
 ) -> Result<(String, Option<String>)> {
+    build_inner_command_with_reasoning(
+        settings,
+        exec_mode,
+        output_dir,
+        effective_model,
+        effective_provider,
+        None,
+        effective_endpoint,
+        effective_endpoint_url,
+        effective_api_key,
+        vars,
+        task_exec,
+        resume_session_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_inner_command_with_reasoning(
+    settings: &worksgood::service::executor::ExecutorSettings,
+    exec_mode: &str,
+    output_dir: &Path,
+    effective_model: &Option<String>,
+    effective_provider: &Option<String>,
+    resolved_reasoning: Option<ReasoningLevel>,
+    effective_endpoint: &Option<String>,
+    effective_endpoint_url: &Option<String>,
+    effective_api_key: &Option<String>,
+    vars: &TemplateVars,
+    task_exec: &Option<String>,
+    resume_session_id: Option<&str>,
+) -> Result<(String, Option<String>)> {
     let inner_command = match settings.executor_type.as_str() {
         "claude" if resume_session_id.is_some() && exec_mode != "bare" => {
             // Resume mode: use --resume <session_id> with checkpoint as follow-up message
@@ -1658,6 +1743,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::OpenCodeFile,
         )?,
         "aider" => external_prompt_command(
@@ -1665,6 +1751,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::AiderMessageFile,
         )?,
         "goose" => external_prompt_command(
@@ -1672,6 +1759,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::GooseInputFile,
         )?,
         "qwen" | "qwen-code" | "qwen_code" => external_prompt_command(
@@ -1679,6 +1767,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::QwenPromptAndStdin,
         )?,
         "cline" => external_prompt_command(
@@ -1686,6 +1775,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::ClinePositionalPromptAndStdin,
         )?,
         "crush" => external_prompt_command(
@@ -1693,6 +1783,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::Stdin,
         )?,
         "pi" => external_prompt_command(
@@ -1700,6 +1791,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::QwenPromptAndStdin,
         )?,
         "amplifier" => external_prompt_command(
@@ -1707,6 +1799,7 @@ fn build_inner_command(
             output_dir,
             effective_model,
             effective_provider,
+            resolved_reasoning,
             ExternalPromptDelivery::Argument,
         )?,
         "shell" => {
@@ -2750,6 +2843,69 @@ mod tests {
             ],
             "Pi provider names are Pi-owned and must not be mapped through WG native aliases"
         );
+        assert_eq!(
+            external_cli_model_args("pi", Some("pi:openai-codex:gpt-5.6-sol"), None).to_vec(),
+            vec![
+                "--provider".to_string(),
+                "openai-codex".to_string(),
+                "--model".to_string(),
+                "gpt-5.6-sol".to_string(),
+            ],
+            "Pi Codex routes must become --provider openai-codex --model gpt-5.6-sol"
+        );
+    }
+
+    #[test]
+    fn test_pi_external_cli_reasoning_args_are_pi_only_and_omitted_by_default() {
+        let existing: Vec<String> = Vec::new();
+        let mut pi_parts = Vec::new();
+        append_external_cli_reasoning_args(
+            &mut pi_parts,
+            &existing,
+            "pi",
+            Some(ReasoningLevel::Xhigh),
+        );
+        assert_eq!(
+            pi_parts,
+            vec!["--thinking".to_string(), "'xhigh'".to_string()]
+        );
+
+        let mut max_parts = Vec::new();
+        append_external_cli_reasoning_args(
+            &mut max_parts,
+            &existing,
+            "pi",
+            Some(ReasoningLevel::Max),
+        );
+        assert_eq!(
+            max_parts,
+            vec!["--thinking".to_string(), "'max'".to_string()]
+        );
+
+        let mut omitted = Vec::new();
+        append_external_cli_reasoning_args(&mut omitted, &existing, "pi", None);
+        assert!(omitted.is_empty());
+
+        let mut non_pi = Vec::new();
+        append_external_cli_reasoning_args(
+            &mut non_pi,
+            &existing,
+            "codex",
+            Some(ReasoningLevel::High),
+        );
+        assert!(
+            non_pi.is_empty(),
+            "non-Pi handlers must not receive --thinking"
+        );
+
+        let mut existing_flag = Vec::new();
+        append_external_cli_reasoning_args(
+            &mut existing_flag,
+            &["--thinking".to_string(), "low".to_string()],
+            "pi",
+            Some(ReasoningLevel::High),
+        );
+        assert!(existing_flag.is_empty(), "explicit executor args win");
     }
 
     #[test]
@@ -3751,6 +3907,47 @@ mod tests {
             template: "Investigate task".to_string(),
         });
         settings
+    }
+
+    #[test]
+    fn test_build_inner_command_pi_external_emits_model_and_thinking() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = external_test_settings("pi", "pi", &["--mode", "json"]);
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command_with_reasoning(
+            &settings,
+            "full",
+            output_dir,
+            &Some("pi:openai-codex:gpt-5.6-sol".to_string()),
+            &None,
+            Some(ReasoningLevel::High),
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.contains("--provider 'openai-codex'"),
+            "Pi external command must carry the provider split: {}",
+            command
+        );
+        assert!(
+            command.contains("--model 'gpt-5.6-sol'"),
+            "Pi external command must carry the model split: {}",
+            command
+        );
+        assert!(
+            command.contains("--thinking 'high'"),
+            "Pi external command must carry structured reasoning: {}",
+            command
+        );
     }
 
     #[test]

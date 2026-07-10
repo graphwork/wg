@@ -48,7 +48,7 @@
 //! always answer "why did this task spawn `native --endpoint openrouter`?"
 //! by reading one line.
 
-use crate::config::{Config, EndpointConfig, parse_model_spec};
+use crate::config::{Config, EndpointConfig, ReasoningLevel, parse_model_spec};
 use crate::graph::Task;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
@@ -318,6 +318,7 @@ impl SpawnProvenance {
 pub struct SpawnPlan {
     pub executor: ExecutorKind,
     pub model: ResolvedModelSpec,
+    pub reasoning: Option<ReasoningLevel>,
     /// `None` for executors that handle their own endpoint (claude/codex/
     /// shell/external workers). `Some(_)` only for `executor=native`.
     pub endpoint: Option<EndpointConfig>,
@@ -408,6 +409,9 @@ pub fn plan_spawn(
     };
 
     let model = ResolvedModelSpec::from_raw(&model_raw);
+    let reasoning = task
+        .reasoning
+        .or_else(|| config.resolve_reasoning_for_role(crate::config::DispatchRole::TaskAgent));
 
     // ----- 2b. Model-compat override -----
     // The claude CLI cannot run non-Anthropic models — it would 404. If we
@@ -554,6 +558,9 @@ pub fn plan_spawn(
         executor.as_str().to_string(),
     );
     env.insert("WG_MODEL".to_string(), model.raw.clone());
+    if let Some(reasoning) = reasoning {
+        env.insert("WG_REASONING".to_string(), reasoning.as_str().to_string());
+    }
 
     let provenance = SpawnProvenance {
         executor_source,
@@ -564,6 +571,7 @@ pub fn plan_spawn(
     Ok(SpawnPlan {
         executor,
         model,
+        reasoning,
         endpoint,
         env,
         argv: Vec::new(),

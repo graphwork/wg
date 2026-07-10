@@ -39,6 +39,8 @@ struct CoordinatorInfo {
     max_agents: usize,
     executor: String,
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
     poll_interval: u64,
 }
 
@@ -258,6 +260,12 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
 }
 
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
+    let configured_reasoning = || {
+        worksgood::config::Config::load_or_default(dir)
+            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
+            .map(|r| r.to_string())
+    };
+
     // Try to get runtime state from coordinator (if daemon is running)
     if let Some(coord) = CoordinatorState::load_for(dir, 0) {
         // Derive the effective handler from the persisted model via the
@@ -280,6 +288,7 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
             max_agents: coord.max_agents,
             executor,
             model: coord.model,
+            reasoning: configured_reasoning(),
             poll_interval: coord.poll_interval,
         };
     }
@@ -302,6 +311,9 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         max_agents: config.coordinator.max_agents,
         executor: config.effective_dispatcher_executor(),
         model,
+        reasoning: config
+            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
+            .map(|r| r.to_string()),
         poll_interval: config.coordinator.poll_interval,
     }
 }
@@ -634,10 +646,11 @@ fn print_status(status: &StatusOutput) {
         None => "default".to_string(),
     };
     println!(
-        "Dispatcher: max={}, executor={}, model={}, poll={}s",
+        "Dispatcher: max={}, executor={}, model={}, reasoning={}, poll={}s",
         status.coordinator.max_agents,
         status.coordinator.executor,
         model_display,
+        status.coordinator.reasoning.as_deref().unwrap_or("(omit)"),
         status.coordinator.poll_interval
     );
 

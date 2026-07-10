@@ -18704,6 +18704,7 @@ impl VizApp {
                                                 model: None,
                                                 tier: Some(tier),
                                                 endpoint: None,
+                                                reasoning: None,
                                             });
                                         }
                                     }

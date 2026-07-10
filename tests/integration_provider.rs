@@ -577,6 +577,7 @@ fn test_fallback_chain_role_to_default_to_agent() {
         provider: Some("openrouter".to_string()),
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
     assert_eq!(

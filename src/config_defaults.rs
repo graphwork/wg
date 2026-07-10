@@ -213,8 +213,11 @@ fn openrouter_config(params: &RouteParams) -> Config {
     // strict model-spec validator accepts them on reload.
     config.tiers = TierConfig {
         fast: Some("openrouter:anthropic/claude-haiku-4-5".to_string()),
+        fast_reasoning: None,
         standard: Some("openrouter:anthropic/claude-sonnet-4-6".to_string()),
+        standard_reasoning: None,
         premium: Some("openrouter:anthropic/claude-opus-4-7".to_string()),
+        premium_reasoning: None,
     };
 
     // Worker default: premium tier (opus) — real implementation needs the
@@ -253,8 +256,11 @@ fn claude_cli_config(params: &RouteParams) -> Config {
     // not silently fall through to sonnet when it resolves by tier.
     config.tiers = TierConfig {
         fast: Some("claude:haiku".to_string()),
+        fast_reasoning: None,
         standard: Some("claude:opus".to_string()),
+        standard_reasoning: None,
         premium: Some("claude:opus".to_string()),
+        premium_reasoning: None,
     };
 
     // Worker default: claude:opus (premium tier) — workers do real
@@ -293,8 +299,11 @@ fn codex_cli_config(params: &RouteParams) -> Config {
     // o1-pro is on the deprecation path (shutdown 2026-10-23).
     config.tiers = TierConfig {
         fast: Some("codex:gpt-5.4-mini".to_string()),
+        fast_reasoning: None,
         standard: Some("codex:gpt-5.5".to_string()),
+        standard_reasoning: None,
         premium: Some("codex:gpt-5.5".to_string()),
+        premium_reasoning: None,
     };
 
     // Worker default: codex:gpt-5.5 (premium tier — newest frontier model,
@@ -322,6 +331,7 @@ fn codex_cli_config(params: &RouteParams) -> Config {
         model: Some("codex:gpt-5.4-mini".to_string()),
         tier: None,
         endpoint: None,
+        reasoning: None,
     };
     config.models.flip_inference = Some(flip_role.clone());
     config.models.flip_comparison = Some(flip_role);
@@ -434,8 +444,11 @@ fn local_config(params: &RouteParams) -> Config {
     // so the strict validator accepts on reload.
     config.tiers = TierConfig {
         fast: Some(default_model.clone()),
+        fast_reasoning: None,
         standard: Some(default_model.clone()),
+        standard_reasoning: None,
         premium: Some(default_model.clone()),
+        premium_reasoning: None,
     };
     config.agent.model = default_model.clone();
     config.coordinator.model = Some(default_model.clone());
@@ -490,8 +503,11 @@ fn nex_custom_config(params: &RouteParams) -> Config {
     // provider:model format to satisfy the strict validator.
     config.tiers = TierConfig {
         fast: Some(default_model.clone()),
+        fast_reasoning: None,
         standard: Some(default_model.clone()),
+        standard_reasoning: None,
         premium: Some(default_model.clone()),
+        premium_reasoning: None,
     };
     config.agent.model = default_model.clone();
     config.coordinator.model = Some(default_model.clone());
@@ -595,12 +611,14 @@ fn split_role_models_routing(
         model: Some(default_model.to_string()),
         tier: None,
         endpoint: None,
+        reasoning: None,
     };
     let evaluator_role = RoleModelConfig {
         provider: None,
         model: Some(evaluator_model.to_string()),
         tier: None,
         endpoint: None,
+        reasoning: None,
     };
     ModelRoutingConfig {
         default: Some(default_role.clone()),
@@ -613,6 +631,7 @@ fn split_role_models_routing(
             model: Some(assigner_model.to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         }),
         ..Default::default()
     }

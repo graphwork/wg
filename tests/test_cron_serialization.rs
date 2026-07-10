@@ -33,6 +33,7 @@ fn test_cron_task_serialization() {
         failure_reason: None,
         failure_class: None,
         model: None,
+        reasoning: None,
         provider: None,
         endpoint: None,
         remote_provider: None,
