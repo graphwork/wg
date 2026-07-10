@@ -2331,6 +2331,13 @@ performance:
     }
 
     #[test]
+    fn test_is_human_executor_telegram() {
+        // A person fronted by a Telegram bot (the `wg agency human add` shape)
+        // is a human — must be excluded from AI auto-assignment.
+        assert!(is_human_executor("telegram"));
+    }
+
+    #[test]
     fn test_is_human_executor_claude_is_not_human() {
         assert!(!is_human_executor("claude"));
     }

@@ -2017,6 +2017,21 @@ fn main() -> Result<()> {
         Commands::PiPlugin { command } => commands::pi_plugin_install::run(command),
         Commands::Agency { command } => match command {
             AgencyCommands::Init => commands::agency_init::run(&workgraph_dir),
+            AgencyCommands::Human { command } => match command {
+                cli::HumanCommands::Add {
+                    name,
+                    telegram,
+                    project,
+                } => commands::agency_human::run_add(
+                    &workgraph_dir,
+                    &name,
+                    &telegram,
+                    project.as_deref(),
+                ),
+                cli::HumanCommands::Confirm { telegram } => {
+                    commands::agency_human::run_confirm(&workgraph_dir, &telegram)
+                }
+            },
             AgencyCommands::Migrate { dry_run } => {
                 commands::agency_migrate::run(&workgraph_dir, dry_run)
             }

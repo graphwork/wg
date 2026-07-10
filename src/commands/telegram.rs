@@ -73,6 +73,20 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
                 if let Err(e) = channel.send_text(&effective_chat_id, &response).await {
                     eprintln!("Failed to send response: {e}");
                 }
+            } else if let Some(name) = try_confirm_binding(&workgraph_dir, &msg.sender, &msg.body) {
+                // A bound-but-unconfirmed human replied YES — record it and
+                // welcome them. This is the inbound half of the
+                // `wg agency human add` onboarding handshake (R21/R22).
+                println!(
+                    "[{}] {} ({}) confirmed — joined via YES handshake",
+                    chrono::Utc::now().format("%H:%M:%S"),
+                    name,
+                    msg.sender
+                );
+                let welcome = format!("Welcome aboard, {}! You're all set. \u{2705}", name);
+                if let Err(e) = channel.send_text(&effective_chat_id, &welcome).await {
+                    eprintln!("Failed to send welcome: {e}");
+                }
             } else {
                 println!(
                     "[{}] Message from {}: {}",
@@ -85,6 +99,32 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
 
         Ok(())
     })
+}
+
+/// Try to confirm a human-onboarding binding from an inbound message.
+///
+/// If `sender` has an unconfirmed Telegram binding (see
+/// `wg agency human add`) and `body` is an affirmative `YES`, mark the binding
+/// confirmed, persist it, and return the human's name. Otherwise return
+/// `None`. Persistence failures are logged and swallowed so the listener keeps
+/// running.
+fn try_confirm_binding(workgraph_dir: &Path, sender: &str, body: &str) -> Option<String> {
+    use worksgood::agency::{apply_confirmation, TelegramBindingMap};
+
+    let agency_dir = workgraph_dir.join("agency");
+    let mut bindings = match TelegramBindingMap::load(&agency_dir) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Failed to load Telegram binding map: {e}");
+            return None;
+        }
+    };
+    let name = apply_confirmation(&mut bindings, sender, body, chrono::Utc::now())?;
+    if let Err(e) = bindings.save(&agency_dir) {
+        eprintln!("Failed to persist Telegram binding confirmation: {e}");
+        return None;
+    }
+    Some(name)
 }
 
 /// Send a message to the configured Telegram chat.

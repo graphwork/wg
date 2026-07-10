@@ -1,6 +1,7 @@
 pub mod abandon;
 pub mod add;
 pub mod agency_create;
+pub mod agency_human;
 pub mod agency_import;
 pub mod agency_init;
 pub mod agency_merge;
