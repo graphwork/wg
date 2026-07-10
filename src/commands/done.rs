@@ -1512,7 +1512,22 @@ fn run_inner(
         .unwrap_or_default();
     if !deliverables.is_empty() {
         let report = super::deliverables::preflight(&deliverables, project_root);
-        if !report.is_clean() {
+        // Human/agent escape hatch for preflight false positives (e.g. a
+        // deliverable inferred from prose that legitimately does not live in
+        // this worktree). `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` bypasses the
+        // refusal but is surfaced loudly so it can't hide a genuine miss.
+        let preflight_override = std::env::var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE")
+            .ok()
+            .as_deref()
+            == Some("1");
+        if !report.is_clean() && preflight_override {
+            eprintln!(
+                "⚠️  deliverable preflight found missing deliverables but \
+                 WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 is set — bypassing:\n{}",
+                report.missing_summary()
+            );
+        }
+        if !report.is_clean() && !preflight_override {
             let id_owned = id.to_string();
             let reason = format!("missing deliverables:\n{}", report.missing_summary());
             let reason_for_log = reason.clone();
@@ -1534,7 +1549,10 @@ fn run_inner(
             anyhow::bail!(
                 "Cannot mark '{}' as done: deliverable preflight refused — \
                  required deliverables were not produced. `wg done` will keep \
-                 refusing until these exist and are non-empty:\n{}",
+                 refusing until these exist and are non-empty:\n{}\n\n\
+                 If this is a false positive (e.g. a file the task tells you to \
+                 discard, or one that belongs to a different worktree/repo), \
+                 set WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 in this shell to bypass.",
                 id,
                 report.missing_summary()
             );
@@ -2626,6 +2644,7 @@ fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::tempdir;
     use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
@@ -4642,6 +4661,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_refuses_missing_deliverable() {
         let dir = tempdir().unwrap();
         let project_root = dir.path();
@@ -4700,6 +4720,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_clears_prior_deliverable_missing_marker_on_success() {
         // First refuse (no deliverables), then produce them and re-run.
         let dir = tempdir().unwrap();
@@ -4743,6 +4764,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_refuses_empty_deliverable_file() {
         let dir = tempdir().unwrap();
         let project_root = dir.path();
@@ -4757,5 +4779,33 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("deliverable preflight refused"));
         assert!(err.contains("latest.pt"));
+    }
+
+    #[test]
+    #[serial]
+    fn done_override_bypasses_missing_deliverable() {
+        // Escape hatch: WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 lets a human/agent
+        // bypass a preflight false positive. The deliverable is genuinely
+        // missing, but the override promotes the task to Done anyway.
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Deliverables\n- latest.pt\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+        let wg_dir = project_root.join(".wg");
+
+        // Baseline: refuses without the override.
+        assert!(run(&wg_dir, "t1", false, false, false, false, false).is_err());
+
+        unsafe { std::env::set_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE", "1") };
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        unsafe { std::env::remove_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE") };
+
+        assert!(
+            result.is_ok(),
+            "override should bypass preflight, got: {:?}",
+            result.err()
+        );
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        assert_eq!(graph.get_task("t1").unwrap().status, Status::Done);
     }
 }

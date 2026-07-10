@@ -59,9 +59,80 @@ pub fn parse_deliverables(description: &str) -> Vec<Deliverable> {
         }
     }
     if let Some(block) = extract_section(description, "Validation") {
-        return parse_bullets(&block);
+        let parsed = parse_bullets(&block);
+        // The `## Validation` section is a rubric, not an explicit contract.
+        // When the task's real work happens in a *different*, externally
+        // managed worktree/repo (e.g. the description points at
+        // `/tmp/wg-fix-lint-49` or another project checkout), a bare filename
+        // mentioned in the rubric cannot be reliably resolved against *this*
+        // task's own worktree — checking it there is a false positive. Drop
+        // bare-filename fallbacks in that case; directory-qualified paths and
+        // any explicit `## Deliverables` block are still honored.
+        if references_external_worktree(description) {
+            return parsed
+                .into_iter()
+                .filter(|d| !is_bare_filename(d))
+                .collect();
+        }
+        return parsed;
     }
     Vec::new()
+}
+
+/// Negative-framing markers: when a bullet instructs that a file be
+/// discarded, not committed, or is explicitly *not* a produced output, it is
+/// not a required deliverable. Matched case-insensitively as substrings of the
+/// bullet text.
+const NEGATIVE_FRAMING: &[&str] = &[
+    "discard",
+    "do not commit",
+    "don't commit",
+    "do not create",
+    "don't create",
+    "do not stage",
+    "do not add",
+    "do not produce",
+    "not a real change",
+    "not a deliverable",
+    "should not exist",
+    "must not exist",
+    "delete this",
+    "remove this",
+];
+
+/// True when a bullet's text frames the mentioned file negatively (discard /
+/// do-not-commit / not-a-real-change). Such bullets are skipped by
+/// `parse_bullets` so a "discard foo.md" instruction is never mistaken for a
+/// "produce foo.md" deliverable.
+fn has_negative_framing(item: &str) -> bool {
+    let lower = item.to_ascii_lowercase();
+    NEGATIVE_FRAMING.iter().any(|m| lower.contains(m))
+}
+
+/// Strong signals that a task's real work lives in a *different*,
+/// externally-managed worktree or repo checkout, so bare filenames in its
+/// `## Validation` rubric should not be resolved against this task's own
+/// worktree. Kept conservative to avoid dropping genuine local deliverables.
+fn references_external_worktree(description: &str) -> bool {
+    let lower = description.to_ascii_lowercase();
+    // WG scratch worktrees live under `/tmp/wg-...`; the other phrases are how
+    // task authors describe an out-of-tree checkout.
+    lower.contains("/tmp/wg-")
+        || lower.contains("external worktree")
+        || lower.contains("externally-managed")
+        || lower.contains("externally managed")
+        || lower.contains("different repo")
+        || lower.contains("separate repo")
+        || lower.contains("another repo")
+}
+
+/// True for a `Deliverable::Path` that is a bare filename (no directory
+/// separator) — the ambiguous case when the referenced repo is external.
+fn is_bare_filename(d: &Deliverable) -> bool {
+    match d {
+        Deliverable::Path(p) => !p.contains('/'),
+        Deliverable::Registry { .. } => false,
+    }
 }
 
 /// Extract the body of a `## <heading>` section (until the next `## ` header
@@ -103,6 +174,13 @@ fn parse_bullets(section: &str) -> Vec<Deliverable> {
         let Some(item) = strip_bullet(trimmed) else {
             continue;
         };
+        // Negative framing: a bullet that says to discard / not commit / not
+        // produce the mentioned file is NOT a required deliverable. Skip it so
+        // "discard foo.md — do not commit it" is never treated as a required
+        // output that must exist in the worktree.
+        if has_negative_framing(item) {
+            continue;
+        }
         // Take the first whitespace-delimited token (the path / registry
         // token). Anything after is prose and ignored.
         let token = item.split_whitespace().next().unwrap_or("");
@@ -393,6 +471,92 @@ mod tests {
         let dir = tempdir().unwrap();
         let report = preflight(&[], dir.path());
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn discard_framing_bullet_is_not_a_deliverable() {
+        // The finish-lint-pr49 regression: a bullet that instructs the file be
+        // discarded must NOT be treated as a required deliverable.
+        let desc = "## Validation\n- Discard PROMPT_CONSTRUCTION_ANALYSIS.md — it is a known macOS case-collision artifact, do not commit it.\n";
+        assert!(
+            parse_deliverables(desc).is_empty(),
+            "got {:?}",
+            parse_deliverables(desc)
+        );
+    }
+
+    #[test]
+    fn negative_framing_variants_all_skipped() {
+        for line in [
+            "- foo.md do not commit it",
+            "- foo.md — discard this artifact",
+            "- foo.md should not exist after the fix",
+            "- foo.md is not a real change",
+            "- foo.md do not create",
+        ] {
+            let desc = format!("## Deliverables\n{}\n", line);
+            assert!(
+                parse_deliverables(&desc).is_empty(),
+                "expected no deliverable for {line:?}, got {:?}",
+                parse_deliverables(&desc)
+            );
+        }
+    }
+
+    #[test]
+    fn positive_deliverable_still_parsed_without_negative_framing() {
+        // Guard against over-eager filtering: a normal produce-this bullet is
+        // still a deliverable.
+        let desc = "## Deliverables\n- out.bin produced by the run\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("out.bin".to_string())]
+        );
+    }
+
+    #[test]
+    fn external_worktree_drops_bare_filename_validation_fallback() {
+        // When the description references an external worktree, a bare filename
+        // in the ## Validation rubric cannot be resolved against this worktree.
+        let desc = "## Description\nReal work happens in /tmp/wg-fix-lint-49.\n\n## Validation\n- report.md summarizes the run\n";
+        assert!(
+            parse_deliverables(desc).is_empty(),
+            "got {:?}",
+            parse_deliverables(desc)
+        );
+    }
+
+    #[test]
+    fn external_worktree_keeps_directory_qualified_paths() {
+        // A path with a directory component is specific enough to keep even
+        // when an external worktree is referenced.
+        let desc = "## Description\nSee the different repo at /Users/x/other.\n\n## Validation\n- seed/manifest.json lists the seed\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("seed/manifest.json".to_string())]
+        );
+    }
+
+    #[test]
+    fn explicit_deliverables_block_survives_external_worktree_reference() {
+        // The external-worktree relaxation only applies to the ## Validation
+        // fallback. An explicit ## Deliverables contract is always honored.
+        let desc = "## Description\nWork in /tmp/wg-foo.\n\n## Deliverables\n- out.bin\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("out.bin".to_string())]
+        );
+    }
+
+    #[test]
+    fn local_bare_filename_still_a_deliverable_without_external_reference() {
+        // No external-worktree signal → bare filenames in ## Validation are
+        // still deliverables (no regression).
+        let desc = "## Validation\n- latest.pt exists and is non-empty\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("latest.pt".to_string())]
+        );
     }
 
     #[test]
