@@ -109,7 +109,7 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
 /// `None`. Persistence failures are logged and swallowed so the listener keeps
 /// running.
 fn try_confirm_binding(workgraph_dir: &Path, sender: &str, body: &str) -> Option<String> {
-    use worksgood::agency::{apply_confirmation, TelegramBindingMap};
+    use worksgood::agency::{TelegramBindingMap, apply_confirmation};
 
     let agency_dir = workgraph_dir.join("agency");
     let mut bindings = match TelegramBindingMap::load(&agency_dir) {

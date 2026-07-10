@@ -89,7 +89,10 @@ pub fn run_add(
 
     let handle = slugify(name);
     if handle.is_empty() {
-        anyhow::bail!("human name '{}' has no alphanumeric characters to form a handle", name);
+        anyhow::bail!(
+            "human name '{}' has no alphanumeric characters to form a handle",
+            name
+        );
     }
     let agent_id = format!("human-{}", handle);
 
@@ -105,8 +108,8 @@ pub fn run_add(
         );
     }
 
-    let mut bindings = TelegramBindingMap::load(&agency_dir)
-        .context("Failed to load Telegram binding map")?;
+    let mut bindings =
+        TelegramBindingMap::load(&agency_dir).context("Failed to load Telegram binding map")?;
     // One-human-one-agent: reject a Telegram user already bound.
     if let Some(existing) = bindings.find_by_user(telegram) {
         anyhow::bail!(
@@ -155,29 +158,30 @@ pub fn run_add(
     );
 
     let (bot_id, outcome) = match resolve_bot(workgraph_dir, &agent_id) {
-        Some((bot_id, bot)) => {
-            match send_dm(&bot_id, bot, telegram, &handshake_msg) {
-                Ok(()) => {
-                    println!(
-                        "Sent join request to {} via bot '{}'. Awaiting their YES reply.",
-                        telegram, bot_id
-                    );
-                    println!(
-                        "  Run `wg telegram listen` (or keep the service listener up) to capture the confirmation."
-                    );
-                    (Some(bot_id.clone()), HandshakeOutcome::Sent { bot_id })
-                }
-                Err(e) => {
-                    let error = e.to_string();
-                    eprintln!("Warning: failed to DM {} via bot '{}': {}", telegram, bot_id, error);
-                    print_manual_step(telegram, &handshake_msg);
-                    (
-                        Some(bot_id.clone()),
-                        HandshakeOutcome::SendFailed { bot_id, error },
-                    )
-                }
+        Some((bot_id, bot)) => match send_dm(&bot_id, bot, telegram, &handshake_msg) {
+            Ok(()) => {
+                println!(
+                    "Sent join request to {} via bot '{}'. Awaiting their YES reply.",
+                    telegram, bot_id
+                );
+                println!(
+                    "  Run `wg telegram listen` (or keep the service listener up) to capture the confirmation."
+                );
+                (Some(bot_id.clone()), HandshakeOutcome::Sent { bot_id })
             }
-        }
+            Err(e) => {
+                let error = e.to_string();
+                eprintln!(
+                    "Warning: failed to DM {} via bot '{}': {}",
+                    telegram, bot_id, error
+                );
+                print_manual_step(telegram, &handshake_msg);
+                (
+                    Some(bot_id.clone()),
+                    HandshakeOutcome::SendFailed { bot_id, error },
+                )
+            }
+        },
         None => {
             println!("No Telegram bot configured — using the manual onboarding path.");
             print_manual_step(telegram, &handshake_msg);
@@ -205,7 +209,10 @@ pub fn run_add(
         HandshakeOutcome::SendFailed { .. } => "unconfirmed (send failed — relay manually)",
         HandshakeOutcome::NoBot => "unconfirmed (manual — relay the join request)",
     };
-    println!("Recorded binding {} → {} [{}]", telegram, agent_id, confirm_state);
+    println!(
+        "Recorded binding {} → {} [{}]",
+        telegram, agent_id, confirm_state
+    );
     println!("  Binding map: {}", path.display());
 
     Ok(())
@@ -217,8 +224,8 @@ pub fn run_add(
 pub fn run_confirm(workgraph_dir: &Path, telegram: &str) -> Result<()> {
     let telegram = telegram.trim();
     let agency_dir = workgraph_dir.join("agency");
-    let mut bindings = TelegramBindingMap::load(&agency_dir)
-        .context("Failed to load Telegram binding map")?;
+    let mut bindings =
+        TelegramBindingMap::load(&agency_dir).context("Failed to load Telegram binding map")?;
 
     match bindings.find_by_user(telegram) {
         None => anyhow::bail!(
@@ -277,12 +284,7 @@ fn resolve_bot(workgraph_dir: &Path, agent_id: &str) -> Option<(String, Telegram
 
 /// Send a one-off DM through the given bot. Best-effort: any error is returned
 /// so the caller can fall back to the manual path.
-fn send_dm(
-    bot_id: &str,
-    bot: TelegramBotConfig,
-    target: &str,
-    message: &str,
-) -> Result<()> {
+fn send_dm(bot_id: &str, bot: TelegramBotConfig, target: &str, message: &str) -> Result<()> {
     use worksgood::notify::NotificationChannel;
     use worksgood::notify::telegram::TelegramChannel;
 
@@ -343,14 +345,10 @@ mod tests {
         assert_eq!(agents[0].name, "Nadin");
         assert_eq!(agents[0].executor, "telegram");
         assert!(agents[0].is_human());
-        assert_eq!(
-            agents[0].contact,
-            Some("telegram:78901234".to_string())
-        );
+        assert_eq!(agents[0].contact, Some("telegram:78901234".to_string()));
 
         // 2. Per-user board exists.
-        let graph =
-            worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         assert!(graph.get_task(".user-nadin-0").is_some());
 
         // 3. Binding recorded, unconfirmed, no bot.

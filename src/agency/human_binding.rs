@@ -213,7 +213,10 @@ mod tests {
         map.add(binding("111", "human-nadin", "Nadin")).unwrap();
 
         assert_eq!(map.find_by_user("111").unwrap().name, "Nadin");
-        assert_eq!(map.find_by_agent("human-nadin").unwrap().telegram_user, "111");
+        assert_eq!(
+            map.find_by_agent("human-nadin").unwrap().telegram_user,
+            "111"
+        );
         assert!(map.find_by_user("999").is_none());
     }
 
