@@ -105,6 +105,8 @@ pub enum IpcRequest {
         #[serde(default)]
         model: Option<String>,
         #[serde(default)]
+        reasoning: Option<worksgood::config::ReasoningLevel>,
+        #[serde(default)]
         verify: Option<String>,
         #[serde(default)]
         verify_timeout: Option<String>,
@@ -492,6 +494,7 @@ fn handle_request(
             skills,
             deliverables,
             model,
+            reasoning,
             verify,
             verify_timeout,
             origin,
@@ -501,7 +504,7 @@ fn handle_request(
                 "IPC AddTask: title='{}', origin={:?}",
                 title, origin
             ));
-            let resp = handle_add_task(
+            let resp = handle_add_task_with_reasoning(
                 dir,
                 &title,
                 id.as_deref(),
@@ -511,6 +514,7 @@ fn handle_request(
                 &skills,
                 &deliverables,
                 model.as_deref(),
+                reasoning,
                 verify.as_deref(),
                 verify_timeout.as_deref(),
                 cron.as_deref(),
@@ -1154,6 +1158,41 @@ fn handle_add_task(
     cron: Option<&str>,
     origin: Option<&str>,
 ) -> IpcResponse {
+    handle_add_task_with_reasoning(
+        dir,
+        title,
+        id,
+        description,
+        after,
+        tags,
+        skills,
+        deliverables,
+        model,
+        None,
+        verify,
+        verify_timeout,
+        cron,
+        origin,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_add_task_with_reasoning(
+    dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    after: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    reasoning: Option<worksgood::config::ReasoningLevel>,
+    verify: Option<&str>,
+    verify_timeout: Option<&str>,
+    cron: Option<&str>,
+    origin: Option<&str>,
+) -> IpcResponse {
     let graph_path = graph_path(dir);
     let graph = match load_graph(&graph_path) {
         Ok(g) => g,
@@ -1259,6 +1298,7 @@ fn handle_add_task(
         failure_reason: None,
         failure_class: None,
         model: model.map(String::from),
+        reasoning,
         provider: None,
         endpoint: None,
         remote_provider: None,

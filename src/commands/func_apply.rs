@@ -267,6 +267,7 @@ pub fn run(
                 failure_reason: None,
                 failure_class: None,
                 model: task_model,
+                reasoning: None,
                 provider: None,
                 endpoint: None,
                 remote_provider: None,

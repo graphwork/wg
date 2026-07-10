@@ -251,6 +251,10 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Structured reasoning level for this task: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
+
         /// [DEPRECATED] Provider for this task — use provider:model format in --model instead
         #[arg(long)]
         provider: Option<String>,
@@ -423,6 +427,10 @@ pub enum Commands {
         /// Update preferred model
         #[arg(long)]
         model: Option<String>,
+
+        /// Update structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// [DEPRECATED] Update provider — use provider:model format in --model instead
         #[arg(long)]
@@ -1637,6 +1645,10 @@ pub enum Commands {
         /// Model to use (haiku, sonnet, opus) - overrides task/executor defaults
         #[arg(long)]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Evaluate tasks: auto-evaluate, record external scores, view history
@@ -1704,6 +1716,10 @@ pub enum Commands {
         /// Updates `agent.model` and `dispatcher.model`.
         #[arg(short = 'm', long)]
         model: Option<String>,
+
+        /// Set default structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// Rewrite the default LLM endpoint to this URL. Must be
         /// `http://` or `https://`. Creates/replaces a `[[llm_endpoints.endpoints]]`
@@ -1942,6 +1958,10 @@ pub enum Commands {
         /// assigner, evolver, verification, triage, creator
         #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"], action = ArgAction::Append)]
         set_model: Vec<String>,
+
+        /// Set reasoning for a dispatch role; repeat: --set-reasoning <role> <level>
+        #[arg(long = "set-reasoning", num_args = 2, value_names = ["ROLE", "LEVEL"], action = ArgAction::Append)]
+        set_reasoning: Vec<String>,
 
         /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
         #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append)]
@@ -2709,6 +2729,10 @@ pub enum Commands {
 
         #[arg(long, short = 'm')]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Print the WG directory that `wg` would use from here,

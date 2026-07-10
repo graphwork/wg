@@ -1994,3 +1994,12 @@ owners = [
 ]
 description = "Pins guardrails G1+G3 from docs/research/prevent-intake-as-evaluator-design.md: an intake task with a `## Deliverables` block is refused at `wg done` (failure_class `deliverable-missing`) when the named deliverable is absent; on retry (retry_count=1, failure_class=deliverable-missing) the spawned worker prompt.txt leads with the G3 'PREVIOUS ATTEMPT FAILED — DO NOT REPEAT' directive naming the concrete deliverable (replacing the neutral 'continue from where they left off' framing); after the deliverable is produced `wg done` succeeds and clears the failure_class marker. The G3 directive-injection pure function is additionally pinned by the retry_mutates_prompt_on_deliverable_missing unit test. Credential-free: drives the real `wg done` + `wg spawn --executor claude` CLI paths (prompt.txt is written before any LLM subprocess launches); no claude CLI auth needed."
 timeout_seconds = 90
+
+[[scenario]]
+name = "pi_structured_reasoning_codex"
+script = "scenarios/pi_structured_reasoning_codex.sh"
+owners = [
+    "implement-structured-pi",
+]
+description = "Pins structured Pi reasoning routing: the real wg CLI config/add/show/spawn flow keeps `pi:openai-codex:gpt-5.6-sol` as model identity while a fake Pi executable observes `--provider openai-codex --model gpt-5.6-sol --thinking high` at runtime, with no `model(high)` mutation. Credential-free and HOME-isolated."
+timeout_seconds = 60

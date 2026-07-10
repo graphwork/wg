@@ -842,6 +842,7 @@ fn validate_format_rejects_bare_role_model() {
         provider: None,
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let err = config.validate_model_format().unwrap_err();
     let msg = err.to_string();
@@ -860,6 +861,7 @@ fn validate_format_rejects_deprecated_role_provider() {
         provider: Some("anthropic".to_string()), // deprecated
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let err = config.validate_model_format().unwrap_err();
     let msg = err.to_string();

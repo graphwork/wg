@@ -413,5 +413,16 @@ wg config -m 'pi:openai-codex:gpt-5.6-sol'
 wg add 'Implement the parser cleanup' --model 'pi:openai-codex:gpt-5.6-sol'
 ```
 
-Until WG has a first-class reasoning field, direct Pi invocations can use
-`--thinking`; WG should not encode that in the model spec.
+WG now has a first-class reasoning field, so use the same model identity with a
+separate reasoning setting:
+
+```bash
+wg config -m 'pi:openai-codex:gpt-5.6-sol' --reasoning high
+wg add 'Implement the parser cleanup' --model 'pi:openai-codex:gpt-5.6-sol' --reasoning high
+wg spawn 'Hard migration' --model 'pi:openai-codex:gpt-5.6-sol' --reasoning xhigh
+```
+
+WG stores this as structured `model` plus `reasoning`, resolves them
+independently, and passes Pi `--thinking <level>` only when reasoning is
+configured. When reasoning is unset, WG omits `--thinking` and Pi keeps its own
+default. WG should not encode reasoning in the model spec.
