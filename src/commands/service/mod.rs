@@ -1296,14 +1296,40 @@ pub fn run_start(
         .open(&log_path)
         .with_context(|| format!("Failed to open daemon log at {:?}", log_path))?;
 
-    let child = process::Command::new(&current_exe)
+    let mut daemon_command = process::Command::new(&current_exe);
+    daemon_command
         .args(&args)
         .env("WG_DIR", dir)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
-        .stderr(stderr_file)
+        .stderr(stderr_file);
+
+    // A background child with null stdio is not detached from its caller's
+    // terminal session: it still shares the foreground process group and is
+    // sent SIGHUP when that PTY closes. Create a new session in the child
+    // between fork and exec so ordinary `wg service start` has the same
+    // lifetime guarantees as an external `setsid wg service start` wrapper.
+    // `setsid` also creates a new process group, so terminal-generated signals
+    // cannot reach the daemon after the start wrapper exits.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: pre_exec is restricted to the async-signal-safe setsid(2)
+        // syscall and constructing an io::Error from errno.
+        unsafe {
+            daemon_command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+
+    let child = daemon_command
         .spawn()
-        .context("Failed to spawn daemon process")?;
+        .context("Failed to spawn detached daemon process")?;
 
     let pid = child.id();
 

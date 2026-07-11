@@ -2003,3 +2003,21 @@ owners = [
 ]
 description = "Pins structured Pi reasoning routing: the real wg CLI config/add/show/spawn flow keeps `pi:openai-codex:gpt-5.6-sol` as model identity while a fake Pi executable observes `--provider openai-codex --model gpt-5.6-sol --thinking high` at runtime, with no `model(high)` mutation. Credential-free and HOME-isolated."
 timeout_seconds = 60
+
+[[scenario]]
+name = "service_start_survives_pty_hangup"
+script = "scenarios/service_start_survives_pty_hangup.sh"
+owners = [
+    "fix-recurring-daemon",
+]
+description = "Pins daemon detachment through the real terminal lifecycle: forkpty launches ordinary `wg service start` without external setsid, the PTY master closes while the launcher is still in its startup wait, and the recorded daemon PID must survive the resulting terminal hangup and complete multiple later 1s coordinator ticks. Credential-free and isolated to a disposable graph. Pre-fix, the child retained the launcher's session/process group and died with the PTY."
+timeout_seconds = 30
+
+[[scenario]]
+name = "service_ipc_mixed_clients_keep_ticking"
+script = "scenarios/service_ipc_mixed_clients_keep_ticking.sh"
+owners = [
+    "fix-recurring-daemon",
+]
+description = "Pins the service IPC lifecycle after the recurring unix_stream_data_wait hang: a deliberately partial no-newline client is held open across poll intervals while ticks must advance, followed by repeated real status/reload/log(GraphChanged) traffic plus empty, malformed, valid GraphChanged and Status clients. Ticks must continue during and after bad disconnects. This catches both post-response second reads and the still-unbounded initial read/send that survived the earlier one-request-per-connection repair. Credential-free and isolated to a disposable graph/socket."
+timeout_seconds = 45
