@@ -3,7 +3,7 @@
 //! that `detect_deprecated_keys` surfaces it for a one-shot daemon-side
 //! deprecation warning.
 
-use worksgood::config::{Config, detect_deprecated_keys};
+use worksgood::config::{Config, detect_deprecated_keys, merge_toml, normalize_legacy_tables};
 
 #[test]
 fn legacy_poll_interval_still_loads() {
@@ -30,6 +30,44 @@ safety_interval = 23
     assert_eq!(
         cfg.coordinator.poll_interval, 23,
         "safety_interval value must be honored (it aliases poll_interval)"
+    );
+}
+
+#[test]
+fn merged_layers_canonicalize_interval_alias_before_deserialize() {
+    // Regression: the Pi profile wrote the canonical key globally while an
+    // older project config retained the legacy spelling. A raw deep merge
+    // preserves both spellings, which serde treats as duplicate values for
+    // `poll_interval` and callers that fall back on error silently revert to
+    // stale/default executor and model settings.
+    let mut global: toml::Value = toml::from_str(
+        r#"
+[dispatcher]
+safety_interval = 30
+model = "pi:openai-codex:gpt-5.6-sol"
+"#,
+    )
+    .unwrap();
+    let mut local: toml::Value = toml::from_str(
+        r#"
+[dispatcher]
+poll_interval = 5
+"#,
+    )
+    .unwrap();
+
+    normalize_legacy_tables(&mut global, "global config", &mut Vec::new());
+    normalize_legacy_tables(&mut local, "local config", &mut Vec::new());
+    let merged = merge_toml(global, local);
+    let cfg: Config = merged
+        .try_into()
+        .expect("canonicalized config layers must not produce a duplicate field");
+
+    assert_eq!(cfg.coordinator.poll_interval, 5, "local value must win");
+    assert_eq!(
+        cfg.coordinator.model.as_deref(),
+        Some("pi:openai-codex:gpt-5.6-sol"),
+        "global Pi route must survive the merge"
     );
 }
 
