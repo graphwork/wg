@@ -285,59 +285,59 @@ pub(crate) fn handle_connection(
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
-    // Ensure reads block (the accepting listener is non-blocking, but we want
-    // straightforward request/response on the accepted connection).
+    // The daemon handles accepted connections on its coordinator thread. A
+    // peer can connect before sending a complete line (or never send one), so
+    // one-request-per-connection alone does not bound the initial read. Keep
+    // blocking I/O for simple request/response semantics, but put a hard bound
+    // on both directions so a partial writer or a client that never reads its
+    // response cannot strand ticks and all subsequent IPC indefinitely.
+    const IPC_IO_TIMEOUT: Duration = Duration::from_millis(500);
     stream.set_nonblocking(false)?;
+    stream.set_recv_timeout(Some(IPC_IO_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_IO_TIMEOUT))?;
 
-    let reader = BufReader::new(&stream);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                let response = IpcResponse::error(&format!("Read error: {}", e));
-                if let Err(we) = write_response(&stream, &response) {
-                    logger.warn(&format!("Failed to send error response: {}", we));
-                }
-                return Ok(());
-            }
-        };
-
-        if line.is_empty() {
-            continue;
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => return Ok(()), // disconnected without a request
+        Ok(_) => {}
+        Err(e) => {
+            logger.warn(&format!("IPC request read failed or timed out: {}", e));
+            return Ok(());
         }
+    }
 
-        let request: IpcRequest = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                logger.warn(&format!("Invalid IPC request: {}", e));
-                let response = IpcResponse::error(&format!("Invalid request: {}", e));
-                write_response(&stream, &response)?;
-                continue;
-            }
-        };
-
-        let response = handle_request(
-            dir,
-            request,
-            running,
-            wake_coordinator,
-            kick_dispatcher,
-            urgent_wake,
-            pending_coordinator_ids,
-            delete_coordinator_ids,
-            interrupt_coordinator_ids,
-            daemon_cfg,
-            logger,
-        );
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.is_empty() {
+        let response = IpcResponse::error("Invalid request: empty request");
         write_response(&stream, &response)?;
-
-        // The IPC client opens a fresh connection per request. Do not wait for
-        // a second line: doing so lets a one-shot client strand the daemon in
-        // unix_stream_data_wait and stops all later ticks/IPC handling.
         return Ok(());
     }
 
+    let request: IpcRequest = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(e) => {
+            logger.warn(&format!("Invalid IPC request: {}", e));
+            let response = IpcResponse::error(&format!("Invalid request: {}", e));
+            write_response(&stream, &response)?;
+            return Ok(());
+        }
+    };
+
+    let response = handle_request(
+        dir,
+        request,
+        running,
+        wake_coordinator,
+        kick_dispatcher,
+        urgent_wake,
+        pending_coordinator_ids,
+        delete_coordinator_ids,
+        interrupt_coordinator_ids,
+        daemon_cfg,
+        logger,
+    );
+    write_response(&stream, &response)?;
     Ok(())
 }
 
