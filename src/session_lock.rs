@@ -597,37 +597,53 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Block until a freshly-spawned child has actually `exec`'d `expected_comm`.
+    /// Spawn a foreign (`sleep`) child for the PID-reuse tests, then — on Linux —
+    /// wait until its `/proc/<pid>/comm` reflects the post-`exec` image rather
+    /// than the still-shared parent (test-harness) comm.
     ///
-    /// `Command::spawn()` returns as soon as the child is `fork`'d — before it
-    /// finishes `exec`'ing the target program. In that window `/proc/<pid>/comm`
-    /// and `/proc/<pid>/cmdline` still reflect the **parent** (this test-harness
-    /// binary, whose CI checkout path `/home/runner/work/wg/wg/...` contains the
-    /// substring `wg`). `pid_reused_by_foreign` then reads that inherited
-    /// identity, decides the child looks like one of us, and returns `false` —
-    /// so the "a live `sleep` is foreign" assertions flake on a loaded runner
-    /// (stable CI run 29137074236). Waiting for the real `comm` before asserting
-    /// makes the identity checks deterministic. Bounded so a stuck exec can't
-    /// hang the suite; if it never appears the assertion reports the real state.
-    #[cfg(target_os = "linux")]
-    fn await_exec(pid: u32, expected_comm: &str) {
-        use std::time::{Duration, Instant};
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-                if comm.trim() == expected_comm {
-                    return;
+    /// A freshly `spawn()`ed child is `fork`ed from the test binary and, until
+    /// its `exec` of `sleep` completes, transiently shares the parent's `comm`
+    /// (`worksgood-<hash>` / the cargo test binary). During that window
+    /// `pid_reused_by_foreign`'s "same executable as us" guard
+    /// (src/session_lock.rs:578-584) sees `their_comm == mine_comm` and returns
+    /// `false` — so asserting foreignness during the window flakes on loaded CI
+    /// runners where the `exec` is delayed (observed on graphwork/wg CI runs
+    /// 29090834963, 29090740682, 29102594830). Production PID reuse involves
+    /// stable, long-lived recycled processes and is unaffected; this raciness is
+    /// purely a test-harness artifact. Waiting for `exec` to land removes the
+    /// race without weakening the real identity/liveness checks.
+    fn spawn_foreign_child() -> std::process::Child {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        #[cfg(target_os = "linux")]
+        {
+            let pid = child.id();
+            let comm_of = |p: u32| {
+                pid_process_identity(p)
+                    .and_then(|id| id.split_whitespace().next().map(str::to_owned))
+            };
+            let mine_comm = comm_of(std::process::id()).unwrap_or_default();
+            // Poll until the child's comm is readable and differs from ours,
+            // i.e. `exec` has replaced the shared image. ~2s of 1ms polls is far
+            // longer than an `exec` takes even on a saturated runner; a genuine
+            // hang surfaces as the test's own assertion, not an infinite loop.
+            for _ in 0..2000 {
+                match comm_of(pid) {
+                    Some(their_comm)
+                        if !their_comm.is_empty()
+                            && !mine_comm.is_empty()
+                            && their_comm != mine_comm =>
+                    {
+                        break;
+                    }
+                    _ => std::thread::sleep(std::time::Duration::from_millis(1)),
                 }
             }
-            if Instant::now() >= deadline {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
         }
+        child
     }
-
-    #[cfg(not(target_os = "linux"))]
-    fn await_exec(_pid: u32, _expected_comm: &str) {}
 
     #[test]
     fn acquire_creates_lock_file_with_pid() {
@@ -839,14 +855,10 @@ mod tests {
 
         // A live, unrelated (non-wg) process IS foreign — this is the
         // multi-day PID-reuse shape that used to wedge the supervisor.
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
+        // `spawn_foreign_child` waits for the child's `exec` to land so its
+        // `/proc` comm no longer shadows the test binary's (see helper doc).
+        let mut child = spawn_foreign_child();
         let sleep_pid = child.id();
-        // Wait for the child to actually become `sleep` before probing its
-        // identity — otherwise the pre-`exec` window makes it look like us.
-        await_exec(sleep_pid, "sleep");
         assert!(pid_is_alive(sleep_pid), "sleep child should be alive");
         if cfg!(target_os = "linux") {
             assert!(
@@ -868,12 +880,8 @@ mod tests {
         // live handler lock is held. Pre-fix this returned Some(foreign_pid)
         // forever (the wedge); now the recycled sentinel is reaped.
         let dir = tempdir().unwrap();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
+        let mut child = spawn_foreign_child();
         let sleep_pid = child.id();
-        await_exec(sleep_pid, "sleep");
 
         let _lock = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex).unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
@@ -903,12 +911,8 @@ mod tests {
         // A lock file whose PID is alive but foreign (recycled) must be
         // recovered on acquire, not treated as a live handler forever.
         let dir = tempdir().unwrap();
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
+        let mut child = spawn_foreign_child();
         let sleep_pid = child.id();
-        await_exec(sleep_pid, "sleep");
 
         std::fs::create_dir_all(dir.path()).unwrap();
         std::fs::write(
