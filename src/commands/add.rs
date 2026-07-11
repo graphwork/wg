@@ -437,9 +437,12 @@ pub fn run_with_remote_provider(
         anyhow::bail!("Task title cannot be empty");
     }
 
-    // R8: a disposable-scoped agent may not mint a persistent persona via
-    // `wg add --tag persistent`.
-    worksgood::scope_guard::enforce_persistent_tag(tags)?;
+    // R8 (default-deny): a disposable-scoped agent may only create
+    // disposable-scoped children. An ordinary untagged durable add inherits
+    // `scope:disposable`; an explicit `persistent` tag or a non-disposable
+    // `--scope` is denied. Non-disposable callers are unaffected.
+    let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
+    let tags: &[String] = &scoped_tags;
 
     // Validate --subtask: requires WG_TASK_ID (must be called from within an agent context)
     let subtask_parent_id = if subtask {
@@ -1071,9 +1074,10 @@ pub fn run_remote(
         anyhow::bail!("Task title cannot be empty");
     }
 
-    // R8: a disposable-scoped agent may not mint a persistent persona via
-    // `wg add --tag persistent` (also gated for cross-repo adds).
-    worksgood::scope_guard::enforce_persistent_tag(tags)?;
+    // R8 (default-deny): as in `run`, a disposable-scoped caller may only create
+    // disposable-scoped children — enforced for cross-repo adds too.
+    let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
+    let tags: &[String] = &scoped_tags;
 
     // Deprecation warning for --provider flag
     if let Some(p) = provider {
