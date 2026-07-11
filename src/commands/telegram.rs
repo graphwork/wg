@@ -23,11 +23,7 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
         .unwrap_or_else(|| config.chat_id.clone());
 
     println!("Starting Telegram listener...");
-    println!(
-        "Bot token: {}...{}",
-        &config.bot_token[..6],
-        &config.bot_token[config.bot_token.len().saturating_sub(4)..]
-    );
+    println!("{}", bot_banner(&config));
     println!("Chat ID: {}", effective_chat_id);
     println!("Press Ctrl+C to stop\n");
 
@@ -523,6 +519,37 @@ fn get_state_file_path() -> Result<std::path::PathBuf> {
         .join("telegram_update_id"))
 }
 
+/// Render the startup banner line describing which bot(s) are configured.
+///
+/// Prefers the legacy single `bot_token` when present (masking it to a
+/// preview). When the config uses only the multi-bot `bots` map — the
+/// legacy `bot_token` is empty — falls back to summarizing all configured
+/// bots by id instead of slicing the empty token, which used to panic
+/// (out-of-bounds string slice).
+fn bot_banner(config: &TelegramConfig) -> String {
+    if config.bot_token.is_empty() {
+        let bots = config.all_bots();
+        if bots.is_empty() {
+            "Bots configured: none".to_string()
+        } else {
+            let names = bots
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} bots configured: {}", bots.len(), names)
+        }
+    } else {
+        let prefix = config.bot_token.get(..6).unwrap_or(&config.bot_token);
+        let suffix_start = config.bot_token.len().saturating_sub(4);
+        let suffix = config
+            .bot_token
+            .get(suffix_start..)
+            .unwrap_or(&config.bot_token);
+        format!("Bot token: {}...{}", prefix, suffix)
+    }
+}
+
 /// Load Telegram config from notify.toml.
 fn load_telegram_config() -> Result<TelegramConfig> {
     let notify_config = NotifyConfig::load(Some(Path::new(".")))
@@ -534,6 +561,64 @@ fn load_telegram_config() -> Result<TelegramConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use worksgood::notify::telegram::TelegramBotConfig;
+
+    #[test]
+    fn bot_banner_bots_map_only_does_not_panic() {
+        // Config with ONLY the multi-bot map, no legacy [telegram] bot_token —
+        // this used to panic on `&config.bot_token[..6]`.
+        let mut bots = HashMap::new();
+        bots.insert(
+            "nora".to_string(),
+            TelegramBotConfig {
+                bot_token: "111:AAA".to_string(),
+                chat_id: "1".to_string(),
+                agent_id: Some("nora".to_string()),
+            },
+        );
+        bots.insert(
+            "bruno".to_string(),
+            TelegramBotConfig {
+                bot_token: "222:BBB".to_string(),
+                chat_id: "2".to_string(),
+                agent_id: Some("bruno".to_string()),
+            },
+        );
+        let config = TelegramConfig {
+            bot_token: String::new(),
+            chat_id: String::new(),
+            bots,
+        };
+
+        let banner = bot_banner(&config);
+        assert!(banner.contains("2 bots configured"));
+        assert!(banner.contains("nora"));
+        assert!(banner.contains("bruno"));
+    }
+
+    #[test]
+    fn bot_banner_legacy_token_masks_preview() {
+        let config = TelegramConfig {
+            bot_token: "123456:ABCDEF".to_string(),
+            chat_id: "1".to_string(),
+            bots: HashMap::new(),
+        };
+
+        let banner = bot_banner(&config);
+        assert_eq!(banner, "Bot token: 123456...CDEF");
+    }
+
+    #[test]
+    fn bot_banner_empty_config_does_not_panic() {
+        let config = TelegramConfig {
+            bot_token: String::new(),
+            chat_id: String::new(),
+            bots: HashMap::new(),
+        };
+
+        assert_eq!(bot_banner(&config), "Bots configured: none");
+    }
 
     #[test]
     fn handle_action_approve() {
