@@ -267,10 +267,10 @@ impl IpcResponse {
 
 /// Handle a single IPC connection
 ///
-/// Uses `&Stream` for both reading and writing — `interprocess::local_socket::Stream`
-/// exposes `Read`/`Write` on shared references, so we can run a `BufReader<&Stream>`
-/// and write responses via `(&stream).write_all(...)` in the same scope without
-/// needing a `try_clone`.
+/// Each connection carries exactly one request and one response. Returning
+/// immediately after the response closes the accepted stream from the server
+/// side, so a client can never leave the single-threaded daemon accept loop
+/// parked on a second `read()` after its one-shot request is complete.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
@@ -332,10 +332,10 @@ pub(crate) fn handle_connection(
         );
         write_response(&stream, &response)?;
 
-        // Check if we should stop
-        if !*running {
-            break;
-        }
+        // The IPC client opens a fresh connection per request. Do not wait for
+        // a second line: doing so lets a one-shot client strand the daemon in
+        // unix_stream_data_wait and stops all later ticks/IPC handling.
+        return Ok(());
     }
 
     Ok(())
