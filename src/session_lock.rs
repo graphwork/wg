@@ -597,6 +597,38 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Block until a freshly-spawned child has actually `exec`'d `expected_comm`.
+    ///
+    /// `Command::spawn()` returns as soon as the child is `fork`'d — before it
+    /// finishes `exec`'ing the target program. In that window `/proc/<pid>/comm`
+    /// and `/proc/<pid>/cmdline` still reflect the **parent** (this test-harness
+    /// binary, whose CI checkout path `/home/runner/work/wg/wg/...` contains the
+    /// substring `wg`). `pid_reused_by_foreign` then reads that inherited
+    /// identity, decides the child looks like one of us, and returns `false` —
+    /// so the "a live `sleep` is foreign" assertions flake on a loaded runner
+    /// (stable CI run 29137074236). Waiting for the real `comm` before asserting
+    /// makes the identity checks deterministic. Bounded so a stuck exec can't
+    /// hang the suite; if it never appears the assertion reports the real state.
+    #[cfg(target_os = "linux")]
+    fn await_exec(pid: u32, expected_comm: &str) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+                if comm.trim() == expected_comm {
+                    return;
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn await_exec(_pid: u32, _expected_comm: &str) {}
+
     #[test]
     fn acquire_creates_lock_file_with_pid() {
         let dir = tempdir().unwrap();
@@ -812,6 +844,9 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let sleep_pid = child.id();
+        // Wait for the child to actually become `sleep` before probing its
+        // identity — otherwise the pre-`exec` window makes it look like us.
+        await_exec(sleep_pid, "sleep");
         assert!(pid_is_alive(sleep_pid), "sleep child should be alive");
         if cfg!(target_os = "linux") {
             assert!(
@@ -838,6 +873,7 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let sleep_pid = child.id();
+        await_exec(sleep_pid, "sleep");
 
         let _lock = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex).unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
@@ -872,6 +908,7 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let sleep_pid = child.id();
+        await_exec(sleep_pid, "sleep");
 
         std::fs::create_dir_all(dir.path()).unwrap();
         std::fs::write(

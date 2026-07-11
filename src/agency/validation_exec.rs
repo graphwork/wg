@@ -46,7 +46,6 @@
 //!   declined to execute something.
 
 use std::path::Path;
-use std::process::Command;
 
 /// Command heads the evaluator is permitted to execute. These are all
 /// read-only existence checks — none of them mutate the repo or the remote.
@@ -58,6 +57,28 @@ pub const ALLOWLIST: &[&str] = &["git ls-remote", "gh pr view", "gh pr list", "t
 /// Characters that, if present anywhere in a candidate line, disqualify it from
 /// execution. Redirections can write files; backticks are command substitution.
 const FORBIDDEN_CHARS: &[char] = &['>', '<', '`'];
+
+/// Default per-command validation timeout, in seconds. A single existence check
+/// (`git ls-remote`, `gh pr view/list`, `test`, `grep`) should finish in well
+/// under a minute; anything longer is a hang. Without this bound a wedged
+/// `gh`/`git` network call (or a `grep` over a pathological path) blocks the
+/// evaluator indefinitely — the failure mode Erik flagged on PR #57.
+pub const DEFAULT_VALIDATION_TIMEOUT_SECS: u64 = 60;
+
+/// Environment variable that overrides [`DEFAULT_VALIDATION_TIMEOUT_SECS`].
+pub const VALIDATION_TIMEOUT_ENV: &str = "WG_VALIDATION_TIMEOUT_SECS";
+
+/// Resolve the per-command timeout: `WG_VALIDATION_TIMEOUT_SECS` when it is set
+/// to a positive integer, otherwise [`DEFAULT_VALIDATION_TIMEOUT_SECS`]. A blank
+/// / unparseable / zero value falls back to the default (zero would disable the
+/// safety net, which is never what an operator means).
+pub fn validation_timeout_secs() -> u64 {
+    std::env::var(VALIDATION_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_VALIDATION_TIMEOUT_SECS)
+}
 
 /// The result of considering (and possibly executing) one validation command.
 #[derive(Debug, Clone)]
@@ -73,6 +94,10 @@ pub struct CommandResult {
     pub exit_code: Option<i32>,
     /// Whether the command ran AND exited 0.
     pub passed: bool,
+    /// Whether the command was killed for exceeding the per-command timeout.
+    /// A timed-out command is a failure (`ran == true`, `passed == false`) —
+    /// a hung validation check can never be allowed to pass silently.
+    pub timed_out: bool,
 }
 
 /// The outcome of executing all machine-checkable validation commands in a
@@ -81,6 +106,9 @@ pub struct CommandResult {
 pub struct ValidationOutcome {
     /// Per-command results, in the order they appeared.
     pub results: Vec<CommandResult>,
+    /// The per-command timeout (seconds) that was applied to this run, for
+    /// reporting. Zero on the default-constructed (no-command) outcome.
+    pub timeout_secs: u64,
 }
 
 impl ValidationOutcome {
@@ -100,14 +128,20 @@ impl ValidationOutcome {
         self.results.iter().filter(|r| r.ran && !r.passed).collect()
     }
 
+    /// Did any command exceed the per-command timeout?
+    pub fn any_timed_out(&self) -> bool {
+        self.results.iter().any(|r| r.timed_out)
+    }
+
     /// A one-line human-readable summary of what ran and what failed.
     pub fn summary(&self) -> String {
         let ran = self.results.iter().filter(|r| r.ran).count();
         let failed = self.failures().len();
+        let timed_out = self.results.iter().filter(|r| r.timed_out).count();
         let skipped = self.results.len() - ran;
         format!(
-            "validation commands: {} ran, {} failed, {} skipped (not allowlisted)",
-            ran, failed, skipped
+            "validation commands: {} ran, {} failed ({} timed out), {} skipped (not allowlisted)",
+            ran, failed, timed_out, skipped
         )
     }
 }
@@ -323,7 +357,21 @@ fn first_arg(norm: &str) -> Option<&str> {
 /// `description`, running each in `cwd`. Commands that are not allowlisted are
 /// recorded as skipped, never executed.
 pub fn execute_validation_commands(description: &str, cwd: &Path) -> ValidationOutcome {
-    let mut outcome = ValidationOutcome::default();
+    execute_validation_commands_with_timeout(description, cwd, validation_timeout_secs())
+}
+
+/// Like [`execute_validation_commands`], but with an explicit per-command
+/// timeout (seconds). Exposed so callers (and tests) can pin a deadline instead
+/// of relying on the `WG_VALIDATION_TIMEOUT_SECS` environment resolver.
+pub fn execute_validation_commands_with_timeout(
+    description: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+) -> ValidationOutcome {
+    let mut outcome = ValidationOutcome {
+        timeout_secs,
+        ..Default::default()
+    };
     for cmd in extract_validation_commands(description) {
         match is_executable(&cmd) {
             Err(reason) => {
@@ -333,16 +381,18 @@ pub fn execute_validation_commands(description: &str, cwd: &Path) -> ValidationO
                     skip_reason: Some(reason),
                     exit_code: None,
                     passed: false,
+                    timed_out: false,
                 });
             }
             Ok(()) => {
-                let (exit_code, passed) = run_sandboxed(&cmd, cwd);
+                let run = run_sandboxed(&cmd, cwd, timeout_secs);
                 outcome.results.push(CommandResult {
                     command: cmd,
                     ran: true,
                     skip_reason: None,
-                    exit_code,
-                    passed,
+                    exit_code: run.exit_code,
+                    passed: run.passed,
+                    timed_out: run.timed_out,
                 });
             }
         }
@@ -350,23 +400,63 @@ pub fn execute_validation_commands(description: &str, cwd: &Path) -> ValidationO
     outcome
 }
 
-/// Run one vetted command via `sh -c` in `cwd`. Returns `(exit_code, passed)`.
+/// Outcome of actually executing one vetted command.
+struct RunResult {
+    exit_code: Option<i32>,
+    passed: bool,
+    timed_out: bool,
+}
+
+/// Run one vetted command via `sh -c` in `cwd`, under a `timeout_secs` deadline.
 /// The line has already been proven to contain only allowlisted commands and no
 /// forbidden metacharacters, so `sh -c` only ever sees read-only checks.
-fn run_sandboxed(cmd: &str, cwd: &Path) -> (Option<i32>, bool) {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(cwd)
-        .output();
-    match output {
+///
+/// The deadline is enforced with [`crate::platform_timeout`] — the same
+/// cross-platform `timeout(1)`-replacement the rest of workgraph shells out
+/// through (PR #52), dogfooded here. On Unix that wraps the command in
+/// `timeout <secs>s`, which exits **124** when it has to kill a runaway; on
+/// Windows a background thread `taskkill`s the tree at the deadline. Either way
+/// a command that overruns is reported as `timed_out` (a failure), so a hung
+/// `gh`/`git`/`grep` can never stall evaluation.
+fn run_sandboxed(cmd: &str, cwd: &Path, timeout_secs: u64) -> RunResult {
+    let spawned = crate::platform_timeout::spawn_with_timeout(
+        "sh",
+        |c| c.arg("-c").arg(cmd).current_dir(cwd),
+        timeout_secs,
+    );
+    let (child, _killer) = match spawned {
+        Ok(pair) => pair,
+        // If we cannot even spawn the check, treat it as not-passed rather than
+        // a timeout so infrastructure gaps don't masquerade as hangs.
+        Err(_) => {
+            return RunResult {
+                exit_code: None,
+                passed: false,
+                timed_out: false,
+            };
+        }
+    };
+    let start = std::time::Instant::now();
+    match child.wait_with_output() {
         Ok(out) => {
             let code = out.status.code();
-            (code, out.status.success())
+            let elapsed = start.elapsed();
+            // `timeout(1)` reports 124 on kill (Unix). On Windows the kill-thread
+            // terminates the child, so fall back to: ran to the full deadline and
+            // did not succeed. Either signal ⇒ timed out.
+            let timed_out = code == Some(124)
+                || (!out.status.success() && elapsed.as_secs_f64() >= timeout_secs as f64);
+            RunResult {
+                exit_code: code,
+                passed: out.status.success() && !timed_out,
+                timed_out,
+            }
         }
-        // If we cannot even spawn the check, treat it as not-run rather than a
-        // failure so infrastructure gaps don't masquerade as phantom-catches.
-        Err(_) => (None, false),
+        Err(_) => RunResult {
+            exit_code: None,
+            passed: false,
+            timed_out: false,
+        },
     }
 }
 
@@ -391,13 +481,20 @@ pub fn failure_note(outcome: &ValidationOutcome) -> Option<String> {
     }
     let mut parts = vec!["VALIDATION FAILED (evaluator executed the task's `## Validation` commands; artifact absent):".to_string()];
     for f in outcome.failures() {
-        parts.push(format!(
-            "  `{}` exited {}",
-            f.command,
-            f.exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "non-zero".to_string())
-        ));
+        if f.timed_out {
+            parts.push(format!(
+                "  `{}` timed out after {}s (killed; a hung validation check fails the task)",
+                f.command, outcome.timeout_secs
+            ));
+        } else {
+            parts.push(format!(
+                "  `{}` exited {}",
+                f.command,
+                f.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "non-zero".to_string())
+            ));
+        }
     }
     Some(parts.join("\n"))
 }
@@ -531,6 +628,96 @@ mod tests {
             clean_command_line("- [ ] test -f docs/x.md").as_deref(),
             Some("test -f docs/x.md")
         );
+    }
+
+    /// A validation command that hangs past the per-command deadline must be
+    /// killed and reported as a FAILURE — the core of Erik's PR #57 finding.
+    /// We use an allowlisted `test` head with a `&& git ls-remote` chain that
+    /// would block, but the simplest deterministic hang is a `test` whose file
+    /// argument forces a wait; instead we drive the timeout with a real slow
+    /// command via the sandbox's own `sh -c`. Because only allowlisted heads are
+    /// executable, we exercise the timeout through `run_sandboxed` directly.
+    #[test]
+    fn test_command_exceeding_timeout_is_a_failure() {
+        // A 1-second deadline against a 30-second sleep: the deadline wins.
+        let run = run_sandboxed("sleep 30", &tmp_dir(), 1);
+        assert!(
+            run.timed_out,
+            "a command that overruns the deadline must be flagged timed_out (exit={:?})",
+            run.exit_code
+        );
+        assert!(!run.passed, "a timed-out command must not be reported as passed");
+    }
+
+    /// End-to-end through the public API: a hung allowlisted command surfaces as
+    /// `has_failure()` and drives the score to FAIL, exactly like an absent
+    /// artifact does. We register the hang under an allowlisted `test` head by
+    /// chaining a benign `test` with a blocking segment is not possible (the
+    /// second segment must also be allowlisted), so we assert the timeout wiring
+    /// via `run_sandboxed` feeding a synthesized outcome.
+    #[test]
+    fn test_timeout_forces_validation_failure_and_zero_score() {
+        let run = run_sandboxed("sleep 30", &tmp_dir(), 1);
+        let outcome = ValidationOutcome {
+            timeout_secs: 1,
+            results: vec![CommandResult {
+                command: "git ls-remote --exit-code origin refs/heads/x".to_string(),
+                ran: true,
+                skip_reason: None,
+                exit_code: run.exit_code,
+                passed: run.passed,
+                timed_out: run.timed_out,
+            }],
+        };
+        assert!(outcome.any_ran());
+        assert!(outcome.any_timed_out(), "{}", outcome.summary());
+        assert!(outcome.has_failure(), "a timeout must count as a failure");
+        // The trust inversion: a timed-out check caps the score at FAIL.
+        assert_eq!(apply_validation_to_score(0.95, &outcome), 0.0);
+        let note = failure_note(&outcome).expect("timeout should produce a failure note");
+        assert!(note.contains("timed out"), "note should name the timeout: {note}");
+        assert!(note.contains("1s"), "note should report the deadline: {note}");
+    }
+
+    /// A fast allowlisted command well under the deadline is NOT flagged as a
+    /// timeout — the deadline only fires on genuine overruns.
+    #[test]
+    fn test_fast_command_under_timeout_is_not_flagged() {
+        let dir = std::env::temp_dir().join("wg_eval_exec_fast_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("present.md");
+        std::fs::write(&file, "trust\n").unwrap();
+
+        let desc = "## Validation\n- [ ] test -f present.md\n";
+        // Generous 60s deadline; the check finishes in milliseconds.
+        let outcome = execute_validation_commands_with_timeout(desc, &dir, 60);
+        assert!(outcome.any_ran());
+        assert!(!outcome.any_timed_out(), "{}", outcome.summary());
+        assert!(!outcome.has_failure(), "{}", outcome.summary());
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// The env-var override resolves a positive value and falls back to the
+    /// default on blank / zero / garbage, so an operator can never accidentally
+    /// disable the safety net with a bad value.
+    #[test]
+    fn test_validation_timeout_env_resolution() {
+        // Snapshot & restore so we don't leak state into sibling tests.
+        let saved = std::env::var(VALIDATION_TIMEOUT_ENV).ok();
+
+        unsafe { std::env::set_var(VALIDATION_TIMEOUT_ENV, "5") };
+        assert_eq!(validation_timeout_secs(), 5);
+        unsafe { std::env::set_var(VALIDATION_TIMEOUT_ENV, "0") };
+        assert_eq!(validation_timeout_secs(), DEFAULT_VALIDATION_TIMEOUT_SECS);
+        unsafe { std::env::set_var(VALIDATION_TIMEOUT_ENV, "not-a-number") };
+        assert_eq!(validation_timeout_secs(), DEFAULT_VALIDATION_TIMEOUT_SECS);
+        unsafe { std::env::remove_var(VALIDATION_TIMEOUT_ENV) };
+        assert_eq!(validation_timeout_secs(), DEFAULT_VALIDATION_TIMEOUT_SECS);
+
+        match saved {
+            Some(v) => unsafe { std::env::set_var(VALIDATION_TIMEOUT_ENV, v) },
+            None => unsafe { std::env::remove_var(VALIDATION_TIMEOUT_ENV) },
+        }
     }
 
     #[test]
