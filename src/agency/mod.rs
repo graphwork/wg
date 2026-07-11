@@ -11,6 +11,7 @@ pub mod run_mode;
 pub(crate) mod starters;
 mod store;
 mod types;
+pub mod validation_exec;
 
 /// Agency federation compatibility surface implemented by this wg build.
 pub const WG_AGENCY_COMPAT_VERSION: &str = "1.2.4";

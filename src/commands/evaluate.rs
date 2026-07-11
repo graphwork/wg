@@ -504,8 +504,55 @@ pub fn run(
         (json, token_usage)
     };
 
-    let parsed: EvalOutput = serde_json::from_str(&eval_json)
+    let mut parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
+
+    // Step 6.5: Evaluator EXECUTES the task's machine-checkable validation
+    // commands (`task-authoring-standard` / docs/13) instead of trusting the
+    // agent's narrative. A confident, prose-only "done" over an ABSENT
+    // deliverable is forced to FAIL — artifact existence, not narrative,
+    // becomes the pass condition. This is the durable fix for the three phantom
+    // completions where three agents in a row reported a task done without ever
+    // pushing a branch and the haiku evaluator passed their prose (Diary §19 /
+    // 06-hybrid-team-review.md §2.4). Only an allowlisted read-only command
+    // (git ls-remote / gh pr view|list / test / grep) is ever run; the sandbox
+    // boundary is documented in src/agency/validation_exec.rs. A command we
+    // decline to run never fails a task — only a command that ran and exited
+    // non-zero does.
+    let validation_cwd = task
+        .working_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let validation_outcome = task
+        .description
+        .as_deref()
+        .map(|desc| {
+            worksgood::agency::validation_exec::execute_validation_commands(desc, &validation_cwd)
+        })
+        .unwrap_or_default();
+    if validation_outcome.any_ran() {
+        println!(
+            "[evaluate] {} (cwd: {})",
+            validation_outcome.summary(),
+            validation_cwd.display()
+        );
+    }
+    if validation_outcome.has_failure() {
+        let original = parsed.score;
+        parsed.score = worksgood::agency::validation_exec::apply_validation_to_score(
+            parsed.score,
+            &validation_outcome,
+        );
+        if let Some(note) = worksgood::agency::validation_exec::failure_note(&validation_outcome) {
+            parsed.notes = format!("{}\n\n{}", note, parsed.notes);
+        }
+        eprintln!(
+            "[evaluate] artifact validation FAILED — overriding narrative score {:.2} -> {:.2}",
+            original, parsed.score
+        );
+    }
 
     // Build the Evaluation record using the agent/role/tradeoff resolved above
     let agent_id = resolved_agent
@@ -531,6 +578,20 @@ pub fn run(
     // Step 7.5: Inject constraint-fidelity score (computed in Step 3.9).
     if let Some(score) = cf_score {
         dimensions.insert("constraint_fidelity".to_string(), score);
+    }
+
+    // Step 7.6: Record the executed-validation outcome as a dimension so the
+    // machine check is visible in the evaluation record (1.0 = all executed
+    // commands passed, 0.0 = at least one failed / artifact absent).
+    if validation_outcome.any_ran() {
+        dimensions.insert(
+            "artifact_validation".to_string(),
+            if validation_outcome.has_failure() {
+                0.0
+            } else {
+                1.0
+            },
+        );
     }
 
     let evaluation = Evaluation {
