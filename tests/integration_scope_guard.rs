@@ -6,7 +6,7 @@
 //! `wg add --tag persistent`. These tests pin the policy at the library
 //! boundary so the CLI handlers can rely on it.
 
-use worksgood::scope_guard::{check_scope, scope_from_tags, PersistentSpawn, SCOPE_DISPOSABLE};
+use worksgood::scope_guard::{PersistentSpawn, SCOPE_DISPOSABLE, check_scope, scope_from_tags};
 
 /// The load-bearing R8 policy: a disposable scope forbids every persistent
 /// spawn, while unscoped / non-disposable scopes are unaffected.

@@ -1006,7 +1006,17 @@ fn main() -> Result<()> {
             priority,
             cron,
             subtask,
+            scope,
         } => {
+            // R8: persist an explicit --scope as a `scope:<value>` tag so the
+            // dispatcher can propagate WG_SCOPE to the spawned worker.
+            let tag = if let Some(scope_val) = scope.as_deref() {
+                let mut tags = tag;
+                tags.push(worksgood::scope_guard::scope_tag(scope_val)?);
+                tags
+            } else {
+                tag
+            };
             // Determine effective paused/unplaced state:
             // - --paused always pauses (user-managed draft, skips placement)
             // - --no-place: unplaced=true, paused=false (immediate dispatch)
