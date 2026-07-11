@@ -1512,22 +1512,15 @@ fn run_inner(
         .unwrap_or_default();
     if !deliverables.is_empty() {
         let report = super::deliverables::preflight(&deliverables, project_root);
-        // Human/agent escape hatch for preflight false positives (e.g. a
-        // deliverable inferred from prose that legitimately does not live in
-        // this worktree). `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` bypasses the
-        // refusal but is surfaced loudly so it can't hide a genuine miss.
-        let preflight_override = std::env::var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE")
-            .ok()
-            .as_deref()
-            == Some("1");
-        if !report.is_clean() && preflight_override {
-            eprintln!(
-                "⚠️  deliverable preflight found missing deliverables but \
-                 WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 is set — bypassing:\n{}",
-                report.missing_summary()
-            );
-        }
-        if !report.is_clean() && !preflight_override {
+        // No environment override exists on purpose. An env var such as
+        // `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` would be inherited by every
+        // spawned agent and become a copy-pasteable way to mark missing
+        // deliverables complete — defeating the gate for exactly the cases it
+        // is meant to stop (see PR #54, Erik CHANGES_REQUESTED). If preflight
+        // fires on a genuine false positive, fix the `## Deliverables` block so
+        // it names only files this worktree actually produces (path lines are
+        // parsed; discard/external-worktree files should not be listed).
+        if !report.is_clean() {
             let id_owned = id.to_string();
             let reason = format!("missing deliverables:\n{}", report.missing_summary());
             let reason_for_log = reason.clone();
@@ -1552,7 +1545,9 @@ fn run_inner(
                  refusing until these exist and are non-empty:\n{}\n\n\
                  If this is a false positive (e.g. a file the task tells you to \
                  discard, or one that belongs to a different worktree/repo), \
-                 set WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 in this shell to bypass.",
+                 correct the task's `## Deliverables` block so it lists only \
+                 files this worktree actually produces — there is no \
+                 environment bypass.",
                 id,
                 report.missing_summary()
             );
@@ -4783,29 +4778,33 @@ mod tests {
 
     #[test]
     #[serial]
-    fn done_override_bypasses_missing_deliverable() {
-        // Escape hatch: WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1 lets a human/agent
-        // bypass a preflight false positive. The deliverable is genuinely
-        // missing, but the override promotes the task to Done anyway.
+    fn done_env_override_cannot_bypass_missing_deliverable() {
+        // Regression guard (PR #54, Erik CHANGES_REQUESTED): there is no
+        // environment override for the deliverable gate. Setting the old
+        // `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` — which every spawned agent
+        // could copy-paste — must NOT let `wg done` promote a task whose
+        // deliverable is genuinely missing.
         let dir = tempdir().unwrap();
         let project_root = dir.path();
         let desc = "## Deliverables\n- latest.pt\n";
         setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
         let wg_dir = project_root.join(".wg");
 
-        // Baseline: refuses without the override.
+        // Baseline: refuses with no env var set.
         assert!(run(&wg_dir, "t1", false, false, false, false, false).is_err());
 
+        // The removed override must have no effect — still refuses.
         unsafe { std::env::set_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE", "1") };
         let result = run(&wg_dir, "t1", false, false, false, false, false);
         unsafe { std::env::remove_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE") };
 
         assert!(
-            result.is_ok(),
-            "override should bypass preflight, got: {:?}",
-            result.err()
+            result.is_err(),
+            "env override must NOT bypass the deliverable gate"
         );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"));
         let graph = load_graph(&graph_path(&wg_dir)).unwrap();
-        assert_eq!(graph.get_task("t1").unwrap().status, Status::Done);
+        assert_ne!(graph.get_task("t1").unwrap().status, Status::Done);
     }
 }
