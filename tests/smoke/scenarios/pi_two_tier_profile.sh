@@ -111,60 +111,58 @@ if grep -q 'standard = "openrouter:z-ai/glm-5.2"' "$HOME/.wg/config.toml"; then
 $(cat "$HOME/.wg/config.toml")"
 fi
 
-# ── 6. CUSTOM PROFILE: models and reasoning update independently ─────────────
-CUSTOM="$HOME/.wg/profiles/pi-codex-56.toml"
-cat >"$CUSTOM" <<'TOML'
-[agent]
-model = "pi:openai-codex:gpt-5.6-sol"
+# ── 6. CUSTOM PROFILE: create/select/edit/activate on the real CLI ───────────
+# Clone the newly shipped direct Codex Sol/Luna starter. This must use the
+# embedded starter without materializing or replacing the user's codex.toml.
+wg profile create codex-56 --from codex >/dev/null 2>&1 \
+    || loud_fail "custom profile creation from built-in codex failed"
+CUSTOM="$HOME/.wg/profiles/codex-56.toml"
+grep -q 'standard = "codex:gpt-5.6-sol"' "$CUSTOM" \
+    || loud_fail "direct Codex Sol starter was not preserved: $(cat "$CUSTOM")"
+grep -q 'fast = "codex:gpt-5.6-luna"' "$CUSTOM" \
+    || loud_fail "direct Codex Luna starter was not preserved: $(cat "$CUSTOM")"
+printf '\n# user-owned sentinel\n' >>"$CUSTOM"
 
-[tiers]
-fast = "pi:openai-codex:gpt-5.6-luna"
-fast_reasoning = "low"
-standard = "pi:openai-codex:gpt-5.6-sol"
-standard_reasoning = "high"
-premium = "pi:openai-codex:gpt-5.6-sol"
-premium_reasoning = "xhigh"
-
-[models.default]
-model = "pi:openai-codex:gpt-5.6-sol"
-reasoning = "medium"
-
-[models.task_agent]
-model = "pi:openai-codex:gpt-5.6-sol"
-reasoning = "high"
-
-[models.evaluator]
-model = "pi:openai-codex:gpt-5.6-luna"
-reasoning = "low"
-TOML
-
-custom_out=$(wg profile pi --profile pi-codex-56 --strong codex:gpt-5.6-terra 2>&1) \
-    || loud_fail "custom profile strong update failed:
+# One command selects the custom profile, partially updates its strong model,
+# and independently updates weak reasoning. Handler-first strings are verbatim.
+custom_out=$(wg profile pi --profile codex-56 \
+    --strong codex:gpt-5.6-terra --weak-reasoning minimal 2>&1) \
+    || loud_fail "custom profile combined update failed:
 $custom_out"
-grep -q 'profile: pi-codex-56' <<<"$custom_out" \
+grep -q 'profile: codex-56' <<<"$custom_out" \
     || loud_fail "custom profile selection was not reflected in output:
 $custom_out"
 grep -q 'model = "codex:gpt-5.6-terra"' "$CUSTOM" \
     || loud_fail "handler-first custom strong route was not preserved verbatim:
 $(cat "$CUSTOM")"
 grep -q 'reasoning = "medium"' "$CUSTOM" \
-    || loud_fail "model update erased existing default reasoning:
+    || loud_fail "model update erased inherited default reasoning:
 $(cat "$CUSTOM")"
-grep -q 'fast = "pi:openai-codex:gpt-5.6-luna"' "$CUSTOM" \
-    || loud_fail "partial strong update changed the weak model:
+grep -q 'fast = "codex:gpt-5.6-luna"' "$CUSTOM" \
+    || loud_fail "partial strong/reasoning update changed the weak model:
 $(cat "$CUSTOM")"
-
-wg profile pi --profile pi-codex-56 --weak-reasoning minimal >/dev/null 2>&1 \
-    || loud_fail "custom profile reasoning-only update failed"
 grep -q 'fast_reasoning = "minimal"' "$CUSTOM" \
     || loud_fail "weak reasoning update was not persisted:
 $(cat "$CUSTOM")"
-grep -q 'fast = "pi:openai-codex:gpt-5.6-luna"' "$CUSTOM" \
-    || loud_fail "reasoning-only update altered the weak model:
+grep -q '# user-owned sentinel' "$CUSTOM" \
+    || loud_fail "custom profile patch overwrote user-owned content:
 $(cat "$CUSTOM")"
-grep -q 'model = "codex:gpt-5.6-terra"' "$CUSTOM" \
-    || loud_fail "reasoning-only update altered the strong model:
-$(cat "$CUSTOM")"
+
+# The inactive edit must not touch resolved global routing. Activation then
+# makes the custom handler-first routes and reasoning visible to config resolve.
+if grep -q 'codex:gpt-5.6-terra' "$HOME/.wg/config.toml"; then
+    loud_fail "inactive custom profile edit leaked into global config"
+fi
+wg profile use codex-56 --no-reload >/dev/null 2>&1 \
+    || loud_fail "custom profile activation failed"
+models_out=$(wg config --models 2>&1) \
+    || loud_fail "resolved routing query failed: $models_out"
+grep -q 'codex:gpt-5.6-terra' <<<"$models_out" \
+    || loud_fail "activated custom strong route did not resolve: $models_out"
+grep -q 'codex:gpt-5.6-luna' <<<"$models_out" \
+    || loud_fail "activated custom weak route did not resolve: $models_out"
+grep -Eq 'evaluator +fast +codex:gpt-5.6-luna +codex +codex +minimal' <<<"$models_out" \
+    || loud_fail "activated custom weak reasoning did not resolve: $models_out"
 
 # ── 7. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
 if wg profile pi openrouter:z-ai/glm-5.2 >/dev/null 2>&1; then

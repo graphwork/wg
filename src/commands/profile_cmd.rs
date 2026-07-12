@@ -1603,14 +1603,6 @@ fn daemon_reload_note_for(dir: &Path, profile: &str) -> String {
     }
 }
 
-/// Send a Reconfigure to the daemon for the Pi two-tier write and return a
-/// one-line note describing the outcome (rather than printing it, so the set
-/// echo controls ordering). Delegates to [`daemon_reload_note_for`] with the
-/// Pi profile name.
-fn daemon_reload_note(dir: &Path) -> String {
-    daemon_reload_note_for(dir, PI_PROFILE_NAME)
-}
-
 /// Render the annotation for a tier line: `(old → new)`, `(unchanged)`, or
 /// `(new)`.
 fn pi_tier_annotation(old: &Option<String>, new: &Option<String>, touched: bool) -> String {

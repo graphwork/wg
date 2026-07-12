@@ -4476,17 +4476,19 @@ pub enum ProfileCommands {
     /// Refresh model data from OpenRouter and recompute rankings
     Refresh,
 
-    /// Set or show the Pi profile's two model tiers (strong / weak).
+    /// Set or show a profile's two model/reasoning tiers (strong / weak).
     ///
-    /// `strong` drives chat + workers + heavy generative roles; `weak` drives
-    /// the recoverable agency one-shots (.flip / .assign / eval). Accepts two
-    /// input forms:
+    /// Defaults to the built-in `pi` profile for backward compatibility. Use
+    /// `--profile NAME` to edit any existing named profile. `strong` drives
+    /// chat + workers + heavy generative roles; `weak` drives the recoverable
+    /// agency one-shots (.flip / .assign / eval). Examples:
     ///
-    ///   wg profile pi <STRONG> <WEAK>          # positional (terse; '-' skips a tier)
-    ///   wg profile pi --strong X --weak Y      # explicit (partial-update friendly)
+    ///   wg profile pi <STRONG> <WEAK>          # pi; '-' skips a tier
+    ///   wg profile pi --strong X --weak Y      # pi partial update
+    ///   wg profile pi --profile codex-56 --strong X --weak-reasoning low
     ///
     /// With no args (or --show) it prints the current tiers and routing; --list
-    /// shows the models configured for the profile to pick from. See
+    /// shows the models configured for the selected profile. See
     /// docs/design-two-tier-pi-profile.md.
     Pi {
         /// Named profile to edit (defaults to `pi`).
@@ -4518,7 +4520,7 @@ pub enum ProfileCommands {
         #[arg(long)]
         show: bool,
 
-        /// List the OpenRouter/Pi models configured for this profile to pick from.
+        /// List the models configured for this profile to pick from.
         #[arg(long)]
         list: bool,
 
