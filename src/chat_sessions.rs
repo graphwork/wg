@@ -485,8 +485,20 @@ fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result
         return Ok(());
     };
     if md.file_type().is_symlink() {
-        // Old-model symlink from a pre-full-UUID install. Remove;
-        // future reads resolve through the registry.
+        // Preserve a correct compatibility link. A Pi process launched before
+        // UUID migration may retain the alias path for its entire lifetime;
+        // removing that link on a later daemon registration would reintroduce
+        // ENOENT even though the canonical transcript is healthy. Registry-
+        // aware WG callers still resolve directly to the UUID path.
+        let points_to_target = fs::canonicalize(&link)
+            .ok()
+            .zip(fs::canonicalize(&target_dir).ok())
+            .is_some_and(|(actual, expected)| actual == expected);
+        if points_to_target {
+            return Ok(());
+        }
+        // Wrong/dangling aliases are stale infrastructure and must not keep
+        // pointing a chat at another UUID.
         let _ = fs::remove_file(&link);
     } else if md.file_type().is_dir() {
         // Legacy regular directory at the alias path — merge its
@@ -508,19 +520,22 @@ fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result
     Ok(())
 }
 
-/// Move files from a legacy numeric chat dir into the canonical
-/// UUID chat dir, concatenating JSONL logs instead of overwriting.
-/// Used by `create_alias_symlink` to resolve split-brain cases
-/// where `chat/0/` got created as a regular directory before the
-/// alias symlink was installed.
+/// Move files from a legacy chat dir into the canonical UUID chat dir,
+/// concatenating the coordinator logs instead of overwriting them.
+///
+/// This walk must be recursive. Pi keeps its native transcripts below
+/// `pi-sessions/`; treating that directory like a regular file made
+/// `fs::copy` fail halfway through coordinator registration. The TUI could
+/// then launch Pi with the legacy path while the daemon retried the migration,
+/// and Pi retained a session-file path that disappeared underneath it.
 ///
 /// Behavior:
-/// - `inbox.jsonl` / `outbox.jsonl` / `chat.log`: appended to the
-///   UUID dir's copy (so no history is lost).
-/// - Other files (`.streaming`, `.handler.pid`, cursors, compactor
-///   state): copied only if not present in the UUID dir.
-/// - Lock sidecars are skipped — they're per-process and get
-///   recreated on demand.
+/// - `inbox.jsonl` / `outbox.jsonl` / `chat.log`: appended to the UUID dir's
+///   copy (so no coordinator history is lost).
+/// - Directories (including `pi-sessions`) are merged recursively.
+/// - Other files are copied only if not present in the UUID dir.
+/// - Lock sidecars and symlinks are skipped; they are process-local or stale
+///   alias infrastructure and are recreated on demand.
 fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("create target dir {:?}", target))?;
     let Ok(entries) = fs::read_dir(legacy) else {
@@ -534,29 +549,88 @@ fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
         }
         let src = entry.path();
         let dst = target.join(&name);
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("inspect legacy chat entry {:?}", src))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if dst.exists() && !dst.is_dir() {
+                // The canonical session wins collisions. Do not replace an
+                // existing file with an untrusted legacy directory.
+                continue;
+            }
+            merge_legacy_chat_dir(&src, &dst)?;
+            continue;
+        }
+
         let is_append_target = matches!(
             name_str.as_ref(),
             "inbox.jsonl" | "outbox.jsonl" | "chat.log"
         );
         if is_append_target {
-            // Append src contents to dst. JSONL concatenation is
-            // safe because every row is self-contained.
+            // Append src contents to dst. JSONL concatenation is safe because
+            // every row is self-contained.
             let bytes = fs::read(&src).with_context(|| format!("read {:?}", src))?;
             let mut file = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&dst)
                 .with_context(|| format!("open-for-append {:?}", dst))?;
-            use std::io::Write;
             file.write_all(&bytes)
                 .with_context(|| format!("append to {:?}", dst))?;
         } else if !dst.exists() {
             fs::copy(&src, &dst).with_context(|| format!("copy {:?} -> {:?}", src, dst))?;
         }
-        // Dst already exists and isn't a log → leave target's copy
-        // intact. Legacy writer's version is discarded.
+        // Dst already exists and isn't a coordinator log: leave the
+        // canonical session's copy intact.
     }
     Ok(())
+}
+
+/// Prepared storage for one Pi-backed chat pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiChatSession {
+    /// Canonical UUID chat directory. The TUI uses this for locks/sentinels.
+    pub chat_dir: PathBuf,
+    /// Pi's native transcript directory below the canonical chat directory.
+    pub session_dir: PathBuf,
+    /// Existing transcript for `chat-N`, when one survived migration. `None`
+    /// is an explicit, recoverable new-session state: Pi's `--session-id`
+    /// contract creates the transcript on the first turn.
+    pub existing_transcript: Option<PathBuf>,
+}
+
+/// Complete coordinator registration/migration before the TUI constructs Pi's
+/// argv. This makes the daemon/TUI ownership order explicit: registration owns
+/// moving legacy storage; only after it commits may Pi discover or create a
+/// transcript in the canonical UUID directory.
+pub fn prepare_pi_chat_session(workgraph_dir: &Path, n: u32) -> Result<PiChatSession> {
+    let uuid = register_coordinator_session(workgraph_dir, n)?;
+    let chat_dir = chat_dir_for_uuid(workgraph_dir, &uuid);
+    let session_dir = chat_dir.join("pi-sessions");
+    fs::create_dir_all(&session_dir)
+        .with_context(|| format!("create Pi session dir {:?}", session_dir))?;
+    let suffix = format!("_chat-{n}.jsonl");
+    let existing_transcript = fs::read_dir(&session_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .max_by_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
+
+    Ok(PiChatSession {
+        chat_dir,
+        session_dir,
+        existing_transcript,
+    })
 }
 
 /// Add an alias to an existing session (UUID or existing alias).
@@ -869,6 +943,88 @@ mod tests {
         // And the alias still resolves via the registry.
         assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
         assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
+    }
+
+    #[test]
+    fn prepare_pi_chat_session_migrates_legacy_transcript_to_uuid_dir() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let legacy = wg.join("chat").join("chat-8").join("pi-sessions");
+        fs::create_dir_all(&legacy).unwrap();
+        let filename = "2026-07-12T09-11-33-232Z_chat-8.jsonl";
+        let historical = legacy.join(filename);
+        fs::write(
+            &historical,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"chat-8\"}\n",
+        )
+        .unwrap();
+
+        let prepared = prepare_pi_chat_session(wg, 8).unwrap();
+        let migrated = prepared.session_dir.join(filename);
+        assert_eq!(
+            prepared.existing_transcript.as_deref(),
+            Some(migrated.as_path())
+        );
+        assert!(migrated.is_file(), "Pi history must survive UUID migration");
+        assert!(
+            !historical.exists(),
+            "the stale legacy transcript reference must no longer be selected"
+        );
+        assert_eq!(
+            prepared.chat_dir,
+            crate::chat::chat_dir_for_ref(wg, "chat-8"),
+            "the restored pane must resolve storage through the UUID registry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registration_preserves_correct_compatibility_link_for_live_pi_process() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = register_coordinator_session(wg, 8).unwrap();
+        let alias = wg.join("chat/chat-8");
+        symlink(&uuid, &alias).unwrap();
+        let transcript =
+            chat_dir_for_uuid(wg, &uuid).join("pi-sessions/2026-07-12T09-11-33-232Z_chat-8.jsonl");
+        fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        fs::write(&transcript, "session\n").unwrap();
+
+        assert_eq!(register_coordinator_session(wg, 8).unwrap(), uuid);
+        assert!(alias.is_symlink());
+        assert_eq!(
+            fs::read_to_string(
+                alias
+                    .join("pi-sessions")
+                    .join(transcript.file_name().unwrap())
+            )
+            .unwrap(),
+            "session\n",
+            "a live pre-migration Pi path must keep resolving across daemon registration"
+        );
+    }
+
+    #[test]
+    fn prepare_pi_chat_session_missing_transcript_is_recoverable_and_stable() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+
+        let first = prepare_pi_chat_session(wg, 8).unwrap();
+        assert!(first.session_dir.is_dir());
+        assert_eq!(
+            first.existing_transcript, None,
+            "no transcript is an explicit new-session state, not an ENOENT"
+        );
+
+        // Pane restoration may ask again. It must resolve the same canonical
+        // directory and remain a harmless new-session state rather than
+        // chasing a missing legacy JSONL path.
+        let reopened = prepare_pi_chat_session(wg, 8).unwrap();
+        assert_eq!(reopened.chat_dir, first.chat_dir);
+        assert_eq!(reopened.session_dir, first.session_dir);
+        assert_eq!(reopened.existing_transcript, None);
     }
 
     #[test]

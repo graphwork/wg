@@ -15206,6 +15206,35 @@ impl VizApp {
         // TUI incorrectly spawns in owner mode — "session lock busy".
         let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
         let chat_ref = format!("chat-{}", self.active_coordinator_id);
+
+        // Pi's transcript path must be chosen only AFTER coordinator
+        // registration has finished migrating a legacy `chat/chat-N` directory
+        // into its UUID directory. Previously the TUI derived the legacy path,
+        // spawned Pi, and raced the daemon's rename; Pi then retained a JSONL
+        // path that vanished and printed raw ENOENT on every pane reopen.
+        // A missing transcript is not an error here: `--session-id chat-N`
+        // creates a fresh one safely in the prepared canonical directory.
+        let prepared_pi_session = if executor == "pi" {
+            match worksgood::chat_sessions::prepare_pi_chat_session(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+            ) {
+                Ok(prepared) => Some(prepared),
+                Err(e) => {
+                    eprintln!(
+                        "[tui] Pi chat {} storage could not be prepared: {e}. \
+                         The pane was not opened; retry after `wg service reload` \
+                         or create a new chat.",
+                        self.active_coordinator_id
+                    );
+                    self.chat_pty_mode = false;
+                    self.chat_pty_forwards_stdin = false;
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let chat_task_metadata =
             worksgood::parser::load_graph(crate::commands::graph_path(&self.workgraph_dir))
                 .ok()
@@ -15274,7 +15303,10 @@ impl VizApp {
         // Resolve (binary, args, observer_mode) per executor. Observer
         // mode (lock-tailing) only applies to native today because the
         // vendor CLIs run their own session management off-graph.
-        let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+        let chat_dir = prepared_pi_session
+            .as_ref()
+            .map(|prepared| prepared.chat_dir.clone())
+            .unwrap_or_else(|| worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref));
         let observer_mode = worksgood::session_lock::read_holder(&chat_dir)
             .ok()
             .flatten()
@@ -15570,8 +15602,11 @@ impl VizApp {
                         );
                         return;
                     }
-                    let session_dir = chat_dir.join("pi-sessions");
-                    let _ = std::fs::create_dir_all(&session_dir);
+                    let session_dir = prepared_pi_session
+                        .as_ref()
+                        .expect("Pi session storage is prepared before pane construction")
+                        .session_dir
+                        .clone();
                     let session_id = chat_ref.clone();
                     let mut args = Vec::new();
                     if let Some(marg) = marg {
@@ -29593,6 +29628,61 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "pi");
         assert_eq!(model.as_deref(), Some("pi:lunaroute:glm-5.2-nvfp4"));
+    }
+
+    #[test]
+    fn pi_pane_uses_uuid_session_dir_after_legacy_transcript_migration() {
+        let project = tempfile::tempdir().unwrap();
+        let wg_dir = project.path().join(".wg");
+        std::fs::create_dir_all(wg_dir.join("chat/chat-8/pi-sessions")).unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"pi\"\n",
+        )
+        .unwrap();
+        write_chat_task(&wg_dir, 8, Some("pi"), None);
+        let transcript = "2026-07-12T09-11-33-232Z_chat-8.jsonl";
+        std::fs::write(
+            wg_dir.join("chat/chat-8/pi-sessions").join(transcript),
+            "{\"type\":\"session\",\"version\":3,\"id\":\"chat-8\"}\n",
+        )
+        .unwrap();
+
+        let mut app = VizApp::new(
+            wg_dir.clone(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.active_coordinator_id = 8;
+        app.pending_chat_pty_spawn = None;
+        app.task_panes.clear();
+        app.maybe_auto_enable_chat_pty();
+
+        let pending = app
+            .pending_chat_pty_spawn
+            .as_ref()
+            .expect("Pi chat should queue a recoverable PTY spawn");
+        let dir_idx = pending
+            .args
+            .iter()
+            .position(|arg| arg == "--session-dir")
+            .expect("Pi argv must include --session-dir");
+        let prepared_dir = std::path::PathBuf::from(&pending.args[dir_idx + 1]);
+        assert!(
+            prepared_dir.join(transcript).is_file(),
+            "restored pane must point Pi at the migrated historical transcript"
+        );
+        assert_ne!(
+            prepared_dir,
+            wg_dir.join("chat/chat-8/pi-sessions"),
+            "Pi must never retain the migration-prone legacy path"
+        );
+        assert!(
+            prepared_dir.starts_with(wg_dir.join("chat")),
+            "Pi transcript must remain inside the UUID chat directory"
+        );
     }
 }
 
