@@ -652,10 +652,7 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&d)?);
         }
     } else {
-        println!(
-            "Asked supervisor to resume chat {}. Send a message to wake the handler.",
-            cid
-        );
+        println!("Asked supervisor to resume chat {}.", cid);
     }
     Ok(())
 }
