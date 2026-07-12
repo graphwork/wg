@@ -611,7 +611,22 @@ fn handle_request(
                 "IPC SetChatExecutor: chat_id={}, executor={:?}, model={:?}",
                 chat_id, executor, model
             ));
-            handle_set_coordinator_executor(dir, chat_id, executor.as_deref(), model.as_deref())
+            let response = handle_set_coordinator_executor(
+                dir,
+                chat_id,
+                executor.as_deref(),
+                model.as_deref(),
+            );
+            if response.ok {
+                // `wg chat resume` uses this IPC. The old supervisor may have
+                // already ended due to idleness, leaving no child for
+                // handle_set_coordinator_executor to signal. Queue an urgent
+                // lazy-spawn either way; the daemon's supervisor-ended gate
+                // safely retains a legitimate restart/backoff supervisor.
+                pending_coordinator_ids.push(chat_id);
+                *urgent_wake = true;
+            }
+            response
         }
         IpcRequest::DeleteChat { chat_id } => {
             logger.info(&format!("IPC DeleteChat: chat_id={}", chat_id));
@@ -2794,6 +2809,54 @@ poll_interval = 120
             pending_coordinator_ids.is_empty(),
             "pending_coordinator_ids must be empty on failed create"
         );
+    }
+
+    #[test]
+    fn test_set_chat_executor_success_queues_urgent_resume_wake() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut kick_dispatcher = false;
+        let mut urgent_wake = false;
+        let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
+        let mut interrupt_coordinator_ids = Vec::new();
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let resp = handle_request(
+            dir,
+            IpcRequest::SetChatExecutor {
+                chat_id: 5,
+                executor: Some("nex".to_string()),
+                model: None,
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut kick_dispatcher,
+            &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
+            &mut interrupt_coordinator_ids,
+            &mut cfg,
+            &logger,
+        );
+
+        assert!(resp.ok);
+        assert!(urgent_wake, "resume must wake the lazy-spawn path");
+        assert_eq!(pending_coordinator_ids, vec![5]);
+        assert!(!wake_coordinator);
     }
 
     #[test]

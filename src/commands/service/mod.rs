@@ -1599,6 +1599,27 @@ fn route_chat_to_agent(
     Ok(count)
 }
 
+/// Evict a coordinator entry only when its supervisor has definitively ended.
+///
+/// The predicate is passed separately so the lifecycle rule can be tested
+/// without constructing OS subprocesses. Production passes
+/// `CoordinatorAgent::supervisor_has_ended`; it must never pass child
+/// `is_alive`, because a supervisor legitimately has no child while it is
+/// restarting or backing off.
+fn evict_definitively_ended_coordinator<T>(
+    agents: &mut std::collections::HashMap<u32, T>,
+    coordinator_id: u32,
+    supervisor_has_ended: impl FnOnce(&T) -> bool,
+) -> bool {
+    let ended = agents
+        .get(&coordinator_id)
+        .is_some_and(supervisor_has_ended);
+    if ended {
+        agents.remove(&coordinator_id);
+    }
+    ended
+}
+
 /// Route chat messages to all active coordinator agents.
 /// Checks each coordinator's inbox and routes pending messages.
 /// Returns total number of messages routed across all coordinators.
@@ -2903,6 +2924,20 @@ pub fn run_daemon(
                 // Lazy-spawn coordinator agents for any pending coordinator IDs
                 // that don't already have a running agent.
                 for &cid in &pending_coordinator_ids {
+                    // An idle supervisor may have returned cleanly while its
+                    // handle remains in this map. Evict only with the explicit
+                    // supervisor-ended signal; child liveness is deliberately
+                    // insufficient because restart/backoff also has no child.
+                    if evict_definitively_ended_coordinator(
+                        &mut coordinator_agents,
+                        cid,
+                        coordinator_agent::CoordinatorAgent::supervisor_has_ended,
+                    ) {
+                        logger.info(&format!(
+                            "Coordinator agent {} supervisor ended; evicted stale handle before lazy respawn",
+                            cid
+                        ));
+                    }
                     if !coordinator_agents.contains_key(&cid) {
                         if coordinator_agents.len() >= max_coordinators {
                             logger.warn(&format!(
@@ -4538,6 +4573,75 @@ fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestSupervisor {
+        generation: u32,
+        ended: bool,
+    }
+
+    #[test]
+    fn ended_supervisor_entry_is_evicted_and_pending_chat_can_spawn_replacement() {
+        let mut agents = std::collections::HashMap::from([(
+            7,
+            TestSupervisor {
+                generation: 1,
+                ended: true,
+            },
+        )]);
+
+        assert!(evict_definitively_ended_coordinator(
+            &mut agents,
+            7,
+            |agent| agent.ended
+        ));
+        assert!(!agents.contains_key(&7));
+
+        // This is the same contains_key gate used by urgent-wake lazy spawn:
+        // after eviction the pending chat may install exactly one replacement.
+        if !agents.contains_key(&7) {
+            agents.insert(
+                7,
+                TestSupervisor {
+                    generation: 2,
+                    ended: false,
+                },
+            );
+        }
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[&7].generation, 2);
+    }
+
+    #[test]
+    fn restart_backoff_supervisor_is_retained_and_cannot_duplicate() {
+        let mut agents = std::collections::HashMap::from([(
+            7,
+            TestSupervisor {
+                generation: 1,
+                // Child liveness may be false during backoff, but the explicit
+                // supervisor-ended state remains false.
+                ended: false,
+            },
+        )]);
+
+        assert!(!evict_definitively_ended_coordinator(
+            &mut agents,
+            7,
+            |agent| agent.ended
+        ));
+        if !agents.contains_key(&7) {
+            agents.insert(
+                7,
+                TestSupervisor {
+                    generation: 2,
+                    ended: false,
+                },
+            );
+        }
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[&7].generation, 1);
+    }
 
     /// Regression test for the 14h-401 incident: a coordinator launched
     /// `wg service start/daemon --model openrouter:z-ai/glm-5.2` silently
