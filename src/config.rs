@@ -1336,6 +1336,24 @@ impl ReasoningLevel {
             Self::Max => "max",
         }
     }
+
+    /// Value accepted by Codex CLI's `model_reasoning_effort` config key.
+    ///
+    /// WG's portable vocabulary is slightly wider/different: Codex calls
+    /// disabled reasoning `none`, and does not accept `minimal` as an effort.
+    /// Response verbosity is intentionally not part of this mapping; Codex
+    /// exposes that independently as `model_verbosity`.
+    pub fn as_codex_effort(self) -> &'static str {
+        match self {
+            Self::Off => "none",
+            Self::Minimal => "low",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
 }
 
 impl std::fmt::Display for ReasoningLevel {
@@ -5224,7 +5242,7 @@ impl Config {
         };
         let (fast, agency) = match provider {
             "claude" | "anthropic" => ("claude:haiku", "claude:haiku"),
-            "codex" => ("codex:gpt-5.4-mini", "codex:gpt-5.4-mini"),
+            "codex" => ("codex:gpt-5.6-luna", "codex:gpt-5.6-luna"),
             _ => return,
         };
 
@@ -5276,7 +5294,12 @@ impl Config {
     fn is_starter_agency_model(model: &str) -> bool {
         matches!(
             model,
-            "haiku" | "claude:haiku" | "gpt-5.4-mini" | "codex:gpt-5.4-mini"
+            "haiku"
+                | "claude:haiku"
+                | "gpt-5.4-mini"
+                | "codex:gpt-5.4-mini"
+                | "gpt-5.6-luna"
+                | "codex:gpt-5.6-luna"
         )
     }
 

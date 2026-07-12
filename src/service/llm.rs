@@ -320,7 +320,9 @@ pub fn run_review_llm_call(
 
     match dispatch.handler {
         ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
-        ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Codex => {
+            call_codex_cli(&dispatch.model_id, dispatch.reasoning, prompt, timeout_secs)
+        }
         ExecutorKind::Native => {
             match agency_native_call_for_spec(config, &dispatch.raw_spec, prompt, timeout_secs) {
                 Ok(result) => Ok(result),
@@ -387,7 +389,7 @@ pub fn run_model_oneshot(
     let dispatch = agency_dispatch_for_spec(model_spec, None);
     match dispatch.handler {
         ExecutorKind::Claude => call_claude_cli(&dispatch.model_id, prompt, timeout_secs),
-        ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, prompt, timeout_secs),
+        ExecutorKind::Codex => call_codex_cli(&dispatch.model_id, None, prompt, timeout_secs),
         ExecutorKind::Native => {
             agency_native_call_for_spec(config, &dispatch.raw_spec, prompt, timeout_secs)
         }
@@ -536,7 +538,12 @@ pub fn run_lightweight_llm_call(
                 return call_claude_cli(&dispatch.model_id, prompt, timeout_secs);
             }
             ExecutorKind::Codex => {
-                return call_codex_cli(&dispatch.model_id, prompt, timeout_secs);
+                return call_codex_cli(
+                    &dispatch.model_id,
+                    dispatch.reasoning,
+                    prompt,
+                    timeout_secs,
+                );
             }
             ExecutorKind::Native => {
                 // Weak tier points at a native HTTP provider (e.g.
@@ -648,7 +655,14 @@ pub fn run_lightweight_llm_call(
                     ),
                 }
             }
-            "codex" => return call_codex_cli(model, prompt, timeout_secs),
+            "codex" => {
+                return call_codex_cli(
+                    model,
+                    config.resolve_reasoning_for_role(role),
+                    prompt,
+                    timeout_secs,
+                );
+            }
             _ => {}
         }
     }
@@ -773,20 +787,39 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
 /// stream to extract the final `agent_message` text and `turn.completed`
 /// usage. Output format mirrors `call_claude_cli` so the caller doesn't
 /// need to special-case which CLI ran.
-fn call_codex_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
+fn codex_one_shot_command_args(model: &str, reasoning: Option<ReasoningLevel>) -> Vec<String> {
+    let mut args = vec![
+        "exec".to_string(),
+        "--json".to_string(),
+        "--skip-git-repo-check".to_string(),
+        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+        "--model".to_string(),
+        model.to_string(),
+    ];
+    if let Some(level) = reasoning {
+        args.extend([
+            "-c".to_string(),
+            format!("model_reasoning_effort=\"{}\"", level.as_codex_effort()),
+        ]);
+    }
+    args
+}
+
+fn call_codex_cli(
+    model: &str,
+    reasoning: Option<ReasoningLevel>,
+    prompt: &str,
+    timeout_secs: u64,
+) -> Result<LlmCallResult> {
     use std::io::Write as _;
 
+    let args = codex_one_shot_command_args(model, reasoning);
     // Cross-platform `timeout(1)` replacement — Windows has no equivalent.
     // Same in-process call-site treatment njt's #22 applied to call_claude_cli.
     let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
         "codex",
         |cmd| {
-            cmd.arg("exec")
-                .arg("--json")
-                .arg("--skip-git-repo-check")
-                .arg("--dangerously-bypass-approvals-and-sandbox")
-                .arg("--model")
-                .arg(model)
+            cmd.args(&args)
                 .stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped())
                 .stderr(process::Stdio::piped())
@@ -1446,6 +1479,36 @@ fn call_openai_native(
 mod tests {
     use super::*;
     use crate::config::{CLAUDE_HAIKU_MODEL_ID, Config, DispatchRole, ModelRegistryEntry, Tier};
+
+    #[test]
+    fn test_direct_codex_agency_argv_carries_reasoning_without_verbosity() {
+        let args = codex_one_shot_command_args("gpt-5.6-luna", Some(ReasoningLevel::Off));
+        assert_eq!(
+            args,
+            vec![
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--model",
+                "gpt-5.6-luna",
+                "-c",
+                "model_reasoning_effort=\"none\"",
+            ]
+        );
+        assert!(
+            args.iter().all(|arg| !arg.contains("model_verbosity")),
+            "agency reasoning must not silently set response verbosity"
+        );
+
+        let inherited = codex_one_shot_command_args("gpt-5.6-luna", None);
+        assert!(
+            inherited
+                .iter()
+                .all(|arg| !arg.contains("model_reasoning_effort")),
+            "unset WG reasoning must leave ~/.codex/config.toml authoritative"
+        );
+    }
 
     #[test]
     fn test_lightweight_llm_dispatch_resolves_model() {

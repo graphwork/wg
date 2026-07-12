@@ -1197,18 +1197,39 @@ fn append_external_cli_model_args(
     }
 }
 
+fn args_have_codex_config(existing_args: &[String], key: &str) -> bool {
+    existing_args.iter().any(|arg| {
+        arg.trim_matches(['\'', '"'])
+            .split_once('=')
+            .is_some_and(|(configured_key, _)| configured_key.trim() == key)
+    })
+}
+
 fn append_external_cli_reasoning_args(
     cmd_parts: &mut Vec<String>,
     existing_args: &[String],
     executor_type: &str,
     reasoning: Option<ReasoningLevel>,
 ) {
-    if executor_type != "pi" || args_have_flag(existing_args, &["--thinking"]) {
+    let Some(level) = reasoning else {
         return;
-    }
-    if let Some(level) = reasoning {
-        cmd_parts.push("--thinking".to_string());
-        cmd_parts.push(shell_escape(level.as_str()));
+    };
+    match executor_type {
+        "pi" if !args_have_flag(existing_args, &["--thinking"]) => {
+            // Pi owns the WG vocabulary and accepts it verbatim.
+            cmd_parts.push("--thinking".to_string());
+            cmd_parts.push(shell_escape(level.as_str()));
+        }
+        "codex" if !args_have_codex_config(existing_args, "model_reasoning_effort") => {
+            // Codex reasoning effort is a config override. Keep it independent
+            // from the separately configured `model_verbosity` setting.
+            cmd_parts.push("-c".to_string());
+            cmd_parts.push(shell_escape(&format!(
+                "model_reasoning_effort=\"{}\"",
+                level.as_codex_effort()
+            )));
+        }
+        _ => {}
     }
 }
 
@@ -1684,6 +1705,12 @@ fn build_inner_command_with_reasoning(
                 cmd_parts.push("--model".to_string());
                 cmd_parts.push(shell_escape(m));
             }
+            append_external_cli_reasoning_args(
+                &mut cmd_parts,
+                &settings.args,
+                "codex",
+                resolved_reasoning,
+            );
             let codex_cmd = cmd_parts.join(" ");
 
             if let Some(ref prompt_template) = settings.prompt_template {
@@ -2856,7 +2883,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_external_cli_reasoning_args_are_pi_only_and_omitted_by_default() {
+    fn test_external_cli_reasoning_args_preserve_pi_and_adapt_codex() {
         let existing: Vec<String> = Vec::new();
         let mut pi_parts = Vec::new();
         append_external_cli_reasoning_args(
@@ -2886,16 +2913,20 @@ mod tests {
         append_external_cli_reasoning_args(&mut omitted, &existing, "pi", None);
         assert!(omitted.is_empty());
 
-        let mut non_pi = Vec::new();
+        let mut codex = Vec::new();
         append_external_cli_reasoning_args(
-            &mut non_pi,
+            &mut codex,
             &existing,
             "codex",
             Some(ReasoningLevel::High),
         );
-        assert!(
-            non_pi.is_empty(),
-            "non-Pi handlers must not receive --thinking"
+        assert_eq!(
+            codex,
+            vec![
+                "-c".to_string(),
+                "'model_reasoning_effort=\"high\"'".to_string(),
+            ],
+            "Codex must use its config override rather than Pi's --thinking flag"
         );
 
         let mut existing_flag = Vec::new();
@@ -2905,7 +2936,24 @@ mod tests {
             "pi",
             Some(ReasoningLevel::High),
         );
-        assert!(existing_flag.is_empty(), "explicit executor args win");
+        assert!(existing_flag.is_empty(), "explicit Pi executor args win");
+
+        let mut existing_codex = Vec::new();
+        append_external_cli_reasoning_args(
+            &mut existing_codex,
+            &[
+                "-c".to_string(),
+                "model_reasoning_effort=\"medium\"".to_string(),
+                "-c".to_string(),
+                "model_verbosity=\"high\"".to_string(),
+            ],
+            "codex",
+            Some(ReasoningLevel::Xhigh),
+        );
+        assert!(
+            existing_codex.is_empty(),
+            "explicit Codex effort must win independently of verbosity"
+        );
     }
 
     #[test]
@@ -4486,6 +4534,59 @@ mod tests {
     }
 
     #[test]
+    fn test_direct_codex_worker_argv_keeps_verbosity_separate_from_reasoning() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let mut settings = default_external_settings(output_dir, "codex");
+        settings.prompt_template = Some(PromptTemplate {
+            template: "Implement task".to_string(),
+        });
+        let vars = test_template_vars();
+
+        let (command, fallback) = build_inner_command_with_reasoning(
+            &settings,
+            "full",
+            output_dir,
+            &Some("gpt-5.6-sol".to_string()),
+            &None,
+            Some(ReasoningLevel::Minimal),
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(fallback.is_none());
+        assert!(
+            command.contains("model_reasoning_effort=\"low\""),
+            "WG minimal must map to Codex low effort: {command}"
+        );
+        assert!(
+            command.contains("model_verbosity=\"high\""),
+            "the independently configured Codex verbosity must remain present: {command}"
+        );
+    }
+
+    #[test]
+    fn test_direct_codex_reasoning_effort_mapping_is_explicit_for_every_level() {
+        let expected = [
+            (ReasoningLevel::Off, "none"),
+            (ReasoningLevel::Minimal, "low"),
+            (ReasoningLevel::Low, "low"),
+            (ReasoningLevel::Medium, "medium"),
+            (ReasoningLevel::High, "high"),
+            (ReasoningLevel::Xhigh, "xhigh"),
+            (ReasoningLevel::Max, "max"),
+        ];
+        for (level, effort) in expected {
+            assert_eq!(level.as_codex_effort(), effort);
+        }
+    }
+
+    #[test]
     fn test_build_inner_command_codex_uses_prompt_file_and_model() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
@@ -4566,6 +4667,10 @@ mod tests {
             command.contains("--model 'gpt-5-codex'"),
             "Expected codex model flag: {}",
             command
+        );
+        assert!(
+            !command.contains("model_reasoning_effort"),
+            "unset WG reasoning must inherit ~/.codex/config.toml: {command}"
         );
         let prompt_file = output_dir.join("prompt.txt");
         assert_eq!(

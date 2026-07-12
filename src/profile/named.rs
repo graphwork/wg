@@ -1150,24 +1150,42 @@ is_default = true
         // because [agent].model wasn't propagating; the snapshot model fixes
         // this by making the file itself the authoritative source.
         let prof = parse_profile(STARTER_CODEX, Path::new("codex.toml"), "codex").unwrap();
-        assert_eq!(prof.config.agent.model, "codex:gpt-5.5");
+        assert_eq!(prof.config.agent.model, "codex:gpt-5.6-sol");
         assert_eq!(
             prof.config.coordinator.model.as_deref(),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         assert_eq!(
             prof.config.tiers.fast.as_deref(),
-            Some("codex:gpt-5.4-mini")
+            Some("codex:gpt-5.6-luna")
         );
-        assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
-        assert_eq!(prof.config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+        assert_eq!(
+            prof.config.tiers.fast_reasoning,
+            Some(crate::config::ReasoningLevel::Low)
+        );
+        assert_eq!(
+            prof.config.tiers.standard.as_deref(),
+            Some("codex:gpt-5.6-sol")
+        );
+        assert_eq!(
+            prof.config.tiers.standard_reasoning,
+            Some(crate::config::ReasoningLevel::High)
+        );
+        assert_eq!(
+            prof.config.tiers.premium.as_deref(),
+            Some("codex:gpt-5.6-sol")
+        );
+        assert_eq!(
+            prof.config.tiers.premium_reasoning,
+            Some(crate::config::ReasoningLevel::Xhigh)
+        );
         assert_eq!(
             prof.config
                 .models
                 .default
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         assert_eq!(
             prof.config
@@ -1175,7 +1193,7 @@ is_default = true
                 .task_agent
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         // Per-role overrides for agency meta-tasks should also be codex models.
         let eval = prof
@@ -1184,9 +1202,11 @@ is_default = true
             .evaluator
             .as_ref()
             .expect("evaluator set");
-        assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.6-luna"));
+        assert_eq!(eval.reasoning, Some(crate::config::ReasoningLevel::Low));
         let assigner = prof.config.models.assigner.as_ref().expect("assigner set");
-        assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.6-luna"));
+        assert_eq!(assigner.reasoning, Some(crate::config::ReasoningLevel::Low));
     }
 
     #[test]
@@ -1399,7 +1419,7 @@ is_default = true
             // names codex, not claude. This is the verbatim check the task
             // validation calls for (`grep 'model = ' ~/.wg/config.toml`).
             assert!(
-                written.contains("model = \"codex:gpt-5.5\""),
+                written.contains("model = \"codex:gpt-5.6-sol\""),
                 "global config must contain codex models, not claude. Got:\n{}",
                 written,
             );
@@ -1429,9 +1449,9 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
         });
     }
 
@@ -1566,9 +1586,9 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
         });
     }
 
@@ -1677,10 +1697,13 @@ assigner_agent = "local-agent"
             );
 
             let merged = Config::load_merged(&wg_dir).unwrap();
-            assert_eq!(merged.agent.model, "codex:gpt-5.5");
-            assert_eq!(merged.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+            assert_eq!(merged.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(
+                merged.coordinator.model.as_deref(),
+                Some("codex:gpt-5.6-sol")
+            );
             assert_eq!(merged.coordinator.effective_executor(), "codex");
-            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
             assert_eq!(merged.coordinator.max_agents, 3);
             assert_eq!(merged.agent.interval, 13);
             assert!(!merged.agency.auto_assign);
@@ -2216,7 +2239,7 @@ assigner_agent = "local-agent"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("codex:gpt-5.5"),
+                Some("codex:gpt-5.6-sol"),
                 "codex is active — task_agent must be codex's"
             );
 
