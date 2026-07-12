@@ -5333,6 +5333,25 @@ impl Config {
         "models.flip_comparison.model",
     ];
 
+    /// Reasoning keys controlled by a two-tier strong-reasoning update.
+    /// Kept separate from model keys so either dimension can be patched without
+    /// reconstructing (and accidentally erasing) the other.
+    pub const PI_STRONG_REASONING_TOML_KEYS: &'static [&'static str] = &[
+        "tiers.standard_reasoning",
+        "tiers.premium_reasoning",
+        "models.default.reasoning",
+        "models.task_agent.reasoning",
+    ];
+
+    /// Reasoning keys controlled by a two-tier weak-reasoning update.
+    pub const PI_WEAK_REASONING_TOML_KEYS: &'static [&'static str] = &[
+        "tiers.fast_reasoning",
+        "models.evaluator.reasoning",
+        "models.assigner.reasoning",
+        "models.flip_inference.reasoning",
+        "models.flip_comparison.reasoning",
+    ];
+
     /// Read the Pi profile's `(strong, weak)` tier models from this config.
     ///
     /// `strong` is inferred from `agent.model` (falling back to
