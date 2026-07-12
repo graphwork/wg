@@ -2039,3 +2039,12 @@ owners = [
 ]
 description = "Permanent tmux/PTy human-flow regression for the Pi transcript ENOENT: a Pi chat with a native transcript under legacy chat/chat-N storage is opened in the real TUI, registered/migrated to UUID storage before Pi argv is built, closed and reopened, then driven with user input. Asserts preserved history, canonical --session-dir, no raw/repeated ENOENT, and a usable reopened pane. Credential-free via a deterministic fake Pi CLI."
 timeout_seconds = 90
+
+[[scenario]]
+name = "direct_codex_reasoning_profile"
+script = "scenarios/direct_codex_reasoning_profile.sh"
+owners = [
+    "add-direct-codex",
+]
+description = "Pins add-direct-codex end-to-end: in an isolated fresh HOME, the single terminal command `wg profile use codex` activates the embedded direct Codex GPT-5.6 Sol/Luna profile, while a subsequent user-owned profile edit is not overwritten; config resolution shows Sol strong/default and Luna weak agency. A real dispatcher-generated worker run.sh then executes a fake Codex CLI and proves its actual argv contains Sol plus `-c model_reasoning_effort=\"high\"` alongside the independently configured `model_verbosity=\"high\"`. Credential-free."
+timeout_seconds = 60
