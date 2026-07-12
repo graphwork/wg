@@ -4415,6 +4415,26 @@ pub fn is_service_paused(dir: &Path) -> bool {
 /// times with short exponential backoff (50ms, 100ms) before giving up.
 /// Distinguishes "daemon not running" from "daemon unreachable" in errors.
 pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
+    const IPC_REQUEST_DEADLINE: Duration = Duration::from_secs(3);
+    let dir = dir.to_path_buf();
+    let request = request.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(send_request_inner(&dir, &request));
+    });
+    match rx.recv_timeout(IPC_REQUEST_DEADLINE) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => anyhow::bail!(
+            "Service IPC request timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
+            IPC_REQUEST_DEADLINE.as_secs()
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("Service IPC worker exited without a response")
+        }
+    }
+}
+
+fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
         anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
     })?;
@@ -4452,11 +4472,21 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
         match connect_to_socket(&socket) {
             Ok(mut stream) => {
-                // `interprocess::local_socket::Stream` doesn't expose per-op
-                // read/write timeouts portably (they mean different things for
-                // UDS vs named pipes). For local IPC on the same machine these
-                // were a belt-and-braces safety net; dropping them is fine in
-                // practice, and Ctrl+C still interrupts a truly hung daemon.
+                // A live PID and socket do not guarantee a responsive daemon:
+                // the coordinator thread may be wedged before it accepts or
+                // answers this connection. Bound both halves so user-facing
+                // commands such as `wg chat create` and `wg chat resume` fail
+                // with an actionable error instead of hanging forever.
+                const IPC_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+                #[cfg(unix)]
+                {
+                    stream
+                        .set_recv_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .context("Failed to set service IPC receive timeout")?;
+                    stream
+                        .set_send_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .context("Failed to set service IPC send timeout")?;
+                }
 
                 let json = serde_json::to_string(&request)?;
                 writeln!(stream, "{}", json)?;
@@ -4464,7 +4494,12 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
                 let reader = BufReader::new(&stream);
                 for line in reader.lines() {
-                    let line = line.context("Failed to read response")?;
+                    let line = line.with_context(|| {
+                        format!(
+                            "Service IPC response timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
+                            IPC_CLIENT_TIMEOUT.as_secs()
+                        )
+                    })?;
                     if !line.is_empty() {
                         let response: IpcResponse =
                             serde_json::from_str(&line).context("Failed to parse response")?;
@@ -4603,6 +4638,41 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let socket = default_socket_path(temp_dir.path());
         assert_eq!(socket, temp_dir.path().join("service").join("daemon.sock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_request_times_out_when_live_daemon_never_responds() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let socket = default_socket_path(dir);
+        let listener = bind_socket(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let _stream = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        });
+        ServiceState {
+            pid: std::process::id(),
+            socket_path: socket.display().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        }
+        .save(dir)
+        .unwrap();
+
+        let started = Instant::now();
+        let error = send_request(dir, &IpcRequest::Status)
+            .expect_err("an unresponsive daemon must not hang the CLI")
+            .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "IPC failure exceeded its bounded deadline"
+        );
+        assert!(
+            error.contains("timed out") || error.contains("unresponsive"),
+            "timeout should be actionable: {error}"
+        );
+        server.join().unwrap();
     }
 
     #[test]

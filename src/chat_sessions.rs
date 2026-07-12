@@ -38,6 +38,36 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Process-wide coordinator registration uses a sidecar file lock because the
+/// daemon starts one supervisor thread per persisted chat. Without this lock,
+/// concurrent registrations all wrote the same `sessions.json.tmp`; one thread
+/// renamed it out from under another, producing the user-visible
+/// `register_coordinator_session failed: No such file or directory` error.
+struct CoordinatorRegistrationLock {
+    _file: File,
+}
+
+impl CoordinatorRegistrationLock {
+    fn acquire(workgraph_dir: &Path) -> Result<Self> {
+        let chat_dir = workgraph_dir.join("chat");
+        fs::create_dir_all(&chat_dir)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(chat_dir.join("sessions.json.lock"))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -310,6 +340,15 @@ pub fn fork_session(
 /// `daemon_style_coordinator_registration_creates_both_paths`
 /// locks in the invariant.
 pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<String> {
+    static REGISTRATION_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _registration_guard = REGISTRATION_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Registration is a read/modify/write transaction over sessions.json. A
+    // daemon restart performs many of these concurrently, so serialize the
+    // entire migration + alias installation sequence rather than merely the
+    // final rename. This also prevents lost registry entries.
+    let _registration_lock = CoordinatorRegistrationLock::acquire(workgraph_dir)?;
     let _ = migrate_numeric_coord_dir(workgraph_dir, n);
     let new_canonical = format!("chat-{}", n);
     let legacy_canonical = format!("coordinator-{}", n);
@@ -866,6 +905,33 @@ mod tests {
             "register_coordinator_session must defensively create the UUID chat dir"
         );
         assert_eq!(resolve_ref(wg, "7").unwrap(), registered);
+    }
+
+    #[test]
+    fn concurrent_coordinator_registration_preserves_every_session_and_dir() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..12)
+            .map(|id| {
+                let wg = wg.clone();
+                std::thread::spawn(move || register_coordinator_session(&wg, id))
+            })
+            .collect();
+
+        for thread in threads {
+            thread
+                .join()
+                .expect("registration thread panicked")
+                .expect("concurrent registration must not lose its temp file");
+        }
+
+        let registry = load(&wg).unwrap();
+        assert_eq!(registry.sessions.len(), 12);
+        for id in 0..12 {
+            let uuid = resolve_ref(&wg, &format!("chat-{id}")).unwrap();
+            assert!(chat_dir_for_uuid(&wg, &uuid).is_dir());
+            assert_eq!(resolve_ref(&wg, &id.to_string()).unwrap(), uuid);
+        }
     }
 
     #[test]
