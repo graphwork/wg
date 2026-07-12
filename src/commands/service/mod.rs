@@ -1296,14 +1296,31 @@ pub fn run_start(
         .open(&log_path)
         .with_context(|| format!("Failed to open daemon log at {:?}", log_path))?;
 
-    let child = process::Command::new(&current_exe)
+    let mut command = process::Command::new(&current_exe);
+    command
         .args(&args)
         .env("WG_DIR", dir)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
-        .stderr(stderr_file)
-        .spawn()
-        .context("Failed to spawn daemon process")?;
+        .stderr(stderr_file);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                // The service daemon must outlive the shell/session that
+                // launched `wg service start`. Without this, a terminal hangup
+                // or parent process-group signal can kill the daemon after the
+                // first tick, leaving only stale state for `wg service status`
+                // to clean up.
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = command.spawn().context("Failed to spawn daemon process")?;
 
     let pid = child.id();
 
