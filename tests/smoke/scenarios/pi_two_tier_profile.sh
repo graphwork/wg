@@ -111,9 +111,64 @@ if grep -q 'standard = "openrouter:z-ai/glm-5.2"' "$HOME/.wg/config.toml"; then
 $(cat "$HOME/.wg/config.toml")"
 fi
 
-# ── 6. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
+# ── 6. CUSTOM PROFILE: models and reasoning update independently ─────────────
+CUSTOM="$HOME/.wg/profiles/pi-codex-56.toml"
+cat >"$CUSTOM" <<'TOML'
+[agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+
+[tiers]
+fast = "pi:openai-codex:gpt-5.6-luna"
+fast_reasoning = "low"
+standard = "pi:openai-codex:gpt-5.6-sol"
+standard_reasoning = "high"
+premium = "pi:openai-codex:gpt-5.6-sol"
+premium_reasoning = "xhigh"
+
+[models.default]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "medium"
+
+[models.task_agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "high"
+
+[models.evaluator]
+model = "pi:openai-codex:gpt-5.6-luna"
+reasoning = "low"
+TOML
+
+custom_out=$(wg profile pi --profile pi-codex-56 --strong codex:gpt-5.6-terra 2>&1) \
+    || loud_fail "custom profile strong update failed:
+$custom_out"
+grep -q 'profile: pi-codex-56' <<<"$custom_out" \
+    || loud_fail "custom profile selection was not reflected in output:
+$custom_out"
+grep -q 'model = "codex:gpt-5.6-terra"' "$CUSTOM" \
+    || loud_fail "handler-first custom strong route was not preserved verbatim:
+$(cat "$CUSTOM")"
+grep -q 'reasoning = "medium"' "$CUSTOM" \
+    || loud_fail "model update erased existing default reasoning:
+$(cat "$CUSTOM")"
+grep -q 'fast = "pi:openai-codex:gpt-5.6-luna"' "$CUSTOM" \
+    || loud_fail "partial strong update changed the weak model:
+$(cat "$CUSTOM")"
+
+wg profile pi --profile pi-codex-56 --weak-reasoning minimal >/dev/null 2>&1 \
+    || loud_fail "custom profile reasoning-only update failed"
+grep -q 'fast_reasoning = "minimal"' "$CUSTOM" \
+    || loud_fail "weak reasoning update was not persisted:
+$(cat "$CUSTOM")"
+grep -q 'fast = "pi:openai-codex:gpt-5.6-luna"' "$CUSTOM" \
+    || loud_fail "reasoning-only update altered the weak model:
+$(cat "$CUSTOM")"
+grep -q 'model = "codex:gpt-5.6-terra"' "$CUSTOM" \
+    || loud_fail "reasoning-only update altered the strong model:
+$(cat "$CUSTOM")"
+
+# ── 7. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
 if wg profile pi openrouter:z-ai/glm-5.2 >/dev/null 2>&1; then
     loud_fail "a single positional tier must be rejected as ambiguous"
 fi
 
-echo "PASS: wg profile pi list/select/apply/persist/active/grammar"
+echo "PASS: wg profile pi built-in/custom model+reasoning editing"

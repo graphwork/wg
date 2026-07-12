@@ -1244,11 +1244,16 @@ const PI_ROUTING_WEAK: &str = ".flip, .assign, eval, triage, off-the-rails, comp
 struct PiUpdate {
     strong: Option<String>,
     weak: Option<String>,
+    strong_reasoning: Option<String>,
+    weak_reasoning: Option<String>,
 }
 
 impl PiUpdate {
     fn has_update(&self) -> bool {
-        self.strong.is_some() || self.weak.is_some()
+        self.strong.is_some()
+            || self.weak.is_some()
+            || self.strong_reasoning.is_some()
+            || self.weak_reasoning.is_some()
     }
 }
 
@@ -1261,6 +1266,8 @@ fn resolve_pi_update(
     tiers: &[String],
     strong_flag: Option<&str>,
     weak_flag: Option<&str>,
+    strong_reasoning: Option<&str>,
+    weak_reasoning: Option<&str>,
 ) -> Result<PiUpdate> {
     let (pos_strong, pos_weak) = match tiers.len() {
         0 => (None, None),
@@ -1306,9 +1313,15 @@ fn resolve_pi_update(
         );
     }
 
+    for level in [strong_reasoning, weak_reasoning].into_iter().flatten() {
+        level.parse::<worksgood::config::ReasoningLevel>()?;
+    }
+
     Ok(PiUpdate {
         strong: pos_strong.or_else(|| strong_flag.map(str::to_string)),
         weak: pos_weak.or_else(|| weak_flag.map(str::to_string)),
+        strong_reasoning: strong_reasoning.map(str::to_string),
+        weak_reasoning: weak_reasoning.map(str::to_string),
     })
 }
 
@@ -1321,32 +1334,54 @@ fn resolve_pi_update(
 pub fn pi(
     dir: &Path,
     json: bool,
+    profile: Option<&str>,
     tiers: &[String],
     strong_flag: Option<&str>,
     weak_flag: Option<&str>,
+    strong_reasoning: Option<&str>,
+    weak_reasoning: Option<&str>,
     show: bool,
     list: bool,
     dry_run: bool,
     no_reload: bool,
 ) -> Result<()> {
-    let update = resolve_pi_update(tiers, strong_flag, weak_flag)?;
+    let profile = profile.unwrap_or(PI_PROFILE_NAME);
+    let update = resolve_pi_update(
+        tiers,
+        strong_flag,
+        weak_flag,
+        strong_reasoning,
+        weak_reasoning,
+    )?;
 
-    // The pi profile is read from its on-disk file, falling back to the baked-in
-    // starter when uninstalled (load() handles that), so `wg profile pi` works
-    // out of the box and reports correct current tiers either way.
-    let prof = named_profile::load(PI_PROFILE_NAME)?;
+    // The built-in pi profile falls back to its baked-in starter. Named custom
+    // profiles must already exist, which protects against typo-created files.
+    let prof = named_profile::load(profile)?;
     let (cur_strong, cur_weak) = prof.config.pi_tiers();
-    let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(PI_PROFILE_NAME);
+    let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(profile);
 
     // Explicit read-only intents win over any (likely contradictory) update.
     if show {
-        return pi_show(is_active, &cur_strong, &cur_weak, json);
+        return pi_show(profile, is_active, &cur_strong, &cur_weak, json);
     }
     if list {
-        return pi_list(&prof.config, is_active, json);
+        return pi_list(profile, &prof.config, is_active, json);
     }
     if !update.has_update() {
-        return pi_show(is_active, &cur_strong, &cur_weak, json);
+        return pi_show(profile, is_active, &cur_strong, &cur_weak, json);
+    }
+
+    // Custom profiles are generic: accept only unambiguous handler-first model
+    // routes and preserve them verbatim. The literal `pi` profile keeps its
+    // historical openrouter/bare strong normalization for compatibility.
+    if profile != PI_PROFILE_NAME {
+        for model in [update.strong.as_deref(), update.weak.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            worksgood::config::parse_model_spec_strict(model)
+                .map_err(|e| anyhow::anyhow!("invalid handler-first model route '{model}': {e}"))?;
+        }
     }
 
     // ── Set (or dry-run preview) ──────────────────────────────────────────────
@@ -1358,12 +1393,19 @@ pub fn pi(
     let new_strong = update
         .strong
         .as_deref()
-        .map(worksgood::config::pi_strong_route)
+        .map(|model| {
+            if profile == PI_PROFILE_NAME {
+                worksgood::config::pi_strong_route(model)
+            } else {
+                model.to_string()
+            }
+        })
         .or_else(|| cur_strong.clone());
     let new_weak = update.weak.clone().or_else(|| cur_weak.clone());
 
     if dry_run {
         pi_set_echo(
+            profile,
             &PiSetEcho {
                 cur_strong: &cur_strong,
                 cur_weak: &cur_weak,
@@ -1382,30 +1424,33 @@ pub fn pi(
         return Ok(());
     }
 
-    let path = named_profile::patch_pi_tiers(
-        PI_PROFILE_NAME,
+    let path = named_profile::patch_two_tier_profile(
+        profile,
         update.strong.as_deref(),
         update.weak.as_deref(),
+        update.strong_reasoning.as_deref(),
+        update.weak_reasoning.as_deref(),
+        profile == PI_PROFILE_NAME,
     )?;
 
     // When pi is the active profile, the profile file IS the runtime config —
     // re-apply it as the global config so the next worker/turn picks up the new
     // tiers, exactly like `wg profile edit` (design §6.3).
     let reloaded_note = if is_active {
-        named_profile::apply_profile_as_global_config(PI_PROFILE_NAME)?;
+        named_profile::apply_profile_as_global_config(profile)?;
         if no_reload {
             Some("staged (--no-reload): applies on next `wg service start`".to_string())
         } else {
-            Some(daemon_reload_note(dir))
+            Some(daemon_reload_note_for(dir, profile))
         }
     } else {
         Some(format!(
-            "pi is not the active profile — takes effect on `wg profile use {}`",
-            PI_PROFILE_NAME
+            "'{profile}' is not the active profile — takes effect on `wg profile use {profile}`"
         ))
     };
 
     pi_set_echo(
+        profile,
         &PiSetEcho {
             cur_strong: &cur_strong,
             cur_weak: &cur_weak,
@@ -1587,6 +1632,7 @@ fn pi_routing_block() {
 
 /// `wg profile pi --show` (and the no-arg default).
 fn pi_show(
+    profile: &str,
     is_active: bool,
     strong: &Option<String>,
     weak: &Option<String>,
@@ -1594,7 +1640,7 @@ fn pi_show(
 ) -> Result<()> {
     if json {
         let val = serde_json::json!({
-            "profile": PI_PROFILE_NAME,
+            "profile": profile,
             "active": is_active,
             "strong": strong,
             "weak": weak,
@@ -1604,18 +1650,16 @@ fn pi_show(
         return Ok(());
     }
     let active_tag = if is_active { "   [active]" } else { "" };
-    println!("Pi profile tiers  (profile: {PI_PROFILE_NAME}){active_tag}");
+    println!("Two-tier profile  (profile: {profile}){active_tag}");
     println!("  strong = {}", strong.as_deref().unwrap_or("(unset)"));
     println!("  weak   = {}", weak.as_deref().unwrap_or("(unset)"));
     println!();
     pi_routing_block();
     println!();
-    println!(
-        "  source: ~/.wg/profiles/{PI_PROFILE_NAME}.toml   (strong ← agent.model; weak ← tiers.fast)"
-    );
+    println!("  source: ~/.wg/profiles/{profile}.toml   (strong ← agent.model; weak ← tiers.fast)");
     if !is_active {
         println!(
-            "  (pi is not the active profile — activate with `wg profile use {PI_PROFILE_NAME}`)"
+            "  ('{profile}' is not the active profile — activate with `wg profile use {profile}`)"
         );
     }
     Ok(())
@@ -1623,13 +1667,13 @@ fn pi_show(
 
 /// `wg profile pi --list` — surface the OpenRouter/Pi models the profile already
 /// references, so the user picks from configured models (never a hardcoded set).
-fn pi_list(config: &Config, is_active: bool, json: bool) -> Result<()> {
+fn pi_list(profile: &str, config: &Config, is_active: bool, json: bool) -> Result<()> {
     let (strong, weak) = config.pi_tiers();
     let models = collect_configured_models(config);
 
     if json {
         let val = serde_json::json!({
-            "profile": PI_PROFILE_NAME,
+            "profile": profile,
             "active": is_active,
             "strong": strong,
             "weak": weak,
@@ -1639,7 +1683,7 @@ fn pi_list(config: &Config, is_active: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("OpenRouter/Pi models configured for the '{PI_PROFILE_NAME}' profile:");
+    println!("Models configured for the '{profile}' profile:");
     if models.is_empty() {
         println!("  (none configured)");
     }
@@ -1660,9 +1704,15 @@ fn pi_list(config: &Config, is_active: bool, json: bool) -> Result<()> {
     }
     println!();
     println!("Pick one and apply it to a tier:");
-    println!("  wg profile pi --strong <spec>      # set the strong tier (chat/worker)");
-    println!("  wg profile pi --weak   <spec>      # set the weak tier (agency one-shots)");
-    println!("  wg profile pi <strong> <weak>      # set both at once (positional)");
+    let target = if profile == PI_PROFILE_NAME {
+        String::new()
+    } else {
+        format!(" --profile {profile}")
+    };
+    println!("  wg profile pi{target} --strong <spec>      # set strong model");
+    println!("  wg profile pi{target} --weak   <spec>      # set weak model");
+    println!("  wg profile pi{target} --strong-reasoning <level>");
+    println!("  wg profile pi{target} --weak-reasoning   <level>");
     Ok(())
 }
 
@@ -1733,15 +1783,20 @@ struct PiSetEcho<'a> {
 }
 
 /// Print the always-on echo for a set or dry-run (design §3.1 / §3.4).
-fn pi_set_echo(e: &PiSetEcho, update: &PiUpdate, json: bool) {
+fn pi_set_echo(profile: &str, e: &PiSetEcho, update: &PiUpdate, json: bool) {
     if json {
         let val = serde_json::json!({
-            "profile": PI_PROFILE_NAME,
+            "profile": profile,
             "active": e.is_active,
             "dry_run": e.dry_run,
             "strong": e.new_strong,
             "weak": e.new_weak,
-            "changed": { "strong": e.touched_strong, "weak": e.touched_weak },
+            "changed": {
+                "strong": e.touched_strong,
+                "weak": e.touched_weak,
+                "strong_reasoning": update.strong_reasoning.is_some(),
+                "weak_reasoning": update.weak_reasoning.is_some(),
+            },
             "wrote": e.wrote_path.as_ref().map(|p| p.display().to_string()),
             "note": e.reloaded_note,
         });
@@ -1755,7 +1810,7 @@ fn pi_set_echo(e: &PiSetEcho, update: &PiUpdate, json: bool) {
     if e.dry_run {
         println!("DRY RUN — no files written.");
     }
-    println!("Pi profile tiers  (profile: {PI_PROFILE_NAME})");
+    println!("Two-tier profile  (profile: {profile})");
     println!(
         "  strong = {:<44} {}",
         e.new_strong.as_deref().unwrap_or("(unset)"),
@@ -1772,7 +1827,7 @@ fn pi_set_echo(e: &PiSetEcho, update: &PiUpdate, json: bool) {
 
     if e.dry_run {
         println!("Apply with:");
-        println!("  {}", pi_apply_command(update));
+        println!("  {}", pi_apply_command(profile, update));
         return;
     }
     if let Some(p) = &e.wrote_path {
@@ -1788,16 +1843,27 @@ fn pi_set_echo(e: &PiSetEcho, update: &PiUpdate, json: bool) {
 /// The strong spec is shown in its normalized `pi:` form (what actually gets
 /// persisted), so the printed command is idempotent and matches the `strong =`
 /// line above it. The weak spec is shown verbatim — it keeps its native route.
-fn pi_apply_command(update: &PiUpdate) -> String {
+fn pi_apply_command(profile: &str, update: &PiUpdate) -> String {
     let mut cmd = String::from("wg profile pi");
+    if profile != PI_PROFILE_NAME {
+        cmd.push_str(&format!(" --profile {profile}"));
+    }
     if let Some(s) = &update.strong {
-        cmd.push_str(&format!(
-            " --strong {}",
+        let route = if profile == PI_PROFILE_NAME {
             worksgood::config::pi_strong_route(s)
-        ));
+        } else {
+            s.clone()
+        };
+        cmd.push_str(&format!(" --strong {route}"));
     }
     if let Some(w) = &update.weak {
         cmd.push_str(&format!(" --weak {w}"));
+    }
+    if let Some(level) = &update.strong_reasoning {
+        cmd.push_str(&format!(" --strong-reasoning {level}"));
+    }
+    if let Some(level) = &update.weak_reasoning {
+        cmd.push_str(&format!(" --weak-reasoning {level}"));
     }
     cmd
 }
@@ -1864,25 +1930,26 @@ mod tests {
 
     #[test]
     fn test_resolve_pi_update_positional_both() {
-        let u = resolve_pi_update(&[s("strong:m"), s("weak:m")], None, None).unwrap();
+        let u = resolve_pi_update(&[s("strong:m"), s("weak:m")], None, None, None, None).unwrap();
         assert_eq!(u.strong.as_deref(), Some("strong:m"));
         assert_eq!(u.weak.as_deref(), Some("weak:m"));
     }
 
     #[test]
     fn test_resolve_pi_update_positional_dash_skips_tier() {
-        let strong_only = resolve_pi_update(&[s("strong:m"), s("-")], None, None).unwrap();
+        let strong_only =
+            resolve_pi_update(&[s("strong:m"), s("-")], None, None, None, None).unwrap();
         assert_eq!(strong_only.strong.as_deref(), Some("strong:m"));
         assert_eq!(strong_only.weak, None);
 
-        let weak_only = resolve_pi_update(&[s("-"), s("weak:m")], None, None).unwrap();
+        let weak_only = resolve_pi_update(&[s("-"), s("weak:m")], None, None, None, None).unwrap();
         assert_eq!(weak_only.strong, None);
         assert_eq!(weak_only.weak.as_deref(), Some("weak:m"));
     }
 
     #[test]
     fn test_resolve_pi_update_flags_partial() {
-        let u = resolve_pi_update(&[], None, Some("weak:m")).unwrap();
+        let u = resolve_pi_update(&[], None, Some("weak:m"), None, None).unwrap();
         assert_eq!(u.strong, None);
         assert_eq!(u.weak.as_deref(), Some("weak:m"));
         assert!(u.has_update());
@@ -1890,22 +1957,22 @@ mod tests {
 
     #[test]
     fn test_resolve_pi_update_no_args_is_empty() {
-        let u = resolve_pi_update(&[], None, None).unwrap();
+        let u = resolve_pi_update(&[], None, None, None, None).unwrap();
         assert!(!u.has_update());
     }
 
     #[test]
     fn test_resolve_pi_update_lone_positional_is_ambiguous_error() {
-        let err = resolve_pi_update(&[s("only-one")], None, None).unwrap_err();
+        let err = resolve_pi_update(&[s("only-one")], None, None, None, None).unwrap_err();
         assert!(err.to_string().contains("ambiguous"));
     }
 
     #[test]
     fn test_resolve_pi_update_conflict_positional_and_flag_errors() {
-        let err = resolve_pi_update(&[s("A"), s("B")], Some("C"), None).unwrap_err();
+        let err = resolve_pi_update(&[s("A"), s("B")], Some("C"), None, None, None).unwrap_err();
         assert!(err.to_string().contains("'strong' specified both"));
 
-        let err2 = resolve_pi_update(&[s("A"), s("B")], None, Some("C")).unwrap_err();
+        let err2 = resolve_pi_update(&[s("A"), s("B")], None, Some("C"), None, None).unwrap_err();
         assert!(err2.to_string().contains("'weak' specified both"));
     }
 
@@ -1915,18 +1982,32 @@ mod tests {
         // so the copy-pasteable apply command is idempotent and pi-routed.
         let u = PiUpdate {
             strong: Some(s("openrouter:qwen/qwen3-max")),
-            weak: None,
+            ..PiUpdate::default()
         };
         assert_eq!(
-            pi_apply_command(&u),
+            pi_apply_command(PI_PROFILE_NAME, &u),
             "wg profile pi --strong pi:openrouter/qwen/qwen3-max"
         );
         // A bare single-token alias has no pi mapping → echoed verbatim.
         let both = PiUpdate {
             strong: Some(s("x")),
             weak: Some(s("y")),
+            ..PiUpdate::default()
         };
-        assert_eq!(pi_apply_command(&both), "wg profile pi --strong x --weak y");
+        assert_eq!(
+            pi_apply_command(PI_PROFILE_NAME, &both),
+            "wg profile pi --strong x --weak y"
+        );
+
+        let custom = PiUpdate {
+            strong: Some(s("pi:openai-codex:gpt-5.6-sol")),
+            weak_reasoning: Some(s("low")),
+            ..PiUpdate::default()
+        };
+        assert_eq!(
+            pi_apply_command("pi-codex-56", &custom),
+            "wg profile pi --profile pi-codex-56 --strong pi:openai-codex:gpt-5.6-sol --weak-reasoning low"
+        );
     }
 
     #[test]

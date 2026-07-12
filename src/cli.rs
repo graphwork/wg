@@ -4489,6 +4489,10 @@ pub enum ProfileCommands {
     /// shows the models configured for the profile to pick from. See
     /// docs/design-two-tier-pi-profile.md.
     Pi {
+        /// Named profile to edit (defaults to `pi`).
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+
         /// Positional tiers in the order STRONG WEAK. Pass exactly 0 or 2
         /// tokens; a literal `-` leaves that tier unchanged.
         #[arg(value_name = "TIER", num_args = 0..=2)]
@@ -4501,6 +4505,14 @@ pub enum ProfileCommands {
         /// Set the weak tier (agency one-shots). Partial-update friendly.
         #[arg(long)]
         weak: Option<String>,
+
+        /// Set reasoning for strong-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        strong_reasoning: Option<String>,
+
+        /// Set reasoning for weak-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        weak_reasoning: Option<String>,
 
         /// Show the current tiers and routing (also the no-arg default).
         #[arg(long)]
