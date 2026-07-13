@@ -38,6 +38,36 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Process-wide coordinator registration uses a sidecar file lock because the
+/// daemon starts one supervisor thread per persisted chat. Without this lock,
+/// concurrent registrations all wrote the same `sessions.json.tmp`; one thread
+/// renamed it out from under another, producing the user-visible
+/// `register_coordinator_session failed: No such file or directory` error.
+struct CoordinatorRegistrationLock {
+    _file: File,
+}
+
+impl CoordinatorRegistrationLock {
+    fn acquire(workgraph_dir: &Path) -> Result<Self> {
+        let chat_dir = workgraph_dir.join("chat");
+        fs::create_dir_all(&chat_dir)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(chat_dir.join("sessions.json.lock"))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -86,6 +116,17 @@ pub struct SessionMeta {
     /// ISO-8601 timestamp of when the archive happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Content-hash of the agency `Agent` (src/agency/types.rs) this
+    /// session is *bound* to, if any. A bound session is that agent's
+    /// persistent identity memory (R2, sessions-as-identity): when the
+    /// agent is dispatched to a task, its bound session's
+    /// `session-summary.md` is injected into the spawn prompt so the
+    /// agent carries continuity across tasks ("Nora remembers last
+    /// month"). At most one session per agent — `bind_agent` clears the
+    /// binding from any previously-bound session so the relationship
+    /// stays 1:1. See `docs/design/sessions-as-identity.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// The on-disk registry file shape.
@@ -187,6 +228,7 @@ pub fn create_session(
             label,
             forked_from: None,
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -278,6 +320,7 @@ pub fn fork_session(
             label: Some(format!("fork of: {}", parent_label)),
             forked_from: Some(source_uuid),
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -310,6 +353,15 @@ pub fn fork_session(
 /// `daemon_style_coordinator_registration_creates_both_paths`
 /// locks in the invariant.
 pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<String> {
+    static REGISTRATION_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _registration_guard = REGISTRATION_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Registration is a read/modify/write transaction over sessions.json. A
+    // daemon restart performs many of these concurrently, so serialize the
+    // entire migration + alias installation sequence rather than merely the
+    // final rename. This also prevents lost registry entries.
+    let _registration_lock = CoordinatorRegistrationLock::acquire(workgraph_dir)?;
     let _ = migrate_numeric_coord_dir(workgraph_dir, n);
     let new_canonical = format!("chat-{}", n);
     let legacy_canonical = format!("coordinator-{}", n);
@@ -446,8 +498,20 @@ fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result
         return Ok(());
     };
     if md.file_type().is_symlink() {
-        // Old-model symlink from a pre-full-UUID install. Remove;
-        // future reads resolve through the registry.
+        // Preserve a correct compatibility link. A Pi process launched before
+        // UUID migration may retain the alias path for its entire lifetime;
+        // removing that link on a later daemon registration would reintroduce
+        // ENOENT even though the canonical transcript is healthy. Registry-
+        // aware WG callers still resolve directly to the UUID path.
+        let points_to_target = fs::canonicalize(&link)
+            .ok()
+            .zip(fs::canonicalize(&target_dir).ok())
+            .is_some_and(|(actual, expected)| actual == expected);
+        if points_to_target {
+            return Ok(());
+        }
+        // Wrong/dangling aliases are stale infrastructure and must not keep
+        // pointing a chat at another UUID.
         let _ = fs::remove_file(&link);
     } else if md.file_type().is_dir() {
         // Legacy regular directory at the alias path — merge its
@@ -469,19 +533,22 @@ fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result
     Ok(())
 }
 
-/// Move files from a legacy numeric chat dir into the canonical
-/// UUID chat dir, concatenating JSONL logs instead of overwriting.
-/// Used by `create_alias_symlink` to resolve split-brain cases
-/// where `chat/0/` got created as a regular directory before the
-/// alias symlink was installed.
+/// Move files from a legacy chat dir into the canonical UUID chat dir,
+/// concatenating the coordinator logs instead of overwriting them.
+///
+/// This walk must be recursive. Pi keeps its native transcripts below
+/// `pi-sessions/`; treating that directory like a regular file made
+/// `fs::copy` fail halfway through coordinator registration. The TUI could
+/// then launch Pi with the legacy path while the daemon retried the migration,
+/// and Pi retained a session-file path that disappeared underneath it.
 ///
 /// Behavior:
-/// - `inbox.jsonl` / `outbox.jsonl` / `chat.log`: appended to the
-///   UUID dir's copy (so no history is lost).
-/// - Other files (`.streaming`, `.handler.pid`, cursors, compactor
-///   state): copied only if not present in the UUID dir.
-/// - Lock sidecars are skipped — they're per-process and get
-///   recreated on demand.
+/// - `inbox.jsonl` / `outbox.jsonl` / `chat.log`: appended to the UUID dir's
+///   copy (so no coordinator history is lost).
+/// - Directories (including `pi-sessions`) are merged recursively.
+/// - Other files are copied only if not present in the UUID dir.
+/// - Lock sidecars and symlinks are skipped; they are process-local or stale
+///   alias infrastructure and are recreated on demand.
 fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("create target dir {:?}", target))?;
     let Ok(entries) = fs::read_dir(legacy) else {
@@ -495,29 +562,88 @@ fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
         }
         let src = entry.path();
         let dst = target.join(&name);
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("inspect legacy chat entry {:?}", src))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if dst.exists() && !dst.is_dir() {
+                // The canonical session wins collisions. Do not replace an
+                // existing file with an untrusted legacy directory.
+                continue;
+            }
+            merge_legacy_chat_dir(&src, &dst)?;
+            continue;
+        }
+
         let is_append_target = matches!(
             name_str.as_ref(),
             "inbox.jsonl" | "outbox.jsonl" | "chat.log"
         );
         if is_append_target {
-            // Append src contents to dst. JSONL concatenation is
-            // safe because every row is self-contained.
+            // Append src contents to dst. JSONL concatenation is safe because
+            // every row is self-contained.
             let bytes = fs::read(&src).with_context(|| format!("read {:?}", src))?;
             let mut file = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&dst)
                 .with_context(|| format!("open-for-append {:?}", dst))?;
-            use std::io::Write;
             file.write_all(&bytes)
                 .with_context(|| format!("append to {:?}", dst))?;
         } else if !dst.exists() {
             fs::copy(&src, &dst).with_context(|| format!("copy {:?} -> {:?}", src, dst))?;
         }
-        // Dst already exists and isn't a log → leave target's copy
-        // intact. Legacy writer's version is discarded.
+        // Dst already exists and isn't a coordinator log: leave the
+        // canonical session's copy intact.
     }
     Ok(())
+}
+
+/// Prepared storage for one Pi-backed chat pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiChatSession {
+    /// Canonical UUID chat directory. The TUI uses this for locks/sentinels.
+    pub chat_dir: PathBuf,
+    /// Pi's native transcript directory below the canonical chat directory.
+    pub session_dir: PathBuf,
+    /// Existing transcript for `chat-N`, when one survived migration. `None`
+    /// is an explicit, recoverable new-session state: Pi's `--session-id`
+    /// contract creates the transcript on the first turn.
+    pub existing_transcript: Option<PathBuf>,
+}
+
+/// Complete coordinator registration/migration before the TUI constructs Pi's
+/// argv. This makes the daemon/TUI ownership order explicit: registration owns
+/// moving legacy storage; only after it commits may Pi discover or create a
+/// transcript in the canonical UUID directory.
+pub fn prepare_pi_chat_session(workgraph_dir: &Path, n: u32) -> Result<PiChatSession> {
+    let uuid = register_coordinator_session(workgraph_dir, n)?;
+    let chat_dir = chat_dir_for_uuid(workgraph_dir, &uuid);
+    let session_dir = chat_dir.join("pi-sessions");
+    fs::create_dir_all(&session_dir)
+        .with_context(|| format!("create Pi session dir {:?}", session_dir))?;
+    let suffix = format!("_chat-{n}.jsonl");
+    let existing_transcript = fs::read_dir(&session_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .max_by_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
+
+    Ok(PiChatSession {
+        chat_dir,
+        session_dir,
+        existing_transcript,
+    })
 }
 
 /// Add an alias to an existing session (UUID or existing alias).
@@ -556,6 +682,75 @@ pub fn remove_alias(workgraph_dir: &Path, alias: &str) -> Result<()> {
     let link = workgraph_dir.join("chat").join(alias);
     let _ = fs::remove_file(link);
     Ok(())
+}
+
+/// Bind an agency `Agent` (content-hash) to a persistent session so the
+/// agent's memory survives across task spawns (R2, sessions-as-identity).
+///
+/// `session_ref` accepts the same formats as [`resolve_ref`]: UUID, UUID
+/// prefix, or alias. The binding is **1:1** — any session previously
+/// bound to this agent is unbound first, so an agent always maps to at
+/// most one session. Returns the bound session's UUID.
+///
+/// The binding is what makes "Nora remembers last month" work: at task
+/// dispatch, [`agent_session_summary`] reads the bound session's
+/// `session-summary.md` and the spawn path injects it into the prompt.
+pub fn bind_agent(workgraph_dir: &Path, agent_id: &str, session_ref: &str) -> Result<String> {
+    let uuid = resolve_ref(workgraph_dir, session_ref)?;
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    if !reg.sessions.contains_key(&uuid) {
+        bail!("session {} not in registry", uuid);
+    }
+    // Enforce the 1:1 invariant: clear the agent from any other session.
+    for (u, meta) in reg.sessions.iter_mut() {
+        if u != &uuid && meta.agent_id.as_deref() == Some(agent_id) {
+            meta.agent_id = None;
+        }
+    }
+    if let Some(meta) = reg.sessions.get_mut(&uuid) {
+        meta.agent_id = Some(agent_id.to_string());
+    }
+    save(workgraph_dir, &reg)?;
+    Ok(uuid)
+}
+
+/// Remove any session binding for `agent_id`. Idempotent — a no-op if the
+/// agent has no bound session. The session itself is left intact.
+pub fn unbind_agent(workgraph_dir: &Path, agent_id: &str) -> Result<()> {
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    let mut changed = false;
+    for meta in reg.sessions.values_mut() {
+        if meta.agent_id.as_deref() == Some(agent_id) {
+            meta.agent_id = None;
+            changed = true;
+        }
+    }
+    if changed {
+        save(workgraph_dir, &reg)?;
+    }
+    Ok(())
+}
+
+/// Return the UUID of the session bound to `agent_id`, if any.
+pub fn session_for_agent(workgraph_dir: &Path, agent_id: &str) -> Option<String> {
+    let reg = load(workgraph_dir).ok()?;
+    reg.sessions
+        .iter()
+        .find(|(_, meta)| meta.agent_id.as_deref() == Some(agent_id))
+        .map(|(uuid, _)| uuid.clone())
+}
+
+/// Read the `session-summary.md` of the session bound to `agent_id`.
+///
+/// Returns `None` when the agent has no bound session, when the bound
+/// session has no summary yet (fresh session — nothing to remember), or
+/// when the summary is empty. This is the memory that gets injected into
+/// the agent's spawn prompt.
+pub fn agent_session_summary(workgraph_dir: &Path, agent_id: &str) -> Option<String> {
+    let uuid = session_for_agent(workgraph_dir, agent_id)?;
+    let path = chat_dir_for_uuid(workgraph_dir, &uuid).join("session-summary.md");
+    let s = fs::read_to_string(path).ok()?;
+    if s.trim().is_empty() { None } else { Some(s) }
 }
 
 /// Delete a session entirely (registry entry + symlinks + chat dir).
@@ -770,6 +965,7 @@ pub fn migrate_numeric_coord_dir(workgraph_dir: &Path, n: u32) -> Result<Option<
             label: Some(format!("coordinator {} (migrated)", n)),
             forked_from: None,
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -833,6 +1029,88 @@ mod tests {
     }
 
     #[test]
+    fn prepare_pi_chat_session_migrates_legacy_transcript_to_uuid_dir() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let legacy = wg.join("chat").join("chat-8").join("pi-sessions");
+        fs::create_dir_all(&legacy).unwrap();
+        let filename = "2026-07-12T09-11-33-232Z_chat-8.jsonl";
+        let historical = legacy.join(filename);
+        fs::write(
+            &historical,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"chat-8\"}\n",
+        )
+        .unwrap();
+
+        let prepared = prepare_pi_chat_session(wg, 8).unwrap();
+        let migrated = prepared.session_dir.join(filename);
+        assert_eq!(
+            prepared.existing_transcript.as_deref(),
+            Some(migrated.as_path())
+        );
+        assert!(migrated.is_file(), "Pi history must survive UUID migration");
+        assert!(
+            !historical.exists(),
+            "the stale legacy transcript reference must no longer be selected"
+        );
+        assert_eq!(
+            prepared.chat_dir,
+            crate::chat::chat_dir_for_ref(wg, "chat-8"),
+            "the restored pane must resolve storage through the UUID registry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registration_preserves_correct_compatibility_link_for_live_pi_process() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = register_coordinator_session(wg, 8).unwrap();
+        let alias = wg.join("chat/chat-8");
+        symlink(&uuid, &alias).unwrap();
+        let transcript =
+            chat_dir_for_uuid(wg, &uuid).join("pi-sessions/2026-07-12T09-11-33-232Z_chat-8.jsonl");
+        fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        fs::write(&transcript, "session\n").unwrap();
+
+        assert_eq!(register_coordinator_session(wg, 8).unwrap(), uuid);
+        assert!(alias.is_symlink());
+        assert_eq!(
+            fs::read_to_string(
+                alias
+                    .join("pi-sessions")
+                    .join(transcript.file_name().unwrap())
+            )
+            .unwrap(),
+            "session\n",
+            "a live pre-migration Pi path must keep resolving across daemon registration"
+        );
+    }
+
+    #[test]
+    fn prepare_pi_chat_session_missing_transcript_is_recoverable_and_stable() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+
+        let first = prepare_pi_chat_session(wg, 8).unwrap();
+        assert!(first.session_dir.is_dir());
+        assert_eq!(
+            first.existing_transcript, None,
+            "no transcript is an explicit new-session state, not an ENOENT"
+        );
+
+        // Pane restoration may ask again. It must resolve the same canonical
+        // directory and remain a harmless new-session state rather than
+        // chasing a missing legacy JSONL path.
+        let reopened = prepare_pi_chat_session(wg, 8).unwrap();
+        assert_eq!(reopened.chat_dir, first.chat_dir);
+        assert_eq!(reopened.session_dir, first.session_dir);
+        assert_eq!(reopened.existing_transcript, None);
+    }
+
+    #[test]
     fn register_coordinator_session_creates_missing_uuid_chat_dir() {
         let dir = tempdir().unwrap();
         let wg = dir.path();
@@ -848,6 +1126,7 @@ mod tests {
                 label: Some("chat 7".to_string()),
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         save(wg, &reg).unwrap();
@@ -866,6 +1145,33 @@ mod tests {
             "register_coordinator_session must defensively create the UUID chat dir"
         );
         assert_eq!(resolve_ref(wg, "7").unwrap(), registered);
+    }
+
+    #[test]
+    fn concurrent_coordinator_registration_preserves_every_session_and_dir() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..12)
+            .map(|id| {
+                let wg = wg.clone();
+                std::thread::spawn(move || register_coordinator_session(&wg, id))
+            })
+            .collect();
+
+        for thread in threads {
+            thread
+                .join()
+                .expect("registration thread panicked")
+                .expect("concurrent registration must not lose its temp file");
+        }
+
+        let registry = load(&wg).unwrap();
+        assert_eq!(registry.sessions.len(), 12);
+        for id in 0..12 {
+            let uuid = resolve_ref(&wg, &format!("chat-{id}")).unwrap();
+            assert!(chat_dir_for_uuid(&wg, &uuid).is_dir());
+            assert_eq!(resolve_ref(&wg, &id.to_string()).unwrap(), uuid);
+        }
     }
 
     #[test]
@@ -924,6 +1230,7 @@ mod tests {
                 label: None,
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         reg.sessions.insert(
@@ -935,6 +1242,7 @@ mod tests {
                 label: None,
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         save(wg, &reg).unwrap();
@@ -1358,5 +1666,96 @@ mod tests {
 
         // .archive is not an orphan
         assert!(!is_orphan_chat_dir(wg, ".archive"));
+    }
+
+    #[test]
+    fn bind_agent_sets_and_resolves() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(wg, SessionKind::Other, &["nora-memory".into()], None).unwrap();
+
+        // No binding yet.
+        assert_eq!(session_for_agent(wg, "agent-hash-abc"), None);
+
+        // Bind by alias; the agent now resolves to the session UUID.
+        let bound = bind_agent(wg, "agent-hash-abc", "nora-memory").unwrap();
+        assert_eq!(bound, uuid);
+        assert_eq!(session_for_agent(wg, "agent-hash-abc"), Some(uuid.clone()));
+
+        // The binding round-trips through the persisted registry.
+        let reg = load(wg).unwrap();
+        assert_eq!(
+            reg.sessions.get(&uuid).unwrap().agent_id.as_deref(),
+            Some("agent-hash-abc")
+        );
+    }
+
+    #[test]
+    fn bind_agent_is_one_to_one() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let first = create_session(wg, SessionKind::Other, &["first".into()], None).unwrap();
+        let second = create_session(wg, SessionKind::Other, &["second".into()], None).unwrap();
+
+        // Bind the agent to the first session, then re-bind to the second.
+        bind_agent(wg, "agent-x", "first").unwrap();
+        bind_agent(wg, "agent-x", "second").unwrap();
+
+        // Only the second session carries the binding — 1:1 invariant.
+        assert_eq!(session_for_agent(wg, "agent-x"), Some(second.clone()));
+        let reg = load(wg).unwrap();
+        assert_eq!(reg.sessions.get(&first).unwrap().agent_id, None);
+        assert_eq!(
+            reg.sessions.get(&second).unwrap().agent_id.as_deref(),
+            Some("agent-x")
+        );
+
+        // Unbinding removes it entirely.
+        unbind_agent(wg, "agent-x").unwrap();
+        assert_eq!(session_for_agent(wg, "agent-x"), None);
+    }
+
+    #[test]
+    fn bind_agent_rejects_unknown_session() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let err = bind_agent(wg, "agent-x", "does-not-exist").unwrap_err();
+        assert!(
+            err.to_string().contains("did not match")
+                || err.to_string().contains("not in registry"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn agent_session_summary_reads_bound_summary() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(wg, SessionKind::Other, &["nora".into()], None).unwrap();
+
+        // No summary file yet → None even once bound.
+        bind_agent(wg, "nora-agent", "nora").unwrap();
+        assert_eq!(agent_session_summary(wg, "nora-agent"), None);
+
+        // Write a summary; now it's injectable memory.
+        std::fs::write(
+            chat_dir_for_uuid(wg, &uuid).join("session-summary.md"),
+            "## Prior work\nNora bought groceries last week.\n",
+        )
+        .unwrap();
+        let summary = agent_session_summary(wg, "nora-agent").unwrap();
+        assert!(summary.contains("bought groceries"));
+
+        // An empty summary reads as None (nothing to remember).
+        std::fs::write(
+            chat_dir_for_uuid(wg, &uuid).join("session-summary.md"),
+            "   \n",
+        )
+        .unwrap();
+        assert_eq!(agent_session_summary(wg, "nora-agent"), None);
+
+        // An agent with no binding has no memory.
+        assert_eq!(agent_session_summary(wg, "unbound-agent"), None);
     }
 }

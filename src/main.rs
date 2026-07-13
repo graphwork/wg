@@ -973,7 +973,9 @@ fn main() -> Result<()> {
             deliverable,
             max_retries,
             model,
+            reasoning,
             provider,
+            remote_provider,
             verify,
             verify_timeout,
             validation,
@@ -1035,13 +1037,14 @@ fn main() -> Result<()> {
                     &skill,
                     &deliverable,
                     model.as_deref(),
+                    reasoning.as_deref(),
                     provider.as_deref(),
                     verify.as_deref(),
                     verify_timeout.as_deref(),
                     cron.as_deref(),
                 )
             } else {
-                commands::add::run(
+                commands::add::run_with_remote_provider(
                     &workgraph_dir,
                     &title,
                     id.as_deref(),
@@ -1056,7 +1059,9 @@ fn main() -> Result<()> {
                     &deliverable,
                     max_retries,
                     model.as_deref(),
+                    reasoning.as_deref(),
                     provider.as_deref(),
+                    remote_provider.as_deref(),
                     verify.as_deref(),
                     verify_timeout.as_deref(),
                     validation.as_deref(),
@@ -1098,6 +1103,7 @@ fn main() -> Result<()> {
             add_tag,
             remove_tag,
             model,
+            reasoning,
             provider,
             add_skill,
             remove_skill,
@@ -1118,7 +1124,7 @@ fn main() -> Result<()> {
             verify_timeout,
             allow_phantom,
             allow_cycle,
-        } => commands::edit::run(
+        } => commands::edit::run_with_reasoning(
             &workgraph_dir,
             &id,
             title.as_deref(),
@@ -1128,6 +1134,7 @@ fn main() -> Result<()> {
             &add_tag,
             &remove_tag,
             model.as_deref(),
+            reasoning.as_deref(),
             provider.as_deref(),
             &add_skill,
             &remove_skill,
@@ -2390,6 +2397,17 @@ fn main() -> Result<()> {
                 commands::agent_crud::run_show(&workgraph_dir, &id, cli.json)
             }
             AgentCommands::Rm { id } => commands::agent_crud::run_rm(&workgraph_dir, &id),
+            AgentCommands::Session {
+                id,
+                session,
+                unbind,
+            } => commands::agent_crud::run_session(
+                &workgraph_dir,
+                &id,
+                session.as_deref(),
+                unbind,
+                cli.json,
+            ),
             AgentCommands::Lineage { id } => {
                 commands::agent_crud::run_lineage(&workgraph_dir, &id, cli.json)
             }
@@ -2417,12 +2435,14 @@ fn main() -> Result<()> {
             executor,
             timeout,
             model,
-        } => commands::spawn::run(
+            reasoning,
+        } => commands::spawn::run_with_reasoning(
             &workgraph_dir,
             &task,
             &executor,
             timeout.as_deref(),
             model.as_deref(),
+            reasoning.as_deref(),
             cli.json,
         ),
         Commands::Evaluate { command } => match command {
@@ -2601,9 +2621,12 @@ fn main() -> Result<()> {
             ProfileCommands::InitStarters { force } => commands::profile_cmd::init_starters(force),
             ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
             ProfileCommands::Pi {
+                profile,
                 tiers,
                 strong,
                 weak,
+                strong_reasoning,
+                weak_reasoning,
                 show,
                 list,
                 dry_run,
@@ -2611,9 +2634,12 @@ fn main() -> Result<()> {
             } => commands::profile_cmd::pi(
                 &workgraph_dir,
                 cli.json,
+                profile.as_deref(),
                 &tiers,
                 strong.as_deref(),
                 weak.as_deref(),
+                strong_reasoning.as_deref(),
+                weak_reasoning.as_deref(),
                 show,
                 list,
                 dry_run,
@@ -2644,6 +2670,7 @@ fn main() -> Result<()> {
             list,
             executor,
             model,
+            reasoning,
             set_interval,
             max_agents,
             coordinator_interval,
@@ -2697,6 +2724,7 @@ fn main() -> Result<()> {
             cost_output,
             show_models,
             set_model,
+            set_reasoning,
             set_provider,
             set_endpoint,
             role_model,
@@ -2892,6 +2920,7 @@ fn main() -> Result<()> {
             } else if show
                 || (executor.is_none()
                     && model.is_none()
+                    && reasoning.is_none()
                     && set_interval.is_none()
                     && max_agents.is_none()
                     && max_coordinators.is_none()
@@ -2929,6 +2958,7 @@ fn main() -> Result<()> {
                     && endpoint.is_none()
                     && set_tier.is_empty()
                     && set_model.is_empty()
+                    && set_reasoning.is_empty()
                     && set_provider.is_empty()
                     && set_endpoint.is_empty()
                     && role_model.is_empty()
@@ -2938,11 +2968,12 @@ fn main() -> Result<()> {
             } else {
                 // Default scope for writes = Local (like git)
                 let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-                commands::config_cmd::update(
+                commands::config_cmd::update_with_reasoning(
                     &workgraph_dir,
                     write_scope,
                     executor.as_deref(),
                     model.as_deref(),
+                    reasoning.as_deref(),
                     set_interval,
                     max_agents,
                     max_coordinators,
@@ -2977,6 +3008,7 @@ fn main() -> Result<()> {
                     endpoint.as_deref(),
                     &set_tier,
                     &set_model,
+                    &set_reasoning,
                     &set_provider,
                     &set_endpoint,
                     &role_model,
@@ -3754,12 +3786,14 @@ fn main() -> Result<()> {
             resume,
             role,
             model,
+            reasoning,
         } => commands::pi_handler::run(
             &workgraph_dir,
             &chat,
             resume,
             role.as_deref(),
             model.as_deref(),
+            reasoning.as_deref(),
         ),
         Commands::NativeExec {
             prompt_file,

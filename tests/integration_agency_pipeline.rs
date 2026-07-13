@@ -160,6 +160,7 @@ fn role_with_explicit_model_ignores_tier() {
         provider: None,
         tier: Some(Tier::Premium), // Should be ignored
         endpoint: None,
+        reasoning: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Triage);
     assert_eq!(resolved.model, "my-explicit-model");
@@ -175,6 +176,7 @@ fn role_with_tier_override_resolves_via_registry() {
         provider: None,
         tier: Some(Tier::Premium), // Override default Standard → Premium
         endpoint: None,
+        reasoning: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
     assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
@@ -211,8 +213,11 @@ fn unknown_model_id_in_tier_config_graceful_fallback() {
     let mut config = Config::default();
     config.tiers = TierConfig {
         fast: Some("nonexistent-model".into()),
+        fast_reasoning: None,
         standard: None,
+        standard_reasoning: None,
         premium: None,
+        premium_reasoning: None,
     };
     // Triage uses Fast tier → should get the bare "nonexistent-model" as a fallback
     let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -867,6 +872,7 @@ fn resolve_model_source_reports_explicit_for_models_override() {
         provider: None,
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let source = config.resolve_model_source(DispatchRole::Triage);
     assert_eq!(source, "explicit");
@@ -880,6 +886,7 @@ fn resolve_model_source_reports_explicit_for_models_section() {
         provider: None,
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let source = config.resolve_model_source(DispatchRole::Evaluator);
     assert_eq!(source, "explicit");
@@ -893,6 +900,7 @@ fn resolve_model_source_reports_tier_override() {
         provider: None,
         tier: Some(Tier::Premium),
         endpoint: None,
+        reasoning: None,
     });
     let source = config.resolve_model_source(DispatchRole::Evaluator);
     assert_eq!(source, "tier-override");

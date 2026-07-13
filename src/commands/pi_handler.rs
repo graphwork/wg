@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use worksgood::chat;
-use worksgood::config::{Config, EndpointConfig};
+use worksgood::config::{Config, DispatchRole, EndpointConfig, ReasoningLevel};
 use worksgood::executor_discovery::{self, PiNodeHost, PiRouteAvailability};
 use worksgood::pi_plugin::{self, EnsureMode};
 use worksgood::session_lock::{HandlerKind, SessionLock};
@@ -465,6 +465,7 @@ impl RpcTransport {
     fn spawn(
         pi_binary: &Path,
         marg: Option<&PiModelArg>,
+        reasoning: Option<ReasoningLevel>,
         session_id: &str,
         session_dir: &Path,
         dist_entry: &Path,
@@ -472,7 +473,7 @@ impl RpcTransport {
         logger: &HandlerLogger,
     ) -> Result<Self> {
         std::fs::create_dir_all(session_dir).ok();
-        let args = rpc_spawn_args(marg, session_id, session_dir, dist_entry);
+        let args = rpc_spawn_args(marg, reasoning, session_id, session_dir, dist_entry);
         logger.info(&format!(
             "pi-handler: spawning `{} {}`",
             pi_binary.display(),
@@ -622,6 +623,7 @@ impl Drop for RpcTransport {
 /// was never installed.
 fn rpc_spawn_args(
     marg: Option<&PiModelArg>,
+    reasoning: Option<ReasoningLevel>,
     session_id: &str,
     session_dir: &Path,
     dist_entry: &Path,
@@ -634,6 +636,9 @@ fn rpc_spawn_args(
             "--model".to_string(),
             marg.model.clone(),
         ]);
+    }
+    if let Some(reasoning) = reasoning {
+        args.extend(["--thinking".to_string(), reasoning.as_str().to_string()]);
     }
     args.extend([
         "--session-id".to_string(),
@@ -669,6 +674,7 @@ impl NodeHostTransport {
     fn spawn(
         host: &PiNodeHost,
         marg: Option<&PiModelArg>,
+        reasoning: Option<ReasoningLevel>,
         secret_env: &[(String, String)],
         logger: &HandlerLogger,
     ) -> Result<Self> {
@@ -689,6 +695,10 @@ impl NodeHostTransport {
         if let Some(marg) = marg {
             cmd.env("WG_PI_PROVIDER", &marg.provider);
             cmd.env("WG_PI_MODEL", &marg.model);
+        }
+        if let Some(reasoning) = reasoning {
+            cmd.env("WG_PI_REASONING", reasoning.as_str());
+            cmd.env("WG_REASONING", reasoning.as_str());
         }
         // WG-resolved endpoint/secret env (WG_API_KEY, WG_ENDPOINT_URL,
         // WG_PI_API_KEY, WG_PI_BASE_URL, OPENROUTER_API_KEY, …). Credentials
@@ -932,6 +942,7 @@ pub fn run(
     resume: bool,
     role: Option<&str>,
     model: Option<&str>,
+    reasoning: Option<&str>,
 ) -> Result<()> {
     let _ = resume; // pi keeps server-side session state; we resume via --session-dir.
 
@@ -984,6 +995,14 @@ pub fn run(
     // credentials from WG config, NOT from ambient env or Pi's own login. This
     // is the WG contract — a configured WG endpoint/key is sufficient.
     let config = Config::load_or_default(workgraph_dir);
+    let role_for_reasoning = role
+        .and_then(|r| r.parse::<DispatchRole>().ok())
+        .unwrap_or(DispatchRole::TaskAgent);
+    let resolved_reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .or_else(|| config.resolve_reasoning_for_role(role_for_reasoning));
     let secret = marg
         .as_ref()
         .map(|marg| PiEndpointSecret::resolve(&config, workgraph_dir, &marg.provider))
@@ -1008,8 +1027,8 @@ pub fn run(
     ));
 
     logger.info(&format!(
-        "pi-handler starting: chat_ref={}, role={:?}, model={:?} -> provider/model={:?}, topology={:?}",
-        chat_ref, role, model, marg.as_ref().map(|m| (&m.provider, &m.model)), topology
+        "pi-handler starting: chat_ref={}, role={:?}, model={:?}, reasoning={:?} -> provider/model={:?}, topology={:?}",
+        chat_ref, role, model, resolved_reasoning, marg.as_ref().map(|m| (&m.provider, &m.model)), topology
     ));
 
     let system_prompt = build_handler_system_prompt(workgraph_dir, chat_ref, role);
@@ -1027,6 +1046,7 @@ pub fn run(
             Box::new(RpcTransport::spawn(
                 pi,
                 marg.as_ref(),
+                resolved_reasoning,
                 chat_ref,
                 &session_dir,
                 &plugin.dist_entry,
@@ -1042,6 +1062,7 @@ pub fn run(
             Box::new(NodeHostTransport::spawn(
                 host,
                 marg.as_ref(),
+                resolved_reasoning,
                 &secret_env,
                 &logger,
             )?)
@@ -1317,6 +1338,14 @@ mod tests {
                 model: "glm-5.2-nvfp4".into(),
             })
         );
+        assert_eq!(
+            pi_model_arg(Some("pi:openai-codex:gpt-5.6-sol")),
+            Some(PiModelArg {
+                provider: "openai-codex".into(),
+                model: "gpt-5.6-sol".into(),
+            }),
+            "Codex-on-Pi provider:model specs must split to Pi provider/model flags"
+        );
         // Unresolved shapes.
         assert_eq!(pi_model_arg(None), None);
         assert_eq!(pi_model_arg(Some("")), None);
@@ -1354,6 +1383,7 @@ mod tests {
         let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
         let args = rpc_spawn_args(
             Some(&marg),
+            None,
             "coordinator-1",
             Path::new("/tmp/pi-sessions"),
             dist,
@@ -1388,7 +1418,7 @@ mod tests {
     #[test]
     fn test_rpc_spawn_args_plain_pi_omits_provider_and_model() {
         let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
-        let args = rpc_spawn_args(None, "chat-1", Path::new("/tmp/pi-sessions"), dist);
+        let args = rpc_spawn_args(None, None, "chat-1", Path::new("/tmp/pi-sessions"), dist);
         assert!(args.contains(&"--mode".to_string()) && args.contains(&"rpc".to_string()));
         assert!(
             !args.contains(&"--provider".to_string()),
@@ -1404,6 +1434,37 @@ mod tests {
         assert!(args.contains(&"--session-dir".to_string()));
         assert!(args.contains(&"-e".to_string()));
         assert!(args.contains(&"-ne".to_string()));
+    }
+
+    #[test]
+    fn test_rpc_spawn_args_emit_structured_thinking_when_resolved() {
+        let marg = PiModelArg {
+            provider: "openai-codex".into(),
+            model: "gpt-5.6-sol".into(),
+        };
+        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let args = rpc_spawn_args(
+            Some(&marg),
+            Some(ReasoningLevel::High),
+            "chat-1",
+            Path::new("/tmp/pi-sessions"),
+            dist,
+        );
+        let tidx = args.iter().position(|a| a == "--thinking").unwrap();
+        assert_eq!(args[tidx + 1], "high");
+
+        let omitted = rpc_spawn_args(
+            Some(&marg),
+            None,
+            "chat-1",
+            Path::new("/tmp/pi-sessions"),
+            dist,
+        );
+        assert!(
+            !omitted.contains(&"--thinking".to_string()),
+            "omitted reasoning must leave Pi defaults intact: {:?}",
+            omitted
+        );
     }
 
     // --- explicit WG_DIR binding on the pi child env (fix-wg-pi) ---------------

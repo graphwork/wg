@@ -73,8 +73,11 @@ pub fn builtin_profiles() -> Vec<Profile> {
             strategy: ProfileStrategy::Static {
                 tiers: TierConfig {
                     fast: Some("claude:haiku".into()),
+                    fast_reasoning: None,
                     standard: Some("claude:opus".into()),
+                    standard_reasoning: None,
                     premium: Some("claude:opus".into()),
+                    premium_reasoning: None,
                 },
             },
         },
@@ -91,8 +94,11 @@ pub fn builtin_profiles() -> Vec<Profile> {
             strategy: ProfileStrategy::Static {
                 tiers: TierConfig {
                     fast: Some("openrouter:deepseek/deepseek-v3.2".into()),
+                    fast_reasoning: None,
                     standard: Some("openrouter:qwen/qwen3-coder".into()),
+                    standard_reasoning: None,
                     premium: Some("openrouter:qwen/qwen3.5-397b-a17b".into()),
+                    premium_reasoning: None,
                 },
             },
         },
@@ -102,8 +108,11 @@ pub fn builtin_profiles() -> Vec<Profile> {
             strategy: ProfileStrategy::Static {
                 tiers: TierConfig {
                     fast: Some("openrouter:openai/gpt-4o-mini".into()),
+                    fast_reasoning: None,
                     standard: Some("openrouter:openai/gpt-4o".into()),
+                    standard_reasoning: None,
                     premium: Some("openrouter:openai/o3-pro".into()),
+                    premium_reasoning: None,
                 },
             },
         },
@@ -113,11 +122,14 @@ pub fn builtin_profiles() -> Vec<Profile> {
             strategy: ProfileStrategy::Static {
                 tiers: TierConfig {
                     fast: Some("codex:gpt-5.4-mini".into()),
+                    fast_reasoning: None,
                     // Standard and premium both use gpt-5.5 so task-agent
                     // dispatch through the tier system does not downgrade.
                     standard: Some("codex:gpt-5.5".into()),
+                    standard_reasoning: None,
                     // gpt-5.5 (released 2026-04-23) supersedes gpt-5.4-pro at lower cost
                     premium: Some("codex:gpt-5.5".into()),
+                    premium_reasoning: None,
                 },
             },
         },

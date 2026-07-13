@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
+use worksgood::config::ReasoningLevel;
 use worksgood::cron::{calculate_next_fire, parse_cron_expression};
 use worksgood::graph::{
     CycleConfig, Estimate, Node, PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE,
@@ -236,6 +237,202 @@ pub fn run(
     cron: Option<&str>,
     subtask: bool,
 ) -> Result<()> {
+    run_with_reasoning(
+        dir,
+        title,
+        id,
+        description,
+        after,
+        assign,
+        hours,
+        cost,
+        tags,
+        skills,
+        inputs,
+        deliverables,
+        max_retries,
+        model,
+        None,
+        provider,
+        verify,
+        verify_timeout,
+        validation,
+        validator_agent,
+        validator_model,
+        max_iterations,
+        cycle_guard,
+        cycle_delay,
+        no_converge,
+        no_restart_on_failure,
+        max_failure_restarts,
+        visibility,
+        context_scope,
+        exec,
+        timeout,
+        exec_mode,
+        paused,
+        no_place,
+        place_near,
+        place_before,
+        delay,
+        not_before,
+        allow_phantom,
+        independent,
+        no_tier_escalation,
+        iteration_config,
+        priority,
+        cron,
+        subtask,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_reasoning(
+    dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    after: &[String],
+    assign: Option<&str>,
+    hours: Option<f64>,
+    cost: Option<f64>,
+    tags: &[String],
+    skills: &[String],
+    inputs: &[String],
+    deliverables: &[String],
+    max_retries: Option<u32>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    provider: Option<&str>,
+    verify: Option<&str>,
+    verify_timeout: Option<&str>,
+    validation: Option<&str>,
+    validator_agent: Option<&str>,
+    validator_model: Option<&str>,
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
+    no_converge: bool,
+    no_restart_on_failure: bool,
+    max_failure_restarts: Option<u32>,
+    visibility: &str,
+    context_scope: Option<&str>,
+    exec: Option<&str>,
+    timeout: Option<&str>,
+    exec_mode: Option<&str>,
+    paused: bool,
+    no_place: bool,
+    place_near: &[String],
+    place_before: &[String],
+    delay: Option<&str>,
+    not_before: Option<&str>,
+    allow_phantom: bool,
+    independent: bool,
+    no_tier_escalation: bool,
+    iteration_config: Option<worksgood::agency::IterationConfig>,
+    priority: Option<&str>,
+    cron: Option<&str>,
+    subtask: bool,
+) -> Result<()> {
+    run_with_remote_provider(
+        dir,
+        title,
+        id,
+        description,
+        after,
+        assign,
+        hours,
+        cost,
+        tags,
+        skills,
+        inputs,
+        deliverables,
+        max_retries,
+        model,
+        reasoning,
+        provider,
+        None,
+        verify,
+        verify_timeout,
+        validation,
+        validator_agent,
+        validator_model,
+        max_iterations,
+        cycle_guard,
+        cycle_delay,
+        no_converge,
+        no_restart_on_failure,
+        max_failure_restarts,
+        visibility,
+        context_scope,
+        exec,
+        timeout,
+        exec_mode,
+        paused,
+        no_place,
+        place_near,
+        place_before,
+        delay,
+        not_before,
+        allow_phantom,
+        independent,
+        no_tier_escalation,
+        iteration_config,
+        priority,
+        cron,
+        subtask,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_remote_provider(
+    dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    after: &[String],
+    assign: Option<&str>,
+    hours: Option<f64>,
+    cost: Option<f64>,
+    tags: &[String],
+    skills: &[String],
+    inputs: &[String],
+    deliverables: &[String],
+    max_retries: Option<u32>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    provider: Option<&str>,
+    remote_provider: Option<&str>,
+    verify: Option<&str>,
+    verify_timeout: Option<&str>,
+    validation: Option<&str>,
+    validator_agent: Option<&str>,
+    validator_model: Option<&str>,
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
+    no_converge: bool,
+    no_restart_on_failure: bool,
+    max_failure_restarts: Option<u32>,
+    visibility: &str,
+    context_scope: Option<&str>,
+    exec: Option<&str>,
+    timeout: Option<&str>,
+    exec_mode: Option<&str>,
+    paused: bool,
+    no_place: bool,
+    place_near: &[String],
+    place_before: &[String],
+    delay: Option<&str>,
+    not_before: Option<&str>,
+    allow_phantom: bool,
+    independent: bool,
+    no_tier_escalation: bool,
+    iteration_config: Option<worksgood::agency::IterationConfig>,
+    priority: Option<&str>,
+    cron: Option<&str>,
+    subtask: bool,
+) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
     }
@@ -437,6 +634,10 @@ pub fn run(
     let validation: Option<&str> = None;
     let validator_agent: Option<&str> = None;
     let validator_model: Option<&str> = None;
+    let reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let log = if paused {
         vec![worksgood::graph::LogEntry {
@@ -590,8 +791,10 @@ pub fn run(
         failure_reason: None,
             failure_class: None,
         model: model.map(String::from),
+        reasoning,
         provider: provider.map(String::from),
         endpoint: None,
+        remote_provider: remote_provider.map(String::from),
         profile: inherited_profile,
         command_argv: vec![],
         working_dir: None,
@@ -852,6 +1055,7 @@ pub fn run_remote(
     skills: &[String],
     deliverables: &[String],
     model: Option<&str>,
+    reasoning: Option<&str>,
     provider: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
@@ -882,6 +1086,10 @@ pub fn run_remote(
         resolved_model_str = None;
     }
     let model = resolved_model_str.as_deref();
+    let reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // --verify is deprecated: error out with migration guidance
     if verify.is_some() {
@@ -915,6 +1123,7 @@ pub fn run_remote(
             skills: skills.to_vec(),
             deliverables: deliverables.to_vec(),
             model: model.map(String::from),
+            reasoning,
             verify: verify.map(String::from),
             verify_timeout: verify_timeout.map(String::from),
             origin: Some(origin),
@@ -952,6 +1161,7 @@ pub fn run_remote(
             skills,
             deliverables,
             model,
+            reasoning.map(|r| r.as_str()).as_deref(),
             provider,
             verify,
             verify_timeout,
@@ -979,6 +1189,7 @@ fn add_task_directly(
     skills: &[String],
     deliverables: &[String],
     model: Option<&str>,
+    reasoning: Option<&str>,
     provider: Option<&str>,
     verify: Option<&str>,
     verify_timeout: Option<&str>,
@@ -998,6 +1209,10 @@ fn add_task_directly(
 
     let mut error: Option<anyhow::Error> = None;
     let mut task_id_out = String::new();
+    let reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let _graph = modify_graph_inner(&graph_path, |graph| {
         let task_id = match id {
@@ -1066,8 +1281,10 @@ fn add_task_directly(
             failure_reason: None,
             failure_class: None,
             model: model.map(String::from),
+            reasoning,
             provider: provider.map(String::from),
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,

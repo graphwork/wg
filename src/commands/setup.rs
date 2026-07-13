@@ -668,8 +668,11 @@ pub fn auto_map_tiers(entries: &[ModelRegistryEntry]) -> worksgood::config::Tier
 
     worksgood::config::TierConfig {
         fast,
+        fast_reasoning: None,
         standard,
+        standard_reasoning: None,
         premium,
+        premium_reasoning: None,
     }
 }
 
