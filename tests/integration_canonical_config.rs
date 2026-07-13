@@ -193,8 +193,8 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     // [agent].model — the central key that the original bug silently
     // dropped — must be codex, not any claude variant.
     assert!(
-        body.contains("model = \"codex:gpt-5.5\""),
-        "codex-cli route must set agent.model to codex:gpt-5.5; got:\n{}",
+        body.contains("model = \"codex:gpt-5.6-sol\""),
+        "codex-cli route must set agent.model to codex:gpt-5.6-sol; got:\n{}",
         body,
     );
     assert!(
@@ -209,7 +209,7 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
         body,
     );
     assert!(
-        body.contains("model = \"codex:gpt-5.4-mini\""),
+        body.contains("model = \"codex:gpt-5.6-luna\""),
         "codex-cli agency roles must use the cheaper codex model; got:\n{}",
         body,
     );
@@ -218,15 +218,15 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     let parsed: Result<worksgood::config::Config, _> = toml::from_str(&body);
     assert!(parsed.is_ok(), "codex-cli config must parse as Config");
     let cfg = parsed.unwrap();
-    assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.6-sol"));
     assert_eq!(
         cfg.models
             .task_agent
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("codex:gpt-5.6-sol")
     );
 }
 
