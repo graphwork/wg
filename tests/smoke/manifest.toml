@@ -45,6 +45,15 @@ description = "Pins fix-cargo-install: `wg dev-check` reports branch, main HEAD,
 timeout_seconds = 30
 
 [[scenario]]
+name = "service_daemon_survives_launch_session_hangup"
+script = "scenarios/service_daemon_survives_launch_session_hangup.sh"
+owners = [
+    "fix-wg-daemon",
+]
+description = "Regression for fix-wg-daemon: the real `wg service start --no-chat-agent --force` flow must leave the daemon detached from the launching shell/session. After a simulated terminal SIGHUP, the daemon must remain running for multiple ticks, and the known keyless OpenRouter registry-refresh warning must stay non-fatal."
+timeout_seconds = 45
+
+[[scenario]]
 name = "integrate_nex_chat_end_to_end"
 script = "scenarios/integrate_nex_chat_end_to_end.sh"
 owners = [
@@ -1656,8 +1665,9 @@ script = "scenarios/pi_two_tier_profile.sh"
 owners = [
     "interactive-pi-model",
     "fix-strong-tier",
+    "add-generic-custom",
 ]
-description = "Pins the two-tier Pi profile setter (`wg profile pi`): --list surfaces the configured strong/weak models from the profile (not hardcoded); a positional `<strong> <weak>` set patches the §4.1 key-set in ~/.wg/profiles/pi.toml (preserving the plugin comment block) and echoes old → new; --show reflects the persisted tiers on a fresh process; a partial --weak leaves strong unchanged; setting on the ACTIVE pi profile re-applies to global config.toml so the next turn sees it; a lone positional is rejected as ambiguous. fix-strong-tier: the STRONG tier is normalized to a `pi:` route on write (so it dispatches through the self-authenticating pi handler — handler_for_model → ExecutorKind::Pi — needing NO wg-side OpenRouter key), while the WEAK/agency tier keeps its native openrouter: route; the scenario asserts strong persists as `pi:openrouter/...` (never a raw `openrouter:` spec) in both the profile file and the active global config.toml. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
+description = "Pins the two-tier profile setter (`wg profile pi`): existing Pi list/select/partial/active behavior and strong-route normalization remain compatible; in a fresh isolated HOME, the CLI creates a custom profile from the embedded direct Codex Sol/Luna starter, selects it with `--profile`, updates one model tier plus independent reasoning in one command, preserves handler-first routes/inherited reasoning/user content, leaves inactive global routing untouched, then activates it and confirms resolved routing. A lone positional remains rejected as ambiguous. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
 timeout_seconds = 60
 
 [[scenario]]
@@ -1774,7 +1784,7 @@ script = "scenarios/real_review_evasion.sh"
 owners = [
     "real-review",
 ]
-description = "Pins real-review (the model-driven reviewer that replaces the fake keyword detectors; docs/prod-audit/audit-safety.md F1/F4/F5): the CLI-seam proof that the shared decode-then-detect engine — the one implementation behind WG-Review Pass 2, the fed S-5 scanner, and the WG-Exec integrity screen — is WIRED into the live `wg review check` pipeline and catches the obfuscation channels the old ~16-phrase keyword matcher let straight through. Credential-free, so Pass 2 is the deterministic engine (the weak→strong model escalation + fail-closed orchestration are proven by the review::reviewer::* lib tests, and the before/after delta vs the legacy keyword list by review::detect::evasion_corpus_before_after). To isolate 'the detector fired' from 'Unknown ⇒ quarantine-by-default', the hostile items use a VERIFIED author at HIGH sensitivity (Pass 2 with an accept-default, exactly the case the old matcher would have ACCEPTED). Falsifiable assertions: (1) a clean Verified+high item reaches Pass 2 and is ACCEPTED (must-not-over-block); (2) six obfuscations of an injection — base64, hex, Cyrillic homoglyph, leetspeak, punctuation-separator, and a curated paraphrase — are each BLOCKED (verdict reject/quarantine, not consumable, reason a bounded category code != clean), where the old keyword matcher would have accepted them. The model silicon is a scheduled wave (the eval-scheduled tag, WG_REVIEW_MODEL=1); this scenario proves the deterministic floor + the wiring."
+description = "Pins real-review (the model-driven reviewer that replaces the fake keyword detectors; docs/prod-audit/audit-safety.md F1/F4/F5): the CLI-seam proof that the shared decode-then-detect engine — the one implementation behind WG-Review Pass 2, the fed S-5 scanner, and the WG-Exec integrity screen — is WIRED into the live `wg review check` pipeline and catches the obfuscation channels the old ~16-phrase keyword matcher let straight through. Credential-free, so Pass 2 is the deterministic engine (the weak→strong model escalation + fail-closed orchestration are proven by the review::reviewer::* lib tests, and the before/after delta vs the legacy keyword list by review::detect::evasion_corpus_before_after). To isolate 'the detector fired' from 'Unknown ⇒ quarantine-by-default', the hostile items use a VERIFIED author at HIGH sensitivity (Pass 2 with an accept-default, exactly the case the old matcher would have ACCEPTED). Falsifiable assertions: (1) a clean Verified+high item reaches Pass 2 and is ACCEPTED (must-not-over-block); (2) six obfuscations of an injection — base64, hex, Cyrillic homoglyph, leetspeak, punctuation-separator, and a curated paraphrase — are each BLOCKED (verdict reject/quarantine, not consumable, reason a bounded category code != clean), where the old keyword matcher would have accepted them. The model silicon is a scheduled wave (explicit WG_REVIEW_MODEL=1 run); this scenario proves the deterministic floor + the wiring."
 timeout_seconds = 60
 
 [[scenario]]
@@ -1829,7 +1839,7 @@ script = "scenarios/exec_harden_wire.sh"
 owners = [
     "exec-harden",
 ]
-description = "Pins exec-harden (HARDEN + WIRE remote execution into the product — audit B4/M5/M15/M16/M17/S7 from docs/prod-audit/audit-exec.md): where exec_spark proves the library invariants through a manual CLI, this proves the PRODUCT WIRING the audit flags as missing. Credential-free; three isolated $HOME keystores (WG-A authorizer + custodian of agent G + the canonical graph / Provider-P separately owned / disjoint verifier Q) + a dumb untrusted store L, over the reused WG-Fed identity/UCAN/seal substrate (no second system); the worker is a real subprocess via WG_EXEC_WORKER_CMD. Six falsifiable assertions: (A) M5 PLANNER-PLACED REMOTE RUN + M15 ACCOUNTING — a task ALREADY IN THE GRAPH that the planner tagged `exec-provider:<wgid>` is placed on that remote provider via `wg provider place` (the coordinator-side driver sourcing the provider/model/sensitivity from the task, not CLI flags — the same tag `dispatch::plan_spawn` turns into Placement::Provider + ExecutorKind::RemoteRunner); the full offer→claim→grant→run→accept wire runs, and on accept the result's usage is BRIDGED into the graph task (usage_accounted_to_graph=true) so it shows in `wg spend` (total_output_tokens>0) and `--complete-task` marks the task done. (B) B4 ACCEPT-GATES-VERIFY — a LOW-TRUST (B/verified-overflow, Provisional) result is not committed on attribution alone: with NO pinned spec `accept` refuses (verification-required); a GENUINE result + pinned spec is ACCEPTED (the trusted-domain eval-gate re-run passes — no over-block); a CORRUPTED result is REJECTED by the re-run vs the authorizer's pinned spec (reason integrity-*) under --no-review (isolating the B4 re-run from the IC2 review layer, which also rejects it), and the producer's trust is LOWERED to unknown (the audit/revoke leg). (C) M17 SENSITIVITY-AT-GRANT — sensitivity is carried into the wire and the fail-closed gate is bound AT GRANT: a High task placed on a Verified provider, with the provider then lowered to Provisional before grant, is REFUSED at grant (trust-floor-not-met) because grant re-derives the real High label from the authorizer's ledger — NOT a hardcoded Normal (with the old hardcoded Normal, Provisional would clear the Normal floor and grant would wrongly succeed). (D) M16 AUTO-RECLAIM — a live lease is NOT swept at real-now, but `wg provider sweep --now <past-term>` AUTO-RECLAIMS the dead lease (epoch bumped) and the resurrected old-epoch worker's late write is fenced (stale-epoch). (E) M16 RENEW HEARTBEAT — a signed LeaseRenewal is accepted (`wg provider renew` → `accept-renewal`, provider live) and a stale renewal after reclaim is fenced (stale-epoch). (F) S7 B-TIER CHECKABLE-ONLY — a NON-checkable task is REFUSED on the B (Provisional/overflow) pool (overflow-requires-checkable, no offer file written) but ALLOWED on the trusted A (Verified) pool (pool_tier=A). Prerequisite: the WG-Exec spark (exec_spark_borrowed_box) — this wires its library bounds into the product, it does not re-prove them."
+description = "Pins exec-harden (HARDEN + WIRE remote execution into the product — audit B4/M5/M15/M16/M17/S7 from docs/prod-audit/audit-exec.md): where exec_spark proves the library invariants through a manual CLI, this proves the PRODUCT WIRING the audit flags as missing. Credential-free; three isolated $HOME keystores (WG-A authorizer + custodian of agent G + the canonical graph / Provider-P separately owned / disjoint verifier Q) + a dumb untrusted store L, over the reused WG-Fed identity/UCAN/seal substrate (no second system); the worker is a real subprocess via WG_EXEC_WORKER_CMD. Six falsifiable assertions: (A) M5 PLANNER-PLACED REMOTE RUN + M15 ACCOUNTING — a task ALREADY IN THE GRAPH carrying typed `remote_provider=<wgid>` metadata is placed on that remote provider via `wg provider place` (the coordinator-side driver sourcing the provider/model/sensitivity from the task, not CLI flags — the typed metadata that `dispatch::plan_spawn` turns into Placement::Provider + ExecutorKind::RemoteRunner); the full offer→claim→grant→run→accept wire runs, and on accept the result's usage is BRIDGED into the graph task (usage_accounted_to_graph=true) so it shows in `wg spend` (total_output_tokens>0) and `--complete-task` marks the task done. (B) B4 ACCEPT-GATES-VERIFY — a LOW-TRUST (B/verified-overflow, Provisional) result is not committed on attribution alone: with NO pinned spec `accept` refuses (verification-required); a GENUINE result + pinned spec is ACCEPTED (the trusted-domain eval-gate re-run passes — no over-block); a CORRUPTED result is REJECTED by the re-run vs the authorizer's pinned spec (reason integrity-*) under --no-review (isolating the B4 re-run from the IC2 review layer, which also rejects it), and the producer's trust is LOWERED to unknown (the audit/revoke leg). (C) M17 SENSITIVITY-AT-GRANT — sensitivity is carried into the wire and the fail-closed gate is bound AT GRANT: a High task placed on a Verified provider, with the provider then lowered to Provisional before grant, is REFUSED at grant (trust-floor-not-met) because grant re-derives the real High label from the authorizer's ledger — NOT a hardcoded Normal (with the old hardcoded Normal, Provisional would clear the Normal floor and grant would wrongly succeed). (D) M16 AUTO-RECLAIM — a live lease is NOT swept at real-now, but `wg provider sweep --now <past-term>` AUTO-RECLAIMS the dead lease (epoch bumped) and the resurrected old-epoch worker's late write is fenced (stale-epoch). (E) M16 RENEW HEARTBEAT — a signed LeaseRenewal is accepted (`wg provider renew` → `accept-renewal`, provider live) and a stale renewal after reclaim is fenced (stale-epoch). (F) S7 B-TIER CHECKABLE-ONLY — a NON-checkable task is REFUSED on the B (Provisional/overflow) pool (overflow-requires-checkable, no offer file written) but ALLOWED on the trusted A (Verified) pool (pool_tier=A). Prerequisite: the WG-Exec spark (exec_spark_borrowed_box) — this wires its library bounds into the product, it does not re-prove them."
 timeout_seconds = 120
 
 [[scenario]]
@@ -1994,3 +2004,57 @@ owners = [
 ]
 description = "Pins guardrails G1+G3 from docs/research/prevent-intake-as-evaluator-design.md: an intake task with a `## Deliverables` block is refused at `wg done` (failure_class `deliverable-missing`) when the named deliverable is absent; on retry (retry_count=1, failure_class=deliverable-missing) the spawned worker prompt.txt leads with the G3 'PREVIOUS ATTEMPT FAILED — DO NOT REPEAT' directive naming the concrete deliverable (replacing the neutral 'continue from where they left off' framing); after the deliverable is produced `wg done` succeeds and clears the failure_class marker. The G3 directive-injection pure function is additionally pinned by the retry_mutates_prompt_on_deliverable_missing unit test. Credential-free: drives the real `wg done` + `wg spawn --executor claude` CLI paths (prompt.txt is written before any LLM subprocess launches); no claude CLI auth needed."
 timeout_seconds = 90
+
+[[scenario]]
+name = "pi_structured_reasoning_codex"
+script = "scenarios/pi_structured_reasoning_codex.sh"
+owners = [
+    "implement-structured-pi",
+]
+description = "Pins structured Pi reasoning routing: the real wg CLI config/add/show/spawn flow keeps `pi:openai-codex:gpt-5.6-sol` as model identity while a fake Pi executable observes `--provider openai-codex --model gpt-5.6-sol --thinking high` at runtime, with no `model(high)` mutation. Credential-free and HOME-isolated."
+timeout_seconds = 60
+
+[[scenario]]
+name = "service_start_survives_pty_hangup"
+script = "scenarios/service_start_survives_pty_hangup.sh"
+owners = [
+    "fix-recurring-daemon",
+]
+description = "Pins daemon detachment through the real terminal lifecycle: forkpty launches ordinary `wg service start` without external setsid, the PTY master closes while the launcher is still in its startup wait, and the recorded daemon PID must survive the resulting terminal hangup and complete multiple later 1s coordinator ticks. Credential-free and isolated to a disposable graph. Pre-fix, the child retained the launcher's session/process group and died with the PTY."
+timeout_seconds = 30
+
+[[scenario]]
+name = "service_ipc_mixed_clients_keep_ticking"
+script = "scenarios/service_ipc_mixed_clients_keep_ticking.sh"
+owners = [
+    "fix-recurring-daemon",
+]
+description = "Pins the service IPC lifecycle after the recurring unix_stream_data_wait hang: a deliberately partial no-newline client is held open across poll intervals while ticks must advance, followed by repeated real status/reload/log(GraphChanged) traffic plus empty, malformed, valid GraphChanged and Status clients. Ticks must continue during and after bad disconnects. This catches both post-response second reads and the still-unbounded initial read/send that survived the earlier one-request-per-connection repair. Credential-free and isolated to a disposable graph/socket."
+timeout_seconds = 45
+
+[[scenario]]
+name = "chat_resume_after_idle_supervisor_exit"
+script = "scenarios/chat_resume_after_idle_supervisor_exit.sh"
+owners = [
+    "fix-chat-resume",
+]
+description = "Pins fix-chat-resume through the real human CLI flow against an isolated daemon: a fake credential-free Pi process exits cleanly while its chat is idle so the supervisor definitively ends, then `wg chat resume` + `wg chat send` must evict the stale coordinator_agents entry and invoke a replacement Pi handler. Refuses the old silent handler:none + queued-message state."
+timeout_seconds = 60
+
+[[scenario]]
+name = "tui_pi_chat_uuid_migration_reopen"
+script = "scenarios/tui_pi_chat_uuid_migration_reopen.sh"
+owners = [
+    "fix-pi-chat",
+]
+description = "Permanent tmux/PTy human-flow regression for the Pi transcript ENOENT: a Pi chat with a native transcript under legacy chat/chat-N storage is opened in the real TUI, registered/migrated to UUID storage before Pi argv is built, closed and reopened, then driven with user input. Asserts preserved history, canonical --session-dir, no raw/repeated ENOENT, and a usable reopened pane. Credential-free via a deterministic fake Pi CLI."
+timeout_seconds = 90
+
+[[scenario]]
+name = "direct_codex_reasoning_profile"
+script = "scenarios/direct_codex_reasoning_profile.sh"
+owners = [
+    "add-direct-codex",
+]
+description = "Pins add-direct-codex end-to-end: in an isolated fresh HOME, the single terminal command `wg profile use codex` activates the embedded direct Codex GPT-5.6 Sol/Luna profile, while a subsequent user-owned profile edit is not overwritten; config resolution shows Sol strong/default and Luna weak agency. A real dispatcher-generated worker run.sh then executes a fake Codex CLI and proves its actual argv contains Sol plus `-c model_reasoning_effort=\"high\"` alongside the independently configured `model_verbosity=\"high\"`. Credential-free."
+timeout_seconds = 60

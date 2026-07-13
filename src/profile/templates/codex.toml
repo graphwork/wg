@@ -1,31 +1,45 @@
-description = "OpenAI Codex CLI: gpt-5.5 standard/default worker, gpt-5.4-mini for agency"
+description = "Direct OpenAI Codex CLI: GPT-5.6 Sol strong/default, GPT-5.6 Luna weak agency"
+
+# Activate from a fresh installation with one command:
+#   wg profile use codex
+# An existing ~/.wg/profiles/codex.toml always wins over this built-in snapshot.
+# See docs/design-direct-codex-reasoning.md for migration and rollback.
 
 [agent]
-model = "codex:gpt-5.5"
+model = "codex:gpt-5.6-sol"
 
 [dispatcher]
-model = "codex:gpt-5.5"
+model = "codex:gpt-5.6-sol"
 max_agents = 8
 
 [tiers]
-fast = "codex:gpt-5.4-mini"
-standard = "codex:gpt-5.5"
-premium = "codex:gpt-5.5"
+fast = "codex:gpt-5.6-luna"
+fast_reasoning = "low"
+standard = "codex:gpt-5.6-sol"
+standard_reasoning = "high"
+premium = "codex:gpt-5.6-sol"
+premium_reasoning = "xhigh"
 
 [models.default]
-model = "codex:gpt-5.5"
+model = "codex:gpt-5.6-sol"
+reasoning = "medium"
 
 [models.task_agent]
-model = "codex:gpt-5.5"
+model = "codex:gpt-5.6-sol"
+reasoning = "high"
 
 [models.evaluator]
-model = "codex:gpt-5.4-mini"
+model = "codex:gpt-5.6-luna"
+reasoning = "low"
 
 [models.assigner]
-model = "codex:gpt-5.4-mini"
+model = "codex:gpt-5.6-luna"
+reasoning = "low"
 
 [models.flip_inference]
-model = "codex:gpt-5.4-mini"
+model = "codex:gpt-5.6-luna"
+reasoning = "low"
 
 [models.flip_comparison]
-model = "codex:gpt-5.4-mini"
+model = "codex:gpt-5.6-luna"
+reasoning = "low"

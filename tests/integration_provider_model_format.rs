@@ -168,7 +168,7 @@ assigner_agent = "local-assigner"
         config
     );
     assert!(
-        config.contains("model = \"codex:gpt-5.5\""),
+        config.contains("model = \"codex:gpt-5.6-sol\""),
         "effective merged config should resolve codex model:\n{}",
         config
     );
@@ -196,7 +196,7 @@ assigner_agent = "local-assigner"
     );
     assert!(
         profile_show.contains("agent.model")
-            && profile_show.contains("codex:gpt-5.5")
+            && profile_show.contains("codex:gpt-5.6-sol")
             && profile_show.contains("dispatcher.model"),
         "profile show should render the effective codex models, not stale local claude pins:\n{}",
         profile_show
@@ -287,19 +287,22 @@ fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
 
     let codex_profile = fs::read_to_string(home.join(".wg/profiles/codex.toml")).unwrap();
     let codex_cfg: Config = toml::from_str(&codex_profile).unwrap();
-    assert_eq!(codex_cfg.agent.model, "codex:gpt-5.5");
+    assert_eq!(codex_cfg.agent.model, "codex:gpt-5.6-sol");
     assert_eq!(
         codex_cfg.coordinator.model.as_deref(),
-        Some("codex:gpt-5.5")
+        Some("codex:gpt-5.6-sol")
     );
-    assert_eq!(codex_cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(
+        codex_cfg.tiers.standard.as_deref(),
+        Some("codex:gpt-5.6-sol")
+    );
     assert_eq!(
         codex_cfg
             .models
             .default
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("codex:gpt-5.6-sol")
     );
     assert_eq!(
         codex_cfg
@@ -307,7 +310,7 @@ fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
             .task_agent
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("codex:gpt-5.6-sol")
     );
     assert_eq!(
         codex_cfg
@@ -315,7 +318,7 @@ fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
             .evaluator
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.4-mini"),
+        Some("codex:gpt-5.6-luna"),
         "agency-specific codex pins stay intentionally cheap"
     );
     assert_ne!(codex_cfg.tiers.standard.as_deref(), Some("codex:gpt-5.4"));
@@ -323,13 +326,13 @@ fn fresh_home_profile_starters_resolve_top_default_worker_routes() {
     wg_ok_with_home(&wg_dir, &home, &["profile", "use", "codex", "--no-reload"]);
     let models_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--models"]);
     let models: serde_json::Value = serde_json::from_str(&models_json).unwrap();
-    assert_eq!(models["default"]["model"], "gpt-5.5");
+    assert_eq!(models["default"]["model"], "gpt-5.6-sol");
     assert_eq!(models["default"]["provider"], "codex");
-    assert_eq!(models["task_agent"]["model"], "gpt-5.5");
+    assert_eq!(models["task_agent"]["model"], "gpt-5.6-sol");
     assert_eq!(models["task_agent"]["provider"], "codex");
     let tiers_json = wg_ok_with_home(&wg_dir, &home, &["--json", "config", "--tiers"]);
     let tiers: serde_json::Value = serde_json::from_str(&tiers_json).unwrap();
-    assert_eq!(tiers["standard"]["model_id"], "codex:gpt-5.5");
+    assert_eq!(tiers["standard"]["model_id"], "codex:gpt-5.6-sol");
 
     let claude_profile = fs::read_to_string(home.join(".wg/profiles/claude.toml")).unwrap();
     let claude_cfg: Config = toml::from_str(&claude_profile).unwrap();
@@ -842,6 +845,7 @@ fn validate_format_rejects_bare_role_model() {
         provider: None,
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let err = config.validate_model_format().unwrap_err();
     let msg = err.to_string();
@@ -860,6 +864,7 @@ fn validate_format_rejects_deprecated_role_provider() {
         provider: Some("anthropic".to_string()), // deprecated
         tier: None,
         endpoint: None,
+        reasoning: None,
     });
     let err = config.validate_model_format().unwrap_err();
     let msg = err.to_string();

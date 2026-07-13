@@ -184,6 +184,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     if config.models.assigner.is_none() {
         config.models.assigner = Some(worksgood::config::RoleModelConfig {
             model: Some("claude:haiku".to_string()),
+            reasoning: None,
             provider: None,
             tier: None,
             endpoint: None,
@@ -193,6 +194,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     if config.models.evaluator.is_none() {
         config.models.evaluator = Some(worksgood::config::RoleModelConfig {
             model: Some("claude:haiku".to_string()),
+            reasoning: None,
             provider: None,
             tier: None,
             endpoint: None,

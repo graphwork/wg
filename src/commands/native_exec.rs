@@ -186,6 +186,7 @@ pub fn run(
             label: Some(format!("task {}", task_id)),
             forked_from: None,
             archived_at: None,
+            agent_id: None,
         }
     });
     let _ = worksgood::chat_sessions::save(workgraph_dir, &reg);

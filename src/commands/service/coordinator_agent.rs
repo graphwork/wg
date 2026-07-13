@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -408,6 +409,14 @@ pub struct CoordinatorAgent {
     _agent_thread: JoinHandle<()>,
     /// Shared flag indicating whether the agent process is alive.
     alive: Arc<Mutex<bool>>,
+    /// Definitive lifecycle signal for the supervisor thread itself.
+    ///
+    /// `alive` only describes the current child process and is false during
+    /// legitimate restart/backoff windows. This separate flag becomes true
+    /// only after `subprocess_coordinator_loop` has returned, allowing the
+    /// daemon to evict a stale map entry without creating duplicate
+    /// supervisors during backoff.
+    supervisor_ended: Arc<AtomicBool>,
     /// Shared PID of the agent process (0 if not running).
     pid: Arc<Mutex<u32>>,
     /// Shared event log for recording events from the daemon.
@@ -501,6 +510,7 @@ impl CoordinatorAgent {
         }
         let (tx, rx) = mpsc::channel::<ChatRequest>();
         let alive = Arc::new(Mutex::new(false));
+        let supervisor_ended = Arc::new(AtomicBool::new(false));
         let pid = Arc::new(Mutex::new(0u32));
 
         let dir = dir.to_path_buf();
@@ -509,6 +519,7 @@ impl CoordinatorAgent {
         let provider = provider.map(String::from);
         let logger = logger.clone();
         let alive_clone = alive.clone();
+        let supervisor_ended_clone = supervisor_ended.clone();
         let pid_clone = pid.clone();
         let event_log_clone = event_log.clone();
 
@@ -527,6 +538,11 @@ impl CoordinatorAgent {
                     &logger,
                     &event_log_clone,
                 );
+                // Publish only after the supervisor loop has definitively
+                // returned. In particular, do not derive this from child
+                // liveness: the child is absent during normal restart and
+                // backoff windows while this thread remains authoritative.
+                supervisor_ended_clone.store(true, Ordering::Release);
             })
             .context("Failed to spawn coordinator agent thread")?;
 
@@ -534,6 +550,7 @@ impl CoordinatorAgent {
             tx,
             _agent_thread: agent_thread,
             alive,
+            supervisor_ended,
             pid,
             event_log,
             uses_subprocess,
@@ -574,6 +591,14 @@ impl CoordinatorAgent {
     #[allow(dead_code)]
     pub fn is_alive(&self) -> bool {
         *self.alive.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Return true only after the supervisor loop has definitively ended.
+    ///
+    /// This is intentionally distinct from [`Self::is_alive`], which tracks
+    /// only the current child and is false during valid restart/backoff.
+    pub fn supervisor_has_ended(&self) -> bool {
+        self.supervisor_ended.load(Ordering::Acquire)
     }
 
     /// Get the PID of the coordinator agent process.

@@ -17,15 +17,6 @@ use std::path::Path;
 use worksgood::config::Config;
 use worksgood::graph::{Node, PRIORITY_DEFAULT, Priority, Status, Task, WorkGraph, lower_priority};
 
-/// Tags that mark tasks as part of the evaluation/assignment infrastructure.
-/// Tasks with these tags do not get their own eval tasks (no meta-evaluation).
-const DOMINATED_TAGS: &[&str] = &["evaluation", "assignment", "flip", "placement"];
-
-/// Tag that exempts a task from `.evaluate-*` and `.flip-*` scaffolding.
-/// Unlike DOMINATED_TAGS (which skip the entire pipeline including assignment),
-/// `skip-eval` only suppresses evaluation and FLIP — assignment still proceeds.
-const SKIP_EVAL_TAG: &str = "skip-eval";
-
 /// System task prefixes that are eligible for the full agency pipeline.
 /// These tasks go through placement, assignment, FLIP, and evaluation like
 /// regular tasks — unlike other system tasks (`.evaluate-*`, `.assign-*`,
@@ -74,14 +65,10 @@ fn calculate_auto_priority(
     }
 }
 
-/// Returns true if FLIP should run for a given task, based on global config
-/// and the task's `flip-eval` tag.
+/// Returns true if FLIP should run for a given task.
 fn should_run_flip(graph: &WorkGraph, task_id: &str, config: &Config) -> bool {
-    let source_has_flip_tag = graph
-        .get_task(task_id)
-        .map(|t| t.tags.iter().any(|tag| tag == "flip-eval"))
-        .unwrap_or(false);
-    config.agency.flip_enabled || source_has_flip_tag
+    let _ = (graph, task_id);
+    config.agency.flip_enabled
 }
 
 /// Create a `.flip-<task_id>` task in `graph`, blocked by `task_id`.
@@ -94,13 +81,6 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     // Skip system tasks (unless pipeline-eligible like .verify-*)
     if worksgood::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
         return false;
-    }
-
-    // Skip tasks tagged skip-eval
-    if let Some(task) = graph.get_task(task_id) {
-        if task.tags.iter().any(|t| t == SKIP_EVAL_TAG) {
-            return false;
-        }
     }
 
     // Idempotency: skip if flip task already exists
@@ -155,7 +135,7 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
 /// - `.assign-*` is created if `config.agency.auto_assign` is enabled.
 ///   Placement (dependency edge decisions) is merged into the assignment step
 ///   when `config.agency.auto_place` is enabled.
-/// - `.flip-*` is created if FLIP is enabled (globally or per-task tag).
+/// - `.flip-*` is created if FLIP is enabled.
 /// - `.evaluate-*` is created if `config.agency.auto_evaluate` is enabled.
 ///
 /// Returns `true` if the graph was modified.
@@ -167,7 +147,7 @@ pub fn scaffold_full_pipeline(
     task_title: &str,
     config: &Config,
 ) -> bool {
-    // Skip system tasks (unless pipeline-eligible like .verify-*) and dominated-tag tasks
+    // Skip system tasks (unless pipeline-eligible like .verify-*)
     if worksgood::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
         return false;
     }
@@ -177,23 +157,6 @@ pub fn scaffold_full_pipeline(
     {
         return false;
     }
-    if let Some(task) = graph.get_task(task_id)
-        && task
-            .tags
-            .iter()
-            .any(|tag| DOMINATED_TAGS.contains(&tag.as_str()))
-    {
-        return false;
-    }
-    // NOTE: We intentionally do NOT early-return on "eval-scheduled" here.
-    // The tag may have been set by `scaffold_eval_task` (which only creates
-    // .flip/.evaluate), so .place/.assign might still be missing.  Each
-    // individual task creation below has its own idempotency guard.
-
-    let skip_eval = graph
-        .get_task(task_id)
-        .map(|t| t.tags.iter().any(|tag| tag == SKIP_EVAL_TAG))
-        .unwrap_or(false);
 
     let assign_task_id = format!(".assign-{}", task_id);
     let flip_task_id = format!(".flip-{}", task_id);
@@ -210,11 +173,7 @@ pub fn scaffold_full_pipeline(
             status: Status::Open,
             after: vec![],
             before: vec![task_id.to_string()],
-            tags: vec![
-                "assignment".to_string(),
-                "agency".to_string(),
-                SKIP_EVAL_TAG.to_string(),
-            ],
+            tags: vec!["assignment".to_string(), "agency".to_string()],
             exec: Some(format!("wg assign {} --auto", task_id)),
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
@@ -237,8 +196,8 @@ pub fn scaffold_full_pipeline(
         source.after.push(assign_task_id.clone());
     }
 
-    // 3. Create .flip-* task (depends on main task) — skip if skip-eval tagged
-    let run_flip = !skip_eval && should_run_flip(graph, task_id, config);
+    // 3. Create .flip-* task (depends on main task)
+    let run_flip = should_run_flip(graph, task_id, config);
     if run_flip && graph.get_task(&flip_task_id).is_none() {
         let flip_resolved =
             config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
@@ -269,8 +228,7 @@ pub fn scaffold_full_pipeline(
     }
 
     // 4. Create .evaluate-* task (depends on .flip-* if FLIP enabled, else main task)
-    //    Skip if skip-eval tagged.
-    if !skip_eval && config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
+    if config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
         let eval_after = if run_flip {
             vec![flip_task_id.clone()]
         } else {
@@ -315,14 +273,6 @@ pub fn scaffold_full_pipeline(
             "[eval-scaffold] Created evaluation task '{}' blocked by '{}'",
             eval_task_id, task_id,
         );
-    }
-
-    // Tag source task as eval-scheduled (prevents duplicate scaffolding after gc)
-    if any_created
-        && let Some(source) = graph.get_task_mut(task_id)
-        && !source.tags.iter().any(|t| t == "eval-scheduled")
-    {
-        source.tags.push("eval-scheduled".to_string());
     }
 
     any_created
@@ -373,16 +323,6 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
         return false;
     }
 
-    // Skip tasks that are part of the evaluation/assignment infrastructure
-    if let Some(task) = graph.get_task(task_id)
-        && task
-            .tags
-            .iter()
-            .any(|tag| DOMINATED_TAGS.contains(&tag.as_str()))
-    {
-        return false;
-    }
-
     // Calculate auto-priority for assign task
     let priority = calculate_auto_priority(graph, task_id, "assign");
 
@@ -393,11 +333,7 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
         priority,
         after: vec![],
         before: vec![task_id.to_string()],
-        tags: vec![
-            "assignment".to_string(),
-            "agency".to_string(),
-            SKIP_EVAL_TAG.to_string(),
-        ],
+        tags: vec!["assignment".to_string(), "agency".to_string()],
         exec: Some(format!("wg assign {} --auto", task_id)),
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),
@@ -440,13 +376,13 @@ pub fn scaffold_assign_tasks_batch(
 
 /// Create a `.evaluate-<task_id>` task in `graph`, blocked by `task_id`.
 ///
-/// When FLIP is enabled (globally or via `flip-eval` tag on the source task),
-/// also creates `.flip-<task_id>` and makes `.evaluate-<task_id>` depend on
-/// the flip task instead of the source task directly.
+/// When FLIP is enabled, also creates `.flip-<task_id>` and makes
+/// `.evaluate-<task_id>` depend on the flip task instead of the source task
+/// directly.
 ///
 /// Returns `true` if the graph was modified (i.e. the eval task was created).
 /// Idempotent: returns `false` if the eval task already exists or the source
-/// task should not be evaluated (system tags, already scheduled, etc.).
+/// task should not be evaluated.
 pub fn scaffold_eval_task(
     dir: &Path,
     graph: &mut WorkGraph,
@@ -464,25 +400,6 @@ pub fn scaffold_eval_task(
     // Idempotency: skip if eval task already exists
     if graph.get_task(&eval_task_id).is_some() {
         return false;
-    }
-
-    // Skip tasks that are part of the evaluation infrastructure themselves
-    if let Some(task) = graph.get_task(task_id) {
-        if task
-            .tags
-            .iter()
-            .any(|tag| DOMINATED_TAGS.contains(&tag.as_str()))
-        {
-            return false;
-        }
-        // Skip if already tagged as having had evaluation scheduled
-        if task.tags.iter().any(|tag| tag == "eval-scheduled") {
-            return false;
-        }
-        // Skip tasks tagged skip-eval
-        if task.tags.iter().any(|t| t == SKIP_EVAL_TAG) {
-            return false;
-        }
     }
 
     // When FLIP is enabled, scaffold the flip task and make eval depend on it
@@ -535,13 +452,6 @@ pub fn scaffold_eval_task(
     };
 
     graph.add_node(Node::Task(eval_task));
-
-    // Tag the source task so we never recreate the eval task after gc
-    if let Some(source) = graph.get_task_mut(task_id)
-        && !source.tags.iter().any(|t| t == "eval-scheduled")
-    {
-        source.tags.push("eval-scheduled".to_string());
-    }
 
     eprintln!(
         "[eval-scaffold] Created evaluation task '{}' blocked by '{}'",
@@ -662,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_skips_evaluation_tagged_tasks() {
+    fn test_scaffold_evaluation_label_is_inert() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -670,18 +580,18 @@ mod tests {
         task.tags = vec!["evaluation".to_string()];
         graph.add_node(Node::Task(task));
 
-        assert!(!scaffold_eval_task(
+        assert!(scaffold_eval_task(
             dir.path(),
             &mut graph,
             "eval-infra",
             "Eval Infra",
             &config
         ));
-        assert!(graph.get_task(".evaluate-eval-infra").is_none());
+        assert!(graph.get_task(".evaluate-eval-infra").is_some());
     }
 
     #[test]
-    fn test_scaffold_skips_already_scheduled() {
+    fn test_eval_scheduled_label_is_inert() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -689,17 +599,18 @@ mod tests {
         task.tags = vec!["eval-scheduled".to_string()];
         graph.add_node(Node::Task(task));
 
-        assert!(!scaffold_eval_task(
+        assert!(scaffold_eval_task(
             dir.path(),
             &mut graph,
             "old-task",
             "Old Task",
             &config
         ));
+        assert!(graph.get_task(".evaluate-old-task").is_some());
     }
 
     #[test]
-    fn test_scaffold_tags_source_task() {
+    fn test_scaffold_does_not_tag_source_task() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -708,7 +619,7 @@ mod tests {
         scaffold_eval_task(dir.path(), &mut graph, "my-task", "My Task", &config);
 
         let source = graph.get_task("my-task").unwrap();
-        assert!(source.tags.contains(&"eval-scheduled".to_string()));
+        assert!(!source.tags.contains(&"eval-scheduled".to_string()));
     }
 
     #[test]
@@ -725,13 +636,13 @@ mod tests {
         let ids = vec![
             ("a".to_string(), "Task A".to_string()),
             ("b".to_string(), "Task B".to_string()),
-            ("c".to_string(), "Eval Task".to_string()), // should be skipped
+            ("c".to_string(), "Eval Task".to_string()),
         ];
         let count = scaffold_eval_tasks_batch(dir.path(), &mut graph, &ids, &config);
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
         assert!(graph.get_task(".evaluate-a").is_some());
         assert!(graph.get_task(".evaluate-b").is_some());
-        assert!(graph.get_task(".evaluate-c").is_none());
+        assert!(graph.get_task(".evaluate-c").is_some());
     }
 
     // --- FLIP scaffolding tests ---
@@ -809,27 +720,25 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_flip_via_task_tag() {
+    fn test_flip_eval_label_does_not_enable_flip() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.flip_enabled = false; // flip_enabled = false globally
         let mut graph = WorkGraph::new();
         let mut task = make_task("my-task", "My Task");
-        task.tags = vec!["flip-eval".to_string()]; // per-task opt-in
+        task.tags = vec!["flip-eval".to_string()];
         graph.add_node(Node::Task(task));
 
         scaffold_eval_task(dir.path(), &mut graph, "my-task", "My Task", &config);
 
-        // FLIP should have been created via the flip-eval tag
-        let flip = graph.get_task(".flip-my-task").unwrap();
-        assert_eq!(flip.after, vec!["my-task".to_string()]);
+        assert!(graph.get_task(".flip-my-task").is_none());
 
         let eval = graph.get_task(".evaluate-my-task").unwrap();
-        assert_eq!(eval.after, vec![".flip-my-task".to_string()]);
+        assert_eq!(eval.after, vec!["my-task".to_string()]);
     }
 
     #[test]
-    fn test_scaffold_skips_flip_tagged_tasks() {
+    fn test_flip_label_is_inert() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -837,50 +746,46 @@ mod tests {
         task.tags = vec!["flip".to_string()];
         graph.add_node(Node::Task(task));
 
-        assert!(!scaffold_eval_task(
+        assert!(scaffold_eval_task(
             dir.path(),
             &mut graph,
             "flip-infra",
             "Flip Infra",
             &config
         ));
-        assert!(graph.get_task(".evaluate-flip-infra").is_none());
+        assert!(graph.get_task(".evaluate-flip-infra").is_some());
     }
 
     #[test]
-    fn test_scaffold_skips_placement_tagged_tasks() {
+    fn test_scaffold_does_not_skip_label_tagged_tasks() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
-        let mut task = make_task("place-infra", "Place Infra");
-        task.tags = vec!["placement".to_string()];
+        let mut task = make_task("labelled-work", "Normal implementation work");
+        task.tags = vec![
+            "agency".to_string(),
+            "assignment".to_string(),
+            "evaluation".to_string(),
+            "reviewer".to_string(),
+            "placement".to_string(),
+        ];
         graph.add_node(Node::Task(task));
 
-        // Placement-tagged tasks should NOT get eval scaffolding
-        assert!(!scaffold_eval_task(
+        assert!(scaffold_eval_task(
             dir.path(),
             &mut graph,
-            "place-infra",
-            "Place Infra",
+            "labelled-work",
+            "Normal implementation work",
             &config
         ));
-        assert!(graph.get_task(".evaluate-place-infra").is_none());
+        assert!(graph.get_task(".evaluate-labelled-work").is_some());
 
-        // Placement-tagged tasks should NOT get assign scaffolding
-        assert!(!scaffold_assign_task(
+        assert!(scaffold_assign_task(
             &mut graph,
-            "place-infra",
-            "Place Infra"
+            "labelled-work",
+            "Normal implementation work"
         ));
-        assert!(graph.get_task(".assign-place-infra").is_none());
-    }
-
-    #[test]
-    fn test_dominated_tags_includes_placement() {
-        assert!(
-            DOMINATED_TAGS.contains(&"placement"),
-            "DOMINATED_TAGS must include 'placement' to prevent legacy .place-* tasks from spawning eval overhead"
-        );
+        assert!(graph.get_task(".assign-labelled-work").is_some());
     }
 
     // --- Assign scaffolding tests ---
@@ -944,13 +849,13 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_assign_skips_dominated_tags() {
+    fn test_scaffold_assign_ignores_label_tags() {
         let mut graph = WorkGraph::new();
         let mut task = make_task("assign-infra", "Assign Infra");
-        task.tags = vec!["assignment".to_string()];
+        task.tags = vec!["assignment".to_string(), "agency".to_string()];
         graph.add_node(Node::Task(task));
 
-        assert!(!scaffold_assign_task(
+        assert!(scaffold_assign_task(
             &mut graph,
             "assign-infra",
             "Assign Infra"
@@ -1061,7 +966,7 @@ mod tests {
             "Foo Task",
             &config
         ));
-        // Second call is a no-op (eval-scheduled tag prevents re-scaffolding)
+        // Second call is a no-op because the structural .evaluate-* task exists.
         assert!(!scaffold_full_pipeline(
             dir.path(),
             &mut graph,
@@ -1072,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_tags_source_as_eval_scheduled() {
+    fn test_scaffold_full_pipeline_does_not_tag_source_as_eval_scheduled() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_assign = true;
@@ -1083,7 +988,7 @@ mod tests {
         scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
 
         let foo = graph.get_task("foo").unwrap();
-        assert!(foo.tags.contains(&"eval-scheduled".to_string()));
+        assert!(!foo.tags.contains(&"eval-scheduled".to_string()));
     }
 
     #[test]
@@ -1099,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_skips_dominated_tags() {
+    fn test_scaffold_full_pipeline_ignores_label_tags() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_assign = true;
@@ -1111,9 +1016,9 @@ mod tests {
 
         let modified =
             scaffold_full_pipeline(dir.path(), &mut graph, "eval-infra", "Eval Infra", &config);
-        assert!(!modified);
-        assert!(graph.get_task(".assign-eval-infra").is_none());
-        assert!(graph.get_task(".evaluate-eval-infra").is_none());
+        assert!(modified);
+        assert!(graph.get_task(".assign-eval-infra").is_some());
+        assert!(graph.get_task(".evaluate-eval-infra").is_some());
     }
 
     #[test]
@@ -1139,10 +1044,9 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_creates_assign_even_if_eval_scheduled() {
-        // Regression: if scaffold_eval_task ran first (coordinator path) and set
-        // the eval-scheduled tag, scaffold_full_pipeline must still create
-        // .assign-* tasks.
+    fn test_scaffold_full_pipeline_creates_assign_when_eval_exists() {
+        // Regression: if scaffold_eval_task ran first (coordinator path),
+        // scaffold_full_pipeline must still create .assign-* tasks.
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
@@ -1152,16 +1056,15 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("foo", "Foo Task")));
 
-        // Simulate coordinator's scaffold_eval_task running first:
-        // creates .flip-* and .evaluate-*, tags source as eval-scheduled
+        // Simulate coordinator's scaffold_eval_task running first.
         scaffold_eval_task(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(graph.get_task(".flip-foo").is_some());
         assert!(graph.get_task(".evaluate-foo").is_some());
         let source = graph.get_task("foo").unwrap();
-        assert!(source.tags.contains(&"eval-scheduled".to_string()));
+        assert!(!source.tags.contains(&"eval-scheduled".to_string()));
 
         // Now scaffold_full_pipeline runs (publish path) — must still create
-        // .assign-* despite the eval-scheduled tag
+        // .assign-* despite the existing eval/flip tasks.
         let modified = scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(
             modified,
@@ -1170,7 +1073,7 @@ mod tests {
 
         assert!(
             graph.get_task(".assign-foo").is_some(),
-            ".assign-foo must exist even when eval-scheduled tag is set"
+            ".assign-foo must exist even when label tags are set"
         );
     }
 
@@ -1573,10 +1476,10 @@ mod tests {
         assert!(graph.get_task(".evaluate-check-batch").is_some());
     }
 
-    // --- skip-eval tag tests ---
+    // --- freeform label inertness tests ---
 
     #[test]
-    fn test_skip_eval_tag_prevents_flip_creation() {
+    fn test_skip_eval_label_does_not_prevent_flip_creation() {
         let mut config = Config::default();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
@@ -1585,12 +1488,15 @@ mod tests {
         graph.add_node(Node::Task(task));
 
         let modified = scaffold_flip_task(&mut graph, "pulse-task", &config);
-        assert!(!modified, "skip-eval tag should prevent .flip-* creation");
-        assert!(graph.get_task(".flip-pulse-task").is_none());
+        assert!(
+            modified,
+            "freeform labels must not prevent .flip-* creation"
+        );
+        assert!(graph.get_task(".flip-pulse-task").is_some());
     }
 
     #[test]
-    fn test_skip_eval_tag_prevents_eval_creation() {
+    fn test_skip_eval_label_does_not_prevent_eval_creation() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -1601,15 +1507,15 @@ mod tests {
         let modified =
             scaffold_eval_task(dir.path(), &mut graph, "pulse-task", "Pulse Task", &config);
         assert!(
-            !modified,
-            "skip-eval tag should prevent .evaluate-* creation"
+            modified,
+            "freeform labels must not prevent .evaluate-* creation"
         );
-        assert!(graph.get_task(".evaluate-pulse-task").is_none());
-        assert!(graph.get_task(".flip-pulse-task").is_none());
+        assert!(graph.get_task(".evaluate-pulse-task").is_some());
+        assert!(graph.get_task(".flip-pulse-task").is_some());
     }
 
     #[test]
-    fn test_skip_eval_tag_allows_assign_in_full_pipeline() {
+    fn test_skip_eval_label_does_not_change_full_pipeline() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_assign = true;
@@ -1622,27 +1528,24 @@ mod tests {
 
         let modified =
             scaffold_full_pipeline(dir.path(), &mut graph, "pulse-task", "Pulse Task", &config);
-        assert!(modified, "skip-eval should still allow .assign-* creation");
+        assert!(modified, "freeform labels do not suppress scaffolding");
 
-        // .assign-* should be created
         assert!(
             graph.get_task(".assign-pulse-task").is_some(),
-            ".assign-* should still be created for skip-eval tasks"
-        );
-
-        // .flip-* and .evaluate-* should NOT be created
-        assert!(
-            graph.get_task(".flip-pulse-task").is_none(),
-            ".flip-* should NOT be created for skip-eval tasks"
+            ".assign-* should be created for label-tagged tasks"
         );
         assert!(
-            graph.get_task(".evaluate-pulse-task").is_none(),
-            ".evaluate-* should NOT be created for skip-eval tasks"
+            graph.get_task(".flip-pulse-task").is_some(),
+            ".flip-* should be created for label-tagged tasks"
+        );
+        assert!(
+            graph.get_task(".evaluate-pulse-task").is_some(),
+            ".evaluate-* should be created for label-tagged tasks"
         );
     }
 
     #[test]
-    fn test_skip_eval_tag_in_batch() {
+    fn test_skip_eval_label_in_batch_is_inert() {
         let dir = tempdir().unwrap();
         let config = Config::default();
         let mut graph = WorkGraph::new();
@@ -1656,13 +1559,13 @@ mod tests {
             ("mechanical".to_string(), "Mechanical Task".to_string()),
         ];
         let count = scaffold_eval_tasks_batch(dir.path(), &mut graph, &ids, &config);
-        assert_eq!(count, 1, "only non-skip-eval task should get eval");
+        assert_eq!(count, 2, "freeform labels must not suppress eval");
         assert!(graph.get_task(".evaluate-normal").is_some());
-        assert!(graph.get_task(".evaluate-mechanical").is_none());
+        assert!(graph.get_task(".evaluate-mechanical").is_some());
     }
 
     #[test]
-    fn test_assign_tasks_get_skip_eval_tag() {
+    fn test_assign_tasks_do_not_need_control_tags() {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
@@ -1670,13 +1573,13 @@ mod tests {
 
         let assign = graph.get_task(".assign-my-task").unwrap();
         assert!(
-            assign.tags.contains(&"skip-eval".to_string()),
-            ".assign-* tasks should have the skip-eval tag"
+            !assign.tags.contains(&"skip-eval".to_string()),
+            ".assign-* tasks are internal by dot-prefixed identity, not labels"
         );
     }
 
     #[test]
-    fn test_assign_tasks_in_full_pipeline_get_skip_eval_tag() {
+    fn test_assign_tasks_in_full_pipeline_do_not_need_control_tags() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_assign = true;
@@ -1688,8 +1591,8 @@ mod tests {
 
         let assign = graph.get_task(".assign-my-task").unwrap();
         assert!(
-            assign.tags.contains(&"skip-eval".to_string()),
-            ".assign-* tasks created by full pipeline should have skip-eval tag"
+            !assign.tags.contains(&"skip-eval".to_string()),
+            ".assign-* tasks created by full pipeline are structural internals"
         );
     }
 }

@@ -512,8 +512,8 @@ struct RecursiveTraceOutput {
 }
 
 /// Collect the subgraph rooted at `root_id`: the task itself plus all tasks
-/// whose after chains trace back to it. Filters out internal tasks
-/// (assignment/evaluation tags) for cleaner display.
+/// whose after chains trace back to it. Filters out structurally internal
+/// tasks for cleaner display.
 pub fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a Task> {
     let reverse_index = build_reverse_index(graph);
     let mut visited = HashSet::new();
@@ -525,11 +525,8 @@ pub fn collect_descendants<'a>(root_id: &str, graph: &'a WorkGraph) -> Vec<&'a T
             continue;
         }
         if let Some(task) = graph.get_task(&id) {
-            // Skip internal agency tasks for cleaner output
-            let is_internal = task
-                .tags
-                .iter()
-                .any(|t| t == "assignment" || t == "evaluation");
+            // Skip internal agency tasks for cleaner output.
+            let is_internal = worksgood::graph::is_system_task(&task.id);
             if !is_internal {
                 result.push(task);
             }
@@ -1768,14 +1765,19 @@ mod tests {
     fn test_collect_descendants_skips_internal_tasks() {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_done_task("root", "Root")));
-        let mut assign = make_done_task("assign-root", "Assign agent");
+        let mut assign = make_done_task(".assign-root", "Assign agent");
         assign.tags = vec!["assignment".to_string(), "agency".to_string()];
         assign.after = vec!["root".to_string()];
         graph.add_node(Node::Task(assign));
+        let mut labeled = make_done_task("assignment-topic", "Normal assignment topic");
+        labeled.tags = vec!["assignment".to_string(), "agency".to_string()];
+        labeled.after = vec!["root".to_string()];
+        graph.add_node(Node::Task(labeled));
 
         let desc = collect_descendants("root", &graph);
-        assert_eq!(desc.len(), 1);
+        assert_eq!(desc.len(), 2);
         assert_eq!(desc[0].id, "root");
+        assert_eq!(desc[1].id, "assignment-topic");
     }
 
     #[test]

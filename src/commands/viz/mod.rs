@@ -155,7 +155,7 @@ impl Default for VizOptions {
     }
 }
 
-/// Returns true if the task is an auto-generated internal task (assignment or evaluation).
+/// Returns true if the task is an auto-generated internal task.
 /// Chat (coordinator) tasks are exempt — always visible.
 fn is_internal_task(task: &Task) -> bool {
     if task.tags.iter().any(|t| {
@@ -164,10 +164,6 @@ fn is_internal_task(task: &Task) -> bool {
         return false;
     }
     worksgood::graph::is_system_task(&task.id)
-        || task
-            .tags
-            .iter()
-            .any(|t| t == "assignment" || t == "evaluation")
 }
 
 /// Returns true if the task is a legacy coordinator task (`.coordinator-N` with `coordinator-loop` tag).
@@ -209,9 +205,9 @@ fn is_pipeline_active(task: &Task) -> bool {
 /// - If an evaluation task is actively running → "[evaluating]"
 fn compute_phase_annotation(internal_task: &Task) -> &'static str {
     let id = &internal_task.id;
-    if id.starts_with(".assign-") || id.starts_with("assign-") {
+    if id.starts_with(".assign-") {
         "[⊞ assigning]"
-    } else if id.starts_with(".verify-") || id.starts_with("verify-") {
+    } else if id.starts_with(".verify-") {
         "[∴ validating]"
     } else {
         "[∴ evaluating]"
@@ -227,11 +223,6 @@ fn system_task_parent_id(id: &str) -> Option<String> {
         ".flip-",
         ".respond-to-",
         ".place-", // Legacy: kept so old .place-* tasks still resolve
-        "assign-",
-        "evaluate-",
-        "verify-",
-        "flip-",
-        "respond-to-",
     ] {
         if let Some(rest) = id.strip_prefix(prefix) {
             return Some(rest.to_string());
@@ -1141,13 +1132,23 @@ mod tests {
 
     #[test]
     fn test_is_internal_task() {
-        let assign = make_internal_task("assign-foo", "Assign agent to foo", "assignment", vec![]);
-        let eval = make_internal_task("evaluate-foo", "Evaluate foo", "evaluation", vec!["foo"]);
+        let assign = make_internal_task(".assign-foo", "Assign agent to foo", "assignment", vec![]);
+        let eval = make_internal_task(".evaluate-foo", "Evaluate foo", "evaluation", vec!["foo"]);
         let normal = make_task("foo", "Normal task");
+        let labeled_normal = make_internal_task(
+            "agency-review-pass",
+            "Normal labeled task",
+            "assignment",
+            vec![],
+        );
 
         assert!(is_internal_task(&assign));
         assert!(is_internal_task(&eval));
         assert!(!is_internal_task(&normal));
+        assert!(
+            !is_internal_task(&labeled_normal),
+            "label tags must not make a normal task internal"
+        );
     }
 
     #[test]
@@ -1156,10 +1157,10 @@ mod tests {
         let mut graph = WorkGraph::new();
         let task_a = make_task("a", "Task A");
         let mut assign_b =
-            make_internal_task("assign-b", "Assign agent to b", "assignment", vec!["a"]);
+            make_internal_task(".assign-b", "Assign agent to b", "assignment", vec!["a"]);
         assign_b.status = Status::InProgress;
         let mut task_b = make_task("b", "Task B");
-        task_b.after = vec!["assign-b".to_string()];
+        task_b.after = vec![".assign-b".to_string()];
         graph.add_node(Node::Task(task_a));
         graph.add_node(Node::Task(assign_b));
         graph.add_node(Node::Task(task_b));
@@ -1172,13 +1173,13 @@ mod tests {
         // Both a and b should be in the filtered set
         assert!(task_ids.contains("a"));
         assert!(task_ids.contains("b"));
-        assert!(!task_ids.contains("assign-b"));
+        assert!(!task_ids.contains(".assign-b"));
 
         // b should show [assigning] annotation with the source dot-task ID
         assert!(annots.contains_key("b"));
         let b_annot = &annots["b"];
         assert!(b_annot.text.contains("assigning"));
-        assert!(b_annot.dot_task_ids.contains(&"assign-b".to_string()));
+        assert!(b_annot.dot_task_ids.contains(&".assign-b".to_string()));
     }
 
     /// Verify the default viz filter includes in-progress tasks alongside open tasks,
@@ -1333,7 +1334,7 @@ mod tests {
         );
 
         // Regular system tasks should still be internal
-        let assign = make_internal_task("assign-foo", "Assign", "assignment", vec![]);
+        let assign = make_internal_task(".assign-foo", "Assign", "assignment", vec![]);
         assert!(is_internal_task(&assign));
     }
 
@@ -1371,7 +1372,7 @@ mod tests {
         assert!(!is_internal_task(&analyze));
 
         // Other system tasks should still be internal
-        let assign = make_internal_task("assign-foo", "Assign", "assignment", vec![]);
+        let assign = make_internal_task(".assign-foo", "Assign", "assignment", vec![]);
         assert!(is_internal_task(&assign));
 
         let flip = Task {

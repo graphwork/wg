@@ -1007,6 +1007,13 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         parts.push(vars.task_identity.clone());
     }
 
+    // All scopes: persistent memory from the agent's bound session (R2).
+    // Placed right after identity so the agent reads "who I am" then
+    // "what I remember" before the task details.
+    if !vars.bound_session_summary.is_empty() {
+        parts.push(vars.bound_session_summary.clone());
+    }
+
     // All scopes: task details
     parts.push(format!(
         "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
@@ -1181,6 +1188,11 @@ pub struct TemplateVars {
     pub task_description: String,
     pub task_context: String,
     pub task_identity: String,
+    /// Persistent memory injected when the task's assigned agent has a
+    /// bound session (R2, sessions-as-identity): the rendered
+    /// `session-summary.md` of that session. Empty when the agent has no
+    /// binding or the bound session has no summary yet.
+    pub bound_session_summary: String,
     pub working_dir: String,
     pub skills_preamble: String,
     pub model: String,
@@ -1205,6 +1217,7 @@ impl TemplateVars {
     /// is empty (backward compatible).
     pub fn from_task(task: &Task, context: Option<&str>, workgraph_dir: Option<&Path>) -> Self {
         let task_identity = Self::resolve_identity(task, workgraph_dir);
+        let bound_session_summary = Self::resolve_bound_session_summary(task, workgraph_dir);
 
         let working_dir = workgraph_dir
             .and_then(|d| {
@@ -1258,6 +1271,7 @@ impl TemplateVars {
             task_description: task.description.clone().unwrap_or_default(),
             task_context: context.unwrap_or_default().to_string(),
             task_identity,
+            bound_session_summary,
             working_dir,
             skills_preamble,
             model: task.model.clone().unwrap_or_default(),
@@ -1329,6 +1343,34 @@ impl TemplateVars {
         agency::render_identity_prompt_rich(&role, &motivation, &resolved_skills, outcome.as_ref())
     }
 
+    /// Resolve the persistent-memory block for a task by looking up the
+    /// assigned agent's *bound session* and reading its
+    /// `session-summary.md` (R2, sessions-as-identity).
+    ///
+    /// Returns an empty string (backward compatible) when the task has no
+    /// agent, no `workgraph_dir` is available, the agent has no bound
+    /// session, or the bound session has no summary yet. When a summary
+    /// exists it's wrapped in a labelled section so the agent understands
+    /// it as continuity from its own prior sessions.
+    fn resolve_bound_session_summary(task: &Task, workgraph_dir: Option<&Path>) -> String {
+        let (agent_hash, wg_dir) = match (task.agent.as_deref(), workgraph_dir) {
+            (Some(h), Some(dir)) => (h, dir),
+            _ => return String::new(),
+        };
+
+        match crate::chat_sessions::agent_session_summary(wg_dir, agent_hash) {
+            Some(summary) => format!(
+                "## Persistent Memory (your bound session)\n\n\
+                 You are a persistent agent. The summary below is your own memory \
+                 from prior sessions — what you did and learned before this task. \
+                 Use it for continuity; it is not part of the current task's \
+                 instructions.\n\n{}",
+                summary.trim()
+            ),
+            None => String::new(),
+        }
+    }
+
     /// Read skills preamble from project-level `.claude/skills/` directory.
     ///
     /// If `using-superpowers/SKILL.md` exists, its content is included so that
@@ -1391,6 +1433,7 @@ impl TemplateVars {
             .replace("{{task_description}}", &self.task_description)
             .replace("{{task_context}}", &self.task_context)
             .replace("{{task_identity}}", &self.task_identity)
+            .replace("{{bound_session_summary}}", &self.bound_session_summary)
             .replace("{{working_dir}}", &self.working_dir)
             .replace("{{skills_preamble}}", &self.skills_preamble)
             .replace("{{model}}", &self.model)
@@ -1916,8 +1959,10 @@ mod tests {
             failure_reason: None,
             failure_class: None,
             model: None,
+            reasoning: None,
             provider: None,
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -2262,6 +2307,73 @@ template = "Work on {{task_id}}"
         assert!(vars.task_identity.contains("Spend more time")); // acceptable tradeoff
         assert!(vars.task_identity.contains("Skip tests")); // unacceptable tradeoff
         assert!(vars.task_identity.contains("Agent Identity"));
+    }
+
+    #[test]
+    fn test_bound_session_summary_injected_into_prompt() {
+        // R2: when the task's assigned agent has a bound session, that
+        // session's `session-summary.md` must be injected into the spawn
+        // prompt so the agent carries memory across tasks.
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+
+        // A content-hashed agent id (shape doesn't matter for this test).
+        let agent_id = "agent-nora-hash";
+
+        // Create a persistent session, seed its summary, and bind the
+        // agent to it — the state a first task would have left behind.
+        let session_uuid = crate::chat_sessions::create_session(
+            &wg_dir,
+            crate::chat_sessions::SessionKind::Other,
+            &["nora-memory".to_string()],
+            None,
+        )
+        .unwrap();
+        fs::write(
+            crate::chat_sessions::chat_dir_for_uuid(&wg_dir, &session_uuid)
+                .join("session-summary.md"),
+            "## Prior work\nSet up the weekly grocery list and paid the electric bill.\n",
+        )
+        .unwrap();
+        crate::chat_sessions::bind_agent(&wg_dir, agent_id, "nora-memory").unwrap();
+
+        // A second task assigned to the same agent.
+        let mut task = make_test_task("task-2", "Plan next week");
+        task.agent = Some(agent_id.to_string());
+
+        let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
+        assert!(
+            vars.bound_session_summary.contains("grocery list"),
+            "summary should carry over: {:?}",
+            vars.bound_session_summary
+        );
+
+        // And it lands in the assembled prompt.
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+        assert!(
+            prompt.contains("Persistent Memory"),
+            "prompt must contain the persistent-memory section"
+        );
+        assert!(
+            prompt.contains("paid the electric bill"),
+            "prompt must contain the bound session's summary text"
+        );
+    }
+
+    #[test]
+    fn test_no_bound_session_summary_when_unbound() {
+        // No binding → no memory section (backward compatible).
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path().join(".wg");
+        fs::create_dir_all(&wg_dir).unwrap();
+
+        let mut task = make_test_task("task-1", "Test Task");
+        task.agent = Some("agent-with-no-session".to_string());
+
+        let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
+        assert_eq!(vars.bound_session_summary, "");
     }
 
     #[test]

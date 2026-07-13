@@ -3,7 +3,8 @@
 use anyhow::Result;
 use std::path::Path;
 use worksgood::config::{
-    Config, ConfigSource, EndpointConfig, MatrixConfig, ModelRegistryEntry, Tier,
+    Config, ConfigSource, DispatchRole, EndpointConfig, MatrixConfig, ModelRegistryEntry,
+    ReasoningLevel, Tier,
 };
 
 fn clear_dispatcher_executor_for_model(config: &mut Config, model: &str) -> Option<String> {
@@ -360,6 +361,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     if let Some(ref p) = default_cfg.provider {
                         println!("  default.provider = \"{}\"", p);
                     }
+                    if let Some(reasoning) = default_cfg.reasoning {
+                        println!("  default.reasoning = \"{}\"", reasoning);
+                    }
                 }
                 for role in DispatchRole::ALL {
                     if let Some(role_cfg) = config.models.get_role(*role) {
@@ -371,6 +375,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                         }
                         if let Some(ref t) = role_cfg.tier {
                             println!("  {}.tier = \"{}\"", role, t);
+                        }
+                        if let Some(reasoning) = role_cfg.reasoning {
+                            println!("  {}.reasoning = \"{}\"", role, reasoning);
                         }
                     }
                 }
@@ -756,6 +763,110 @@ pub fn update(
     flip_model: Option<&str>,
     no_reload: bool,
 ) -> Result<()> {
+    update_with_reasoning(
+        dir,
+        scope,
+        executor,
+        model,
+        None,
+        interval,
+        max_agents,
+        max_coordinators,
+        coordinator_interval,
+        poll_interval,
+        coordinator_executor,
+        coordinator_model,
+        coordinator_provider,
+        auto_evaluate,
+        auto_assign,
+        assigner_agent,
+        evaluator_agent,
+        evolver_agent,
+        creator_agent,
+        retention_heuristics,
+        auto_triage,
+        auto_place,
+        auto_create,
+        triage_timeout,
+        triage_max_log_bytes,
+        max_child_tasks,
+        max_task_depth,
+        viz_edge_color,
+        eval_gate_threshold,
+        eval_gate_all,
+        flip_enabled,
+        flip_verification_threshold,
+        chat_history,
+        chat_history_max,
+        tui_counters,
+        retry_context_tokens,
+        endpoint,
+        tier_specs,
+        set_models,
+        &[],
+        set_providers,
+        set_endpoints,
+        role_models,
+        role_providers,
+        flip_inference_model,
+        flip_comparison_model,
+        flip_model,
+        no_reload,
+    )
+}
+
+/// Update configuration values, including structured reasoning routing.
+#[allow(clippy::too_many_arguments)]
+pub fn update_with_reasoning(
+    dir: &Path,
+    scope: ConfigScope,
+    executor: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    interval: Option<u64>,
+    max_agents: Option<usize>,
+    max_coordinators: Option<usize>,
+    coordinator_interval: Option<u64>,
+    poll_interval: Option<u64>,
+    coordinator_executor: Option<&str>,
+    coordinator_model: Option<&str>,
+    coordinator_provider: Option<&str>,
+    auto_evaluate: Option<bool>,
+    auto_assign: Option<bool>,
+    assigner_agent: Option<&str>,
+    evaluator_agent: Option<&str>,
+    evolver_agent: Option<&str>,
+    creator_agent: Option<&str>,
+    retention_heuristics: Option<&str>,
+    auto_triage: Option<bool>,
+    auto_place: Option<bool>,
+    auto_create: Option<bool>,
+    triage_timeout: Option<u64>,
+    triage_max_log_bytes: Option<usize>,
+    max_child_tasks: Option<u32>,
+    max_task_depth: Option<u32>,
+    viz_edge_color: Option<&str>,
+    eval_gate_threshold: Option<f64>,
+    eval_gate_all: Option<bool>,
+    flip_enabled: Option<bool>,
+    flip_verification_threshold: Option<f64>,
+    chat_history: Option<bool>,
+    chat_history_max: Option<usize>,
+    tui_counters: Option<&str>,
+    retry_context_tokens: Option<u32>,
+    endpoint: Option<&str>,
+    tier_specs: &[String],
+    set_models: &[String],
+    set_reasoning: &[String],
+    set_providers: &[String],
+    set_endpoints: &[String],
+    role_models: &[String],
+    role_providers: &[String],
+    flip_inference_model: Option<&str>,
+    flip_comparison_model: Option<&str>,
+    flip_model: Option<&str>,
+    no_reload: bool,
+) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
         ConfigScope::Local => Config::load(dir)?,
@@ -1080,6 +1191,14 @@ pub fn update(
 
     let registry_config = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
     changed |= apply_tier_updates(&mut config, &registry_config, tier_specs)?;
+    if let Some(reasoning) = reasoning {
+        let level = reasoning.parse::<ReasoningLevel>()?;
+        config.models.set_reasoning(DispatchRole::Default, level);
+        config.models.set_reasoning(DispatchRole::TaskAgent, level);
+        println!("Set models.default.reasoning = \"{}\"", level);
+        println!("Set models.task_agent.reasoning = \"{}\"", level);
+        changed = true;
+    }
 
     // Handle --flip-model / --flip-inference-model / --flip-comparison-model
     // before explicit role routing, preserving the old precedence where a
@@ -1091,6 +1210,7 @@ pub fn update(
         &mut config,
         &registry_config,
         set_models,
+        set_reasoning,
         set_providers,
         set_endpoints,
         role_models,
@@ -1127,6 +1247,7 @@ pub fn update(
             || coordinator_model.is_some()
             || !tier_specs.is_empty()
             || !set_models.is_empty()
+            || !set_reasoning.is_empty()
             || !set_providers.is_empty()
             || !set_endpoints.is_empty()
             || !role_models.is_empty()
@@ -1455,11 +1576,11 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
 
     if json {
         let mut entries = serde_json::Map::new();
-        let mut insert_role = |entries: &mut serde_json::Map<String, serde_json::Value>,
-                               name: &str,
-                               resolved: &worksgood::config::ResolvedModel,
-                               tier: String,
-                               source: &str| {
+        let insert_role = |entries: &mut serde_json::Map<String, serde_json::Value>,
+                           name: &str,
+                           resolved: &worksgood::config::ResolvedModel,
+                           tier: String,
+                           source: &str| {
             // `model`/`provider` keep their original split representation (the
             // bare model id + resolved provider) for back-compat. `route` is
             // the full `provider:model` spec, `canonical` renders it
@@ -1474,6 +1595,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                     "canonical": canonical(&spec),
                     "handler": handler_of(&spec),
                     "provider": resolved.provider,
+                    "reasoning": resolved.reasoning.map(|r| r.as_str()),
                     "endpoint": resolved.endpoint,
                     "tier": tier,
                     "source": source,
@@ -1507,10 +1629,10 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("===========================");
         println!();
         println!(
-            "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<14} SOURCE",
-            "ROLE", "TIER", "MODEL", "HANDLER", "PROVIDER", "ENDPOINT"
+            "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<9} {:<14} SOURCE",
+            "ROLE", "TIER", "MODEL", "HANDLER", "PROVIDER", "REASON", "ENDPOINT"
         );
-        println!("  {}", "-".repeat(112));
+        println!("  {}", "-".repeat(122));
 
         let print_row =
             |role: &str, tier: &str, resolved: &worksgood::config::ResolvedModel, source: &str| {
@@ -1524,12 +1646,13 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                 // handler-first and `handler_of` resolves the real handler.
                 let spec = resolved.spawn_model_spec();
                 println!(
-                    "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<14} {}",
+                    "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<9} {:<14} {}",
                     role,
                     tier,
                     canonical(&spec),
                     handler_of(&spec),
                     provider_display,
+                    resolved.reasoning.map(|r| r.as_str()).unwrap_or("(omit)"),
                     resolved.endpoint.as_deref().unwrap_or(""),
                     source,
                 );
@@ -1564,6 +1687,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("         fallback = from [models.default] or agent.model");
         println!();
         println!("Use --set-model <role> <model> to override a role.");
+        println!("Use --set-reasoning <role> <level> to override structured reasoning.");
         println!("Use --set-provider <role> <provider> to set a provider.");
         println!("Use --set-endpoint <role> <endpoint-name> to bind an endpoint.");
     }
@@ -1755,6 +1879,7 @@ fn apply_model_routing_updates(
     config: &mut Config,
     registry_config: &Config,
     set_models: &[String],
+    set_reasoning: &[String],
     set_providers: &[String],
     set_endpoints: &[String],
     role_models: &[String],
@@ -1768,6 +1893,19 @@ fn apply_model_routing_updates(
         }
         for pair in set_models.chunks(2) {
             apply_model_for_role(config, registry_config, &pair[0], &pair[1])?;
+            changed = true;
+        }
+    }
+
+    if !set_reasoning.is_empty() {
+        if set_reasoning.len() % 2 != 0 {
+            anyhow::bail!("--set-reasoning requires pairs of arguments: <role> <level>");
+        }
+        for pair in set_reasoning.chunks(2) {
+            let role: DispatchRole = pair[0].parse()?;
+            let level: ReasoningLevel = pair[1].parse()?;
+            config.models.set_reasoning(role, level);
+            println!("Set models.{}.reasoning = \"{}\"", role, level);
             changed = true;
         }
     }
@@ -1830,6 +1968,7 @@ pub fn update_model_routing(
         &mut config,
         &registry_config,
         set_model.unwrap_or(empty),
+        empty,
         set_provider.unwrap_or(empty),
         set_endpoint.unwrap_or(empty),
         empty,

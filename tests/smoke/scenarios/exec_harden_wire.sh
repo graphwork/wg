@@ -9,7 +9,7 @@
 # spend`, and sensitivity is carried + gated at grant. Each step is a falsifiable
 # assertion:
 #
-#   A. M5  — a task ALREADY IN THE GRAPH, tagged `exec-provider:<wgid>` by the planner, is
+#   A. M5  — a task ALREADY IN THE GRAPH, carrying typed `remote_provider=<wgid>` metadata, is
 #            placed on that remote provider via `wg provider place` (the coordinator-side
 #            driver sourcing model/sensitivity from the task); the full wire runs; and on
 #            accept the result's usage is bridged into the graph task (M15) so it shows in
@@ -118,7 +118,7 @@ echo "setup ok: G=$G  P=$P  Q=$Q"
 # ───────────────────────────────────────────────────────────────────────────────
 # STEP A — M5: a planner-placed graph task runs on a remote provider; M15: usage in spend.
 # ───────────────────────────────────────────────────────────────────────────────
-wga add "remote dinner plan" --id wed-remote --tag "exec-provider:$P" --model claude:opus \
+wga add "remote dinner plan" --id wed-remote --remote-provider "$P" --model claude:opus \
     >/dev/null 2>&1 || loud_fail "STEP A: wg add (planner task) failed"
 wga --json provider enroll "$P" --trust verified --model claude:opus \
     --isolation container >/dev/null 2>&1 || loud_fail "STEP A: enroll P failed"
