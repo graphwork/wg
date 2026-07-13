@@ -2382,6 +2382,17 @@ fn main() -> Result<()> {
                 commands::agent_crud::run_show(&workgraph_dir, &id, cli.json)
             }
             AgentCommands::Rm { id } => commands::agent_crud::run_rm(&workgraph_dir, &id),
+            AgentCommands::Session {
+                id,
+                session,
+                unbind,
+            } => commands::agent_crud::run_session(
+                &workgraph_dir,
+                &id,
+                session.as_deref(),
+                unbind,
+                cli.json,
+            ),
             AgentCommands::Lineage { id } => {
                 commands::agent_crud::run_lineage(&workgraph_dir, &id, cli.json)
             }

@@ -116,6 +116,17 @@ pub struct SessionMeta {
     /// ISO-8601 timestamp of when the archive happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Content-hash of the agency `Agent` (src/agency/types.rs) this
+    /// session is *bound* to, if any. A bound session is that agent's
+    /// persistent identity memory (R2, sessions-as-identity): when the
+    /// agent is dispatched to a task, its bound session's
+    /// `session-summary.md` is injected into the spawn prompt so the
+    /// agent carries continuity across tasks ("Nora remembers last
+    /// month"). At most one session per agent — `bind_agent` clears the
+    /// binding from any previously-bound session so the relationship
+    /// stays 1:1. See `docs/design/sessions-as-identity.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// The on-disk registry file shape.
@@ -217,6 +228,7 @@ pub fn create_session(
             label,
             forked_from: None,
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -308,6 +320,7 @@ pub fn fork_session(
             label: Some(format!("fork of: {}", parent_label)),
             forked_from: Some(source_uuid),
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -671,6 +684,75 @@ pub fn remove_alias(workgraph_dir: &Path, alias: &str) -> Result<()> {
     Ok(())
 }
 
+/// Bind an agency `Agent` (content-hash) to a persistent session so the
+/// agent's memory survives across task spawns (R2, sessions-as-identity).
+///
+/// `session_ref` accepts the same formats as [`resolve_ref`]: UUID, UUID
+/// prefix, or alias. The binding is **1:1** — any session previously
+/// bound to this agent is unbound first, so an agent always maps to at
+/// most one session. Returns the bound session's UUID.
+///
+/// The binding is what makes "Nora remembers last month" work: at task
+/// dispatch, [`agent_session_summary`] reads the bound session's
+/// `session-summary.md` and the spawn path injects it into the prompt.
+pub fn bind_agent(workgraph_dir: &Path, agent_id: &str, session_ref: &str) -> Result<String> {
+    let uuid = resolve_ref(workgraph_dir, session_ref)?;
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    if !reg.sessions.contains_key(&uuid) {
+        bail!("session {} not in registry", uuid);
+    }
+    // Enforce the 1:1 invariant: clear the agent from any other session.
+    for (u, meta) in reg.sessions.iter_mut() {
+        if u != &uuid && meta.agent_id.as_deref() == Some(agent_id) {
+            meta.agent_id = None;
+        }
+    }
+    if let Some(meta) = reg.sessions.get_mut(&uuid) {
+        meta.agent_id = Some(agent_id.to_string());
+    }
+    save(workgraph_dir, &reg)?;
+    Ok(uuid)
+}
+
+/// Remove any session binding for `agent_id`. Idempotent — a no-op if the
+/// agent has no bound session. The session itself is left intact.
+pub fn unbind_agent(workgraph_dir: &Path, agent_id: &str) -> Result<()> {
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    let mut changed = false;
+    for meta in reg.sessions.values_mut() {
+        if meta.agent_id.as_deref() == Some(agent_id) {
+            meta.agent_id = None;
+            changed = true;
+        }
+    }
+    if changed {
+        save(workgraph_dir, &reg)?;
+    }
+    Ok(())
+}
+
+/// Return the UUID of the session bound to `agent_id`, if any.
+pub fn session_for_agent(workgraph_dir: &Path, agent_id: &str) -> Option<String> {
+    let reg = load(workgraph_dir).ok()?;
+    reg.sessions
+        .iter()
+        .find(|(_, meta)| meta.agent_id.as_deref() == Some(agent_id))
+        .map(|(uuid, _)| uuid.clone())
+}
+
+/// Read the `session-summary.md` of the session bound to `agent_id`.
+///
+/// Returns `None` when the agent has no bound session, when the bound
+/// session has no summary yet (fresh session — nothing to remember), or
+/// when the summary is empty. This is the memory that gets injected into
+/// the agent's spawn prompt.
+pub fn agent_session_summary(workgraph_dir: &Path, agent_id: &str) -> Option<String> {
+    let uuid = session_for_agent(workgraph_dir, agent_id)?;
+    let path = chat_dir_for_uuid(workgraph_dir, &uuid).join("session-summary.md");
+    let s = fs::read_to_string(path).ok()?;
+    if s.trim().is_empty() { None } else { Some(s) }
+}
+
 /// Delete a session entirely (registry entry + symlinks + chat dir).
 /// Destructive — no undo.
 pub fn delete_session(workgraph_dir: &Path, reference: &str) -> Result<()> {
@@ -883,6 +965,7 @@ pub fn migrate_numeric_coord_dir(workgraph_dir: &Path, n: u32) -> Result<Option<
             label: Some(format!("coordinator {} (migrated)", n)),
             forked_from: None,
             archived_at: None,
+            agent_id: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -1043,6 +1126,7 @@ mod tests {
                 label: Some("chat 7".to_string()),
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         save(wg, &reg).unwrap();
@@ -1146,6 +1230,7 @@ mod tests {
                 label: None,
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         reg.sessions.insert(
@@ -1157,6 +1242,7 @@ mod tests {
                 label: None,
                 forked_from: None,
                 archived_at: None,
+                agent_id: None,
             },
         );
         save(wg, &reg).unwrap();
@@ -1580,5 +1666,96 @@ mod tests {
 
         // .archive is not an orphan
         assert!(!is_orphan_chat_dir(wg, ".archive"));
+    }
+
+    #[test]
+    fn bind_agent_sets_and_resolves() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(wg, SessionKind::Other, &["nora-memory".into()], None).unwrap();
+
+        // No binding yet.
+        assert_eq!(session_for_agent(wg, "agent-hash-abc"), None);
+
+        // Bind by alias; the agent now resolves to the session UUID.
+        let bound = bind_agent(wg, "agent-hash-abc", "nora-memory").unwrap();
+        assert_eq!(bound, uuid);
+        assert_eq!(session_for_agent(wg, "agent-hash-abc"), Some(uuid.clone()));
+
+        // The binding round-trips through the persisted registry.
+        let reg = load(wg).unwrap();
+        assert_eq!(
+            reg.sessions.get(&uuid).unwrap().agent_id.as_deref(),
+            Some("agent-hash-abc")
+        );
+    }
+
+    #[test]
+    fn bind_agent_is_one_to_one() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let first = create_session(wg, SessionKind::Other, &["first".into()], None).unwrap();
+        let second = create_session(wg, SessionKind::Other, &["second".into()], None).unwrap();
+
+        // Bind the agent to the first session, then re-bind to the second.
+        bind_agent(wg, "agent-x", "first").unwrap();
+        bind_agent(wg, "agent-x", "second").unwrap();
+
+        // Only the second session carries the binding — 1:1 invariant.
+        assert_eq!(session_for_agent(wg, "agent-x"), Some(second.clone()));
+        let reg = load(wg).unwrap();
+        assert_eq!(reg.sessions.get(&first).unwrap().agent_id, None);
+        assert_eq!(
+            reg.sessions.get(&second).unwrap().agent_id.as_deref(),
+            Some("agent-x")
+        );
+
+        // Unbinding removes it entirely.
+        unbind_agent(wg, "agent-x").unwrap();
+        assert_eq!(session_for_agent(wg, "agent-x"), None);
+    }
+
+    #[test]
+    fn bind_agent_rejects_unknown_session() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let err = bind_agent(wg, "agent-x", "does-not-exist").unwrap_err();
+        assert!(
+            err.to_string().contains("did not match")
+                || err.to_string().contains("not in registry"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn agent_session_summary_reads_bound_summary() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(wg, SessionKind::Other, &["nora".into()], None).unwrap();
+
+        // No summary file yet → None even once bound.
+        bind_agent(wg, "nora-agent", "nora").unwrap();
+        assert_eq!(agent_session_summary(wg, "nora-agent"), None);
+
+        // Write a summary; now it's injectable memory.
+        std::fs::write(
+            chat_dir_for_uuid(wg, &uuid).join("session-summary.md"),
+            "## Prior work\nNora bought groceries last week.\n",
+        )
+        .unwrap();
+        let summary = agent_session_summary(wg, "nora-agent").unwrap();
+        assert!(summary.contains("bought groceries"));
+
+        // An empty summary reads as None (nothing to remember).
+        std::fs::write(
+            chat_dir_for_uuid(wg, &uuid).join("session-summary.md"),
+            "   \n",
+        )
+        .unwrap();
+        assert_eq!(agent_session_summary(wg, "nora-agent"), None);
+
+        // An agent with no binding has no memory.
+        assert_eq!(agent_session_summary(wg, "unbound-agent"), None);
     }
 }

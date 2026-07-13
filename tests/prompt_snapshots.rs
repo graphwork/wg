@@ -78,6 +78,7 @@ fn test_template_vars() -> TemplateVars {
         task_description: "Build a widget factory that produces widgets from specs.".into(),
         task_context: "From prerequisite-task: Widget spec is defined in docs/spec.md".into(),
         task_identity: "## Agent Identity\n\nYou are a Builder agent.".into(),
+        bound_session_summary: String::new(),
         working_dir: "/home/user/project".into(),
         skills_preamble: "".into(),
         model: CLAUDE_SONNET_MODEL_ID.into(),
