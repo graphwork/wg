@@ -34,6 +34,126 @@ pub fn new_emacs_editor() -> EditorState {
     state
 }
 
+#[cfg(test)]
+mod large_graph_snapshot_tests {
+    use super::*;
+
+    fn shell() -> VizApp {
+        VizApp::build(
+            PathBuf::from("/tmp/wg-snapshot-test"),
+            VizOptions::default(),
+            Some(false),
+            None,
+            true,
+            Config::default(),
+            None,
+            false,
+        )
+    }
+
+    fn synthetic_snapshot(rows: usize, selected: usize, generation: u64) -> GraphViewSnapshot {
+        let mut app = shell();
+        app.initial_load = false;
+        for index in 0..rows {
+            let id = format!("task-{index:05}");
+            app.lines.push(format!("{id} synthetic row {index}"));
+            app.plain_lines.push(format!("{id} synthetic row {index}"));
+            app.search_lines.push(format!("{id} synthetic row {index}"));
+            app.task_order.push(id.clone());
+            app.node_line_map.insert(id, index);
+        }
+        app.max_line_width = 32;
+        app.selected_task_idx = Some(selected.min(rows.saturating_sub(1)));
+        app.rebuild_snapshot_indexes();
+        app.scroll.content_height = rows + 1;
+        let key = app.graph_view_key();
+        app.take_graph_snapshot(generation, key, None, true)
+    }
+
+    #[test]
+    fn snapshot_accept_is_constant_work_and_preserves_interaction_state() {
+        let mut app = shell();
+        app.snapshot_engine = Some(super::super::snapshot_engine::SnapshotEngine::new());
+        app.install_graph_snapshot(synthetic_snapshot(10_000, 5_000, 1));
+
+        app.scroll.viewport_height = 40;
+        app.scroll.offset_y = 4_990;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.input_mode = InputMode::Search;
+        app.search_active = true;
+        app.search_input = "needle".to_string();
+        app.active_coordinator_id = 7;
+        app.active_tabs = vec![0, 7, 9];
+        app.chat.scroll = 23;
+        app.hud_scroll = 41;
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-task-05000".to_string(),
+            anchor_parent_id: "task-05000".to_string(),
+        });
+        let old_line_storage = app.lines.as_ptr();
+        let retired_generation = Arc::downgrade(&app.task_snapshots);
+
+        let replacement = synthetic_snapshot(10_001, 5_000, 2);
+        let replacement_storage = replacement.lines.as_ptr();
+        let started = Instant::now();
+        app.install_graph_snapshot(replacement);
+        let accepted_in = started.elapsed();
+
+        assert_ne!(old_line_storage, app.lines.as_ptr());
+        assert_eq!(replacement_storage, app.lines.as_ptr());
+        assert_eq!(app.snapshot_generation, 2);
+        assert_eq!(app.selected_task_id(), Some("task-05000"));
+        assert_eq!(app.scroll.offset_y, 4_990);
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.input_mode, InputMode::Search);
+        assert_eq!(app.search_input, "needle");
+        assert_eq!(app.active_coordinator_id, 7);
+        assert_eq!(app.active_tabs, vec![0, 7, 9]);
+        assert_eq!(app.chat.scroll, 23);
+        assert_eq!(app.hud_scroll, 41);
+        assert_eq!(
+            app.hud_pin.as_ref().map(|pin| pin.dot_task_id.as_str()),
+            Some(".evaluate-task-05000")
+        );
+        assert!(
+            accepted_in < Duration::from_millis(5),
+            "10k snapshot acceptance must be bounded; took {accepted_in:?}"
+        );
+        let retire_deadline = Instant::now() + Duration::from_secs(1);
+        while retired_generation.upgrade().is_some() && Instant::now() < retire_deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            retired_generation.upgrade().is_none(),
+            "the idle worker retained the replaced graph generation"
+        );
+    }
+
+    #[test]
+    fn snapshot_indexes_make_filter_hit_test_and_trace_lookup_constant_time() {
+        let mut app = shell();
+        app.install_graph_snapshot(synthetic_snapshot(10_000, 9_999, 1));
+        app.filtered_indices = Some((0..10_000).step_by(2).collect());
+        app.fuzzy_matches = (0..10_000)
+            .step_by(10)
+            .map(|line_idx| FuzzyLineMatch {
+                line_idx,
+                score: 1,
+                char_positions: vec![0],
+            })
+            .collect();
+        app.rebuild_snapshot_indexes();
+
+        assert_eq!(app.original_to_visible(9_998), Some(4_999));
+        assert_eq!(app.original_to_visible(9_999), None);
+        assert_eq!(app.match_for_line(9_990).map(|m| m.line_idx), Some(9_990));
+        assert!(app.select_task_at_line(9_999));
+        assert_eq!(app.selected_task_id(), Some("task-09999"));
+    }
+}
+
 #[allow(dead_code)]
 pub fn new_emacs_editor_with(text: &str) -> EditorState {
     use edtui::Lines;
@@ -1732,6 +1852,7 @@ pub struct LauncherState {
 /// Pure function (no &mut self) so unit tests can exercise it without
 /// constructing a full `VizViewer`. See
 /// `chat_launched_with_uses_per_chat_executor` for the regression lock.
+#[cfg(test)]
 pub fn resolve_chat_pty_executor_and_model(
     workgraph_dir: &std::path::Path,
     config: &Config,
@@ -1743,6 +1864,20 @@ pub fn resolve_chat_pty_executor_and_model(
             g.get_task(&worksgood::chat_id::format_chat_task_id(coordinator_id))
                 .cloned()
         });
+    resolve_chat_pty_executor_and_model_with_task(
+        workgraph_dir,
+        config,
+        coordinator_id,
+        chat_task.as_ref(),
+    )
+}
+
+fn resolve_chat_pty_executor_and_model_with_task(
+    workgraph_dir: &std::path::Path,
+    config: &Config,
+    coordinator_id: u32,
+    chat_task: Option<&worksgood::graph::Task>,
+) -> (String, Option<String>) {
     let coord_state =
         crate::commands::service::CoordinatorState::load_for(workgraph_dir, coordinator_id);
     let executor = coord_state
@@ -2730,6 +2865,7 @@ impl TaskFormField {
 }
 
 impl TaskFormState {
+    #[cfg(test)]
     pub fn new(workgraph_dir: &std::path::Path) -> Self {
         // Load all tasks for dependency search.
         let graph_path = workgraph_dir.join("graph.jsonl");
@@ -2737,6 +2873,10 @@ impl TaskFormState {
             Ok(g) => g.tasks().map(|t| (t.id.clone(), t.title.clone())).collect(),
             Err(_) => Vec::new(),
         };
+        Self::from_tasks(all_tasks)
+    }
+
+    fn from_tasks(all_tasks: Vec<(String, String)>) -> Self {
         Self {
             active_field: TaskFormField::Title,
             title: String::new(),
@@ -6149,7 +6289,7 @@ pub fn extract_section_name(line: &str) -> Option<String> {
 /// `in_progress` uses `Status::is_active()` so it matches what `wg viz`
 /// highlights as "running" (InProgress + PendingValidation + PendingEval).
 /// See the rationale on `Status::is_active`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TaskCounts {
     pub total: usize,
     pub done: usize,
@@ -6161,6 +6301,7 @@ pub struct TaskCounts {
 }
 
 /// Active cycle timing info for status bar display.
+#[derive(Clone)]
 pub struct CycleTimingEntry {
     /// Task ID of the cycle header (config owner).
     pub task_id: String,
@@ -6177,6 +6318,7 @@ pub struct CycleTimingEntry {
 }
 
 /// A single fuzzy match result for a line.
+#[derive(Clone)]
 pub struct FuzzyLineMatch {
     /// Index into the original `lines`/`plain_lines` arrays.
     pub line_idx: usize,
@@ -6188,10 +6330,97 @@ pub struct FuzzyLineMatch {
     pub char_positions: Vec<usize>,
 }
 
+/// Semantic identity of a worker-derived graph projection.  A completion is
+/// accepted only if this still matches the user's current intent, preventing
+/// an old search, sort, visibility toggle, or selection trace from rolling the
+/// display backward.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GraphViewKey {
+    search_input: String,
+    search_active: bool,
+    sort_mode: u8,
+    show_system_tasks: bool,
+    show_running_system_tasks: bool,
+    selected_task_id: Option<String>,
+}
+
+/// Immutable product of one background parse/derive/layout/accounting pass.
+///
+/// All graph-sized allocations live here.  Installing it consists only of a
+/// fixed number of ownership moves and stable-ID hash lookups.  The replaced
+/// product is returned to [`snapshot_engine`](super::snapshot_engine) so its
+/// large allocations are destroyed off the terminal thread.
+pub(super) struct GraphViewSnapshot {
+    generation: u64,
+    key: GraphViewKey,
+    graph_mtime: Option<SystemTime>,
+    published_graph: Option<Arc<worksgood::graph::WorkGraph>>,
+    selected_task_id: Option<String>,
+    lines: Vec<String>,
+    plain_lines: Vec<String>,
+    search_lines: Vec<String>,
+    max_line_width: usize,
+    fuzzy_matches: Vec<FuzzyLineMatch>,
+    fuzzy_match_index_by_line: Vec<Option<usize>>,
+    filtered_indices: Option<Vec<usize>>,
+    visible_position_by_line: Vec<Option<usize>>,
+    task_counts: TaskCounts,
+    total_usage: TokenUsage,
+    visible_usage: TokenUsage,
+    task_token_map: HashMap<String, TokenUsage>,
+    cycle_timing: Vec<CycleTimingEntry>,
+    task_order: Vec<String>,
+    task_index: HashMap<String, usize>,
+    line_task_map: HashMap<usize, String>,
+    node_line_map: HashMap<String, usize>,
+    forward_edges: HashMap<String, Vec<String>>,
+    reverse_edges: HashMap<String, Vec<String>>,
+    upstream_set: HashSet<String>,
+    downstream_set: HashSet<String>,
+    char_edge_map: HashMap<(usize, usize), Vec<(String, String)>>,
+    cycle_members: HashMap<String, HashSet<String>>,
+    cycle_set: HashSet<String>,
+    annotation_map: HashMap<String, crate::commands::viz::AnnotationInfo>,
+    annotation_hit_regions: Vec<AnnotationHitRegion>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
+    task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
+    sort_status_map: HashMap<String, (u8, String)>,
+    splash_animations: HashMap<String, Animation>,
+    toasts: Vec<Toast>,
+    task_message_statuses: HashMap<String, worksgood::messages::CoordinatorMessageStatus>,
+    cached_chat_tab_entries: Vec<(u32, String)>,
+    cached_user_board_entries: Vec<(String, String)>,
+    cached_coordinator_id_set: HashMap<u32, String>,
+}
+
+struct GraphBuildInput {
+    key: GraphViewKey,
+    workgraph_dir: PathBuf,
+    viz_options: VizOptions,
+    graph: Arc<worksgood::graph::WorkGraph>,
+    graph_mtime: Option<SystemTime>,
+    animation_mode: AnimationMode,
+    task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
+    splash_animations: HashMap<String, Animation>,
+}
+
+fn zero_token_usage() -> TokenUsage {
+    TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    }
+}
+
 /// Main application state for the viz viewer.
 pub struct VizApp {
     /// Path to the WG directory.
     pub workgraph_dir: PathBuf,
+    /// Parsed graph revision coherent with the installed derived view.
+    published_graph: Option<Arc<worksgood::graph::WorkGraph>>,
     /// Viz options passed from CLI (--all, --status, --critical-path, etc.).
     viz_options: VizOptions,
     /// Whether the app should quit on next loop iteration.
@@ -6223,11 +6452,15 @@ pub struct VizApp {
     pub search_input: String,
     /// Lines that fuzzy-match the current query, with scores and positions.
     pub fuzzy_matches: Vec<FuzzyLineMatch>,
+    fuzzy_match_index_by_line: Vec<Option<usize>>,
     /// Index into `fuzzy_matches` for the currently focused match.
     pub current_match: Option<usize>,
     /// When filter is active, indices of original lines that are visible.
     /// `None` means show all lines (no filter).
     pub filtered_indices: Option<Vec<usize>>,
+    /// O(1) inverse for filtered scroll anchoring. Built with the snapshot;
+    /// `original_to_visible` never scans a 10k-line filter on the UI thread.
+    visible_position_by_line: Vec<Option<usize>>,
     /// The fuzzy matcher instance (reused across searches).
     matcher: SkimMatcherV2,
 
@@ -6237,6 +6470,9 @@ pub struct VizApp {
     pub total_usage: TokenUsage,
     /// Per-task token usage keyed by task ID (for computing visible-task totals).
     pub task_token_map: HashMap<String, TokenUsage>,
+    /// Aggregate usage for the current worker-derived visible set. Rendering
+    /// reads this value instead of scanning every graph line each frame.
+    visible_usage: TokenUsage,
     /// Active cycle timing info (refreshed with graph stats).
     pub cycle_timing: Vec<CycleTimingEntry>,
 
@@ -6357,6 +6593,10 @@ pub struct VizApp {
     // ── Task selection / edge tracing ──
     /// Ordered list of task IDs as they appear in the viz output (top to bottom).
     pub task_order: Vec<String>,
+    /// Stable-ID selection index built off-thread.
+    task_index: HashMap<String, usize>,
+    /// Reverse line hit-test index built off-thread.
+    line_task_map: HashMap<usize, String>,
     /// Map from task ID to its line index in the viz output.
     pub node_line_map: HashMap<String, usize>,
     /// Forward edges: task_id → dependent task IDs.
@@ -6386,7 +6626,7 @@ pub struct VizApp {
     /// Sticky annotations: annotations that should persist in the UI for a
     /// minimum duration even after the underlying system task completes.
     /// Key is the parent task ID, value is the annotation info + timing.
-    sticky_annotations: HashMap<String, StickyAnnotation>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
     /// Clickable hit regions for phase annotations, computed from plain_lines + annotation_map.
     pub annotation_hit_regions: Vec<AnnotationHitRegion>,
     /// Active annotation click flash (for visual feedback). Clears after 500ms.
@@ -6720,7 +6960,7 @@ pub struct VizApp {
     pub splash_animations: HashMap<String, Animation>,
     /// Previous per-task snapshots for change detection.
     /// Populated on each refresh; compared to current state to detect changes.
-    pub task_snapshots: HashMap<String, TaskSnapshot>,
+    pub task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
     /// Animation mode (from config: normal/fast/slow/reduced/off).
     pub animation_mode: AnimationMode,
     /// Active slide animation on the inspector panel (for Alt+arrow view cycling).
@@ -6886,6 +7126,10 @@ pub struct VizApp {
     /// Versioned, bounded initial-load worker.  It is started only after the
     /// storage-independent first frame has been painted.
     bootstrap: Option<super::bootstrap::BootstrapEngine>,
+    /// Bounded latest-wins CPU worker for all graph-sized presentation work.
+    snapshot_engine: Option<super::snapshot_engine::SnapshotEngine>,
+    /// Monotonic generation of the currently installed graph view.
+    snapshot_generation: u64,
     /// True once a coherent graph/config/state/history snapshot was atomically
     /// installed.  Render uses placeholders while this is false and never
     /// invokes lazy storage loaders.
@@ -6967,6 +7211,8 @@ impl VizApp {
             );
         }
         app.key_feedback_enabled = force_show_keys || configured_show_keys;
+        app.rebuild_snapshot_indexes();
+        app.visible_usage = app.compute_visible_token_usage();
         Ok(app.into_bootstrap_apply())
     }
 
@@ -6986,6 +7232,7 @@ impl VizApp {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let mut app = Self {
             workgraph_dir,
+            published_graph: None,
             viz_options,
             should_quit: false,
             exit_prompt_resolved: false,
@@ -6997,8 +7244,10 @@ impl VizApp {
             search_active: false,
             search_input: String::new(),
             fuzzy_matches: Vec::new(),
+            fuzzy_match_index_by_line: Vec::new(),
             current_match: None,
             filtered_indices: None,
+            visible_position_by_line: Vec::new(),
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
             total_usage: TokenUsage {
@@ -7009,6 +7258,13 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            visible_usage: TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
@@ -7055,6 +7311,8 @@ impl VizApp {
             config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order: Vec::new(),
+            task_index: HashMap::new(),
+            line_task_map: HashMap::new(),
             node_line_map: HashMap::new(),
             forward_edges: HashMap::new(),
             reverse_edges: HashMap::new(),
@@ -7065,7 +7323,7 @@ impl VizApp {
             char_edge_map: std::collections::HashMap::new(),
             cycle_members: HashMap::new(),
             annotation_map: HashMap::new(),
-            sticky_annotations: HashMap::new(),
+            sticky_annotations: Arc::new(HashMap::new()),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
             hud_pin: None,
@@ -7168,7 +7426,7 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: true,
             splash_animations: HashMap::new(),
-            task_snapshots: HashMap::new(),
+            task_snapshots: Arc::new(HashMap::new()),
             animation_mode,
             slide_animation: None,
             message_name_threshold: config.tui.message_name_threshold,
@@ -7220,6 +7478,8 @@ impl VizApp {
             is_light_theme: config.tui.color_theme == "light",
             async_fs: super::async_fs::AsyncFs::new_unstarted(),
             bootstrap: None,
+            snapshot_engine: None,
+            snapshot_generation: 0,
             bootstrap_complete: load_storage,
         };
         if !load_storage {
@@ -7238,8 +7498,10 @@ impl VizApp {
             app.refresh_chat_tab_caches(&graph);
             app.async_fs.seed_graph(graph, graph_mtime);
         } else {
-            app.load_viz();
-            app.load_stats();
+            app.lines = vec!["(error loading graph)".to_string()];
+            app.plain_lines = app.lines.clone();
+            app.search_lines = app.lines.clone();
+            app.max_line_width = app.lines[0].len();
         }
         // Restore TUI focus state from previous session (before ensure_user_coordinator
         // so that the user's last-focused coordinator is preserved).
@@ -7276,8 +7538,11 @@ impl VizApp {
             },
         );
         let task_token_map = std::mem::take(&mut self.task_token_map);
+        let visible_usage = std::mem::replace(&mut self.visible_usage, zero_token_usage());
         let cycle_timing = std::mem::take(&mut self.cycle_timing);
         let task_order = std::mem::take(&mut self.task_order);
+        let task_index = std::mem::take(&mut self.task_index);
+        let line_task_map = std::mem::take(&mut self.line_task_map);
         let node_line_map = std::mem::take(&mut self.node_line_map);
         let forward_edges = std::mem::take(&mut self.forward_edges);
         let reverse_edges = std::mem::take(&mut self.reverse_edges);
@@ -7286,6 +7551,8 @@ impl VizApp {
         let annotation_map = std::mem::take(&mut self.annotation_map);
         let sticky_annotations = std::mem::take(&mut self.sticky_annotations);
         let cycle_set = std::mem::take(&mut self.cycle_set);
+        let visible_position_by_line = std::mem::take(&mut self.visible_position_by_line);
+        let fuzzy_match_index_by_line = std::mem::take(&mut self.fuzzy_match_index_by_line);
         let task_snapshots = std::mem::take(&mut self.task_snapshots);
         let sort_status_map = std::mem::take(&mut self.sort_status_map);
         let cached_chat_tab_entries = std::mem::take(&mut self.cached_chat_tab_entries);
@@ -7337,8 +7604,11 @@ impl VizApp {
             app.task_counts = task_counts;
             app.total_usage = total_usage;
             app.task_token_map = task_token_map;
+            app.visible_usage = visible_usage;
             app.cycle_timing = cycle_timing;
             app.task_order = task_order;
+            app.task_index = task_index;
+            app.line_task_map = line_task_map;
             app.node_line_map = node_line_map;
             app.forward_edges = forward_edges;
             app.reverse_edges = reverse_edges;
@@ -7347,6 +7617,8 @@ impl VizApp {
             app.annotation_map = annotation_map;
             app.sticky_annotations = sticky_annotations;
             app.cycle_set = cycle_set;
+            app.visible_position_by_line = visible_position_by_line;
+            app.fuzzy_match_index_by_line = fuzzy_match_index_by_line;
             app.task_snapshots = task_snapshots;
             app.sort_status_map = sort_status_map;
             app.cached_chat_tab_entries = cached_chat_tab_entries;
@@ -7382,6 +7654,7 @@ impl VizApp {
             app.last_graph_mtime = last_graph_mtime;
             app.viz_options = viz_options;
             if let Some((graph, mtime)) = graph {
+                app.published_graph = Some(graph.clone());
                 app.async_fs.seed_graph_arc(graph, mtime);
             }
             app.tracer = tracer;
@@ -7398,6 +7671,7 @@ impl VizApp {
             return;
         }
         self.async_fs.start();
+        self.snapshot_engine = Some(super::snapshot_engine::SnapshotEngine::new());
         let args = super::bootstrap::BootstrapArgs {
             workgraph_dir: self.workgraph_dir.clone(),
             viz_options: self.viz_options.clone(),
@@ -7442,16 +7716,382 @@ impl VizApp {
         self.bootstrap.as_ref().and_then(|b| b.feedback())
     }
 
-    /// Load viz output by calling the viz module directly.
-    pub fn load_viz(&mut self) {
-        let viz_result = self.generate_viz();
-        self.apply_viz_result(viz_result);
+    fn graph_view_key(&self) -> GraphViewKey {
+        GraphViewKey {
+            search_input: self.search_input.clone(),
+            search_active: self.search_active,
+            sort_mode: match self.sort_mode {
+                SortMode::Chronological => 0,
+                SortMode::ReverseChronological => 1,
+                SortMode::StatusGrouped => 2,
+            },
+            show_system_tasks: self.show_system_tasks,
+            show_running_system_tasks: self.show_running_system_tasks,
+            selected_task_id: self.selected_task_id().map(str::to_owned),
+        }
+    }
+
+    fn coherent_graph(&self) -> Option<Arc<worksgood::graph::WorkGraph>> {
+        if let Some(graph) = self.published_graph.as_ref() {
+            return Some(graph.clone());
+        }
+        #[cfg(test)]
+        {
+            return load_graph(self.workgraph_dir.join("graph.jsonl"))
+                .ok()
+                .map(Arc::new);
+        }
+        #[cfg(not(test))]
+        None
+    }
+
+    fn request_graph_snapshot(&mut self) {
+        let Some((graph, graph_mtime)) = self.async_fs.cached_graph() else {
+            return;
+        };
+        self.request_graph_snapshot_from(graph, graph_mtime);
+    }
+
+    fn request_graph_snapshot_from(
+        &mut self,
+        graph: Arc<worksgood::graph::WorkGraph>,
+        graph_mtime: Option<SystemTime>,
+    ) {
+        self.graph_reload_pending = true;
+        if self.snapshot_engine.is_none() {
+            self.snapshot_engine = Some(super::snapshot_engine::SnapshotEngine::new());
+        }
+        let input = GraphBuildInput {
+            key: self.graph_view_key(),
+            workgraph_dir: self.workgraph_dir.clone(),
+            viz_options: self.viz_options.clone(),
+            graph,
+            graph_mtime,
+            animation_mode: self.animation_mode,
+            task_snapshots: self.task_snapshots.clone(),
+            sticky_annotations: self.sticky_annotations.clone(),
+            // The animation map is globally capped, so this clone has a fixed
+            // upper bound independent of graph size.
+            splash_animations: self.splash_animations.clone(),
+        };
+        if let Some(engine) = self.snapshot_engine.as_mut() {
+            engine.request(Box::new(move |token| {
+                Self::derive_graph_snapshot(input, token)
+            }));
+        }
+    }
+
+    fn derive_graph_snapshot(
+        input: GraphBuildInput,
+        token: super::snapshot_engine::GenerationToken,
+    ) -> std::result::Result<GraphViewSnapshot, String> {
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let mut app = Self::build(
+            input.workgraph_dir,
+            input.viz_options,
+            None,
+            None,
+            false,
+            Config::default(),
+            input.graph_mtime,
+            false,
+        );
+        app.show_system_tasks = input.key.show_system_tasks;
+        app.show_running_system_tasks = input.key.show_running_system_tasks;
+        app.sort_mode = match input.key.sort_mode {
+            1 => SortMode::ReverseChronological,
+            2 => SortMode::StatusGrouped,
+            _ => SortMode::Chronological,
+        };
+        app.task_snapshots = input.task_snapshots;
+        app.sticky_annotations = input.sticky_annotations;
+        app.splash_animations = input.splash_animations;
+        app.initial_load = false;
+
+        // Seed only the stable selected ID.  This lets the existing selection
+        // reconciliation preserve it without copying the old graph order.
+        if let Some(selected) = input.key.selected_task_id.clone() {
+            app.task_order.push(selected);
+            app.selected_task_idx = Some(0);
+        }
+        // Avoid treating every task other than the seeded selection as newly
+        // visible. Status/assignment animations are derived below from the
+        // compact task-snapshot index.
+        app.animation_mode = AnimationMode::Off;
+        app.load_viz_from_graph(&input.graph);
+        app.animation_mode = input.animation_mode;
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+
+        app.load_stats_from_graph(&input.graph);
+        app.refresh_chat_tab_caches(&input.graph);
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+
+        app.apply_sort_mode_sync();
+        app.search_input = input.key.search_input.clone();
+        app.search_active = input.key.search_active;
+        app.rerun_search();
+        app.recompute_trace_sync();
+        app.rebuild_snapshot_indexes();
+        app.visible_usage = app.compute_visible_token_usage();
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let mut snapshot =
+            app.take_graph_snapshot(token.generation(), input.key, input.graph_mtime, true);
+        snapshot.published_graph = Some(input.graph);
+        Ok(snapshot)
+    }
+
+    fn rebuild_snapshot_indexes(&mut self) {
+        self.task_index = self
+            .task_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect();
+        self.line_task_map = self
+            .node_line_map
+            .iter()
+            .map(|(id, line)| (*line, id.clone()))
+            .collect();
+        self.visible_position_by_line = vec![None; self.lines.len()];
+        self.fuzzy_match_index_by_line = vec![None; self.lines.len()];
+        for (match_index, matched) in self.fuzzy_matches.iter().enumerate() {
+            if let Some(slot) = self.fuzzy_match_index_by_line.get_mut(matched.line_idx) {
+                *slot = Some(match_index);
+            }
+        }
+        match &self.filtered_indices {
+            Some(indices) => {
+                for (visible, original) in indices.iter().copied().enumerate() {
+                    if let Some(slot) = self.visible_position_by_line.get_mut(original) {
+                        *slot = Some(visible);
+                    }
+                }
+            }
+            None => {
+                for (line, slot) in self.visible_position_by_line.iter_mut().enumerate() {
+                    *slot = Some(line);
+                }
+            }
+        }
+    }
+
+    fn take_graph_snapshot(
+        &mut self,
+        generation: u64,
+        key: GraphViewKey,
+        graph_mtime: Option<SystemTime>,
+        take_notifications: bool,
+    ) -> GraphViewSnapshot {
+        GraphViewSnapshot {
+            generation,
+            key,
+            graph_mtime,
+            published_graph: self.published_graph.take(),
+            selected_task_id: self.selected_task_id().map(str::to_owned),
+            lines: std::mem::take(&mut self.lines),
+            plain_lines: std::mem::take(&mut self.plain_lines),
+            search_lines: std::mem::take(&mut self.search_lines),
+            max_line_width: self.max_line_width,
+            fuzzy_matches: std::mem::take(&mut self.fuzzy_matches),
+            fuzzy_match_index_by_line: std::mem::take(&mut self.fuzzy_match_index_by_line),
+            filtered_indices: self.filtered_indices.take(),
+            visible_position_by_line: std::mem::take(&mut self.visible_position_by_line),
+            task_counts: std::mem::take(&mut self.task_counts),
+            total_usage: std::mem::replace(&mut self.total_usage, zero_token_usage()),
+            visible_usage: std::mem::replace(&mut self.visible_usage, zero_token_usage()),
+            task_token_map: std::mem::take(&mut self.task_token_map),
+            cycle_timing: std::mem::take(&mut self.cycle_timing),
+            task_order: std::mem::take(&mut self.task_order),
+            task_index: std::mem::take(&mut self.task_index),
+            line_task_map: std::mem::take(&mut self.line_task_map),
+            node_line_map: std::mem::take(&mut self.node_line_map),
+            forward_edges: std::mem::take(&mut self.forward_edges),
+            reverse_edges: std::mem::take(&mut self.reverse_edges),
+            upstream_set: std::mem::take(&mut self.upstream_set),
+            downstream_set: std::mem::take(&mut self.downstream_set),
+            char_edge_map: std::mem::take(&mut self.char_edge_map),
+            cycle_members: std::mem::take(&mut self.cycle_members),
+            cycle_set: std::mem::take(&mut self.cycle_set),
+            annotation_map: std::mem::take(&mut self.annotation_map),
+            annotation_hit_regions: std::mem::take(&mut self.annotation_hit_regions),
+            sticky_annotations: std::mem::take(&mut self.sticky_annotations),
+            task_snapshots: std::mem::take(&mut self.task_snapshots),
+            sort_status_map: std::mem::take(&mut self.sort_status_map),
+            splash_animations: std::mem::take(&mut self.splash_animations),
+            toasts: if take_notifications {
+                std::mem::take(&mut self.toasts)
+            } else {
+                Vec::new()
+            },
+            task_message_statuses: std::mem::take(&mut self.task_message_statuses),
+            cached_chat_tab_entries: std::mem::take(&mut self.cached_chat_tab_entries),
+            cached_user_board_entries: std::mem::take(&mut self.cached_user_board_entries),
+            cached_coordinator_id_set: std::mem::take(&mut self.cached_coordinator_id_set),
+        }
+    }
+
+    fn install_graph_snapshot(&mut self, mut snapshot: GraphViewSnapshot) {
+        let was_at_bottom = self.scroll.is_at_bottom_strict() || self.initial_load;
+        let was_at_top = self.scroll.is_at_top() || self.initial_load;
+        let old_offset_y = self.scroll.offset_y;
+        let old_selected_id = self.selected_task_id().map(str::to_owned);
+        let old_relative_pos = old_selected_id.as_ref().and_then(|id| {
+            let original = *self.node_line_map.get(id)?;
+            let visible = self.original_to_visible(original)?;
+            Some(visible as isize - old_offset_y as isize)
+        });
+        let old_match = self.current_match;
+        let old = self.take_graph_snapshot(
+            self.snapshot_generation,
+            self.graph_view_key(),
+            self.last_graph_mtime,
+            false,
+        );
+
+        self.lines = std::mem::take(&mut snapshot.lines);
+        self.plain_lines = std::mem::take(&mut snapshot.plain_lines);
+        self.search_lines = std::mem::take(&mut snapshot.search_lines);
+        self.max_line_width = snapshot.max_line_width;
+        self.published_graph = snapshot.published_graph.take();
+        self.fuzzy_matches = std::mem::take(&mut snapshot.fuzzy_matches);
+        self.fuzzy_match_index_by_line = std::mem::take(&mut snapshot.fuzzy_match_index_by_line);
+        self.filtered_indices = snapshot.filtered_indices.take();
+        self.visible_position_by_line = std::mem::take(&mut snapshot.visible_position_by_line);
+        self.task_counts = std::mem::take(&mut snapshot.task_counts);
+        self.total_usage = std::mem::replace(&mut snapshot.total_usage, zero_token_usage());
+        self.visible_usage = std::mem::replace(&mut snapshot.visible_usage, zero_token_usage());
+        self.task_token_map = std::mem::take(&mut snapshot.task_token_map);
+        self.cycle_timing = std::mem::take(&mut snapshot.cycle_timing);
+        self.task_order = std::mem::take(&mut snapshot.task_order);
+        self.task_index = std::mem::take(&mut snapshot.task_index);
+        self.line_task_map = std::mem::take(&mut snapshot.line_task_map);
+        self.node_line_map = std::mem::take(&mut snapshot.node_line_map);
+        self.forward_edges = std::mem::take(&mut snapshot.forward_edges);
+        self.reverse_edges = std::mem::take(&mut snapshot.reverse_edges);
+        self.upstream_set = std::mem::take(&mut snapshot.upstream_set);
+        self.downstream_set = std::mem::take(&mut snapshot.downstream_set);
+        self.char_edge_map = std::mem::take(&mut snapshot.char_edge_map);
+        self.cycle_members = std::mem::take(&mut snapshot.cycle_members);
+        self.cycle_set = std::mem::take(&mut snapshot.cycle_set);
+        self.annotation_map = std::mem::take(&mut snapshot.annotation_map);
+        self.annotation_hit_regions = std::mem::take(&mut snapshot.annotation_hit_regions);
+        self.sticky_annotations = std::mem::take(&mut snapshot.sticky_annotations);
+        self.task_snapshots = std::mem::take(&mut snapshot.task_snapshots);
+        self.sort_status_map = std::mem::take(&mut snapshot.sort_status_map);
+        self.splash_animations = std::mem::take(&mut snapshot.splash_animations);
+        self.task_message_statuses = std::mem::take(&mut snapshot.task_message_statuses);
+        self.cached_chat_tab_entries = std::mem::take(&mut snapshot.cached_chat_tab_entries);
+        self.cached_user_board_entries = std::mem::take(&mut snapshot.cached_user_board_entries);
+        self.cached_coordinator_id_set = std::mem::take(&mut snapshot.cached_coordinator_id_set);
+        for toast in std::mem::take(&mut snapshot.toasts) {
+            self.push_toast(toast.message, toast.severity);
+        }
+
+        self.selected_task_idx = snapshot
+            .selected_task_id
+            .as_ref()
+            .and_then(|id| self.task_index.get(id).copied())
+            .or_else(|| (!self.task_order.is_empty()).then_some(0));
+        self.current_match = if self.fuzzy_matches.is_empty() {
+            None
+        } else {
+            Some(old_match.unwrap_or(0).min(self.fuzzy_matches.len() - 1))
+        };
+        self.scroll.content_height = self.visible_line_count() + 1;
+        self.scroll.content_width = self.max_line_width;
+
+        let new_selected_id = self.selected_task_id().map(str::to_owned);
+        if self.initial_load || was_at_top {
+            self.scroll.go_top();
+            self.initial_load = false;
+        } else if was_at_bottom {
+            self.scroll.go_bottom();
+        } else if old_selected_id == new_selected_id {
+            if let (Some(relative), Some(id)) = (old_relative_pos, new_selected_id.as_ref())
+                && let Some(original) = self.node_line_map.get(id)
+                && let Some(visible) = self.original_to_visible(*original)
+            {
+                self.scroll.offset_y = (visible as isize - relative).max(0) as usize;
+            } else {
+                self.scroll.offset_y = old_offset_y;
+            }
+            self.scroll.clamp();
+        } else {
+            self.needs_scroll_into_view = true;
+            self.scroll.clamp();
+        }
+
+        self.snapshot_generation = snapshot.generation;
+        self.last_graph_mtime = snapshot.graph_mtime;
+        self.last_heavy_refresh_at = Some(Instant::now());
+        self.graph_reload_pending = false;
+        self.graph_viz_stale = false;
+        self.last_refresh = Instant::now();
+        if let Some(engine) = self.snapshot_engine.as_mut() {
+            engine.retire(old);
+        }
+    }
+
+    fn poll_graph_snapshot(&mut self) -> bool {
+        let result = self
+            .snapshot_engine
+            .as_mut()
+            .and_then(|engine| engine.try_result());
+        let Some(result) = result else {
+            return false;
+        };
+        match result {
+            Ok(snapshot)
+                if snapshot.key == self.graph_view_key()
+                    && self.snapshot_matches_cached_graph(&snapshot) =>
+            {
+                self.install_graph_snapshot(snapshot);
+            }
+            Ok(snapshot) => {
+                if let Some(engine) = self.snapshot_engine.as_mut() {
+                    engine.retire(snapshot);
+                }
+                self.request_graph_snapshot();
+            }
+            Err(message) if message != "cancelled" => {
+                self.graph_reload_pending = false;
+                self.graph_viz_stale = true;
+                self.push_toast(
+                    format!("Graph refresh failed: {message}"),
+                    ToastSeverity::Warning,
+                );
+            }
+            Err(_) => {}
+        }
+        true
+    }
+
+    /// A newer filesystem parse may land while the CPU worker is completing
+    /// an older layout. Pointer identity is a stronger revision fence than
+    /// mtime (atomic replacements can preserve timestamps): only the graph
+    /// revision currently held by the async cache may be published.
+    fn snapshot_matches_cached_graph(&self, snapshot: &GraphViewSnapshot) -> bool {
+        self.async_fs.cached_graph().is_none_or(|(cached, _)| {
+            snapshot
+                .published_graph
+                .as_ref()
+                .is_some_and(|built| Arc::ptr_eq(built, &cached))
+        })
     }
 
     /// Load viz output from a pre-loaded graph, avoiding a redundant disk read.
     pub fn load_viz_from_graph(&mut self, graph: &worksgood::graph::WorkGraph) {
         let viz_result = self.generate_viz_from_graph(graph);
         self.apply_viz_result(viz_result);
+        self.rebuild_snapshot_indexes();
     }
 
     /// Apply a viz result (shared implementation for load_viz and load_viz_from_graph).
@@ -7521,7 +8161,7 @@ impl VizApp {
 
                 // Update sticky annotations: refresh last_seen for live ones, keep recent stale ones.
                 for (parent_id, info) in &live_annotations {
-                    self.sticky_annotations.insert(
+                    Arc::make_mut(&mut self.sticky_annotations).insert(
                         parent_id.clone(),
                         StickyAnnotation {
                             info: info.clone(),
@@ -7533,7 +8173,7 @@ impl VizApp {
                 // Build merged map: start with live annotations, then add stale stickies.
                 let mut merged = live_annotations;
                 let hold = std::time::Duration::from_secs(STICKY_ANNOTATION_HOLD_SECS);
-                self.sticky_annotations.retain(|parent_id, sticky| {
+                Arc::make_mut(&mut self.sticky_annotations).retain(|parent_id, sticky| {
                     if merged.contains_key(parent_id) {
                         // Still live — keep in sticky map, already in merged.
                         return true;
@@ -7709,13 +8349,6 @@ impl VizApp {
         }
     }
 
-    fn generate_viz(&self) -> Result<VizOutput> {
-        let mut opts = self.viz_options.clone();
-        opts.show_internal = self.show_system_tasks;
-        opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
-        crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
-    }
-
     /// Generate viz output from a pre-loaded graph, avoiding a redundant disk read.
     fn generate_viz_from_graph(&self, graph: &worksgood::graph::WorkGraph) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
@@ -7756,7 +8389,11 @@ impl VizApp {
     /// Map an original line index to its position in the visible set.
     fn original_to_visible(&self, orig_idx: usize) -> Option<usize> {
         match &self.filtered_indices {
-            Some(indices) => indices.iter().position(|&i| i == orig_idx),
+            Some(_) => self
+                .visible_position_by_line
+                .get(orig_idx)
+                .copied()
+                .flatten(),
             None => {
                 if orig_idx < self.lines.len() {
                     Some(orig_idx)
@@ -7865,6 +8502,14 @@ impl VizApp {
     /// Recompute the transitive upstream/downstream sets and line mappings
     /// based on the currently selected task.
     pub fn recompute_trace(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
+        self.recompute_trace_sync();
+    }
+
+    fn recompute_trace_sync(&mut self) {
         self.upstream_set.clear();
         self.downstream_set.clear();
         self.cycle_set.clear();
@@ -8043,18 +8688,11 @@ impl VizApp {
     /// Select the task at the given original line index, if any.
     /// Returns true if a task was found and selected.
     pub fn select_task_at_line(&mut self, orig_line: usize) -> bool {
-        // Reverse lookup: find which task_id lives at this line.
-        let task_id = self
-            .node_line_map
-            .iter()
-            .find(|&(_, line)| *line == orig_line)
-            .map(|(id, _)| id.clone());
-        let task_id = match task_id {
+        let task_id = match self.line_task_map.get(&orig_line).cloned() {
             Some(id) => id,
             None => return false,
         };
-        // Find its index in task_order.
-        let idx = match self.task_order.iter().position(|id| *id == task_id) {
+        let idx = match self.task_index.get(&task_id).copied() {
             Some(i) => i,
             None => return false,
         };
@@ -8292,6 +8930,10 @@ impl VizApp {
     /// Called on every keystroke while search is active.
     /// Performs incremental fuzzy matching and updates the filter.
     pub fn update_search(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         let query = &self.search_input;
         if query.is_empty() {
             self.fuzzy_matches.clear();
@@ -8340,6 +8982,10 @@ impl VizApp {
     /// keep match highlights and viewport position (vim-style search).
     pub fn accept_search(&mut self) {
         self.search_active = false;
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         self.filtered_indices = None;
         self.update_scroll_bounds();
         // Keep search_input, fuzzy_matches, current_match for highlights + navigation.
@@ -8394,6 +9040,10 @@ impl VizApp {
     pub fn clear_search(&mut self) {
         self.search_active = false;
         self.search_input.clear();
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         self.fuzzy_matches.clear();
         self.current_match = None;
         self.filtered_indices = None;
@@ -8437,7 +9087,11 @@ impl VizApp {
 
     /// Get the fuzzy match info for an original line index, if any.
     pub fn match_for_line(&self, orig_idx: usize) -> Option<&FuzzyLineMatch> {
-        self.fuzzy_matches.iter().find(|m| m.line_idx == orig_idx)
+        self.fuzzy_match_index_by_line
+            .get(orig_idx)
+            .copied()
+            .flatten()
+            .and_then(|index| self.fuzzy_matches.get(index))
     }
 
     /// Get the original line index of the current match (for highlight).
@@ -8641,27 +9295,6 @@ impl VizApp {
                 self.chat.search.matches.len()
             )
         }
-    }
-
-    /// Load task counts and token usage from the graph + live agent output.
-    pub fn load_stats(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
-                self.task_counts = TaskCounts::default();
-                self.total_usage = TokenUsage {
-                    cost_usd: 0.0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                };
-                self.task_token_map.clear();
-                return;
-            }
-        };
-        self.load_stats_from_graph(&graph);
     }
 
     /// Load task counts and token usage from a pre-loaded graph.
@@ -8911,7 +9544,7 @@ impl VizApp {
             0
         };
 
-        self.task_snapshots = new_snapshots;
+        self.task_snapshots = Arc::new(new_snapshots);
         self.task_counts = counts;
         self.total_usage = total_usage;
         self.task_token_map = task_token_map;
@@ -9014,69 +9647,7 @@ impl VizApp {
 
         // Enforce animation cap: drop oldest if we exceed MAX_ANIMATIONS.
         self.enforce_animation_cap();
-    }
-
-    fn apply_loaded_graph_refresh(
-        &mut self,
-        graph: &worksgood::graph::WorkGraph,
-        graph_mtime: Option<SystemTime>,
-    ) {
-        self.graph_reload_pending = false;
-        self.graph_viz_stale = false;
-        self.last_graph_mtime = graph_mtime;
-        self.last_heavy_refresh_at = Some(Instant::now());
-
-        let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-        let prev_hud_scroll = self.hud_scroll;
-        let prev_hud_follow = self.hud_follow;
-
-        self.smart_follow_active = self.scroll.is_at_bottom();
-        self.load_viz_from_graph(graph);
-        if !self.search_input.is_empty() {
-            self.rerun_search();
-        }
-        self.load_stats_from_graph(graph);
-        self.refresh_chat_tab_caches(graph);
-        self.load_agent_monitor();
-        self.update_agent_streams();
-        if self.right_panel_tab == RightPanelTab::Firehose {
-            self.update_firehose();
-        }
-        if self.right_panel_tab == RightPanelTab::Output {
-            self.update_output_pane();
-        }
-        if self.right_panel_tab == RightPanelTab::Log {
-            self.update_log_output();
-            self.update_log_stream_events();
-        }
-        self.invalidate_hud();
-        self.load_hud_detail();
-        if prev_hud_task.is_some()
-            && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-        {
-            if prev_hud_follow {
-                self.hud_scroll = usize::MAX;
-            } else {
-                self.hud_scroll = prev_hud_scroll;
-            }
-        }
-        if self.right_panel_tab == RightPanelTab::Log {
-            self.invalidate_log_pane();
-            self.load_log_pane();
-        }
-        if self.right_panel_tab == RightPanelTab::Agency {
-            self.invalidate_agency_lifecycle();
-            self.load_agency_lifecycle();
-        }
-        if self.right_panel_tab == RightPanelTab::Files
-            && let Some(ref mut fb) = self.file_browser
-        {
-            fb.refresh();
-        }
-        if self.right_panel_tab == RightPanelTab::CoordLog {
-            self.load_coord_log();
-            self.load_activity_feed();
-        }
+        self.visible_usage = self.compute_visible_token_usage();
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
@@ -9087,6 +9658,9 @@ impl VizApp {
         }
         if !self.bootstrap_complete {
             return false;
+        }
+        if self.poll_graph_snapshot() {
+            return true;
         }
         // Flush a deferred sort apply if the debounce window has elapsed.
         // Run before consuming fs events so a burst of events doesn't keep
@@ -9102,7 +9676,7 @@ impl VizApp {
             && self.graph_reload_pending
             && let Some((graph, graph_mtime)) = self.async_fs.cached_graph()
         {
-            self.apply_loaded_graph_refresh(&graph, graph_mtime);
+            self.request_graph_snapshot_from(graph, graph_mtime);
             return true;
         }
 
@@ -9191,8 +9765,7 @@ impl VizApp {
                 // ✉ indicator and the right-panel Msg tab indicator update
                 // promptly.
                 if let Some((graph, _)) = self.async_fs.cached_graph() {
-                    self.load_viz_from_graph(&graph);
-                    self.load_stats_from_graph(&graph);
+                    self.request_graph_snapshot_from(graph, self.last_graph_mtime);
                     content_updated = true;
                 }
             }
@@ -9381,77 +9954,8 @@ impl VizApp {
             self.graph_viz_stale = true;
             self.async_fs.request_graph_load(graph_path.clone());
         } else if needs_token_refresh || has_expiring_stickies {
-            if let Some((graph, _)) = self.async_fs.cached_graph() {
-                // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
-                // recompute_trace() -> invalidate_hud() clears hud_detail.
-                let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-                let prev_hud_scroll = self.hud_scroll;
-                let prev_hud_follow = self.hud_follow;
-
-                if has_expiring_stickies {
-                    // Update smart-follow state before reloading: track if user is at bottom.
-                    self.smart_follow_active = self.scroll.is_at_bottom();
-                    self.load_viz_from_graph(&graph);
-                    if !self.search_input.is_empty() {
-                        self.rerun_search();
-                    }
-                }
-                self.load_stats_from_graph(&graph);
-                self.refresh_chat_tab_caches(&graph);
-                self.load_agent_monitor();
-                self.update_agent_streams();
-                // Update firehose with new agent output if Firehose tab is active.
-                if self.right_panel_tab == RightPanelTab::Firehose {
-                    self.update_firehose();
-                }
-                // Update output pane with new agent output if Output tab is active.
-                if self.right_panel_tab == RightPanelTab::Output {
-                    self.update_output_pane();
-                }
-                // Update log pane agent output if Log tab is active.
-                if self.right_panel_tab == RightPanelTab::Log {
-                    self.update_log_output();
-                    self.update_log_stream_events();
-                }
-                // Preserve HUD scroll position when the selected task hasn't changed.
-                self.invalidate_hud();
-                // Eagerly reload so we can restore scroll before render.
-                self.load_hud_detail();
-                if prev_hud_task.is_some()
-                    && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-                {
-                    if prev_hud_follow {
-                        self.hud_scroll = usize::MAX; // renderer clamps to actual max
-                    } else {
-                        self.hud_scroll = prev_hud_scroll;
-                    }
-                }
-                // Reload log pane content if Log tab is active.
-                if self.right_panel_tab == RightPanelTab::Log {
-                    self.invalidate_log_pane();
-                    self.load_log_pane();
-                }
-                // Messages panel: NOT reloaded here. Message changes are detected
-                // by the fast-path mtime check (above), and task-selection changes
-                // are handled by recompute_trace (inside load_viz_from_graph).
-                // Reloading here on every tick caused the editor to be re-created
-                // each second, resetting the cursor to position 0.
-                // Reload agency lifecycle if Agency tab is active.
-                if self.right_panel_tab == RightPanelTab::Agency {
-                    self.invalidate_agency_lifecycle();
-                    self.load_agency_lifecycle();
-                }
-                // Refresh file browser tree if Files tab is active.
-                if self.right_panel_tab == RightPanelTab::Files
-                    && let Some(ref mut fb) = self.file_browser
-                {
-                    fb.refresh();
-                }
-                // Refresh coordinator log if CoordLog tab is active.
-                if self.right_panel_tab == RightPanelTab::CoordLog {
-                    self.load_coord_log();
-                    self.load_activity_feed();
-                }
+            if let Some((graph, graph_mtime)) = self.async_fs.cached_graph() {
+                self.request_graph_snapshot_from(graph, graph_mtime);
             }
         }
 
@@ -9481,6 +9985,7 @@ impl VizApp {
     /// clear without requiring a keypress.
     pub fn is_refresh_due(&self) -> bool {
         !self.bootstrap_complete
+            || self.graph_reload_pending
             || self.fs_change_pending.load(Ordering::Relaxed)
             || self.last_refresh.elapsed() >= self.refresh_interval
     }
@@ -9696,6 +10201,10 @@ impl VizApp {
     /// Compute aggregate token usage for tasks currently visible on screen.
     /// Extracts task IDs from the plain_lines visible in the viewport.
     pub fn visible_token_usage(&self) -> TokenUsage {
+        self.visible_usage.clone()
+    }
+
+    fn compute_visible_token_usage(&self) -> TokenUsage {
         let mut usage = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,
@@ -9779,6 +10288,16 @@ impl VizApp {
     /// Apply the current sort mode to reorder `task_order`.
     /// Preserves the selected task ID across the reorder.
     pub(crate) fn apply_sort_mode(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.last_sort_apply = Some(Instant::now());
+            self.pending_sort_apply = false;
+            self.request_graph_snapshot();
+            return;
+        }
+        self.apply_sort_mode_sync();
+    }
+
+    fn apply_sort_mode_sync(&mut self) {
         // Record the apply timestamp regardless of whether anything changed,
         // so the debounce window resets on every legitimate flush. This must
         // run even on empty graphs so a flush request after a reload that
@@ -9815,36 +10334,6 @@ impl VizApp {
                 // 8/8-busy load deserialized the 3+MB JSONL file at the
                 // 5ms-debounced fs-watcher cadence (diagnose hot path #2).
                 //
-                // Bootstrap fallback: if the cache hasn't been populated
-                // yet (first sort before the first stats refresh, or a
-                // test fixture that bypassed load_stats_from_graph), do
-                // the load_graph here as a one-shot. Subsequent sorts
-                // hit the cache populated by the next stats refresh.
-                if self.sort_status_map.is_empty() {
-                    let graph_path = self.workgraph_dir.join("graph.jsonl");
-                    if let Ok(g) = load_graph(&graph_path) {
-                        self.sort_status_map = g
-                            .tasks()
-                            .map(|t| {
-                                let priority = match t.status {
-                                    Status::InProgress => 0,
-                                    Status::Failed => 1,
-                                    Status::Open => 2,
-                                    Status::Blocked => 3,
-                                    Status::Done => 4,
-                                    Status::Abandoned => 5,
-                                    Status::Waiting | Status::PendingValidation => 3,
-                                    Status::PendingEval | Status::FailedPendingEval => 0,
-                                    Status::Incomplete => 1,
-                                };
-                                (
-                                    t.id.clone(),
-                                    (priority, t.interaction_sort_key().to_string()),
-                                )
-                            })
-                            .collect();
-                    }
-                }
                 self.task_order.sort_by(|a, b| {
                     let default_meta = (99u8, String::new());
                     let ma = self.sort_status_map.get(a).unwrap_or(&default_meta);
@@ -9978,10 +10467,9 @@ impl VizApp {
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.hud_detail = None;
                 return;
             }
@@ -10759,10 +11247,9 @@ impl VizApp {
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.hud_detail = None;
                 return;
             }
@@ -11348,10 +11835,9 @@ impl VizApp {
             return;
         }
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.log_pane.rendered_lines.clear();
                 self.log_pane.task_id = None;
                 return;
@@ -11818,13 +12304,11 @@ impl VizApp {
         self.messages_panel.summary = MessageSummary::default();
 
         // Look up the assigned agent for direction detection.
-        let assigned_agent = load_graph(self.workgraph_dir.join("graph.jsonl"))
-            .ok()
-            .and_then(|g| {
-                g.tasks()
-                    .find(|t| t.id == task_id)
-                    .and_then(|t| t.assigned.clone())
-            });
+        let assigned_agent = self.coherent_graph().and_then(|g| {
+            g.tasks()
+                .find(|t| t.id == task_id)
+                .and_then(|t| t.assigned.clone())
+        });
 
         match worksgood::messages::list_messages(&self.workgraph_dir, &task_id) {
             Ok(msgs) if msgs.is_empty() => {
@@ -11986,11 +12470,22 @@ impl VizApp {
             .collect();
         task_order.sort_by_key(|(_, line)| *line);
         let task_order: Vec<String> = task_order.into_iter().map(|(id, _)| id).collect();
+        let task_index = task_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect();
+        let line_task_map = viz
+            .node_line_map
+            .iter()
+            .map(|(id, line)| (*line, id.clone()))
+            .collect();
 
         let selected_task_idx = if task_order.is_empty() { None } else { Some(0) };
 
         Self {
             workgraph_dir: std::path::PathBuf::from("/tmp/test-workgraph"),
+            published_graph: None,
             viz_options: crate::commands::viz::VizOptions::default(),
             should_quit: false,
             exit_prompt_resolved: false,
@@ -12002,8 +12497,10 @@ impl VizApp {
             search_active: false,
             search_input: String::new(),
             fuzzy_matches: Vec::new(),
+            fuzzy_match_index_by_line: Vec::new(),
             current_match: None,
             filtered_indices: None,
+            visible_position_by_line: Vec::new(),
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
             total_usage: worksgood::graph::TokenUsage {
@@ -12014,6 +12511,13 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            visible_usage: TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
@@ -12060,6 +12564,8 @@ impl VizApp {
             config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order,
+            task_index,
+            line_task_map,
             node_line_map: viz.node_line_map.clone(),
             forward_edges: viz.forward_edges.clone(),
             reverse_edges: viz.reverse_edges.clone(),
@@ -12070,7 +12576,7 @@ impl VizApp {
             char_edge_map: viz.char_edge_map.clone(),
             cycle_members: viz.cycle_members.clone(),
             annotation_map: viz.annotation_map.clone(),
-            sticky_annotations: HashMap::new(),
+            sticky_annotations: Arc::new(HashMap::new()),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
             hud_pin: None,
@@ -12164,7 +12670,7 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: false,
             splash_animations: HashMap::new(),
-            task_snapshots: HashMap::new(),
+            task_snapshots: Arc::new(HashMap::new()),
             animation_mode: AnimationMode::Normal,
             slide_animation: None,
             message_name_threshold: 8,
@@ -12224,6 +12730,8 @@ impl VizApp {
             is_light_theme: false,
             async_fs: super::async_fs::AsyncFs::new(),
             bootstrap: None,
+            snapshot_engine: None,
+            snapshot_generation: 0,
             bootstrap_complete: true,
         }
     }
@@ -12869,8 +13377,7 @@ impl VizApp {
 
     /// Load agent monitor data from the agent registry.
     pub fn load_agent_monitor(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         match AgentRegistry::load(&self.workgraph_dir) {
             Ok(registry) => {
@@ -13588,10 +14095,9 @@ impl VizApp {
             return;
         }
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.agency_lifecycle = None;
                 return;
             }
@@ -13958,9 +14464,8 @@ impl VizApp {
         }
 
         // Detect stuck tasks: in-progress tasks whose agent PID is dead
-        let graph_path = dir.join("graph.jsonl");
         let mut stuck = Vec::new();
-        if let Ok(graph) = worksgood::parser::load_graph(&graph_path) {
+        if let Some(graph) = self.coherent_graph() {
             for task in graph.tasks() {
                 if task.status == worksgood::graph::Status::InProgress
                     && let Some(ref agent_id) = task.agent
@@ -15419,10 +15924,15 @@ impl VizApp {
         // binary (typically `claude`) for every chat tab, ignoring the
         // `--executor codex` / `--model codex:gpt-5` the user actually
         // picked when creating that chat — chat-launched-with bug.
-        let (executor, chat_model) = resolve_chat_pty_executor_and_model(
+        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let chat_task = self
+            .coherent_graph()
+            .and_then(|graph| graph.get_task(&task_id).cloned());
+        let (executor, chat_model) = resolve_chat_pty_executor_and_model_with_task(
             &self.workgraph_dir,
             &config,
             self.active_coordinator_id,
+            chat_task.as_ref(),
         );
         let chat_endpoint = crate::commands::service::CoordinatorState::load_for(
             &self.workgraph_dir,
@@ -15471,10 +15981,9 @@ impl VizApp {
         } else {
             None
         };
-        let chat_task_metadata =
-            worksgood::parser::load_graph(crate::commands::graph_path(&self.workgraph_dir))
-                .ok()
-                .and_then(|g| g.get_task(&task_id).cloned());
+        let chat_task_metadata = self
+            .coherent_graph()
+            .and_then(|g| g.get_task(&task_id).cloned());
         if let Some(mut task) = chat_task_metadata.clone()
             && task
                 .tags
@@ -16177,23 +16686,22 @@ impl VizApp {
 
         // Build the set of live chat refs from the graph: `chat-N` for
         // every non-archived/non-abandoned task with the chat-loop tag.
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let live_refs: std::collections::HashSet<String> =
-            worksgood::parser::load_graph(&graph_path)
-                .map(|g| {
-                    g.tasks()
-                        .filter(|t| {
-                            t.tags
-                                .iter()
-                                .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
-                        })
-                        .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
-                        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
-                        .filter_map(|t| worksgood::chat_id::parse_chat_task_id(&t.id))
-                        .map(|n| format!("chat-{}", n))
-                        .collect()
-                })
-                .unwrap_or_default();
+        let live_refs: std::collections::HashSet<String> = self
+            .coherent_graph()
+            .map(|g| {
+                g.tasks()
+                    .filter(|t| {
+                        t.tags
+                            .iter()
+                            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+                    })
+                    .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
+                    .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+                    .filter_map(|t| worksgood::chat_id::parse_chat_task_id(&t.id))
+                    .map(|n| format!("chat-{}", n))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Enumerate all wg-chat-* sessions and kill the ones whose chat
         // ref isn't in `live_refs`.
@@ -16246,8 +16754,7 @@ impl VizApp {
         // Load the graph to check chat task titles directly.
         // list_coordinator_ids_and_labels() returns display labels like ".chat-N"
         // which don't match the "Chat: {user}" title format.
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = worksgood::parser::load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         // Find a non-archived chat task whose title matches (new or legacy)
         let existing_coord: Option<u32> = graph.as_ref().and_then(|g| {
@@ -16537,8 +17044,7 @@ impl VizApp {
 
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = worksgood::parser::load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         let ids_and_labels = self.list_coordinator_ids_and_labels();
         let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
@@ -16603,10 +17109,9 @@ impl VizApp {
     /// graph (active + terminal), sort by cid, and present as a multi-
     /// selectable list for bulk-abandon. See `ChatManagerState`.
     pub fn open_chat_manager(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return,
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return,
         };
 
         let mut entries: Vec<ChatManagerEntry> = Vec::new();
@@ -17037,10 +17542,9 @@ impl VizApp {
     /// Returns 0 on a missing graph file rather than synthesizing a phantom
     /// chat-0 entry — empty graph means zero live chats.
     pub fn live_chat_count(&self) -> usize {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return 0,
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return 0,
         };
         worksgood::chat::count_live_chats(
             &self.workgraph_dir,
@@ -17053,10 +17557,9 @@ impl VizApp {
     /// Returns Vec of (id, label) where label is the canonical chat task id
     /// (`.chat-N`) matching what `wg show` / `wg list` use.
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return vec![(0, worksgood::chat_id::format_chat_task_id(0))],
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return vec![(0, worksgood::chat_id::format_chat_task_id(0))],
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
@@ -17203,10 +17706,9 @@ impl VizApp {
     /// Get user board entries from the graph.
     /// Returns Vec of (task_id, label) for active `.user-*` tasks.
     pub fn list_user_board_entries(&self) -> Vec<(String, String)> {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return Vec::new(),
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return Vec::new(),
         };
         let mut entries: Vec<(String, String)> = graph
             .tasks()
@@ -17254,7 +17756,16 @@ impl VizApp {
 
     /// Open the task creation form.
     pub fn open_task_form(&mut self) {
-        self.task_form = Some(TaskFormState::new(&self.workgraph_dir));
+        let all_tasks = self
+            .coherent_graph()
+            .map(|graph| {
+                graph
+                    .tasks()
+                    .map(|task| (task.id.clone(), task.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.task_form = Some(TaskFormState::from_tasks(all_tasks));
         self.input_mode = InputMode::TaskForm;
     }
 
@@ -17417,10 +17928,9 @@ impl VizApp {
             }
         };
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.push_toast("Failed to load graph".to_string(), ToastSeverity::Error);
                 return;
             }
@@ -29323,8 +29833,8 @@ mod agent_stream_tests {
     /// asserts the pane gets non-empty content.
     #[test]
     fn test_log_view_renders_codex_stream_for_running_codex_agent() {
+        use crate::commands::viz::LayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
-        use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
         use worksgood::graph::{Node, Status, WorkGraph};
         use worksgood::parser::save_graph;
@@ -29428,8 +29938,8 @@ mod agent_stream_tests {
 
     #[test]
     fn test_log_view_renders_agent_stream_events_for_inprogress_task() {
+        use crate::commands::viz::LayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
-        use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
         use worksgood::graph::{Node, Status, WorkGraph};
         use worksgood::parser::save_graph;
@@ -31344,6 +31854,21 @@ mod message_indicator_refresh_tests {
         writeln!(f, "{}", line).unwrap();
     }
 
+    fn await_message_status(app: &mut VizApp, task_id: &str, expected: CoordinatorMessageStatus) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.maybe_refresh();
+            if app.task_message_statuses.get(task_id) == Some(&expected) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background message-index snapshot did not publish {expected:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     /// `wg msg send` from a non-coordinator-side sender (an agent or task
     /// alias) should make the M:Msg tab indicator appear after the next
     /// maybe_refresh, even though graph.jsonl mtime did not change.
@@ -31363,7 +31888,7 @@ mod message_indicator_refresh_tests {
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31384,7 +31909,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
         assert!(app.task_message_statuses.contains_key("t1"));
 
         // Simulate a subsequent unrelated fs change that does NOT touch the
@@ -31393,7 +31918,7 @@ mod message_indicator_refresh_tests {
         app.fs_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
         // messages_change_pending intentionally NOT set this time.
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31446,7 +31971,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
         assert_eq!(
             app.task_message_statuses.get("t1"),
             Some(&CoordinatorMessageStatus::Unseen)
@@ -31463,7 +31988,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Seen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31515,6 +32040,7 @@ mod activity_sort_debounce_tests {
         let viz = render_viz(graph);
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = tmp.path().to_path_buf();
+        app.load_stats_from_graph(graph);
         (app, tmp)
     }
 
