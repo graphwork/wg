@@ -1422,68 +1422,22 @@ fn native_coordinator_service_startup_with_api_key() {
     );
 }
 
-/// Backwards compatibility: executor = "claude" still starts the Claude CLI path.
+/// Legacy executor-only configuration is ambiguous and no longer selects execution.
 #[test]
-fn native_coordinator_backwards_compat_claude_executor() {
+fn native_coordinator_executor_only_is_unselected() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = init_workgraph(&tmp);
     configure_claude_coordinator(&wg_dir);
 
-    // Create a mock claude so the daemon doesn't fail trying to find the real one
-    let mock_dir = TempDir::new().unwrap();
-    let mock_script = r#"#!/bin/bash
-for arg in "$@"; do
-    if [ "$arg" = "--version" ]; then echo "mock-claude 0.1.0"; exit 0; fi
-done
-while IFS= read -r line; do
-    if [[ "$line" == *'"type":"user"'* ]]; then
-        printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Mock claude response"}],"stop_reason":"end_turn"}}\n'
-    fi
-done
-"#;
-    let mock_path = mock_dir.path().join("claude");
-    fs::write(&mock_path, mock_script).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&mock_path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let path_env = format!("{}:{}", mock_dir.path().display(), original_path);
-    let env = [("PATH", path_env.as_str())];
-    let _guard = DaemonGuard::with_env(&wg_dir, &env);
-
     let output = wg_cmd_env(
         &wg_dir,
         &["service", "start", "--interval", "600", "--max-agents", "1"],
-        &env,
+        &[],
     );
-    assert!(
-        output.status.success(),
-        "Service should start with claude executor.\nstderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    wait_for_socket(&wg_dir);
-
-    let configured = wait_for(Duration::from_secs(10), 100, || {
-        let log = read_daemon_log(&wg_dir);
-        log.contains("Coordinator config:") && log.contains("executor=claude")
-    });
-    assert!(
-        configured,
-        "Claude executor daemon should load the claude coordinator configuration.\nDaemon log:\n{}",
-        read_daemon_log(&wg_dir)
-    );
-
-    // The log should NOT mention "Native coordinator"
-    let log = read_daemon_log(&wg_dir);
-    assert!(
-        !log.contains("Native coordinator: initialized"),
-        "Claude executor should NOT use the native coordinator path.\nLog:\n{}",
-        log
-    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WG-EXEC-UNSELECTED"), "{stderr}");
+    assert!(!wg_dir.join("service/state.json").exists());
 }
 
 /// Chat routing through native coordinator: the daemon forwards messages

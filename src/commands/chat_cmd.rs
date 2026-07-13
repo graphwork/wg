@@ -248,6 +248,9 @@ pub fn run_create(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    // A chat is an LLM-backed entity. Refuse before IPC or direct graph
+    // mutation unless its invocation or config explicitly selects a route.
+    worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
     if service_is_running(dir) {
         run_create_via_ipc(dir, name, model, executor, endpoint, command, json)
     } else {

@@ -427,6 +427,42 @@ pub fn init(dir: &Path, scope: Option<ConfigScope>) -> Result<()> {
     Ok(())
 }
 
+/// Write a graph-only config with no model route. This is intentionally
+/// available only through `wg config init --bare`.
+pub fn init_graph_only(workgraph_dir: &Path, scope: ConfigScope, force: bool) -> Result<()> {
+    let path = match scope {
+        ConfigScope::Global => Config::global_config_path()?,
+        ConfigScope::Local => workgraph_dir.join("config.toml"),
+    };
+    if path.exists()
+        && !force
+        && !std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        anyhow::bail!(
+            "{} already exists; pass --force to overwrite",
+            path.display()
+        );
+    }
+    if path.exists() && force {
+        std::fs::copy(&path, path.with_extension("toml.bak"))?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = match scope {
+        ConfigScope::Global => "# WG graph-only configuration; no LLM execution route selected.\n",
+        ConfigScope::Local => {
+            "# WG graph-only configuration; no LLM execution route selected.\n[project]\n"
+        }
+    };
+    std::fs::write(&path, body)?;
+    println!("Created graph-only configuration at {}", path.display());
+    Ok(())
+}
+
 /// `wg config init` — write a minimal canonical config file for the
 /// chosen route. Refuses to overwrite an existing file unless `--force`
 /// is set (in which case a `.bak` is made first).
@@ -2944,9 +2980,11 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
         &merged,
         &worksgood::executor_discovery::pi_route_availability(),
     );
+    let execution_selection = worksgood::execution_selection::resolve(workgraph_dir, None)?;
 
     if json {
         let payload = serde_json::json!({
+            "execution_selection": execution_selection,
             "files": results
                 .iter()
                 .map(|r| serde_json::json!({
@@ -2965,6 +3003,32 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     }
 
     let mut total_findings = 0usize;
+    println!("execution-selection:");
+    match execution_selection.state {
+        worksgood::execution_selection::SelectionState::Selected => {
+            println!("  state: selected");
+            println!(
+                "  route: {}",
+                execution_selection.route.as_deref().unwrap_or("?")
+            );
+            if let Some(system) = &execution_selection.system {
+                println!("  system: ({}, {})", system.handler, system.wire);
+            }
+            println!("  source: {:?}", execution_selection.source);
+        }
+        worksgood::execution_selection::SelectionState::Unselected => {
+            println!("  state: missing");
+            println!("  This installation previously relied on WG's implicit claude:opus default.");
+            println!("  Choose explicitly, for example:");
+            println!("    wg setup --route claude-cli --yes");
+            println!("    wg profile use claude");
+            println!("    wg config --global --model claude:opus");
+            println!(
+                "  No change was made automatically; built-in models are inactive suggestions."
+            );
+            total_findings += 1;
+        }
+    }
     for r in &results {
         print_lint_one(r);
         total_findings += r.removed_keys.len() + r.renamed_keys.len() + r.rewritten_values.len();

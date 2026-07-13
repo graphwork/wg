@@ -746,7 +746,9 @@ pub fn check_existing_config(config: &Config) -> String {
 
 /// Run setup in non-interactive mode using CLI flags.
 pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
-    let provider = args.provider.as_deref().unwrap_or("anthropic");
+    let provider = args.provider.as_deref().ok_or_else(|| anyhow::anyhow!(
+        "non-interactive setup requires an explicit --route (preferred), --provider, or handler-first --model; for example: `wg setup --route claude-cli --yes`"
+    ))?;
 
     let existing = Config::load_global()?.unwrap_or_default();
     let global_path = Config::global_config_path()?;
@@ -1261,15 +1263,33 @@ fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
 pub fn run_with_args(args: &SetupArgs) -> Result<()> {
-    // New route-driven path: when --route is given (or --yes / --dry-run),
-    // skip the legacy provider-shaped flow and write the route's complete
-    // defaults directly.
+    let non_interactive = !std::io::stdin().is_terminal() || args.yes || args.dry_run;
+    if non_interactive && args.route.is_none() && args.provider.is_none() {
+        if let Some(model) = args.model.as_deref() {
+            let handler = model.split_once(':').map(|(h, _)| h).unwrap_or("");
+            let route = match handler {
+                "claude" => "claude-cli",
+                "codex" => "codex-cli",
+                "pi" => "pi",
+                "nex" | "native" if model.contains(":openrouter:") => "openrouter",
+                "nex" | "native" => "nex-custom",
+                _ => bail!(
+                    "--model must be handler-first (for example `claude:opus` or `pi:openrouter:vendor/model`)"
+                ),
+            };
+            let mut routed = args.clone();
+            routed.route = Some(route.to_string());
+            return run_route(&routed);
+        }
+        bail!(
+            "non-interactive setup requires an explicit route. Try `wg setup --route claude-cli --yes`, `wg setup --route codex-cli --yes`, `wg setup --route pi --yes`, or `wg setup --route openrouter --yes`."
+        );
+    }
+
     if args.route.is_some() || (args.yes && args.resolved_route().is_some()) || args.dry_run {
         return run_route(args);
     }
-
-    // Legacy --provider path (still used by older callers + tests).
-    if !std::io::stdin().is_terminal() || args.provider.is_some() {
+    if args.provider.is_some() {
         return run_non_interactive(args);
     }
     run()
@@ -1725,33 +1745,50 @@ pub fn run() -> Result<()> {
 
     // 1. Route selection — the 5 named smooth routes (primary decision point).
     let route_choices: Vec<SetupRoute> = SetupRoute::all().to_vec();
-    let route_labels: Vec<String> = route_choices
-        .iter()
-        .map(|r| format!("{} — {}", r.as_name(), r.description()))
-        .collect();
+    let mut route_labels = vec!["Not now — keep this WG graph-only".to_string()];
+    route_labels.extend(
+        route_choices
+            .iter()
+            .map(|r| format!("{} — {}", r.as_name(), r.description())),
+    );
 
-    // Smart default: derive from existing executor, falling back to detected
-    // API keys, falling back to claude-cli (the most common starting point).
-    let current_route = if let Some(ref exec) = existing.coordinator.executor {
-        SetupRoute::from_executor(exec)
-    } else if configured_openrouter_login(&existing_global).is_some() || detection.openrouter_key {
-        SetupRoute::Openrouter
-    } else if detection.claude_cli {
-        SetupRoute::ClaudeCli
+    // Detection annotates availability only; it never selects a fresh route.
+    // An existing on-disk model may be preselected because its provenance is
+    // explicit user configuration.
+    let target_text = std::fs::read_to_string(target_path).unwrap_or_default();
+    let has_explicit_model = target_text.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("model =") || line.starts_with("fast =") || line.starts_with("standard =")
+    });
+    let current_route_idx = if has_explicit_model {
+        let current_route = existing
+            .coordinator
+            .model
+            .as_deref()
+            .map(|m| worksgood::dispatch::handler_for_model(m).as_str())
+            .or_else(|| {
+                (!existing.agent.model.trim().is_empty())
+                    .then(|| worksgood::dispatch::handler_for_model(&existing.agent.model).as_str())
+            })
+            .and_then(SetupRoute::try_from_executor);
+        current_route
+            .and_then(|r| route_choices.iter().position(|v| *v == r))
+            .map(|i| i + 1)
+            .unwrap_or(0)
     } else {
-        SetupRoute::ClaudeCli
+        0
     };
-    let current_route_idx = route_choices
-        .iter()
-        .position(|r| *r == current_route)
-        .unwrap_or(0);
 
     let route_idx = Select::new()
         .with_prompt("Pick a route (each one is a complete, working setup)")
         .items(&route_labels)
         .default(current_route_idx)
         .interact()?;
-    let route = route_choices[route_idx];
+    if route_idx == 0 {
+        println!("No execution system selected; WG remains graph-only.");
+        return Ok(());
+    }
+    let route = route_choices[route_idx - 1];
 
     // Map the chosen route back into the legacy `provider` string so the
     // rest of the wizard (which is parameterized by `provider`) still

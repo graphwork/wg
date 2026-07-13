@@ -2736,24 +2736,34 @@ fn main() -> Result<()> {
                 match subcmd {
                     ConfigSubcommand::Init {
                         global: init_global,
-                        local: init_local,
+                        local: _init_local,
                         route,
                         bare,
                         force,
                     } => {
                         let scope = if init_global {
                             commands::config_cmd::ConfigScope::Global
-                        } else if init_local {
-                            commands::config_cmd::ConfigScope::Local
                         } else {
                             commands::config_cmd::ConfigScope::Local
                         };
-                        return commands::config_cmd::init_minimal(
-                            &workgraph_dir,
-                            scope,
-                            &route,
-                            bare,
-                            force,
+                        if let Some(route) = route.as_deref() {
+                            return commands::config_cmd::init_minimal(
+                                &workgraph_dir,
+                                scope,
+                                route,
+                                bare,
+                                force,
+                            );
+                        }
+                        if bare {
+                            return commands::config_cmd::init_graph_only(
+                                &workgraph_dir,
+                                scope,
+                                force,
+                            );
+                        }
+                        anyhow::bail!(
+                            "`wg config init` requires --route <ROUTE> to select execution; use `wg config init --local --bare` for graph-only configuration"
                         );
                     }
                     ConfigSubcommand::Lint {

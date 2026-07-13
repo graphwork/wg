@@ -95,6 +95,7 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     // Create config with crash detection settings
     let config_content = format!(
         "[agent]
+model = \"claude:opus\"
 reaper_grace_seconds = 1
 heartbeat_timeout = 3
 
@@ -535,6 +536,7 @@ fn test_crash_scenarios_timeout_cleanup() {
 
     // Override config for fast timeout testing
     let config_content = "[agent]
+model = \"claude:opus\"
 reaper_grace_seconds = 1
 heartbeat_timeout = 1
 

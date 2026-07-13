@@ -125,7 +125,8 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     // can't handle.  Without this, a global ~/.wg/config.toml with
     // auto_assign = true would cause every test task to be blocked behind an
     // unexecutable assign-* task.
-    let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\n";
+    let config_content =
+        "[agent]\nmodel = \"claude:opus\"\n[agency]\nauto_assign = false\nauto_evaluate = false\n";
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 
     let executors_dir = wg_dir.join("executors");
@@ -573,6 +574,7 @@ fn test_dead_agent_recovery() {
     // The daemon's poll_interval of 2s ensures frequent checks.
     let config_content = r#"
 [agent]
+model = "claude:opus"
 heartbeat_timeout = 5
 reaper_grace_seconds = 0
 
@@ -757,7 +759,7 @@ auto_evaluate = false
 
 #[test]
 #[serial]
-fn test_service_start_on_bare_graph_does_not_create_daemon_tasks() {
+fn test_service_start_on_selected_graph_does_not_create_daemon_tasks() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
     let socket = socket_path_for(tmp.path());
@@ -833,16 +835,18 @@ fn test_service_start_fails_on_invalid_config_instead_of_using_defaults() {
 
 #[test]
 #[serial]
-fn test_service_start_succeeds_with_implicit_coordinator_config() {
+fn test_service_start_rejects_implicit_coordinator_config() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\n",
+    )
+    .unwrap();
 
-    // With lenient preflight, service start should succeed even without
-    // explicit coordinator config (daemon will use native executor defaults)
     let output = wg_cmd(&wg_dir, &["service", "start"]);
-    assert!(
-        output.status.success(),
-        "service start should succeed with implicit coordinator config, got stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WG-EXEC-UNSELECTED"), "{stderr}");
+    assert!(!wg_dir.join("service/state.json").exists());
 }

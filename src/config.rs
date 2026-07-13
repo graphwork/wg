@@ -5079,16 +5079,6 @@ impl Config {
         {
             return Ok(key);
         }
-        // Also check the default endpoint if provider didn't match
-        if let Some(ep) = self.llm_endpoints.find_default()
-            && ep.provider != provider
-        {
-            // Already tried provider-specific above; try default endpoint
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Ok(key);
-            }
-        }
-
         // 2. Environment variables based on provider
         for var_name in EndpointConfig::env_var_names_for_provider(provider) {
             if let Ok(key) = std::env::var(var_name) {

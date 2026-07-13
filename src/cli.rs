@@ -6008,10 +6008,10 @@ pub enum ConfigSubcommand {
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
-        /// Setup route. One of: `claude-cli` (default), `codex-cli`,
-        /// `openrouter`, `local`, `nex-custom`.
-        #[arg(long, default_value = "claude-cli")]
-        route: String,
+        /// Explicit setup route. One of: `claude-cli`, `codex-cli`,
+        /// `openrouter`, `pi`, `local`, `nex-custom`. Required unless --bare.
+        #[arg(long)]
+        route: Option<String>,
 
         /// Write only the absolute minimum (`[project]` for local,
         /// just `agent.model` for global). Use this when you want

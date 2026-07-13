@@ -1149,6 +1149,35 @@ pub fn run_start(
     // incident) must warn loudly here, on the user's terminal, before the
     // daemon is even forked.
     warn_bare_provider_model_arg(model, "wg service start");
+    #[cfg(not(test))]
+    {
+        let selection = worksgood::execution_selection::resolve(dir, model.map(|m| (m, false)))?;
+        if selection.state == worksgood::execution_selection::SelectionState::Unselected {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "code": worksgood::execution_selection::UNSELECTED_CODE,
+                        "operation": "service-start",
+                        "selection": "unselected",
+                        "setup_commands": [
+                            "wg setup",
+                            "wg setup --route claude-cli --yes",
+                            "wg setup --route codex-cli --yes",
+                            "wg setup --route pi --yes",
+                            "wg setup --route openrouter --yes",
+                            "wg profile use <name>"
+                        ]
+                    }))?
+                );
+                anyhow::bail!("{}", worksgood::execution_selection::UNSELECTED_CODE);
+            }
+            anyhow::bail!(
+                "{}",
+                worksgood::execution_selection::unselected_message("wg service start")
+            );
+        }
+    }
     let config = Config::load_merged(dir)?;
 
     // Check if service is already running
@@ -2218,6 +2247,11 @@ pub fn run_daemon(
     cli_model: Option<&str>,
     no_coordinator_agent: bool,
 ) -> Result<()> {
+    worksgood::execution_selection::require(
+        dir,
+        cli_model.map(|m| (m, false)),
+        "wg service daemon",
+    )?;
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---
