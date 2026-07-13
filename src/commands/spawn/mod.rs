@@ -100,6 +100,8 @@ pub struct SpawnResult {
     pub output_file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// Parse a timeout duration string like "30m", "1h", "90s", "1d" into seconds.
@@ -188,8 +190,28 @@ pub fn run(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let result =
-        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "wg spawn")?;
+    run_with_reasoning(dir, task_id, executor_name, timeout, model, None, json)
+}
+
+/// Run the spawn command with an explicit structured reasoning override.
+pub fn run_with_reasoning(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let result = execution::spawn_agent_inner_with_reasoning(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        model,
+        reasoning,
+        "wg spawn",
+    )?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -198,6 +220,9 @@ pub fn run(
         println!("  Executor: {} ({})", executor_name, result.executor_type);
         if let Some(ref m) = result.model {
             println!("  Model: {}", m);
+        }
+        if let Some(ref r) = result.reasoning {
+            println!("  Reasoning: {}", r);
         }
         println!("  PID: {}", result.pid);
         println!("  Output: {}", result.output_file);

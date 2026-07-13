@@ -251,9 +251,17 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Structured reasoning level for this task: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
+
         /// [DEPRECATED] Provider for this task — use provider:model format in --model instead
         #[arg(long)]
         provider: Option<String>,
+
+        /// Typed remote execution provider (`wgid:`). Freeform tags are labels only and do not route work.
+        #[arg(long = "remote-provider")]
+        remote_provider: Option<String>,
 
         /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
         /// task description; the agency evaluator scores against it.
@@ -419,6 +427,10 @@ pub enum Commands {
         /// Update preferred model
         #[arg(long)]
         model: Option<String>,
+
+        /// Update structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// [DEPRECATED] Update provider — use provider:model format in --model instead
         #[arg(long)]
@@ -1633,6 +1645,10 @@ pub enum Commands {
         /// Model to use (haiku, sonnet, opus) - overrides task/executor defaults
         #[arg(long)]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Evaluate tasks: auto-evaluate, record external scores, view history
@@ -1700,6 +1716,10 @@ pub enum Commands {
         /// Updates `agent.model` and `dispatcher.model`.
         #[arg(short = 'm', long)]
         model: Option<String>,
+
+        /// Set default structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// Rewrite the default LLM endpoint to this URL. Must be
         /// `http://` or `https://`. Creates/replaces a `[[llm_endpoints.endpoints]]`
@@ -1836,12 +1856,12 @@ pub enum Commands {
         viz_edge_color: Option<String>,
 
         /// Set the evaluation gate threshold (0.0–1.0). Evaluations below this
-        /// score will reject (fail) the original task. Only applies to tasks
-        /// tagged 'eval-gate' unless --eval-gate-all is set.
+        /// score can reject tasks with parsed deliverables, or all tasks when
+        /// --eval-gate-all is set. Tags are labels only.
         #[arg(long, name = "eval-gate-threshold")]
         eval_gate_threshold: Option<f64>,
 
-        /// Apply eval gate to ALL evaluated tasks, not just those tagged 'eval-gate'
+        /// Apply eval gate to ALL evaluated tasks, not just tasks with deliverables
         #[arg(long, name = "eval-gate-all")]
         eval_gate_all: Option<bool>,
 
@@ -1938,6 +1958,10 @@ pub enum Commands {
         /// assigner, evolver, verification, triage, creator
         #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"], action = ArgAction::Append)]
         set_model: Vec<String>,
+
+        /// Set reasoning for a dispatch role; repeat: --set-reasoning <role> <level>
+        #[arg(long = "set-reasoning", num_args = 2, value_names = ["ROLE", "LEVEL"], action = ArgAction::Append)]
+        set_reasoning: Vec<String>,
 
         /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
         #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append)]
@@ -2705,6 +2729,10 @@ pub enum Commands {
 
         #[arg(long, short = 'm')]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Print the WG directory that `wg` would use from here,
@@ -3745,15 +3773,15 @@ pub enum ProviderCommands {
         out: String,
     },
 
-    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH that
-    /// the planner tagged `exec-provider:<wgid>` onto that remote provider. Sources the
-    /// provider/model/sensitivity/checkability from the task, runs the fail-closed
-    /// leash+matcher, and emits the signed offer.
+    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH whose
+    /// typed `remote_provider` metadata names a remote provider. Sources the
+    /// provider/model from the task plus explicit placement flags, runs the
+    /// fail-closed leash+matcher, and emits the signed offer.
     Place {
         /// The authorizer/principal G's local identity handle.
         #[arg(long)]
         as_name: String,
-        /// The graph task id to place (must carry an `exec-provider:<wgid>` tag).
+        /// The graph task id to place (must carry typed `remote_provider` metadata).
         #[arg(long)]
         task: String,
         /// Override the task's sensitivity: normal | high | confidential.
@@ -4448,19 +4476,25 @@ pub enum ProfileCommands {
     /// Refresh model data from OpenRouter and recompute rankings
     Refresh,
 
-    /// Set or show the Pi profile's two model tiers (strong / weak).
+    /// Set or show a profile's two model/reasoning tiers (strong / weak).
     ///
-    /// `strong` drives chat + workers + heavy generative roles; `weak` drives
-    /// the recoverable agency one-shots (.flip / .assign / eval). Accepts two
-    /// input forms:
+    /// Defaults to the built-in `pi` profile for backward compatibility. Use
+    /// `--profile NAME` to edit any existing named profile. `strong` drives
+    /// chat + workers + heavy generative roles; `weak` drives the recoverable
+    /// agency one-shots (.flip / .assign / eval). Examples:
     ///
-    ///   wg profile pi <STRONG> <WEAK>          # positional (terse; '-' skips a tier)
-    ///   wg profile pi --strong X --weak Y      # explicit (partial-update friendly)
+    ///   wg profile pi <STRONG> <WEAK>          # pi; '-' skips a tier
+    ///   wg profile pi --strong X --weak Y      # pi partial update
+    ///   wg profile pi --profile codex-56 --strong X --weak-reasoning low
     ///
     /// With no args (or --show) it prints the current tiers and routing; --list
-    /// shows the models configured for the profile to pick from. See
+    /// shows the models configured for the selected profile. See
     /// docs/design-two-tier-pi-profile.md.
     Pi {
+        /// Named profile to edit (defaults to `pi`).
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+
         /// Positional tiers in the order STRONG WEAK. Pass exactly 0 or 2
         /// tokens; a literal `-` leaves that tier unchanged.
         #[arg(value_name = "TIER", num_args = 0..=2)]
@@ -4474,11 +4508,19 @@ pub enum ProfileCommands {
         #[arg(long)]
         weak: Option<String>,
 
+        /// Set reasoning for strong-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        strong_reasoning: Option<String>,
+
+        /// Set reasoning for weak-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        weak_reasoning: Option<String>,
+
         /// Show the current tiers and routing (also the no-arg default).
         #[arg(long)]
         show: bool,
 
-        /// List the OpenRouter/Pi models configured for this profile to pick from.
+        /// List the models configured for this profile to pick from.
         #[arg(long)]
         list: bool,
 

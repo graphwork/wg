@@ -38,7 +38,7 @@
 //! decode-then-detect engine — which the evasion corpus proves catches the bulk the
 //! old keyword lists missed. The weak→strong **orchestration** (escalation,
 //! fail-closed) is proven here with a fake [`ReviewLlm`]; the real silicon is
-//! exercised by a scheduled eval (the `eval-scheduled` tag) with `WG_REVIEW_MODEL=1`.
+//! exercised by an explicit scheduled eval run with `WG_REVIEW_MODEL=1`.
 
 use crate::config::Config;
 

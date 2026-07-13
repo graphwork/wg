@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
-use worksgood::config::Config;
+use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{
     CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task,
     TokenUsage, format_tokens, parse_token_usage_live,
@@ -79,6 +79,10 @@ struct TaskDetails {
     failure_class: Option<FailureClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_reasoning: Option<String>,
     /// WCC profile pinned to this task (`wg publish --profile`).
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
@@ -574,6 +578,12 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     });
 
     let (actual_executor, actual_model, native_compaction) = gather_task_runtime_info(dir, task);
+    let resolved_reasoning = task
+        .reasoning
+        .or_else(|| {
+            Config::load_or_default(dir).resolve_reasoning_for_role(DispatchRole::TaskAgent)
+        })
+        .map(|r| r.to_string());
 
     // Load evaluation data for this task (if any)
     let evaluations = {
@@ -624,6 +634,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         failure_reason: task.failure_reason.clone(),
         failure_class: task.failure_class,
         model: task.model.clone(),
+        reasoning: task.reasoning.map(|r| r.to_string()),
+        resolved_reasoning,
         profile: task.profile.clone(),
         actual_executor,
         actual_model,
@@ -720,6 +732,7 @@ fn print_human_readable(details: &TaskDetails) {
     if details.actual_executor.is_some()
         || details.model.is_some()
         || details.actual_model.is_some()
+        || details.resolved_reasoning.is_some()
     {
         println!();
         println!("Runtime:");
@@ -735,6 +748,18 @@ fn print_human_readable(details: &TaskDetails) {
             }
             (Some(configured), None) => {
                 println!("  Model: {} (configured)", configured);
+            }
+            (None, None) => {}
+        }
+        match (&details.reasoning, &details.resolved_reasoning) {
+            (Some(configured), Some(resolved)) if configured != resolved => {
+                println!("  Reasoning: {} (configured: {})", resolved, configured);
+            }
+            (_, Some(resolved)) => {
+                println!("  Reasoning: {}", resolved);
+            }
+            (Some(configured), None) => {
+                println!("  Reasoning: {} (configured)", configured);
             }
             (None, None) => {}
         }
@@ -1526,6 +1551,8 @@ mod tests {
             failure_reason: None,
             failure_class: None,
             model: None,
+            reasoning: None,
+            resolved_reasoning: None,
             profile: None,
             actual_executor: Some("native".to_string()),
             actual_model: Some("openrouter/minimax".to_string()),
