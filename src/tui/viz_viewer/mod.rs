@@ -1,4 +1,5 @@
 pub mod async_fs;
+pub mod bootstrap;
 pub mod chat_palette;
 pub mod chat_tab_state;
 pub mod event;
@@ -124,14 +125,6 @@ pub fn run(
     } else {
         mouse_override
     };
-    let tracer = match trace_path {
-        Some(ref p) => Some(
-            trace::EventTracer::new(p)
-                .with_context(|| format!("failed to open trace file: {}", p.display()))?,
-        ),
-        None => None,
-    };
-
     let mut app = VizApp::new(
         workgraph_dir.clone(),
         viz_options,
@@ -140,17 +133,32 @@ pub fn run(
         no_history,
     );
     app.has_keyboard_enhancement = has_keyboard_enhancement;
-    app.tracer = tracer;
     app.key_feedback_enabled = show_keys;
 
-    // Start the screen dump IPC server so external agents can read the
-    // current TUI contents via `wg tui dump`.
+    // Paint the storage-independent shell before starting any project I/O,
+    // watcher/poller, dump socket, daemon probe, or trace file.  In
+    // particular, `.wg` may be on an NFS mount whose first metadata call takes
+    // seconds; terminal input must already be live by then.
+    terminal.draw(|frame| render::draw(frame, &mut app))?;
+
+    app.start_bootstrap(trace_path, show_keys);
+
+    // The dump socket is diagnostic only.  Its setup touches `.wg/service`,
+    // so detach it from the input/render thread after the first frame.
     let shared_screen = screen_dump::new_shared_screen();
     let dump_shutdown = Arc::new(AtomicBool::new(false));
     #[cfg(unix)]
-    let dump_server_started =
-        screen_dump::start_server(&workgraph_dir, shared_screen.clone(), dump_shutdown.clone())
-            .is_ok();
+    let dump_server_started = {
+        let workgraph_dir = workgraph_dir.clone();
+        let shared_screen = shared_screen.clone();
+        let dump_shutdown = dump_shutdown.clone();
+        std::thread::Builder::new()
+            .name("wg-tui-dump-start".into())
+            .spawn(move || {
+                let _ = screen_dump::start_server(&workgraph_dir, shared_screen, dump_shutdown);
+            })
+            .is_ok()
+    };
     #[cfg(not(unix))]
     let dump_server_started = false;
     let _ = dump_server_started;

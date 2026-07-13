@@ -1467,6 +1467,15 @@ description = "Pins fix-tui-must: under simulated 500ms-latency filesystem (WG_A
 timeout_seconds = 600
 
 [[scenario]]
+name = "tui_first_frame_slow_storage"
+script = "scenarios/tui_first_frame_slow_storage.sh"
+owners = [
+    "implement-nonblocking-tui",
+]
+description = "Real tmux/PTY human-flow gate: with the bootstrap storage worker delayed by 1, 3, and 5 seconds, the neutral TUI shell paints before storage completes, the help key is acknowledged during the read, one thresholded phase-aware slow-storage slot appears and clears, the graph snapshot eventually lands, and quit remains bounded."
+timeout_seconds = 90
+
+[[scenario]]
 name = "publish_wcc_releases_paused_subgraph"
 script = "scenarios/publish_wcc_releases_paused_subgraph.sh"
 owners = [

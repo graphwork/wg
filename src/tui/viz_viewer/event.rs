@@ -1,5 +1,6 @@
 use std::io;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -338,8 +339,9 @@ pub fn run_event_loop(
 
     let result = run_event_loop_inner(terminal, app, shared_screen);
 
-    // Save all coordinator chat states and TUI focus state before exit.
-    app.save_all_chat_state();
+    // Preserve normal chat/tab persistence, but never let a final filesystem
+    // write hold terminal restoration hostage on NFS/sshfs.
+    app.save_all_chat_state_bounded(Duration::from_millis(100));
 
     // Always disable mouse capture on exit
     let _ = set_mouse_capture(false, false);
@@ -412,8 +414,14 @@ fn run_event_loop_inner(
                 // Drain remaining queued events so we only redraw once
                 // for a rapid burst (e.g. pasted text arriving as
                 // individual KeyEvents when bracketed paste is absent).
-                while let Ok(ev) = rx.try_recv() {
+                let drain_started = Instant::now();
+                let mut drained_events = 0usize;
+                while drained_events < 64 && drain_started.elapsed() < Duration::from_millis(2) {
+                    let Ok(ev) = rx.try_recv() else {
+                        break;
+                    };
                     dispatch_event(app, ev);
+                    drained_events += 1;
                     if app.should_quit {
                         break;
                     }

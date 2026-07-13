@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
@@ -21,6 +21,8 @@ use worksgood::graph::{
 use worksgood::models::load_model_choices;
 use worksgood::parser::load_graph;
 use worksgood::{AgentRegistry, AgentStatus};
+
+pub(super) type BootstrapApply = Box<dyn FnOnce(&mut VizApp) + Send>;
 
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
@@ -2922,6 +2924,7 @@ pub struct PendingAttachment {
     pub size_bytes: u64,
 }
 
+#[derive(Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
@@ -6826,18 +6829,17 @@ pub struct VizApp {
     /// Refresh interval.
     refresh_interval: std::time::Duration,
 
-    // ── File system watcher (for real-time streaming) ──
-    /// Flag set by the background file watcher when `.wg/` content changes.
-    /// Checked and cleared by `maybe_refresh()` to trigger immediate panel reloads.
+    // ── Bounded polling hints (for real-time streaming) ──
+    /// Coalesced hint set when an async mutation or bounded poll observes that
+    /// `.wg/` content may have changed. Checked and cleared by
+    /// `maybe_refresh()` to trigger targeted panel reloads.
     pub fs_change_pending: Arc<AtomicBool>,
-    /// Flag set by the background file watcher when a file under
-    /// `.wg/messages/` (excluding `.cursors/`) changes. Drives a viz
+    /// Coalesced hint set when a bounded poll observes that a file under
+    /// `.wg/messages/` (excluding `.cursors/`) changed. Drives a viz
     /// reload so per-task message indicators and the right-panel Msg tab
     /// indicator update promptly after `wg msg send` — graph.jsonl is not
     /// touched by message writes, so the graph-mtime check alone misses them.
     pub messages_change_pending: Arc<AtomicBool>,
-    /// Keep the watcher alive for the lifetime of the app.
-    _fs_watcher: Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>,
     /// Last mtime of the messages file for the currently-viewed task.
     last_messages_mtime: Option<SystemTime>,
     /// Last mtime of the daemon.log for coord log panel.
@@ -6876,11 +6878,18 @@ pub struct VizApp {
 
     // ── Background filesystem service ──
     /// Owns a worker thread that performs all heavy disk I/O (graph.jsonl
-    /// reads, stat() calls for the fs watcher, streaming-text reads, chat
+    /// reads, bounded stat() polling, streaming-text reads, chat
     /// interaction bumps). The main thread reads cached values and
     /// dispatches refreshes via channels — it never blocks on disk, even
     /// on a high-latency filesystem (NFS, sshfs). See task `fix-tui-must`.
     pub async_fs: super::async_fs::AsyncFs,
+    /// Versioned, bounded initial-load worker.  It is started only after the
+    /// storage-independent first frame has been painted.
+    bootstrap: Option<super::bootstrap::BootstrapEngine>,
+    /// True once a coherent graph/config/state/history snapshot was atomically
+    /// installed.  Render uses placeholders while this is false and never
+    /// invokes lazy storage loaders.
+    pub bootstrap_complete: bool,
 }
 
 /// Scroll state for a 2D viewport.
@@ -6911,11 +6920,68 @@ impl VizApp {
         history_depth_override: Option<usize>,
         no_history: bool,
     ) -> Self {
-        let mouse_enabled = mouse_override.unwrap_or(true);
+        Self::build(
+            workgraph_dir,
+            viz_options,
+            mouse_override,
+            history_depth_override,
+            no_history,
+            Config::default(),
+            None,
+            false,
+        )
+    }
+
+    /// Build the legacy fully-populated state on a storage worker.  This is
+    /// deliberately unavailable to the TUI input/render path.
+    pub(super) fn load_bootstrap(
+        workgraph_dir: PathBuf,
+        mut viz_options: VizOptions,
+        mouse_override: Option<bool>,
+        history_depth_override: Option<usize>,
+        no_history: bool,
+        trace_path: Option<PathBuf>,
+        force_show_keys: bool,
+    ) -> Result<BootstrapApply> {
+        super::bootstrap::inject_test_storage_latency();
         let graph_mtime = std::fs::metadata(workgraph_dir.join("graph.jsonl"))
             .and_then(|m| m.modified())
             .ok();
         let config = Config::load_or_default(&workgraph_dir);
+        let configured_show_keys = config.tui.show_keys;
+        viz_options.edge_color = config.viz.edge_color.clone();
+        let mut app = Self::build(
+            workgraph_dir,
+            viz_options,
+            mouse_override,
+            history_depth_override,
+            no_history,
+            config,
+            graph_mtime,
+            true,
+        );
+        if let Some(path) = trace_path {
+            app.tracer = Some(
+                super::trace::EventTracer::new(&path)
+                    .with_context(|| format!("failed to open trace file: {}", path.display()))?,
+            );
+        }
+        app.key_feedback_enabled = force_show_keys || configured_show_keys;
+        Ok(app.into_bootstrap_apply())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        workgraph_dir: PathBuf,
+        viz_options: VizOptions,
+        mouse_override: Option<bool>,
+        history_depth_override: Option<usize>,
+        no_history: bool,
+        config: Config,
+        graph_mtime: Option<SystemTime>,
+        load_storage: bool,
+    ) -> Self {
+        let mouse_enabled = mouse_override.unwrap_or(true);
         let animation_mode = AnimationMode::from_config(&config.viz.animations);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let mut app = Self {
@@ -7140,7 +7206,6 @@ impl VizApp {
             refresh_interval: std::time::Duration::from_secs(1),
             fs_change_pending: Arc::new(AtomicBool::new(false)),
             messages_change_pending: Arc::new(AtomicBool::new(false)),
-            _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
             last_ops_log_mtime: None,
@@ -7153,9 +7218,13 @@ impl VizApp {
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
             is_light_theme: config.tui.color_theme == "light",
-            async_fs: super::async_fs::AsyncFs::new(),
+            async_fs: super::async_fs::AsyncFs::new_unstarted(),
+            bootstrap: None,
+            bootstrap_complete: load_storage,
         };
-        app.start_fs_watcher();
+        if !load_storage {
+            return app;
+        }
         // Load graph once for both viz and stats on startup. This is the
         // ONLY synchronous disk read in the TUI startup path — once the
         // app is running, all graph reloads go through `app.async_fs`.
@@ -7187,8 +7256,190 @@ impl VizApp {
         // auto-enter PTY mode so Chat tab embeds `wg nex --chat` directly
         // instead of relying on the daemon's inbox/outbox relay. Silent
         // no-op for claude/codex executors.
-        app.maybe_auto_enable_chat_pty();
         app
+    }
+
+    fn into_bootstrap_apply(mut self) -> BootstrapApply {
+        let lines = std::mem::take(&mut self.lines);
+        let plain_lines = std::mem::take(&mut self.plain_lines);
+        let search_lines = std::mem::take(&mut self.search_lines);
+        let max_line_width = self.max_line_width;
+        let task_counts = std::mem::take(&mut self.task_counts);
+        let total_usage = std::mem::replace(
+            &mut self.total_usage,
+            TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        );
+        let task_token_map = std::mem::take(&mut self.task_token_map);
+        let cycle_timing = std::mem::take(&mut self.cycle_timing);
+        let task_order = std::mem::take(&mut self.task_order);
+        let node_line_map = std::mem::take(&mut self.node_line_map);
+        let forward_edges = std::mem::take(&mut self.forward_edges);
+        let reverse_edges = std::mem::take(&mut self.reverse_edges);
+        let char_edge_map = std::mem::take(&mut self.char_edge_map);
+        let cycle_members = std::mem::take(&mut self.cycle_members);
+        let annotation_map = std::mem::take(&mut self.annotation_map);
+        let sticky_annotations = std::mem::take(&mut self.sticky_annotations);
+        let cycle_set = std::mem::take(&mut self.cycle_set);
+        let task_snapshots = std::mem::take(&mut self.task_snapshots);
+        let sort_status_map = std::mem::take(&mut self.sort_status_map);
+        let cached_chat_tab_entries = std::mem::take(&mut self.cached_chat_tab_entries);
+        let cached_user_board_entries = std::mem::take(&mut self.cached_user_board_entries);
+        let cached_coordinator_id_set = std::mem::take(&mut self.cached_coordinator_id_set);
+        let active_coordinator_id = self.active_coordinator_id;
+        let active_tabs = std::mem::take(&mut self.active_tabs);
+        let chat_messages = std::mem::take(&mut self.chat.messages);
+        let chat_history = (
+            self.chat.outbox_cursor,
+            self.chat.has_more_history,
+            self.chat.total_history_count,
+            self.chat.skipped_history_count,
+            self.chat.has_archives,
+        );
+        let mut coordinator_histories = HashMap::new();
+        for (id, mut chat) in std::mem::take(&mut self.coordinator_chats) {
+            coordinator_histories.insert(
+                id,
+                (
+                    std::mem::take(&mut chat.messages),
+                    chat.outbox_cursor,
+                    chat.has_more_history,
+                    chat.total_history_count,
+                    chat.skipped_history_count,
+                    chat.has_archives,
+                ),
+            );
+        }
+        let show_system_tasks = self.show_system_tasks;
+        let show_running_system_tasks = self.show_running_system_tasks;
+        let right_panel_percent = self.right_panel_percent;
+        let layout_mode = self.layout_mode;
+        let animation_mode = self.animation_mode;
+        let message_name_threshold = self.message_name_threshold;
+        let message_indent = self.message_indent;
+        let session_gap_minutes = self.session_gap_minutes;
+        let is_light_theme = self.is_light_theme;
+        let last_graph_mtime = self.last_graph_mtime;
+        let viz_options = self.viz_options.clone();
+        let graph = self.async_fs.cached_graph();
+        let tracer = self.tracer.take();
+
+        Box::new(move |app: &mut VizApp| {
+            app.lines = lines;
+            app.plain_lines = plain_lines;
+            app.search_lines = search_lines;
+            app.max_line_width = max_line_width;
+            app.task_counts = task_counts;
+            app.total_usage = total_usage;
+            app.task_token_map = task_token_map;
+            app.cycle_timing = cycle_timing;
+            app.task_order = task_order;
+            app.node_line_map = node_line_map;
+            app.forward_edges = forward_edges;
+            app.reverse_edges = reverse_edges;
+            app.char_edge_map = char_edge_map;
+            app.cycle_members = cycle_members;
+            app.annotation_map = annotation_map;
+            app.sticky_annotations = sticky_annotations;
+            app.cycle_set = cycle_set;
+            app.task_snapshots = task_snapshots;
+            app.sort_status_map = sort_status_map;
+            app.cached_chat_tab_entries = cached_chat_tab_entries;
+            app.cached_user_board_entries = cached_user_board_entries;
+            app.cached_coordinator_id_set = cached_coordinator_id_set;
+            app.active_coordinator_id = active_coordinator_id;
+            app.active_tabs = active_tabs;
+            app.chat.messages = chat_messages;
+            app.chat.outbox_cursor = chat_history.0;
+            app.chat.has_more_history = chat_history.1;
+            app.chat.total_history_count = chat_history.2;
+            app.chat.skipped_history_count = chat_history.3;
+            app.chat.has_archives = chat_history.4;
+            for (id, history) in coordinator_histories {
+                let mut chat = ChatState::default();
+                chat.messages = history.0;
+                chat.outbox_cursor = history.1;
+                chat.has_more_history = history.2;
+                chat.total_history_count = history.3;
+                chat.skipped_history_count = history.4;
+                chat.has_archives = history.5;
+                app.coordinator_chats.insert(id, chat);
+            }
+            app.show_system_tasks = show_system_tasks;
+            app.show_running_system_tasks = show_running_system_tasks;
+            app.right_panel_percent = right_panel_percent;
+            app.layout_mode = layout_mode;
+            app.animation_mode = animation_mode;
+            app.message_name_threshold = message_name_threshold;
+            app.message_indent = message_indent;
+            app.session_gap_minutes = session_gap_minutes;
+            app.is_light_theme = is_light_theme;
+            app.last_graph_mtime = last_graph_mtime;
+            app.viz_options = viz_options;
+            if let Some((graph, mtime)) = graph {
+                app.async_fs.seed_graph_arc(graph, mtime);
+            }
+            app.tracer = tracer;
+            app.bootstrap_complete = true;
+            app.initial_load = false;
+            app.scroll.content_height = app.lines.len();
+        })
+    }
+
+    /// Start the versioned background bootstrap.  Submission is nonblocking
+    /// and the queue retains only the newest pending generation.
+    pub fn start_bootstrap(&mut self, trace_path: Option<PathBuf>, force_show_keys: bool) {
+        if self.bootstrap.is_some() || self.bootstrap_complete {
+            return;
+        }
+        self.async_fs.start();
+        let args = super::bootstrap::BootstrapArgs {
+            workgraph_dir: self.workgraph_dir.clone(),
+            viz_options: self.viz_options.clone(),
+            mouse_override: Some(self.mouse_enabled),
+            history_depth_override: self.history_depth_override,
+            no_history: self.no_history,
+            trace_path,
+            force_show_keys,
+        };
+        let mut engine = super::bootstrap::BootstrapEngine::new();
+        engine.request(args);
+        self.bootstrap = Some(engine);
+    }
+
+    /// Accept at most one background result.  Generation checks happen in
+    /// the broker; applying a coherent snapshot is an O(1) state swap.  Small
+    /// interaction state owned by the UI survives a slow bootstrap.
+    fn poll_bootstrap(&mut self) -> bool {
+        let Some(engine) = self.bootstrap.as_mut() else {
+            return false;
+        };
+        let Some(result) = engine.try_result() else {
+            return false;
+        };
+        match result {
+            Ok(apply) => {
+                apply(self);
+            }
+            Err(message) => {
+                // One compact error episode, no repeating toast.  Keep the
+                // shell interactive; polling/retry remains available.
+                self.bootstrap_complete = false;
+                if let Some(engine) = self.bootstrap.as_mut() {
+                    engine.record_error(message);
+                }
+            }
+        }
+        true
+    }
+
+    pub fn bootstrap_feedback(&self) -> Option<String> {
+        self.bootstrap.as_ref().and_then(|b| b.feedback())
     }
 
     /// Load viz output by calling the viz module directly.
@@ -8765,62 +9016,6 @@ impl VizApp {
         self.enforce_animation_cap();
     }
 
-    /// Start a background file watcher on the `.wg/` directory.
-    /// Sets `fs_change_pending` flag when any file changes, which triggers
-    /// immediate panel reloads in `maybe_refresh()`. Also sets
-    /// `messages_change_pending` when a message file (under `messages/`,
-    /// excluding the `.cursors/` subdir) changes, since `wg msg send` writes
-    /// only there and doesn't bump graph.jsonl mtime — the message indicator
-    /// would otherwise stay stale until something else mutates the graph.
-    fn start_fs_watcher(&mut self) {
-        use notify_debouncer_mini::new_debouncer;
-        use std::time::Duration;
-
-        let flag = self.fs_change_pending.clone();
-        let messages_flag = self.messages_change_pending.clone();
-        let messages_dir = self.workgraph_dir.join("messages");
-        let cursors_segment = std::ffi::OsString::from(".cursors");
-        // 5ms debounce: just enough to coalesce a burst of events
-        // from one write (inotify can fire twice per append on some
-        // filesystems), not so much that the user perceives lag.
-        // On a chat write, we want the TUI to react within a single
-        // frame (16ms @ 60Hz), and 5ms leaves plenty of headroom.
-        let debouncer = new_debouncer(
-            Duration::from_millis(5),
-            move |res: notify_debouncer_mini::DebounceEventResult| {
-                if let Ok(events) = res {
-                    flag.store(true, Ordering::Relaxed);
-                    let touched_messages = events.iter().any(|e| {
-                        e.path.starts_with(&messages_dir)
-                            && !e
-                                .path
-                                .components()
-                                .any(|c| c.as_os_str() == cursors_segment.as_os_str())
-                    });
-                    if touched_messages {
-                        messages_flag.store(true, Ordering::Relaxed);
-                    }
-                }
-            },
-        );
-
-        match debouncer {
-            Ok(mut debouncer) => {
-                let watch_path = self.workgraph_dir.clone();
-                if debouncer
-                    .watcher()
-                    .watch(&watch_path, notify::RecursiveMode::Recursive)
-                    .is_ok()
-                {
-                    self._fs_watcher = Some(debouncer);
-                }
-            }
-            Err(_) => {
-                // File watching unavailable — fall back to polling (existing behavior).
-            }
-        }
-    }
-
     fn apply_loaded_graph_refresh(
         &mut self,
         graph: &worksgood::graph::WorkGraph,
@@ -8887,6 +9082,12 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
+        if self.poll_bootstrap() {
+            return true;
+        }
+        if !self.bootstrap_complete {
+            return false;
+        }
         // Flush a deferred sort apply if the debounce window has elapsed.
         // Run before consuming fs events so a burst of events doesn't keep
         // pushing the flush forward indefinitely.
@@ -9275,10 +9476,12 @@ impl VizApp {
         true
     }
 
-    /// Whether a refresh tick is due (enough time has elapsed since last refresh,
-    /// or the file watcher detected changes).
+    /// Whether a refresh tick is due. While the initial snapshot is loading,
+    /// periodic redraws make the single thresholded phase indicator appear and
+    /// clear without requiring a keypress.
     pub fn is_refresh_due(&self) -> bool {
-        self.fs_change_pending.load(Ordering::Relaxed)
+        !self.bootstrap_complete
+            || self.fs_change_pending.load(Ordering::Relaxed)
             || self.last_refresh.elapsed() >= self.refresh_interval
     }
 
@@ -9352,8 +9555,8 @@ impl VizApp {
     /// Whether any time-based UI elements are active and need periodic redraws
     /// (animations, fading notifications, scrollbar timeouts, etc.).
     pub fn has_timed_ui_elements(&self) -> bool {
-        // File watcher detected changes — keep poll responsive for immediate updates.
-        if self.fs_change_pending.load(Ordering::Relaxed) {
+        // Bootstrap feedback and coalesced storage hints need prompt redraws.
+        if !self.bootstrap_complete || self.fs_change_pending.load(Ordering::Relaxed) {
             return true;
         }
         // Chat streaming: keep poll interval short for progressive display.
@@ -12007,7 +12210,6 @@ impl VizApp {
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
             messages_change_pending: Arc::new(AtomicBool::new(false)),
-            _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
             last_ops_log_mtime: None,
@@ -12021,36 +12223,17 @@ impl VizApp {
             key_feedback: VecDeque::new(),
             is_light_theme: false,
             async_fs: super::async_fs::AsyncFs::new(),
+            bootstrap: None,
+            bootstrap_complete: true,
         }
     }
 
     /// Force an immediate refresh (manual `r` key).
     pub fn force_refresh(&mut self) {
-        self.last_graph_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-            .and_then(|m| m.modified())
-            .ok();
-        self.graph_viz_stale = false;
-        self.smart_follow_active = self.scroll.is_at_bottom();
-        // Load graph once and share between viz and stats.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        if let Ok(graph) = load_graph(&graph_path) {
-            self.load_viz_from_graph(&graph);
-            if !self.search_input.is_empty() {
-                self.rerun_search();
-            }
-            self.load_stats_from_graph(&graph);
-            self.refresh_chat_tab_caches(&graph);
-        } else {
-            self.load_viz();
-            if !self.search_input.is_empty() {
-                self.rerun_search();
-            }
-            self.load_stats();
-        }
-        self.load_agent_monitor();
-        self.sync_active_tabs_from_graph();
-        self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.last_refresh = Instant::now();
+        self.graph_reload_pending = true;
+        self.graph_viz_stale = true;
+        self.async_fs.request_graph_load(graph_path);
     }
 
     // ── Multi-panel methods ──
@@ -14203,6 +14386,59 @@ impl VizApp {
             &self.right_panel_tab,
             &open_tabs,
         );
+    }
+
+    /// Preserve the normal exit-state write without letting a slow or wedged
+    /// project filesystem delay terminal restoration indefinitely. All data
+    /// is copied from in-memory caches before the worker starts; the caller
+    /// waits only for the supplied bound and then proceeds.
+    pub fn save_all_chat_state_bounded(&self, timeout: Duration) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let active_coordinator_id = self.active_coordinator_id;
+        let active_messages = self.chat.messages.clone();
+        let active_skipped = self.chat.skipped_history_count;
+        let coordinator_histories: Vec<_> = self
+            .coordinator_chats
+            .iter()
+            .map(|(id, state)| (*id, state.messages.clone(), state.skipped_history_count))
+            .collect();
+        let right_panel_tab = self.right_panel_tab;
+        let open_tabs: Vec<String> = self
+            .active_tabs
+            .iter()
+            .filter(|id| !self.closed_tabs.contains(id))
+            .map(|id| {
+                self.cached_coordinator_id_set
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| worksgood::chat_id::format_chat_task_id(*id))
+            })
+            .collect();
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        if std::thread::Builder::new()
+            .name("wg-tui-exit-save".into())
+            .spawn(move || {
+                save_chat_history_with_skip(
+                    &workgraph_dir,
+                    active_coordinator_id,
+                    &active_messages,
+                    active_skipped,
+                );
+                for (id, messages, skipped) in coordinator_histories {
+                    save_chat_history_with_skip(&workgraph_dir, id, &messages, skipped);
+                }
+                save_tui_state(
+                    &workgraph_dir,
+                    active_coordinator_id,
+                    &right_panel_tab,
+                    &open_tabs,
+                );
+                let _ = done_tx.try_send(());
+            })
+            .is_ok()
+        {
+            let _ = done_rx.recv_timeout(timeout);
+        }
     }
 
     /// Persist the current tab list and active tab to tui-state.json.

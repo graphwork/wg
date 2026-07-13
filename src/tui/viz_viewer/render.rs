@@ -117,44 +117,48 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     let vitals_area = chunks[2];
     let hints_area = chunks[3];
 
-    // Lazily load panel content if needed.
-    if app.hud_detail.is_none() && app.selected_task_idx.is_some() {
-        app.load_hud_detail();
-    }
-    if app.right_panel_tab == RightPanelTab::Log
-        && app.log_pane.task_id.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_log_pane();
-    }
-    if app.right_panel_tab == RightPanelTab::Messages
-        && app.messages_panel.task_id.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_messages_panel();
-    }
-    if app.right_panel_tab == RightPanelTab::Agency
-        && app.agency_lifecycle.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_agency_lifecycle();
-    }
-    // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
-    if app.right_panel_tab == RightPanelTab::CoordLog {
-        if app.coord_log.rendered_lines.is_empty() {
-            app.load_coord_log();
+    // Lazy project loaders are forbidden while the asynchronous bootstrap is
+    // in flight.  The shell remains fully navigable and panel rendering below
+    // uses empty snapshots/placeholders until one coherent generation lands.
+    if app.bootstrap_complete {
+        if app.hud_detail.is_none() && app.selected_task_idx.is_some() {
+            app.load_hud_detail();
         }
-        if app.activity_feed.events.is_empty() {
-            app.load_activity_feed();
+        if app.right_panel_tab == RightPanelTab::Log
+            && app.log_pane.task_id.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.load_log_pane();
         }
-    }
-    // Lazy-init file browser on first switch to Files tab.
-    if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
-        app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
-    }
-    // Lazy-load firehose data on first switch to Firehose tab.
-    if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
-        app.update_firehose();
+        if app.right_panel_tab == RightPanelTab::Messages
+            && app.messages_panel.task_id.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.load_messages_panel();
+        }
+        if app.right_panel_tab == RightPanelTab::Agency
+            && app.agency_lifecycle.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.load_agency_lifecycle();
+        }
+        // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
+        if app.right_panel_tab == RightPanelTab::CoordLog {
+            if app.coord_log.rendered_lines.is_empty() {
+                app.load_coord_log();
+            }
+            if app.activity_feed.events.is_empty() {
+                app.load_activity_feed();
+            }
+        }
+        // Lazy-init file browser on first switch to Files tab.
+        if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
+            app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
+        }
+        // Lazy-load firehose data on first switch to Firehose tab.
+        if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
+            app.update_firehose();
+        }
     }
 
     // ── Responsive breakpoint detection ──
@@ -2293,6 +2297,16 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .and_then(|id| app.task_message_statuses.get(id))
         .cloned();
     draw_tab_bar(frame, app, app.right_panel_tab, tab_area, msg_status);
+
+    if !app.bootstrap_complete {
+        frame.render_widget(
+            Paragraph::new("Loading project snapshot…")
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center),
+            content_area,
+        );
+        return;
+    }
 
     // Apply slide animation offset to the content area.
     let content_area = if let Some(ref anim) = app.slide_animation {
@@ -8408,6 +8422,15 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ") ",
         Style::default().fg(text_primary(app.is_light_theme)),
     ));
+
+    if let Some(feedback) = app.bootstrap_feedback() {
+        spans.push(Span::styled(
+            format!("| {feedback} "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
     if c.archived > 0 {
         spans.push(Span::styled(
@@ -16989,16 +17012,27 @@ mod tests {
             "[tui]\ncolor_theme = \"light\"\n",
         )
         .unwrap();
-        let app = VizApp::new(
-            wg_dir,
+        let mut app = VizApp::new(
+            wg_dir.clone(),
             crate::commands::viz::VizOptions::default(),
             Some(false),
             None,
             true,
         );
+        let apply = VizApp::load_bootstrap(
+            wg_dir,
+            crate::commands::viz::VizOptions::default(),
+            Some(false),
+            None,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        apply(&mut app);
         assert!(
             app.is_light_theme,
-            "VizApp::new with color_theme='light' must set is_light_theme=true"
+            "async config snapshot with color_theme='light' must set is_light_theme=true"
         );
     }
 

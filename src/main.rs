@@ -3358,8 +3358,6 @@ fn main() -> Result<()> {
             history_depth,
             no_history,
         } => {
-            let config = Config::load_or_default(&workgraph_dir);
-            let resolved_edge_color = config.viz.edge_color;
             let options = commands::viz::VizOptions {
                 all: true,
                 status: None,
@@ -3372,11 +3370,12 @@ fn main() -> Result<()> {
                 tui_mode: true,
                 layout: commands::viz::LayoutMode::default(),
                 tags: vec![],
-                edge_color: resolved_edge_color,
+                // The project config is intentionally loaded by the TUI's
+                // asynchronous bootstrap after its first frame.
+                edge_color: "gray".to_string(),
                 max_columns: None, // TUI handles its own sizing
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
-            let show_keys = show_keys || config.tui.show_keys;
             tui::viz_viewer::run(
                 workgraph_dir,
                 options,
