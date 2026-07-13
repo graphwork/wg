@@ -2058,3 +2058,12 @@ owners = [
 ]
 description = "Pins add-direct-codex end-to-end: in an isolated fresh HOME, the single terminal command `wg profile use codex` activates the embedded direct Codex GPT-5.6 Sol/Luna profile, while a subsequent user-owned profile edit is not overwritten; config resolution shows Sol strong/default and Luna weak agency. A real dispatcher-generated worker run.sh then executes a fake Codex CLI and proves its actual argv contains Sol plus `-c model_reasoning_effort=\"high\"` alongside the independently configured `model_verbosity=\"high\"`. Credential-free."
 timeout_seconds = 60
+
+[[scenario]]
+name = "pi_json_closed_consumer"
+script = "scenarios/pi_json_closed_consumer.sh"
+owners = [
+    "fix-pi-json",
+]
+description = "Terminal-flow regression for Pi 0.80.6 output-guard EPIPE: a real Node pipe consumes only the first NDJSON event from the maintained patched Pi source and closes, while the producer must exit 0 without an unhandled broken-pipe exception. A normal full consumer must still receive the ordered session/turn stream and non-zero usage. Credential-free; the upstream Vitest patch separately pins transient retry success and the 101-attempt bound."
+timeout_seconds = 30

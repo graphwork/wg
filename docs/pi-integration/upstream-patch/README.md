@@ -1,13 +1,13 @@
-# `PI_NO_TUI` — upstream pi patch package (Phase 5, optional)
+# Upstream Pi patch packages
 
-This directory is a **ready-to-submit upstream PR** for
-[`earendil-works/pi`](https://github.com/earendil-works/pi). It adds a
-default-off `PI_NO_TUI` environment switch to `resolveAppMode` in
-`packages/coding-agent/src/main.ts`.
+This directory contains ready-to-submit patches for
+[`earendil-works/pi`](https://github.com/earendil-works/pi). They touch no WG
+runtime source. Each patch's directory or companion document states its own
+gating and validation status.
 
-It **touches no WG source file.** It is an upstream patch prepared *for* pi,
-staged here as documentation/deliverable until/if it is submitted. WG itself
-never depends on it (see "Gating / status" below).
+`PI_NO_TUI` is the original optional Phase-5 patch described below. The
+production bug fix under `output-guard-epipe/` makes JSON/RPC output tolerate a
+consumer closing stdout and is independently applicable.
 
 ## Contents
 
@@ -16,6 +16,7 @@ never depends on it (see "Gating / status" below).
 | `PI_NO_TUI.patch` | The change as a unified diff against `packages/coding-agent/src/main.ts`. Applies with `git apply` / `patch -p1`. |
 | `PR.md` | The PR title + description (harness use case, minimal-surface argument, behavior matrix, suggested commit message). |
 | `tui_guard_test.mjs` | Standalone truth-table test of the patched logic — `node tui_guard_test.mjs`, 11/11 PASS. |
+| `output-guard-epipe/` | Pi 0.80.6 source patch, focused tests, executable source snapshot, and validation record for graceful closed-reader `EPIPE` handling. |
 
 ## Provenance
 
