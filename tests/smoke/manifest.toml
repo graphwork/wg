@@ -1928,8 +1928,9 @@ name = "agency_pi_weak_tier_routes_to_pi_handler"
 script = "scenarios/agency_pi_weak_tier_routes_to_pi_handler.sh"
 owners = [
     "bug-flip-pi-route-uses-claude-cli",
+    "implement-same-system",
 ]
-description = "Pins bug-flip-pi-route-uses-claude-cli: a handler-first `pi:` weak tier (`tiers.fast = \"pi:openrouter:deepseek/deepseek-chat\"`) must dispatch the agency one-shot roles (Evaluator / FlipInference / FlipComparison / Assigner) to the Pi handler — NOT the claude-CLI catch-all in `run_lightweight_llm_call`. The bug silently routed `pi:` specs to claude CLI, which then failed with \"Claude CLI call failed ... subscription access disabled\" instead of honoring pi. Credential-free; stubs both `pi` (records invocation + emits canned NDJSON `translate_pi_stream` parses into a valid evaluator JSON reply) and `claude` (fails LOUDLY with the regression's own error signature if ever invoked). Falsifiable assertions: (1) `wg evaluate run` succeeds; (2) the stub `pi` was invoked (invocation marker file exists); (3) the stub `claude` was NOT invoked (no claude marker) and the regression signature string \"Claude CLI call failed\" is absent from the evaluate log — proving the pi handler path was taken, not the claude fallback."
+description = "Pins bug-flip-pi-route-uses-claude-cli and implement-same-system: a handler-first `pi:` weak tier must stay on Pi after failure. Credential-free stubs prove: the failing Terra primary returns structured WG-EXEC-ROUTE-FAILED diagnostics and never runs Claude when no fallback exists; after an explicit same-system fallback is configured, attempts run in declared Terra -> Sol order, the success diagnostic names the fallback, and Claude still never runs."
 timeout_seconds = 60
 
 [[scenario]]

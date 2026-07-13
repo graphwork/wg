@@ -276,8 +276,8 @@ pub fn run(
     // Per-WCC profile: if the task was published under a profile
     // (`wg publish --profile`), load THAT profile's complete config so the
     // evaluator role resolves through the profile's `[models.evaluator]` (or
-    // tier) instead of the global default claude:haiku pin. `None` ⇒ global
-    // config unchanged. This is the dispatch-time resolution point for the
+    // explicitly configured weak tier). `None` ⇒ global config unchanged.
+    // This is the dispatch-time resolution point for the
     // `.evaluate-*` satellite, since `run_lightweight_llm_call` re-resolves
     // the model from this config by role.
     let config = worksgood::dispatch::effective_config_owned(
@@ -475,12 +475,22 @@ pub fn run(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let eval_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::Evaluator,
-                &prompt,
-                timeout_secs,
-            )
+            let eval_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::Evaluator,
+                    route,
+                    &prompt,
+                    timeout_secs,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::Evaluator,
+                    &prompt,
+                    timeout_secs,
+                )
+            }
             .context("Evaluation LLM call failed")?;
             last_text = eval_result.text;
             token_usage = eval_result.token_usage;
@@ -981,12 +991,22 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let inference_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::FlipInference,
-                &inference_prompt,
-                flip_timeout,
-            )
+            let inference_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::FlipInference,
+                    route,
+                    &inference_prompt,
+                    flip_timeout,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::FlipInference,
+                    &inference_prompt,
+                    flip_timeout,
+                )
+            }
             .context("FLIP inference LLM call failed")?;
             last_text = inference_result.text;
             token_usage = inference_result.token_usage;
@@ -1040,12 +1060,22 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let comparison_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::FlipComparison,
-                &comparison_prompt,
-                flip_timeout,
-            )
+            let comparison_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::FlipComparison,
+                    route,
+                    &comparison_prompt,
+                    flip_timeout,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::FlipComparison,
+                    &comparison_prompt,
+                    flip_timeout,
+                )
+            }
             .context("FLIP comparison LLM call failed")?;
             last_text = comparison_result.text;
             token_usage = comparison_result.token_usage;
