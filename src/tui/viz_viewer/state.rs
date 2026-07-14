@@ -28,6 +28,63 @@ use edtui::{EditorEventHandler, EditorMode, EditorState};
 
 const CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE: Duration = Duration::from_secs(5);
 
+/// Construct a child `wg` command that is pinned to this TUI's graph.
+///
+/// A TUI can itself be launched from a WG worker/chat. In that case the
+/// process inherits the parent's routing and identity variables. Letting a
+/// background command inherit those values means `current_dir(project_root)`
+/// is ignored in favor of the parent WG_DIR, so first-use chat bootstrap can
+/// mutate the live parent graph (historically even creating bare
+/// `.coordinator` ghosts). An explicit `--dir` plus an identity-free child
+/// environment is the hard subprocess boundary.
+fn isolated_wg_subprocess(program: &Path, workgraph_dir: &Path, args: &[String]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .arg("--dir")
+        .arg(workgraph_dir)
+        .args(args)
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID");
+    command
+}
+
+#[cfg(test)]
+mod subprocess_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn tui_child_command_pins_graph_and_clears_parent_worker_environment() {
+        let command = isolated_wg_subprocess(
+            Path::new("/tmp/built-wg"),
+            Path::new("/tmp/scratch/.wg"),
+            &["chat".into(), "create".into()],
+        );
+
+        assert_eq!(command.get_program(), "/tmp/built-wg");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--dir", "/tmp/scratch/.wg", "chat", "create"]);
+
+        let removed: HashSet<_> = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.is_none().then(|| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        assert_eq!(
+            removed,
+            HashSet::from([
+                "WG_DIR".to_string(),
+                "WG_TASK_ID".to_string(),
+                "WG_AGENT_ID".to_string(),
+            ])
+        );
+    }
+}
+
 /// One active-log enrichment/history page is bounded by both bytes and records.
 ///
 /// These are the TUI-wide limits promised by `docs/design-fully-async-tui.md`.
@@ -13531,14 +13588,17 @@ impl VizApp {
         // `.wg/.wg`. Use the parent directory as the CWD.
         #[cfg(not(test))]
         {
-            let project_root = self
-                .workgraph_dir
+            let workgraph_dir = self.workgraph_dir.clone();
+            let project_root = workgraph_dir
                 .parent()
-                .unwrap_or(&self.workgraph_dir)
+                .unwrap_or(&workgraph_dir)
                 .to_path_buf();
+            // Re-exec the running binary, not an unrelated/stale `wg` from
+            // PATH. This also keeps the TUI and its background commands on the
+            // same wire/storage version after an upgrade.
+            let wg_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wg"));
             std::thread::spawn(move || {
-                let result = Command::new("wg")
-                    .args(&args)
+                let result = isolated_wg_subprocess(&wg_binary, &workgraph_dir, &args)
                     .current_dir(&project_root)
                     .output();
                 let (success, output) = match result {

@@ -2132,3 +2132,12 @@ owners = [
 ]
 description = "Permanent real tmux/PTY regression for bound-tui-chat: creates the exact valid 100,000-record / 97,100,000-byte chat history with public [tui] chat_page_size=100000, waits for the newest Chat snapshot (not the neutral shell), sends the actual Help key, and requires visible acknowledgement below 100ms. Static assertions pin the shared 200-record / 1 MiB projection at configuration/CLI/pagination publication plus Chat draw/search. Credential-free and cleanup-safe on success, failure, INT, and TERM."
 timeout_seconds = 30
+
+[[scenario]]
+name = "tui_bootstrap_parent_graph_isolation"
+script = "scenarios/tui_bootstrap_parent_graph_isolation.sh"
+owners = [
+    "fix-integration-test",
+]
+description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker task/agent identity, wait for first-use chat bootstrap, require .chat-0 in scratch, and prove the parent graph hash/content is unchanged with no legacy .coordinator ghost. Credential-free."
+timeout_seconds = 30

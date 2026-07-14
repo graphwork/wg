@@ -89,6 +89,9 @@ fn wg_cmd_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> std::p
 fn isolate_command_env(cmd: &mut Command, wg_dir: &Path) {
     cmd.env("HOME", fake_home_for(wg_dir));
     for key in [
+        "WG_DIR",
+        "WG_TASK_ID",
+        "WG_AGENT_ID",
         "WG_LLM_PROVIDER",
         "WG_ENDPOINT",
         "WG_ENDPOINT_URL",

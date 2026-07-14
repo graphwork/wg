@@ -27,6 +27,9 @@ fn dev_check_warns_on_non_main_branch() {
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
         .arg("dev-check")
         .current_dir(repo)
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
         .output()
         .unwrap();
 
