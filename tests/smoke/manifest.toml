@@ -2089,6 +2089,15 @@ description = "Terminal-flow regression for Pi 0.80.6 output-guard EPIPE: a real
 timeout_seconds = 30
 
 [[scenario]]
+name = "pi_runtime_delivery"
+script = "scenarios/pi_runtime_delivery.sh"
+owners = [
+    "make-pi-epipe",
+]
+description = "Live installed-runtime delivery gate for make-pi-epipe: wg doctor content-inspects the actual Pi package reached through PATH and reports the fixed EPIPE + bounded-retry guard; the real human `pi --mode json -p ... | head -n1` terminal flow exits cleanly with no unhandled EPIPE; a normal full consumer receives ordered events plus non-zero turn usage; and source assertions pin the human chat, hermetic RPC handler, and JSON worker launch surfaces to that same PATH runtime. Loud SKIP (77) when Pi is not installed."
+timeout_seconds = 120
+
+[[scenario]]
 name = "explicit_execution_selection"
 script = "scenarios/explicit_execution_selection.sh"
 owners = [

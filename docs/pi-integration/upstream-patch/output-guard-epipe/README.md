@@ -64,3 +64,44 @@ patch:
 
 WG does not need a wrapper change: its Pi worker consumes the complete stream.
 The defect is in Pi's raw stdout guard, so the durable fix belongs upstream.
+
+## WG runtime delivery
+
+As of 2026-07-14, npm still publishes 0.80.6 as the latest
+`@earendil-works/pi-coding-agent` release (registry integrity
+`sha512-vcfD6tOk402isLl3Cm/qbn2O10TvgroMp1+/fEGM24ZdvETFCdOYv5VZ7m59EI5fPsjfSJh+CpQ5bhBrhfOg7g==`),
+and those published bytes contain the vulnerable guard. A green source-snapshot
+test therefore does not fix the runtime on `PATH`.
+
+WG's supported development delivery workflow is:
+
+```bash
+make install-patched-pi
+wg doctor
+```
+
+The make target runs `scripts/install-patched-pi.sh`. It clones the canonical Pi
+package repository at the exact commit above, applies this patch to
+`packages/coding-agent`, installs dependencies, builds the monorepo, runs the
+focused upstream tests, creates an npm tarball, and installs that tarball. It
+never edits an existing global `node_modules` tree in place. The resulting
+package keeps upstream's version `0.80.6`, so `wg doctor` inspects the resolved
+`dist/core/output-guard.js` bytes and reports whether both EPIPE handling and
+the retry bound are present; a version-only check would misclassify a patched
+development install.
+
+Human `pi`, WG's JSON worker, and `wg pi-handler` all resolve the Pi executable
+from `PATH`. The doctor detail prints that exact executable and guard path, so
+one diagnostic covers all three launch surfaces without adding a warning to
+the daemon loop.
+
+Delivery evidence from the 2026-07-14 validation host:
+
+- resolved CLI: `/home/bot/.nvm/versions/node/v25.4.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`;
+- runtime version: `0.80.6` built from commit
+  `b084d2fb395f0f1aa924cb07b14e5d0edab115e2`;
+- installed compiled guard SHA-256:
+  `96d0b1c5dd9832204c4a9ef92babf258f71ca7bea6b8876d0e94e7dd54161cc4`;
+- focused upstream output-guard tests: 4 passed; and
+- live full consumer: 13 valid NDJSON events, one `turn_end` with non-zero
+  `usage.totalTokens`, and empty stderr.

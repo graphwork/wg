@@ -6610,6 +6610,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Check
+            | Commands::Doctor
             | Commands::Cleanup { .. }
             | Commands::Cycles
             | Commands::Cron { .. }
