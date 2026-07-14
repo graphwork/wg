@@ -2994,6 +2994,58 @@ impl ChatState {
     }
 }
 
+/// Sendable subset of chat state used by the auxiliary storage worker.
+/// `EditorState` embeds an `Rc` clipboard and deliberately remains owned by
+/// the terminal thread.
+struct ChatStorageSnapshot {
+    messages: Vec<ChatMessage>,
+    pending_request_ids: HashSet<String>,
+    outbox_cursor: u64,
+    deferred_user_indices: Vec<usize>,
+    coordinator_active: bool,
+    streaming_text: String,
+    awaiting_since: Option<Instant>,
+    has_more_history: bool,
+    total_history_count: usize,
+    skipped_history_count: usize,
+    archives_loaded: bool,
+    has_archives: bool,
+}
+
+impl ChatStorageSnapshot {
+    fn capture(chat: &ChatState) -> Self {
+        Self {
+            messages: chat.messages.clone(),
+            pending_request_ids: chat.pending_request_ids.clone(),
+            outbox_cursor: chat.outbox_cursor,
+            deferred_user_indices: chat.deferred_user_indices.clone(),
+            coordinator_active: chat.coordinator_active,
+            streaming_text: chat.streaming_text.clone(),
+            awaiting_since: chat.awaiting_since,
+            has_more_history: chat.has_more_history,
+            total_history_count: chat.total_history_count,
+            skipped_history_count: chat.skipped_history_count,
+            archives_loaded: chat.archives_loaded,
+            has_archives: chat.has_archives,
+        }
+    }
+
+    fn install(self, chat: &mut ChatState) {
+        chat.messages = self.messages;
+        chat.pending_request_ids = self.pending_request_ids;
+        chat.outbox_cursor = self.outbox_cursor;
+        chat.deferred_user_indices = self.deferred_user_indices;
+        chat.coordinator_active = self.coordinator_active;
+        chat.streaming_text = self.streaming_text;
+        chat.awaiting_since = self.awaiting_since;
+        chat.has_more_history = self.has_more_history;
+        chat.total_history_count = self.total_history_count;
+        chat.skipped_history_count = self.skipped_history_count;
+        chat.archives_loaded = self.archives_loaded;
+        chat.has_archives = self.has_archives;
+    }
+}
+
 /// State for in-chat search (/ key when chat tab is focused).
 #[derive(Clone, Debug, Default)]
 pub struct ChatSearchState {
@@ -5379,6 +5431,7 @@ impl LogPaneState {
 }
 
 /// State for the Coordinator Log panel (panel 7) — shows daemon activity log.
+#[derive(Clone)]
 pub struct CoordLogState {
     pub scroll: usize,
     pub auto_tail: bool,
@@ -5386,6 +5439,21 @@ pub struct CoordLogState {
     pub last_offset: u64,
     pub viewport_height: usize,
     pub total_wrapped_lines: usize,
+}
+
+/// Storage-derived header shown above the coordinator activity feed.
+/// Rendering consumes only this cache; config, compactor and message files are
+/// read together on the auxiliary storage lane.
+#[derive(Default)]
+pub struct CoordinatorRuntimeState {
+    pub coordinator_id: u32,
+    pub executor: String,
+    pub model: String,
+    pub compaction_count: u64,
+    pub last_compaction: String,
+    pub pending: usize,
+    pub threshold: usize,
+    pub summary_present: bool,
 }
 
 impl Default for CoordLogState {
@@ -5655,6 +5723,7 @@ fn format_event_summary(
 }
 
 /// State for the Activity Feed — semantic view of operations.jsonl.
+#[derive(Clone)]
 pub struct ActivityFeedState {
     /// Ring buffer of parsed activity events (max 500).
     pub events: VecDeque<ActivityEvent>,
@@ -5706,6 +5775,7 @@ pub struct FirehoseLine {
 const FIREHOSE_MAX_LINES: usize = 1000;
 
 /// State for the Firehose panel (panel 8) — merged stream of all agent output.
+#[derive(Clone)]
 pub struct FirehoseState {
     /// Scroll offset from the top.
     pub scroll: usize,
@@ -6865,6 +6935,7 @@ pub struct VizApp {
 
     // ── Activity feed state (semantic operations.jsonl view, replaces raw coord log) ──
     pub activity_feed: ActivityFeedState,
+    pub coordinator_runtime: CoordinatorRuntimeState,
 
     // ── Messages panel state (panel 3) ──
     pub messages_panel: MessagesPanelState,
@@ -6896,10 +6967,6 @@ pub struct VizApp {
 
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
-    /// Dedicated config snapshot lane; render only observes the completed
-    /// `config_panel` and never waits on this receiver.
-    config_load_rx: Option<mpsc::Receiver<ConfigPanelState>>,
-    config_load_in_flight: bool,
 
     // ── Settings tab state (RightPanelTab::Settings) ──
     pub settings_panel: SettingsPanelState,
@@ -7130,6 +7197,9 @@ pub struct VizApp {
     /// dispatches refreshes via channels — it never blocks on disk, even
     /// on a high-latency filesystem (NFS, sshfs). See task `fix-tui-must`.
     pub async_fs: super::async_fs::AsyncFs,
+    /// Bounded lane for all non-graph storage snapshots. The terminal thread
+    /// only performs non-blocking submission and completion drains.
+    auxiliary: super::auxiliary::Lane,
     /// Versioned, bounded initial-load worker.  It is started only after the
     /// storage-independent first frame has been painted.
     bootstrap: Option<super::bootstrap::BootstrapEngine>,
@@ -7409,14 +7479,13 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             activity_feed: ActivityFeedState::default(),
+            coordinator_runtime: CoordinatorRuntimeState::default(),
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
             sort_status_map: HashMap::new(),
             last_heavy_refresh_at: None,
             config_panel: ConfigPanelState::default(),
-            config_load_rx: None,
-            config_load_in_flight: false,
             settings_panel: SettingsPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
             viewing_iteration: None,
@@ -7486,6 +7555,7 @@ impl VizApp {
             key_feedback: VecDeque::new(),
             is_light_theme: config.tui.color_theme == "light",
             async_fs: super::async_fs::AsyncFs::new_unstarted(),
+            auxiliary: super::auxiliary::Lane::new(),
             bootstrap: None,
             snapshot_engine: None,
             snapshot_generation: 0,
@@ -9282,13 +9352,7 @@ impl VizApp {
     /// Search through on-disk history pages that haven't been loaded yet.
     /// Loads pages until a match is found or all history is loaded.
     pub fn chat_search_load_all_history(&mut self) {
-        while self.chat.has_more_history {
-            if !self.load_more_chat_history() {
-                break;
-            }
-        }
-        // Re-run the search with all messages now loaded.
-        self.update_chat_search();
+        self.request_all_chat_history();
     }
 
     /// Return a human-readable chat search status string for the search bar.
@@ -9665,11 +9729,11 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
-        let config_changed = self.poll_config_panel();
+        let auxiliary_changed = self.poll_auxiliary_snapshots();
         if self.poll_bootstrap() {
             return true;
         }
-        if config_changed {
+        if auxiliary_changed {
             return true;
         }
         if !self.bootstrap_complete {
@@ -9716,7 +9780,7 @@ impl VizApp {
             if streaming != prev {
                 self.chat.streaming_text = streaming;
                 // Also check outbox in case the response just completed.
-                self.poll_chat_messages();
+                self.request_chat_refresh();
                 return true;
             }
         }
@@ -9800,7 +9864,7 @@ impl VizApp {
                     self.last_messages_mtime = msg_mtime;
                     self.save_message_draft();
                     self.invalidate_messages_panel();
-                    self.load_messages_panel();
+                    self.request_messages_panel();
                     content_updated = true;
                 }
             }
@@ -9812,7 +9876,7 @@ impl VizApp {
                 let log_mtime = self.async_fs.cached_stat(&log_path);
                 if log_mtime != self.last_daemon_log_mtime {
                     self.last_daemon_log_mtime = log_mtime;
-                    self.load_coord_log();
+                    self.request_coordinator_log();
                     content_updated = true;
                 }
                 let ops_path = self.workgraph_dir.join("log").join("operations.jsonl");
@@ -9820,7 +9884,7 @@ impl VizApp {
                 let ops_mtime = self.async_fs.cached_stat(&ops_path);
                 if ops_mtime != self.last_ops_log_mtime {
                     self.last_ops_log_mtime = ops_mtime;
-                    self.load_activity_feed();
+                    self.request_coordinator_log();
                     content_updated = true;
                 }
             }
@@ -9835,8 +9899,7 @@ impl VizApp {
                 let outbox_mtime = self.async_fs.cached_stat(&outbox_path);
                 if outbox_mtime != self.last_chat_outbox_mtime {
                     self.last_chat_outbox_mtime = outbox_mtime;
-                    self.check_coordinator_status();
-                    self.poll_chat_messages();
+                    self.request_chat_refresh();
                     content_updated = true;
                 }
             }
@@ -9850,20 +9913,20 @@ impl VizApp {
 
             // Firehose: update if tab is active.
             if self.right_panel_tab == RightPanelTab::Firehose {
-                self.update_firehose();
+                self.request_firehose();
                 content_updated = true;
             }
 
             // Output pane: update if tab is active.
             if self.right_panel_tab == RightPanelTab::Output {
-                self.update_output_pane();
+                self.request_output_pane();
                 content_updated = true;
             }
 
             // Log pane: update agent output if tab is active.
             if self.right_panel_tab == RightPanelTab::Log {
-                self.update_log_output();
-                self.update_log_stream_events();
+                self.invalidate_log_pane();
+                self.request_log_pane();
                 content_updated = true;
             }
 
@@ -9887,7 +9950,7 @@ impl VizApp {
                     let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
                     let prev_hud_scroll = self.hud_scroll;
                     self.invalidate_hud();
-                    self.load_hud_detail();
+                    self.request_hud_detail();
                     if prev_hud_task.is_some()
                         && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
                     {
@@ -9917,14 +9980,12 @@ impl VizApp {
 
         // Update coordinator status and poll for new chat messages on every refresh tick.
         if self.chat.awaiting_response() || self.right_panel_tab == RightPanelTab::Chat {
-            self.check_coordinator_status();
-            self.poll_chat_messages();
+            self.request_chat_refresh();
         }
 
         // Poll service health every ~2 seconds for responsive agent count updates.
         if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(2) {
-            self.update_service_health();
-            self.update_vitals();
+            self.request_service_snapshot();
         }
 
         // Auto-refresh config panel when config.toml changes on disk,
@@ -9943,7 +10004,7 @@ impl VizApp {
         }
 
         if self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10) {
-            self.update_time_counters();
+            self.request_service_snapshot();
         }
 
         // --- Heavy data refresh (graph-dependent) ---
@@ -10256,7 +10317,7 @@ impl VizApp {
             self.hud_detail = None;
             self.hud_scroll = 0;
         } else {
-            self.load_hud_detail();
+            self.request_hud_detail();
         }
     }
 
@@ -12016,9 +12077,10 @@ impl VizApp {
             self.log_pane.scroll = usize::MAX;
             self.log_pane.auto_tail = true;
             self.log_pane.has_new_content = false;
-            // Pull in the newly-selected attempt's content immediately.
-            self.update_log_output();
-            self.update_log_stream_events();
+            // Pull in the newly-selected attempt without touching storage on
+            // the input thread.
+            self.invalidate_log_pane();
+            self.request_log_pane();
         }
     }
 
@@ -12113,8 +12175,7 @@ impl VizApp {
         } else {
             self.right_panel_visible = true;
             self.right_panel_tab = RightPanelTab::CoordLog;
-            self.load_coord_log();
-            self.load_activity_feed();
+            self.request_coordinator_log();
         }
     }
 
@@ -12670,6 +12731,7 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             activity_feed: ActivityFeedState::default(),
+            coordinator_runtime: CoordinatorRuntimeState::default(),
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
@@ -12728,8 +12790,6 @@ impl VizApp {
             iteration_archives: Vec::new(),
             history_browser: HistoryBrowserState::default(),
             config_panel: ConfigPanelState::default(),
-            config_load_rx: None,
-            config_load_in_flight: false,
             settings_panel: SettingsPanelState::default(),
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
@@ -12747,6 +12807,7 @@ impl VizApp {
             key_feedback: VecDeque::new(),
             is_light_theme: false,
             async_fs: super::async_fs::AsyncFs::new(),
+            auxiliary: super::auxiliary::Lane::new(),
             bootstrap: None,
             snapshot_engine: None,
             snapshot_generation: 0,
@@ -13174,7 +13235,7 @@ impl VizApp {
                         // wg chat succeeded — response should be in the outbox.
                         // Poll immediately so message appears at the same time as
                         // the throbber disappears (avoids 1-second gap).
-                        self.poll_chat_messages();
+                        self.request_chat_refresh();
                         // If poll didn't find messages yet (edge case), keep
                         // awaiting_response true so the throbber persists until
                         // the next poll picks it up.
@@ -14966,14 +15027,16 @@ impl VizApp {
 
     /// Persist the current tab list and active tab to tui-state.json.
     /// Best-effort: failure logs a warning but doesn't block operation.
-    pub fn persist_tab_state(&self) {
+    pub fn persist_tab_state(&mut self) {
         let open_tabs = self.open_tab_labels_for_persistence();
-        save_tui_state(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.right_panel_tab,
-            &open_tabs,
-        );
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let tab = self.right_panel_tab;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Persistence, move || {
+                save_tui_state(&workgraph_dir, cid, &tab, &open_tabs);
+                Box::new(|_| {})
+            });
     }
 
     fn open_tab_labels_for_persistence(&self) -> Vec<String> {
@@ -15784,48 +15847,12 @@ impl VizApp {
         self.coordinator_chats
             .insert(self.active_coordinator_id, current);
 
-        // Load target chat state: try in-memory first, then persisted file (paginated), then default.
-        // --no-history: always start with empty chat for any coordinator.
-        self.chat = if self.no_history {
-            ChatState::default()
-        } else {
-            self.coordinator_chats
-                .remove(&target_id)
-                .unwrap_or_else(|| {
-                    let config = Config::load_or_default(&self.workgraph_dir);
-                    let page_size = self
-                        .history_depth_override
-                        .unwrap_or(config.tui.chat_page_size);
-                    let result = load_persisted_chat_history_paginated(
-                        &self.workgraph_dir,
-                        target_id,
-                        page_size,
-                    );
-                    if result.messages.is_empty() {
-                        ChatState::default()
-                    } else {
-                        ChatState {
-                            has_more_history: result.has_more,
-                            total_history_count: result.total_count,
-                            skipped_history_count: result
-                                .total_count
-                                .saturating_sub(result.messages.len()),
-                            messages: result.messages,
-                            ..Default::default()
-                        }
-                    }
-                })
-        };
-
-        // Initialize outbox cursor for newly created chat states so we don't
-        // re-display old messages or miss new ones (each coordinator has independent
-        // ID sequences — a cursor from coordinator-0 is meaningless for coordinator-6).
-        if self.chat.outbox_cursor == 0
-            && let Ok(msgs) =
-                worksgood::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
-        {
-            self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
-        }
+        // Never fall through to project storage from a tab-switch key. A
+        // missing in-memory chat paints an empty cached shell while the
+        // auxiliary worker loads its bounded initial page and outbox cursor.
+        let cached = self.coordinator_chats.remove(&target_id);
+        let needs_history_snapshot = !self.no_history && cached.is_none();
+        self.chat = cached.unwrap_or_default();
 
         // Always reset to Normal when switching coordinators so arrow-key
         // navigation doesn't get stuck in input mode. The user must explicitly
@@ -15841,6 +15868,9 @@ impl VizApp {
 
         self.active_coordinator_id = target_id;
         self.persist_tab_state();
+        if needs_history_snapshot {
+            self.request_initial_chat_history();
+        }
 
         // Auto-enter PTY mode when switching to a native-executor
         // coordinator (Step 1 of nex-as-everything). Harmless no-op for
@@ -17283,9 +17313,6 @@ impl VizApp {
         }
     }
 
-    /// Delete a coordinator session via IPC.
-    /// Sends the delete command to the backend; on success the effect handler
-    /// cleans up local chat state, switches to another coordinator, and refreshes.
     // ── Chat-exit prompt (tmux-persistence UX) ──────────────────────
 
     /// Returns chat ids that currently have a live tmux session for
@@ -18005,58 +18032,561 @@ impl VizApp {
         self.chat.deferred_user_indices.clear();
     }
 
-    // ── Config panel ──
+    // ── Auxiliary storage snapshots ──
 
-    /// Queue a config-panel rebuild on a dedicated storage thread. Requests
-    /// coalesce while one rebuild is in flight, keeping tab/render input
-    /// bounded even when open/read/stat calls take seconds.
-    pub fn request_config_panel(&mut self) {
-        if self.config_load_in_flight {
-            return;
-        }
-        let workgraph_dir = self.workgraph_dir.clone();
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.config_load_rx = Some(rx);
-        self.config_load_in_flight = true;
-        std::thread::spawn(move || {
-            let mut loader = VizApp::new(
-                workgraph_dir,
-                VizOptions::default(),
-                Some(false),
-                None,
-                true,
-            );
-            loader.load_config_panel();
-            let _ = tx.try_send(loader.config_panel);
-        });
+    fn selected_hud_target(&self) -> Option<String> {
+        let selected = self.selected_task_id()?.to_string();
+        Some(
+            self.hud_pin
+                .as_ref()
+                .filter(|pin| pin.anchor_parent_id == selected)
+                .map(|pin| pin.dot_task_id.clone())
+                .unwrap_or(selected),
+        )
     }
 
-    /// Accept at most one completed config snapshot without blocking.
-    fn poll_config_panel(&mut self) -> bool {
-        let Some(rx) = self.config_load_rx.as_ref() else {
-            return false;
+    /// Queue the selected task's full detail snapshot.
+    pub fn request_hud_detail(&mut self) {
+        let Some(target) = self.selected_hud_target() else {
+            self.hud_detail = None;
+            return;
         };
-        match rx.try_recv() {
-            Ok(mut panel) => {
-                panel.selected = self
-                    .config_panel
-                    .selected
-                    .min(panel.entries.len().saturating_sub(1));
-                panel.collapsed = std::mem::take(&mut self.config_panel.collapsed);
-                panel.endpoint_test_results =
-                    std::mem::take(&mut self.config_panel.endpoint_test_results);
-                self.config_panel = panel;
-                self.config_load_rx = None;
-                self.config_load_in_flight = false;
-                true
-            }
-            Err(mpsc::TryRecvError::Empty) => false,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.config_load_rx = None;
-                self.config_load_in_flight = false;
-                false
-            }
+        self.request_hud_detail_target(target, true);
+    }
+
+    /// Queue a detail snapshot for a task reached from Agency/navigation.
+    pub fn request_hud_detail_for_task(&mut self, target: &str) {
+        self.request_hud_detail_target(target.to_string(), false);
+    }
+
+    fn request_hud_detail_target(&mut self, target: String, full: bool) {
+        let graph = self.published_graph.clone();
+        let workgraph_dir = self.workgraph_dir.clone();
+        let anchor = self.selected_task_id().map(str::to_string);
+        let viewing_iteration = self.viewing_iteration;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Detail, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.viewing_iteration = viewing_iteration;
+                if full {
+                    loader.load_hud_detail();
+                } else {
+                    loader.load_hud_detail_for_task(&target);
+                }
+                let detail = loader.hud_detail;
+                let archives = loader.iteration_archives;
+                let archives_task_id = loader.iteration_archives_task_id;
+                let output_mtime = detail.as_ref().and_then(|d| d.output_mtime);
+                Box::new(move |app| {
+                    if app.selected_task_id().map(str::to_string) != anchor {
+                        return;
+                    }
+                    app.hud_detail = detail;
+                    app.iteration_archives = archives;
+                    app.iteration_archives_task_id = archives_task_id;
+                    app.last_detail_output_mtime = output_mtime;
+                })
+            });
+    }
+
+    pub fn request_log_pane(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.invalidate_log_pane();
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        let json_mode = self.log_pane.json_mode;
+        let view_mode = self.log_pane.view_mode;
+        let summary_mode = self.log_pane.summary_mode;
+        let manual_pin = self.log_pane.manual_pin.clone();
+        let pinned_for_task = self.log_pane.pinned_for_task.clone();
+        let viewing_iteration = self.viewing_iteration;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Log, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.viewing_iteration = viewing_iteration;
+                loader.log_pane.json_mode = json_mode;
+                loader.log_pane.view_mode = view_mode;
+                loader.log_pane.summary_mode = summary_mode;
+                loader.log_pane.manual_pin = manual_pin;
+                loader.log_pane.pinned_for_task = pinned_for_task;
+                loader.load_agent_monitor();
+                loader.load_log_pane();
+                loader.update_log_output();
+                loader.update_log_stream_events();
+                let mut panel = loader.log_pane;
+                Box::new(move |app| {
+                    if app.selected_task_id() != Some(target.as_str()) {
+                        return;
+                    }
+                    panel.scroll = app.log_pane.scroll;
+                    panel.auto_tail = app.log_pane.auto_tail;
+                    panel.json_mode = app.log_pane.json_mode;
+                    panel.view_mode = app.log_pane.view_mode;
+                    panel.summary_mode = app.log_pane.summary_mode;
+                    app.log_pane = panel;
+                })
+            });
+    }
+
+    pub fn request_messages_panel(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.invalidate_messages_panel();
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Messages, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.load_messages_panel();
+                let rendered_lines = loader.messages_panel.rendered_lines;
+                let entries = loader.messages_panel.entries;
+                let summary = loader.messages_panel.summary;
+                let task_id = loader.messages_panel.task_id;
+                Box::new(move |app| {
+                    if app.selected_task_id() != Some(target.as_str()) {
+                        return;
+                    }
+                    app.messages_panel.rendered_lines = rendered_lines;
+                    app.messages_panel.entries = entries;
+                    app.messages_panel.summary = summary;
+                    app.messages_panel.task_id = task_id;
+                })
+            });
+    }
+
+    pub fn request_agency_lifecycle(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.agency_lifecycle = None;
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Agency, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.load_agency_lifecycle();
+                let lifecycle = loader.agency_lifecycle;
+                Box::new(move |app| {
+                    if app.selected_task_id() == Some(target.as_str()) {
+                        app.agency_lifecycle = lifecycle;
+                    }
+                })
+            });
+    }
+
+    pub fn request_coordinator_log(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let coord_log = self.coord_log.clone();
+        let activity_feed = self.activity_feed.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::CoordinatorLog, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                loader.coord_log = coord_log;
+                loader.activity_feed = activity_feed;
+                loader.load_coord_log();
+                loader.load_activity_feed();
+                loader.load_coordinator_runtime();
+                let coord_log = loader.coord_log;
+                let activity_feed = loader.activity_feed;
+                let runtime = loader.coordinator_runtime;
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    if app.active_coordinator_id != cid {
+                        return;
+                    }
+                    app.coord_log = coord_log;
+                    app.activity_feed = activity_feed;
+                    app.coordinator_runtime = runtime;
+                    app.toasts.extend(toasts);
+                })
+            });
+    }
+
+    fn load_coordinator_runtime(&mut self) {
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let cid = self.active_coordinator_id;
+        let state =
+            worksgood::service::chat_compactor::ChatCompactorState::load(&self.workgraph_dir, cid);
+        let pending =
+            worksgood::chat::read_inbox_since_for(&self.workgraph_dir, cid, state.last_inbox_id)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                + worksgood::chat::read_outbox_since_for(
+                    &self.workgraph_dir,
+                    cid,
+                    state.last_outbox_id,
+                )
+                .map(|m| m.len())
+                .unwrap_or(0);
+        self.coordinator_runtime = CoordinatorRuntimeState {
+            coordinator_id: cid,
+            executor: config.coordinator.effective_executor(),
+            model: config.coordinator.model.clone().unwrap_or_else(|| {
+                config
+                    .resolve_model_for_role(worksgood::config::DispatchRole::Default)
+                    .model
+            }),
+            compaction_count: state.compaction_count,
+            last_compaction: state.last_compaction.unwrap_or_else(|| "never".to_string()),
+            pending,
+            threshold: config.chat.compact_threshold,
+            summary_present: worksgood::service::chat_compactor::context_summary_path(
+                &self.workgraph_dir,
+                cid,
+            )
+            .exists(),
+        };
+    }
+
+    pub fn request_agent_monitor(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::AgentMonitor, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.load_agent_monitor();
+                let monitor = loader.agent_monitor;
+                let dashboard = loader.dashboard;
+                Box::new(move |app| {
+                    app.agent_monitor = monitor;
+                    app.dashboard = dashboard;
+                })
+            });
+    }
+
+    pub fn request_firehose(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let prior = self.firehose.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Firehose, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.firehose = prior;
+                loader.update_firehose();
+                let firehose = loader.firehose;
+                Box::new(move |app| app.firehose = firehose)
+            });
+    }
+
+    pub fn request_output_pane(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let active_agent_id = self.output_pane.active_agent_id.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Output, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.output_pane.active_agent_id = active_agent_id.clone();
+                loader.update_output_pane();
+                let mut output = loader.output_pane;
+                Box::new(move |app| {
+                    if app.output_pane.active_agent_id == active_agent_id {
+                        output.agent_scrolls = std::mem::take(&mut app.output_pane.agent_scrolls);
+                        output.viewport_height = app.output_pane.viewport_height;
+                        output.total_rendered_lines = app.output_pane.total_rendered_lines;
+                        app.output_pane = output;
+                    }
+                })
+            });
+    }
+
+    pub fn request_chat_refresh(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_cursor = self.chat.outbox_cursor;
+        let start_len = self.chat.messages.len();
+        let chat = ChatStorageSnapshot::capture(&self.chat);
+        let tab = self.right_panel_tab;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Chat, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                chat.install(&mut loader.chat);
+                loader.right_panel_tab = tab;
+                loader.check_coordinator_status();
+                loader.poll_chat_messages();
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    if app.active_coordinator_id != cid {
+                        return;
+                    }
+                    app.chat.coordinator_active = refreshed.coordinator_active;
+                    if app.chat.outbox_cursor != start_cursor
+                        || app.chat.messages.len() != start_len
+                    {
+                        return;
+                    }
+                    refreshed.install(&mut app.chat);
+                    app.toasts.extend(toasts);
+                })
+            });
+    }
+
+    pub fn request_service_snapshot(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let task_counts = self.task_counts.clone();
+        let counter_values = (
+            self.time_counters.service_uptime_secs,
+            self.time_counters.cumulative_secs,
+            self.time_counters.active_secs,
+            self.time_counters.active_agent_count,
+            self.time_counters.session_start,
+            self.time_counters.show_uptime,
+            self.time_counters.show_cumulative,
+            self.time_counters.show_active,
+            self.time_counters.show_session,
+        );
+        self.auxiliary
+            .request(super::auxiliary::Kind::Service, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.task_counts = task_counts;
+                loader.time_counters.service_uptime_secs = counter_values.0;
+                loader.time_counters.cumulative_secs = counter_values.1;
+                loader.time_counters.active_secs = counter_values.2;
+                loader.time_counters.active_agent_count = counter_values.3;
+                loader.time_counters.session_start = counter_values.4;
+                loader.time_counters.show_uptime = counter_values.5;
+                loader.time_counters.show_cumulative = counter_values.6;
+                loader.time_counters.show_active = counter_values.7;
+                loader.time_counters.show_session = counter_values.8;
+                loader.update_service_health();
+                loader.update_vitals();
+                loader.update_time_counters();
+                let mut health = loader.service_health;
+                let vitals = loader.vitals;
+                let counters = loader.time_counters;
+                Box::new(move |app| {
+                    health.detail_open = app.service_health.detail_open;
+                    health.detail_scroll = app.service_health.detail_scroll;
+                    health.panel_open = app.service_health.panel_open;
+                    health.panel_focus = app.service_health.panel_focus.clone();
+                    health.panic_confirm = app.service_health.panic_confirm;
+                    health.feedback = app.service_health.feedback.clone();
+                    app.service_health = health;
+                    app.vitals = vitals;
+                    app.time_counters = counters;
+                })
+            });
+    }
+
+    pub fn request_settings_panel(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Settings, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.load_settings_panel();
+                let entries = loader.settings_panel.entries;
+                Box::new(move |app| {
+                    app.settings_panel.selected = app
+                        .settings_panel
+                        .selected
+                        .min(entries.len().saturating_sub(1));
+                    app.settings_panel.entries = entries;
+                })
+            });
+    }
+
+    pub fn request_more_chat_history(&mut self) {
+        self.request_chat_history(false);
+    }
+
+    fn request_initial_chat_history(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_len = self.chat.messages.len();
+        let history_depth_override = self.history_depth_override;
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatHistory, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                loader.history_depth_override = history_depth_override;
+                loader.load_chat_history_for_coordinator(cid);
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                Box::new(move |app| {
+                    if app.active_coordinator_id == cid
+                        && app.chat.messages.len() == start_len
+                        && app.chat.outbox_cursor == 0
+                    {
+                        refreshed.install(&mut app.chat);
+                    }
+                })
+            });
+    }
+
+    pub fn request_all_chat_history(&mut self) {
+        self.request_chat_history(true);
+    }
+
+    fn request_chat_history(&mut self, all: bool) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_len = self.chat.messages.len();
+        let start_cursor = self.chat.outbox_cursor;
+        let chat = ChatStorageSnapshot::capture(&self.chat);
+        let no_history = self.no_history;
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatHistory, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                chat.install(&mut loader.chat);
+                loader.no_history = no_history;
+                let mut loaded = loader.load_more_chat_history();
+                if all {
+                    while loader.chat.has_more_history && loader.load_more_chat_history() {
+                        loaded = true;
+                    }
+                }
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                Box::new(move |app| {
+                    if !loaded
+                        || app.active_coordinator_id != cid
+                        || app.chat.messages.len() != start_len
+                        || app.chat.outbox_cursor != start_cursor
+                    {
+                        return;
+                    }
+                    let added = refreshed.messages.len().saturating_sub(start_len);
+                    app.chat.scroll = app.chat.scroll.saturating_add(added * 3);
+                    refreshed.install(&mut app.chat);
+                    if all {
+                        app.update_chat_search();
+                    }
+                })
+            });
+    }
+
+    pub fn request_history_browser(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        let cid = self.active_coordinator_id;
+        self.auxiliary
+            .request(super::auxiliary::Kind::HistoryBrowser, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.active_coordinator_id = cid;
+                loader.open_history_browser();
+                let browser = loader.history_browser;
+                Box::new(move |app| {
+                    if app.active_coordinator_id == cid {
+                        app.history_browser = browser;
+                    }
+                })
+            });
+    }
+
+    pub fn request_chat_manager(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatManager, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.open_chat_manager();
+                let manager = loader.chat_manager;
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    app.chat_manager = manager;
+                    app.toasts.extend(toasts);
+                    if app.chat_manager.is_some() {
+                        app.input_mode = InputMode::ChatManager;
+                    }
+                })
+            });
+    }
+
+    pub fn request_file_browser(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::FileBrowser, move || {
+                let browser = super::file_browser::FileBrowser::new(&workgraph_dir);
+                Box::new(move |app| app.file_browser = Some(browser))
+            });
+    }
+
+    // ── Config panel ──
+
+    /// Construct an empty worker-side app without touching project storage.
+    /// Blocking loader methods are invoked only on the auxiliary worker.
+    fn auxiliary_loader(
+        workgraph_dir: PathBuf,
+        graph: Option<Arc<worksgood::graph::WorkGraph>>,
+    ) -> Self {
+        let mut loader = Self::build(
+            workgraph_dir,
+            VizOptions::default(),
+            Some(false),
+            None,
+            false,
+            Config::default(),
+            None,
+            false,
+        );
+        loader.published_graph = graph;
+        loader.bootstrap_complete = true;
+        loader
+    }
+
+    /// Apply completed auxiliary snapshots. Completion closures are bounded
+    /// state swaps and identity checks; all storage work already finished on
+    /// the worker.
+    fn poll_auxiliary_snapshots(&mut self) -> bool {
+        let completed = self.auxiliary.drain();
+        let changed = !completed.is_empty();
+        for apply in completed {
+            apply(self);
         }
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_for_auxiliary_snapshot(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            self.poll_auxiliary_snapshots();
+            if self.auxiliary.pending_len() == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("timed out waiting for TUI auxiliary snapshot");
+    }
+
+    /// Queue a config-panel rebuild on the shared auxiliary storage lane.
+    pub fn request_config_panel(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Config, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.load_config_panel();
+                let mut panel = loader.config_panel;
+                Box::new(move |app| {
+                    panel.selected = app
+                        .config_panel
+                        .selected
+                        .min(panel.entries.len().saturating_sub(1));
+                    panel.collapsed = std::mem::take(&mut app.config_panel.collapsed);
+                    panel.endpoint_test_results =
+                        std::mem::take(&mut app.config_panel.endpoint_test_results);
+                    panel.editing = app.config_panel.editing;
+                    panel.edit_buffer = std::mem::take(&mut app.config_panel.edit_buffer);
+                    panel.adding_endpoint = app.config_panel.adding_endpoint;
+                    panel.adding_model = app.config_panel.adding_model;
+                    app.config_panel = panel;
+                })
+            });
     }
 
     /// Load configuration from disk and populate config panel entries.
@@ -19165,7 +19695,7 @@ impl VizApp {
                     value,
                     self.settings_panel.edit_scope.label()
                 ));
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Err(e) => {
                 self.settings_panel.last_error = Some(format!("Save failed: {}", e));
@@ -19212,7 +19742,7 @@ impl VizApp {
         match result {
             Ok(out) if out.status.success() => {
                 self.settings_panel.notice = Some(format!("Activated profile: {}", name));
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -19231,7 +19761,7 @@ impl VizApp {
         match worksgood::launcher_history::clear_history() {
             Ok(()) => {
                 self.settings_panel.notice = Some("Cleared launcher history".to_string());
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Err(e) => {
                 self.settings_panel.last_error = Some(format!("Failed to clear history: {}", e));
@@ -23484,15 +24014,13 @@ mod tui_config_panel_tests {
             started.elapsed() < Duration::from_millis(50),
             "config snapshot submission blocked the caller"
         );
-        assert!(app.config_load_in_flight);
-        assert!(app.config_load_rx.is_some());
+        assert_eq!(app.auxiliary.pending_len(), 1);
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !app.poll_config_panel() {
+        while Instant::now() < deadline && !app.poll_auxiliary_snapshots() {
             std::thread::yield_now();
         }
-        assert!(!app.config_load_in_flight);
-        assert!(app.config_load_rx.is_none());
+        assert_eq!(app.auxiliary.pending_len(), 0);
         assert!(!app.config_panel.entries.is_empty());
     }
 

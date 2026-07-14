@@ -1476,6 +1476,15 @@ description = "Real tmux/PTY human-flow gate: with the bootstrap storage worker 
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_auxiliary_snapshot_latency"
+script = "scenarios/tui_auxiliary_snapshot_latency.sh"
+owners = [
+    "finish-aux-tui-snapshot-lanes",
+]
+description = "Real tmux/PTY auxiliary-lane gate: after the graph loads, an LD_PRELOAD shim delays matching stat/open/first-read calls by 500ms; the scenario visits every reachable inspector tab, forces Detail/Config/Settings refreshes, presses help, and requires visible acknowledgement below 100ms on every tab. It also proves all three syscall classes were delayed and statically rejects direct storage/subprocess calls or legacy synchronous loaders in production input/render code."
+timeout_seconds = 90
+
+[[scenario]]
 name = "tui_large_graph_continuous_mutation"
 script = "scenarios/tui_large_graph_continuous_mutation.sh"
 owners = [

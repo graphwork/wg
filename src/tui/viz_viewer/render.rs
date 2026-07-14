@@ -122,42 +122,42 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // uses empty snapshots/placeholders until one coherent generation lands.
     if app.bootstrap_complete {
         if app.hud_detail.is_none() && app.selected_task_idx.is_some() {
-            app.load_hud_detail();
+            app.request_hud_detail();
         }
         if app.right_panel_tab == RightPanelTab::Log
             && app.log_pane.task_id.is_none()
             && app.selected_task_idx.is_some()
         {
-            app.load_log_pane();
+            app.request_log_pane();
         }
         if app.right_panel_tab == RightPanelTab::Messages
             && app.messages_panel.task_id.is_none()
             && app.selected_task_idx.is_some()
         {
-            app.load_messages_panel();
+            app.request_messages_panel();
         }
         if app.right_panel_tab == RightPanelTab::Agency
             && app.agency_lifecycle.is_none()
             && app.selected_task_idx.is_some()
         {
-            app.load_agency_lifecycle();
+            app.request_agency_lifecycle();
         }
         // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
         if app.right_panel_tab == RightPanelTab::CoordLog {
             if app.coord_log.rendered_lines.is_empty() {
-                app.load_coord_log();
+                app.request_coordinator_log();
             }
             if app.activity_feed.events.is_empty() {
-                app.load_activity_feed();
+                app.request_coordinator_log();
             }
         }
         // Lazy-init file browser on first switch to Files tab.
         if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
-            app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
+            app.request_file_browser();
         }
         // Lazy-load firehose data on first switch to Firehose tab.
         if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
-            app.update_firehose();
+            app.request_firehose();
         }
     }
 
@@ -2356,11 +2356,6 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_config_tab(frame, app, content_area);
         }
         RightPanelTab::Log => {
-            // Keep data fresh while the tab is visible. Cheap when nothing
-            // has changed on disk.
-            app.load_log_pane();
-            app.update_log_output();
-            app.update_log_stream_events();
             draw_log_tab(frame, app, content_area);
         }
         RightPanelTab::CoordLog => {
@@ -2370,12 +2365,11 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_dashboard_tab(frame, app, content_area);
         }
         RightPanelTab::Messages => {
-            app.load_messages_panel();
             draw_messages_tab(frame, app, content_area);
         }
         RightPanelTab::Settings => {
             if app.settings_panel.entries.is_empty() {
-                app.load_settings_panel();
+                app.request_settings_panel();
             }
             draw_settings_tab(frame, app, content_area);
         }
@@ -5285,46 +5279,29 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
-    let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
-    let executor = config.coordinator.effective_executor();
-    let model = config.coordinator.model.clone().unwrap_or_else(|| {
-        config
-            .resolve_model_for_role(worksgood::config::DispatchRole::Default)
-            .model
-    });
-    let cid = app.active_coordinator_id;
-    let state =
-        worksgood::service::chat_compactor::ChatCompactorState::load(&app.workgraph_dir, cid);
-    let threshold = config.chat.compact_threshold;
-    let pending =
-        worksgood::chat::read_inbox_since_for(&app.workgraph_dir, cid, state.last_inbox_id)
-            .map(|m| m.len())
-            .unwrap_or(0)
-            + worksgood::chat::read_outbox_since_for(&app.workgraph_dir, cid, state.last_outbox_id)
-                .map(|m| m.len())
-                .unwrap_or(0);
-    let summary_present =
-        worksgood::service::chat_compactor::context_summary_path(&app.workgraph_dir, cid).exists();
-    let last = state
-        .last_compaction
-        .clone()
-        .unwrap_or_else(|| "never".to_string());
+    let runtime = &app.coordinator_runtime;
+    if runtime.coordinator_id != app.active_coordinator_id {
+        return Vec::new();
+    }
 
     vec![
         Line::from(vec![
             Span::styled(
-                format!("Chat {} ", cid),
+                format!("Chat {} ", runtime.coordinator_id),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("· "),
             Span::styled(
-                executor,
+                runtime.executor.clone(),
                 Style::default().fg(text_primary(app.is_light_theme)),
             ),
             Span::raw(" · "),
-            Span::styled(model, Style::default().fg(text_primary(app.is_light_theme))),
+            Span::styled(
+                runtime.model.clone(),
+                Style::default().fg(text_primary(app.is_light_theme)),
+            ),
         ]),
         Line::from(vec![
             // Coordinator-tab cyan matches the "↯ " prefix branding so the
@@ -5335,13 +5312,13 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
                 Style::default().fg(super::chat_palette::COORDINATOR_PREFIX),
             ),
             Span::raw("· "),
-            Span::raw(format!("{}x", state.compaction_count)),
+            Span::raw(format!("{}x", runtime.compaction_count)),
             Span::raw(" · "),
-            Span::raw(format!("last {}", last)),
+            Span::raw(format!("last {}", runtime.last_compaction)),
             Span::raw(" · "),
-            Span::raw(format!("pending {}/{}", pending, threshold)),
+            Span::raw(format!("pending {}/{}", runtime.pending, runtime.threshold)),
             Span::raw(" · "),
-            Span::raw(if summary_present {
+            Span::raw(if runtime.summary_present {
                 "summary present"
             } else {
                 "summary absent"
@@ -13074,6 +13051,7 @@ mod tests {
         assert!(app.settings_panel.editing);
         app.settings_panel.edit_buffer = "claude:sonnet".to_string();
         app.commit_settings_edit();
+        app.wait_for_auxiliary_snapshot();
 
         assert_eq!(
             app.settings_panel.last_error, None,
@@ -16298,7 +16276,7 @@ mod tests {
 
     /// Regression test for tui-log-view: when an in-progress task has an
     /// assigned agent whose raw_stream.jsonl file contains events, the Log
-    /// pane MUST render those events on first draw — NOT show
+    /// pane MUST render those events after its first asynchronous snapshot — NOT show
     /// "no agent output yet". This is the user-reported failure mode that
     /// the prior tui-agent-activity attempt did not catch end-to-end.
     #[test]
@@ -16360,10 +16338,13 @@ mod tests {
         app.right_panel_visible = true;
         app.right_panel_tab = RightPanelTab::Log;
 
-        // 4) Render via TestBackend — the user's first draw of the Log tab.
-        //    Wide enough to avoid Compact breakpoint clobbering layout.
+        // 4) Submit the same asynchronous request used by the first draw,
+        //    wait for completion, then draw the cached result. Wide enough to
+        //    avoid Compact breakpoint clobbering layout.
         let backend = TestBackend::new(140, 40);
         let mut terminal = Terminal::new(backend).unwrap();
+        app.request_log_pane();
+        app.wait_for_auxiliary_snapshot();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let rendered = buffer_to_string(terminal.backend().buffer());
@@ -16378,7 +16359,7 @@ mod tests {
         );
         assert!(
             rendered.contains("UNIQUE_STREAM_MARKER_ALPHA"),
-            "Log tab must render the stream event text on first draw. Rendered:\n{}",
+            "Log tab must render the stream event text after the first snapshot. Rendered:\n{}",
             rendered
         );
     }

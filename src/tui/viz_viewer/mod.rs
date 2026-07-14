@@ -1,4 +1,5 @@
 pub mod async_fs;
+pub mod auxiliary;
 pub mod bootstrap;
 pub mod chat_palette;
 pub mod chat_tab_state;
