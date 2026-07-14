@@ -1471,10 +1471,29 @@ fn run_inner(
                 if in_same_cycle {
                     return false;
                 }
-                // PendingEval bypass for system dependents: `.flip-X` /
-                // `.evaluate-X` ARE the eval pipeline — they must run on a
-                // soft-done source. See pick_done_target_status.
-                if dependent_is_system && b.status == Status::PendingEval {
+                // PendingEval / FailedPendingEval bypass for system dependents:
+                // `.flip-X` / `.evaluate-X` ARE the rescue/eval pipeline — they
+                // must run on a soft-done (PendingEval) OR soft-failed
+                // (FailedPendingEval) source. See pick_done_target_status and
+                // query.rs (readiness treats both states identically for system
+                // dependents).
+                //
+                // General theorem: NO blocked-on edge may point from a rescue
+                // path back into the thing being rescued. `.flip-X` and
+                // `.evaluate-X` depend on `X`, but they ARE the mechanism that
+                // resolves a FailedPendingEval `X`. Gating their `wg done` on
+                // `X` being resolved is a circular wait — the exact deadlock
+                // this bypass exists to prevent. Omitting FailedPendingEval here
+                // (while query.rs exempts it) deadlocks a crashed run three
+                // ways: `.flip-X` can't done (blocked by X), `.evaluate-X` can't
+                // done (blocked by `.flip-X`), X can't resolve (waiting on
+                // `.evaluate-X`).
+                if dependent_is_system
+                    && matches!(
+                        b.status,
+                        Status::PendingEval | Status::FailedPendingEval
+                    )
+                {
                     return false;
                 }
                 // Terminal blockers (Failed / Abandoned) don't gate manual
@@ -2783,6 +2802,90 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("blocked").unwrap();
         assert_eq!(task.status, Status::Done);
+    }
+
+    #[test]
+    fn test_rescue_failed_pending_eval_satellites_do_not_deadlock() {
+        // Regression: the three-way satellite deadlock (live 2026-07-14).
+        //
+        // When an agent crashes mid-task, its parent lands in
+        // `FailedPendingEval` (soft-failed, awaiting an eval verdict). The
+        // rescue/eval pipeline is the satellite scaffold:
+        //     X --> .flip-X --> .evaluate-X
+        // Both `.flip-X` and `.evaluate-X` depend on `X`, but they ARE the
+        // mechanism that resolves `X`. Before the fix, `wg done .flip-X` was
+        // refused ("blocked by X: FailedPendingEval") because the system-
+        // dependent bypass only exempted `PendingEval`, not
+        // `FailedPendingEval`. That deadlocked three ways:
+        //   1. `.flip-X` can't done   (blocked by X)
+        //   2. `.evaluate-X` can't done (blocked by `.flip-X` still Open)
+        //   3. X can't resolve         (waiting on `.evaluate-X`'s verdict)
+        // Only manual coordinator surgery (abandon flips, respawn evals)
+        // cleared it. This test asserts the rescue completes with no surgery.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let parent = make_task("X", "Crashed task", Status::FailedPendingEval);
+        let mut flip = make_task(".flip-X", "FLIP: X", Status::Open);
+        flip.after = vec!["X".to_string()];
+        let mut eval = make_task(".evaluate-X", "Evaluate: X", Status::Open);
+        eval.after = vec![".flip-X".to_string()];
+
+        setup_workgraph(dir_path, vec![parent, flip, eval]);
+
+        // Step 1: `.flip-X` must be able to complete even though its parent is
+        // FailedPendingEval — the rescue edge must never gate on the thing
+        // being rescued.
+        let flip_res = run(dir_path, ".flip-X", false, false, false, false, false);
+        assert!(
+            flip_res.is_ok(),
+            "`.flip-X` must complete over a FailedPendingEval parent (rescue \
+             path), got: {:?}",
+            flip_res.err()
+        );
+        {
+            let graph = load_graph(&graph_path(dir_path)).unwrap();
+            assert_eq!(graph.get_task(".flip-X").unwrap().status, Status::Done);
+        }
+
+        // Step 2: with `.flip-X` Done, `.evaluate-X` is no longer blocked and
+        // can produce the verdict that resolves `X`.
+        let eval_res = run(dir_path, ".evaluate-X", false, false, false, false, false);
+        assert!(
+            eval_res.is_ok(),
+            "`.evaluate-X` must complete once `.flip-X` is Done, got: {:?}",
+            eval_res.err()
+        );
+        {
+            let graph = load_graph(&graph_path(dir_path)).unwrap();
+            assert_eq!(graph.get_task(".evaluate-X").unwrap().status, Status::Done);
+        }
+    }
+
+    #[test]
+    fn test_rescue_bypass_does_not_leak_to_regular_dependents() {
+        // The FailedPendingEval bypass is ONLY for system dependents (the
+        // rescue/eval pipeline). Normal-path scoring must stay intact: a
+        // regular downstream task must still be blocked by a FailedPendingEval
+        // parent — proceeding would run real work against a crashed/broken
+        // upstream artifact.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let parent = make_task("X", "Crashed task", Status::FailedPendingEval);
+        let mut child = make_task("regular-child", "Regular downstream", Status::Open);
+        child.after = vec!["X".to_string()];
+
+        setup_workgraph(dir_path, vec![parent, child]);
+
+        let res = run(dir_path, "regular-child", false, false, false, false, false);
+        assert!(
+            res.is_err(),
+            "a regular (non-system) dependent must stay blocked by a \
+             FailedPendingEval parent"
+        );
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("blocked by"), "unexpected error: {}", err);
     }
 
     #[test]
