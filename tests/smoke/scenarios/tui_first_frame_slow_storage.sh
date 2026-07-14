@@ -103,6 +103,7 @@ for delay in 1000 3000 5000; do
         loud_fail "${delay}ms storage delay: phase feedback did not clear after load"
     fi
 
+    quit_start=$(now_ms)
     tmux send-keys -t "$session" q
     for _ in $(seq 1 50); do
         if ! tmux has-session -t "$session" 2>/dev/null; then
@@ -110,9 +111,11 @@ for delay in 1000 3000 5000; do
         fi
         sleep 0.01
     done
-    if tmux has-session -t "$session" 2>/dev/null; then
-        loud_fail "${delay}ms storage delay: shutdown exceeded 500ms"
+    quit_ms=$(( $(now_ms) - quit_start ))
+    if tmux has-session -t "$session" 2>/dev/null || (( quit_ms >= 250 )); then
+        loud_fail "${delay}ms storage delay: shutdown ${quit_ms}ms exceeded 250ms"
     fi
+    echo "MEASURE: delay=${delay}ms first=${first_ms}ms help=${key_ms}ms quit=${quit_ms}ms"
 done
 
 echo "PASS: real TUI first frame/input remain responsive under 1-5s storage delay"

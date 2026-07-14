@@ -1,232 +1,260 @@
-# Fully asynchronous TUI validation
+# Fully asynchronous TUI final revalidation
 
 Date: 2026-07-14
-Task: `validate-fully-async`
-Result: **FAIL — the first-frame and large-graph lanes pass, but the complete
-asynchronous contract is not yet satisfied.**
 
-## Scope and revisions
+Task: `revalidate-fully-async`
 
-The code under test started at
-`e3e6f72a2c0e82ab97bf8efbc707d403dda54cff` (`move-large-graph`), whose direct
-TUI predecessors are
-`e70bb92a7079c10d157caa9db8cd6357ac247978` (`implement-nonblocking-tui`) and
-`0a4665f1e7443fb1ae8abe5f4d157a0768ef4fa1`
-(`design-fully-asynchronous`). Measurements below were repeated after the
-Config-render correction in
-`b2cab06e216275826f7dd165b437f6999f6fc74e`. The host was Linux x86-64,
-Rust 1.96.0, tmux at 120x40 (160x50 for large-log panels), and `/dev/md2`
-local storage. The deterministic shim converted that local storage into a
-network-filesystem-like path by delaying selected libc `stat`/`statx`/
-`fstatat`, `open`/`openat`, first `read`, and `rename` calls and by returning
-`ENOSPC` from `inotify_add_watch`.
+Result: **FAIL — non-provisional.**
 
-The task also removes two direct Config-render reads: configuration is rebuilt
-on a dedicated, coalesced one-result lane; render consumes the cached endpoint
-map and shows a placeholder before it arrives. This is a real reduction in the
-reachable blocking surface, but the broader refresh path described below still
-prevents a PASS verdict.
+The two blockers from the discovery run are fixed: auxiliary panels no longer
+perform storage work on the terminal thread, and a valid 100 MiB-class active
+agent log no longer holds back base-graph publication. The final acceptance
+gate nevertheless found one different, reachable contract violation. A valid
+`[tui] chat_page_size = 100000` setting publishes 100,000 history records to
+the live Chat view. With a 97,100,000-byte valid history, the neutral shell
+appeared in 15 ms, but after the history snapshot arrived the Help key was
+still not acknowledged after 4,648 ms. RSS increased from 160,268 to 348,044
+KiB. The setting and the CLI history-depth override are not capped before
+render/search work, so the required invariant that input/render derivation is
+bounded is false at the tested revision.
 
-## Commands
+This report is the terminal ledger for this revision, not a provisional pass.
+WG must not describe the TUI as fully asynchronous until the history-page
+bound is enforced and the failing human-flow probe passes.
 
-The validation used the checked-in scenarios plus deterministic PTY harnesses.
-Build commands were run with `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0` after an
-earlier parallel attempt exhausted the host through unrelated leaked `/tmp`
-Cargo targets.
+## Revisions under test
+
+The installed binary, PTY tests, static audit, and Rust gates all used the same
+acceptance revision.
+
+| Purpose | Exact commit |
+| --- | --- |
+| Acceptance revision (`main`/starting HEAD) | `2f742c9f4cf229bf1390cf6265ee6ffa69b6dc21` |
+| Bounded active-log fix | `0a5a1e341646f2c9e159205ed41d370042878d7c` |
+| Auxiliary snapshot-lane integration on `main` | `0512f6fe8461d3a5d326f441834cfd0f4cf05fd1` |
+| Auxiliary lane implementation checkpoints | `e08b52387237b6eb0cb62b4670e35a3259eba8ae`, `125b9c20f46ccc3101af4e90cd193f3482a11ec9`, `edd3cce21d1502886e6b13e90cf0b3057525c205` |
+| Discovery validation | `e3644c13` |
+| Large-graph / nonblocking / design ancestry | `e3e6f72a`, `e70bb92a`, `0a4665f1` |
+
+The report and acceptance-harness changes are committed separately after the
+measurements; that validation-only commit does not change the production
+binary under test.
+
+Host: Linux x86-64, Rust 1.96.0, tmux PTYs. Latency injection used the existing
+test shim for matched `stat`/`statx`/`fstatat`, `open`/`openat`, and first
+`read` calls, plus the bootstrap test delay and watcher-failure injection.
+
+## Acceptance budgets
+
+The normative budgets are from `docs/design-fully-async-tui.md`:
+
+- first frame: p99 at most 50 ms (dispatch allowance at most 100 ms);
+- input acknowledgement: p99 at most 50 ms and never 100 ms or more;
+- base-graph publication: at most 2 seconds for the scale fixture;
+- shutdown: terminal restoration at most 100 ms and process exit at most
+  250 ms;
+- scale: 10,000 tasks, approximately 50,000 dependency edges, 100 active
+  agents, a 100 MiB-class active log, and 100,000 history records must not
+  change the first-frame or input budgets;
+- all storage reads must be worker-owned and all work applied to the terminal
+  thread must be bounded by a viewport/page projection.
+
+All timings below are end-to-end tmux observations and therefore include PTY
+command and capture overhead. Percentiles use nearest rank.
+
+## Injected-latency matrix
+
+### Bootstrap storage, first frame, Help, feedback, and shutdown
+
+Five independent PTY trials were run at every bootstrap delay. Every trial
+showed the neutral shell before storage completed, accepted `?`, displayed one
+compact slow-storage slot after the threshold, cleared that slot after a
+snapshot was published, and exited while the worker could still be delayed.
+
+| Injected delay | First-frame samples (ms) | Help samples (ms) | Quit samples (ms) | Verdict |
+| ---: | --- | --- | --- | --- |
+| 1,000 ms | 13, 13, 28, 14, 14 | 8, 9, 7, 8, 8 | 21, 20, 20, 21, 20 | PASS |
+| 3,000 ms | 13, 27, 27, 14, 26 | 9, 9, 8, 9, 8 | 21, 20, 21, 20, 21 | PASS |
+| 5,000 ms | 28, 27, 13, 26, 14 | 8, 9, 7, 9, 8 | 20, 21, 22, 20, 21 | PASS |
+| All 15 | p50 14; p99/max 28 | p50 8; p99/max 9 | p50 21; p99/max 22 | PASS |
+
+The permanent `tui_first_frame_slow_storage.sh` scenario now reports all three
+measurements and enforces the design's strict `<250 ms` process-exit budget,
+instead of only checking that the session disappeared within 500 ms.
+
+### Auxiliary Config and inspector panels
+
+`tui_auxiliary_snapshot_latency.sh` visited every reachable inspector tab and
+opened Help immediately while its worker lane was stalled. The nine-tab flow
+includes the Config/Settings panel (`r`), Detail (`R`), and the other auxiliary
+views. All three requested syscall classes were observed in the shim log; the
+test also scans the production portions of `event.rs` and `render.rs` for
+direct storage/config/process access and legacy synchronous loader calls.
+
+| `stat`/`open`/first-`read` delay | Maximum Help acknowledgement | Verdict |
+| ---: | ---: | --- |
+| 500 ms | 9 ms | PASS |
+| 1,000 ms | 9 ms | PASS |
+| 3,000 ms | 9 ms | PASS |
+| 5,000 ms | 8 ms | PASS |
+
+The scenario is parameterized by `WG_TUI_AUX_LATENCY_MS`, so the full matrix is
+repeatable rather than being a one-off harness modification.
+
+## Scale, enrichment, and publication
+
+| Fixture / behavior | Measurement | Verdict |
+| --- | --- | --- |
+| 10,000 tasks / about 49,995 edges; 20 atomic replacements at 20 Hz | base publication 629 ms; Help 10 ms; RSS 289,548 -> 649,592 KiB; peak 801,624 KiB; generation 20 remained stable | PASS |
+| Valid active-agent `output.log`, exactly 101,955,000 bytes | first frame 24 ms; Help 9 ms; base graph 445 ms | PASS |
+| Valid 100,000-record history, 97,100,000 bytes, bounded page (`chat_page_size=100`) | first 22 ms; Help 9 ms; graph 253 ms; steady RSS 25,796 KiB; quit 118 ms | PASS |
+| Same valid history with valid `chat_page_size=100000` | first 15 ms; Help not acknowledged after 4,648 ms (`ack=0`); RSS 160,268 -> 348,044 KiB | **FAIL** |
+
+The active-log result is the direct proof that enrichment cannot starve base
+graph publication: the exact valid log that blocked the discovery revision for
+more than 82 seconds now leaves publication at 445 ms, below the 2-second
+budget. Unit tests additionally pin the active-log projection at 1 MiB / 200
+records and preserve terminal-result precedence.
+
+The graph mutation run proves bounded latest-generation behavior under churn:
+all 20 replacements were observed through the asynchronous path, no older
+generation rolled the UI back, and interactive acknowledgement stayed at
+10 ms while publication was active.
+
+## Operating-mode and recovery ledger
+
+| Case | Exact observation | Verdict |
+| --- | --- | --- |
+| Daemon absent/stopped | first 21 ms; Help 8 ms; graph 40 ms; quit 15 ms | PASS |
+| Daemon running | first 24 ms; Help 8 ms; graph 43 ms; quit 16 ms | PASS |
+| Daemon stopped after running | first 16 ms; Help 9 ms; graph 37 ms; quit 15 ms | PASS |
+| Watch registration unavailable | atomic-replacement polling converged without recursive watch support | PASS |
+| Corrupt graph under 1,000 ms storage delay | first 21 ms; Help 7 ms; one `Storage slow · discover` slot | PASS |
+| Atomic repair of corrupt graph | valid replacement visible 754 ms after rename; feedback cleared | PASS |
+| Slow/corrupt storage warning spam | zero matching warnings in service logs | PASS |
+| Daemon-running warning-spam hold (2.2 s) | zero slow-storage/watcher/TUI warning matches | PASS |
+| Quit during 1--5 s delayed worker | worst process exit 22 ms | PASS |
+| Mutation storm | 20 atomic writes at 20 Hz; latest generation stable | PASS |
+
+`rg 'RecursiveMode::Recursive' src/tui` returned no match. Fallback
+correctness was exercised, rather than inferred, by disabling watch
+registration and observing atomic graph replacement through polling.
+
+Feedback behaved as a single state slot, not a log stream: it appeared once
+after the 150 ms threshold, changed with the active phase, cleared after
+successful publication/recovery, and produced no service/coordinator warning
+spam.
+
+## Static input/render reachability audit
+
+The original synchronous-storage blocker is fixed. The permanent auxiliary
+scenario extracts production code before `#[cfg(test)]` and rejects direct
+filesystem/process/config-load calls from `event.rs` and `render.rs`, as well
+as calls to the retired synchronous panel loaders. It passed under every
+latency in the 500 ms--5 s matrix. Auxiliary lane request/result queues are
+bounded 1/1, requests use nonblocking `try_send`, results use `try_recv`, and
+work coalesces by snapshot kind. The graph path is likewise generation-fenced
+and latest-wins.
+
+The broader required assertion still fails because derivation is unbounded:
+
+- `Config.tui.chat_page_size` is an unconstrained `usize` at
+  `src/config.rs:838-839`;
+- `load_chat_history` and `load_chat_history_for_coordinator` pass either the
+  CLI override or that setting through as the requested page size at
+  `src/tui/viz_viewer/state.rs:15057` and `:15088` (with another config use at
+  `:15296`);
+- the worker can therefore publish 100,000 messages to the app;
+- live Chat drawing wraps/renders that loaded collection, and chat search
+  scans it on the interactive path.
+
+This is not a theoretical grep finding. The PTY probe used a valid graph,
+valid history, and valid public configuration, waited for the snapshot, then
+sent the real Help key through tmux. The terminal did not acknowledge it in
+the 4,648 ms observation window. Consequently, the requirement “no
+synchronous storage access or unbounded derivation is reachable on
+input/render paths” is **FAIL** even though the synchronous-storage half now
+passes.
+
+## Commands and reproducibility
 
 ```text
 wg quickstart
 wg agent-guide
-wg show validate-fully-async
+wg show revalidate-fully-async
 
 cargo fmt
 cargo fmt --check
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo build --locked
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo clippy --locked
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo test --locked
-# The managed target was reaped twice after the unit/binary suites; the clean
-# full run used a target outside the worktree and removed worker-only service
-# control variables expected to be absent by integration_chat.
-env -u WG_TASK_ID -u WG_AGENT_ID \
-  CARGO_TARGET_DIR=/home/bot/wg/.validate-target-agent-389 \
-  CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo test --locked
 
-bash tests/smoke/scenarios/tui_responsive_under_500ms_latency.sh
+# Authoritative full run. The trap removed the external target on success,
+# failure, SIGINT, or SIGTERM; worker service-control variables were removed.
+target=/home/bot/wg/.revalidate-target-agent-402
+trap 'rm -rf "$target"' EXIT INT TERM
+env -u WG_TASK_ID -u WG_AGENT_ID \
+  CARGO_TARGET_DIR="$target" CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 \
+  cargo test --locked
+
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo install --path . --locked
+
 bash tests/smoke/scenarios/tui_first_frame_slow_storage.sh
+WG_TUI_AUX_LATENCY_MS=500  bash tests/smoke/scenarios/tui_auxiliary_snapshot_latency.sh
+WG_TUI_AUX_LATENCY_MS=1000 bash tests/smoke/scenarios/tui_auxiliary_snapshot_latency.sh
+WG_TUI_AUX_LATENCY_MS=3000 bash tests/smoke/scenarios/tui_auxiliary_snapshot_latency.sh
+WG_TUI_AUX_LATENCY_MS=5000 bash tests/smoke/scenarios/tui_auxiliary_snapshot_latency.sh
+bash tests/smoke/scenarios/tui_large_active_log_enrichment.sh
 bash tests/smoke/scenarios/tui_large_graph_continuous_mutation.sh
 
-# Five trials at each delay; launch wg tui in tmux, capture the neutral frame,
-# press ?, observe Navigation, press q, and time process disappearance.
-WG_TUI_TEST_STORAGE_LATENCY_MS={1000,3000,5000} wg tui --no-mouse --show-keys
-
-# LD_PRELOAD matrix, matching the fixture's .wg path only.
-WG_FS_SHIM_OPS={stat,open,read} WG_FS_SHIM_LATENCY_MS=50 wg tui ...
-WG_FS_SHIM_FAIL_WATCH=1 wg tui ...
-WG_FS_SHIM_OPS=rename WG_FS_SHIM_LATENCY_MS=500 mv graph.next graph.jsonl
-
-# Daemon/new-graph modes.
-wg tui ...                                  # absent .wg / newly initialized
-wg service start --no-chat-agent; wg tui ...
-wg service stop --force; wg tui ...
-
-# Recovery and feedback.
-printf '{corrupt\n' >.wg/graph.jsonl
-WG_TUI_TEST_STORAGE_LATENCY_MS=1000 wg tui ...
-mv valid-graph .wg/graph.jsonl
-grep -Rci 'Storage slow' .wg/service
-
-# Scale fixtures, driven through tmux.
-# - 10,000 tasks / about 49,995 edges; 20 atomic mutations at 20 Hz
-# - 100,000 history records / 97,150,000 bytes
-# - 105,000 valid assistant NDJSON records / 101,955,000 bytes
-
-# Static acceptance checks from docs/design-fully-async-tui.md.
 rg 'RecursiveMode::Recursive' src/tui
-rg 'std::fs|File::|Config::load|AgentRegistry::load|Command::(new|output)' \
-  src/tui/viz_viewer/{mod.rs,event.rs,render.rs,state.rs}
-
-cargo install --path . --locked
 ```
 
-## Measurements against the design budgets
+The daemon/recovery/history probes used isolated temporary HOME and graph
+directories and drove `wg tui --no-mouse --show-keys` via tmux. The daemon
+fixture was paused before startup, so no model call was made.
 
-All latency values include tmux command/capture overhead, so they are
-conservative user-visible measurements. Percentiles use nearest-rank.
-
-| Surface | Budget | Result | Verdict |
-| --- | ---: | ---: | --- |
-| First frame, 1 s storage delay (n=5) | p99 <= 50 ms; dispatch p99 <= 100 ms | p50 23 ms, p99/max 33 ms | PASS |
-| First frame, 3 s delay (n=5) | same | p50 23 ms, p99/max 24 ms | PASS |
-| First frame, 5 s delay (n=5) | same | p50 31 ms, p99/max 32 ms | PASS |
-| Help acknowledgement during 1/3/5 s bootstrap delay | p99 <= 50 ms, max <= 100 ms | p99/max 18/9/18 ms | PASS |
-| Shutdown during 1/3/5 s stuck bootstrap read | restore <= 100 ms; exit <= 250 ms | worst observed exit 25 ms | PASS |
-| Continuous 10k/50k mutation, 50 presentation samples | input p99 <= 50 ms, max <= 100 ms | p50 14 ms, p95/p99/max 16 ms | PASS |
-| Render frame time | p95 <= 16.7 ms, p99 <= 33 ms | no internal render histogram exists; presentation-cycle surrogate p95/p99 16/16 ms | **FAIL (instrumentation gap)** |
-| Input dispatch / result acceptance | <= 2 ms / <= 1 ms | no internal phase counters exported | **FAIL (instrumentation gap)** |
-| 10k/50k local publication | p95 <= 2 s in release | installed release run 628 ms; an earlier debug smoke run at 2,700 ms is non-comparable | PASS on required release profile |
-| Latest-generation convergence | no stale rollback | 20th generation appeared and remained stable in the installed release smoke | PASS |
-| Large-graph memory | <= two graph generations plus bounded projections; three-owner transient <= 1 GiB | installed release run: 290,240 -> 502,992 KiB RSS, 811,492 KiB peak | PASS |
-| 100k chat records / 97,150,000 bytes | first/input targets; bounded retained page | first 41 ms, input 9 ms, load 294 ms, 61,436 KiB steady, 155,208 KiB peak | PASS for launch/input/memory |
-| Valid active log / 101,955,000 bytes | base graph <= 2 s; page <= 1 MiB/200 records | graph did not publish within 82,708 ms | **FAIL** |
-| Config open/read latency, 500 ms | help p99 <= 50 ms, max <= 100 ms | Config content 15,247 ms; help 15,219 ms | **FAIL** |
-| Stat/open/read matrix, 50 ms per matched operation | first/input <= 100 ms | stat 117/6 ms; open 71/7 ms; read 26/8 ms | stat first frame **FAIL** by 17 ms; all input PASS |
-| Atomic rename plus unavailable watcher | eventual polling convergence | delayed rename 509 ms; query-visible convergence 7 ms after rename | PASS |
-| Corrupt graph then restore | compact failure, eventual recovery | first 14 ms, input 9 ms, recovery 2,904 ms | PASS |
-
-The frame surrogate measures key-to-present rather than `render::draw` itself.
-It is useful evidence that ordinary frames fit the user-visible budget, but it
-cannot honestly satisfy the design's phase-level frame/dispatch/acceptance
-requirement. The missing counters are therefore recorded as a failure, not
-inferred as a pass.
-
-## Queue-depth and generation audit
-
-The graph pipeline is bounded and latest-wins:
-
-- `AsyncFs`: bulk request capacity 8, interactive request capacity 32,
-  response capacity 64, with per-key in-flight deduplication.
-- `BootstrapEngine`: request capacity 1, result capacity 4, exactly one newest
-  local pending request, one fixed worker, stale-generation rejection, and no
-  join on drop.
-- `SnapshotEngine`: request/result/retire capacities 1/1/1, one newest local
-  pending build and one pending retirement. Its 100,000-request unit test
-  asserts `pending_len() <= 1` and generation 100,000 wins.
-- Config correction in this task: one in-flight rebuild and a one-result
-  channel; repeated reload hints coalesce.
-
-Thus graph and Config queue growth is bounded. This does not rescue the full
-contract: legacy auxiliary loaders are still called synchronously, and a
-single huge log generation has unbounded work even though the number of queued
-generations is bounded.
-
-## Static reachability audit
-
-`rg 'RecursiveMode::Recursive' src/tui` returned no match, so watcher-limit
-fallback no longer depends on a recursive `.wg` watch. The watcher-failure PTY
-run also converged through polling after an atomic replacement.
-
-The required blocking-call scan did **not** pass. Excluding test-only code, it
-still finds project-storage operations reachable from the terminal loop,
-including:
-
-- `render.rs::build_coordinator_runtime_lines`: `Config::load_or_default`,
-  compactor-state/inbox/outbox reads, and an existence check during draw;
-- `render::draw`/`draw_right_panel`: lazy detail/log/messages/agency/
-  coordinator-log/activity/settings loaders and log updates;
-- `state.rs::maybe_refresh`: coordinator/chat polling, service/vitals/time
-  refresh, detail/log/message/activity updates, registries, metadata and log
-  reads;
-- input handlers that directly call detail/log/config/settings/archive and
-  clipboard/subprocess paths;
-- log/history helpers that read or wrap complete files rather than a bounded
-  byte/record page.
-
-The scan produced 101 raw matches below line 20,000 alone (some are legitimate
-worker-only helpers, so raw count is not a call-graph count). Dynamic injection
-proves at least the periodic Config/chat/service path is reachable: while the
-main thread was delayed, `ps -T` showed the terminal thread in
-`hrtimer_nanosleep` and help did not render for about 15.2 seconds. Therefore
-the required claim “no synchronous filesystem call or unbounded derivation is
-reachable from input/render” is false at this revision.
-
-## Slow-storage feedback and recovery
-
-The 1/3/5-second bootstrap scenario displayed one compact
-`Storage slow ... discover` slot after the 150 ms threshold and cleared it
-after publication. The corrupt-then-restore run found one slot during failure,
-zero after recovery, and zero `Storage slow` matches under `.wg/service`.
-There was no coordinator/service log spam. This portion passes.
-
-## Operating-mode ledger
-
-| Case | Result | Notes |
-| --- | --- | --- |
-| `.wg` absent / new graph | PASS | first 14 ms, help 7 ms |
-| Empty graph, daemon stopped | PASS | first 29 ms, help 9 ms |
-| Empty graph, daemon running | PASS | first 13 ms, help 7 ms |
-| Daemon stopped after run | PASS | clean shutdown; graph correctness independent of daemon |
-| Continuous atomic graph mutation | PASS | bounded latest-wins graph lane |
-| Watch registration unavailable | PASS | polling observed replacement |
-| Slow bootstrap storage | PASS | neutral shell, input and shutdown independent of worker |
-| Failed/corrupt storage and recovery | PASS | compact feedback cleared after restore |
-| Large chat history | PASS | launch/input/memory stayed bounded |
-| Large active log tree | FAIL | log enrichment held back base publication |
-| Slow auxiliary/config storage | FAIL | periodic UI-thread refresh blocked input |
-| SIGTERM-specific stuck persistence lane | NOT PROVEN | quit-key stuck-worker case passes; no separate persistence-lane injector exists |
-
-## Compatibility notes and disposition
-
-The first-frame shell, graph-generation fencing, continuous-mutation behavior,
-nonrecursive watcher fallback, and shutdown-with-stuck-bootstrap behavior are
-compatible with daemon-running and daemon-stopped operation. The Config change
-is wire/config compatible: it changes only where an existing panel snapshot is
-built and preserves endpoint test-result and UI selection state on install.
-
-No release should describe the TUI as “fully asynchronous” yet. Two follow-up
-tasks were added with live-PTY acceptance criteria:
-`finish-aux-tui-snapshot-lanes` for auxiliary render/refresh/input storage, and
-`bound-async-tui-log-enrichment` for bounded log/token pages and base-graph
-publication. The installed binary includes the validated first-frame/graph and
-Config-lane improvements, but this report deliberately retains the overall
-FAIL verdict until those tasks and the missing phase telemetry land.
-
-The ordinary aggregate test command passed the library suite (2,845/2,845) and
-binary suite (3,730/3,730, one ignored) twice, but on both attempts the running
-coordinator reaped the managed `target/` before Cargo could launch
-`agency_schema_fields`. That target passed directly (5/5). The authoritative
-full rerun used the external target shown above; removing the inherited worker
-identity was also necessary because `integration_chat` intentionally starts and
-stops an isolated service, an operation production workers correctly refuse.
-That rerun passed every integration executable and all doctests.
-
-## Validation gate ledger
+## Build, test, install, and cleanup ledger
 
 | Gate | Result |
 | --- | --- |
 | `cargo fmt` | PASS |
 | `cargo fmt --check` | PASS |
-| `cargo clippy --locked` | PASS (warnings only) |
-| full `cargo test --locked` | PASS in isolated target with worker-only `WG_TASK_ID`/`WG_AGENT_ID` removed; all integration binaries and doctests passed |
-| `tui_responsive_under_500ms_latency` | PASS |
-| `tui_first_frame_slow_storage` | PASS |
-| owned `tui_large_graph_continuous_mutation` | PASS: load 628 ms, key 10 ms, RSS 290,240 -> 502,992 KiB, peak 811,492 KiB |
-| `cargo install --path . --locked` | PASS |
+| `cargo build --locked` | PASS in 4m14s; warnings only |
+| `cargo clippy --locked` | PASS in 2m09s; warnings only |
+| Full `cargo test --locked` | PASS: all unit, binary, integration, and doctest executables completed; expected credential/live tests ignored |
+| Installed-release PTY bootstrap scenario | PASS |
+| Installed-release auxiliary 500 ms--5 s matrix | PASS |
+| Installed-release exact active-log scenario | PASS |
+| Owned installed-release 10k-task/50k-edge mutation scenario | PASS |
+| `cargo install --path . --locked` | PASS in 11m22s; max RSS 2,454,524 KiB; installed `wg` and `nex` from agent-402/acceptance HEAD |
+
+The first managed-target `cargo test` attempt passed its library and binary
+suites, then the coordinator reaped a managed executable before Cargo could
+launch it. That environmental race is not counted as acceptance. The complete
+authoritative rerun used the bounded external target above, exited zero, and
+finished all doctests. At completion:
+
+- `/home/bot/wg/.revalidate-target-agent-402` did not exist (trap cleanup
+  verified explicitly);
+- no other external `CARGO_TARGET_DIR` was created by this task;
+- the inherited `/home/bot/wg/.wg-worktrees/agent-402/target` is WG-managed
+  shared build storage inside the assigned worktree, not an external target;
+- all PTY scratch directories and tmux sessions were removed by their scenario
+  traps, including failure paths.
+
+## Final disposition
+
+The original auxiliary-storage and active-log blockers are closed, and every
+other requested functional lane passed: first frame, Help, base publication,
+daemon on/off, fallback polling, corruption/recovery, mutation storm,
+10k-task/50k-edge scale, bounded large history, valid large log, shutdown,
+feedback clearing, and warning-spam suppression.
+
+The release gate remains **FAIL** because a public, valid configuration reaches
+unbounded Chat render/search work and causes an input miss two orders of
+magnitude above the 100 ms hard maximum. The required remediation is to apply
+one hard page projection to every history source (configuration, CLI override,
+coordinator fallback, pagination/search), bounded to at most 200 records and
+1 MiB before publication, then preserve the failing 100,000-record tmux flow
+as a permanent smoke scenario and rerun this ledger. The focused follow-up is
+WG task `bound-tui-chat`.

@@ -2,9 +2,10 @@
 # Real tmux/PTY regression for finish-aux-tui-snapshot-lanes.
 #
 # After the graph has loaded, a small LD_PRELOAD shim delays matching stat,
-# open and first-read calls by 500ms. We visit every reachable inspector tab
-# and immediately press help. The visible help overlay must acknowledge each
-# key in under 100ms even while auxiliary storage snapshots are stalled.
+# open and first-read calls by 500ms (or WG_TUI_AUX_LATENCY_MS). We visit every
+# reachable inspector tab and immediately press help. The visible help overlay
+# must acknowledge each key in under 100ms even while auxiliary storage
+# snapshots are stalled.
 
 set -u
 
@@ -16,6 +17,10 @@ command -v tmux >/dev/null 2>&1 \
     || loud_skip "MISSING TMUX" "tmux not on PATH; cannot drive the real TUI"
 command -v cc >/dev/null 2>&1 \
     || loud_skip "MISSING C COMPILER" "cc is needed to build the latency shim"
+
+aux_latency_ms=${WG_TUI_AUX_LATENCY_MS:-500}
+[[ "$aux_latency_ms" =~ ^[1-9][0-9]*$ ]] \
+    || loud_fail "WG_TUI_AUX_LATENCY_MS must be a positive integer"
 
 repo_root="$(cd "$HERE/../../.." && pwd)"
 scratch=$(make_scratch)
@@ -227,7 +232,7 @@ fi
 (( preflight_help == 1 )) || loud_fail "could not establish TUI command mode"
 tmux send-keys -t "$session" Escape
 
-printf '500\n' >"$control"
+printf '%s\n' "$aux_latency_ms" >"$control"
 # Let the one-second periodic refresh submit chat/service work before tab churn.
 sleep 1.05
 
@@ -276,7 +281,8 @@ done
 # Prove all three requested syscall classes were genuinely delayed. The lane
 # is intentionally serial and each preceding syscall costs 500ms, so allow the
 # worker to progress through metadata probes to open + first read after the
-# latency-sensitive input measurements have already completed.
+# latency-sensitive input measurements have already completed. The loop is
+# long enough for the acceptance matrix's maximum five-second injection.
 observed_all=0
 for _ in $(seq 1 600); do
     if grep -q '^stat ' "$calls" 2>/dev/null \
@@ -309,4 +315,4 @@ if rg -n 'app\.(load_hud_detail|load_log_pane|load_messages_panel|load_agency_li
 fi
 
 tmux send-keys -t "$session" Escape q
-echo "PASS: every reachable TUI tab acknowledged input below 100ms under delayed stat/open/read (max=${max_ms}ms)"
+echo "PASS: every reachable TUI tab acknowledged input below 100ms under ${aux_latency_ms}ms delayed stat/open/read (max=${max_ms}ms)"
