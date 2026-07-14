@@ -9885,14 +9885,10 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
 
 /// Draw the Config tab content: full configuration dashboard.
 fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    if app.config_panel.entries.is_empty() {
-        app.load_config_panel();
-    }
-
     let entries = &app.config_panel.entries;
     if entries.is_empty() {
         let msg =
-            Paragraph::new("No configuration found").style(Style::default().fg(Color::DarkGray));
+            Paragraph::new("Loading configuration…").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(msg, area);
         return;
     }
@@ -9913,16 +9909,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 
     // Precompute endpoint index → name for test status display.
-    let endpoint_names: HashMap<usize, String> = {
-        let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
-        config
-            .llm_endpoints
-            .endpoints
-            .iter()
-            .enumerate()
-            .map(|(i, ep)| (i, ep.name.clone()))
-            .collect()
-    };
+    let endpoint_names = &app.config_panel.endpoint_names;
 
     // Build display lines grouped by section with collapsible headers.
     let mut lines: Vec<(Line, bool)> = Vec::new(); // (line, is_selectable)

@@ -5989,6 +5989,9 @@ pub struct ConfigPanelState {
     pub service_pid: Option<u32>,
     /// Per-endpoint test results, keyed by endpoint name.
     pub endpoint_test_results: HashMap<String, EndpointTestStatus>,
+    /// Endpoint index to name, derived while the background config snapshot
+    /// is built. Render must never reload config merely to recover this map.
+    pub endpoint_names: HashMap<usize, String>,
     /// Whether we're in the "add model" flow.
     pub adding_model: bool,
     /// Fields for new model being added.
@@ -6893,6 +6896,10 @@ pub struct VizApp {
 
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
+    /// Dedicated config snapshot lane; render only observes the completed
+    /// `config_panel` and never waits on this receiver.
+    config_load_rx: Option<mpsc::Receiver<ConfigPanelState>>,
+    config_load_in_flight: bool,
 
     // ── Settings tab state (RightPanelTab::Settings) ──
     pub settings_panel: SettingsPanelState,
@@ -7408,6 +7415,8 @@ impl VizApp {
             sort_status_map: HashMap::new(),
             last_heavy_refresh_at: None,
             config_panel: ConfigPanelState::default(),
+            config_load_rx: None,
+            config_load_in_flight: false,
             settings_panel: SettingsPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
             viewing_iteration: None,
@@ -7684,6 +7693,9 @@ impl VizApp {
         let mut engine = super::bootstrap::BootstrapEngine::new();
         engine.request(args);
         self.bootstrap = Some(engine);
+        // Configuration uses its own I/O lane. A long registry/config read
+        // must neither delay the base graph publication nor run in render.
+        self.request_config_panel();
     }
 
     /// Accept at most one background result.  Generation checks happen in
@@ -9653,7 +9665,11 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
+        let config_changed = self.poll_config_panel();
         if self.poll_bootstrap() {
+            return true;
+        }
+        if config_changed {
             return true;
         }
         if !self.bootstrap_complete {
@@ -9922,7 +9938,7 @@ impl VizApp {
             self.async_fs.request_stat(cfg_path.clone());
             let current_mtime = self.async_fs.cached_stat(&cfg_path);
             if current_mtime != self.config_panel.last_config_mtime {
-                self.load_config_panel();
+                self.request_config_panel();
             }
         }
 
@@ -12712,6 +12728,8 @@ impl VizApp {
             iteration_archives: Vec::new(),
             history_browser: HistoryBrowserState::default(),
             config_panel: ConfigPanelState::default(),
+            config_load_rx: None,
+            config_load_in_flight: false,
             settings_panel: SettingsPanelState::default(),
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
@@ -17989,9 +18007,68 @@ impl VizApp {
 
     // ── Config panel ──
 
+    /// Queue a config-panel rebuild on a dedicated storage thread. Requests
+    /// coalesce while one rebuild is in flight, keeping tab/render input
+    /// bounded even when open/read/stat calls take seconds.
+    pub fn request_config_panel(&mut self) {
+        if self.config_load_in_flight {
+            return;
+        }
+        let workgraph_dir = self.workgraph_dir.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.config_load_rx = Some(rx);
+        self.config_load_in_flight = true;
+        std::thread::spawn(move || {
+            let mut loader = VizApp::new(
+                workgraph_dir,
+                VizOptions::default(),
+                Some(false),
+                None,
+                true,
+            );
+            loader.load_config_panel();
+            let _ = tx.try_send(loader.config_panel);
+        });
+    }
+
+    /// Accept at most one completed config snapshot without blocking.
+    fn poll_config_panel(&mut self) -> bool {
+        let Some(rx) = self.config_load_rx.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(mut panel) => {
+                panel.selected = self
+                    .config_panel
+                    .selected
+                    .min(panel.entries.len().saturating_sub(1));
+                panel.collapsed = std::mem::take(&mut self.config_panel.collapsed);
+                panel.endpoint_test_results =
+                    std::mem::take(&mut self.config_panel.endpoint_test_results);
+                self.config_panel = panel;
+                self.config_load_rx = None;
+                self.config_load_in_flight = false;
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.config_load_rx = None;
+                self.config_load_in_flight = false;
+                false
+            }
+        }
+    }
+
     /// Load configuration from disk and populate config panel entries.
     pub fn load_config_panel(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
+        self.config_panel.endpoint_names = config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (index, endpoint.name.clone()))
+            .collect();
         let model_choices = load_model_choices(&self.workgraph_dir);
         let mut model_choices_with_default = vec!["(default)".to_string()];
         model_choices_with_default.extend(model_choices.iter().cloned());
@@ -23394,6 +23471,29 @@ mod tui_config_panel_tests {
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = wg_dir;
         (app, temp)
+    }
+
+    #[test]
+    fn config_panel_background_request_is_coalesced_and_nonblocking() {
+        let (mut app, _temp) = build_config_test_app();
+
+        let started = Instant::now();
+        app.request_config_panel();
+        app.request_config_panel();
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "config snapshot submission blocked the caller"
+        );
+        assert!(app.config_load_in_flight);
+        assert!(app.config_load_rx.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !app.poll_config_panel() {
+            std::thread::yield_now();
+        }
+        assert!(!app.config_load_in_flight);
+        assert!(app.config_load_rx.is_none());
+        assert!(!app.config_panel.entries.is_empty());
     }
 
     #[test]

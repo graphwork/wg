@@ -3307,7 +3307,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
         // Config tab: 'r' reloads config from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Config => {
-            app.load_config_panel();
+            app.request_config_panel();
         }
 
         // Config tab: 'g' installs project config as global default
