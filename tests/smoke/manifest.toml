@@ -2035,6 +2035,15 @@ description = "Pins guardrails G1+G3 from docs/research/prevent-intake-as-evalua
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_large_active_log_enrichment"
+script = "scenarios/tui_large_active_log_enrichment.sh"
+owners = [
+    "bound-async-tui-log-enrichment",
+]
+description = "Real tmux TUI gate with a valid 105,000-record/101,955,000-byte working-agent output.log: neutral shell and help input stay below 100ms, while the base graph publishes below 2s independently of capacity-one, 1MiB/200-record active-log enrichment pages. Credential-free."
+timeout_seconds = 30
+
+[[scenario]]
 name = "pi_structured_reasoning_codex"
 script = "scenarios/pi_structured_reasoning_codex.sh"
 owners = [

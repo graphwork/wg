@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -27,6 +27,14 @@ pub(super) type BootstrapApply = Box<dyn FnOnce(&mut VizApp) + Send>;
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
 const CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE: Duration = Duration::from_secs(5);
+
+/// One active-log enrichment/history page is bounded by both bytes and records.
+///
+/// These are the TUI-wide limits promised by `docs/design-fully-async-tui.md`.
+/// A tail with more data is resumed from its byte cursor on the next 100 ms
+/// poll; no individual read or parse batch can grow with the size of the log.
+pub(crate) const ACTIVE_LOG_PAGE_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const ACTIVE_LOG_PAGE_MAX_RECORDS: usize = 200;
 
 pub fn new_emacs_editor() -> EditorState {
     let mut state = EditorState::default();
@@ -4391,9 +4399,52 @@ pub struct AgentStreamInfo {
     pub latest_snippet: Option<String>,
     /// Whether the latest event was a tool use (vs text).
     pub latest_is_tool: bool,
+    /// Token usage accumulated from the bounded JSONL pages read so far.
+    pub token_usage: Option<TokenUsage>,
+    /// A final `result` record supersedes the per-turn running total.
+    token_usage_final: bool,
 }
 
 impl AgentStreamInfo {
+    fn process_token_usage(&mut self, val: &serde_json::Value, event_type: &str) {
+        if event_type == "result" {
+            let Some(usage) = val.get("usage").or_else(|| val.get("total_usage")) else {
+                return;
+            };
+            let mut final_usage = token_usage_from_standard_fields(usage);
+            final_usage.cost_usd = val
+                .get("total_cost_usd")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(final_usage.cost_usd);
+            self.token_usage = Some(final_usage);
+            self.token_usage_final = true;
+            return;
+        }
+
+        if self.token_usage_final {
+            return;
+        }
+
+        let usage = match event_type {
+            "assistant" => val
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .map(token_usage_from_standard_fields),
+            "turn" => val.get("usage").map(token_usage_from_standard_fields),
+            "turn.completed" => val.get("usage").map(token_usage_from_codex_fields),
+            "turn_end" => val
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .map(token_usage_from_pi_fields),
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            self.token_usage
+                .get_or_insert_with(zero_token_usage)
+                .accumulate(&usage);
+        }
+    }
+
     /// Parse one JSONL line from an agent's output.log and update self.
     /// Extracted from `update_agent_streams` so per-agent tail threads can
     /// call it off the main render thread (fix-tui-perf-2 fix 6).
@@ -4408,6 +4459,7 @@ impl AgentStreamInfo {
         };
 
         let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        self.process_token_usage(&val, msg_type);
 
         match msg_type {
             "assistant" => {
@@ -4553,6 +4605,224 @@ impl AgentStreamInfo {
             }
             _ => {}
         }
+    }
+}
+
+fn token_usage_from_standard_fields(usage: &serde_json::Value) -> TokenUsage {
+    TokenUsage {
+        cost_usd: usage
+            .get("cost_usd")
+            .or_else(|| usage.get("costUsd"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0),
+        input_tokens: usage
+            .get("input_tokens")
+            .or_else(|| usage.get("inputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .or_else(|| usage.get("outputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_read_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .or_else(|| usage.get("cacheReadInputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .or_else(|| usage.get("cacheCreationInputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    }
+}
+
+fn token_usage_from_codex_fields(usage: &serde_json::Value) -> TokenUsage {
+    let total_input = usage
+        .get("input_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let cached = usage
+        .get("cached_input_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    TokenUsage {
+        input_tokens: total_input.saturating_sub(cached),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            + usage
+                .get("reasoning_output_tokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        cache_read_input_tokens: cached,
+        ..zero_token_usage()
+    }
+}
+
+fn token_usage_from_pi_fields(usage: &serde_json::Value) -> TokenUsage {
+    TokenUsage {
+        cost_usd: usage
+            .get("cost")
+            .and_then(|cost| cost.get("total"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0),
+        input_tokens: usage
+            .get("input")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_read_input_tokens: usage
+            .get("cacheRead")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .get("cacheWrite")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveLogPage {
+    next_offset: u64,
+    bytes_read: usize,
+    records_read: usize,
+    reached_eof: bool,
+}
+
+/// Read one bounded JSONL page. A trailing partial record is retried from its
+/// opening byte on the next page. A single over-sized record is skipped after
+/// one byte-capped read so it cannot wedge the cursor forever.
+fn read_bounded_jsonl_page(path: &Path, offset: u64) -> std::io::Result<(String, ActiveLogPage)> {
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let offset = if offset > file_len { 0 } else { offset };
+    file.seek(SeekFrom::Start(offset))?;
+
+    let mut data = Vec::new();
+    file.by_ref()
+        .take(ACTIVE_LOG_PAGE_MAX_BYTES as u64)
+        .read_to_end(&mut data)?;
+    let bytes_read = data.len();
+    let physical_eof = offset.saturating_add(bytes_read as u64) >= file_len;
+
+    let mut record_start = 0usize;
+    let mut consumed = 0usize;
+    let mut records_read = 0usize;
+    let mut text = String::new();
+    for (index, byte) in data.iter().copied().enumerate() {
+        if byte != b'\n' {
+            continue;
+        }
+        if records_read >= ACTIVE_LOG_PAGE_MAX_RECORDS {
+            break;
+        }
+        text.push_str(&String::from_utf8_lossy(&data[record_start..index]));
+        text.push('\n');
+        records_read += 1;
+        record_start = index + 1;
+        consumed = record_start;
+    }
+
+    if records_read < ACTIVE_LOG_PAGE_MAX_RECORDS && physical_eof && record_start < data.len() {
+        text.push_str(&String::from_utf8_lossy(&data[record_start..]));
+        records_read += 1;
+        consumed = data.len();
+    } else if consumed == 0 && data.len() == ACTIVE_LOG_PAGE_MAX_BYTES {
+        // No newline fits in the byte budget: discard this one malformed or
+        // over-sized record page rather than rereading it forever.
+        consumed = data.len();
+    }
+
+    let next_offset = offset.saturating_add(consumed as u64);
+    Ok((
+        text,
+        ActiveLogPage {
+            next_offset,
+            bytes_read,
+            records_read,
+            reached_eof: next_offset >= file_len,
+        },
+    ))
+}
+
+fn read_active_log_page(
+    path: &Path,
+    offset: u64,
+    info: &mut AgentStreamInfo,
+) -> std::io::Result<ActiveLogPage> {
+    let (text, page) = read_bounded_jsonl_page(path, offset)?;
+    for line in text.lines() {
+        info.process_jsonl_line(line);
+    }
+    info.file_offset = page.next_offset;
+    Ok(page)
+}
+
+#[cfg(test)]
+mod active_log_page_tests {
+    use super::*;
+
+    #[test]
+    fn active_log_enrichment_is_paginated_by_bytes_and_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("output.log");
+        let line =
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":2}}}"#;
+        let content = std::iter::repeat_n(line, 1_000)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, content).unwrap();
+
+        let mut info = AgentStreamInfo::default();
+        let first = read_active_log_page(&path, 0, &mut info).unwrap();
+        assert!(first.bytes_read <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert_eq!(first.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert!(!first.reached_eof);
+        assert_eq!(info.message_count, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert_eq!(info.token_usage.as_ref().unwrap().input_tokens, 600);
+
+        let second = read_active_log_page(&path, first.next_offset, &mut info).unwrap();
+        assert!(second.bytes_read <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert_eq!(second.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert_eq!(info.message_count, ACTIVE_LOG_PAGE_MAX_RECORDS * 2);
+        assert_eq!(info.token_usage.as_ref().unwrap().output_tokens, 800);
+    }
+
+    #[test]
+    fn final_result_replaces_incremental_active_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("output.log");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n",
+                "{\"type\":\"result\",\"total_cost_usd\":1.25,\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}\n",
+            ),
+        )
+        .unwrap();
+
+        let mut info = AgentStreamInfo::default();
+        let page = read_active_log_page(&path, 0, &mut info).unwrap();
+        assert!(page.reached_eof);
+        assert_eq!(page.records_read, 2);
+        assert_eq!(
+            info.token_usage,
+            Some(TokenUsage {
+                cost_usd: 1.25,
+                input_tokens: 40,
+                output_tokens: 8,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            })
+        );
     }
 }
 
@@ -6473,6 +6743,7 @@ struct GraphBuildInput {
     graph: Arc<worksgood::graph::WorkGraph>,
     graph_mtime: Option<SystemTime>,
     animation_mode: AnimationMode,
+    live_task_token_map: Arc<HashMap<String, TokenUsage>>,
     task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
     sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
     splash_animations: HashMap<String, Animation>,
@@ -6543,6 +6814,9 @@ pub struct VizApp {
     pub total_usage: TokenUsage,
     /// Per-task token usage keyed by task ID (for computing visible-task totals).
     pub task_token_map: HashMap<String, TokenUsage>,
+    /// Incrementally enriched usage from active logs. Bounded tail workers
+    /// publish this map independently of base-graph derivation.
+    live_task_token_map: Arc<HashMap<String, TokenUsage>>,
     /// Aggregate usage for the current worker-derived visible set. Rendering
     /// reads this value instead of scanning every graph line each frame.
     visible_usage: TokenUsage,
@@ -7335,6 +7609,7 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            live_task_token_map: Arc::new(HashMap::new()),
             visible_usage: TokenUsage {
                 cost_usd: 0.0,
                 input_tokens: 0,
@@ -7850,6 +8125,7 @@ impl VizApp {
             graph,
             graph_mtime,
             animation_mode: self.animation_mode,
+            live_task_token_map: self.live_task_token_map.clone(),
             task_snapshots: self.task_snapshots.clone(),
             sticky_annotations: self.sticky_annotations.clone(),
             // The animation map is globally capped, so this clone has a fixed
@@ -7887,6 +8163,7 @@ impl VizApp {
             2 => SortMode::StatusGrouped,
             _ => SortMode::Chronological,
         };
+        app.live_task_token_map = input.live_task_token_map;
         app.task_snapshots = input.task_snapshots;
         app.sticky_annotations = input.sticky_annotations;
         app.splash_animations = input.splash_animations;
@@ -9385,22 +9662,6 @@ impl VizApp {
         };
         let mut task_token_map: HashMap<String, TokenUsage> = HashMap::new();
 
-        // Build a map of agent_id -> live token usage for in-progress agents.
-        // Uses the (path, mtime)-keyed cache so a no-op refresh is one
-        // metadata syscall per agent instead of a full JSONL parse.
-        let mut live_agent_usage: HashMap<String, TokenUsage> = HashMap::new();
-        if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
-            for (id, agent) in &registry.agents {
-                if agent.status != AgentStatus::Working || agent.output_file.is_empty() {
-                    continue;
-                }
-                let path = std::path::Path::new(&agent.output_file);
-                if let Some(usage) = parse_token_usage_live_cached(path) {
-                    live_agent_usage.insert(id.clone(), usage);
-                }
-            }
-        }
-
         let mut new_snapshots: HashMap<String, TaskSnapshot> = HashMap::new();
         let now = Instant::now();
         // Collect toast messages during the loop to avoid borrow conflicts
@@ -9430,12 +9691,13 @@ impl VizApp {
                 }
             }
 
-            // Use stored token_usage if available, otherwise check live agent data
-            let usage = task.token_usage.as_ref().or_else(|| {
-                task.assigned
-                    .as_ref()
-                    .and_then(|aid| live_agent_usage.get(aid))
-            });
+            // Stored usage is authoritative. Active usage is an independently
+            // published, in-memory enrichment assembled by the bounded tail
+            // workers; base-graph derivation never opens an output log.
+            let usage = task
+                .token_usage
+                .as_ref()
+                .or_else(|| self.live_task_token_map.get(&task.id));
 
             if let Some(usage) = usage {
                 total_usage.accumulate(usage);
@@ -12588,6 +12850,7 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            live_task_token_map: Arc::new(HashMap::new()),
             visible_usage: TokenUsage {
                 cost_usd: 0.0,
                 input_tokens: 0,
@@ -13676,6 +13939,33 @@ impl VizApp {
                 self.agent_streams.insert(agent_id.clone(), info.clone());
             }
         }
+
+        let next_live_usage: HashMap<String, TokenUsage> = self
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|entry| matches!(entry.status, AgentStatus::Working))
+            .filter_map(|entry| {
+                let task_id = entry.task_id.as_ref()?;
+                let graph = self.published_graph.as_ref()?;
+                if graph.get_task(task_id)?.token_usage.is_some() {
+                    return None;
+                }
+                let usage = self
+                    .agent_streams
+                    .get(&entry.agent_id)?
+                    .token_usage
+                    .clone()?;
+                Some((task_id.clone(), usage))
+            })
+            .collect();
+        if self.live_task_token_map.as_ref() != &next_live_usage {
+            self.live_task_token_map = Arc::new(next_live_usage);
+            // Token enrichment is a new graph presentation input, but the
+            // request is still latest-wins/capacity-one. The terminal thread
+            // does not parse, aggregate, or apply graph-sized state here.
+            self.request_graph_snapshot();
+        }
     }
 
     /// Polling cadence for per-agent tail threads. 100ms keeps the activity
@@ -13688,8 +13978,6 @@ impl VizApp {
     /// output.log into a shared `AgentStreamInfo`. Used by
     /// `update_agent_streams` (fix-tui-perf-2 fix 6).
     fn spawn_agent_tail(log_path: std::path::PathBuf) -> AgentTailHandle {
-        use std::io::{Read, Seek, SeekFrom};
-
         let info = std::sync::Arc::new(std::sync::Mutex::new(AgentStreamInfo::default()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let info_w = std::sync::Arc::clone(&info);
@@ -13702,19 +13990,11 @@ impl VizApp {
                 if let Some(meta) = metadata {
                     let len = meta.len();
                     if len > file_offset {
-                        if let Ok(mut file) = std::fs::File::open(&log_path) {
-                            if file.seek(SeekFrom::Start(file_offset)).is_ok() {
-                                let mut new_data = String::new();
-                                if file.read_to_string(&mut new_data).is_ok() {
-                                    file_offset = len;
-                                    if let Ok(mut info) = info_w.lock() {
-                                        info.file_offset = file_offset;
-                                        for line in new_data.lines() {
-                                            info.process_jsonl_line(line);
-                                        }
-                                    }
-                                }
-                            }
+                        if let Ok(mut info) = info_w.lock()
+                            && let Ok(page) =
+                                read_active_log_page(&log_path, file_offset, &mut info)
+                        {
+                            file_offset = page.next_offset;
                         }
                     } else if len < file_offset {
                         // File was rotated / truncated — restart from 0.
@@ -13739,8 +14019,6 @@ impl VizApp {
     /// Called when the Output tab is active. Reads incrementally from each agent's output.log
     /// and accumulates extracted markdown text.
     pub fn update_output_pane(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agents_dir = self.workgraph_dir.join("agents");
 
         // Check if iteration changed — if so, invalidate all cached text so we reload
@@ -13825,27 +14103,14 @@ impl VizApp {
                 text_entry.dirty = true;
             }
 
-            // Open file and seek to last known position.
-            let mut file = match std::fs::File::open(&log_path) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, text_entry.file_offset)
+            else {
+                continue;
             };
-
-            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if file_len <= text_entry.file_offset {
-                continue; // No new data.
-            }
-
-            if file.seek(SeekFrom::Start(text_entry.file_offset)).is_err() {
+            if page.next_offset == text_entry.file_offset {
                 continue;
             }
-
-            let mut new_data = String::new();
-            if file.read_to_string(&mut new_data).is_err() {
-                continue;
-            }
-
-            text_entry.file_offset = file_len;
+            text_entry.file_offset = page.next_offset;
 
             // Extract assistant text + tool results from the new JSONL lines.
             let new_text = extract_enriched_text_from_log(&new_data);
@@ -13897,8 +14162,6 @@ impl VizApp {
     /// Uses the same extraction function (`extract_enriched_text_from_log`) and data type
     /// (`OutputAgentText`) as the Output tab, ensuring identical rendering.
     pub fn update_log_output(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agent_id = match &self.log_pane.agent_id {
             Some(id) => id.clone(),
             None => return,
@@ -13933,26 +14196,14 @@ impl VizApp {
 
         let text_entry = &mut self.log_pane.agent_output;
 
-        let mut file = match std::fs::File::open(&log_path) {
-            Ok(f) => f,
-            Err(_) => return,
+        let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, text_entry.file_offset)
+        else {
+            return;
         };
-
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if file_len <= text_entry.file_offset {
-            return; // No new data.
-        }
-
-        if file.seek(SeekFrom::Start(text_entry.file_offset)).is_err() {
+        if page.next_offset == text_entry.file_offset {
             return;
         }
-
-        let mut new_data = String::new();
-        if file.read_to_string(&mut new_data).is_err() {
-            return;
-        }
-
-        text_entry.file_offset = file_len;
+        text_entry.file_offset = page.next_offset;
 
         // Same extraction as the Output tab.
         let new_text = extract_enriched_text_from_log(&new_data);
@@ -13991,8 +14242,6 @@ impl VizApp {
     }
 
     pub fn update_log_stream_events(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agent_id = match &self.log_pane.agent_id {
             Some(id) => id.clone(),
             None => return,
@@ -14004,29 +14253,15 @@ impl VizApp {
             return;
         }
 
-        let mut file = match std::fs::File::open(&stream_path) {
-            Ok(f) => f,
-            Err(_) => return,
+        let Ok((new_data, page)) =
+            read_bounded_jsonl_page(&stream_path, self.log_pane.raw_stream_offset)
+        else {
+            return;
         };
-
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if file_len <= self.log_pane.raw_stream_offset {
+        if page.next_offset == self.log_pane.raw_stream_offset {
             return;
         }
-
-        if file
-            .seek(SeekFrom::Start(self.log_pane.raw_stream_offset))
-            .is_err()
-        {
-            return;
-        }
-
-        let mut new_data = String::new();
-        if file.read_to_string(&mut new_data).is_err() {
-            return;
-        }
-
-        self.log_pane.raw_stream_offset = file_len;
+        self.log_pane.raw_stream_offset = page.next_offset;
 
         let mut had_new = false;
         for line in new_data.lines() {
@@ -14068,8 +14303,6 @@ impl VizApp {
     /// Each non-empty line is appended to the firehose buffer. The buffer is capped at
     /// FIREHOSE_MAX_LINES to prevent memory growth.
     pub fn update_firehose(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agents_dir = self.workgraph_dir.join("agents");
 
         // Collect active agent IDs and their task IDs from the monitor.
@@ -14095,26 +14328,13 @@ impl VizApp {
                 .entry(agent_id.clone())
                 .or_insert(0);
 
-            let mut file = match std::fs::File::open(&log_path) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, *offset) else {
+                continue;
             };
-
-            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if file_len <= *offset {
+            if page.next_offset == *offset {
                 continue;
             }
-
-            if file.seek(SeekFrom::Start(*offset)).is_err() {
-                continue;
-            }
-
-            let mut new_data = String::new();
-            if file.read_to_string(&mut new_data).is_err() {
-                continue;
-            }
-
-            *offset = file_len;
+            *offset = page.next_offset;
 
             // Assign a stable color index for this agent.
             let color_idx = *self
@@ -18267,6 +18487,7 @@ impl VizApp {
                 Box::new(move |app| {
                     app.agent_monitor = monitor;
                     app.dashboard = dashboard;
+                    app.update_agent_streams();
                 })
             });
     }
