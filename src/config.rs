@@ -834,7 +834,9 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
-    /// Number of chat messages to load per page in the TUI (default: 100)
+    /// Requested chat messages per TUI page (default: 100).
+    /// The live render/search projection is always hard-capped at 200 records
+    /// and 1 MiB, regardless of this value or the CLI history-depth override.
     #[serde(default = "default_chat_page_size")]
     pub chat_page_size: usize,
     /// Comma-separated counters to display: "uptime", "cumulative", "active", "session", "compact"

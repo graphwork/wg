@@ -3081,6 +3081,9 @@ pub(super) fn compute_chat_bar_layout(
 
 /// Draw the Chat tab content with word-wrapped messages, scrolling, and input area.
 fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // This assertion boundary makes the render loop's work independent of
+    // persisted history depth, configuration, and CLI overrides.
+    app.chat.enforce_history_projection();
     let width = area.width as usize;
     if width < 4 || area.height < 3 {
         return;

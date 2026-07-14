@@ -2123,3 +2123,12 @@ owners = [
 ]
 description = "Live terminal contract for explicit execution selection: isolated fresh HOME runs graph-only init/CRUD, real service start fails with WG-EXEC-UNSELECTED before daemon state, non-interactive setup without --route fails, explicit Codex setup writes only handler-first Codex routing, lint reports its source, and the real selected daemon lifecycle starts with Codex. Credential-free."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_chat_history_projection_latency"
+script = "scenarios/tui_chat_history_projection_latency.sh"
+owners = [
+    "bound-tui-chat",
+]
+description = "Permanent real tmux/PTY regression for bound-tui-chat: creates the exact valid 100,000-record / 97,100,000-byte chat history with public [tui] chat_page_size=100000, waits for the newest Chat snapshot (not the neutral shell), sends the actual Help key, and requires visible acknowledgement below 100ms. Static assertions pin the shared 200-record / 1 MiB projection at configuration/CLI/pagination publication plus Chat draw/search. Credential-free and cleanup-safe on success, failure, INT, and TERM."
+timeout_seconds = 30
