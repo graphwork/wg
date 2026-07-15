@@ -20,7 +20,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use worksgood::agency::{
-    self, Agent, Lineage, PerformanceRecord, TelegramBinding, TelegramBindingMap,
+    self, Agent, Lineage, PerformanceRecord, TelegramBinding, TelegramBindingMap, is_numeric_id,
+    normalize_identity,
 };
 use worksgood::graph::TrustLevel;
 use worksgood::notify::config::NotifyConfig;
@@ -75,14 +76,48 @@ pub fn run_add(
     telegram: &str,
     project: Option<&str>,
 ) -> Result<()> {
+    run_add_with_sender(workgraph_dir, name, telegram, project, &send_dm)
+}
+
+/// Core of [`run_add`] with the invitation-DM sender injected.
+///
+/// Production passes [`send_dm`]; tests pass a closure so they can assert the
+/// persist-before-send ordering (Erik's PR #49 race) without a live bot — the
+/// binding must already be on disk by the time the sender is invoked.
+fn run_add_with_sender(
+    workgraph_dir: &Path,
+    name: &str,
+    telegram: &str,
+    project: Option<&str>,
+    send: &dyn Fn(&str, TelegramBotConfig, &str, &str) -> Result<()>,
+) -> Result<()> {
     let name = name.trim();
-    let telegram = telegram.trim();
+    let telegram_raw = telegram.trim();
     if name.is_empty() {
         anyhow::bail!("human name must not be empty");
     }
-    if telegram.is_empty() {
+    if telegram_raw.is_empty() {
         anyhow::bail!("--telegram must not be empty");
     }
+    // Normalize to the one canonical binding key the live listener will match
+    // against: a stable numeric `from.id` kept verbatim, or an `@`-less,
+    // lowercased username handle (see `normalize_identity`). Storing the raw
+    // string here is exactly what made a numeric binding unmatchable — the
+    // listener emits `from.id`, never the operator's punctuation/casing.
+    let telegram = normalize_identity(telegram_raw);
+    if telegram.is_empty() {
+        anyhow::bail!(
+            "--telegram '{}' is not a usable Telegram id or @handle",
+            telegram_raw
+        );
+    }
+    // The chat target for the invitation DM: a numeric id addresses the user's
+    // DM directly; a handle must carry the leading `@` Telegram expects.
+    let dm_target = if is_numeric_id(&telegram) {
+        telegram.clone()
+    } else {
+        format!("@{}", telegram)
+    };
 
     let agency_dir = workgraph_dir.join("agency");
     agency::init(&agency_dir).context("Failed to initialise agency directory")?;
@@ -111,7 +146,7 @@ pub fn run_add(
     let mut bindings =
         TelegramBindingMap::load(&agency_dir).context("Failed to load Telegram binding map")?;
     // One-human-one-agent: reject a Telegram user already bound.
-    if let Some(existing) = bindings.find_by_user(telegram) {
+    if let Some(existing) = bindings.find_by_user(&telegram) {
         anyhow::bail!(
             "Telegram user '{}' is already bound to agent '{}' ({}). One human maps to one agent.",
             telegram,
@@ -148,50 +183,21 @@ pub fn run_add(
     super::user::run_init(workgraph_dir, Some(&handle))
         .context("Failed to initialise per-user board")?;
 
-    // --- 3. Attempt the Telegram handshake -------------------------------
-    let project = project
-        .map(str::to_string)
-        .unwrap_or_else(|| project_label(workgraph_dir));
-    let handshake_msg = format!(
-        "You've been added to the '{}' workgraph as {}. Reply YES to join.",
-        project, name
-    );
+    // --- 3. Resolve the fronting bot -------------------------------------
+    // Resolve (but do NOT send) first, so the binding we persist below records
+    // which bot will front this human.
+    let resolved_bot = resolve_bot(workgraph_dir, &agent_id);
+    let bot_id = resolved_bot.as_ref().map(|(id, _)| id.clone());
 
-    let (bot_id, outcome) = match resolve_bot(workgraph_dir, &agent_id) {
-        Some((bot_id, bot)) => match send_dm(&bot_id, bot, telegram, &handshake_msg) {
-            Ok(()) => {
-                println!(
-                    "Sent join request to {} via bot '{}'. Awaiting their YES reply.",
-                    telegram, bot_id
-                );
-                println!(
-                    "  Run `wg telegram listen` (or keep the service listener up) to capture the confirmation."
-                );
-                (Some(bot_id.clone()), HandshakeOutcome::Sent { bot_id })
-            }
-            Err(e) => {
-                let error = e.to_string();
-                eprintln!(
-                    "Warning: failed to DM {} via bot '{}': {}",
-                    telegram, bot_id, error
-                );
-                print_manual_step(telegram, &handshake_msg);
-                (
-                    Some(bot_id.clone()),
-                    HandshakeOutcome::SendFailed { bot_id, error },
-                )
-            }
-        },
-        None => {
-            println!("No Telegram bot configured — using the manual onboarding path.");
-            print_manual_step(telegram, &handshake_msg);
-            (None, HandshakeOutcome::NoBot)
-        }
-    };
-
-    // --- 4. Record the (unconfirmed) binding -----------------------------
+    // --- 4. Persist the (unconfirmed) binding BEFORE inviting ------------
+    // Ordering is deliberate and load-bearing: the invitation DM must not go
+    // out until the unconfirmed binding is durable. Otherwise a fast `YES`
+    // could reach an already-running listener before any binding exists — the
+    // update offset would advance and the confirmation would be lost forever.
+    // Persisting first also means a save failure aborts here, leaving no
+    // dangling invitation with nothing to confirm against.
     let binding = TelegramBinding::new(
-        telegram.to_string(),
+        telegram.clone(),
         agent_id.clone(),
         name.to_string(),
         bot_id,
@@ -203,6 +209,44 @@ pub fn run_add(
     let path = bindings
         .save(&agency_dir)
         .context("Failed to persist Telegram binding map")?;
+
+    // --- 5. Now invite: send the handshake DM ----------------------------
+    let project = project
+        .map(str::to_string)
+        .unwrap_or_else(|| project_label(workgraph_dir));
+    let handshake_msg = format!(
+        "You've been added to the '{}' workgraph as {}. Reply YES to join.",
+        project, name
+    );
+
+    let outcome = match resolved_bot {
+        Some((bot_id, bot)) => match send(&bot_id, bot, &dm_target, &handshake_msg) {
+            Ok(()) => {
+                println!(
+                    "Sent join request to {} via bot '{}'. Awaiting their YES reply.",
+                    dm_target, bot_id
+                );
+                println!(
+                    "  Run `wg telegram listen` (or keep the service listener up) to capture the confirmation."
+                );
+                HandshakeOutcome::Sent { bot_id }
+            }
+            Err(e) => {
+                let error = e.to_string();
+                eprintln!(
+                    "Warning: failed to DM {} via bot '{}': {}",
+                    dm_target, bot_id, error
+                );
+                print_manual_step(&dm_target, &handshake_msg);
+                HandshakeOutcome::SendFailed { bot_id, error }
+            }
+        },
+        None => {
+            println!("No Telegram bot configured — using the manual onboarding path.");
+            print_manual_step(&dm_target, &handshake_msg);
+            HandshakeOutcome::NoBot
+        }
+    };
 
     let confirm_state = match &outcome {
         HandshakeOutcome::Sent { .. } => "unconfirmed (join request sent — awaiting YES)",
@@ -222,12 +266,14 @@ pub fn run_add(
 /// confirmation when the inbound listener isn't running (the no-bot / manual
 /// onboarding path).
 pub fn run_confirm(workgraph_dir: &Path, telegram: &str) -> Result<()> {
-    let telegram = telegram.trim();
+    // Normalize to the same canonical key onboarding stored, so `confirm` finds
+    // the binding regardless of the `@`/casing the operator retypes.
+    let telegram = normalize_identity(telegram);
     let agency_dir = workgraph_dir.join("agency");
     let mut bindings =
         TelegramBindingMap::load(&agency_dir).context("Failed to load Telegram binding map")?;
 
-    match bindings.find_by_user(telegram) {
+    match bindings.find_by_user(&telegram) {
         None => anyhow::bail!(
             "no Telegram binding for '{}'. Add the human first with `wg agency human add`.",
             telegram
@@ -239,7 +285,14 @@ pub fn run_confirm(workgraph_dir: &Path, telegram: &str) -> Result<()> {
         Some(_) => {}
     }
 
-    let name = agency::apply_confirmation(&mut bindings, telegram, "yes", chrono::Utc::now())
+    // Drive the same matching contract as the live listener: a numeric key is
+    // the sender id; a handle key is the username.
+    let (id, username) = if is_numeric_id(&telegram) {
+        (telegram.as_str(), None)
+    } else {
+        ("", Some(telegram.as_str()))
+    };
+    let name = agency::apply_confirmation(&mut bindings, id, username, "yes", chrono::Utc::now())
         .expect("binding exists and is unconfirmed");
     bindings
         .save(&agency_dir)
@@ -407,5 +460,74 @@ mod tests {
         // it's non-empty and not the literal fallback.
         let label = project_label(&dir);
         assert!(!label.is_empty());
+    }
+
+    #[test]
+    fn test_human_add_normalizes_handle_and_confirm_matches() {
+        let tmp = setup();
+        let dir = wg_dir(&tmp);
+
+        // Operator types a handle with `@` and mixed case.
+        run_add(&dir, "Nadin", "@Nadin", None).unwrap();
+
+        let map = TelegramBindingMap::load(&dir.join("agency")).unwrap();
+        // Stored in the canonical normalized form the listener will match.
+        assert!(map.find_by_user("nadin").is_some());
+        assert!(map.find_by_user("@Nadin").is_none());
+
+        // Manual confirm with different punctuation/casing resolves the same
+        // binding — because both ends normalize identically.
+        run_confirm(&dir, "@NADIN").unwrap();
+        let map2 = TelegramBindingMap::load(&dir.join("agency")).unwrap();
+        assert!(map2.find_by_user("nadin").unwrap().confirmed);
+    }
+
+    #[test]
+    fn test_human_add_persists_binding_before_sending_invitation() {
+        // Erik's PR #49 race: the unconfirmed binding MUST be durable before
+        // the invitation DM goes out, or a fast YES reaching an already-running
+        // listener would be lost. We assert the binding file exists at the
+        // exact moment the (injected) sender is invoked.
+        let tmp = setup();
+        let dir = wg_dir(&tmp);
+
+        // A named bot bound to this human so the invitation path runs.
+        let wgconf = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wgconf).unwrap();
+        std::fs::write(
+            wgconf.join("notify.toml"),
+            "[telegram.bots.nadin]\n\
+             bot_token = \"111:AAA\"\n\
+             chat_id = \"78901234\"\n\
+             agent_id = \"human-nadin\"\n",
+        )
+        .unwrap();
+
+        let binding_file = dir.join("agency/bindings/telegram.yaml");
+        let existed_at_send = std::cell::Cell::new(false);
+        let target_seen = std::cell::RefCell::new(String::new());
+        {
+            let sender =
+                |_bot_id: &str, _bot: TelegramBotConfig, target: &str, _msg: &str| -> Result<()> {
+                    existed_at_send.set(binding_file.exists());
+                    *target_seen.borrow_mut() = target.to_string();
+                    Ok(())
+                };
+            run_add_with_sender(&dir, "Nadin", "78901234", Some("family"), &sender).unwrap();
+        }
+
+        assert!(
+            existed_at_send.get(),
+            "binding must be persisted BEFORE the invitation DM is sent"
+        );
+        // Numeric id addresses the user's DM directly.
+        assert_eq!(*target_seen.borrow(), "78901234");
+
+        // And it's persisted unconfirmed with the resolved bot recorded.
+        let map = TelegramBindingMap::load(&dir.join("agency")).unwrap();
+        let b = map.find_by_user("78901234").unwrap();
+        assert_eq!(b.agent_id, "human-nadin");
+        assert!(!b.confirmed);
+        assert_eq!(b.bot_id.as_deref(), Some("nadin"));
     }
 }

@@ -36,10 +36,11 @@ use super::store::AgencyError;
 /// A single Telegram-user → agency-agent binding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TelegramBinding {
-    /// The Telegram user id (numeric) or `@handle` as supplied to
-    /// `wg agency human add --telegram <...>`. Matched verbatim against the
-    /// `sender` of inbound messages (Telegram numeric ids are stable; handles
-    /// are convenience aliases the operator typed).
+    /// The canonical Telegram identity this binding authorizes, in normalized
+    /// form (see [`normalize_identity`]): either the stable numeric `from.id`
+    /// or an `@`-less, lowercased username handle. Matched against inbound
+    /// senders via [`TelegramBinding::matches_sender`] — numeric bindings match
+    /// the listener's `from.id`, handle bindings match `from.username`.
     pub telegram_user: String,
     /// Agency agent id this human maps to (the `is_human` agent created by
     /// `wg agency human add`).
@@ -79,6 +80,49 @@ impl TelegramBinding {
             created_at,
             confirmed_at: None,
         }
+    }
+
+    /// Does this binding match an inbound sender identity?
+    ///
+    /// The canonical authorization identity is the stable numeric Telegram
+    /// `from.id`. A binding keyed on a numeric id matches only that exact id —
+    /// never a username, which a person can change. A binding keyed on a
+    /// `@handle` (stored normalized: `@`-less and lowercased) matches the
+    /// listener's lowercased `from.username`. This is the single matching rule
+    /// shared by the live listener and the manual `confirm` path, so the
+    /// identity a human is onboarded with is exactly the one their `YES` is
+    /// checked against.
+    pub fn matches_sender(&self, id: &str, username: Option<&str>) -> bool {
+        if is_numeric_id(&self.telegram_user) {
+            self.telegram_user == id
+        } else {
+            username == Some(self.telegram_user.as_str())
+        }
+    }
+}
+
+/// Whether `s` is a bare numeric Telegram user id (all ASCII digits, non-empty).
+///
+/// Numeric ids are the stable authorization identity; everything else is
+/// treated as a username handle.
+pub fn is_numeric_id(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Normalize an operator-supplied Telegram identity into the stored binding
+/// key, so onboarding and the live listener speak the same representation.
+///
+/// A numeric id (`78901234`) is kept verbatim — it is the stable, spoof-proof
+/// authorization identity. Anything else is treated as a username handle: the
+/// leading `@` (if any) is stripped and it is lowercased, so `@Nadin`, `Nadin`
+/// and `nadin` all normalize to `nadin` and match the listener's lowercased
+/// `from.username`.
+pub fn normalize_identity(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if is_numeric_id(trimmed) {
+        trimmed.to_string()
+    } else {
+        trimmed.trim_start_matches('@').to_ascii_lowercase()
     }
 }
 
@@ -170,15 +214,23 @@ pub fn is_affirmative(body: &str) -> bool {
 /// Apply an inbound reply to the binding map, confirming the sender if the
 /// message is an affirmative handshake reply.
 ///
-/// This is the pure, unit-testable core of the inbound-listener hook. Given
-/// the `sender` (Telegram user id) and message `body`, if the sender has an
-/// unconfirmed binding and the body [`is_affirmative`], the binding is marked
-/// confirmed at `at` and the human's name is returned. Returns `None` when the
-/// sender is unknown, already confirmed, or the reply is not affirmative —
-/// making it safe to call on every inbound message and idempotent on repeats.
+/// This is the pure, unit-testable core of the inbound-listener hook. Given the
+/// inbound sender's canonical numeric `id` and optional `username`, and the
+/// message `body`, if some unconfirmed binding [`matches`](TelegramBinding::matches_sender)
+/// that sender and the body [`is_affirmative`], the binding is marked confirmed
+/// at `at` and the human's name is returned. Returns `None` when no unconfirmed
+/// binding matches, the sender is already confirmed, or the reply is not
+/// affirmative — making it safe to call on every inbound message and idempotent
+/// on repeats.
+///
+/// Matching keys on the canonical identity contract: a numeric binding matches
+/// only the stable `id`; a `@handle` binding matches the `username`. This is
+/// why a numeric-bound sender's `YES` is honoured while a different sender's is
+/// not, even when both carry the same username string.
 pub fn apply_confirmation(
     map: &mut TelegramBindingMap,
-    sender: &str,
+    id: &str,
+    username: Option<&str>,
     body: &str,
     at: DateTime<Utc>,
 ) -> Option<String> {
@@ -188,7 +240,7 @@ pub fn apply_confirmation(
     let binding = map
         .bindings
         .iter_mut()
-        .find(|b| b.telegram_user == sender && !b.confirmed)?;
+        .find(|b| !b.confirmed && b.matches_sender(id, username))?;
     binding.confirmed = true;
     binding.confirmed_at = Some(at);
     Some(binding.name.clone())
@@ -282,7 +334,7 @@ mod tests {
         assert!(!map.find_by_user("111").unwrap().confirmed);
 
         let confirmed_at = "2026-07-10T12:03:11Z".parse().unwrap();
-        let name = apply_confirmation(&mut map, "111", "YES", confirmed_at);
+        let name = apply_confirmation(&mut map, "111", None, "YES", confirmed_at);
         assert_eq!(name, Some("Nadin".to_string()));
 
         let b = map.find_by_user("111").unwrap();
@@ -294,7 +346,7 @@ mod tests {
     fn test_apply_confirmation_ignores_unknown_sender() {
         let mut map = TelegramBindingMap::default();
         map.add(binding("111", "human-nadin", "Nadin")).unwrap();
-        assert_eq!(apply_confirmation(&mut map, "999", "YES", ts()), None);
+        assert_eq!(apply_confirmation(&mut map, "999", None, "YES", ts()), None);
         assert!(!map.find_by_user("111").unwrap().confirmed);
     }
 
@@ -302,7 +354,10 @@ mod tests {
     fn test_apply_confirmation_ignores_non_affirmative() {
         let mut map = TelegramBindingMap::default();
         map.add(binding("111", "human-nadin", "Nadin")).unwrap();
-        assert_eq!(apply_confirmation(&mut map, "111", "no thanks", ts()), None);
+        assert_eq!(
+            apply_confirmation(&mut map, "111", None, "no thanks", ts()),
+            None
+        );
         assert!(!map.find_by_user("111").unwrap().confirmed);
     }
 
@@ -312,12 +367,93 @@ mod tests {
         map.add(binding("111", "human-nadin", "Nadin")).unwrap();
         let first = "2026-07-10T12:03:11Z".parse().unwrap();
         assert_eq!(
-            apply_confirmation(&mut map, "111", "yes", first),
+            apply_confirmation(&mut map, "111", None, "yes", first),
             Some("Nadin".to_string())
         );
         // Second YES is a no-op: already confirmed, confirmed_at unchanged.
         let second = "2026-07-10T13:00:00Z".parse().unwrap();
-        assert_eq!(apply_confirmation(&mut map, "111", "yes", second), None);
+        assert_eq!(
+            apply_confirmation(&mut map, "111", None, "yes", second),
+            None
+        );
         assert_eq!(map.find_by_user("111").unwrap().confirmed_at, Some(first));
+    }
+
+    #[test]
+    fn test_normalize_identity() {
+        // Numeric ids are the stable authorization identity — kept verbatim.
+        assert_eq!(normalize_identity("78901234"), "78901234");
+        assert_eq!(normalize_identity("  78901234  "), "78901234");
+        // Handles: strip a leading @ and lowercase so they match from.username.
+        assert_eq!(normalize_identity("@Nadin"), "nadin");
+        assert_eq!(normalize_identity("Nadin"), "nadin");
+        assert_eq!(normalize_identity("  @NADIN "), "nadin");
+    }
+
+    #[test]
+    fn test_matches_sender_numeric_binding() {
+        // A numeric binding authorizes the stable from.id ONLY — never a
+        // username, even one that happens to equal the id string.
+        let b = binding("78901234", "human-nadin", "Nadin");
+        assert!(b.matches_sender("78901234", Some("nadin")));
+        assert!(b.matches_sender("78901234", None));
+        // Wrong id, right username → no match (this is the authorization crux).
+        assert!(!b.matches_sender("99999999", Some("nadin")));
+        // A spoofer who set their username to the victim's numeric id string
+        // but has a different real id must NOT match.
+        assert!(!b.matches_sender("99999999", Some("78901234")));
+    }
+
+    #[test]
+    fn test_matches_sender_handle_binding() {
+        // A handle binding (stored normalized) matches the lowercased username,
+        // independent of the numeric id.
+        let b = binding("nadin", "human-nadin", "Nadin");
+        assert!(b.matches_sender("78901234", Some("nadin")));
+        assert!(b.matches_sender("55555555", Some("nadin")));
+        // No username, or a different username → no match.
+        assert!(!b.matches_sender("78901234", None));
+        assert!(!b.matches_sender("78901234", Some("erik")));
+    }
+
+    #[test]
+    fn test_apply_confirmation_numeric_binding_matches_id_not_username() {
+        // Regression for the listener-contract gap: a stable numeric binding
+        // is confirmed by the matching from.id, and a DIFFERENT sender who
+        // shares nothing but a coincidental username is rejected.
+        let mut map = TelegramBindingMap::default();
+        map.add(binding("78901234", "human-nadin", "Nadin"))
+            .unwrap();
+
+        // Different id, same username the listener would send → NOT confirmed.
+        assert_eq!(
+            apply_confirmation(&mut map, "11112222", Some("nadin"), "YES", ts()),
+            None
+        );
+        assert!(!map.find_by_user("78901234").unwrap().confirmed);
+
+        // The bound numeric id's YES → confirmed.
+        let at = "2026-07-10T12:03:11Z".parse().unwrap();
+        assert_eq!(
+            apply_confirmation(&mut map, "78901234", Some("nadin"), "YES", at),
+            Some("Nadin".to_string())
+        );
+        assert!(map.find_by_user("78901234").unwrap().confirmed);
+    }
+
+    #[test]
+    fn test_apply_confirmation_handle_binding_matches_username() {
+        let mut map = TelegramBindingMap::default();
+        map.add(binding("nadin", "human-nadin", "Nadin")).unwrap();
+        // A different person (different username) cannot confirm it.
+        assert_eq!(
+            apply_confirmation(&mut map, "78901234", Some("erik"), "YES", ts()),
+            None
+        );
+        // The bound handle's owner confirms regardless of their numeric id.
+        assert_eq!(
+            apply_confirmation(&mut map, "78901234", Some("nadin"), "YES", ts()),
+            Some("Nadin".to_string())
+        );
     }
 }
