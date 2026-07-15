@@ -132,13 +132,68 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
                 let welcome = format!("Welcome aboard, {}! You're all set. \u{2705}", name);
                 send_reply(reply_channel, &reply_target, &welcome, &msg.channel).await;
             } else {
-                println!(
-                    "[{}] Message from {} on {}: {}",
-                    chrono::Utc::now().format("%H:%M:%S"),
-                    display_sender,
-                    msg.channel,
-                    msg.body
-                );
+                // Not a command and not a button press: treat as a human's
+                // reply to a task they were handed. The router authorizes the
+                // sender against their CONFIRMED binding and only then records
+                // the reply onto that human's parked task — satisfying its
+                // HumanInput wait so the coordinator completes it. (The
+                // "awaiting-human task router" formerly deferred at
+                // src/notify/telegram.rs:42.)
+                //
+                // Authorization uses the canonical numeric `msg.sender`, matched
+                // against the confirmed binding; replies go back through the bot
+                // that received the message (the #49 multi-bot reply contract).
+                use crate::commands::service::human_dispatch::InboundReplyOutcome;
+                match crate::commands::service::human_dispatch::route_inbound_reply(
+                    &workgraph_dir,
+                    &msg.channel,
+                    &msg.sender,
+                    &msg.body,
+                ) {
+                    InboundReplyOutcome::Recorded(task_id) => {
+                        println!(
+                            "[{}] Reply from {} recorded on awaiting-human task '{}'",
+                            chrono::Utc::now().format("%H:%M:%S"),
+                            display_sender,
+                            task_id
+                        );
+                        send_reply(
+                            reply_channel,
+                            &reply_target,
+                            &format!("✓ Recorded your reply on task '{}'.", task_id),
+                            &msg.channel,
+                        )
+                        .await;
+                    }
+                    InboundReplyOutcome::NoWaitingTask => {
+                        println!(
+                            "[{}] Message from {} on {} (no awaiting-human task matched): {}",
+                            chrono::Utc::now().format("%H:%M:%S"),
+                            display_sender,
+                            msg.channel,
+                            msg.body
+                        );
+                    }
+                    InboundReplyOutcome::Rejected(reason) => {
+                        // Security event: an unproven sender tried to answer for
+                        // a human. Log the reason server-side; reply with a
+                        // generic note that never leaks which humans/tasks exist.
+                        eprintln!(
+                            "[{}] Rejected reply from {} on {}: {}",
+                            chrono::Utc::now().format("%H:%M:%S"),
+                            display_sender,
+                            msg.channel,
+                            reason
+                        );
+                        send_reply(
+                            reply_channel,
+                            &reply_target,
+                            "Sorry — I couldn't match your message to a task you're set up to answer.",
+                            &msg.channel,
+                        )
+                        .await;
+                    }
+                }
             }
         }
 

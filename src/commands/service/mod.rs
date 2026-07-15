@@ -19,6 +19,7 @@
 pub(crate) mod assignment;
 mod coordinator;
 pub(crate) mod coordinator_agent;
+pub(crate) mod human_dispatch;
 pub mod ipc;
 mod triage;
 pub(crate) mod worktree;

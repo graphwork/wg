@@ -38,9 +38,12 @@
 //!
 //! Each named bot registers as a distinct channel whose `channel_type()` is
 //! `"telegram:<bot_id>"`, so the router can address them independently.
-//! Inbound messages are tagged with the receiving bot's qualified type so
-//! downstream code (the `awaiting-human` task router — see follow-up PR)
-//! can route replies to the right open task.
+//! Inbound messages are tagged with the receiving bot's qualified type so the
+//! awaiting-human task router can route replies to the right open task. That
+//! router now lives in `commands::service::human_dispatch::route_inbound_reply`
+//! (R13): it maps the receiving bot's `channel_type()` back to the human agent
+//! it fronts and records the reply on that agent's parked task, satisfying the
+//! task's `WaitCondition::HumanInput`.
 
 use std::collections::HashMap;
 
@@ -364,8 +367,9 @@ impl NotificationChannel for TelegramChannel {
         let client = self.client.clone();
         // Pre-compute the channel-type tag so each IncomingMessage carries
         // the bot identity ("telegram" for the legacy bot, "telegram:<id>"
-        // for named ones). The downstream router uses this to decide which
-        // open `awaiting-human` task should receive the reply.
+        // for named ones). The awaiting-human router
+        // (`commands::service::human_dispatch::route_inbound_reply`) uses this
+        // to decide which open `awaiting-human` task should receive the reply.
         let channel_tag = self.channel_type.clone();
 
         tokio::spawn(async move {
