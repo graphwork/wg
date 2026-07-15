@@ -646,7 +646,10 @@ mod tests {
             "a command that overruns the deadline must be flagged timed_out (exit={:?})",
             run.exit_code
         );
-        assert!(!run.passed, "a timed-out command must not be reported as passed");
+        assert!(
+            !run.passed,
+            "a timed-out command must not be reported as passed"
+        );
     }
 
     /// End-to-end through the public API: a hung allowlisted command surfaces as
@@ -675,8 +678,14 @@ mod tests {
         // The trust inversion: a timed-out check caps the score at FAIL.
         assert_eq!(apply_validation_to_score(0.95, &outcome), 0.0);
         let note = failure_note(&outcome).expect("timeout should produce a failure note");
-        assert!(note.contains("timed out"), "note should name the timeout: {note}");
-        assert!(note.contains("1s"), "note should report the deadline: {note}");
+        assert!(
+            note.contains("timed out"),
+            "note should name the timeout: {note}"
+        );
+        assert!(
+            note.contains("1s"),
+            "note should report the deadline: {note}"
+        );
     }
 
     /// A fast allowlisted command well under the deadline is NOT flagged as a
