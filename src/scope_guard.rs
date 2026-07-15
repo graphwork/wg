@@ -3,14 +3,18 @@
 //! A task created with `wg add --scope disposable` runs its agent with
 //! `WG_SCOPE=disposable` in the environment (the dispatcher's [`SpawnPlan`]
 //! propagates it — see `dispatch::plan`). A disposable-scoped agent must not be
-//! able to mint a *persistent* persona: it may not run `wg agent create` or
-//! `wg add --tag persistent`.
+//! able to mint durable/persistent graph state: it may not run `wg agent
+//! create`, `wg add --tag persistent`, or an ordinary durable `wg add`.
 //!
 //! This is the policy gate for R8 (docs/02 §3.2 in the family-team project):
 //! the action is structurally possible today — any agent can call `wg agent
-//! create` with any role — so we deny it at the CLI boundary when the caller is
-//! disposable-scoped. Only the reserved scope value `disposable` restricts
-//! anything; every other value (including unscoped) is unaffected.
+//! create` with any role, or mint durable follow-up work with `wg add` — so we
+//! deny it at the CLI boundary when the caller is disposable-scoped. The `wg
+//! add` boundary is **default-deny**: from disposable scope the only allowed
+//! add is *explicitly* disposable child work (`--scope disposable` /
+//! `--tag disposable`); every other add is refused (see
+//! [`resolve_add_scope_for`]). Only the reserved scope value `disposable`
+//! restricts anything; every other value (including unscoped) is unaffected.
 //!
 //! [`SpawnPlan`]: crate::dispatch::plan::SpawnPlan
 
@@ -101,15 +105,21 @@ pub fn resolve_add_scope(tags: &[String]) -> Result<Vec<String>> {
 ///
 /// When the caller is **not** disposable-scoped the tags are returned verbatim.
 ///
-/// When the caller **is** `disposable`-scoped the policy is default-deny: a
-/// disposable agent may only ever create disposable-scoped children, so
+/// When the caller **is** `disposable`-scoped the policy is **default-deny**:
+/// from disposable scope the *only* thing that may be created is **explicitly
+/// disposable / non-durable child work**. Concretely:
 ///
+///   * an explicit child `--scope disposable` (a `scope:disposable` tag), or an
+///     explicit `disposable` tag, is **allowed** verbatim — a disposable agent
+///     may spawn a disposable child;
 ///   * an explicit `persistent` tag, or an explicit `scope:<x>` naming any scope
 ///     other than `disposable`, is **denied** — a disposable agent may not
 ///     escalate a child into durable / persistent graph state; and
-///   * every other add (ordinary untagged durable `wg add "x"`, the case Erik
-///     flagged) is forced to **inherit** `scope:disposable`, so it mints a
-///     disposable child instead of durable follow-up work.
+///   * an ordinary untagged durable `wg add "x"` (the case Erik flagged on
+///     PR #56 — minting durable follow-up work simply by omitting the tag) is
+///     **denied**. It is *not* silently downgraded: the merge plan requires
+///     that only *explicitly* disposable child work be allowed, so the caller
+///     must opt in with `--scope disposable` (or `--tag disposable`).
 ///
 /// The returned `Vec` is the tag set that should be persisted on the new task.
 pub fn resolve_add_scope_for(caller_scope: Option<&str>, tags: &[String]) -> Result<Vec<String>> {
@@ -123,7 +133,8 @@ pub fn resolve_add_scope_for(caller_scope: Option<&str>, tags: &[String]) -> Res
         check_scope(caller_scope, PersistentSpawn::Task)?;
     }
 
-    // An explicit child `--scope` other than `disposable` is an escalation → deny.
+    // An explicit child `--scope` is either the allowed disposable case or an
+    // escalation to deny.
     if let Some(child_scope) = scope_from_tags(tags) {
         if child_scope != SCOPE_DISPOSABLE {
             bail!(
@@ -133,15 +144,25 @@ pub fn resolve_add_scope_for(caller_scope: Option<&str>, tags: &[String]) -> Res
                  durable work."
             );
         }
-        // Child is already disposable-scoped — nothing to inherit.
+        // Child is explicitly disposable-scoped — allowed, verbatim.
         return Ok(tags.to_vec());
     }
 
-    // Default-deny durable state: force the untagged child to inherit disposable
-    // scope so no durable follow-up graph work can be minted from disposable scope.
-    let mut resolved = tags.to_vec();
-    resolved.push(scope_tag(SCOPE_DISPOSABLE)?);
-    Ok(resolved)
+    // A child explicitly tagged `disposable` (non-durable) is allowed, verbatim.
+    if tags.iter().any(|t| t == "disposable") {
+        return Ok(tags.to_vec());
+    }
+
+    // Ordinary untagged durable `wg add "x"` from disposable scope: DENY.
+    // This is Erik's blocking case — a disposable worker must not mint durable
+    // follow-up graph work by omitting the tag. Only *explicitly* disposable
+    // child work is allowed from disposable scope; the caller must opt in.
+    bail!(
+        "scope=disposable forbids a durable `wg add`: a disposable agent may only create \
+         explicitly disposable child work — pass `--scope disposable` (or `--tag disposable`) \
+         to mint a disposable child. Durable follow-up graph work must be created by a \
+         persistent agent (R8)."
+    );
 }
 
 /// Validate a user-supplied `--scope` value and return the tag that persists it.
@@ -207,30 +228,37 @@ mod tests {
     }
 
     #[test]
-    fn disposable_untagged_add_inherits_disposable_scope() {
+    fn disposable_untagged_add_is_denied() {
         // The case Erik flagged: an ordinary untagged durable add from disposable
-        // scope must NOT mint durable work — it inherits scope:disposable instead.
-        let resolved = resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["urgent".to_string()]).unwrap();
-        assert!(resolved.contains(&"urgent".to_string()));
-        assert_eq!(scope_from_tags(&resolved).as_deref(), Some(SCOPE_DISPOSABLE));
+        // scope must be REFUSED — a disposable agent may not mint durable
+        // follow-up work by omitting the tag. It is not silently downgraded.
+        assert!(resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["urgent".to_string()]).is_err());
+        // Even a fully untagged add is refused.
+        assert!(resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &[]).is_err());
     }
 
     #[test]
     fn disposable_add_persistent_tag_is_denied() {
-        assert!(resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["persistent".to_string()]).is_err());
+        assert!(
+            resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["persistent".to_string()]).is_err()
+        );
     }
 
     #[test]
     fn disposable_add_escalating_scope_is_denied() {
         // Trying to hand a child a non-disposable scope is an escalation.
-        assert!(resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:team".to_string()]).is_err());
+        assert!(
+            resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:team".to_string()]).is_err()
+        );
     }
 
     #[test]
-    fn disposable_add_already_disposable_is_idempotent() {
-        // An explicit --scope disposable child is allowed and not double-tagged.
+    fn disposable_explicit_disposable_scope_child_is_allowed() {
+        // The one allowed case: an explicit --scope disposable child. Allowed
+        // verbatim and not double-tagged.
         let resolved =
-            resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:disposable".to_string()]).unwrap();
+            resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:disposable".to_string()])
+                .unwrap();
         assert_eq!(
             resolved
                 .iter()
@@ -238,5 +266,17 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            scope_from_tags(&resolved).as_deref(),
+            Some(SCOPE_DISPOSABLE)
+        );
+    }
+
+    #[test]
+    fn disposable_explicit_disposable_tag_child_is_allowed() {
+        // A child explicitly tagged `disposable` (non-durable) is allowed verbatim.
+        let resolved =
+            resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["disposable".to_string()]).unwrap();
+        assert_eq!(resolved, vec!["disposable".to_string()]);
     }
 }

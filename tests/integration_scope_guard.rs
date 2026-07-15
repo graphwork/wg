@@ -1,10 +1,13 @@
 //! R8 — `--scope disposable` guard (docs/02 §3.2 in the family-team project).
 //!
 //! A task created with `wg add --scope disposable` runs its agent with
-//! `WG_SCOPE=disposable`. A disposable-scoped agent must not be able to mint a
-//! *persistent* persona: it may not run `wg agent create` or
-//! `wg add --tag persistent`. These tests pin the policy at the library
-//! boundary so the CLI handlers can rely on it.
+//! `WG_SCOPE=disposable`. A disposable-scoped agent must not be able to mint
+//! durable/persistent graph state: it may not run `wg agent create`,
+//! `wg add --tag persistent`, or an ordinary durable `wg add`. From disposable
+//! scope the `wg add` boundary is default-deny — only *explicitly* disposable
+//! child work (`--scope disposable` / `--tag disposable`) is allowed. These
+//! tests pin the policy at the library boundary so the CLI handlers can rely on
+//! it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -56,17 +59,19 @@ fn test_scope_persisted_as_tag() {
     assert_eq!(scope_from_tags(&["urgent".to_string()]), None);
 }
 
-/// Default-deny at the library boundary: a disposable caller may only ever mint
-/// disposable-scoped children.
+/// Default-deny at the library boundary: from disposable scope only *explicitly*
+/// disposable child work is allowed; every other add is refused.
 #[test]
 fn test_disposable_caller_default_deny_resolution() {
-    // Untagged durable add → inherits scope:disposable (no durable state minted).
-    let resolved =
-        resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["urgent".to_string()]).unwrap();
-    assert_eq!(
-        scope_from_tags(&resolved).as_deref(),
-        Some(SCOPE_DISPOSABLE),
-        "untagged add from disposable scope must inherit disposable scope"
+    // Untagged durable add → REFUSED (not silently downgraded). This is Erik's
+    // blocking case: a disposable agent may not mint durable follow-up work.
+    assert!(
+        resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["urgent".to_string()]).is_err(),
+        "untagged durable add from disposable scope must be refused"
+    );
+    assert!(
+        resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &[]).is_err(),
+        "a fully untagged add from disposable scope must be refused"
     );
 
     // Explicit persistent tag / non-disposable scope → denied.
@@ -77,6 +82,15 @@ fn test_disposable_caller_default_deny_resolution() {
     assert!(
         resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:team".to_string()]).is_err(),
         "disposable caller must not escalate a child to a non-disposable scope"
+    );
+
+    // The allowed case: an explicit disposable child passes through verbatim.
+    let resolved =
+        resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:disposable".to_string()]).unwrap();
+    assert_eq!(
+        scope_from_tags(&resolved).as_deref(),
+        Some(SCOPE_DISPOSABLE),
+        "an explicit --scope disposable child must be allowed from disposable scope"
     );
 
     // Non-disposable callers are unaffected — tags pass through verbatim.
@@ -145,10 +159,10 @@ fn task_tags(wg_dir: &Path, id: &str) -> Vec<String> {
 }
 
 /// The Erik regression: `WG_SCOPE=disposable wg add "x"` with no `--tag
-/// persistent` must NOT mint durable follow-up work — the child inherits
-/// `scope:disposable`.
+/// persistent` must be REFUSED — a disposable agent may not mint durable
+/// follow-up work by omitting the tag, and nothing is minted.
 #[test]
-fn cli_disposable_untagged_add_inherits_disposable_scope() {
+fn cli_disposable_untagged_add_is_refused() {
     let dir = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(dir.path());
 
@@ -158,14 +172,45 @@ fn cli_disposable_untagged_add_inherits_disposable_scope() {
         &[("WG_SCOPE", "disposable")],
     );
     assert!(
+        !out.status.success(),
+        "untagged durable add from disposable scope must be refused.\nstdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("disposable"),
+        "error should explain the disposable boundary: {stderr}"
+    );
+    // And nothing durable was minted.
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    assert!(
+        graph.get_task("follow-up").is_none(),
+        "refused durable add must not create a task"
+    );
+}
+
+/// The allowed disposable case Erik asked for: `WG_SCOPE=disposable wg add "x"
+/// --scope disposable` succeeds and the child carries `scope:disposable` — a
+/// disposable agent may spawn an explicitly disposable child.
+#[test]
+fn cli_disposable_explicit_disposable_add_is_allowed() {
+    let dir = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(dir.path());
+
+    let out = wg_add(
+        &wg_dir,
+        &["scrape child", "--id", "child", "--scope", "disposable"],
+        &[("WG_SCOPE", "disposable")],
+    );
+    assert!(
         out.status.success(),
-        "untagged disposable add should succeed as a disposable child.\nstderr: {}",
+        "explicit --scope disposable child should be allowed from disposable scope.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        scope_from_tags(&task_tags(&wg_dir, "follow-up")).as_deref(),
+        scope_from_tags(&task_tags(&wg_dir, "child")).as_deref(),
         Some(SCOPE_DISPOSABLE),
-        "untagged add from disposable scope must inherit scope:disposable, not mint durable work"
+        "explicit disposable child must carry scope:disposable"
     );
 }
 

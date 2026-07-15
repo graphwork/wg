@@ -437,10 +437,10 @@ pub fn run_with_remote_provider(
         anyhow::bail!("Task title cannot be empty");
     }
 
-    // R8 (default-deny): a disposable-scoped agent may only create
-    // disposable-scoped children. An ordinary untagged durable add inherits
-    // `scope:disposable`; an explicit `persistent` tag or a non-disposable
-    // `--scope` is denied. Non-disposable callers are unaffected.
+    // R8 (default-deny): a disposable-scoped agent may only create *explicitly*
+    // disposable child work (`--scope disposable` / `--tag disposable`). An
+    // ordinary untagged durable add, an explicit `persistent` tag, or a
+    // non-disposable `--scope` is refused. Non-disposable callers are unaffected.
     let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
     let tags: &[String] = &scoped_tags;
 
@@ -1075,7 +1075,7 @@ pub fn run_remote(
     }
 
     // R8 (default-deny): as in `run`, a disposable-scoped caller may only create
-    // disposable-scoped children — enforced for cross-repo adds too.
+    // explicitly disposable child work — enforced for cross-repo adds too.
     let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
     let tags: &[String] = &scoped_tags;
 
