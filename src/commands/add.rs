@@ -437,6 +437,13 @@ pub fn run_with_remote_provider(
         anyhow::bail!("Task title cannot be empty");
     }
 
+    // R8 (default-deny): a disposable-scoped agent may only create *explicitly*
+    // disposable child work (`--scope disposable` / `--tag disposable`). An
+    // ordinary untagged durable add, an explicit `persistent` tag, or a
+    // non-disposable `--scope` is refused. Non-disposable callers are unaffected.
+    let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
+    let tags: &[String] = &scoped_tags;
+
     // Validate --subtask: requires WG_TASK_ID (must be called from within an agent context)
     let subtask_parent_id = if subtask {
         let parent_id = std::env::var("WG_TASK_ID").map_err(|_| {
@@ -1066,6 +1073,11 @@ pub fn run_remote(
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
     }
+
+    // R8 (default-deny): as in `run`, a disposable-scoped caller may only create
+    // explicitly disposable child work — enforced for cross-repo adds too.
+    let scoped_tags = worksgood::scope_guard::resolve_add_scope(tags)?;
+    let tags: &[String] = &scoped_tags;
 
     // Deprecation warning for --provider flag
     if let Some(p) = provider {

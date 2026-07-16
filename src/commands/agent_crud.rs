@@ -46,6 +46,9 @@ pub fn run_create(
     preferred_model: Option<&str>,
     preferred_provider: Option<&str>,
 ) -> Result<()> {
+    // R8: a disposable-scoped agent may not mint a persistent persona.
+    worksgood::scope_guard::enforce(worksgood::scope_guard::PersistentSpawn::Agent)?;
+
     let agency_dir = workgraph_dir.join("agency");
     agency::init(&agency_dir).context("Failed to initialise agency directory")?;
 

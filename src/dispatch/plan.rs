@@ -562,6 +562,13 @@ pub fn plan_spawn(
         env.insert("WG_REASONING".to_string(), reasoning.as_str().to_string());
     }
 
+    // R8: propagate the task's privilege scope (`scope:<value>` tag, set by
+    // `wg add --scope`) so the guard can deny persistent spawns from a
+    // disposable worker. See `crate::scope_guard`.
+    if let Some(scope) = crate::scope_guard::scope_from_tags(&task.tags) {
+        env.insert(crate::scope_guard::WG_SCOPE_ENV.to_string(), scope);
+    }
+
     let provenance = SpawnProvenance {
         executor_source,
         model_source,
@@ -1858,5 +1865,47 @@ mod tests {
         let plan = plan_spawn(&task, &config, None, Some("opus")).unwrap();
         assert_eq!(plan.placement, Placement::Local);
         assert_ne!(plan.executor, ExecutorKind::RemoteRunner);
+    }
+
+    // ── R8: WG_SCOPE propagation (Erik, PR #56 rd3) ──────────────────────────
+
+    /// The allowed disposable route is scope-carrying: a task tagged
+    /// `scope:disposable` (what `wg add --scope disposable` persists) produces a
+    /// SpawnPlan whose env sets `WG_SCOPE=disposable`, so the child worker is
+    /// itself contained and cannot mint durable grandchildren.
+    #[test]
+    fn plan_spawn_propagates_wg_scope_from_scope_disposable_tag() {
+        let config = Config::default();
+        let mut task = base_task("disposable-child");
+        task.tags.push("scope:disposable".to_string());
+
+        let plan = plan_spawn(&task, &config, None, Some("opus")).unwrap();
+        assert_eq!(
+            plan.env
+                .get(crate::scope_guard::WG_SCOPE_ENV)
+                .map(String::as_str),
+            Some("disposable"),
+            "an allowed --scope disposable child must spawn with WG_SCOPE=disposable"
+        );
+    }
+
+    /// The reason the `wg add` boundary refuses a *bare* `disposable` tag: it is
+    /// NOT a `scope:` tag, so `plan_spawn` cannot recover a scope from it — the
+    /// child would spawn UNSCOPED and could mint durable grandchildren. This
+    /// pins the dispatcher-side half of Erik's PR #56 rd3 hole, motivating the
+    /// scope_guard refusal.
+    #[test]
+    fn plan_spawn_does_not_scope_a_bare_disposable_tag() {
+        let config = Config::default();
+        let mut task = base_task("bare-tag-child");
+        task.tags.push("disposable".to_string());
+
+        let plan = plan_spawn(&task, &config, None, Some("opus")).unwrap();
+        assert_eq!(
+            plan.env.get(crate::scope_guard::WG_SCOPE_ENV),
+            None,
+            "a bare `disposable` tag carries no scope: prefix, so plan_spawn leaves \
+             the worker UNSCOPED — exactly why the wg add boundary refuses it"
+        );
     }
 }
