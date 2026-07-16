@@ -1,5 +1,6 @@
 use std::io;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -102,7 +103,7 @@ pub(crate) fn switch_chat_tab_relative(app: &mut VizApp, delta: i32) {
 /// Handle content reload when iteration changes.
 fn handle_iteration_change(app: &mut VizApp) {
     // Always reload Detail tab content
-    app.load_hud_detail();
+    app.request_hud_detail();
 
     // Invalidate Log and Messages panes so they reload with updated headers
     app.invalidate_log_pane();
@@ -111,10 +112,10 @@ fn handle_iteration_change(app: &mut VizApp) {
     // Force reload of the current tab's content
     match app.right_panel_tab {
         RightPanelTab::Log => {
-            app.load_log_pane();
+            app.request_log_pane();
         }
         RightPanelTab::Messages => {
-            app.load_messages_panel();
+            app.request_messages_panel();
         }
         _ => {} // Detail tab is already reloaded above
     }
@@ -338,8 +339,9 @@ pub fn run_event_loop(
 
     let result = run_event_loop_inner(terminal, app, shared_screen);
 
-    // Save all coordinator chat states and TUI focus state before exit.
-    app.save_all_chat_state();
+    // Preserve normal chat/tab persistence, but never let a final filesystem
+    // write hold terminal restoration hostage on NFS/sshfs.
+    app.save_all_chat_state_bounded(Duration::from_millis(100));
 
     // Always disable mouse capture on exit
     let _ = set_mouse_capture(false, false);
@@ -383,6 +385,7 @@ fn run_event_loop_inner(
 
         if needs_redraw || refreshed || drained || takeover_redraw {
             if app.chat_pty_mode && app.chat_pty_has_new_bytes() {
+                app.record_first_chat_key_echoed();
                 app.bump_active_chat_pty_interaction(false);
             }
             let completed = terminal.draw(|frame| render::draw(frame, app))?;
@@ -412,8 +415,14 @@ fn run_event_loop_inner(
                 // Drain remaining queued events so we only redraw once
                 // for a rapid burst (e.g. pasted text arriving as
                 // individual KeyEvents when bracketed paste is absent).
-                while let Ok(ev) = rx.try_recv() {
+                let drain_started = Instant::now();
+                let mut drained_events = 0usize;
+                while drained_events < 64 && drain_started.elapsed() < Duration::from_millis(2) {
+                    let Ok(ev) = rx.try_recv() else {
+                        break;
+                    };
                     dispatch_event(app, ev);
+                    drained_events += 1;
                     if app.should_quit {
                         break;
                     }
@@ -623,6 +632,61 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // The prioritized chat lane can be authoritative before its tmux/PTY
+    // attach finishes. Accept text immediately into a bounded buffer rather
+    // than running graph hotkeys or silently swallowing it. The buffer is
+    // flushed in order when the pane arrives.
+    if app.right_panel_tab == RightPanelTab::Chat
+        && app.focused_panel == FocusedPanel::RightPanel
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.chat_is_connecting()
+    {
+        // Ctrl+O remains the canonical host escape even before a pane exists;
+        // never buffer it for later child delivery. This also handles raw SI
+        // (0x0f) delivery through terminals/tmux via `is_ctrl_chord`.
+        if is_ctrl_chord(code, modifiers, 'o') {
+            app.focused_panel = FocusedPanel::Graph;
+            return;
+        }
+        // Keep the shell's universal Help key actionable while loading.
+        let is_text_key = (is_bare_printable(code, modifiers)
+            && !matches!(code, KeyCode::Char('?')))
+            || (modifiers.is_empty()
+                && matches!(
+                    code,
+                    KeyCode::Enter
+                        | KeyCode::Backspace
+                        | KeyCode::Delete
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Up
+                        | KeyCode::Down
+                ));
+        if is_text_key {
+            const STARTUP_KEY_CAPACITY: usize = 64;
+            if app.pending_chat_keys.len() == STARTUP_KEY_CAPACITY {
+                app.pending_chat_keys.pop_front();
+            }
+            app.pending_chat_keys
+                .push_back(crossterm::event::KeyEvent::new(code, modifiers));
+            app.record_first_chat_key_accepted();
+            return;
+        }
+    }
+
+    // Recoverable chat-startup error: retry only the minimal lane. This never
+    // synthesizes a task and does not wait for the full graph projection.
+    if matches!(
+        app.chat_startup_state,
+        super::state::ChatStartupState::Error(_)
+    ) && app.right_panel_tab == RightPanelTab::Chat
+        && modifiers.is_empty()
+        && matches!(code, KeyCode::Char('r'))
+    {
+        app.retry_chat_startup();
+        return;
+    }
+
     // Scroll mode: intercept all keys when the user has entered Ctrl+]
     // scroll mode on the active chat PTY pane. The inner PTY must NOT
     // receive any keys while scroll mode is active.
@@ -800,7 +864,9 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                     let _ = pane.interrupt_foreground();
                 } else {
                     let key_event = crossterm::event::KeyEvent::new(code, modifiers);
-                    let _ = pane.send_key(key_event);
+                    if pane.send_key(key_event).is_ok() {
+                        app.record_first_chat_key_accepted();
+                    }
                 }
             }
             app.bump_active_chat_pty_interaction(matches!(code, KeyCode::Enter));
@@ -2182,7 +2248,7 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
                     CommandEffect::Notify(format!("Message sent to '{}'", task_id)),
                 );
                 app.invalidate_messages_panel();
-                app.load_messages_panel();
+                app.request_messages_panel();
             }
             return;
         }
@@ -2406,7 +2472,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Ctrl+H: open history browser
         KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.open_history_browser();
+            app.request_history_browser();
         }
 
         // Ctrl+R: quick resume when paused due to provider errors
@@ -2700,7 +2766,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // (fix-tui-chat). Takes precedence over the bare-graph "send
         // message" binding so chat-tab users get the cleanup UX.
         KeyCode::Char('M') if app.right_panel_tab == RightPanelTab::Chat => {
-            app.open_chat_manager();
+            app.request_chat_manager();
         }
         // M (graph context): send message to selected task's agent.
         KeyCode::Char('M') => {
@@ -2741,7 +2807,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.focused_panel = FocusedPanel::RightPanel;
                     }
                 } else {
-                    app.load_hud_detail_for_task(&task_id);
+                    app.request_hud_detail_for_task(&task_id);
                     app.right_panel_visible = true;
                     app.right_panel_tab = RightPanelTab::Detail;
                     if is_agency_task_id(&task_id) {
@@ -3024,7 +3090,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
         // Ctrl+H: open history browser
         KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.open_history_browser();
+            app.request_history_browser();
         }
 
         // Ctrl+Tab / Ctrl+Shift+Tab: cycle chat tabs (Chat tab only).
@@ -3183,13 +3249,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('k') if app.right_panel_tab == RightPanelTab::Dashboard => {
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let agent_id = row.agent_id.clone();
-                let wg_dir = app.workgraph_dir.clone();
-                let _ = std::process::Command::new("wg")
-                    .arg("kill")
-                    .arg(&agent_id)
-                    .current_dir(&wg_dir)
-                    .output();
-                app.load_agent_monitor();
+                app.exec_command(
+                    vec!["kill".into(), agent_id.clone()],
+                    CommandEffect::RefreshAndNotify(format!("Killed {}", agent_id)),
+                );
+                app.request_agent_monitor();
             }
         }
         // Up/Down/k/j scroll the active panel content
@@ -3261,7 +3325,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                         app.nav_stack.push(NavEntry::AgentDetail {
                             agent_id: agent_id.clone(),
                         });
-                        app.load_hud_detail_for_task(&task_id);
+                        app.request_hud_detail_for_task(&task_id);
                         app.right_panel_tab = RightPanelTab::Detail;
                     }
                 }
@@ -3276,7 +3340,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                         app.selected_task_idx = Some(idx);
                     }
                     app.invalidate_log_pane();
-                    app.load_log_pane();
+                    app.request_log_pane();
                     app.right_panel_tab = RightPanelTab::Log;
                 }
             }
@@ -3299,7 +3363,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
         // Config tab: 'r' reloads config from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Config => {
-            app.load_config_panel();
+            app.request_config_panel();
         }
 
         // Config tab: 'g' installs project config as global default
@@ -3350,7 +3414,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
         // Settings tab: 'r' reloads from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Settings => {
-            app.load_settings_panel();
+            app.request_settings_panel();
             app.settings_panel.notice = Some("Reloaded settings from disk".to_string());
         }
         // Settings tab: 'a' moves focus between entries and the action bar.
@@ -3390,7 +3454,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 && let Some(ref phase) = lifecycle.assignment
             {
                 let task_id = phase.task_id.clone();
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3399,7 +3463,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 && let Some(ref phase) = lifecycle.evaluation
             {
                 let task_id = phase.task_id.clone();
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3410,7 +3474,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let task_id = row.task_id.clone();
                 app.nav_stack.push(NavEntry::Dashboard);
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3557,7 +3621,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
             app.detail_raw_json = !app.detail_raw_json;
             app.hud_detail = None; // force reload with new format
-            app.load_hud_detail();
+            app.request_hud_detail();
         }
 
         // Detail tab: Space toggles section collapse at current scroll position
@@ -3615,18 +3679,8 @@ fn maybe_load_more_chat_history(app: &mut VizApp) {
     // Load more when within one viewport height of the top.
     if scroll_from_top < viewport {
         let old_msg_count = app.chat.messages.len();
-        if app.load_more_chat_history() {
-            // Adjust scroll to maintain the user's visual position after prepending messages.
-            // The new messages added at the top will add rendered lines, so we need to
-            // increase the scroll-from-bottom by the approximate number of new lines.
-            // Since we don't know the exact rendered line count yet (that happens during
-            // rendering), we estimate based on message count change.
-            let new_msg_count = app.chat.messages.len();
-            let added_msgs = new_msg_count.saturating_sub(old_msg_count);
-            // Rough estimate: ~3 rendered lines per message (header + content + blank).
-            let estimated_new_lines = added_msgs * 3;
-            app.chat.scroll = app.chat.scroll.saturating_add(estimated_new_lines);
-        }
+        let _ = old_msg_count;
+        app.request_more_chat_history();
     }
 }
 
@@ -3908,10 +3962,8 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
                     return;
                 }
             }
-            while app.chat.has_more_history {
-                if !app.load_more_chat_history() {
-                    break;
-                }
+            if app.chat.has_more_history {
+                app.request_more_chat_history();
             }
             app.chat.scroll = usize::MAX;
         }
@@ -4631,7 +4683,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         anchor_parent_id: parent_id,
                                     });
                                 }
-                                app.load_hud_detail_for_task(dot_id);
+                                app.request_hud_detail_for_task(dot_id);
                             }
                             app.right_panel_visible = true;
                             app.right_panel_tab = RightPanelTab::Detail;
@@ -4699,7 +4751,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     app.right_panel_visible = true;
                                     app.right_panel_tab = RightPanelTab::Messages;
                                     app.invalidate_messages_panel();
-                                    app.load_messages_panel();
+                                    app.request_messages_panel();
                                 } else if app
                                     .selected_task_id()
                                     .map(worksgood::chat_id::is_chat_task_id)
@@ -4717,8 +4769,23 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         app.right_panel_visible = true;
                                         app.focused_panel = FocusedPanel::RightPanel;
                                     }
-                                } else if let Some(line) = app.plain_lines.get(orig_line) {
-                                    // Determine click region for tab switching.
+                                } else if let Some(line) = app.plain_lines.get(orig_line).cloned() {
+                                    // A semantic click on any ordinary task is
+                                    // immediately a Detail navigation. Do not
+                                    // leave stale Chat content visible while
+                                    // the bounded detail snapshot is pending.
+                                    // Status/log text may refine this to Log
+                                    // below, but task-name and title clicks
+                                    // always open Detail even when the
+                                    // inspector was previously closed.
+                                    app.right_panel_visible = true;
+                                    app.right_panel_tab = RightPanelTab::Detail;
+                                    if let Some(task_id) = app.selected_task_id().map(str::to_owned)
+                                    {
+                                        app.request_hud_detail_for_task(&task_id);
+                                    }
+
+                                    // Determine click region for optional Log switching.
                                     let chars: Vec<char> = line.chars().collect();
                                     let text_start = chars.iter().position(|c| c.is_alphanumeric());
                                     // Find the "  (" separator between task ID and status.
@@ -4726,19 +4793,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         (ts..chars.len().saturating_sub(1))
                                             .find(|&i| chars[i] == ' ' && chars[i + 1] == '(')
                                     });
-                                    if let (Some(ts), Some(ps)) = (text_start, paren_start)
-                                        && app.right_panel_visible
-                                    {
-                                        // Inspector already open — update which tab is shown.
+                                    if let (Some(ts), Some(ps)) = (text_start, paren_start) {
                                         if content_col >= ts && content_col < ps {
                                             app.right_panel_tab = RightPanelTab::Detail;
                                         } else if content_col >= ps {
                                             app.right_panel_tab = RightPanelTab::Log;
                                             app.invalidate_log_pane();
-                                            app.load_log_pane();
+                                            app.request_log_pane();
                                         }
                                     }
-                                    // If inspector is closed, just select — don't auto-open.
                                 }
                             }
                         } // end else (not annotation click)
@@ -5972,7 +6035,7 @@ fn nav_stack_pop(app: &mut VizApp) {
             app.right_panel_tab = RightPanelTab::Output;
         }
         Some(NavEntry::TaskDetail { task_id }) => {
-            app.load_hud_detail_for_task(&task_id);
+            app.request_hud_detail_for_task(&task_id);
             app.right_panel_tab = RightPanelTab::Detail;
         }
         Some(NavEntry::TaskLog { task_id }) => {
@@ -5980,7 +6043,7 @@ fn nav_stack_pop(app: &mut VizApp) {
                 app.selected_task_idx = Some(idx);
             }
             app.invalidate_log_pane();
-            app.load_log_pane();
+            app.request_log_pane();
             app.right_panel_tab = RightPanelTab::Log;
         }
         None => {
@@ -8938,6 +9001,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = InputMode::Normal;
 
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
 
         assert_eq!(app.input_mode, InputMode::ChatManager);
         let mgr = app.chat_manager.as_ref().expect("manager must be open");
@@ -8959,6 +9023,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = InputMode::Normal;
 
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
         // Select all visible.
         super::handle_key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
         // Verify all 3 entries got selected.
@@ -9003,6 +9068,7 @@ mod chat_tab_navigation_tests {
         app.right_panel_tab = RightPanelTab::Chat;
         app.input_mode = InputMode::Normal;
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
         assert_eq!(
             app.chat_manager.as_ref().unwrap().filter,
             ChatManagerFilter::All
@@ -9196,6 +9262,33 @@ mod chat_tab_navigation_tests {
             FocusedPanel::RightPanel,
             "raw Ctrl+O byte from command mode must return focus to chat PTY"
         );
+    }
+
+    #[test]
+    fn connecting_ctrl_o_is_never_buffered_then_command_n_opens_new_chat() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_startup_state = super::super::state::ChatStartupState::Loading;
+
+        // A printable n belongs to the pending chat input, not the host.
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(app.pending_chat_keys.len(), 1);
+        assert!(app.launcher.is_none());
+
+        // Ctrl+O is the one host escape even before the pane attaches. It is
+        // never queued for later delivery to the child.
+        super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.pending_chat_keys.len(), 1);
+
+        // Now in command mode, n opens creation instead of becoming chat text.
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.launcher.is_some());
+        assert_eq!(app.input_mode, InputMode::Launcher);
+        assert_eq!(app.pending_chat_keys.len(), 1);
     }
 
     /// Keymap policy P3 (docs/bugs/tui-keymap-routing.md): while the embedded
@@ -9545,12 +9638,19 @@ mod chat_tab_navigation_tests {
         app.focused_panel = FocusedPanel::Graph;
         app.input_mode = InputMode::Normal;
         switch_chat_tab_to_index(&mut app, 1); // active = cid 4
+        app.focused_panel = FocusedPanel::Graph;
 
         super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
 
         assert!(
             !app.active_tabs.contains(&4),
             "'w' in command mode must remove the current tab from active_tabs"
+        );
+        let graph = worksgood::parser::load_graph(app.workgraph_dir.join("graph.jsonl")).unwrap();
+        assert_eq!(
+            graph.get_task(".coordinator-4").unwrap().status,
+            Status::InProgress,
+            "w closes only the local tab; it must not abandon/kill the chat task"
         );
     }
 
@@ -10801,6 +10901,8 @@ mod chat_open_tests {
         graph.add_node(Node::Task(chat_task));
         let regular = make_task_with_status("regular-task", "Regular Task", Status::Open);
         graph.add_node(Node::Task(regular));
+        let other = make_task_with_status("other-task", "Other Task", Status::Open);
+        graph.add_node(Node::Task(other));
 
         let tmp = tempfile::tempdir().unwrap();
         let wg_dir = tmp.path().join(".wg");
@@ -10862,40 +10964,34 @@ mod chat_open_tests {
         app.last_fullscreen_restore_area = Rect::default();
     }
 
-    /// The [+] button on the coordinator tab bar opens the new-chat launcher.
+    /// Every cell in the large labeled New-chat control opens the launcher,
+    /// including while a live PTY nominally owns keyboard focus.
     #[test]
-    fn clicking_plus_button_on_coordinator_bar_opens_launcher() {
-        let (mut app, _tmp) = build_app_with_chat_node();
-        // Clear all conflicting hit areas.
-        app.last_graph_scrollbar_area = Rect::default();
-        app.last_panel_scrollbar_area = Rect::default();
-        app.last_graph_hscrollbar_area = Rect::default();
-        app.last_service_badge_area = Rect::default();
-        app.last_minimized_strip_area = Rect::default();
-        app.last_fullscreen_restore_area = Rect::default();
-        app.last_graph_area = Rect::default();
-        // Coordinator bar at row 0, width 40.
-        app.last_coordinator_bar_area = Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 1,
-        };
-        // Place [+] at columns 10..13.
-        app.coordinator_plus_hit = CoordinatorPlusHit { start: 10, end: 13 };
+    fn clicking_full_new_chat_button_opens_launcher_from_pty_focus() {
+        for column in [10, 21] {
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.last_graph_scrollbar_area = Rect::default();
+            app.last_panel_scrollbar_area = Rect::default();
+            app.last_graph_hscrollbar_area = Rect::default();
+            app.last_service_badge_area = Rect::default();
+            app.last_minimized_strip_area = Rect::default();
+            app.last_fullscreen_restore_area = Rect::default();
+            app.last_graph_area = Rect::default();
+            app.last_coordinator_bar_area = Rect::new(0, 0, 40, 3);
+            app.coordinator_plus_hit = CoordinatorPlusHit { start: 10, end: 22 };
+            app.right_panel_tab = RightPanelTab::Chat;
+            app.focused_panel = FocusedPanel::RightPanel;
+            app.chat_pty_mode = true;
+            app.chat_pty_forwards_stdin = true;
 
-        // Click col 11, row 0 — inside the [+] button.
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 11);
+            handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 1, column);
 
-        assert!(
-            app.launcher.is_some(),
-            "Clicking [+] on coordinator bar should open the launcher"
-        );
-        assert_eq!(
-            app.right_panel_tab,
-            RightPanelTab::Chat,
-            "Clicking [+] should switch to Chat tab"
-        );
+            assert!(
+                app.launcher.is_some(),
+                "column {column} in the full New-chat label must open the launcher"
+            );
+            assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        }
     }
 
     /// Clicking a .chat-N node in the graph viewer opens/focuses the chat tab.
@@ -10944,9 +11040,10 @@ mod chat_open_tests {
         );
     }
 
-    /// Clicking a non-chat node does NOT switch to the Chat tab.
+    /// Clicking a non-chat node atomically selects it and opens Detail rather
+    /// than leaving stale Chat content visible.
     #[test]
-    fn clicking_non_chat_node_in_graph_does_not_open_chat_tab() {
+    fn clicking_non_chat_node_in_graph_opens_matching_detail() {
         let (mut app, _tmp) = build_app_with_chat_node();
         setup_for_graph_click(&mut app);
         app.right_panel_visible = true;
@@ -10969,11 +11066,39 @@ mod chat_open_tests {
             text_col,
         );
 
-        assert_ne!(
+        assert_eq!(app.selected_task_id(), Some("regular-task"));
+        assert_eq!(
             app.right_panel_tab,
-            RightPanelTab::Chat,
-            "Clicking a regular task must not switch to Chat tab"
+            RightPanelTab::Detail,
+            "Clicking a regular task name must immediately navigate to Detail"
         );
+        assert!(app.right_panel_visible);
+    }
+
+    #[test]
+    fn rapid_chat_task_task_clicks_keep_selection_and_view_consistent() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        setup_for_graph_click(&mut app);
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        for task_id in [".chat-1", "regular-task", "other-task"] {
+            let line = app.node_line_map[task_id];
+            let col = app.plain_lines[line]
+                .chars()
+                .position(|c| c.is_alphanumeric())
+                .unwrap_or(0) as u16;
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                line as u16,
+                col,
+            );
+        }
+
+        assert_eq!(app.selected_task_id(), Some("other-task"));
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert!(app.right_panel_visible);
     }
 
     /// Clicking an already-active .chat-N node focuses the existing tab
@@ -11014,6 +11139,25 @@ mod chat_open_tests {
             app.active_coordinator_id, 1,
             "Coordinator ID must remain 1 (was already active)"
         );
+    }
+
+    #[test]
+    fn enter_key_on_regular_task_opens_matching_detail() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.selected_task_idx = app
+            .task_order
+            .iter()
+            .position(|task_id| task_id == "regular-task");
+
+        handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.selected_task_id(), Some("regular-task"));
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert!(app.right_panel_visible);
     }
 
     /// Pressing Enter on a .chat-N node opens/focuses the chat tab.

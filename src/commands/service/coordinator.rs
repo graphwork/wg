@@ -26,6 +26,7 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_with_peers_cycle_aware};
 use worksgood::service::registry::AgentRegistry;
 
+use super::human_dispatch;
 use super::triage;
 use crate::commands::{graph_path, is_process_alive, kill_process_graceful, spawn};
 
@@ -574,6 +575,26 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
         let satisfied = evaluate_wait_spec(spec, graph, dir, task_id, wait_started.as_deref());
 
         if satisfied {
+            // Human-as-agent dispatch tail (R13): if this task is assigned to a
+            // human, their reply (the non-agent message that just satisfied the
+            // wait) completes it — record the reply as a reply-to-artifact for
+            // each declared deliverable and mark the task Done. Resuming to Open
+            // (the generic path below) would re-park it forever, since there is
+            // no AI agent to spawn for a human assignee.
+            if human_dispatch::try_complete_human_task_on_reply(
+                graph,
+                dir,
+                task_id,
+                wait_started.as_deref(),
+            ) {
+                modified = true;
+                eprintln!(
+                    "[dispatcher] Waiting task '{}' received human reply, marking Done",
+                    task_id
+                );
+                continue;
+            }
+
             // Build resume delta before mutating
             let delta = {
                 let task = graph.get_task(task_id).unwrap();
@@ -1931,8 +1952,10 @@ fn build_auto_assign_tasks(
                     failure_reason: None,
                     failure_class: None,
                     model: Some(creator_resolved.model),
+                    reasoning: creator_resolved.reasoning,
                     provider: creator_resolved.provider,
                     endpoint: None,
+                    remote_provider: None,
                     profile: None,
                     command_argv: vec![],
                     working_dir: None,
@@ -2035,16 +2058,13 @@ fn build_auto_evaluate_tasks(
 
     // Catch-all for tasks that weren't published with eager scaffolding
     // (backward compatibility). The eval_scaffold helper handles idempotency
-    // and tag checks, so this is safe to call even if publish already created
+    // structurally, so this is safe to call even if publish already created
     // the eval task.
     let tasks_needing_eval: Vec<_> = graph
         .tasks()
         .filter(|t| {
             // Skip paused/draft tasks — their pipeline is scaffolded at
             // `wg publish` time via scaffold_full_pipeline.  Creating
-            // .flip/.evaluate here prematurely would tag the source task
-            // as eval-scheduled, causing scaffold_full_pipeline to skip
-            // .place/.assign creation later.
             if t.paused {
                 return false;
             }
@@ -2052,14 +2072,7 @@ fn build_auto_evaluate_tasks(
             if graph.get_task(&eval_id).is_some() {
                 return false;
             }
-            let dominated_tags = ["evaluation", "assignment", "evolution"];
-            if t.tags
-                .iter()
-                .any(|tag| dominated_tags.contains(&tag.as_str()))
-            {
-                return false;
-            }
-            if t.tags.iter().any(|tag| tag == "eval-scheduled") {
+            if worksgood::graph::is_system_task(&t.id) {
                 return false;
             }
             // Skip tasks assigned to human agents
@@ -2178,8 +2191,12 @@ fn build_flip_verification_tasks(
 
         // Skip tasks that would be handled by eval gate - let eval gate take precedence
         if let Some(eval_threshold) = config.agency.eval_gate_threshold {
-            let is_eval_gated =
-                config.agency.eval_gate_all || source_task.tags.iter().any(|t| t == "eval-gate");
+            let has_deliverables = source_task
+                .description
+                .as_deref()
+                .map(crate::commands::deliverables::parse_deliverables)
+                .is_some_and(|deliverables| !deliverables.is_empty());
+            let is_eval_gated = config.agency.eval_gate_all || has_deliverables;
             if is_eval_gated {
                 // Check if there's a regular evaluation for this task that scored below eval threshold
                 // But exclude system evaluations (infrastructure failures) from this check
@@ -2328,8 +2345,10 @@ fn build_flip_verification_tasks(
             failure_reason: None,
             failure_class: None,
             model: Some(verification_model.clone()),
+            reasoning: verification_resolved.reasoning,
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -2604,8 +2623,10 @@ fn build_separate_verify_tasks(
             failure_reason: None,
             failure_class: None,
             model: Some(verification_model.clone()),
+            reasoning: verification_resolved.reasoning,
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            remote_provider: None,
             profile: None,
             command_argv: vec![],
             working_dir: None,
@@ -2810,8 +2831,10 @@ fn build_auto_evolve_task(
         failure_reason: None,
         failure_class: None,
         model: Some(evolver_resolved.model),
+        reasoning: evolver_resolved.reasoning,
         provider: evolver_resolved.provider,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,
@@ -3019,8 +3042,10 @@ fn build_auto_create_task(
         failure_reason: None,
         failure_class: None,
         model: Some(creator_resolved.model),
+        reasoning: creator_resolved.reasoning,
         provider: creator_resolved.provider,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,
@@ -3178,13 +3203,19 @@ if [ $EXIT_CODE -eq 0 ]; then
     wg evaluate record --task '{escaped_eval_id}' --score 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
+    _WG_ROUTE_FAILURE=0
+    grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
     _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
     _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
     rm -f "$_WG_STDERR"
     wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    wg evaluate record --task '{escaped_eval_id}' --score 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+    if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
+        wg wait '{escaped_eval_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
+    else
+        wg evaluate record --task '{escaped_eval_id}' --score 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
+        REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+        wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+    fi
 fi
 exit $EXIT_CODE"#,
         )
@@ -3199,12 +3230,18 @@ if [ $EXIT_CODE -eq 0 ]; then
     rm -f "$_WG_STDERR"
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
+    _WG_ROUTE_FAILURE=0
+    grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
     _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
     _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
     rm -f "$_WG_STDERR"
     wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+    if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
+        wg wait '{escaped_eval_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
+    else
+        REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+        wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+    fi
 fi
 exit $EXIT_CODE"#,
         )
@@ -3217,6 +3254,30 @@ fn spawn_eval_inline(
     evaluator_model: Option<&str>,
 ) -> Result<(String, u32)> {
     use std::process::{Command, Stdio};
+
+    // Resolve the invocation/role route before creating artifacts or claiming
+    // the agency task. An unavailable execution route is retryable scheduling
+    // state, not a spawn failure or semantic evaluator verdict.
+    let config = Config::load_or_default(dir);
+    let eval_role = if eval_task_id.starts_with(".flip-") {
+        DispatchRole::FlipInference
+    } else {
+        DispatchRole::Evaluator
+    };
+    let (eval_executor, eval_recorded_model) = if let Some(route) = evaluator_model {
+        worksgood::config::execution_system_key(route)
+            .with_context(|| format!("invalid invocation-scoped evaluator route {route:?}"))?;
+        (
+            worksgood::dispatch::handler_for_model(route)
+                .as_str()
+                .to_string(),
+            route.to_string(),
+        )
+    } else {
+        let dispatch = worksgood::service::llm::resolve_agency_dispatch(&config, eval_role)
+            .context("agency evaluator execution route is not selected")?;
+        (dispatch.handler.as_str().to_string(), dispatch.raw_spec)
+    };
 
     let graph_path = graph_path(dir);
 
@@ -3303,8 +3364,6 @@ fn spawn_eval_inline(
         )
     };
 
-    let config = Config::load_or_default(dir);
-
     // Resolve the special agent (evaluator) hash for performance recording.
     // After the inline eval completes, we record an Evaluation against this
     // agent so it accumulates performance history like any other agent.
@@ -3334,26 +3393,14 @@ fn spawn_eval_inline(
         special_agent_verified.as_deref(),
     );
 
-    // Agency one-shot tasks (.evaluate-* / .flip-*) run on whichever CLI
-    // handler the user has configured for the role: claude:haiku by default
-    // (per CLAUDE.md "pinned to claude:haiku"), but `[models.evaluator]` /
-    // `[models.flip_*]` overrides win — explicit overrides win, cascade
-    // does not. Resolve once here so the registry display matches what
-    // run_lightweight_llm_call will actually invoke.
-    let eval_role = if eval_task_id.starts_with(".flip-") {
-        DispatchRole::FlipInference
-    } else {
-        DispatchRole::Evaluator
-    };
-    let eval_dispatch = worksgood::service::llm::resolve_agency_dispatch(&config, eval_role);
-    let eval_executor = eval_dispatch.handler.as_str();
-    let eval_recorded_model = eval_dispatch.raw_spec.as_str();
+    // Route resolution happened before the claim so registry metadata and the
+    // actual call cannot disagree or create a claimed task with no executor.
     write_inline_artifacts(
         &output_dir,
         &agent_id,
         eval_task_id,
-        eval_executor,
-        Some(evaluator_model.unwrap_or(eval_recorded_model)),
+        &eval_executor,
+        Some(&eval_recorded_model),
         &script,
     );
 
@@ -3424,9 +3471,9 @@ fn spawn_eval_inline(
     locked_registry.register_agent_with_model(
         pid,
         eval_task_id,
-        eval_executor,
+        &eval_executor,
         &output_file_str,
-        Some(evaluator_model.unwrap_or(eval_recorded_model)),
+        Some(evaluator_model.unwrap_or(&eval_recorded_model)),
     );
     locked_registry
         .save()
@@ -3439,6 +3486,15 @@ fn spawn_eval_inline(
 /// Emits the standard agent artifacts (metadata.json, prompt.txt, run.sh, output.log).
 fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)> {
     use std::process::{Command, Stdio};
+
+    // Preflight before any claim/artifact mutation. Built-in Claude catalog
+    // defaults do not authorize an assignment call.
+    let assign_config = Config::load_or_default(dir);
+    let assign_dispatch =
+        worksgood::service::llm::resolve_agency_dispatch(&assign_config, DispatchRole::Assigner)
+            .context("agency assigner execution route is not selected")?;
+    let assign_executor = assign_dispatch.handler.as_str().to_string();
+    let assign_model = assign_dispatch.raw_spec;
 
     let graph_path = graph_path(dir);
 
@@ -3532,37 +3588,32 @@ if [ $EXIT_CODE -eq 0 ]; then
     rm -f "$_WG_STDERR"
     wg done '{escaped_assign_id}' 2>> '{escaped_output}'
 else
+    _WG_ROUTE_FAILURE=0
+    grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
     _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
     _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
     rm -f "$_WG_STDERR"
     wg log '{escaped_assign_id}' "Assign stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    REASON=$(printf 'wg assign exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-    wg fail '{escaped_assign_id}' --reason "$REASON" 2>> '{escaped_output}'
+    if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
+        wg wait '{escaped_assign_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
+    else
+        REASON=$(printf 'wg assign exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+        wg fail '{escaped_assign_id}' --reason "$REASON" 2>> '{escaped_output}'
+    fi
 fi
 exit $EXIT_CODE"#,
     );
 
-    // Agency one-shot tasks (.assign-*) run on whichever CLI handler the
-    // user has configured for the Assigner role: claude:haiku by default,
-    // or whatever `[models.assigner]` specifies (codex, claude, native).
-    // Resolve once so the registry display matches what
-    // run_lightweight_llm_call will actually invoke.
-    let assign_config = Config::load_or_default(dir);
-    let assign_dispatch =
-        worksgood::service::llm::resolve_agency_dispatch(&assign_config, DispatchRole::Assigner);
-    let assign_executor = assign_dispatch.handler.as_str();
-    let assign_model = assign_dispatch.raw_spec.as_str();
     write_inline_artifacts(
         &output_dir,
         &agent_id,
         assign_task_id,
-        assign_executor,
-        Some(assign_model),
+        &assign_executor,
+        Some(&assign_model),
         &script,
     );
 
     // Fork the process
-    let assign_config = Config::load_or_default(dir);
     let bash_path = worksgood::platform_bash::bash_exe_path(assign_config.bash.path.as_deref())
         .context("Failed to resolve bash executable for inline assign")?;
     let mut cmd = Command::new(&bash_path);
@@ -3629,9 +3680,9 @@ exit $EXIT_CODE"#,
     locked_registry.register_agent_with_model(
         pid,
         assign_task_id,
-        assign_executor,
+        &assign_executor,
         &output_file_str,
-        Some(assign_model),
+        Some(&assign_model),
     );
     locked_registry
         .save()
@@ -4058,6 +4109,42 @@ fn record_spawn_failure(
     tripped
 }
 
+/// Keep an agency satellite retryable when execution selection/readiness fails
+/// before claim. This is deliberately separate from the spawn circuit breaker:
+/// no semantic attempt happened, so no spawn/failure budget is consumed.
+fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow::Error) -> bool {
+    let diagnostic = format!("{error:#}");
+    if !diagnostic.contains("error[WG-EXEC-") {
+        return false;
+    }
+
+    let resume_after = (Utc::now() + chrono::Duration::minutes(1)).to_rfc3339();
+    let task_id = task_id.to_string();
+    let _ = modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(&task_id) else {
+            return false;
+        };
+        if task.status != Status::Open {
+            return false;
+        }
+        task.status = Status::Waiting;
+        task.assigned = None;
+        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Timer {
+            resume_after: resume_after.clone(),
+        }]));
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("agency-execution".to_string()),
+            user: None,
+            message: format!(
+                "Execution route unavailable; retrying without a semantic verdict: {diagnostic}"
+            ),
+        });
+        true
+    });
+    true
+}
+
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
@@ -4167,13 +4254,12 @@ fn spawn_agents_for_ready_tasks(
         // Evaluation, flip, and assignment tasks run inline: fork `wg evaluate`, `wg flip`, or `wg assign`
         // directly instead of going through the full spawn machinery
         // (run.sh, executor config, etc.)
-        let is_inline_task = task
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && task.exec.is_some();
+        let is_inline_task = task.exec.is_some()
+            && (task.id.starts_with(".evaluate-")
+                || task.id.starts_with(".flip-")
+                || task.id.starts_with(".assign-"));
         if is_inline_task {
-            let is_assignment = task.tags.iter().any(|t| t == "assignment");
+            let is_assignment = task.id.starts_with(".assign-");
             let eval_model = task.model.as_deref();
             let task_id = task.id.clone();
             let title = task.title.clone();
@@ -4194,14 +4280,16 @@ fn spawn_agents_for_ready_tasks(
                             "[dispatcher] Failed to spawn assignment for {}: {}",
                             task_id, e
                         );
-                        record_spawn_failure(
-                            &gp,
-                            &task_id,
-                            &format!("{}", e),
-                            "inline-assignment",
-                            task.exec_mode.as_deref(),
-                            config.coordinator.max_spawn_failures,
-                        );
+                        if !park_agency_execution_error(&gp, &task_id, &e) {
+                            record_spawn_failure(
+                                &gp,
+                                &task_id,
+                                &format!("{}", e),
+                                "inline-assignment",
+                                task.exec_mode.as_deref(),
+                                config.coordinator.max_spawn_failures,
+                            );
+                        }
                     }
                 }
             } else {
@@ -4221,14 +4309,16 @@ fn spawn_agents_for_ready_tasks(
                     }
                     Err(e) => {
                         eprintln!("[dispatcher] Failed to spawn eval for {}: {}", task_id, e);
-                        record_spawn_failure(
-                            &gp,
-                            &task_id,
-                            &format!("{}", e),
-                            "inline-eval",
-                            task.exec_mode.as_deref(),
-                            config.coordinator.max_spawn_failures,
-                        );
+                        if !park_agency_execution_error(&gp, &task_id, &e) {
+                            record_spawn_failure(
+                                &gp,
+                                &task_id,
+                                &format!("{}", e),
+                                "inline-eval",
+                                task.exec_mode.as_deref(),
+                                config.coordinator.max_spawn_failures,
+                            );
+                        }
                     }
                 }
             }
@@ -4724,7 +4814,12 @@ pub fn coordinator_tick(
     })
     .context("Failed to load/save graph during maintenance phases")?;
 
-    // Phases 3–4.7: Agency scaffolding (atomic load-modify-save).
+    // Phases 3–4.8: Agency scaffolding (atomic load-modify-save).
+    //
+    // `newly_parked_humans` is filled inside the closure by Phase 4.8 and
+    // notified AFTER the closure returns, so the (potentially network-bound)
+    // human notification never runs while the graph file lock is held.
+    let mut newly_parked_humans: Vec<human_dispatch::ParkedHumanTask> = Vec::new();
     let graph = modify_graph(&graph_path, |graph| {
         let mut modified = false;
 
@@ -4761,9 +4856,24 @@ pub fn coordinator_tick(
             modified |= build_auto_create_task(dir, graph, &config);
         }
 
+        // Phase 4.8: Human-as-agent dispatch tail (R10) — park ready tasks
+        // assigned to a human on WaitCondition::HumanInput so the AI spawn
+        // path skips them and the human's reply is what unblocks them. The
+        // returned list is notified below, outside this graph lock.
+        let parked = human_dispatch::park_ready_human_tasks(graph, dir);
+        if !parked.is_empty() {
+            modified = true;
+            newly_parked_humans = parked;
+        }
+
         modified
     })
     .context("Failed to save graph after auto-assign/auto-evaluate; aborting tick")?;
+
+    // Phase 4.8b: Render each newly parked task to its human (R11), out of lock.
+    for parked in &newly_parked_humans {
+        human_dispatch::notify_parked_human(dir, parked);
+    }
 
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
     if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {
@@ -5110,28 +5220,92 @@ mod tests {
     }
 
     #[test]
+    fn test_inline_eval_route_failure_parks_without_recording_verdict() {
+        let script = build_inline_eval_script(
+            "wg evaluate run my-source",
+            ".evaluate-my-source",
+            "/tmp/out.log",
+            Some("agent-hash-deadbeef"),
+        );
+
+        assert!(script.contains("grep -q 'error\\[WG-EXEC-'"));
+        assert!(script.contains(
+            "wg wait '.evaluate-my-source' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict'"
+        ));
+        let route_branch = script
+            .split("if [ $_WG_ROUTE_FAILURE -eq 1 ]; then")
+            .nth(1)
+            .expect("route-failure branch");
+        let route_only = route_branch
+            .split("else")
+            .next()
+            .expect("route-failure branch body");
+        assert!(!route_only.contains("wg evaluate record"));
+        assert!(!route_only.contains("wg fail"));
+    }
+
+    #[test]
+    fn test_preclaim_execution_error_parks_agency_without_failure_budget() {
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        let task = Task {
+            id: ".evaluate-source".into(),
+            title: "Evaluate source".into(),
+            status: Status::Open,
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &graph_path).unwrap();
+
+        let error =
+            anyhow::anyhow!("error[WG-EXEC-ROUTE-FAILED]: role=evaluator selected_route=pi:test");
+        assert!(park_agency_execution_error(
+            &graph_path,
+            ".evaluate-source",
+            &error
+        ));
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task(".evaluate-source").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.spawn_failures, 0);
+        assert!(task.assigned.is_none());
+        assert!(matches!(
+            task.wait_condition,
+            Some(WaitSpec::All(ref conditions))
+                if matches!(conditions.as_slice(), [WaitCondition::Timer { .. }])
+        ));
+    }
+
+    #[test]
     fn test_eval_routing_condition() {
-        // The routing condition for inline eval: has "evaluation" tag AND exec is set
+        // Inline evaluator routing is structural: a dot-prefixed eval/flip/assign
+        // task with exec is inline. Tags are inert labels.
         let mut task = Task::default();
-        task.id = "evaluate-t1".to_string();
+        task.id = ".evaluate-t1".to_string();
         task.tags = vec!["evaluation".to_string(), "agency".to_string()];
         task.exec = Some("wg evaluate run t1".to_string());
 
-        let is_inline_eval = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
+        let is_inline_eval = task.exec.is_some()
+            && (task.id.starts_with(".evaluate-") || task.id.starts_with(".flip-"));
         assert!(is_inline_eval);
 
         // Non-eval exec task should NOT match
         let mut shell_task = Task::default();
+        shell_task.id = "evaluate-t1".to_string();
+        shell_task.tags = vec!["evaluation".to_string()];
         shell_task.exec = Some("bash run.sh".to_string());
-        let is_inline_eval2 =
-            shell_task.tags.iter().any(|t| t == "evaluation") && shell_task.exec.is_some();
+        let is_inline_eval2 = shell_task.exec.is_some()
+            && (shell_task.id.starts_with(".evaluate-") || shell_task.id.starts_with(".flip-"));
         assert!(!is_inline_eval2);
 
-        // Eval tag but no exec should NOT match
+        // Structural eval task but no exec should NOT match
         let mut no_exec = Task::default();
+        no_exec.id = ".evaluate-t2".to_string();
         no_exec.tags = vec!["evaluation".to_string()];
-        let is_inline_eval3 =
-            no_exec.tags.iter().any(|t| t == "evaluation") && no_exec.exec.is_some();
+        let is_inline_eval3 = no_exec.exec.is_some()
+            && (no_exec.id.starts_with(".evaluate-") || no_exec.id.starts_with(".flip-"));
         assert!(!is_inline_eval3);
     }
 
@@ -6221,11 +6395,11 @@ mod tests {
     // `dispatch::plan::resolve_executor`; see tests in src/dispatch/plan.rs.
     // -----------------------------------------------------------------------
 
-    ///.assign-* tasks with `assignment` tag and `exec` field are detected as inline
+    ///.assign-* tasks with an `exec` field are detected as inline
     /// tasks and spawned via the lightweight inline path, not as full Claude agents.
     #[test]
     fn test_assign_spawned_inline() {
-        // An .assign-* task with "assignment" tag + exec should be detected as inline
+        // A .assign-* task with exec should be detected as inline. Tags do not route it.
         let mut assign_task = Task::default();
         assign_task.id = ".assign-my-task".to_string();
         assign_task.title = "Assign agent for: My Task".to_string();
@@ -6233,18 +6407,17 @@ mod tests {
         assign_task.exec = Some("wg assign my-task --auto".to_string());
         assign_task.status = Status::Open;
 
-        let is_inline_task = assign_task
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && assign_task.exec.is_some();
+        let is_inline_task = assign_task.exec.is_some()
+            && (assign_task.id.starts_with(".evaluate-")
+                || assign_task.id.starts_with(".flip-")
+                || assign_task.id.starts_with(".assign-"));
         assert!(
             is_inline_task,
-            ".assign-* task with assignment tag + exec should be detected as inline"
+            ".assign-* task with exec should be detected as inline"
         );
 
         // Verify the assignment branch is taken (not eval)
-        let is_assignment = assign_task.tags.iter().any(|t| t == "assignment");
+        let is_assignment = assign_task.id.starts_with(".assign-");
         assert!(
             is_assignment,
             ".assign-* task should be routed to the assignment inline path"
@@ -6254,11 +6427,10 @@ mod tests {
         let mut no_exec_assign = Task::default();
         no_exec_assign.id = ".assign-other".to_string();
         no_exec_assign.tags = vec!["assignment".to_string()];
-        let is_inline_no_exec = no_exec_assign
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && no_exec_assign.exec.is_some();
+        let is_inline_no_exec = no_exec_assign.exec.is_some()
+            && (no_exec_assign.id.starts_with(".evaluate-")
+                || no_exec_assign.id.starts_with(".flip-")
+                || no_exec_assign.id.starts_with(".assign-"));
         assert!(
             !is_inline_no_exec,
             ".assign-* without exec should NOT be inline"
@@ -6267,15 +6439,19 @@ mod tests {
         // A regular task with exec but no assignment/eval/flip tag should NOT match
         let mut regular_exec = Task::default();
         regular_exec.id = "build-thing".to_string();
+        regular_exec.tags = vec![
+            "assignment".to_string(),
+            "evaluation".to_string(),
+            "flip".to_string(),
+        ];
         regular_exec.exec = Some("make build".to_string());
-        let is_inline_regular = regular_exec
-            .tags
-            .iter()
-            .any(|t| t == "evaluation" || t == "flip" || t == "assignment")
-            && regular_exec.exec.is_some();
+        let is_inline_regular = regular_exec.exec.is_some()
+            && (regular_exec.id.starts_with(".evaluate-")
+                || regular_exec.id.starts_with(".flip-")
+                || regular_exec.id.starts_with(".assign-"));
         assert!(
             !is_inline_regular,
-            "regular task with exec should NOT be inline"
+            "regular task with label tags and exec should NOT be inline"
         );
     }
 

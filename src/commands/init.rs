@@ -72,24 +72,9 @@ pub fn run_with_route(
     } else {
         effective_executor.and_then(SetupRoute::try_from_executor)
     };
-    // When nothing was supplied explicitly, decide the default route based on
-    // whether a global config already exists. If `~/.wg/config.toml` is
-    // present, the user already picked their provider (via `wg profile use`
-    // or a manual edit) — bake in the *same* route so the project's local
-    // config remains a thin overlay rather than overwriting global with claude
-    // defaults. This is what makes `wg profile use codex && cd proj && wg
-    // init` work end-to-end: the local config inherits codex rather than
-    // silently restating claude:opus.
-    let resolved_route = if resolved_route.is_none()
-        && executor.is_none()
-        && route.is_none()
-        && model.is_none()
-        && endpoint.is_none()
-    {
-        Some(default_route_from_global_or_claude())
-    } else {
-        resolved_route
-    };
+    // No flags means graph-only initialization. A global config or active
+    // profile remains available through normal merged-config inheritance, but
+    // init never copies it into the project and never invents a route.
 
     if dry_run {
         if let Some(r) = resolved_route {
@@ -109,14 +94,17 @@ pub fn run_with_route(
             println!("{}", toml);
             return Ok(());
         }
-        anyhow::bail!(
-            "--dry-run requires either --route or a model spec with a provider prefix \
-             (e.g. -m claude:opus) so the would-be config can be shown."
-        );
+        println!("# wg init --dry-run (graph-only; no LLM route selected)");
+        println!("# Would create: {}", dir.display());
+        return Ok(());
     }
 
-    // If no route was resolved, fall back to the legacy executor-only path.
+    // With no explicit route/model/executor, initialize only the graph. An
+    // executor-only invocation retains its one-release compatibility path.
     let Some(route) = resolved_route else {
+        if effective_executor.is_none() && model.is_none() && endpoint.is_none() {
+            return run_graph_only(dir, no_agency);
+        }
         return run(dir, no_agency, effective_executor, model, endpoint);
     };
 
@@ -239,25 +227,40 @@ pub fn run_with_route(
     Ok(())
 }
 
-/// Default route for a no-arg `wg init`. Reads `~/.wg/config.toml` and picks
-/// the route whose primary model provider matches the global `[agent].model`
-/// prefix. Falls back to `ClaudeCli` if no global exists or the provider is
-/// unrecognized.
-///
-/// This is the glue that makes `wg profile use <provider> && wg init` produce
-/// a project config consistent with the active profile. Without it, the
-/// previous default (always ClaudeCli) overwrote codex/nex globals with
-/// claude:opus the moment a user ran `wg init`.
-fn default_route_from_global_or_claude() -> SetupRoute {
-    let Ok(Some(global)) = worksgood::config::Config::load_global() else {
-        return SetupRoute::ClaudeCli;
-    };
-    let spec = worksgood::config::parse_model_spec(&global.agent.model);
-    spec.provider
-        .as_deref()
-        .map(worksgood::config::provider_to_executor)
-        .and_then(SetupRoute::try_from_executor)
-        .unwrap_or(SetupRoute::ClaudeCli)
+fn run_graph_only(dir: &Path, no_agency: bool) -> Result<()> {
+    if dir.exists() {
+        anyhow::bail!("WG already initialized at {}", dir.display());
+    }
+    if let Some(parent) = dir.parent()
+        && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
+    {
+        for sibling in [".wg", ".workgraph"] {
+            if sibling != target_name && parent.join(sibling).is_dir() {
+                anyhow::bail!(
+                    "WG already initialized at {} (legacy dir name). Either use it as-is, or remove/rename it before running `wg init`.",
+                    parent.join(sibling).display()
+                );
+            }
+        }
+    }
+    fs::create_dir_all(dir).context("Failed to create WG directory")?;
+    write_repo_gitignore(dir)?;
+    fs::write(dir.join("graph.jsonl"), "").context("Failed to create graph.jsonl")?;
+    fs::write(dir.join(".gitignore"), GITIGNORE_CONTENT).context("Failed to create .gitignore")?;
+    write_executor_templates(dir)?;
+    println!("Initialized WG at {} (graph-only)", dir.display());
+    if !no_agency {
+        super::agency_init::run(dir).context("Failed to initialize agency")?;
+    }
+    if let Some(project_dir) = dir.parent() {
+        let (status, changed) = super::setup::configure_project_agent_guides(project_dir)?;
+        if changed {
+            println!("\n{}", status);
+        }
+    }
+    println!("\nNo LLM execution system selected. Graph commands are ready.");
+    println!("Run `wg setup` or `wg profile use <name>` before LLM dispatch.");
+    Ok(())
 }
 
 /// Map a model spec (e.g. `claude:opus`, `local:qwen3-coder`) to the

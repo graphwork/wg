@@ -95,11 +95,12 @@ A bare leading provider prefix is a **loud deprecation, never a silent route**. 
 
 The legacy `--executor` / `-x` flag and `[agent].executor` / `[dispatcher].executor` config keys are deprecated; they still work for one release with a deprecation warning, but the model spec is the single source of truth for which handler runs. Spawned agents continue to receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars (handler kind + resolved model). See `src/dispatch/handler_for_model.rs` for the full mapping.
 
-A fresh install with no `~/.wg/config.toml` already runs `claude:opus` via the
-claude CLI handler — built-in defaults cover the common case. To commit choices
-to disk run `wg config init --global` (minimal canonical claude-cli config; pass
-`--route claude-cli` / `codex-cli` / `openrouter` / `local` / `nex-custom` for
-non-default routes) or `wg setup` (interactive wizard). To inspect a config
+A fresh install is graph-only: built-in models are inactive catalog suggestions,
+not dispatch authority. Before any LLM-backed command, explicitly select a route
+with `wg setup`, `wg setup --route <route> --yes`, `wg profile use <name>`, or a
+handler-first `wg config --global/--local --model <handler>:<model>`. `wg config
+init --local --bare` remains graph-only; route-driven config init requires
+`--route`. To inspect a config
 without rewriting, run `wg config lint` (read-only companion to `wg migrate
 config`). To clean up an old config with deprecated keys or stale model strings,
 run `wg migrate config --dry-run` then `wg migrate config --all`. `wg config
@@ -116,6 +117,17 @@ This writes `~/.wg/active-profile` and hot-reloads the daemon.
 `wg profile show` / `list` / `create` / `edit` / `diff` / `init-starters`
 cover the rest of the management surface. Profiles overlay onto the
 global+local merge but never clobber project-local config.
+
+#### Structured Pi reasoning (`--reasoning` → `--thinking`)
+
+Pi model identity stays `pi:<provider>:<model>`; reasoning is a separate
+inherited setting, set with `--reasoning off|minimal|low|medium|high|xhigh|max`
+on `wg config`, `wg add`, or `wg spawn`, or per role with
+`wg config --set-reasoning <role> <level>`. For Pi, resolved reasoning is passed
+as `pi --thinking <level>`; when unset, WG omits the flag so Pi keeps its own
+default. Do not encode reasoning as `model(high)` or a fourth colon suffix.
+Recommended policy: chat `medium`, standard workers `high`, premium/hard
+`xhigh`, weak agency one-shots `low`, and `max` only for explicit escalation.
 
 #### Picking Pi models: `wg profile pi` (two-tier strong/weak)
 

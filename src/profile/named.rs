@@ -844,15 +844,23 @@ pub fn set_toml_string_value(content: &str, dotted: &str, value: &str) -> String
     result
 }
 
-/// Apply a two-tier (`strong`/`weak`) update to a named profile's TOML file,
-/// preserving comments and unrelated keys.
+/// Apply model and reasoning updates to a named profile's two tiers while
+/// preserving comments and every unrelated key.
 ///
-/// Writes [`Config::PI_STRONG_TOML_KEYS`] for `strong` and
-/// [`Config::PI_WEAK_TOML_KEYS`] for `weak` (each only when `Some`). When the
-/// profile file does not yet exist it is seeded from the baked-in starter
-/// template first (so a first `wg profile pi` never fails on a missing file —
-/// design §6.1). Returns the path written.
-pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> Result<PathBuf> {
+/// Model and reasoning writes are deliberately independent: changing a model
+/// never reconstructs its role table (and therefore cannot erase `reasoning`),
+/// while changing reasoning touches no `.model` key. `normalize_pi_strong`
+/// retains the historical `wg profile pi` behavior; generic/custom profiles
+/// pass handler-first routes through byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+pub fn patch_two_tier_profile(
+    name: &str,
+    strong: Option<&str>,
+    weak: Option<&str>,
+    strong_reasoning: Option<&str>,
+    weak_reasoning: Option<&str>,
+    normalize_pi_strong: bool,
+) -> Result<PathBuf> {
     let path = profile_path(name)?;
     let mut content = if path.exists() {
         std::fs::read_to_string(&path)
@@ -870,12 +878,11 @@ pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> R
     };
 
     if let Some(s) = strong {
-        // Strong tier must route through the self-authenticating pi handler, not
-        // the in-process nex OpenRouter client (which requires a wg-side key).
-        // Normalize an `openrouter:`/bare route to a `pi:` route before writing;
-        // CLI / pi / nex-local specs pass through unchanged. Mirrors
-        // `Config::set_pi_tiers` so the file patcher and in-memory writer agree.
-        let s = crate::config::pi_strong_route(s);
+        let s = if normalize_pi_strong {
+            crate::config::pi_strong_route(s)
+        } else {
+            s.to_string()
+        };
         for dotted in Config::PI_STRONG_TOML_KEYS {
             content = set_toml_string_value(&content, dotted, &s);
         }
@@ -885,9 +892,32 @@ pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> R
             content = set_toml_string_value(&content, dotted, w);
         }
     }
+    if let Some(reasoning) = strong_reasoning {
+        for dotted in Config::PI_STRONG_REASONING_TOML_KEYS {
+            content = set_toml_string_value(&content, dotted, reasoning);
+        }
+    }
+    if let Some(reasoning) = weak_reasoning {
+        for dotted in Config::PI_WEAK_REASONING_TOML_KEYS {
+            content = set_toml_string_value(&content, dotted, reasoning);
+        }
+    }
 
+    // Refuse to persist an invalid reasoning value or malformed profile.
+    let _check: Config = toml::from_str(&content).map_err(|e| {
+        anyhow::anyhow!(
+            "Patched profile '{}' failed to parse as Config: {}",
+            name,
+            e
+        )
+    })?;
     save_raw(name, &content)?;
     Ok(path)
+}
+
+/// Backward-compatible Pi-only model patch used by the existing CLI/tests.
+pub fn patch_pi_tiers(name: &str, strong: Option<&str>, weak: Option<&str>) -> Result<PathBuf> {
+    patch_two_tier_profile(name, strong, weak, None, None, true)
 }
 
 /// Apply a per-role model override (`models.<role>.model`) to a named profile's
@@ -1150,24 +1180,42 @@ is_default = true
         // because [agent].model wasn't propagating; the snapshot model fixes
         // this by making the file itself the authoritative source.
         let prof = parse_profile(STARTER_CODEX, Path::new("codex.toml"), "codex").unwrap();
-        assert_eq!(prof.config.agent.model, "codex:gpt-5.5");
+        assert_eq!(prof.config.agent.model, "codex:gpt-5.6-sol");
         assert_eq!(
             prof.config.coordinator.model.as_deref(),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         assert_eq!(
             prof.config.tiers.fast.as_deref(),
-            Some("codex:gpt-5.4-mini")
+            Some("codex:gpt-5.6-luna")
         );
-        assert_eq!(prof.config.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
-        assert_eq!(prof.config.tiers.premium.as_deref(), Some("codex:gpt-5.5"));
+        assert_eq!(
+            prof.config.tiers.fast_reasoning,
+            Some(crate::config::ReasoningLevel::Low)
+        );
+        assert_eq!(
+            prof.config.tiers.standard.as_deref(),
+            Some("codex:gpt-5.6-sol")
+        );
+        assert_eq!(
+            prof.config.tiers.standard_reasoning,
+            Some(crate::config::ReasoningLevel::High)
+        );
+        assert_eq!(
+            prof.config.tiers.premium.as_deref(),
+            Some("codex:gpt-5.6-sol")
+        );
+        assert_eq!(
+            prof.config.tiers.premium_reasoning,
+            Some(crate::config::ReasoningLevel::Xhigh)
+        );
         assert_eq!(
             prof.config
                 .models
                 .default
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         assert_eq!(
             prof.config
@@ -1175,7 +1223,7 @@ is_default = true
                 .task_agent
                 .as_ref()
                 .and_then(|m| m.model.as_deref()),
-            Some("codex:gpt-5.5")
+            Some("codex:gpt-5.6-sol")
         );
         // Per-role overrides for agency meta-tasks should also be codex models.
         let eval = prof
@@ -1184,9 +1232,11 @@ is_default = true
             .evaluator
             .as_ref()
             .expect("evaluator set");
-        assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(eval.model.as_deref(), Some("codex:gpt-5.6-luna"));
+        assert_eq!(eval.reasoning, Some(crate::config::ReasoningLevel::Low));
         let assigner = prof.config.models.assigner.as_ref().expect("assigner set");
-        assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(assigner.model.as_deref(), Some("codex:gpt-5.6-luna"));
+        assert_eq!(assigner.reasoning, Some(crate::config::ReasoningLevel::Low));
     }
 
     #[test]
@@ -1399,7 +1449,7 @@ is_default = true
             // names codex, not claude. This is the verbatim check the task
             // validation calls for (`grep 'model = ' ~/.wg/config.toml`).
             assert!(
-                written.contains("model = \"codex:gpt-5.5\""),
+                written.contains("model = \"codex:gpt-5.6-sol\""),
                 "global config must contain codex models, not claude. Got:\n{}",
                 written,
             );
@@ -1429,9 +1479,9 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
         });
     }
 
@@ -1566,9 +1616,9 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+            assert_eq!(cfg.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
         });
     }
 
@@ -1677,10 +1727,13 @@ assigner_agent = "local-agent"
             );
 
             let merged = Config::load_merged(&wg_dir).unwrap();
-            assert_eq!(merged.agent.model, "codex:gpt-5.5");
-            assert_eq!(merged.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
+            assert_eq!(merged.agent.model, "codex:gpt-5.6-sol");
+            assert_eq!(
+                merged.coordinator.model.as_deref(),
+                Some("codex:gpt-5.6-sol")
+            );
             assert_eq!(merged.coordinator.effective_executor(), "codex");
-            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
+            assert_eq!(merged.tiers.fast.as_deref(), Some("codex:gpt-5.6-luna"));
             assert_eq!(merged.coordinator.max_agents, 3);
             assert_eq!(merged.agent.interval, 13);
             assert!(!merged.agency.auto_assign);
@@ -1976,6 +2029,115 @@ assigner_agent = "local-agent"
     }
 
     #[test]
+    fn test_patch_custom_two_tier_profile_preserves_handler_routes_and_reasoning() {
+        let _tmp = with_home(|| {
+            let path = profile_path("pi-codex-56").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"[agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+
+[tiers]
+fast = "pi:openai-codex:gpt-5.6-luna"
+fast_reasoning = "low"
+standard = "pi:openai-codex:gpt-5.6-sol"
+standard_reasoning = "high"
+premium = "pi:openai-codex:gpt-5.6-sol"
+premium_reasoning = "xhigh"
+
+[models.default]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "medium"
+
+[models.task_agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "high"
+"#,
+            )
+            .unwrap();
+
+            patch_two_tier_profile(
+                "pi-codex-56",
+                Some("codex:gpt-5.6-terra"),
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+            assert_eq!(cfg.agent.model, "codex:gpt-5.6-terra");
+            assert_eq!(
+                cfg.models.default.as_ref().unwrap().model.as_deref(),
+                Some("codex:gpt-5.6-terra")
+            );
+            assert_eq!(
+                cfg.models.default.as_ref().unwrap().reasoning,
+                Some(crate::config::ReasoningLevel::Medium),
+                "model update must preserve inherited/per-role reasoning"
+            );
+            assert_eq!(
+                cfg.tiers.standard_reasoning,
+                Some(crate::config::ReasoningLevel::High)
+            );
+            assert_eq!(
+                cfg.tiers.premium_reasoning,
+                Some(crate::config::ReasoningLevel::Xhigh)
+            );
+            assert_eq!(
+                cfg.tiers.fast.as_deref(),
+                Some("pi:openai-codex:gpt-5.6-luna"),
+                "partial strong update must not alter weak"
+            );
+        });
+    }
+
+    #[test]
+    fn test_patch_custom_two_tier_reasoning_does_not_alter_models() {
+        let _tmp = with_home(|| {
+            let path = profile_path("pi-codex-56").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                "[agent]\nmodel = \"pi:openai-codex:gpt-5.6-sol\"\n\n[tiers]\nfast = \"pi:openai-codex:gpt-5.6-luna\"\nstandard = \"pi:openai-codex:gpt-5.6-sol\"\npremium = \"pi:openai-codex:gpt-5.6-sol\"\n",
+            )
+            .unwrap();
+
+            patch_two_tier_profile(
+                "pi-codex-56",
+                None,
+                None,
+                Some("xhigh"),
+                Some("minimal"),
+                false,
+            )
+            .unwrap();
+            let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+            assert_eq!(cfg.agent.model, "pi:openai-codex:gpt-5.6-sol");
+            assert_eq!(
+                cfg.tiers.fast.as_deref(),
+                Some("pi:openai-codex:gpt-5.6-luna")
+            );
+            assert_eq!(
+                cfg.models.task_agent.as_ref().unwrap().model,
+                None,
+                "reasoning-only update must not synthesize or alter a model"
+            );
+            assert_eq!(
+                cfg.models.task_agent.as_ref().unwrap().reasoning,
+                Some(crate::config::ReasoningLevel::Xhigh)
+            );
+            assert_eq!(
+                cfg.models.evaluator.as_ref().unwrap().reasoning,
+                Some(crate::config::ReasoningLevel::Minimal)
+            );
+        });
+    }
+
+    #[test]
     fn test_patch_role_model_overrides_task_agent_preserving_handler_first_pi_route() {
         // The motivating case for `wg profile set-model`: keep default on GLM
         // while routing task_agent through a different pi: model. The pi:
@@ -2216,7 +2378,7 @@ assigner_agent = "local-agent"
                     .task_agent
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("codex:gpt-5.5"),
+                Some("codex:gpt-5.6-sol"),
                 "codex is active — task_agent must be codex's"
             );
 

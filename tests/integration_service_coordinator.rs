@@ -898,7 +898,7 @@ fn test_eval_task_routes_to_inline_spawn() {
 
     // Eval task (ready, with evaluation tag and exec)
     let mut eval_task = make_task(
-        "evaluate-source-task",
+        ".evaluate-source-task",
         "Evaluate: Source Task",
         Status::Open,
     );
@@ -914,10 +914,10 @@ fn test_eval_task_routes_to_inline_spawn() {
     assert_eq!(ready.len(), 1);
 
     let task = &ready[0];
-    assert_eq!(task.id, "evaluate-source-task");
+    assert_eq!(task.id, ".evaluate-source-task");
 
     // This is the routing condition used in spawn_agents_for_ready_tasks
-    let is_inline_eval = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
+    let is_inline_eval = task.id.starts_with(".evaluate-") && task.exec.is_some();
     assert!(
         is_inline_eval,
         "Eval tasks should be routed to inline spawn"
@@ -929,14 +929,14 @@ fn test_eval_task_routes_to_inline_spawn() {
 
 #[test]
 fn test_non_eval_exec_task_uses_shell_executor() {
-    // Tasks with exec but without "evaluation" tag should still use shell executor
+    // Tasks with exec but without a structural eval/flip/assign ID should still use shell executor.
     let tmp = TempDir::new().unwrap();
     let (_wg_dir, graph_path) = setup_workgraph(&tmp);
 
     let mut graph = WorkGraph::new();
     let mut shell_task = make_task("run-script", "Run Script", Status::Open);
     shell_task.exec = Some("bash my-script.sh".to_string());
-    // No "evaluation" tag
+    shell_task.tags = vec!["evaluation".to_string(), "agency".to_string()];
     graph.add_node(Node::Task(shell_task));
     save_graph(&graph, &graph_path).unwrap();
 
@@ -945,14 +945,14 @@ fn test_non_eval_exec_task_uses_shell_executor() {
     assert_eq!(ready.len(), 1);
 
     let task = &ready[0];
-    // This task should NOT be routed to inline eval
-    let is_inline_eval = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
+    // Label-only eval topics should NOT route to inline eval.
+    let is_inline_eval = task.id.starts_with(".evaluate-") && task.exec.is_some();
     assert!(
         !is_inline_eval,
         "Non-eval exec tasks should use shell executor, not inline eval"
     );
 
-    // It should use shell executor (exec.is_some() without evaluation tag)
+    // It should use shell executor (exec.is_some() without structural eval ID)
     assert!(task.exec.is_some());
 }
 
@@ -1226,6 +1226,9 @@ mod llm_tests {
             .arg(wg_dir)
             .args(args)
             .env("HOME", fake_home_for(wg_dir))
+            .env_remove("WG_DIR")
+            .env_remove("WG_TASK_ID")
+            .env_remove("WG_AGENT_ID")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

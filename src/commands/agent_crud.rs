@@ -46,6 +46,9 @@ pub fn run_create(
     preferred_model: Option<&str>,
     preferred_provider: Option<&str>,
 ) -> Result<()> {
+    // R8: a disposable-scoped agent may not mint a persistent persona.
+    worksgood::scope_guard::enforce(worksgood::scope_guard::PersistentSpawn::Agent)?;
+
     let agency_dir = workgraph_dir.join("agency");
     agency::init(&agency_dir).context("Failed to initialise agency directory")?;
 
@@ -375,6 +378,128 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// `wg agent session <hash> [--session <ref>] [--unbind]`
+///
+/// Show or set the persistent session bound to an agent (R2,
+/// sessions-as-identity). A bound session is the agent's durable identity
+/// memory: at task dispatch, its `session-summary.md` is injected into the
+/// spawn prompt so the agent carries continuity across tasks.
+///
+/// - No `--session` / `--unbind`: show the current binding, creating a
+///   fresh bound session if the agent has none.
+/// - `--session <ref>`: bind the agent to an existing session.
+/// - `--unbind`: remove the binding (the session itself is kept).
+pub fn run_session(
+    workgraph_dir: &Path,
+    id: &str,
+    session: Option<&str>,
+    unbind: bool,
+    json: bool,
+) -> Result<()> {
+    use worksgood::chat_sessions;
+
+    let dir = agents_dir(workgraph_dir)?;
+    let agent = agency::find_agent_by_prefix(&dir, id)
+        .with_context(|| format!("Failed to find agent '{}'", id))?;
+
+    // --unbind: drop the binding and report.
+    if unbind {
+        chat_sessions::unbind_agent(workgraph_dir, &agent.id)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "agent_id": agent.id,
+                    "agent_name": agent.name,
+                    "session": null,
+                    "bound": false,
+                }))?
+            );
+        } else {
+            println!(
+                "Unbound agent '{}' ({}) from its session.",
+                agent.name,
+                agency::short_hash(&agent.id)
+            );
+        }
+        return Ok(());
+    }
+
+    // --session <ref>: bind to an existing session.
+    if let Some(session_ref) = session {
+        let uuid = chat_sessions::bind_agent(workgraph_dir, &agent.id, session_ref)?;
+        report_binding(workgraph_dir, &agent, &uuid, false, json)?;
+        return Ok(());
+    }
+
+    // No flags: show the binding, creating one if absent.
+    if let Some(uuid) = chat_sessions::session_for_agent(workgraph_dir, &agent.id) {
+        report_binding(workgraph_dir, &agent, &uuid, false, json)?;
+    } else {
+        // Create a fresh persistent session and bind it. The alias makes
+        // it addressable; `SessionKind::Other` since it's not a live
+        // coordinator/task-agent/interactive handler — the `agent_id`
+        // field is what marks it as agent-bound memory.
+        let alias = format!("agent-{}", agency::short_hash(&agent.id));
+        let label = Some(format!("memory: {}", agent.name));
+        let uuid = chat_sessions::create_session(
+            workgraph_dir,
+            chat_sessions::SessionKind::Other,
+            &[alias],
+            label,
+        )?;
+        chat_sessions::bind_agent(workgraph_dir, &agent.id, &uuid)?;
+        report_binding(workgraph_dir, &agent, &uuid, true, json)?;
+    }
+    Ok(())
+}
+
+/// Print (or JSON-emit) the current agent→session binding.
+fn report_binding(
+    workgraph_dir: &Path,
+    agent: &Agent,
+    uuid: &str,
+    created: bool,
+    json: bool,
+) -> Result<()> {
+    let has_summary = worksgood::chat_sessions::agent_session_summary(workgraph_dir, &agent.id)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent_id": agent.id,
+                "agent_name": agent.name,
+                "session": uuid,
+                "bound": true,
+                "created": created,
+                "has_summary": has_summary,
+            }))?
+        );
+    } else {
+        let verb = if created {
+            "Created and bound"
+        } else {
+            "Bound"
+        };
+        println!(
+            "{} agent '{}' ({}) → session {}",
+            verb,
+            agent.name,
+            agency::short_hash(agent.id.as_str()),
+            uuid
+        );
+        if has_summary {
+            println!("  session-summary.md present — injected into this agent's next spawn.");
+        } else {
+            println!("  no session-summary.md yet — memory will accrue as this session runs.");
+        }
+    }
     Ok(())
 }
 

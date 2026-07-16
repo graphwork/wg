@@ -1512,6 +1512,14 @@ fn run_inner(
         .unwrap_or_default();
     if !deliverables.is_empty() {
         let report = super::deliverables::preflight(&deliverables, project_root);
+        // No environment override exists on purpose. An env var such as
+        // `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` would be inherited by every
+        // spawned agent and become a copy-pasteable way to mark missing
+        // deliverables complete — defeating the gate for exactly the cases it
+        // is meant to stop (see PR #54, Erik CHANGES_REQUESTED). If preflight
+        // fires on a genuine false positive, fix the `## Deliverables` block so
+        // it names only files this worktree actually produces (path lines are
+        // parsed; discard/external-worktree files should not be listed).
         if !report.is_clean() {
             let id_owned = id.to_string();
             let reason = format!("missing deliverables:\n{}", report.missing_summary());
@@ -1534,7 +1542,12 @@ fn run_inner(
             anyhow::bail!(
                 "Cannot mark '{}' as done: deliverable preflight refused — \
                  required deliverables were not produced. `wg done` will keep \
-                 refusing until these exist and are non-empty:\n{}",
+                 refusing until these exist and are non-empty:\n{}\n\n\
+                 If this is a false positive (e.g. a file the task tells you to \
+                 discard, or one that belongs to a different worktree/repo), \
+                 correct the task's `## Deliverables` block so it lists only \
+                 files this worktree actually produces — there is no \
+                 environment bypass.",
                 id,
                 report.missing_summary()
             );
@@ -2626,6 +2639,7 @@ fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::tempdir;
     use worksgood::test_helpers::{make_task_with_status as make_task, setup_workgraph};
 
@@ -4642,6 +4656,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_refuses_missing_deliverable() {
         let dir = tempdir().unwrap();
         let project_root = dir.path();
@@ -4700,6 +4715,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_clears_prior_deliverable_missing_marker_on_success() {
         // First refuse (no deliverables), then produce them and re-run.
         let dir = tempdir().unwrap();
@@ -4743,6 +4759,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn done_refuses_empty_deliverable_file() {
         let dir = tempdir().unwrap();
         let project_root = dir.path();
@@ -4757,5 +4774,109 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("deliverable preflight refused"));
         assert!(err.contains("latest.pt"));
+    }
+
+    #[test]
+    #[serial]
+    fn done_env_override_cannot_bypass_missing_deliverable() {
+        // Regression guard (PR #54, Erik CHANGES_REQUESTED): there is no
+        // environment override for the deliverable gate. Setting the old
+        // `WG_DELIVERABLE_PREFLIGHT_OVERRIDE=1` — which every spawned agent
+        // could copy-paste — must NOT let `wg done` promote a task whose
+        // deliverable is genuinely missing.
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Deliverables\n- latest.pt\n";
+        setup_with_project_root(project_root, vec![task_with_desc("t1", desc)]);
+        let wg_dir = project_root.join(".wg");
+
+        // Baseline: refuses with no env var set.
+        assert!(run(&wg_dir, "t1", false, false, false, false, false).is_err());
+
+        // The removed override must have no effect — still refuses.
+        unsafe { std::env::set_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE", "1") };
+        let result = run(&wg_dir, "t1", false, false, false, false, false);
+        unsafe { std::env::remove_var("WG_DELIVERABLE_PREFLIGHT_OVERRIDE") };
+
+        assert!(
+            result.is_err(),
+            "env override must NOT bypass the deliverable gate"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"));
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        assert_ne!(graph.get_task("t1").unwrap().status, Status::Done);
+    }
+
+    #[test]
+    #[serial]
+    fn done_honors_explicit_deliverable_with_marker_in_name_for_assigned_worker() {
+        // Regression guard (PR #54 round 3, Erik CHANGES_REQUESTED): an
+        // explicit `## Deliverables` bullet whose filename contains a
+        // negative-framing marker substring (`discard-policy.md`) must remain
+        // a required deliverable. Previously `has_negative_framing` scanned the
+        // whole bullet, so the filename self-suppressed and the assigned worker
+        // could `wg done` a genuinely missing deliverable (exit 0, task Done,
+        // no `deliverable-missing` marker). Here the file is absent, so `wg
+        // done` — run as the assigned worker — must refuse, leave the task in
+        // progress, and record the `deliverable-missing` failure class.
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Description\nDocument the discard policy.\n\n## Deliverables\n- discard-policy.md\n";
+        let mut task = task_with_desc("explicit-discard-name", desc);
+        task.assigned = Some("agent-worker-1".to_string());
+        setup_with_project_root(project_root, vec![task]);
+        let wg_dir = project_root.join(".wg");
+
+        // Simulate the assigned worker running `wg done` (agent path).
+        unsafe { std::env::set_var("WG_AGENT_ID", "agent-worker-1") };
+        let result = run(
+            &wg_dir,
+            "explicit-discard-name",
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+
+        assert!(
+            result.is_err(),
+            "assigned worker must not promote a missing explicit deliverable whose name contains a marker"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"), "got: {err}");
+        assert!(err.contains("discard-policy.md"), "got: {err}");
+
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("explicit-discard-name").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.failure_class, Some(FailureClass::DeliverableMissing));
+        assert!(
+            task.log
+                .iter()
+                .any(|e| e.actor == Some("deliverable-preflight".to_string())),
+            "expected a deliverable-missing marker in the task log"
+        );
+
+        // And once the deliverable exists, the same worker can complete it.
+        std::fs::write(project_root.join("discard-policy.md"), b"policy text").unwrap();
+        unsafe { std::env::set_var("WG_AGENT_ID", "agent-worker-1") };
+        let ok = run(
+            &wg_dir,
+            "explicit-discard-name",
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+        assert!(ok.is_ok(), "got: {:?}", ok.err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("explicit-discard-name").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.failure_class, None);
     }
 }

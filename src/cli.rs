@@ -251,9 +251,17 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Structured reasoning level for this task: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
+
         /// [DEPRECATED] Provider for this task — use provider:model format in --model instead
         #[arg(long)]
         provider: Option<String>,
+
+        /// Typed remote execution provider (`wgid:`). Freeform tags are labels only and do not route work.
+        #[arg(long = "remote-provider")]
+        remote_provider: Option<String>,
 
         /// [DEPRECATED] Put validation criteria in a `## Validation` section of the
         /// task description; the agency evaluator scores against it.
@@ -380,6 +388,12 @@ pub enum Commands {
         /// Create as a blocking subtask: child is created, parent waits for child to complete
         #[arg(long)]
         subtask: bool,
+
+        /// Privilege scope for the spawned agent (R8). `--scope disposable`
+        /// runs the worker with WG_SCOPE=disposable and forbids it from minting
+        /// a persistent persona (`wg agent create`, `wg add --tag persistent`).
+        #[arg(long)]
+        scope: Option<String>,
     },
 
     /// Edit an existing task
@@ -419,6 +433,10 @@ pub enum Commands {
         /// Update preferred model
         #[arg(long)]
         model: Option<String>,
+
+        /// Update structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// [DEPRECATED] Update provider — use provider:model format in --model instead
         #[arg(long)]
@@ -1633,6 +1651,10 @@ pub enum Commands {
         /// Model to use (haiku, sonnet, opus) - overrides task/executor defaults
         #[arg(long)]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Evaluate tasks: auto-evaluate, record external scores, view history
@@ -1700,6 +1722,10 @@ pub enum Commands {
         /// Updates `agent.model` and `dispatcher.model`.
         #[arg(short = 'm', long)]
         model: Option<String>,
+
+        /// Set default structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
 
         /// Rewrite the default LLM endpoint to this URL. Must be
         /// `http://` or `https://`. Creates/replaces a `[[llm_endpoints.endpoints]]`
@@ -1836,12 +1862,12 @@ pub enum Commands {
         viz_edge_color: Option<String>,
 
         /// Set the evaluation gate threshold (0.0–1.0). Evaluations below this
-        /// score will reject (fail) the original task. Only applies to tasks
-        /// tagged 'eval-gate' unless --eval-gate-all is set.
+        /// score can reject tasks with parsed deliverables, or all tasks when
+        /// --eval-gate-all is set. Tags are labels only.
         #[arg(long, name = "eval-gate-threshold")]
         eval_gate_threshold: Option<f64>,
 
-        /// Apply eval gate to ALL evaluated tasks, not just those tagged 'eval-gate'
+        /// Apply eval gate to ALL evaluated tasks, not just tasks with deliverables
         #[arg(long, name = "eval-gate-all")]
         eval_gate_all: Option<bool>,
 
@@ -1938,6 +1964,10 @@ pub enum Commands {
         /// assigner, evolver, verification, triage, creator
         #[arg(long = "set-model", num_args = 2, value_names = ["ROLE", "MODEL"], action = ArgAction::Append)]
         set_model: Vec<String>,
+
+        /// Set reasoning for a dispatch role; repeat: --set-reasoning <role> <level>
+        #[arg(long = "set-reasoning", num_args = 2, value_names = ["ROLE", "LEVEL"], action = ArgAction::Append)]
+        set_reasoning: Vec<String>,
 
         /// [DEPRECATED] Set provider for a dispatch role; repeat for multiple roles — use provider:model in --set-model instead
         #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"], action = ArgAction::Append)]
@@ -2705,6 +2735,10 @@ pub enum Commands {
 
         #[arg(long, short = 'm')]
         model: Option<String>,
+
+        /// Structured reasoning level: off, minimal, low, medium, high, xhigh, max
+        #[arg(long)]
+        reasoning: Option<String>,
     },
 
     /// Print the WG directory that `wg` would use from here,
@@ -3745,15 +3779,15 @@ pub enum ProviderCommands {
         out: String,
     },
 
-    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH that
-    /// the planner tagged `exec-provider:<wgid>` onto that remote provider. Sources the
-    /// provider/model/sensitivity/checkability from the task, runs the fail-closed
-    /// leash+matcher, and emits the signed offer.
+    /// The coordinator-side placement driver (M5): place a task ALREADY IN THE GRAPH whose
+    /// typed `remote_provider` metadata names a remote provider. Sources the
+    /// provider/model from the task plus explicit placement flags, runs the
+    /// fail-closed leash+matcher, and emits the signed offer.
     Place {
         /// The authorizer/principal G's local identity handle.
         #[arg(long)]
         as_name: String,
-        /// The graph task id to place (must carry an `exec-provider:<wgid>` tag).
+        /// The graph task id to place (must carry typed `remote_provider` metadata).
         #[arg(long)]
         task: String,
         /// Override the task's sensitivity: normal | high | confidential.
@@ -4448,19 +4482,25 @@ pub enum ProfileCommands {
     /// Refresh model data from OpenRouter and recompute rankings
     Refresh,
 
-    /// Set or show the Pi profile's two model tiers (strong / weak).
+    /// Set or show a profile's two model/reasoning tiers (strong / weak).
     ///
-    /// `strong` drives chat + workers + heavy generative roles; `weak` drives
-    /// the recoverable agency one-shots (.flip / .assign / eval). Accepts two
-    /// input forms:
+    /// Defaults to the built-in `pi` profile for backward compatibility. Use
+    /// `--profile NAME` to edit any existing named profile. `strong` drives
+    /// chat + workers + heavy generative roles; `weak` drives the recoverable
+    /// agency one-shots (.flip / .assign / eval). Examples:
     ///
-    ///   wg profile pi <STRONG> <WEAK>          # positional (terse; '-' skips a tier)
-    ///   wg profile pi --strong X --weak Y      # explicit (partial-update friendly)
+    ///   wg profile pi <STRONG> <WEAK>          # pi; '-' skips a tier
+    ///   wg profile pi --strong X --weak Y      # pi partial update
+    ///   wg profile pi --profile codex-56 --strong X --weak-reasoning low
     ///
     /// With no args (or --show) it prints the current tiers and routing; --list
-    /// shows the models configured for the profile to pick from. See
+    /// shows the models configured for the selected profile. See
     /// docs/design-two-tier-pi-profile.md.
     Pi {
+        /// Named profile to edit (defaults to `pi`).
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+
         /// Positional tiers in the order STRONG WEAK. Pass exactly 0 or 2
         /// tokens; a literal `-` leaves that tier unchanged.
         #[arg(value_name = "TIER", num_args = 0..=2)]
@@ -4474,11 +4514,19 @@ pub enum ProfileCommands {
         #[arg(long)]
         weak: Option<String>,
 
+        /// Set reasoning for strong-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        strong_reasoning: Option<String>,
+
+        /// Set reasoning for weak-tier roles without changing their models.
+        #[arg(long, value_name = "LEVEL")]
+        weak_reasoning: Option<String>,
+
         /// Show the current tiers and routing (also the no-arg default).
         #[arg(long)]
         show: bool,
 
-        /// List the OpenRouter/Pi models configured for this profile to pick from.
+        /// List the models configured for this profile to pick from.
         #[arg(long)]
         list: bool,
 
@@ -5040,6 +5088,12 @@ pub enum AgencyCommands {
     /// Seed agency with starter roles and tradeoffs
     Init,
 
+    /// Onboard and manage human teammates (Telegram handshake)
+    Human {
+        #[command(subcommand)]
+        command: HumanCommands,
+    },
+
     /// Migrate old-format agency store (roles/, motivations/, agents/) to primitive+cache format
     Migrate {
         /// Show what would be migrated without writing
@@ -5249,6 +5303,32 @@ pub enum AgencyCommands {
         /// Push from ~/.wg/agency/ instead of local project
         #[arg(long)]
         global: bool,
+    },
+}
+
+/// Subcommands for `wg agency human <sub>` — human-teammate onboarding.
+#[derive(Subcommand)]
+pub enum HumanCommands {
+    /// Add a human teammate: create their agent, per-user board, and a
+    /// Telegram binding, then DM a "reply YES to join" handshake (or print the
+    /// manual step when no bot is configured).
+    Add {
+        /// Display name of the human (e.g. "Nadin").
+        name: String,
+
+        /// Telegram user id (numeric) or @handle to bind and DM.
+        #[arg(long)]
+        telegram: String,
+
+        /// Project label used in the join message (default: project dir name).
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Manually record a human's YES confirmation (when no listener is running).
+    Confirm {
+        /// Telegram user id or @handle previously added.
+        telegram: String,
     },
 }
 
@@ -5707,6 +5787,31 @@ pub enum AgentCommands {
         id: String,
     },
 
+    /// Show or set the persistent session bound to an agent (R2).
+    ///
+    /// A bound session is the agent's durable identity memory: at task
+    /// dispatch, the session's `session-summary.md` is injected into the
+    /// spawn prompt so the agent carries continuity across tasks.
+    ///
+    /// - `wg agent session <id>` — show the current binding, creating a
+    ///   fresh bound session if the agent has none.
+    /// - `wg agent session <id> --session <ref>` — bind the agent to an
+    ///   existing session (UUID, prefix, or alias).
+    /// - `wg agent session <id> --unbind` — remove the binding.
+    Session {
+        /// Agent ID (or prefix)
+        id: String,
+
+        /// Session reference (UUID, prefix, or alias) to bind. Omit to
+        /// show the binding (creating one if absent).
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Remove the agent's session binding instead of showing/creating.
+        #[arg(long, conflicts_with = "session")]
+        unbind: bool,
+    },
+
     /// Remove an agent definition
     Rm {
         /// Agent ID (or prefix)
@@ -5941,10 +6046,10 @@ pub enum ConfigSubcommand {
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
-        /// Setup route. One of: `claude-cli` (default), `codex-cli`,
-        /// `openrouter`, `local`, `nex-custom`.
-        #[arg(long, default_value = "claude-cli")]
-        route: String,
+        /// Explicit setup route. One of: `claude-cli`, `codex-cli`,
+        /// `openrouter`, `pi`, `local`, `nex-custom`. Required unless --bare.
+        #[arg(long)]
+        route: Option<String>,
 
         /// Write only the absolute minimum (`[project]` for local,
         /// just `agent.model` for global). Use this when you want
@@ -6543,6 +6648,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Check
+            | Commands::Doctor
             | Commands::Cleanup { .. }
             | Commands::Cycles
             | Commands::Cron { .. }

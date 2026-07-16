@@ -19,6 +19,7 @@
 pub(crate) mod assignment;
 mod coordinator;
 pub(crate) mod coordinator_agent;
+pub(crate) mod human_dispatch;
 pub mod ipc;
 mod triage;
 pub(crate) mod worktree;
@@ -1149,6 +1150,35 @@ pub fn run_start(
     // incident) must warn loudly here, on the user's terminal, before the
     // daemon is even forked.
     warn_bare_provider_model_arg(model, "wg service start");
+    #[cfg(not(test))]
+    {
+        let selection = worksgood::execution_selection::resolve(dir, model.map(|m| (m, false)))?;
+        if selection.state == worksgood::execution_selection::SelectionState::Unselected {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "code": worksgood::execution_selection::UNSELECTED_CODE,
+                        "operation": "service-start",
+                        "selection": "unselected",
+                        "setup_commands": [
+                            "wg setup",
+                            "wg setup --route claude-cli --yes",
+                            "wg setup --route codex-cli --yes",
+                            "wg setup --route pi --yes",
+                            "wg setup --route openrouter --yes",
+                            "wg profile use <name>"
+                        ]
+                    }))?
+                );
+                anyhow::bail!("{}", worksgood::execution_selection::UNSELECTED_CODE);
+            }
+            anyhow::bail!(
+                "{}",
+                worksgood::execution_selection::unselected_message("wg service start")
+            );
+        }
+    }
     let config = Config::load_merged(dir)?;
 
     // Check if service is already running
@@ -1296,14 +1326,40 @@ pub fn run_start(
         .open(&log_path)
         .with_context(|| format!("Failed to open daemon log at {:?}", log_path))?;
 
-    let child = process::Command::new(&current_exe)
+    let mut daemon_command = process::Command::new(&current_exe);
+    daemon_command
         .args(&args)
         .env("WG_DIR", dir)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
-        .stderr(stderr_file)
+        .stderr(stderr_file);
+
+    // A background child with null stdio is not detached from its caller's
+    // terminal session: it still shares the foreground process group and is
+    // sent SIGHUP when that PTY closes. Create a new session in the child
+    // between fork and exec so ordinary `wg service start` has the same
+    // lifetime guarantees as an external `setsid wg service start` wrapper.
+    // `setsid` also creates a new process group, so terminal-generated signals
+    // cannot reach the daemon after the start wrapper exits.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: pre_exec is restricted to the async-signal-safe setsid(2)
+        // syscall and constructing an io::Error from errno.
+        unsafe {
+            daemon_command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+
+    let child = daemon_command
         .spawn()
-        .context("Failed to spawn daemon process")?;
+        .context("Failed to spawn detached daemon process")?;
 
     let pid = child.id();
 
@@ -1571,6 +1627,27 @@ fn route_chat_to_agent(
     }
 
     Ok(count)
+}
+
+/// Evict a coordinator entry only when its supervisor has definitively ended.
+///
+/// The predicate is passed separately so the lifecycle rule can be tested
+/// without constructing OS subprocesses. Production passes
+/// `CoordinatorAgent::supervisor_has_ended`; it must never pass child
+/// `is_alive`, because a supervisor legitimately has no child while it is
+/// restarting or backing off.
+fn evict_definitively_ended_coordinator<T>(
+    agents: &mut std::collections::HashMap<u32, T>,
+    coordinator_id: u32,
+    supervisor_has_ended: impl FnOnce(&T) -> bool,
+) -> bool {
+    let ended = agents
+        .get(&coordinator_id)
+        .is_some_and(supervisor_has_ended);
+    if ended {
+        agents.remove(&coordinator_id);
+    }
+    ended
 }
 
 /// Route chat messages to all active coordinator agents.
@@ -2171,6 +2248,11 @@ pub fn run_daemon(
     cli_model: Option<&str>,
     no_coordinator_agent: bool,
 ) -> Result<()> {
+    worksgood::execution_selection::require(
+        dir,
+        cli_model.map(|m| (m, false)),
+        "wg service daemon",
+    )?;
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---
@@ -2877,6 +2959,20 @@ pub fn run_daemon(
                 // Lazy-spawn coordinator agents for any pending coordinator IDs
                 // that don't already have a running agent.
                 for &cid in &pending_coordinator_ids {
+                    // An idle supervisor may have returned cleanly while its
+                    // handle remains in this map. Evict only with the explicit
+                    // supervisor-ended signal; child liveness is deliberately
+                    // insufficient because restart/backoff also has no child.
+                    if evict_definitively_ended_coordinator(
+                        &mut coordinator_agents,
+                        cid,
+                        coordinator_agent::CoordinatorAgent::supervisor_has_ended,
+                    ) {
+                        logger.info(&format!(
+                            "Coordinator agent {} supervisor ended; evicted stale handle before lazy respawn",
+                            cid
+                        ));
+                    }
                     if !coordinator_agents.contains_key(&cid) {
                         if coordinator_agents.len() >= max_coordinators {
                             logger.warn(&format!(
@@ -4389,6 +4485,26 @@ pub fn is_service_paused(dir: &Path) -> bool {
 /// times with short exponential backoff (50ms, 100ms) before giving up.
 /// Distinguishes "daemon not running" from "daemon unreachable" in errors.
 pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
+    const IPC_REQUEST_DEADLINE: Duration = Duration::from_secs(3);
+    let dir = dir.to_path_buf();
+    let request = request.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(send_request_inner(&dir, &request));
+    });
+    match rx.recv_timeout(IPC_REQUEST_DEADLINE) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => anyhow::bail!(
+            "Service IPC request timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
+            IPC_REQUEST_DEADLINE.as_secs()
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("Service IPC worker exited without a response")
+        }
+    }
+}
+
+fn send_request_inner(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
         anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
     })?;
@@ -4426,11 +4542,21 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
         match connect_to_socket(&socket) {
             Ok(mut stream) => {
-                // `interprocess::local_socket::Stream` doesn't expose per-op
-                // read/write timeouts portably (they mean different things for
-                // UDS vs named pipes). For local IPC on the same machine these
-                // were a belt-and-braces safety net; dropping them is fine in
-                // practice, and Ctrl+C still interrupts a truly hung daemon.
+                // A live PID and socket do not guarantee a responsive daemon:
+                // the coordinator thread may be wedged before it accepts or
+                // answers this connection. Bound both halves so user-facing
+                // commands such as `wg chat create` and `wg chat resume` fail
+                // with an actionable error instead of hanging forever.
+                const IPC_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+                #[cfg(unix)]
+                {
+                    stream
+                        .set_recv_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .context("Failed to set service IPC receive timeout")?;
+                    stream
+                        .set_send_timeout(Some(IPC_CLIENT_TIMEOUT))
+                        .context("Failed to set service IPC send timeout")?;
+                }
 
                 let json = serde_json::to_string(&request)?;
                 writeln!(stream, "{}", json)?;
@@ -4438,7 +4564,12 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 
                 let reader = BufReader::new(&stream);
                 for line in reader.lines() {
-                    let line = line.context("Failed to read response")?;
+                    let line = line.with_context(|| {
+                        format!(
+                            "Service IPC response timed out after {}s; the daemon is alive but unresponsive — restart with 'wg service start --force'",
+                            IPC_CLIENT_TIMEOUT.as_secs()
+                        )
+                    })?;
                     if !line.is_empty() {
                         let response: IpcResponse =
                             serde_json::from_str(&line).context("Failed to parse response")?;
@@ -4477,6 +4608,75 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestSupervisor {
+        generation: u32,
+        ended: bool,
+    }
+
+    #[test]
+    fn ended_supervisor_entry_is_evicted_and_pending_chat_can_spawn_replacement() {
+        let mut agents = std::collections::HashMap::from([(
+            7,
+            TestSupervisor {
+                generation: 1,
+                ended: true,
+            },
+        )]);
+
+        assert!(evict_definitively_ended_coordinator(
+            &mut agents,
+            7,
+            |agent| agent.ended
+        ));
+        assert!(!agents.contains_key(&7));
+
+        // This is the same contains_key gate used by urgent-wake lazy spawn:
+        // after eviction the pending chat may install exactly one replacement.
+        if !agents.contains_key(&7) {
+            agents.insert(
+                7,
+                TestSupervisor {
+                    generation: 2,
+                    ended: false,
+                },
+            );
+        }
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[&7].generation, 2);
+    }
+
+    #[test]
+    fn restart_backoff_supervisor_is_retained_and_cannot_duplicate() {
+        let mut agents = std::collections::HashMap::from([(
+            7,
+            TestSupervisor {
+                generation: 1,
+                // Child liveness may be false during backoff, but the explicit
+                // supervisor-ended state remains false.
+                ended: false,
+            },
+        )]);
+
+        assert!(!evict_definitively_ended_coordinator(
+            &mut agents,
+            7,
+            |agent| agent.ended
+        ));
+        if !agents.contains_key(&7) {
+            agents.insert(
+                7,
+                TestSupervisor {
+                    generation: 2,
+                    ended: false,
+                },
+            );
+        }
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[&7].generation, 1);
+    }
 
     /// Regression test for the 14h-401 incident: a coordinator launched
     /// `wg service start/daemon --model openrouter:z-ai/glm-5.2` silently
@@ -4577,6 +4777,41 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let socket = default_socket_path(temp_dir.path());
         assert_eq!(socket, temp_dir.path().join("service").join("daemon.sock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_request_times_out_when_live_daemon_never_responds() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let socket = default_socket_path(dir);
+        let listener = bind_socket(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let _stream = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+        });
+        ServiceState {
+            pid: std::process::id(),
+            socket_path: socket.display().to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        }
+        .save(dir)
+        .unwrap();
+
+        let started = Instant::now();
+        let error = send_request(dir, &IpcRequest::Status)
+            .expect_err("an unresponsive daemon must not hang the CLI")
+            .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "IPC failure exceeded its bounded deadline"
+        );
+        assert!(
+            error.contains("timed out") || error.contains("unresponsive"),
+            "timeout should be actionable: {error}"
+        );
+        server.join().unwrap();
     }
 
     #[test]

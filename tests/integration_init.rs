@@ -37,6 +37,9 @@ fn wg_cmd_in(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(wg_binary())
         .current_dir(dir)
         .env("HOME", &fake_home)
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -61,12 +64,12 @@ fn assert_lockstep_agent_guides(project_dir: &Path) {
 }
 
 // ---------------------------------------------------------------------------
-// test_init_without_flags_uses_default_route
+// test_init_without_flags_is_graph_only
 // ---------------------------------------------------------------------------
 
-/// `wg init` with no flags uses the built-in default claude-cli route.
+/// `wg init` with no flags creates a graph but selects no LLM route.
 #[test]
-fn test_init_without_flags_uses_default_route() {
+fn test_init_without_flags_is_graph_only() {
     let tmp = TempDir::new().unwrap();
 
     let output = wg_cmd_in(tmp.path(), &["init"]);
@@ -74,7 +77,7 @@ fn test_init_without_flags_uses_default_route() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "wg init with no inputs should use the default route.\nstdout: {}\nstderr: {}",
+        "wg init with no inputs should remain graph-only.\nstdout: {}\nstderr: {}",
         stdout,
         stderr
     );
@@ -83,11 +86,13 @@ fn test_init_without_flags_uses_default_route() {
     assert!(wg_dir.exists(), ".wg directory should be created");
     assert_lockstep_agent_guides(tmp.path());
 
-    let config = worksgood::config::Config::load(&wg_dir).expect("config.toml should be loadable");
+    assert!(stdout.contains("graph-only"));
+    let config_text = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
     assert!(
-        config.agent.model.starts_with("claude:"),
-        "default route should write a claude agent model, got {:?}",
-        config.agent.model
+        !config_text
+            .lines()
+            .any(|line| line.trim().starts_with("model =")),
+        "graph-only init must not persist a route: {config_text}"
     );
 }
 

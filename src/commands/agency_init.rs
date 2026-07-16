@@ -77,7 +77,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
             capacity: None,
             trust_level: TrustLevel::default(),
             contact: None,
-            executor: "claude".to_string(),
+            executor: String::new(),
             preferred_model: None,
             preferred_provider: None,
             deployment_history: vec![],
@@ -145,7 +145,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
                 capacity: None,
                 trust_level: TrustLevel::default(),
                 contact: None,
-                executor: "claude".to_string(),
+                executor: String::new(),
                 preferred_model: None,
                 preferred_provider: None,
                 deployment_history: vec![],
@@ -165,7 +165,13 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         special_agent_ids.push((role_name, sa_id));
     }
 
-    // 4. Enable auto_assign and auto_evaluate in config
+    // 4. Enable auto_assign and auto_evaluate in config. Record selection
+    // before serde compatibility defaults are loaded: those defaults are
+    // catalog placeholders and must never become an on-disk route merely
+    // because agency metadata was initialized.
+    let execution_was_selected = worksgood::execution_selection::resolve(workgraph_dir, None)?
+        .state
+        == worksgood::execution_selection::SelectionState::Selected;
     let mut config = Config::load(workgraph_dir)?;
     let mut config_changed = false;
 
@@ -178,25 +184,18 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         config_changed = true;
     }
 
-    // Default assign/eval to haiku — these are lightweight tasks that don't need
-    // a full reasoning model. Using haiku reduces cost and rate limit pressure.
-    // Use [models.*] table format instead of deprecated agency.*_model fields.
-    if config.models.assigner.is_none() {
-        config.models.assigner = Some(worksgood::config::RoleModelConfig {
-            model: Some("claude:haiku".to_string()),
-            provider: None,
-            tier: None,
-            endpoint: None,
-        });
-        config_changed = true;
-    }
-    if config.models.evaluator.is_none() {
-        config.models.evaluator = Some(worksgood::config::RoleModelConfig {
-            model: Some("claude:haiku".to_string()),
-            provider: None,
-            tier: None,
-            endpoint: None,
-        });
+    // Agency initialization is graph-only. Assigner/evaluator routes inherit
+    // only from an explicitly selected execution system; no handler is pinned
+    // here.
+    if !execution_was_selected {
+        config.coordinator.model = None;
+        config.models.default = None;
+        config.models.task_agent = None;
+        config.models.assigner = None;
+        config.models.evaluator = None;
+        config.models.flip_inference = None;
+        config.models.flip_comparison = None;
+        config.tiers = Default::default();
         config_changed = true;
     }
 
@@ -219,6 +218,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         config
             .save(workgraph_dir)
             .context("Failed to save config")?;
+        if !execution_was_selected {
+            remove_inactive_route_fields(workgraph_dir)?;
+        }
         println!("Enabled auto_assign and auto_evaluate in config.");
     }
 
@@ -248,6 +250,31 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         println!("  Next: wg service start");
     }
 
+    Ok(())
+}
+
+/// Remove serde-filled routing placeholders after a graph-only agency init.
+/// Their values remain available through `Config::default()` for compatibility,
+/// but their absence on disk is the provenance signal that execution is not
+/// selected.
+fn remove_inactive_route_fields(workgraph_dir: &Path) -> Result<()> {
+    let path = workgraph_dir.join("config.toml");
+    let text = std::fs::read_to_string(&path)?;
+    let mut value: toml::Value = text.parse()?;
+    if let Some(root) = value.as_table_mut() {
+        if let Some(agent) = root.get_mut("agent").and_then(toml::Value::as_table_mut) {
+            agent.remove("model");
+            agent.remove("executor");
+        }
+        if let Some(dispatcher) = root
+            .get_mut("dispatcher")
+            .and_then(toml::Value::as_table_mut)
+        {
+            dispatcher.remove("model");
+            dispatcher.remove("executor");
+        }
+    }
+    std::fs::write(&path, toml::to_string_pretty(&value)?)?;
     Ok(())
 }
 

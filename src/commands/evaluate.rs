@@ -276,8 +276,8 @@ pub fn run(
     // Per-WCC profile: if the task was published under a profile
     // (`wg publish --profile`), load THAT profile's complete config so the
     // evaluator role resolves through the profile's `[models.evaluator]` (or
-    // tier) instead of the global default claude:haiku pin. `None` ⇒ global
-    // config unchanged. This is the dispatch-time resolution point for the
+    // explicitly configured weak tier). `None` ⇒ global config unchanged.
+    // This is the dispatch-time resolution point for the
     // `.evaluate-*` satellite, since `run_lightweight_llm_call` re-resolves
     // the model from this config by role.
     let config = worksgood::dispatch::effective_config_owned(
@@ -475,12 +475,22 @@ pub fn run(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let eval_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::Evaluator,
-                &prompt,
-                timeout_secs,
-            )
+            let eval_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::Evaluator,
+                    route,
+                    &prompt,
+                    timeout_secs,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::Evaluator,
+                    &prompt,
+                    timeout_secs,
+                )
+            }
             .context("Evaluation LLM call failed")?;
             last_text = eval_result.text;
             token_usage = eval_result.token_usage;
@@ -875,19 +885,17 @@ pub fn run_flip(
         }
     }
 
-    // Check FLIP is enabled or task is tagged.
+    // Check FLIP is enabled. Freeform tags are labels only and do not opt
+    // tasks into evaluator behavior.
     // Per-WCC profile: resolve through the task's pinned profile (if any) so
     // FLIP inference/comparison roles route through the profile's models.
     let config = worksgood::dispatch::effective_config_owned(
         task.profile.as_deref(),
         Config::load_or_default(dir),
     );
-    let flip_enabled = config.agency.flip_enabled || task.tags.iter().any(|t| t == "flip-eval");
+    let flip_enabled = config.agency.flip_enabled;
     if !flip_enabled {
-        bail!(
-            "FLIP evaluation is not enabled. Enable with `wg config --flip-enabled true` \
-             or tag the task with 'flip-eval'."
-        );
+        bail!("FLIP evaluation is not enabled. Enable with `wg config --flip-enabled true`.");
     }
 
     // Load agent identity (same as regular evaluation)
@@ -1044,12 +1052,22 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let inference_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::FlipInference,
-                &inference_prompt,
-                flip_timeout,
-            )
+            let inference_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::FlipInference,
+                    route,
+                    &inference_prompt,
+                    flip_timeout,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::FlipInference,
+                    &inference_prompt,
+                    flip_timeout,
+                )
+            }
             .context("FLIP inference LLM call failed")?;
             last_text = inference_result.text;
             token_usage = inference_result.token_usage;
@@ -1103,12 +1121,22 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let comparison_result = worksgood::service::llm::run_lightweight_llm_call(
-                &config,
-                worksgood::config::DispatchRole::FlipComparison,
-                &comparison_prompt,
-                flip_timeout,
-            )
+            let comparison_result = if let Some(route) = evaluator_model {
+                worksgood::service::llm::run_lightweight_llm_call_for_route(
+                    &config,
+                    worksgood::config::DispatchRole::FlipComparison,
+                    route,
+                    &comparison_prompt,
+                    flip_timeout,
+                )
+            } else {
+                worksgood::service::llm::run_lightweight_llm_call(
+                    &config,
+                    worksgood::config::DispatchRole::FlipComparison,
+                    &comparison_prompt,
+                    flip_timeout,
+                )
+            }
             .context("FLIP comparison LLM call failed")?;
             last_text = comparison_result.text;
             token_usage = comparison_result.token_usage;
@@ -1808,8 +1836,8 @@ fn extract_json(raw: &str) -> Option<String> {
 ///
 /// Eval gate applies when:
 /// 1. `config.agency.eval_gate_threshold` is set, AND
-/// 2. Either `config.agency.eval_gate_all` is true, OR the task has the
-///    "eval-gate" tag.
+/// 2. Either `config.agency.eval_gate_all` is true, OR the task has
+///    structural deliverables.
 ///
 /// When rejecting, this function:
 /// - Fails the original task with a descriptive reason
@@ -1819,23 +1847,17 @@ fn extract_json(raw: &str) -> Option<String> {
 ///
 /// A task is gated when ANY of:
 /// - `config.agency.eval_gate_all` is set (global opt-in), OR
-/// - the task carries the `eval-gate` tag (explicit per-task opt-in), OR
-/// - the task carries the `intake` tag (operational intake — the gate must
-///   score so a soft evaluator pass can't promote a no-deliverable run), OR
 /// - the task has a non-empty parsed `## Deliverables` list (a task that
 ///   names concrete deliverables is operational and must be gated).
 ///
-/// Research/review tasks (rubric `## Validation`, no deliverables, no
-/// `intake`/`eval-gate` tag) are NOT gated — preserves the fast default.
+/// Research/review tasks (rubric `## Validation`, no deliverables) are NOT
+/// gated — preserves the fast default. Freeform tags are labels only.
 fn task_is_eval_gated(
-    task_tags: &[String],
+    _task_tags: &[String],
     task_description: Option<&str>,
     config: &Config,
 ) -> bool {
     if config.agency.eval_gate_all {
-        return true;
-    }
-    if task_tags.iter().any(|t| t == "eval-gate" || t == "intake") {
         return true;
     }
     if let Some(desc) = task_description
@@ -1860,11 +1882,9 @@ fn check_eval_gate(
         None => return Ok(false), // No threshold configured
     };
 
-    // Check if this task is gated. Guardrail G2: an `intake` tag OR a
-    // non-empty parsed-deliverable list opts the task into the gate (as if
-    // it carried `eval-gate`), so a soft evaluator pass can no longer
-    // promote a no-deliverable run to Done. Research/review tasks with no
-    // deliverables stay ungated and fast (no regression).
+    // Check if this task is gated. A non-empty parsed-deliverable list opts
+    // the task into the gate, so a soft evaluator pass can no longer promote
+    // a missing-deliverable run to Done. Freeform labels are inert.
     let is_gated = task_is_eval_gated(task_tags, task_description, config);
     if !is_gated {
         return Ok(false);
@@ -2577,6 +2597,10 @@ mod tests {
         }
     }
 
+    fn gate_deliverables_desc() -> Option<&'static str> {
+        Some("## Deliverables\n- reports/eval-gate.txt\n")
+    }
+
     #[test]
     fn test_eval_fail_retries_in_place_with_same_agent() {
         // Eval scores below threshold, rescue_count < max:
@@ -2594,7 +2618,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
-            None,
+            gate_deliverables_desc(),
             &eval,
             &config,
             true, // json mode silences stdout for tests
@@ -2643,7 +2667,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
-            None,
+            gate_deliverables_desc(),
             &eval,
             &config,
             true,
@@ -2717,7 +2741,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
-            None,
+            gate_deliverables_desc(),
             &eval,
             &config,
             true,
@@ -2949,18 +2973,15 @@ mod tests {
     }
 
     #[test]
-    fn intake_task_is_eval_gated() {
-        // Guardrail G2: an `intake` tag OR a non-empty parsed-deliverable
-        // list opts the task into the gate (as if it carried `eval-gate`),
-        // so the configured threshold actually gates. Research/review tasks
-        // with no deliverables stay ungated.
+    fn eval_gate_uses_deliverables_not_label_tags() {
+        // Guardrail G2: a non-empty parsed-deliverable list opts the task into
+        // the gate. Freeform labels like `intake` and `eval-gate` are inert.
         let cfg = cfg_with_eval_gate(0.7, 3);
 
-        // `intake` tag alone gates.
-        assert!(task_is_eval_gated(&["intake".to_string()], None, &cfg));
+        // Label tags alone do not gate.
+        assert!(!task_is_eval_gated(&["intake".to_string()], None, &cfg));
 
-        // `eval-gate` tag still gates.
-        assert!(task_is_eval_gated(&["eval-gate".to_string()], None, &cfg));
+        assert!(!task_is_eval_gated(&["eval-gate".to_string()], None, &cfg));
 
         // No tag but a `## Deliverables` block gates.
         let desc = "## Description\nRefresh the seed.\n\n## Deliverables\n- latest.pt\n- seed/manifest.json\n";

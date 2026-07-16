@@ -104,7 +104,11 @@ fn config_init_global_writes_minimal_canonical() {
     fs::create_dir_all(&home).unwrap();
     let wg_dir = fresh_workgraph(&tmp);
 
-    let stdout = wg_ok(&wg_dir, &home, &["config", "init", "--global"]);
+    let stdout = wg_ok(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "claude-cli"],
+    );
     assert!(
         stdout.contains("Wrote minimal global config"),
         "init should announce what it wrote; got:\n{}",
@@ -193,8 +197,8 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     // [agent].model — the central key that the original bug silently
     // dropped — must be codex, not any claude variant.
     assert!(
-        body.contains("model = \"codex:gpt-5.5\""),
-        "codex-cli route must set agent.model to codex:gpt-5.5; got:\n{}",
+        body.contains("model = \"codex:gpt-5.6-sol\""),
+        "codex-cli route must set agent.model to codex:gpt-5.6-sol; got:\n{}",
         body,
     );
     assert!(
@@ -209,7 +213,7 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
         body,
     );
     assert!(
-        body.contains("model = \"codex:gpt-5.4-mini\""),
+        body.contains("model = \"codex:gpt-5.6-luna\""),
         "codex-cli agency roles must use the cheaper codex model; got:\n{}",
         body,
     );
@@ -218,15 +222,15 @@ fn config_init_route_codex_cli_produces_complete_codex_config() {
     let parsed: Result<worksgood::config::Config, _> = toml::from_str(&body);
     assert!(parsed.is_ok(), "codex-cli config must parse as Config");
     let cfg = parsed.unwrap();
-    assert_eq!(cfg.agent.model, "codex:gpt-5.5");
-    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.5"));
+    assert_eq!(cfg.agent.model, "codex:gpt-5.6-sol");
+    assert_eq!(cfg.coordinator.model.as_deref(), Some("codex:gpt-5.6-sol"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.6-sol"));
     assert_eq!(
         cfg.models
             .task_agent
             .as_ref()
             .and_then(|m| m.model.as_deref()),
-        Some("codex:gpt-5.5")
+        Some("codex:gpt-5.6-sol")
     );
 }
 
@@ -268,7 +272,11 @@ fn config_init_refuses_to_clobber_existing_without_force() {
     )
     .unwrap();
 
-    let out = wg(&wg_dir, &home, &["config", "init", "--global"]);
+    let out = wg(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "claude-cli"],
+    );
     assert!(
         !out.status.success(),
         "init --global should refuse to clobber an existing file"
@@ -295,7 +303,18 @@ fn config_init_force_makes_backup() {
     )
     .unwrap();
 
-    wg_ok(&wg_dir, &home, &["config", "init", "--global", "--force"]);
+    wg_ok(
+        &wg_dir,
+        &home,
+        &[
+            "config",
+            "init",
+            "--global",
+            "--route",
+            "claude-cli",
+            "--force",
+        ],
+    );
     let backup = home.join(".wg/config.toml.bak");
     assert!(
         backup.exists(),

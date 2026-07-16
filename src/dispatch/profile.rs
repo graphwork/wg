@@ -211,22 +211,24 @@ mod tests {
             "[models.evaluator]\nmodel = \"codex:gpt-5.5-mini\"\n",
         );
 
-        // Baseline: with no profile, the evaluator resolves to the default weak
-        // tier (claude:haiku) on the claude CLI handler.
+        // With no profile/role selection the evaluator is unselected; built-in
+        // Claude catalog metadata is not execution authorization.
         let global = Config::default();
-        let base = crate::service::llm::resolve_agency_dispatch(
-            &global,
-            crate::config::DispatchRole::Evaluator,
+        assert!(
+            crate::service::llm::resolve_agency_dispatch(
+                &global,
+                crate::config::DispatchRole::Evaluator,
+            )
+            .is_err()
         );
-        assert_eq!(base.raw_spec, "claude:haiku");
-        assert_eq!(base.handler, crate::dispatch::ExecutorKind::Claude);
 
         // With the profile, the evaluator role resolves to the profile's model.
         let eff = effective_config_owned(Some("creditburn"), Config::default());
         let dispatch = crate::service::llm::resolve_agency_dispatch(
             &eff,
             crate::config::DispatchRole::Evaluator,
-        );
+        )
+        .unwrap();
         assert_eq!(dispatch.raw_spec, "codex:gpt-5.5-mini");
         assert_ne!(dispatch.raw_spec, "claude:haiku");
         assert_eq!(dispatch.handler, crate::dispatch::ExecutorKind::Codex);

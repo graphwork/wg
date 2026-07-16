@@ -98,6 +98,12 @@ pub struct Config {
     #[serde(default)]
     pub models: ModelRoutingConfig,
 
+    /// Explicit execution-failure policy. Tiers and registry rankings select a
+    /// route for a new call; they never authorize switching routes after a
+    /// failure. Only entries in this section may do that.
+    #[serde(default, skip_serializing_if = "ExecutionConfig::is_empty")]
+    pub execution: ExecutionConfig,
+
     /// Active provider profile name (e.g., "anthropic", "openrouter", "openai").
     /// When set, the profile supplies tier defaults. Explicit [tiers] entries
     /// and per-role [models] overrides still take precedence.
@@ -112,13 +118,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_registry: Vec<ModelRegistryEntry>,
 
-    /// Tag-based routing: assign a model (and optional executor) to
-    /// every task that has a given tag. Evaluated only when a task
-    /// lacks an explicit `model` — tag routing never overrides
-    /// explicit per-task settings. First matching rule wins (order
-    /// in config.toml determines priority). Useful for steering a
-    /// whole subgraph at once: tag tasks `frontend`, add a routing
-    /// rule, done.
+    /// Deprecated/inert legacy tag-routing entries.
+    ///
+    /// Freeform task tags are labels only; they do not route work or
+    /// select executors. The field remains deserializable for old
+    /// configs so `wg migrate config`/linting can inspect it without
+    /// rejecting the whole file.
     ///
     /// ```toml
     /// [[tag_routing]]
@@ -829,7 +834,9 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
-    /// Number of chat messages to load per page in the TUI (default: 100)
+    /// Requested chat messages per TUI page (default: 100).
+    /// The live render/search projection is always hard-capped at 200 records
+    /// and 1 MiB, regardless of this value or the CLI history-depth override.
     #[serde(default = "default_chat_page_size")]
     pub chat_page_size: usize,
     /// Comma-separated counters to display: "uptime", "cumulative", "active", "session", "compact"
@@ -1301,6 +1308,88 @@ impl Default for CheckpointConfig {
 // Model routing configuration
 // ---------------------------------------------------------------------------
 
+/// Common structured reasoning budget used by handlers that expose a separate
+/// reasoning/thinking knob. Pi maps this directly to `--thinking <level>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningLevel {
+    pub const ALL: &'static [ReasoningLevel] = &[
+        Self::Off,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    /// Value accepted by Codex CLI's `model_reasoning_effort` config key.
+    ///
+    /// WG's portable vocabulary is slightly wider/different: Codex calls
+    /// disabled reasoning `none`, and does not accept `minimal` as an effort.
+    /// Response verbosity is intentionally not part of this mapping; Codex
+    /// exposes that independently as `model_verbosity`.
+    pub fn as_codex_effort(self) -> &'static str {
+        match self {
+            Self::Off => "none",
+            Self::Minimal => "low",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ReasoningLevel {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => anyhow::bail!(
+                "invalid reasoning level '{}'. Valid values: off, minimal, low, medium, high, xhigh, max",
+                other
+            ),
+        }
+    }
+}
+
 /// Dispatch roles for model routing.
 /// Each role maps to a specific dispatch point in the coordinator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1649,18 +1738,141 @@ impl Default for ModelRegistryEntry {
     }
 }
 
+/// Ordered, opt-in execution-failure policy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionConfig {
+    /// Exact primary route → explicitly authorized same-system alternatives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<ExecutionFallback>,
+}
+
+impl ExecutionConfig {
+    pub fn is_empty(&self) -> bool {
+        self.fallbacks.is_empty()
+    }
+
+    /// Alternatives for an exact primary route, preserving file order.
+    pub fn models_for(&self, primary: &str) -> &[String] {
+        self.fallbacks
+            .iter()
+            .find(|entry| entry.primary.trim() == primary.trim())
+            .map(|entry| entry.models.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
+/// One explicit same-system fallback declaration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionFallback {
+    /// Exact handler-first primary route this declaration applies to.
+    pub primary: String,
+    /// Ordered alternatives. Every entry must have the primary's execution-system key.
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+/// Handler + provider/wire identity. Route failure may change a model only
+/// while this key remains identical.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionSystemKey {
+    pub handler: String,
+    pub provider: String,
+}
+
+impl std::fmt::Display for ExecutionSystemKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.handler, self.provider)
+    }
+}
+
+/// Derive the execution-system identity for the one-shot handlers WG supports.
+/// Unknown/opaque handler dialects fail closed: without a provider key WG may
+/// retry only the exact route, never select another model.
+pub fn execution_system_key(raw_route: &str) -> anyhow::Result<ExecutionSystemKey> {
+    let route = raw_route.trim();
+    if route.is_empty() {
+        anyhow::bail!("empty model route has no execution-system key");
+    }
+
+    let handler = crate::dispatch::handler_for_model(route);
+    let provider = match handler {
+        crate::dispatch::ExecutorKind::Claude => {
+            // The lenient handler resolver historically maps every unknown bare
+            // token to Claude. Only actual Claude forms are safe here.
+            let lower = route.to_ascii_lowercase();
+            let is_alias = matches!(lower.as_str(), "opus" | "sonnet" | "haiku" | "fable")
+                || lower.starts_with("claude-")
+                || lower.starts_with("anthropic/claude-");
+            if !lower.starts_with("claude:") && !is_alias {
+                anyhow::bail!(
+                    "route {route:?} does not explicitly identify the claude execution system"
+                );
+            }
+            "anthropic-cli".to_string()
+        }
+        crate::dispatch::ExecutorKind::Codex => "openai-codex-cli".to_string(),
+        crate::dispatch::ExecutorKind::Pi => {
+            let inner = route
+                .strip_prefix("pi:")
+                .ok_or_else(|| anyhow::anyhow!("pi route {route:?} is not handler-first"))?;
+            let provider = inner
+                .split_once(':')
+                .map(|(p, _)| p)
+                .or_else(|| inner.split_once('/').map(|(p, _)| p))
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("pi route {route:?} does not identify a provider")
+                })?;
+            provider.to_ascii_lowercase()
+        }
+        crate::dispatch::ExecutorKind::Native => {
+            let inner = strip_native_handler_prefix(route);
+            parse_model_spec(inner)
+                .provider
+                .as_deref()
+                .map(provider_to_resolved_provider)
+                .unwrap_or("oai-compat")
+                .to_string()
+        }
+        other => anyhow::bail!(
+            "handler {} does not expose a lightweight execution-system key",
+            other.as_str()
+        ),
+    };
+
+    let handler = match handler {
+        // `Native` is the internal executor enum; `nex` is the canonical
+        // user-selected handler name and therefore the execution-system key.
+        crate::dispatch::ExecutorKind::Native => "nex",
+        other => other.as_str(),
+    };
+    Ok(ExecutionSystemKey {
+        handler: handler.to_string(),
+        provider,
+    })
+}
+
 /// Tier routing configuration: which model ID each tier resolves to.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TierConfig {
     /// Model ID for fast tier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<String>,
+    /// Reasoning level for fast tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_reasoning: Option<ReasoningLevel>,
     /// Model ID for standard tier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standard: Option<String>,
+    /// Reasoning level for standard tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_reasoning: Option<ReasoningLevel>,
     /// Model ID for premium tier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub premium: Option<String>,
+    /// Reasoning level for premium tier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium_reasoning: Option<ReasoningLevel>,
 }
 
 /// Tag-based routing rule. When a task carries the named tag AND
@@ -1685,19 +1897,13 @@ pub struct TagRoutingEntry {
     pub executor: Option<String>,
 }
 
-/// Resolve a model (and optional executor override) for a task via
-/// tag-based routing. Returns the first matching rule's settings,
-/// or `None` when no rule matches.
-///
-/// Call sites should only consult this when `task.model` is None:
-/// explicit per-task model always wins.
+/// Deprecated compatibility shim. Freeform tags are labels only, so
+/// tag routing never returns a runtime route.
 pub fn resolve_tag_routing<'a>(
-    routing: &'a [TagRoutingEntry],
-    task_tags: &[String],
+    _routing: &'a [TagRoutingEntry],
+    _task_tags: &[String],
 ) -> Option<&'a TagRoutingEntry> {
-    routing
-        .iter()
-        .find(|rule| task_tags.iter().any(|t| t == &rule.tag))
+    None
 }
 
 /// Per-role model+provider assignment.
@@ -1716,6 +1922,9 @@ pub struct RoleModelConfig {
     /// Named endpoint override: use a specific configured endpoint by name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Structured reasoning level. Inherited independently from `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningLevel>,
 }
 
 /// Model routing: maps each dispatch role to a model+provider.
@@ -1823,6 +2032,23 @@ impl ModelRoutingConfig {
                 model: Some(model.to_string()),
                 tier: None,
                 endpoint: None,
+                reasoning: None,
+            });
+        }
+    }
+
+    /// Set the structured reasoning level for a role.
+    pub fn set_reasoning(&mut self, role: DispatchRole, reasoning: ReasoningLevel) {
+        let slot = self.get_role_mut(role);
+        if let Some(cfg) = slot {
+            cfg.reasoning = Some(reasoning);
+        } else {
+            *slot = Some(RoleModelConfig {
+                provider: None,
+                model: None,
+                tier: None,
+                endpoint: None,
+                reasoning: Some(reasoning),
             });
         }
     }
@@ -1838,6 +2064,7 @@ impl ModelRoutingConfig {
                 model: None,
                 tier: None,
                 endpoint: None,
+                reasoning: None,
             });
         }
     }
@@ -1853,6 +2080,7 @@ impl ModelRoutingConfig {
                 model: None,
                 tier: None,
                 endpoint: Some(endpoint.to_string()),
+                reasoning: None,
             });
         }
     }
@@ -1868,6 +2096,7 @@ impl ModelRoutingConfig {
                 model: None,
                 tier: Some(tier),
                 endpoint: None,
+                reasoning: None,
             });
         }
     }
@@ -1878,6 +2107,7 @@ impl ModelRoutingConfig {
 pub struct ResolvedModel {
     pub model: String,
     pub provider: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
     /// Registry entry if resolved through the registry (carries cost data)
     pub registry_entry: Option<ModelRegistryEntry>,
     /// Named endpoint override: when set, consumers should look up this endpoint
@@ -2645,8 +2875,9 @@ pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
 /// This is the single chokepoint shared by every path that *persists* the
 /// strong tier ([`Config::set_pi_tiers`], `profile::named::patch_pi_tiers`, and
 /// the model scout), so no write path can reintroduce a nex-routed strong spec.
-/// The weak/agency tier is deliberately NOT routed through here: it keeps its
-/// native route and the loud keyless-native `claude:haiku` fallback intact.
+/// The weak/agency tier is deliberately NOT routed through here: its selected
+/// handler/provider remains authoritative and failure does not authorize Pi or
+/// any other execution system.
 pub fn pi_strong_route(spec: &str) -> String {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -2926,19 +3157,61 @@ impl Config {
                 .clone()
                 .or(profile_tiers.fast)
                 .or_else(|| Some(format!("claude:{}", Tier::Fast.default_alias()))),
+            fast_reasoning: self.tiers.fast_reasoning.or(profile_tiers.fast_reasoning),
             standard: self
                 .tiers
                 .standard
                 .clone()
                 .or(profile_tiers.standard)
                 .or_else(|| Some(format!("claude:{}", Tier::Standard.default_alias()))),
+            standard_reasoning: self
+                .tiers
+                .standard_reasoning
+                .or(profile_tiers.standard_reasoning),
             premium: self
                 .tiers
                 .premium
                 .clone()
                 .or(profile_tiers.premium)
                 .or_else(|| Some(format!("claude:{}", Tier::Premium.default_alias()))),
+            premium_reasoning: self
+                .tiers
+                .premium_reasoning
+                .or(profile_tiers.premium_reasoning),
         }
+    }
+
+    fn tier_reasoning(&self, tier: Tier) -> Option<ReasoningLevel> {
+        let tiers = self.effective_tiers();
+        match tier {
+            Tier::Fast => tiers.fast_reasoning,
+            Tier::Standard => tiers.standard_reasoning,
+            Tier::Premium => tiers.premium_reasoning,
+        }
+    }
+
+    /// Resolve reasoning independently from model/provider.
+    ///
+    /// Precedence: explicit task override (handled by callers) >
+    /// role-specific `[models.<role>].reasoning` > role tier override /
+    /// default tier reasoning > `[models.default].reasoning` > omitted handler
+    /// default (`None`). This deliberately does not inspect or mutate the
+    /// winning model string.
+    pub fn resolve_reasoning_for_role(&self, role: DispatchRole) -> Option<ReasoningLevel> {
+        if let Some(reasoning) = self.models.get_role(role).and_then(|c| c.reasoning) {
+            return Some(reasoning);
+        }
+        if let Some(tier) = self.models.get_role(role).and_then(|c| c.tier)
+            && let Some(reasoning) = self.tier_reasoning(tier)
+        {
+            return Some(reasoning);
+        }
+        if let Some(reasoning) = self.tier_reasoning(role.default_tier()) {
+            return Some(reasoning);
+        }
+        self.models
+            .get_role(DispatchRole::Default)
+            .and_then(|c| c.reasoning)
     }
 
     /// Look up a registry entry by its short ID.
@@ -2946,29 +3219,34 @@ impl Config {
         self.effective_registry().into_iter().find(|e| e.id == id)
     }
 
-    /// The raw model spec for the **weak** two-tier label.
-    ///
-    /// In the two-tier model (`design-two-tier-pi-profile.md`) `weak` is the
-    /// 2-coloring of the `fast` quality tier — the cheap tier used for agency
-    /// judgment one-shots (`.flip` / `.assign` / `.evaluate`). This returns the
-    /// provider-qualified spec (e.g. `openrouter:deepseek/deepseek-chat`, or
-    /// `claude:haiku` for the bare default) so callers that need the route
-    /// prefix (not just the bare model id) get it intact. Always `Some` because
-    /// `effective_tiers()` carries a hardcoded Anthropic fallback.
+    /// The explicitly configured raw model spec for the **weak** two-tier
+    /// label. Built-in tier catalog defaults are deliberately excluded: they
+    /// are suggestions, not authorization to execute Claude (or any system).
     pub fn weak_tier_spec(&self) -> Option<String> {
-        self.effective_tiers().fast
+        let profile_tiers = self.resolve_profile_tiers();
+        self.tiers.fast.clone().or(profile_tiers.fast)
     }
 
-    /// The raw model spec for the **strong** two-tier label — the escalation target
-    /// for the content reviewer (WG-Review Pass 2). In the two-tier projection
-    /// (`design-two-tier-pi-profile.md`) `strong` is `premium + standard`; the
-    /// reviewer escalates to the strongest available, so this prefers `premium`
-    /// and falls back to `standard` (and finally the hardcoded Anthropic premium
-    /// default via `effective_tiers()`). Used by `run_review_llm_call` to get a
-    /// stronger second opinion on uncertainty / high sensitivity — never a human.
+    /// The explicitly configured raw model spec for the **strong** reviewer
+    /// tier. Built-in Anthropic fill values are not execution selection.
     pub fn strong_tier_spec(&self) -> Option<String> {
-        let tiers = self.effective_tiers();
-        tiers.premium.or(tiers.standard)
+        let profile_tiers = self.resolve_profile_tiers();
+        self.tiers
+            .premium
+            .clone()
+            .or(profile_tiers.premium)
+            .or_else(|| self.tiers.standard.clone())
+            .or(profile_tiers.standard)
+    }
+
+    /// Raw configured tier route without the built-in display/catalog fill.
+    pub fn configured_tier_spec(&self, tier: Tier) -> Option<String> {
+        let profile_tiers = self.resolve_profile_tiers();
+        match tier {
+            Tier::Fast => self.tiers.fast.clone().or(profile_tiers.fast),
+            Tier::Standard => self.tiers.standard.clone().or(profile_tiers.standard),
+            Tier::Premium => self.tiers.premium.clone().or(profile_tiers.premium),
+        }
     }
 
     /// Resolve a tier to a ResolvedModel via the tier config and registry.
@@ -3000,6 +3278,7 @@ impl Config {
                     .or_else(|| Some(entry.provider.clone())),
                 registry_entry: Some(entry),
                 endpoint: None,
+                reasoning: self.tier_reasoning(tier),
             })
         } else {
             // Not in registry — use parsed provider or None
@@ -3010,6 +3289,7 @@ impl Config {
                     .map(|p| provider_to_resolved_provider(&p).to_string()),
                 registry_entry: None,
                 endpoint: None,
+                reasoning: self.tier_reasoning(tier),
             })
         }
     }
@@ -3100,6 +3380,7 @@ impl Config {
                         .or_else(|| default_provider.clone()),
                     registry_entry: Some(entry),
                     endpoint: resolve_endpoint(role),
+                    reasoning: self.resolve_reasoning_for_role(role),
                 };
             }
             return ResolvedModel {
@@ -3109,6 +3390,7 @@ impl Config {
                     .or_else(|| default_provider.clone()),
                 registry_entry: None,
                 endpoint: resolve_endpoint(role),
+                reasoning: self.resolve_reasoning_for_role(role),
             };
         }
 
@@ -3159,6 +3441,7 @@ impl Config {
                         .or_else(|| Some(entry.provider.clone())),
                     registry_entry: Some(entry),
                     endpoint: resolve_endpoint(role),
+                    reasoning: self.resolve_reasoning_for_role(role),
                 };
             }
             return ResolvedModel {
@@ -3166,6 +3449,7 @@ impl Config {
                 provider: spec_provider.or(default_provider),
                 registry_entry: None,
                 endpoint: resolve_endpoint(role),
+                reasoning: self.resolve_reasoning_for_role(role),
             };
         }
 
@@ -3185,6 +3469,7 @@ impl Config {
                     .or_else(|| Some(entry.provider.clone())),
                 registry_entry: Some(entry),
                 endpoint: resolve_endpoint(role),
+                reasoning: self.resolve_reasoning_for_role(role),
             };
         }
         ResolvedModel {
@@ -3192,6 +3477,7 @@ impl Config {
             provider: fallback_provider.or(default_provider),
             registry_entry: None,
             endpoint: resolve_endpoint(role),
+            reasoning: self.resolve_reasoning_for_role(role),
         }
     }
 
@@ -3385,9 +3671,10 @@ pub struct AgencyConfig {
     pub auto_assign_grace_seconds: u64,
 
     /// Global evaluation gate threshold. When set, evaluations that score
-    /// below this threshold will reject (fail) the original task, blocking
-    /// its dependents. Only applies to tasks tagged with "eval-gate" unless
-    /// `eval_gate_all` is true. Range: 0.0–1.0. Default: 0.7 (enabled).
+    /// below this threshold can reject (fail) the original task, blocking
+    /// its dependents. The gate applies to tasks with parsed deliverables,
+    /// or to all tasks when `eval_gate_all` is true. Range: 0.0–1.0.
+    /// Default: 0.7 (enabled).
     #[serde(
         default = "default_eval_gate_threshold",
         skip_serializing_if = "Option::is_none"
@@ -3395,7 +3682,7 @@ pub struct AgencyConfig {
     pub eval_gate_threshold: Option<f64>,
 
     /// When true, apply the eval gate threshold to ALL evaluated tasks,
-    /// not just those tagged with "eval-gate". Default: false.
+    /// not just tasks with parsed deliverables. Default: false.
     #[serde(default)]
     pub eval_gate_all: bool,
 
@@ -4370,6 +4657,19 @@ pub fn normalize_legacy_tables(
             }
         }
     }
+    normalize_dispatcher_interval_alias(table);
+}
+
+fn normalize_dispatcher_interval_alias(table: &mut toml::map::Map<String, toml::Value>) {
+    for section_name in ["coordinator", "dispatcher"] {
+        let Some(section) = table.get_mut(section_name).and_then(|v| v.as_table_mut()) else {
+            continue;
+        };
+        let Some(safety_interval) = section.remove("safety_interval") else {
+            continue;
+        };
+        section.insert("poll_interval".to_string(), safety_interval);
+    }
 }
 
 /// Print accumulated legacy-section deprecation warnings to stderr.
@@ -4781,16 +5081,6 @@ impl Config {
         {
             return Ok(key);
         }
-        // Also check the default endpoint if provider didn't match
-        if let Some(ep) = self.llm_endpoints.find_default()
-            && ep.provider != provider
-        {
-            // Already tried provider-specific above; try default endpoint
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Ok(key);
-            }
-        }
-
         // 2. Environment variables based on provider
         for var_name in EndpointConfig::env_var_names_for_provider(provider) {
             if let Ok(key) = std::env::var(var_name) {
@@ -5054,6 +5344,7 @@ impl Config {
             model: Some(model.to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         };
         self.models.default = Some(role.clone());
         self.models.task_agent = Some(role);
@@ -5069,7 +5360,7 @@ impl Config {
         };
         let (fast, agency) = match provider {
             "claude" | "anthropic" => ("claude:haiku", "claude:haiku"),
-            "codex" => ("codex:gpt-5.4-mini", "codex:gpt-5.4-mini"),
+            "codex" => ("codex:gpt-5.6-luna", "codex:gpt-5.6-luna"),
             _ => return,
         };
 
@@ -5113,6 +5404,7 @@ impl Config {
                 model: Some(model.to_string()),
                 tier: None,
                 endpoint: None,
+                reasoning: None,
             });
         }
     }
@@ -5120,7 +5412,12 @@ impl Config {
     fn is_starter_agency_model(model: &str) -> bool {
         matches!(
             model,
-            "haiku" | "claude:haiku" | "gpt-5.4-mini" | "codex:gpt-5.4-mini"
+            "haiku"
+                | "claude:haiku"
+                | "gpt-5.4-mini"
+                | "codex:gpt-5.4-mini"
+                | "gpt-5.6-luna"
+                | "codex:gpt-5.6-luna"
         )
     }
 
@@ -5152,6 +5449,25 @@ impl Config {
         "models.assigner.model",
         "models.flip_inference.model",
         "models.flip_comparison.model",
+    ];
+
+    /// Reasoning keys controlled by a two-tier strong-reasoning update.
+    /// Kept separate from model keys so either dimension can be patched without
+    /// reconstructing (and accidentally erasing) the other.
+    pub const PI_STRONG_REASONING_TOML_KEYS: &'static [&'static str] = &[
+        "tiers.standard_reasoning",
+        "tiers.premium_reasoning",
+        "models.default.reasoning",
+        "models.task_agent.reasoning",
+    ];
+
+    /// Reasoning keys controlled by a two-tier weak-reasoning update.
+    pub const PI_WEAK_REASONING_TOML_KEYS: &'static [&'static str] = &[
+        "tiers.fast_reasoning",
+        "models.evaluator.reasoning",
+        "models.assigner.reasoning",
+        "models.flip_inference.reasoning",
+        "models.flip_comparison.reasoning",
     ];
 
     /// Read the Pi profile's `(strong, weak)` tier models from this config.
@@ -5214,6 +5530,7 @@ impl Config {
                 model: Some(s.clone()),
                 tier: None,
                 endpoint: None,
+                reasoning: None,
             };
             self.models.default = Some(role.clone());
             self.models.task_agent = Some(role);
@@ -5233,6 +5550,7 @@ impl Config {
                     model: Some(w.to_string()),
                     tier: None,
                     endpoint: None,
+                    reasoning: None,
                 });
             }
         }
@@ -5537,6 +5855,46 @@ impl Config {
     pub fn validate_config(&self) -> ConfigValidation {
         let mut result = ConfigValidation::default();
 
+        // Explicit execution fallbacks are all-or-nothing. A handler/provider
+        // change is a fatal configuration error, not a candidate to skip.
+        for declaration in &self.execution.fallbacks {
+            let primary_key = match execution_system_key(&declaration.primary) {
+                Ok(key) => key,
+                Err(error) => {
+                    result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-primary".into(),
+                        message: format!(
+                            "execution fallback primary {:?} is invalid: {error:#}",
+                            declaration.primary
+                        ),
+                        fix: "Use an explicit handler-first primary route.".into(),
+                    });
+                    continue;
+                }
+            };
+            for candidate in &declaration.models {
+                match execution_system_key(candidate) {
+                    Ok(candidate_key) if candidate_key == primary_key => {}
+                    Ok(candidate_key) => result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-cross-system".into(),
+                        message: format!(
+                            "fallback {:?} has system {} but primary {:?} has system {}",
+                            candidate, candidate_key, declaration.primary, primary_key
+                        ),
+                        fix: "Remove the candidate or use a model on the same handler and provider/wire."
+                            .into(),
+                    }),
+                    Err(error) => result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-candidate".into(),
+                        message: format!(
+                            "execution fallback candidate {candidate:?} is invalid: {error:#}"
+                        ),
+                        fix: "Use an explicit handler-first fallback route.".into(),
+                    }),
+                }
+            }
+        }
+
         // Check coordinator executor + model/provider combinations
         let executor = self.coordinator.effective_executor();
         let model = self
@@ -5718,7 +6076,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn tag_routing_matches_first_rule_by_order() {
+    fn tag_routing_entries_are_inert_legacy_config() {
         let rules = vec![
             TagRoutingEntry {
                 tag: "frontend".into(),
@@ -5732,9 +6090,7 @@ mod tests {
             },
         ];
         let tags = vec!["frontend".to_string(), "urgent".to_string()];
-        let hit = resolve_tag_routing(&rules, &tags).expect("match");
-        assert_eq!(hit.model, "codex:gpt-5-codex");
-        assert_eq!(hit.executor.as_deref(), Some("codex"));
+        assert!(resolve_tag_routing(&rules, &tags).is_none());
     }
 
     #[test]
@@ -5748,33 +6104,130 @@ mod tests {
     }
 
     #[test]
-    fn tag_routing_first_rule_wins_when_task_has_multiple_tags() {
-        let rules = vec![
-            TagRoutingEntry {
-                tag: "urgent".into(),
-                model: "claude:opus".into(),
-                executor: None,
-            },
-            TagRoutingEntry {
-                tag: "frontend".into(),
-                model: "codex:gpt-5-codex".into(),
-                executor: None,
-            },
-        ];
-        let tags = vec!["frontend".to_string(), "urgent".to_string()];
-        // Declaration order wins: `urgent` is first.
-        assert_eq!(
-            resolve_tag_routing(&rules, &tags).unwrap().model,
-            "claude:opus"
-        );
-    }
-
-    #[test]
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.agent.executor, "claude");
         assert_eq!(config.agent.model, "claude:opus");
         assert_eq!(config.agent.interval, 10);
+    }
+
+    #[test]
+    fn test_reasoning_level_validation_and_display() {
+        for (raw, expected) in [
+            ("off", ReasoningLevel::Off),
+            ("minimal", ReasoningLevel::Minimal),
+            ("low", ReasoningLevel::Low),
+            ("medium", ReasoningLevel::Medium),
+            ("high", ReasoningLevel::High),
+            ("xhigh", ReasoningLevel::Xhigh),
+            ("max", ReasoningLevel::Max),
+        ] {
+            assert_eq!(raw.parse::<ReasoningLevel>().unwrap(), expected);
+            assert_eq!(expected.to_string(), raw);
+        }
+
+        let err = "extreme".parse::<ReasoningLevel>().unwrap_err().to_string();
+        assert!(err.contains("invalid reasoning level 'extreme'"));
+        assert!(err.contains("off, minimal, low, medium, high, xhigh, max"));
+    }
+
+    #[test]
+    fn test_reasoning_config_toml_roundtrip_and_backward_compatibility() {
+        let old: Config = toml::from_str(
+            r#"
+[models.default]
+model = "pi:openai-codex:gpt-5.6-sol"
+
+[tiers]
+standard = "pi:openai-codex:gpt-5.6-sol"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            old.resolve_reasoning_for_role(DispatchRole::TaskAgent),
+            None,
+            "old configs without reasoning must keep omitting the handler flag"
+        );
+
+        let parsed: Config = toml::from_str(
+            r#"
+[models.default]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "medium"
+
+[models.task_agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+reasoning = "high"
+
+[tiers]
+standard = "pi:openai-codex:gpt-5.6-sol"
+standard_reasoning = "xhigh"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.models.default.as_ref().unwrap().reasoning,
+            Some(ReasoningLevel::Medium)
+        );
+        assert_eq!(
+            parsed.models.task_agent.as_ref().unwrap().reasoning,
+            Some(ReasoningLevel::High)
+        );
+        assert_eq!(parsed.tiers.standard_reasoning, Some(ReasoningLevel::Xhigh));
+
+        let serialized = toml::to_string_pretty(&parsed).unwrap();
+        let reparsed: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            reparsed.resolve_reasoning_for_role(DispatchRole::TaskAgent),
+            Some(ReasoningLevel::High)
+        );
+        assert!(serialized.contains("reasoning = \"high\""));
+        assert!(serialized.contains("standard_reasoning = \"xhigh\""));
+    }
+
+    #[test]
+    fn test_reasoning_resolves_independently_from_model_precedence() {
+        let mut config = Config::default();
+        config.agent.model = "pi:openai-codex:gpt-5.6-sol".to_string();
+        config.models.default = Some(RoleModelConfig {
+            provider: None,
+            model: Some("pi:openai-codex:gpt-5.6-sol".to_string()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::Medium),
+        });
+        config.tiers.standard = Some("pi:openai-codex:gpt-5.6-sol".to_string());
+        config.tiers.standard_reasoning = Some(ReasoningLevel::High);
+
+        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+        assert_eq!(resolved.spawn_model_spec(), "pi:openai-codex:gpt-5.6-sol");
+        assert_eq!(
+            resolved.reasoning,
+            Some(ReasoningLevel::High),
+            "tier reasoning should outrank global/default reasoning"
+        );
+
+        config
+            .models
+            .set_model(DispatchRole::TaskAgent, "pi:openai-codex:gpt-5.6-sol");
+        assert_eq!(
+            config
+                .resolve_model_for_role(DispatchRole::TaskAgent)
+                .reasoning,
+            Some(ReasoningLevel::High),
+            "overriding only a model must not erase inherited reasoning"
+        );
+
+        config
+            .models
+            .set_reasoning(DispatchRole::TaskAgent, ReasoningLevel::Xhigh);
+        assert_eq!(
+            config
+                .resolve_model_for_role(DispatchRole::TaskAgent)
+                .reasoning,
+            Some(ReasoningLevel::Xhigh),
+            "role-specific reasoning should outrank tier reasoning"
+        );
     }
 
     #[test]
@@ -6388,6 +6841,7 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
         assert_eq!(resolved.model, "routing-model");
@@ -6412,6 +6866,7 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -6444,12 +6899,14 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         config.models.triage = Some(RoleModelConfig {
             model: Some("anthropic/claude-3.5-haiku".to_string()),
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -6470,12 +6927,14 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         config.models.triage = Some(RoleModelConfig {
             model: Some("gpt-4o-mini".to_string()),
             provider: Some("openai".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -6496,6 +6955,7 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
@@ -6614,8 +7074,11 @@ model = "claude:haiku"
     fn test_tier_config_serde() {
         let tc = TierConfig {
             fast: Some("haiku".into()),
+            fast_reasoning: None,
             standard: None,
+            standard_reasoning: None,
             premium: Some("opus".into()),
+            premium_reasoning: None,
         };
         let json = serde_json::to_string(&tc).unwrap();
         let parsed: TierConfig = serde_json::from_str(&json).unwrap();
@@ -6706,6 +7169,7 @@ model = "claude:haiku"
             provider: None,
             tier: Some(Tier::Premium),
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
@@ -6720,6 +7184,7 @@ model = "claude:haiku"
             provider: None,
             tier: Some(Tier::Premium), // Should be ignored because model is set
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
         assert_eq!(resolved.model, "my-custom-model");
@@ -7398,6 +7863,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: Some("openrouter".to_string()),
+            reasoning: None,
         });
 
         // Triage should inherit the default endpoint
@@ -7417,12 +7883,14 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: Some("openrouter".to_string()),
+            reasoning: None,
         });
         config.models.evaluator = Some(RoleModelConfig {
             model: None,
             provider: None,
             tier: None,
             endpoint: Some("anthropic-direct".to_string()),
+            reasoning: None,
         });
 
         // Triage inherits default
@@ -7535,6 +8003,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
@@ -7558,6 +8027,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "deepseek/deepseek-chat");
@@ -7574,6 +8044,7 @@ model = "claude:haiku"
             provider: Some("openrouter".to_string()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
@@ -7590,6 +8061,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "some-unknown-model");
@@ -7703,6 +8175,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let v = config.validate_config();
         assert!(v.is_ok()); // warnings don't block
@@ -7718,6 +8191,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let v = config.validate_config();
         assert!(v.is_clean());
@@ -7732,6 +8206,7 @@ model = "claude:haiku"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let v = config.validate_config();
         assert!(v.warnings.iter().all(|w| w.rule != "unresolved-model-id"));
@@ -8657,6 +9132,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "deepseek/deepseek-v3.2");
@@ -8671,6 +9147,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         // Model ID should be the bare part without the claude: prefix
@@ -8686,6 +9163,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "gpt-5.4-mini");
@@ -8700,6 +9178,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
@@ -8721,6 +9200,7 @@ model = "local:qwen3-coder"
             provider: Some("anthropic".into()), // This should be overridden
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "qwen/qwen-turbo");
@@ -8737,6 +9217,7 @@ model = "local:qwen3-coder"
             provider: Some("openai".into()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "gpt-4o-mini");
@@ -8751,6 +9232,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "llama3");
@@ -8765,6 +9247,7 @@ model = "local:qwen3-coder"
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "gemini-2.0-flash-001");
@@ -9855,6 +10338,7 @@ fetch_max_chars = 16000
             provider: None,
             tier: None,
             endpoint: None,
+            reasoning: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(
@@ -10223,5 +10707,59 @@ model = "codex:gpt-5.5"
         for k in Config::PI_STRONG_TOML_KEYS {
             assert!(!Config::PI_WEAK_TOML_KEYS.contains(k), "{k} in both tiers");
         }
+    }
+
+    #[test]
+    fn execution_system_key_keeps_handler_and_provider_boundaries() {
+        for (route, handler, provider) in [
+            ("claude:sonnet", "claude", "anthropic-cli"),
+            ("codex:gpt-5.5", "codex", "openai-codex-cli"),
+            ("pi:openai-codex:gpt-5.6-terra", "pi", "openai-codex"),
+            ("pi:openrouter:z-ai/glm-5.2", "pi", "openrouter"),
+            ("nex:openrouter:z-ai/glm-5.2", "nex", "openrouter"),
+            ("nex:qwen3-coder", "nex", "oai-compat"),
+        ] {
+            let key = execution_system_key(route).unwrap();
+            assert_eq!(key.handler, handler, "route={route}");
+            assert_eq!(key.provider, provider, "route={route}");
+        }
+    }
+
+    #[test]
+    fn execution_fallback_config_roundtrips_in_declared_order() {
+        let input = r#"
+[[execution.fallbacks]]
+primary = "pi:openai-codex:gpt-5.6-terra"
+models = ["pi:openai-codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-luna"]
+"#;
+        let config: Config = toml::from_str(input).unwrap();
+        assert_eq!(
+            config.execution.models_for("pi:openai-codex:gpt-5.6-terra"),
+            [
+                "pi:openai-codex:gpt-5.6-sol",
+                "pi:openai-codex:gpt-5.6-luna"
+            ]
+        );
+    }
+
+    #[test]
+    fn config_validation_rejects_cross_system_execution_fallbacks() {
+        let mut config = Config::default();
+        config.execution.fallbacks.push(ExecutionFallback {
+            primary: "pi:openrouter:z-ai/glm-5.2".into(),
+            models: vec![
+                "pi:openai-codex:gpt-5.6-sol".into(),
+                "nex:openrouter:z-ai/glm-5.2".into(),
+                "claude:haiku".into(),
+            ],
+        });
+
+        let validation = config.validate_config();
+        let cross_system = validation
+            .errors
+            .iter()
+            .filter(|diagnostic| diagnostic.rule == "execution-fallback-cross-system")
+            .count();
+        assert_eq!(cross_system, 3);
     }
 }

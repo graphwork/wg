@@ -188,6 +188,11 @@ pub fn run(
         return Ok(());
     }
 
+    worksgood::execution_selection::require(
+        workgraph_dir,
+        task.model.as_deref().map(|m| (m, true)),
+        "wg spawn-task",
+    )?;
     dispatch(&spec, workgraph_dir)
 }
 

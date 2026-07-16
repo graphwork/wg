@@ -33,7 +33,11 @@ fn make_in_progress_task(id: &str, title: &str) -> Task {
 /// Run a `wg` subcommand inside `dir` using `cargo run` and return (stdout, stderr, exit_code).
 fn run_wg(dir: &std::path::Path, args: &[&str]) -> (String, String, i32) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
-    cmd.current_dir(dir).args(args).env_remove("WG_DIR");
+    cmd.current_dir(dir)
+        .args(args)
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID");
     let output = cmd.output().expect("Failed to run wg binary");
     (
         String::from_utf8_lossy(&output.stdout).to_string(),
@@ -208,6 +212,8 @@ fn test_classify_failure_subcommand_pdf_400() {
         "1",
     ]);
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     let output = cmd.output().expect("Failed to run wg binary");
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(
@@ -235,6 +241,8 @@ fn test_classify_failure_subcommand_codex_unavailable_optional_tool_model() {
         "1",
     ]);
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     let output = cmd.output().expect("Failed to run wg binary");
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(
@@ -251,6 +259,8 @@ fn test_classify_failure_subcommand_hard_timeout() {
     cmd.current_dir(tmp.path())
         .args(["classify-failure", "--exit-code", "124"]);
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     let output = cmd.output().expect("Failed to run wg binary");
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(

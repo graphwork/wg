@@ -1082,6 +1082,7 @@ fn apply_proposal<'a>(dir: &Path, p: &'a Proposal) -> Result<Vec<&'a str>> {
             model: Some(weak_spec.clone()),
             tier: None,
             endpoint: None,
+            reasoning: None,
         };
         config.models.evaluator = Some(role.clone());
         config.models.assigner = Some(role.clone());

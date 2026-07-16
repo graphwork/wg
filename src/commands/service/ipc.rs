@@ -105,6 +105,8 @@ pub enum IpcRequest {
         #[serde(default)]
         model: Option<String>,
         #[serde(default)]
+        reasoning: Option<worksgood::config::ReasoningLevel>,
+        #[serde(default)]
         verify: Option<String>,
         #[serde(default)]
         verify_timeout: Option<String>,
@@ -265,10 +267,10 @@ impl IpcResponse {
 
 /// Handle a single IPC connection
 ///
-/// Uses `&Stream` for both reading and writing — `interprocess::local_socket::Stream`
-/// exposes `Read`/`Write` on shared references, so we can run a `BufReader<&Stream>`
-/// and write responses via `(&stream).write_all(...)` in the same scope without
-/// needing a `try_clone`.
+/// Each connection carries exactly one request and one response. Returning
+/// immediately after the response closes the accepted stream from the server
+/// side, so a client can never leave the single-threaded daemon accept loop
+/// parked on a second `read()` after its one-shot request is complete.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
@@ -283,59 +285,59 @@ pub(crate) fn handle_connection(
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
-    // Ensure reads block (the accepting listener is non-blocking, but we want
-    // straightforward request/response on the accepted connection).
+    // The daemon handles accepted connections on its coordinator thread. A
+    // peer can connect before sending a complete line (or never send one), so
+    // one-request-per-connection alone does not bound the initial read. Keep
+    // blocking I/O for simple request/response semantics, but put a hard bound
+    // on both directions so a partial writer or a client that never reads its
+    // response cannot strand ticks and all subsequent IPC indefinitely.
+    const IPC_IO_TIMEOUT: Duration = Duration::from_millis(500);
     stream.set_nonblocking(false)?;
+    stream.set_recv_timeout(Some(IPC_IO_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_IO_TIMEOUT))?;
 
-    let reader = BufReader::new(&stream);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                let response = IpcResponse::error(&format!("Read error: {}", e));
-                if let Err(we) = write_response(&stream, &response) {
-                    logger.warn(&format!("Failed to send error response: {}", we));
-                }
-                return Ok(());
-            }
-        };
-
-        if line.is_empty() {
-            continue;
-        }
-
-        let request: IpcRequest = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                logger.warn(&format!("Invalid IPC request: {}", e));
-                let response = IpcResponse::error(&format!("Invalid request: {}", e));
-                write_response(&stream, &response)?;
-                continue;
-            }
-        };
-
-        let response = handle_request(
-            dir,
-            request,
-            running,
-            wake_coordinator,
-            kick_dispatcher,
-            urgent_wake,
-            pending_coordinator_ids,
-            delete_coordinator_ids,
-            interrupt_coordinator_ids,
-            daemon_cfg,
-            logger,
-        );
-        write_response(&stream, &response)?;
-
-        // Check if we should stop
-        if !*running {
-            break;
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => return Ok(()), // disconnected without a request
+        Ok(_) => {}
+        Err(e) => {
+            logger.warn(&format!("IPC request read failed or timed out: {}", e));
+            return Ok(());
         }
     }
 
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.is_empty() {
+        let response = IpcResponse::error("Invalid request: empty request");
+        write_response(&stream, &response)?;
+        return Ok(());
+    }
+
+    let request: IpcRequest = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(e) => {
+            logger.warn(&format!("Invalid IPC request: {}", e));
+            let response = IpcResponse::error(&format!("Invalid request: {}", e));
+            write_response(&stream, &response)?;
+            return Ok(());
+        }
+    };
+
+    let response = handle_request(
+        dir,
+        request,
+        running,
+        wake_coordinator,
+        kick_dispatcher,
+        urgent_wake,
+        pending_coordinator_ids,
+        delete_coordinator_ids,
+        interrupt_coordinator_ids,
+        daemon_cfg,
+        logger,
+    );
+    write_response(&stream, &response)?;
     Ok(())
 }
 
@@ -492,6 +494,7 @@ fn handle_request(
             skills,
             deliverables,
             model,
+            reasoning,
             verify,
             verify_timeout,
             origin,
@@ -501,7 +504,7 @@ fn handle_request(
                 "IPC AddTask: title='{}', origin={:?}",
                 title, origin
             ));
-            let resp = handle_add_task(
+            let resp = handle_add_task_with_reasoning(
                 dir,
                 &title,
                 id.as_deref(),
@@ -511,6 +514,7 @@ fn handle_request(
                 &skills,
                 &deliverables,
                 model.as_deref(),
+                reasoning,
                 verify.as_deref(),
                 verify_timeout.as_deref(),
                 cron.as_deref(),
@@ -607,7 +611,22 @@ fn handle_request(
                 "IPC SetChatExecutor: chat_id={}, executor={:?}, model={:?}",
                 chat_id, executor, model
             ));
-            handle_set_coordinator_executor(dir, chat_id, executor.as_deref(), model.as_deref())
+            let response = handle_set_coordinator_executor(
+                dir,
+                chat_id,
+                executor.as_deref(),
+                model.as_deref(),
+            );
+            if response.ok {
+                // `wg chat resume` uses this IPC. The old supervisor may have
+                // already ended due to idleness, leaving no child for
+                // handle_set_coordinator_executor to signal. Queue an urgent
+                // lazy-spawn either way; the daemon's supervisor-ended gate
+                // safely retains a legitimate restart/backoff supervisor.
+                pending_coordinator_ids.push(chat_id);
+                *urgent_wake = true;
+            }
+            response
         }
         IpcRequest::DeleteChat { chat_id } => {
             logger.info(&format!("IPC DeleteChat: chat_id={}", chat_id));
@@ -1154,6 +1173,41 @@ fn handle_add_task(
     cron: Option<&str>,
     origin: Option<&str>,
 ) -> IpcResponse {
+    handle_add_task_with_reasoning(
+        dir,
+        title,
+        id,
+        description,
+        after,
+        tags,
+        skills,
+        deliverables,
+        model,
+        None,
+        verify,
+        verify_timeout,
+        cron,
+        origin,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_add_task_with_reasoning(
+    dir: &Path,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    after: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    reasoning: Option<worksgood::config::ReasoningLevel>,
+    verify: Option<&str>,
+    verify_timeout: Option<&str>,
+    cron: Option<&str>,
+    origin: Option<&str>,
+) -> IpcResponse {
     let graph_path = graph_path(dir);
     let graph = match load_graph(&graph_path) {
         Ok(g) => g,
@@ -1259,8 +1313,10 @@ fn handle_add_task(
         failure_reason: None,
         failure_class: None,
         model: model.map(String::from),
+        reasoning,
         provider: None,
         endpoint: None,
+        remote_provider: None,
         profile: None,
         command_argv: vec![],
         working_dir: None,
@@ -2753,6 +2809,54 @@ poll_interval = 120
             pending_coordinator_ids.is_empty(),
             "pending_coordinator_ids must be empty on failed create"
         );
+    }
+
+    #[test]
+    fn test_set_chat_executor_success_queues_urgent_resume_wake() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut kick_dispatcher = false;
+        let mut urgent_wake = false;
+        let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
+        let mut interrupt_coordinator_ids = Vec::new();
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let resp = handle_request(
+            dir,
+            IpcRequest::SetChatExecutor {
+                chat_id: 5,
+                executor: Some("nex".to_string()),
+                model: None,
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut kick_dispatcher,
+            &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
+            &mut interrupt_coordinator_ids,
+            &mut cfg,
+            &logger,
+        );
+
+        assert!(resp.ok);
+        assert!(urgent_wake, "resume must wake the lazy-spawn path");
+        assert_eq!(pending_coordinator_ids, vec![5]);
+        assert!(!wake_coordinator);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use worksgood::config::ReasoningLevel;
 use worksgood::cycle::{EdgeAddResult, check_edge_addition};
 use worksgood::graph::{CycleConfig, parse_delay};
 use worksgood::parser::modify_graph;
@@ -20,6 +21,73 @@ pub fn run(
     add_tag: &[String],
     remove_tag: &[String],
     model: Option<&str>,
+    provider: Option<&str>,
+    add_skill: &[String],
+    remove_skill: &[String],
+    max_iterations: Option<u32>,
+    cycle_guard: Option<&str>,
+    cycle_delay: Option<&str>,
+    no_converge: bool,
+    no_restart_on_failure: bool,
+    max_failure_restarts: Option<u32>,
+    visibility: Option<&str>,
+    context_scope: Option<&str>,
+    exec_mode: Option<&str>,
+    delay: Option<&str>,
+    not_before: Option<&str>,
+    verify: Option<&str>,
+    cron: Option<&str>,
+    timeout: Option<&str>,
+    verify_timeout: Option<&str>,
+    allow_phantom: bool,
+    allow_cycle: bool,
+) -> Result<()> {
+    run_with_reasoning(
+        dir,
+        task_id,
+        title,
+        description,
+        add_after,
+        remove_after,
+        add_tag,
+        remove_tag,
+        model,
+        None,
+        provider,
+        add_skill,
+        remove_skill,
+        max_iterations,
+        cycle_guard,
+        cycle_delay,
+        no_converge,
+        no_restart_on_failure,
+        max_failure_restarts,
+        visibility,
+        context_scope,
+        exec_mode,
+        delay,
+        not_before,
+        verify,
+        cron,
+        timeout,
+        verify_timeout,
+        allow_phantom,
+        allow_cycle,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_reasoning(
+    dir: &Path,
+    task_id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+    add_after: &[String],
+    remove_after: &[String],
+    add_tag: &[String],
+    remove_tag: &[String],
+    model: Option<&str>,
+    reasoning: Option<&str>,
     provider: Option<&str>,
     add_skill: &[String],
     remove_skill: &[String],
@@ -70,6 +138,10 @@ pub fn run(
     {
         anyhow::bail!("Invalid --model format: {}", e);
     }
+    let parsed_reasoning = reasoning
+        .map(str::parse::<ReasoningLevel>)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
@@ -254,6 +326,12 @@ pub fn run(
         if let Some(new_model) = model {
             task.model = Some(new_model.to_string());
             println!("Updated model: {}", new_model);
+            changed = true;
+        }
+
+        if let Some(parsed) = parsed_reasoning {
+            task.reasoning = Some(parsed);
+            println!("Updated reasoning: {}", parsed);
             changed = true;
         }
 

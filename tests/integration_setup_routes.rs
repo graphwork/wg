@@ -45,6 +45,8 @@ fn run_wg_in_isolation_with_env(
     cmd.env_remove("OPENROUTER_API_KEY");
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -67,6 +69,8 @@ fn run_wg_in_isolation_with_stdin(
     cmd.env_remove("OPENROUTER_API_KEY");
     cmd.env_remove("OPENAI_API_KEY");
     cmd.env_remove("WG_DIR");
+    cmd.env_remove("WG_TASK_ID");
+    cmd.env_remove("WG_AGENT_ID");
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

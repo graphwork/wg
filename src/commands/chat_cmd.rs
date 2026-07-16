@@ -248,6 +248,9 @@ pub fn run_create(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    // A chat is an LLM-backed entity. Refuse before IPC or direct graph
+    // mutation unless its invocation or config explicitly selects a route.
+    worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
     if service_is_running(dir) {
         run_create_via_ipc(dir, name, model, executor, endpoint, command, json)
     } else {
@@ -652,10 +655,7 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&d)?);
         }
     } else {
-        println!(
-            "Asked supervisor to resume chat {}. Send a message to wake the handler.",
-            cid
-        );
+        println!("Asked supervisor to resume chat {}.", cid);
     }
     Ok(())
 }
