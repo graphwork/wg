@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
@@ -22,14 +22,211 @@ use worksgood::models::load_model_choices;
 use worksgood::parser::load_graph;
 use worksgood::{AgentRegistry, AgentStatus};
 
+pub(super) type BootstrapApply = Box<dyn FnOnce(&mut VizApp) + Send>;
+
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
 const CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE: Duration = Duration::from_secs(5);
+
+/// Construct a child `wg` command that is pinned to this TUI's graph.
+///
+/// A TUI can itself be launched from a WG worker/chat. In that case the
+/// process inherits the parent's routing and identity variables. Letting a
+/// background command inherit those values means `current_dir(project_root)`
+/// is ignored in favor of the parent WG_DIR, so first-use chat bootstrap can
+/// mutate the live parent graph (historically even creating bare
+/// `.coordinator` ghosts). An explicit `--dir` plus an identity-free child
+/// environment is the hard subprocess boundary.
+fn isolated_wg_subprocess(program: &Path, workgraph_dir: &Path, args: &[String]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .arg("--dir")
+        .arg(workgraph_dir)
+        .args(args)
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID");
+    command
+}
+
+#[cfg(test)]
+mod subprocess_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn tui_child_command_pins_graph_and_clears_parent_worker_environment() {
+        let command = isolated_wg_subprocess(
+            Path::new("/tmp/built-wg"),
+            Path::new("/tmp/scratch/.wg"),
+            &["chat".into(), "create".into()],
+        );
+
+        assert_eq!(command.get_program(), "/tmp/built-wg");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--dir", "/tmp/scratch/.wg", "chat", "create"]);
+
+        let removed: HashSet<_> = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.is_none().then(|| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        assert_eq!(
+            removed,
+            HashSet::from([
+                "WG_DIR".to_string(),
+                "WG_TASK_ID".to_string(),
+                "WG_AGENT_ID".to_string(),
+            ])
+        );
+    }
+}
+
+/// One active-log enrichment/history page is bounded by both bytes and records.
+///
+/// These are the TUI-wide limits promised by `docs/design-fully-async-tui.md`.
+/// A tail with more data is resumed from its byte cursor on the next 100 ms
+/// poll; no individual read or parse batch can grow with the size of the log.
+pub(crate) const ACTIVE_LOG_PAGE_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const ACTIVE_LOG_PAGE_MAX_RECORDS: usize = 200;
+
+/// A live Chat page is a projection, never the persisted history itself.
+/// Keep these limits independent of public configuration and CLI overrides so
+/// draw/search cost cannot grow with an on-disk history file.
+pub(crate) const CHAT_HISTORY_PAGE_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const CHAT_HISTORY_PAGE_MAX_RECORDS: usize = 200;
+
+fn bounded_chat_page_size(requested: usize) -> usize {
+    requested.clamp(1, CHAT_HISTORY_PAGE_MAX_RECORDS)
+}
 
 pub fn new_emacs_editor() -> EditorState {
     let mut state = EditorState::default();
     state.mode = EditorMode::Insert;
     state
+}
+
+#[cfg(test)]
+mod large_graph_snapshot_tests {
+    use super::*;
+
+    fn shell() -> VizApp {
+        VizApp::build(
+            PathBuf::from("/tmp/wg-snapshot-test"),
+            VizOptions::default(),
+            Some(false),
+            None,
+            true,
+            Config::default(),
+            None,
+            false,
+        )
+    }
+
+    fn synthetic_snapshot(rows: usize, selected: usize, generation: u64) -> GraphViewSnapshot {
+        let mut app = shell();
+        app.initial_load = false;
+        for index in 0..rows {
+            let id = format!("task-{index:05}");
+            app.lines.push(format!("{id} synthetic row {index}"));
+            app.plain_lines.push(format!("{id} synthetic row {index}"));
+            app.search_lines.push(format!("{id} synthetic row {index}"));
+            app.task_order.push(id.clone());
+            app.node_line_map.insert(id, index);
+        }
+        app.max_line_width = 32;
+        app.selected_task_idx = Some(selected.min(rows.saturating_sub(1)));
+        app.rebuild_snapshot_indexes();
+        app.scroll.content_height = rows + 1;
+        let key = app.graph_view_key();
+        app.take_graph_snapshot(generation, key, None, true)
+    }
+
+    #[test]
+    fn snapshot_accept_is_constant_work_and_preserves_interaction_state() {
+        let mut app = shell();
+        app.snapshot_engine = Some(super::super::snapshot_engine::SnapshotEngine::new());
+        app.install_graph_snapshot(synthetic_snapshot(10_000, 5_000, 1));
+
+        app.scroll.viewport_height = 40;
+        app.scroll.offset_y = 4_990;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.input_mode = InputMode::Search;
+        app.search_active = true;
+        app.search_input = "needle".to_string();
+        app.active_coordinator_id = 7;
+        app.active_tabs = vec![0, 7, 9];
+        app.chat.scroll = 23;
+        app.hud_scroll = 41;
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-task-05000".to_string(),
+            anchor_parent_id: "task-05000".to_string(),
+        });
+        let old_line_storage = app.lines.as_ptr();
+        let retired_generation = Arc::downgrade(&app.task_snapshots);
+
+        let replacement = synthetic_snapshot(10_001, 5_000, 2);
+        let replacement_storage = replacement.lines.as_ptr();
+        let started = Instant::now();
+        app.install_graph_snapshot(replacement);
+        let accepted_in = started.elapsed();
+
+        assert_ne!(old_line_storage, app.lines.as_ptr());
+        assert_eq!(replacement_storage, app.lines.as_ptr());
+        assert_eq!(app.snapshot_generation, 2);
+        assert_eq!(app.selected_task_id(), Some("task-05000"));
+        assert_eq!(app.scroll.offset_y, 4_990);
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.input_mode, InputMode::Search);
+        assert_eq!(app.search_input, "needle");
+        assert_eq!(app.active_coordinator_id, 7);
+        assert_eq!(app.active_tabs, vec![0, 7, 9]);
+        assert_eq!(app.chat.scroll, 23);
+        assert_eq!(app.hud_scroll, 41);
+        assert_eq!(
+            app.hud_pin.as_ref().map(|pin| pin.dot_task_id.as_str()),
+            Some(".evaluate-task-05000")
+        );
+        assert!(
+            accepted_in < Duration::from_millis(5),
+            "10k snapshot acceptance must be bounded; took {accepted_in:?}"
+        );
+        let retire_deadline = Instant::now() + Duration::from_secs(1);
+        while retired_generation.upgrade().is_some() && Instant::now() < retire_deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            retired_generation.upgrade().is_none(),
+            "the idle worker retained the replaced graph generation"
+        );
+    }
+
+    #[test]
+    fn snapshot_indexes_make_filter_hit_test_and_trace_lookup_constant_time() {
+        let mut app = shell();
+        app.install_graph_snapshot(synthetic_snapshot(10_000, 9_999, 1));
+        app.filtered_indices = Some((0..10_000).step_by(2).collect());
+        app.fuzzy_matches = (0..10_000)
+            .step_by(10)
+            .map(|line_idx| FuzzyLineMatch {
+                line_idx,
+                score: 1,
+                char_positions: vec![0],
+            })
+            .collect();
+        app.rebuild_snapshot_indexes();
+
+        assert_eq!(app.original_to_visible(9_998), Some(4_999));
+        assert_eq!(app.original_to_visible(9_999), None);
+        assert_eq!(app.match_for_line(9_990).map(|m| m.line_idx), Some(9_990));
+        assert!(app.select_task_at_line(9_999));
+        assert_eq!(app.selected_task_id(), Some("task-09999"));
+    }
 }
 
 #[allow(dead_code)]
@@ -1730,6 +1927,7 @@ pub struct LauncherState {
 /// Pure function (no &mut self) so unit tests can exercise it without
 /// constructing a full `VizViewer`. See
 /// `chat_launched_with_uses_per_chat_executor` for the regression lock.
+#[cfg(test)]
 pub fn resolve_chat_pty_executor_and_model(
     workgraph_dir: &std::path::Path,
     config: &Config,
@@ -1741,6 +1939,20 @@ pub fn resolve_chat_pty_executor_and_model(
             g.get_task(&worksgood::chat_id::format_chat_task_id(coordinator_id))
                 .cloned()
         });
+    resolve_chat_pty_executor_and_model_with_task(
+        workgraph_dir,
+        config,
+        coordinator_id,
+        chat_task.as_ref(),
+    )
+}
+
+fn resolve_chat_pty_executor_and_model_with_task(
+    workgraph_dir: &std::path::Path,
+    config: &Config,
+    coordinator_id: u32,
+    chat_task: Option<&worksgood::graph::Task>,
+) -> (String, Option<String>) {
     let coord_state =
         crate::commands::service::CoordinatorState::load_for(workgraph_dir, coordinator_id);
     let executor = coord_state
@@ -2728,6 +2940,7 @@ impl TaskFormField {
 }
 
 impl TaskFormState {
+    #[cfg(test)]
     pub fn new(workgraph_dir: &std::path::Path) -> Self {
         // Load all tasks for dependency search.
         let graph_path = workgraph_dir.join("graph.jsonl");
@@ -2735,6 +2948,10 @@ impl TaskFormState {
             Ok(g) => g.tasks().map(|t| (t.id.clone(), t.title.clone())).collect(),
             Err(_) => Vec::new(),
         };
+        Self::from_tasks(all_tasks)
+    }
+
+    fn from_tasks(all_tasks: Vec<(String, String)>) -> Self {
         Self {
             active_field: TaskFormField::Title,
             title: String::new(),
@@ -2850,6 +3067,92 @@ impl ChatState {
     pub fn awaiting_response(&self) -> bool {
         !self.pending_request_ids.is_empty()
     }
+
+    /// Enforce the one projection contract shared by history publication,
+    /// drawing, and search. The newest contiguous records win; an individual
+    /// oversized newest record is UTF-8-truncated to the byte budget.
+    pub(super) fn enforce_history_projection(&mut self) {
+        let dropped = clamp_chat_messages(&mut self.messages);
+        if dropped == 0 {
+            return;
+        }
+        self.skipped_history_count = self.skipped_history_count.saturating_add(dropped);
+        self.deferred_user_indices = self
+            .deferred_user_indices
+            .iter()
+            .filter_map(|index| index.checked_sub(dropped))
+            .collect();
+        self.search.matches.clear();
+        self.search.current_match = None;
+    }
+
+    /// The legacy persistence writer preserves an unloaded prefix. It must not
+    /// rewrite while an older replacement page is visible, because that page
+    /// has an unloaded suffix as well. Inbox/outbox remain the source of truth
+    /// for any new traffic until the newest page is restored.
+    fn projection_reaches_history_tail(&self) -> bool {
+        self.total_history_count == 0
+            || self
+                .skipped_history_count
+                .saturating_add(self.messages.len())
+                >= self.total_history_count
+    }
+}
+
+/// Sendable subset of chat state used by the auxiliary storage worker.
+/// `EditorState` embeds an `Rc` clipboard and deliberately remains owned by
+/// the terminal thread.
+struct ChatStorageSnapshot {
+    messages: Vec<ChatMessage>,
+    pending_request_ids: HashSet<String>,
+    outbox_cursor: u64,
+    deferred_user_indices: Vec<usize>,
+    coordinator_active: bool,
+    streaming_text: String,
+    awaiting_since: Option<Instant>,
+    has_more_history: bool,
+    total_history_count: usize,
+    skipped_history_count: usize,
+    archives_loaded: bool,
+    has_archives: bool,
+}
+
+impl ChatStorageSnapshot {
+    fn capture(chat: &ChatState) -> Self {
+        Self {
+            messages: clone_bounded_chat_messages(&chat.messages),
+            pending_request_ids: chat.pending_request_ids.clone(),
+            outbox_cursor: chat.outbox_cursor,
+            deferred_user_indices: chat.deferred_user_indices.clone(),
+            coordinator_active: chat.coordinator_active,
+            streaming_text: chat.streaming_text.clone(),
+            awaiting_since: chat.awaiting_since,
+            has_more_history: chat.has_more_history,
+            total_history_count: chat.total_history_count,
+            skipped_history_count: chat.skipped_history_count,
+            archives_loaded: chat.archives_loaded,
+            has_archives: chat.has_archives,
+        }
+    }
+
+    fn install(mut self, chat: &mut ChatState) {
+        // This is the publication boundary from storage workers to the
+        // terminal-owned render/search state. Never trust a producer's page
+        // size, even when it already came through a bounded loader.
+        clamp_chat_messages(&mut self.messages);
+        chat.messages = self.messages;
+        chat.pending_request_ids = self.pending_request_ids;
+        chat.outbox_cursor = self.outbox_cursor;
+        chat.deferred_user_indices = self.deferred_user_indices;
+        chat.coordinator_active = self.coordinator_active;
+        chat.streaming_text = self.streaming_text;
+        chat.awaiting_since = self.awaiting_since;
+        chat.has_more_history = self.has_more_history;
+        chat.total_history_count = self.total_history_count;
+        chat.skipped_history_count = self.skipped_history_count;
+        chat.archives_loaded = self.archives_loaded;
+        chat.has_archives = self.has_archives;
+    }
 }
 
 /// State for in-chat search (/ key when chat tab is focused).
@@ -2922,6 +3225,7 @@ pub struct PendingAttachment {
     pub size_bytes: u64,
 }
 
+#[derive(Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
@@ -2957,6 +3261,112 @@ pub enum ChatRole {
     /// A message sent to an agent's task via `wg msg send`, shown interleaved
     /// at the temporal position where the agent read it.
     SentMessage,
+}
+
+fn chat_message_projection_bytes(message: &ChatMessage) -> usize {
+    message.text.len()
+        + message.full_text.as_ref().map_or(0, String::len)
+        + message.attachments.iter().map(String::len).sum::<usize>()
+        + message.user.as_ref().map_or(0, String::len)
+        + message.target_task.as_ref().map_or(0, String::len)
+        + message.msg_timestamp.as_ref().map_or(0, String::len)
+        + message.read_at.as_ref().map_or(0, String::len)
+}
+
+fn truncate_string_to_budget(value: &mut String, remaining: &mut usize) {
+    if value.len() <= *remaining {
+        *remaining -= value.len();
+        return;
+    }
+    let mut end = (*remaining).min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    *remaining = remaining.saturating_sub(end);
+}
+
+fn truncate_optional_string_to_budget(value: &mut Option<String>, remaining: &mut usize) {
+    if let Some(value) = value {
+        truncate_string_to_budget(value, remaining);
+    }
+}
+
+fn truncate_chat_message_to_budget(message: &mut ChatMessage, budget: usize) {
+    let mut remaining = budget;
+    truncate_string_to_budget(&mut message.text, &mut remaining);
+    truncate_optional_string_to_budget(&mut message.full_text, &mut remaining);
+    for attachment in &mut message.attachments {
+        truncate_string_to_budget(attachment, &mut remaining);
+    }
+    message
+        .attachments
+        .retain(|attachment| !attachment.is_empty());
+    truncate_optional_string_to_budget(&mut message.user, &mut remaining);
+    truncate_optional_string_to_budget(&mut message.target_task, &mut remaining);
+    truncate_optional_string_to_budget(&mut message.msg_timestamp, &mut remaining);
+    truncate_optional_string_to_budget(&mut message.read_at, &mut remaining);
+}
+
+/// Clamp in place and return the number of older records removed.
+fn clamp_chat_messages(messages: &mut Vec<ChatMessage>) -> usize {
+    if messages.is_empty() {
+        return 0;
+    }
+
+    let mut start = messages.len();
+    let mut records = 0usize;
+    let mut bytes = 0usize;
+    for index in (0..messages.len()).rev() {
+        if records == CHAT_HISTORY_PAGE_MAX_RECORDS {
+            break;
+        }
+        let message_bytes = chat_message_projection_bytes(&messages[index]);
+        if message_bytes > CHAT_HISTORY_PAGE_MAX_BYTES.saturating_sub(bytes) {
+            if records == 0 {
+                truncate_chat_message_to_budget(&mut messages[index], CHAT_HISTORY_PAGE_MAX_BYTES);
+                start = index;
+            }
+            break;
+        }
+        bytes += message_bytes;
+        records += 1;
+        start = index;
+    }
+
+    let dropped = start;
+    if dropped > 0 {
+        messages.drain(..dropped);
+    }
+    dropped
+}
+
+fn clone_bounded_chat_messages(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+
+    let mut start = messages.len();
+    let mut records = 0usize;
+    let mut bytes = 0usize;
+    for index in (0..messages.len()).rev() {
+        if records == CHAT_HISTORY_PAGE_MAX_RECORDS {
+            break;
+        }
+        let message_bytes = chat_message_projection_bytes(&messages[index]);
+        if message_bytes > CHAT_HISTORY_PAGE_MAX_BYTES.saturating_sub(bytes) {
+            if records == 0 {
+                let mut newest = messages[index].clone();
+                truncate_chat_message_to_budget(&mut newest, CHAT_HISTORY_PAGE_MAX_BYTES);
+                return vec![newest];
+            }
+            break;
+        }
+        bytes += message_bytes;
+        records += 1;
+        start = index;
+    }
+    messages[start..].to_vec()
 }
 
 /// Serializable chat message for persistence to disk.
@@ -3132,6 +3542,9 @@ struct PaginatedChatHistory {
     messages: Vec<ChatMessage>,
     /// Total number of messages in the history file.
     total_count: usize,
+    /// Source-record index of the first record represented by this page.
+    /// This remains accurate when malformed/sent-message records are filtered.
+    window_start: usize,
     /// Whether there are older messages not yet loaded.
     has_more: bool,
 }
@@ -3148,6 +3561,7 @@ fn load_persisted_chat_history_paginated(
         return PaginatedChatHistory {
             messages: vec![],
             total_count: 0,
+            window_start: 0,
             has_more: false,
         };
     }
@@ -3187,124 +3601,126 @@ fn load_persisted_chat_history_paginated(
     PaginatedChatHistory {
         messages: vec![],
         total_count: 0,
+        window_start: 0,
         has_more: false,
     }
 }
 
-/// Efficiently load the last `limit` messages from a JSONL file by reading from the end.
-fn load_jsonl_tail(path: &std::path::Path, limit: usize) -> PaginatedChatHistory {
-    use std::io::{Read, Seek, SeekFrom};
+fn is_nonempty_jsonl_record(line: &[u8]) -> bool {
+    line.iter()
+        .any(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+}
 
-    let mut file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => {
-            return PaginatedChatHistory {
-                messages: vec![],
-                total_count: 0,
-                has_more: false,
-            };
+fn count_jsonl_records(path: &std::path::Path) -> usize {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut count = 0usize;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if is_nonempty_jsonl_record(&line) => count += 1,
+            Ok(_) => {}
         }
+    }
+    count
+}
+
+/// Read one chronological source window while retaining only its newest hard
+/// projection. The file is streamed; unlike the old implementation, a 97 MiB
+/// history is never materialized as one `String`/`Vec<&str>`.
+fn load_jsonl_window(
+    path: &std::path::Path,
+    total_count: usize,
+    end_exclusive: usize,
+    requested: usize,
+) -> PaginatedChatHistory {
+    let limit = bounded_chat_page_size(requested);
+    let end = end_exclusive.min(total_count);
+    let requested_start = end.saturating_sub(limit);
+    let Ok(file) = std::fs::File::open(path) else {
+        return PaginatedChatHistory {
+            messages: vec![],
+            total_count: 0,
+            window_start: 0,
+            has_more: false,
+        };
     };
 
-    let file_len = match file.seek(SeekFrom::End(0)) {
-        Ok(len) => len as usize,
-        Err(_) => {
-            return PaginatedChatHistory {
-                messages: vec![],
-                total_count: 0,
-                has_more: false,
-            };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut source_index = 0usize;
+    let mut retained_bytes = 0usize;
+    let mut retained: VecDeque<(usize, Vec<u8>)> = VecDeque::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if !is_nonempty_jsonl_record(&line) => continue,
+            Ok(_) => {}
         }
-    };
 
-    if file_len == 0 {
-        return PaginatedChatHistory {
-            messages: vec![],
-            total_count: 0,
-            has_more: false,
-        };
+        if source_index >= end {
+            break;
+        }
+        if source_index >= requested_start {
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            // An individual record that cannot fit is not a publishable page
+            // record. Clear older retained records so the result remains the
+            // newest contiguous projection after that record.
+            if line.len() > CHAT_HISTORY_PAGE_MAX_BYTES {
+                retained.clear();
+                retained_bytes = 0;
+            } else {
+                retained_bytes += line.len();
+                retained.push_back((source_index, std::mem::take(&mut line)));
+                while retained.len() > limit || retained_bytes > CHAT_HISTORY_PAGE_MAX_BYTES {
+                    if let Some((_, removed)) = retained.pop_front() {
+                        retained_bytes = retained_bytes.saturating_sub(removed.len());
+                    }
+                }
+            }
+        }
+        source_index += 1;
     }
 
-    // Read the file contents and extract the tail.
-    let _ = file.seek(SeekFrom::Start(0));
-    let mut all_data = String::new();
-    if file.read_to_string(&mut all_data).is_err() {
-        return PaginatedChatHistory {
-            messages: vec![],
-            total_count: 0,
-            has_more: false,
-        };
-    }
-
-    let lines: Vec<&str> = all_data.lines().filter(|l| !l.trim().is_empty()).collect();
-    let total_count = lines.len();
-
-    if total_count == 0 {
-        return PaginatedChatHistory {
-            messages: vec![],
-            total_count: 0,
-            has_more: false,
-        };
-    }
-
-    let skip = total_count.saturating_sub(limit);
-    let tail_lines = &lines[skip..];
-
-    let messages: Vec<ChatMessage> = tail_lines
-        .iter()
-        .filter_map(|line| {
-            serde_json::from_str::<PersistedChatMessage>(line)
-                .ok()
-                .map(persisted_to_chat_message)
-        })
-        // Filter out SentMessage entries — these were interleaved from task message
-        // queues and don't belong in the coordinator chat. Task messages are visible
-        // in the dedicated Messages panel.
-        .filter(|m| m.role != ChatRole::SentMessage)
+    let window_start = retained.front().map(|(index, _)| *index).unwrap_or(end);
+    let mut messages: Vec<ChatMessage> = retained
+        .into_iter()
+        .filter_map(|(_, line)| serde_json::from_slice::<PersistedChatMessage>(&line).ok())
+        .map(persisted_to_chat_message)
+        // Task messages belong in the dedicated Messages panel.
+        .filter(|message| message.role != ChatRole::SentMessage)
         .collect();
+    clamp_chat_messages(&mut messages);
 
     PaginatedChatHistory {
-        has_more: skip > 0,
-        total_count,
         messages,
+        total_count,
+        window_start,
+        has_more: window_start > 0,
     }
 }
 
-/// Load a specific page of older messages from a JSONL file.
-/// `loaded_count` is how many messages are already loaded from the tail.
-/// Returns the next `page_size` messages before those already loaded.
+/// Load the newest bounded page from a JSONL file.
+fn load_jsonl_tail(path: &std::path::Path, limit: usize) -> PaginatedChatHistory {
+    let total_count = count_jsonl_records(path);
+    load_jsonl_window(path, total_count, total_count, limit)
+}
+
+/// Load the bounded page immediately before `end_exclusive`.
 fn load_jsonl_page(
     path: &std::path::Path,
-    loaded_count: usize,
+    end_exclusive: usize,
     page_size: usize,
-) -> Vec<ChatMessage> {
-    let data = match std::fs::read_to_string(path) {
-        Ok(d) => d,
-        Err(_) => return vec![],
-    };
-
-    let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-    let total = lines.len();
-
-    if loaded_count >= total {
-        return vec![];
-    }
-
-    // Messages are in chronological order. We've loaded the last `loaded_count`.
-    // We want `page_size` messages before those.
-    let end = total.saturating_sub(loaded_count);
-    let start = end.saturating_sub(page_size);
-    let page_lines = &lines[start..end];
-
-    page_lines
-        .iter()
-        .filter_map(|line| {
-            serde_json::from_str::<PersistedChatMessage>(line)
-                .ok()
-                .map(persisted_to_chat_message)
-        })
-        .filter(|m| m.role != ChatRole::SentMessage)
-        .collect()
+) -> PaginatedChatHistory {
+    let total_count = count_jsonl_records(path);
+    load_jsonl_window(path, total_count, end_exclusive, page_size)
 }
 
 /// Load all messages from a legacy JSON array file.
@@ -3328,12 +3744,15 @@ fn load_legacy_json_all(path: &std::path::Path) -> Vec<ChatMessage> {
 fn load_legacy_json_paginated(path: &std::path::Path, limit: usize) -> PaginatedChatHistory {
     let all = load_legacy_json_all(path);
     let total_count = all.len();
-    let skip = total_count.saturating_sub(limit);
-    let messages = all.into_iter().skip(skip).collect();
+    let skip = total_count.saturating_sub(bounded_chat_page_size(limit));
+    let mut messages: Vec<_> = all.into_iter().skip(skip).collect();
+    clamp_chat_messages(&mut messages);
+    let window_start = total_count.saturating_sub(messages.len());
     PaginatedChatHistory {
         messages,
         total_count,
-        has_more: skip > 0,
+        window_start,
+        has_more: window_start > 0,
     }
 }
 
@@ -4196,9 +4615,52 @@ pub struct AgentStreamInfo {
     pub latest_snippet: Option<String>,
     /// Whether the latest event was a tool use (vs text).
     pub latest_is_tool: bool,
+    /// Token usage accumulated from the bounded JSONL pages read so far.
+    pub token_usage: Option<TokenUsage>,
+    /// A final `result` record supersedes the per-turn running total.
+    token_usage_final: bool,
 }
 
 impl AgentStreamInfo {
+    fn process_token_usage(&mut self, val: &serde_json::Value, event_type: &str) {
+        if event_type == "result" {
+            let Some(usage) = val.get("usage").or_else(|| val.get("total_usage")) else {
+                return;
+            };
+            let mut final_usage = token_usage_from_standard_fields(usage);
+            final_usage.cost_usd = val
+                .get("total_cost_usd")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(final_usage.cost_usd);
+            self.token_usage = Some(final_usage);
+            self.token_usage_final = true;
+            return;
+        }
+
+        if self.token_usage_final {
+            return;
+        }
+
+        let usage = match event_type {
+            "assistant" => val
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .map(token_usage_from_standard_fields),
+            "turn" => val.get("usage").map(token_usage_from_standard_fields),
+            "turn.completed" => val.get("usage").map(token_usage_from_codex_fields),
+            "turn_end" => val
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .map(token_usage_from_pi_fields),
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            self.token_usage
+                .get_or_insert_with(zero_token_usage)
+                .accumulate(&usage);
+        }
+    }
+
     /// Parse one JSONL line from an agent's output.log and update self.
     /// Extracted from `update_agent_streams` so per-agent tail threads can
     /// call it off the main render thread (fix-tui-perf-2 fix 6).
@@ -4213,6 +4675,7 @@ impl AgentStreamInfo {
         };
 
         let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        self.process_token_usage(&val, msg_type);
 
         match msg_type {
             "assistant" => {
@@ -4358,6 +4821,224 @@ impl AgentStreamInfo {
             }
             _ => {}
         }
+    }
+}
+
+fn token_usage_from_standard_fields(usage: &serde_json::Value) -> TokenUsage {
+    TokenUsage {
+        cost_usd: usage
+            .get("cost_usd")
+            .or_else(|| usage.get("costUsd"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0),
+        input_tokens: usage
+            .get("input_tokens")
+            .or_else(|| usage.get("inputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .or_else(|| usage.get("outputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_read_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .or_else(|| usage.get("cacheReadInputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .or_else(|| usage.get("cacheCreationInputTokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    }
+}
+
+fn token_usage_from_codex_fields(usage: &serde_json::Value) -> TokenUsage {
+    let total_input = usage
+        .get("input_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let cached = usage
+        .get("cached_input_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    TokenUsage {
+        input_tokens: total_input.saturating_sub(cached),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            + usage
+                .get("reasoning_output_tokens")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        cache_read_input_tokens: cached,
+        ..zero_token_usage()
+    }
+}
+
+fn token_usage_from_pi_fields(usage: &serde_json::Value) -> TokenUsage {
+    TokenUsage {
+        cost_usd: usage
+            .get("cost")
+            .and_then(|cost| cost.get("total"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0),
+        input_tokens: usage
+            .get("input")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_read_input_tokens: usage
+            .get("cacheRead")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_creation_input_tokens: usage
+            .get("cacheWrite")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveLogPage {
+    next_offset: u64,
+    bytes_read: usize,
+    records_read: usize,
+    reached_eof: bool,
+}
+
+/// Read one bounded JSONL page. A trailing partial record is retried from its
+/// opening byte on the next page. A single over-sized record is skipped after
+/// one byte-capped read so it cannot wedge the cursor forever.
+fn read_bounded_jsonl_page(path: &Path, offset: u64) -> std::io::Result<(String, ActiveLogPage)> {
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let offset = if offset > file_len { 0 } else { offset };
+    file.seek(SeekFrom::Start(offset))?;
+
+    let mut data = Vec::new();
+    file.by_ref()
+        .take(ACTIVE_LOG_PAGE_MAX_BYTES as u64)
+        .read_to_end(&mut data)?;
+    let bytes_read = data.len();
+    let physical_eof = offset.saturating_add(bytes_read as u64) >= file_len;
+
+    let mut record_start = 0usize;
+    let mut consumed = 0usize;
+    let mut records_read = 0usize;
+    let mut text = String::new();
+    for (index, byte) in data.iter().copied().enumerate() {
+        if byte != b'\n' {
+            continue;
+        }
+        if records_read >= ACTIVE_LOG_PAGE_MAX_RECORDS {
+            break;
+        }
+        text.push_str(&String::from_utf8_lossy(&data[record_start..index]));
+        text.push('\n');
+        records_read += 1;
+        record_start = index + 1;
+        consumed = record_start;
+    }
+
+    if records_read < ACTIVE_LOG_PAGE_MAX_RECORDS && physical_eof && record_start < data.len() {
+        text.push_str(&String::from_utf8_lossy(&data[record_start..]));
+        records_read += 1;
+        consumed = data.len();
+    } else if consumed == 0 && data.len() == ACTIVE_LOG_PAGE_MAX_BYTES {
+        // No newline fits in the byte budget: discard this one malformed or
+        // over-sized record page rather than rereading it forever.
+        consumed = data.len();
+    }
+
+    let next_offset = offset.saturating_add(consumed as u64);
+    Ok((
+        text,
+        ActiveLogPage {
+            next_offset,
+            bytes_read,
+            records_read,
+            reached_eof: next_offset >= file_len,
+        },
+    ))
+}
+
+fn read_active_log_page(
+    path: &Path,
+    offset: u64,
+    info: &mut AgentStreamInfo,
+) -> std::io::Result<ActiveLogPage> {
+    let (text, page) = read_bounded_jsonl_page(path, offset)?;
+    for line in text.lines() {
+        info.process_jsonl_line(line);
+    }
+    info.file_offset = page.next_offset;
+    Ok(page)
+}
+
+#[cfg(test)]
+mod active_log_page_tests {
+    use super::*;
+
+    #[test]
+    fn active_log_enrichment_is_paginated_by_bytes_and_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("output.log");
+        let line =
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":2}}}"#;
+        let content = std::iter::repeat_n(line, 1_000)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, content).unwrap();
+
+        let mut info = AgentStreamInfo::default();
+        let first = read_active_log_page(&path, 0, &mut info).unwrap();
+        assert!(first.bytes_read <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert_eq!(first.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert!(!first.reached_eof);
+        assert_eq!(info.message_count, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert_eq!(info.token_usage.as_ref().unwrap().input_tokens, 600);
+
+        let second = read_active_log_page(&path, first.next_offset, &mut info).unwrap();
+        assert!(second.bytes_read <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert_eq!(second.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert_eq!(info.message_count, ACTIVE_LOG_PAGE_MAX_RECORDS * 2);
+        assert_eq!(info.token_usage.as_ref().unwrap().output_tokens, 800);
+    }
+
+    #[test]
+    fn final_result_replaces_incremental_active_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("output.log");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n",
+                "{\"type\":\"result\",\"total_cost_usd\":1.25,\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}\n",
+            ),
+        )
+        .unwrap();
+
+        let mut info = AgentStreamInfo::default();
+        let page = read_active_log_page(&path, 0, &mut info).unwrap();
+        assert!(page.reached_eof);
+        assert_eq!(page.records_read, 2);
+        assert_eq!(
+            info.token_usage,
+            Some(TokenUsage {
+                cost_usd: 1.25,
+                input_tokens: 40,
+                output_tokens: 8,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            })
+        );
     }
 }
 
@@ -5236,6 +5917,7 @@ impl LogPaneState {
 }
 
 /// State for the Coordinator Log panel (panel 7) — shows daemon activity log.
+#[derive(Clone)]
 pub struct CoordLogState {
     pub scroll: usize,
     pub auto_tail: bool,
@@ -5243,6 +5925,21 @@ pub struct CoordLogState {
     pub last_offset: u64,
     pub viewport_height: usize,
     pub total_wrapped_lines: usize,
+}
+
+/// Storage-derived header shown above the coordinator activity feed.
+/// Rendering consumes only this cache; config, compactor and message files are
+/// read together on the auxiliary storage lane.
+#[derive(Default)]
+pub struct CoordinatorRuntimeState {
+    pub coordinator_id: u32,
+    pub executor: String,
+    pub model: String,
+    pub compaction_count: u64,
+    pub last_compaction: String,
+    pub pending: usize,
+    pub threshold: usize,
+    pub summary_present: bool,
 }
 
 impl Default for CoordLogState {
@@ -5512,6 +6209,7 @@ fn format_event_summary(
 }
 
 /// State for the Activity Feed — semantic view of operations.jsonl.
+#[derive(Clone)]
 pub struct ActivityFeedState {
     /// Ring buffer of parsed activity events (max 500).
     pub events: VecDeque<ActivityEvent>,
@@ -5563,6 +6261,7 @@ pub struct FirehoseLine {
 const FIREHOSE_MAX_LINES: usize = 1000;
 
 /// State for the Firehose panel (panel 8) — merged stream of all agent output.
+#[derive(Clone)]
 pub struct FirehoseState {
     /// Scroll offset from the top.
     pub scroll: usize,
@@ -5846,6 +6545,9 @@ pub struct ConfigPanelState {
     pub service_pid: Option<u32>,
     /// Per-endpoint test results, keyed by endpoint name.
     pub endpoint_test_results: HashMap<String, EndpointTestStatus>,
+    /// Endpoint index to name, derived while the background config snapshot
+    /// is built. Render must never reload config merely to recover this map.
+    pub endpoint_names: HashMap<usize, String>,
     /// Whether we're in the "add model" flow.
     pub adding_model: bool,
     /// Fields for new model being added.
@@ -6146,7 +6848,7 @@ pub fn extract_section_name(line: &str) -> Option<String> {
 /// `in_progress` uses `Status::is_active()` so it matches what `wg viz`
 /// highlights as "running" (InProgress + PendingValidation + PendingEval).
 /// See the rationale on `Status::is_active`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TaskCounts {
     pub total: usize,
     pub done: usize,
@@ -6158,6 +6860,7 @@ pub struct TaskCounts {
 }
 
 /// Active cycle timing info for status bar display.
+#[derive(Clone)]
 pub struct CycleTimingEntry {
     /// Task ID of the cycle header (config owner).
     pub task_id: String,
@@ -6174,6 +6877,7 @@ pub struct CycleTimingEntry {
 }
 
 /// A single fuzzy match result for a line.
+#[derive(Clone)]
 pub struct FuzzyLineMatch {
     /// Index into the original `lines`/`plain_lines` arrays.
     pub line_idx: usize,
@@ -6185,10 +6889,98 @@ pub struct FuzzyLineMatch {
     pub char_positions: Vec<usize>,
 }
 
+/// Semantic identity of a worker-derived graph projection.  A completion is
+/// accepted only if this still matches the user's current intent, preventing
+/// an old search, sort, visibility toggle, or selection trace from rolling the
+/// display backward.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GraphViewKey {
+    search_input: String,
+    search_active: bool,
+    sort_mode: u8,
+    show_system_tasks: bool,
+    show_running_system_tasks: bool,
+    selected_task_id: Option<String>,
+}
+
+/// Immutable product of one background parse/derive/layout/accounting pass.
+///
+/// All graph-sized allocations live here.  Installing it consists only of a
+/// fixed number of ownership moves and stable-ID hash lookups.  The replaced
+/// product is returned to [`snapshot_engine`](super::snapshot_engine) so its
+/// large allocations are destroyed off the terminal thread.
+pub(super) struct GraphViewSnapshot {
+    generation: u64,
+    key: GraphViewKey,
+    graph_mtime: Option<SystemTime>,
+    published_graph: Option<Arc<worksgood::graph::WorkGraph>>,
+    selected_task_id: Option<String>,
+    lines: Vec<String>,
+    plain_lines: Vec<String>,
+    search_lines: Vec<String>,
+    max_line_width: usize,
+    fuzzy_matches: Vec<FuzzyLineMatch>,
+    fuzzy_match_index_by_line: Vec<Option<usize>>,
+    filtered_indices: Option<Vec<usize>>,
+    visible_position_by_line: Vec<Option<usize>>,
+    task_counts: TaskCounts,
+    total_usage: TokenUsage,
+    visible_usage: TokenUsage,
+    task_token_map: HashMap<String, TokenUsage>,
+    cycle_timing: Vec<CycleTimingEntry>,
+    task_order: Vec<String>,
+    task_index: HashMap<String, usize>,
+    line_task_map: HashMap<usize, String>,
+    node_line_map: HashMap<String, usize>,
+    forward_edges: HashMap<String, Vec<String>>,
+    reverse_edges: HashMap<String, Vec<String>>,
+    upstream_set: HashSet<String>,
+    downstream_set: HashSet<String>,
+    char_edge_map: HashMap<(usize, usize), Vec<(String, String)>>,
+    cycle_members: HashMap<String, HashSet<String>>,
+    cycle_set: HashSet<String>,
+    annotation_map: HashMap<String, crate::commands::viz::AnnotationInfo>,
+    annotation_hit_regions: Vec<AnnotationHitRegion>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
+    task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
+    sort_status_map: HashMap<String, (u8, String)>,
+    splash_animations: HashMap<String, Animation>,
+    toasts: Vec<Toast>,
+    task_message_statuses: HashMap<String, worksgood::messages::CoordinatorMessageStatus>,
+    cached_chat_tab_entries: Vec<(u32, String)>,
+    cached_user_board_entries: Vec<(String, String)>,
+    cached_coordinator_id_set: HashMap<u32, String>,
+}
+
+struct GraphBuildInput {
+    key: GraphViewKey,
+    workgraph_dir: PathBuf,
+    viz_options: VizOptions,
+    graph: Arc<worksgood::graph::WorkGraph>,
+    graph_mtime: Option<SystemTime>,
+    animation_mode: AnimationMode,
+    live_task_token_map: Arc<HashMap<String, TokenUsage>>,
+    task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
+    splash_animations: HashMap<String, Animation>,
+}
+
+fn zero_token_usage() -> TokenUsage {
+    TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    }
+}
+
 /// Main application state for the viz viewer.
 pub struct VizApp {
     /// Path to the WG directory.
     pub workgraph_dir: PathBuf,
+    /// Parsed graph revision coherent with the installed derived view.
+    published_graph: Option<Arc<worksgood::graph::WorkGraph>>,
     /// Viz options passed from CLI (--all, --status, --critical-path, etc.).
     viz_options: VizOptions,
     /// Whether the app should quit on next loop iteration.
@@ -6220,11 +7012,15 @@ pub struct VizApp {
     pub search_input: String,
     /// Lines that fuzzy-match the current query, with scores and positions.
     pub fuzzy_matches: Vec<FuzzyLineMatch>,
+    fuzzy_match_index_by_line: Vec<Option<usize>>,
     /// Index into `fuzzy_matches` for the currently focused match.
     pub current_match: Option<usize>,
     /// When filter is active, indices of original lines that are visible.
     /// `None` means show all lines (no filter).
     pub filtered_indices: Option<Vec<usize>>,
+    /// O(1) inverse for filtered scroll anchoring. Built with the snapshot;
+    /// `original_to_visible` never scans a 10k-line filter on the UI thread.
+    visible_position_by_line: Vec<Option<usize>>,
     /// The fuzzy matcher instance (reused across searches).
     matcher: SkimMatcherV2,
 
@@ -6234,6 +7030,12 @@ pub struct VizApp {
     pub total_usage: TokenUsage,
     /// Per-task token usage keyed by task ID (for computing visible-task totals).
     pub task_token_map: HashMap<String, TokenUsage>,
+    /// Incrementally enriched usage from active logs. Bounded tail workers
+    /// publish this map independently of base-graph derivation.
+    live_task_token_map: Arc<HashMap<String, TokenUsage>>,
+    /// Aggregate usage for the current worker-derived visible set. Rendering
+    /// reads this value instead of scanning every graph line each frame.
+    visible_usage: TokenUsage,
     /// Active cycle timing info (refreshed with graph stats).
     pub cycle_timing: Vec<CycleTimingEntry>,
 
@@ -6354,6 +7156,10 @@ pub struct VizApp {
     // ── Task selection / edge tracing ──
     /// Ordered list of task IDs as they appear in the viz output (top to bottom).
     pub task_order: Vec<String>,
+    /// Stable-ID selection index built off-thread.
+    task_index: HashMap<String, usize>,
+    /// Reverse line hit-test index built off-thread.
+    line_task_map: HashMap<usize, String>,
     /// Map from task ID to its line index in the viz output.
     pub node_line_map: HashMap<String, usize>,
     /// Forward edges: task_id → dependent task IDs.
@@ -6383,7 +7189,7 @@ pub struct VizApp {
     /// Sticky annotations: annotations that should persist in the UI for a
     /// minimum duration even after the underlying system task completes.
     /// Key is the parent task ID, value is the annotation info + timing.
-    sticky_annotations: HashMap<String, StickyAnnotation>,
+    sticky_annotations: Arc<HashMap<String, StickyAnnotation>>,
     /// Clickable hit regions for phase annotations, computed from plain_lines + annotation_map.
     pub annotation_hit_regions: Vec<AnnotationHitRegion>,
     /// Active annotation click flash (for visual feedback). Clears after 500ms.
@@ -6619,6 +7425,7 @@ pub struct VizApp {
 
     // ── Activity feed state (semantic operations.jsonl view, replaces raw coord log) ──
     pub activity_feed: ActivityFeedState,
+    pub coordinator_runtime: CoordinatorRuntimeState,
 
     // ── Messages panel state (panel 3) ──
     pub messages_panel: MessagesPanelState,
@@ -6717,7 +7524,7 @@ pub struct VizApp {
     pub splash_animations: HashMap<String, Animation>,
     /// Previous per-task snapshots for change detection.
     /// Populated on each refresh; compared to current state to detect changes.
-    pub task_snapshots: HashMap<String, TaskSnapshot>,
+    pub task_snapshots: Arc<HashMap<String, TaskSnapshot>>,
     /// Animation mode (from config: normal/fast/slow/reduced/off).
     pub animation_mode: AnimationMode,
     /// Active slide animation on the inspector panel (for Alt+arrow view cycling).
@@ -6826,18 +7633,17 @@ pub struct VizApp {
     /// Refresh interval.
     refresh_interval: std::time::Duration,
 
-    // ── File system watcher (for real-time streaming) ──
-    /// Flag set by the background file watcher when `.wg/` content changes.
-    /// Checked and cleared by `maybe_refresh()` to trigger immediate panel reloads.
+    // ── Bounded polling hints (for real-time streaming) ──
+    /// Coalesced hint set when an async mutation or bounded poll observes that
+    /// `.wg/` content may have changed. Checked and cleared by
+    /// `maybe_refresh()` to trigger targeted panel reloads.
     pub fs_change_pending: Arc<AtomicBool>,
-    /// Flag set by the background file watcher when a file under
-    /// `.wg/messages/` (excluding `.cursors/`) changes. Drives a viz
+    /// Coalesced hint set when a bounded poll observes that a file under
+    /// `.wg/messages/` (excluding `.cursors/`) changed. Drives a viz
     /// reload so per-task message indicators and the right-panel Msg tab
     /// indicator update promptly after `wg msg send` — graph.jsonl is not
     /// touched by message writes, so the graph-mtime check alone misses them.
     pub messages_change_pending: Arc<AtomicBool>,
-    /// Keep the watcher alive for the lifetime of the app.
-    _fs_watcher: Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>,
     /// Last mtime of the messages file for the currently-viewed task.
     last_messages_mtime: Option<SystemTime>,
     /// Last mtime of the daemon.log for coord log panel.
@@ -6876,11 +7682,25 @@ pub struct VizApp {
 
     // ── Background filesystem service ──
     /// Owns a worker thread that performs all heavy disk I/O (graph.jsonl
-    /// reads, stat() calls for the fs watcher, streaming-text reads, chat
+    /// reads, bounded stat() polling, streaming-text reads, chat
     /// interaction bumps). The main thread reads cached values and
     /// dispatches refreshes via channels — it never blocks on disk, even
     /// on a high-latency filesystem (NFS, sshfs). See task `fix-tui-must`.
     pub async_fs: super::async_fs::AsyncFs,
+    /// Bounded lane for all non-graph storage snapshots. The terminal thread
+    /// only performs non-blocking submission and completion drains.
+    auxiliary: super::auxiliary::Lane,
+    /// Versioned, bounded initial-load worker.  It is started only after the
+    /// storage-independent first frame has been painted.
+    bootstrap: Option<super::bootstrap::BootstrapEngine>,
+    /// Bounded latest-wins CPU worker for all graph-sized presentation work.
+    snapshot_engine: Option<super::snapshot_engine::SnapshotEngine>,
+    /// Monotonic generation of the currently installed graph view.
+    snapshot_generation: u64,
+    /// True once a coherent graph/config/state/history snapshot was atomically
+    /// installed.  Render uses placeholders while this is false and never
+    /// invokes lazy storage loaders.
+    pub bootstrap_complete: bool,
 }
 
 /// Scroll state for a 2D viewport.
@@ -6911,15 +7731,75 @@ impl VizApp {
         history_depth_override: Option<usize>,
         no_history: bool,
     ) -> Self {
-        let mouse_enabled = mouse_override.unwrap_or(true);
+        Self::build(
+            workgraph_dir,
+            viz_options,
+            mouse_override,
+            history_depth_override,
+            no_history,
+            Config::default(),
+            None,
+            false,
+        )
+    }
+
+    /// Build the legacy fully-populated state on a storage worker.  This is
+    /// deliberately unavailable to the TUI input/render path.
+    pub(super) fn load_bootstrap(
+        workgraph_dir: PathBuf,
+        mut viz_options: VizOptions,
+        mouse_override: Option<bool>,
+        history_depth_override: Option<usize>,
+        no_history: bool,
+        trace_path: Option<PathBuf>,
+        force_show_keys: bool,
+    ) -> Result<BootstrapApply> {
+        super::bootstrap::inject_test_storage_latency();
         let graph_mtime = std::fs::metadata(workgraph_dir.join("graph.jsonl"))
             .and_then(|m| m.modified())
             .ok();
         let config = Config::load_or_default(&workgraph_dir);
+        let configured_show_keys = config.tui.show_keys;
+        viz_options.edge_color = config.viz.edge_color.clone();
+        let mut app = Self::build(
+            workgraph_dir,
+            viz_options,
+            mouse_override,
+            history_depth_override,
+            no_history,
+            config,
+            graph_mtime,
+            true,
+        );
+        if let Some(path) = trace_path {
+            app.tracer = Some(
+                super::trace::EventTracer::new(&path)
+                    .with_context(|| format!("failed to open trace file: {}", path.display()))?,
+            );
+        }
+        app.key_feedback_enabled = force_show_keys || configured_show_keys;
+        app.rebuild_snapshot_indexes();
+        app.visible_usage = app.compute_visible_token_usage();
+        Ok(app.into_bootstrap_apply())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        workgraph_dir: PathBuf,
+        viz_options: VizOptions,
+        mouse_override: Option<bool>,
+        history_depth_override: Option<usize>,
+        no_history: bool,
+        config: Config,
+        graph_mtime: Option<SystemTime>,
+        load_storage: bool,
+    ) -> Self {
+        let mouse_enabled = mouse_override.unwrap_or(true);
         let animation_mode = AnimationMode::from_config(&config.viz.animations);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let mut app = Self {
             workgraph_dir,
+            published_graph: None,
             viz_options,
             should_quit: false,
             exit_prompt_resolved: false,
@@ -6931,8 +7811,10 @@ impl VizApp {
             search_active: false,
             search_input: String::new(),
             fuzzy_matches: Vec::new(),
+            fuzzy_match_index_by_line: Vec::new(),
             current_match: None,
             filtered_indices: None,
+            visible_position_by_line: Vec::new(),
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
             total_usage: TokenUsage {
@@ -6943,6 +7825,14 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            live_task_token_map: Arc::new(HashMap::new()),
+            visible_usage: TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
@@ -6989,6 +7879,8 @@ impl VizApp {
             config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order: Vec::new(),
+            task_index: HashMap::new(),
+            line_task_map: HashMap::new(),
             node_line_map: HashMap::new(),
             forward_edges: HashMap::new(),
             reverse_edges: HashMap::new(),
@@ -6999,7 +7891,7 @@ impl VizApp {
             char_edge_map: std::collections::HashMap::new(),
             cycle_members: HashMap::new(),
             annotation_map: HashMap::new(),
-            sticky_annotations: HashMap::new(),
+            sticky_annotations: Arc::new(HashMap::new()),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
             hud_pin: None,
@@ -7078,6 +7970,7 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             activity_feed: ActivityFeedState::default(),
+            coordinator_runtime: CoordinatorRuntimeState::default(),
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
@@ -7102,7 +7995,7 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: true,
             splash_animations: HashMap::new(),
-            task_snapshots: HashMap::new(),
+            task_snapshots: Arc::new(HashMap::new()),
             animation_mode,
             slide_animation: None,
             message_name_threshold: config.tui.message_name_threshold,
@@ -7140,7 +8033,6 @@ impl VizApp {
             refresh_interval: std::time::Duration::from_secs(1),
             fs_change_pending: Arc::new(AtomicBool::new(false)),
             messages_change_pending: Arc::new(AtomicBool::new(false)),
-            _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
             last_ops_log_mtime: None,
@@ -7153,9 +8045,16 @@ impl VizApp {
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
             is_light_theme: config.tui.color_theme == "light",
-            async_fs: super::async_fs::AsyncFs::new(),
+            async_fs: super::async_fs::AsyncFs::new_unstarted(),
+            auxiliary: super::auxiliary::Lane::new(),
+            bootstrap: None,
+            snapshot_engine: None,
+            snapshot_generation: 0,
+            bootstrap_complete: load_storage,
         };
-        app.start_fs_watcher();
+        if !load_storage {
+            return app;
+        }
         // Load graph once for both viz and stats on startup. This is the
         // ONLY synchronous disk read in the TUI startup path — once the
         // app is running, all graph reloads go through `app.async_fs`.
@@ -7169,8 +8068,10 @@ impl VizApp {
             app.refresh_chat_tab_caches(&graph);
             app.async_fs.seed_graph(graph, graph_mtime);
         } else {
-            app.load_viz();
-            app.load_stats();
+            app.lines = vec!["(error loading graph)".to_string()];
+            app.plain_lines = app.lines.clone();
+            app.search_lines = app.lines.clone();
+            app.max_line_width = app.lines[0].len();
         }
         // Restore TUI focus state from previous session (before ensure_user_coordinator
         // so that the user's last-focused coordinator is preserved).
@@ -7187,20 +8088,589 @@ impl VizApp {
         // auto-enter PTY mode so Chat tab embeds `wg nex --chat` directly
         // instead of relying on the daemon's inbox/outbox relay. Silent
         // no-op for claude/codex executors.
-        app.maybe_auto_enable_chat_pty();
         app
     }
 
-    /// Load viz output by calling the viz module directly.
-    pub fn load_viz(&mut self) {
-        let viz_result = self.generate_viz();
-        self.apply_viz_result(viz_result);
+    fn into_bootstrap_apply(mut self) -> BootstrapApply {
+        let lines = std::mem::take(&mut self.lines);
+        let plain_lines = std::mem::take(&mut self.plain_lines);
+        let search_lines = std::mem::take(&mut self.search_lines);
+        let max_line_width = self.max_line_width;
+        let task_counts = std::mem::take(&mut self.task_counts);
+        let total_usage = std::mem::replace(
+            &mut self.total_usage,
+            TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        );
+        let task_token_map = std::mem::take(&mut self.task_token_map);
+        let visible_usage = std::mem::replace(&mut self.visible_usage, zero_token_usage());
+        let cycle_timing = std::mem::take(&mut self.cycle_timing);
+        let task_order = std::mem::take(&mut self.task_order);
+        let task_index = std::mem::take(&mut self.task_index);
+        let line_task_map = std::mem::take(&mut self.line_task_map);
+        let node_line_map = std::mem::take(&mut self.node_line_map);
+        let forward_edges = std::mem::take(&mut self.forward_edges);
+        let reverse_edges = std::mem::take(&mut self.reverse_edges);
+        let char_edge_map = std::mem::take(&mut self.char_edge_map);
+        let cycle_members = std::mem::take(&mut self.cycle_members);
+        let annotation_map = std::mem::take(&mut self.annotation_map);
+        let sticky_annotations = std::mem::take(&mut self.sticky_annotations);
+        let cycle_set = std::mem::take(&mut self.cycle_set);
+        let visible_position_by_line = std::mem::take(&mut self.visible_position_by_line);
+        let fuzzy_match_index_by_line = std::mem::take(&mut self.fuzzy_match_index_by_line);
+        let task_snapshots = std::mem::take(&mut self.task_snapshots);
+        let sort_status_map = std::mem::take(&mut self.sort_status_map);
+        let cached_chat_tab_entries = std::mem::take(&mut self.cached_chat_tab_entries);
+        let cached_user_board_entries = std::mem::take(&mut self.cached_user_board_entries);
+        let cached_coordinator_id_set = std::mem::take(&mut self.cached_coordinator_id_set);
+        let active_coordinator_id = self.active_coordinator_id;
+        let active_tabs = std::mem::take(&mut self.active_tabs);
+        self.chat.enforce_history_projection();
+        let chat_messages = std::mem::take(&mut self.chat.messages);
+        let chat_history = (
+            self.chat.outbox_cursor,
+            self.chat.has_more_history,
+            self.chat.total_history_count,
+            self.chat.skipped_history_count,
+            self.chat.has_archives,
+        );
+        let mut coordinator_histories = HashMap::new();
+        for (id, mut chat) in std::mem::take(&mut self.coordinator_chats) {
+            chat.enforce_history_projection();
+            coordinator_histories.insert(
+                id,
+                (
+                    std::mem::take(&mut chat.messages),
+                    chat.outbox_cursor,
+                    chat.has_more_history,
+                    chat.total_history_count,
+                    chat.skipped_history_count,
+                    chat.has_archives,
+                ),
+            );
+        }
+        let show_system_tasks = self.show_system_tasks;
+        let show_running_system_tasks = self.show_running_system_tasks;
+        let right_panel_percent = self.right_panel_percent;
+        let layout_mode = self.layout_mode;
+        let animation_mode = self.animation_mode;
+        let message_name_threshold = self.message_name_threshold;
+        let message_indent = self.message_indent;
+        let session_gap_minutes = self.session_gap_minutes;
+        let is_light_theme = self.is_light_theme;
+        let last_graph_mtime = self.last_graph_mtime;
+        let viz_options = self.viz_options.clone();
+        let graph = self.async_fs.cached_graph();
+        let tracer = self.tracer.take();
+
+        Box::new(move |app: &mut VizApp| {
+            app.lines = lines;
+            app.plain_lines = plain_lines;
+            app.search_lines = search_lines;
+            app.max_line_width = max_line_width;
+            app.task_counts = task_counts;
+            app.total_usage = total_usage;
+            app.task_token_map = task_token_map;
+            app.visible_usage = visible_usage;
+            app.cycle_timing = cycle_timing;
+            app.task_order = task_order;
+            app.task_index = task_index;
+            app.line_task_map = line_task_map;
+            app.node_line_map = node_line_map;
+            app.forward_edges = forward_edges;
+            app.reverse_edges = reverse_edges;
+            app.char_edge_map = char_edge_map;
+            app.cycle_members = cycle_members;
+            app.annotation_map = annotation_map;
+            app.sticky_annotations = sticky_annotations;
+            app.cycle_set = cycle_set;
+            app.visible_position_by_line = visible_position_by_line;
+            app.fuzzy_match_index_by_line = fuzzy_match_index_by_line;
+            app.task_snapshots = task_snapshots;
+            app.sort_status_map = sort_status_map;
+            app.cached_chat_tab_entries = cached_chat_tab_entries;
+            app.cached_user_board_entries = cached_user_board_entries;
+            app.cached_coordinator_id_set = cached_coordinator_id_set;
+            app.active_coordinator_id = active_coordinator_id;
+            app.active_tabs = active_tabs;
+            app.chat.messages = chat_messages;
+            app.chat.enforce_history_projection();
+            app.chat.outbox_cursor = chat_history.0;
+            app.chat.has_more_history = chat_history.1;
+            app.chat.total_history_count = chat_history.2;
+            app.chat.skipped_history_count = chat_history.3;
+            app.chat.has_archives = chat_history.4;
+            for (id, history) in coordinator_histories {
+                let mut chat = ChatState::default();
+                chat.messages = history.0;
+                chat.enforce_history_projection();
+                chat.outbox_cursor = history.1;
+                chat.has_more_history = history.2;
+                chat.total_history_count = history.3;
+                chat.skipped_history_count = history.4;
+                chat.has_archives = history.5;
+                app.coordinator_chats.insert(id, chat);
+            }
+            app.show_system_tasks = show_system_tasks;
+            app.show_running_system_tasks = show_running_system_tasks;
+            app.right_panel_percent = right_panel_percent;
+            app.layout_mode = layout_mode;
+            app.animation_mode = animation_mode;
+            app.message_name_threshold = message_name_threshold;
+            app.message_indent = message_indent;
+            app.session_gap_minutes = session_gap_minutes;
+            app.is_light_theme = is_light_theme;
+            app.last_graph_mtime = last_graph_mtime;
+            app.viz_options = viz_options;
+            if let Some((graph, mtime)) = graph {
+                app.published_graph = Some(graph.clone());
+                app.async_fs.seed_graph_arc(graph, mtime);
+            }
+            app.tracer = tracer;
+            app.bootstrap_complete = true;
+            app.initial_load = false;
+            app.scroll.content_height = app.lines.len();
+        })
+    }
+
+    /// Start the versioned background bootstrap.  Submission is nonblocking
+    /// and the queue retains only the newest pending generation.
+    pub fn start_bootstrap(&mut self, trace_path: Option<PathBuf>, force_show_keys: bool) {
+        if self.bootstrap.is_some() || self.bootstrap_complete {
+            return;
+        }
+        self.async_fs.start();
+        self.snapshot_engine = Some(super::snapshot_engine::SnapshotEngine::new());
+        let args = super::bootstrap::BootstrapArgs {
+            workgraph_dir: self.workgraph_dir.clone(),
+            viz_options: self.viz_options.clone(),
+            mouse_override: Some(self.mouse_enabled),
+            history_depth_override: self.history_depth_override,
+            no_history: self.no_history,
+            trace_path,
+            force_show_keys,
+        };
+        let mut engine = super::bootstrap::BootstrapEngine::new();
+        engine.request(args);
+        self.bootstrap = Some(engine);
+        // Configuration uses its own I/O lane. A long registry/config read
+        // must neither delay the base graph publication nor run in render.
+        self.request_config_panel();
+    }
+
+    /// Accept at most one background result.  Generation checks happen in
+    /// the broker; applying a coherent snapshot is an O(1) state swap.  Small
+    /// interaction state owned by the UI survives a slow bootstrap.
+    fn poll_bootstrap(&mut self) -> bool {
+        let Some(engine) = self.bootstrap.as_mut() else {
+            return false;
+        };
+        let Some(result) = engine.try_result() else {
+            return false;
+        };
+        match result {
+            Ok(apply) => {
+                apply(self);
+            }
+            Err(message) => {
+                // One compact error episode, no repeating toast.  Keep the
+                // shell interactive; polling/retry remains available.
+                self.bootstrap_complete = false;
+                if let Some(engine) = self.bootstrap.as_mut() {
+                    engine.record_error(message);
+                }
+            }
+        }
+        true
+    }
+
+    pub fn bootstrap_feedback(&self) -> Option<String> {
+        self.bootstrap.as_ref().and_then(|b| b.feedback())
+    }
+
+    fn graph_view_key(&self) -> GraphViewKey {
+        GraphViewKey {
+            search_input: self.search_input.clone(),
+            search_active: self.search_active,
+            sort_mode: match self.sort_mode {
+                SortMode::Chronological => 0,
+                SortMode::ReverseChronological => 1,
+                SortMode::StatusGrouped => 2,
+            },
+            show_system_tasks: self.show_system_tasks,
+            show_running_system_tasks: self.show_running_system_tasks,
+            selected_task_id: self.selected_task_id().map(str::to_owned),
+        }
+    }
+
+    fn coherent_graph(&self) -> Option<Arc<worksgood::graph::WorkGraph>> {
+        if let Some(graph) = self.published_graph.as_ref() {
+            return Some(graph.clone());
+        }
+        #[cfg(test)]
+        {
+            return load_graph(self.workgraph_dir.join("graph.jsonl"))
+                .ok()
+                .map(Arc::new);
+        }
+        #[cfg(not(test))]
+        None
+    }
+
+    fn request_graph_snapshot(&mut self) {
+        let Some((graph, graph_mtime)) = self.async_fs.cached_graph() else {
+            return;
+        };
+        self.request_graph_snapshot_from(graph, graph_mtime);
+    }
+
+    fn request_graph_snapshot_from(
+        &mut self,
+        graph: Arc<worksgood::graph::WorkGraph>,
+        graph_mtime: Option<SystemTime>,
+    ) {
+        self.graph_reload_pending = true;
+        if self.snapshot_engine.is_none() {
+            self.snapshot_engine = Some(super::snapshot_engine::SnapshotEngine::new());
+        }
+        let input = GraphBuildInput {
+            key: self.graph_view_key(),
+            workgraph_dir: self.workgraph_dir.clone(),
+            viz_options: self.viz_options.clone(),
+            graph,
+            graph_mtime,
+            animation_mode: self.animation_mode,
+            live_task_token_map: self.live_task_token_map.clone(),
+            task_snapshots: self.task_snapshots.clone(),
+            sticky_annotations: self.sticky_annotations.clone(),
+            // The animation map is globally capped, so this clone has a fixed
+            // upper bound independent of graph size.
+            splash_animations: self.splash_animations.clone(),
+        };
+        if let Some(engine) = self.snapshot_engine.as_mut() {
+            engine.request(Box::new(move |token| {
+                Self::derive_graph_snapshot(input, token)
+            }));
+        }
+    }
+
+    fn derive_graph_snapshot(
+        input: GraphBuildInput,
+        token: super::snapshot_engine::GenerationToken,
+    ) -> std::result::Result<GraphViewSnapshot, String> {
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let mut app = Self::build(
+            input.workgraph_dir,
+            input.viz_options,
+            None,
+            None,
+            false,
+            Config::default(),
+            input.graph_mtime,
+            false,
+        );
+        app.show_system_tasks = input.key.show_system_tasks;
+        app.show_running_system_tasks = input.key.show_running_system_tasks;
+        app.sort_mode = match input.key.sort_mode {
+            1 => SortMode::ReverseChronological,
+            2 => SortMode::StatusGrouped,
+            _ => SortMode::Chronological,
+        };
+        app.live_task_token_map = input.live_task_token_map;
+        app.task_snapshots = input.task_snapshots;
+        app.sticky_annotations = input.sticky_annotations;
+        app.splash_animations = input.splash_animations;
+        app.initial_load = false;
+
+        // Seed only the stable selected ID.  This lets the existing selection
+        // reconciliation preserve it without copying the old graph order.
+        if let Some(selected) = input.key.selected_task_id.clone() {
+            app.task_order.push(selected);
+            app.selected_task_idx = Some(0);
+        }
+        // Avoid treating every task other than the seeded selection as newly
+        // visible. Status/assignment animations are derived below from the
+        // compact task-snapshot index.
+        app.animation_mode = AnimationMode::Off;
+        app.load_viz_from_graph(&input.graph);
+        app.animation_mode = input.animation_mode;
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+
+        app.load_stats_from_graph(&input.graph);
+        app.refresh_chat_tab_caches(&input.graph);
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+
+        app.apply_sort_mode_sync();
+        app.search_input = input.key.search_input.clone();
+        app.search_active = input.key.search_active;
+        app.rerun_search();
+        app.recompute_trace_sync();
+        app.rebuild_snapshot_indexes();
+        app.visible_usage = app.compute_visible_token_usage();
+        if token.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let mut snapshot =
+            app.take_graph_snapshot(token.generation(), input.key, input.graph_mtime, true);
+        snapshot.published_graph = Some(input.graph);
+        Ok(snapshot)
+    }
+
+    fn rebuild_snapshot_indexes(&mut self) {
+        self.task_index = self
+            .task_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect();
+        self.line_task_map = self
+            .node_line_map
+            .iter()
+            .map(|(id, line)| (*line, id.clone()))
+            .collect();
+        self.visible_position_by_line = vec![None; self.lines.len()];
+        self.fuzzy_match_index_by_line = vec![None; self.lines.len()];
+        for (match_index, matched) in self.fuzzy_matches.iter().enumerate() {
+            if let Some(slot) = self.fuzzy_match_index_by_line.get_mut(matched.line_idx) {
+                *slot = Some(match_index);
+            }
+        }
+        match &self.filtered_indices {
+            Some(indices) => {
+                for (visible, original) in indices.iter().copied().enumerate() {
+                    if let Some(slot) = self.visible_position_by_line.get_mut(original) {
+                        *slot = Some(visible);
+                    }
+                }
+            }
+            None => {
+                for (line, slot) in self.visible_position_by_line.iter_mut().enumerate() {
+                    *slot = Some(line);
+                }
+            }
+        }
+    }
+
+    fn take_graph_snapshot(
+        &mut self,
+        generation: u64,
+        key: GraphViewKey,
+        graph_mtime: Option<SystemTime>,
+        take_notifications: bool,
+    ) -> GraphViewSnapshot {
+        GraphViewSnapshot {
+            generation,
+            key,
+            graph_mtime,
+            published_graph: self.published_graph.take(),
+            selected_task_id: self.selected_task_id().map(str::to_owned),
+            lines: std::mem::take(&mut self.lines),
+            plain_lines: std::mem::take(&mut self.plain_lines),
+            search_lines: std::mem::take(&mut self.search_lines),
+            max_line_width: self.max_line_width,
+            fuzzy_matches: std::mem::take(&mut self.fuzzy_matches),
+            fuzzy_match_index_by_line: std::mem::take(&mut self.fuzzy_match_index_by_line),
+            filtered_indices: self.filtered_indices.take(),
+            visible_position_by_line: std::mem::take(&mut self.visible_position_by_line),
+            task_counts: std::mem::take(&mut self.task_counts),
+            total_usage: std::mem::replace(&mut self.total_usage, zero_token_usage()),
+            visible_usage: std::mem::replace(&mut self.visible_usage, zero_token_usage()),
+            task_token_map: std::mem::take(&mut self.task_token_map),
+            cycle_timing: std::mem::take(&mut self.cycle_timing),
+            task_order: std::mem::take(&mut self.task_order),
+            task_index: std::mem::take(&mut self.task_index),
+            line_task_map: std::mem::take(&mut self.line_task_map),
+            node_line_map: std::mem::take(&mut self.node_line_map),
+            forward_edges: std::mem::take(&mut self.forward_edges),
+            reverse_edges: std::mem::take(&mut self.reverse_edges),
+            upstream_set: std::mem::take(&mut self.upstream_set),
+            downstream_set: std::mem::take(&mut self.downstream_set),
+            char_edge_map: std::mem::take(&mut self.char_edge_map),
+            cycle_members: std::mem::take(&mut self.cycle_members),
+            cycle_set: std::mem::take(&mut self.cycle_set),
+            annotation_map: std::mem::take(&mut self.annotation_map),
+            annotation_hit_regions: std::mem::take(&mut self.annotation_hit_regions),
+            sticky_annotations: std::mem::take(&mut self.sticky_annotations),
+            task_snapshots: std::mem::take(&mut self.task_snapshots),
+            sort_status_map: std::mem::take(&mut self.sort_status_map),
+            splash_animations: std::mem::take(&mut self.splash_animations),
+            toasts: if take_notifications {
+                std::mem::take(&mut self.toasts)
+            } else {
+                Vec::new()
+            },
+            task_message_statuses: std::mem::take(&mut self.task_message_statuses),
+            cached_chat_tab_entries: std::mem::take(&mut self.cached_chat_tab_entries),
+            cached_user_board_entries: std::mem::take(&mut self.cached_user_board_entries),
+            cached_coordinator_id_set: std::mem::take(&mut self.cached_coordinator_id_set),
+        }
+    }
+
+    fn install_graph_snapshot(&mut self, mut snapshot: GraphViewSnapshot) {
+        let was_at_bottom = self.scroll.is_at_bottom_strict() || self.initial_load;
+        let was_at_top = self.scroll.is_at_top() || self.initial_load;
+        let old_offset_y = self.scroll.offset_y;
+        let old_selected_id = self.selected_task_id().map(str::to_owned);
+        let old_relative_pos = old_selected_id.as_ref().and_then(|id| {
+            let original = *self.node_line_map.get(id)?;
+            let visible = self.original_to_visible(original)?;
+            Some(visible as isize - old_offset_y as isize)
+        });
+        let old_match = self.current_match;
+        let old = self.take_graph_snapshot(
+            self.snapshot_generation,
+            self.graph_view_key(),
+            self.last_graph_mtime,
+            false,
+        );
+
+        self.lines = std::mem::take(&mut snapshot.lines);
+        self.plain_lines = std::mem::take(&mut snapshot.plain_lines);
+        self.search_lines = std::mem::take(&mut snapshot.search_lines);
+        self.max_line_width = snapshot.max_line_width;
+        self.published_graph = snapshot.published_graph.take();
+        self.fuzzy_matches = std::mem::take(&mut snapshot.fuzzy_matches);
+        self.fuzzy_match_index_by_line = std::mem::take(&mut snapshot.fuzzy_match_index_by_line);
+        self.filtered_indices = snapshot.filtered_indices.take();
+        self.visible_position_by_line = std::mem::take(&mut snapshot.visible_position_by_line);
+        self.task_counts = std::mem::take(&mut snapshot.task_counts);
+        self.total_usage = std::mem::replace(&mut snapshot.total_usage, zero_token_usage());
+        self.visible_usage = std::mem::replace(&mut snapshot.visible_usage, zero_token_usage());
+        self.task_token_map = std::mem::take(&mut snapshot.task_token_map);
+        self.cycle_timing = std::mem::take(&mut snapshot.cycle_timing);
+        self.task_order = std::mem::take(&mut snapshot.task_order);
+        self.task_index = std::mem::take(&mut snapshot.task_index);
+        self.line_task_map = std::mem::take(&mut snapshot.line_task_map);
+        self.node_line_map = std::mem::take(&mut snapshot.node_line_map);
+        self.forward_edges = std::mem::take(&mut snapshot.forward_edges);
+        self.reverse_edges = std::mem::take(&mut snapshot.reverse_edges);
+        self.upstream_set = std::mem::take(&mut snapshot.upstream_set);
+        self.downstream_set = std::mem::take(&mut snapshot.downstream_set);
+        self.char_edge_map = std::mem::take(&mut snapshot.char_edge_map);
+        self.cycle_members = std::mem::take(&mut snapshot.cycle_members);
+        self.cycle_set = std::mem::take(&mut snapshot.cycle_set);
+        self.annotation_map = std::mem::take(&mut snapshot.annotation_map);
+        self.annotation_hit_regions = std::mem::take(&mut snapshot.annotation_hit_regions);
+        self.sticky_annotations = std::mem::take(&mut snapshot.sticky_annotations);
+        self.task_snapshots = std::mem::take(&mut snapshot.task_snapshots);
+        self.sort_status_map = std::mem::take(&mut snapshot.sort_status_map);
+        self.splash_animations = std::mem::take(&mut snapshot.splash_animations);
+        self.task_message_statuses = std::mem::take(&mut snapshot.task_message_statuses);
+        self.cached_chat_tab_entries = std::mem::take(&mut snapshot.cached_chat_tab_entries);
+        self.cached_user_board_entries = std::mem::take(&mut snapshot.cached_user_board_entries);
+        self.cached_coordinator_id_set = std::mem::take(&mut snapshot.cached_coordinator_id_set);
+        for toast in std::mem::take(&mut snapshot.toasts) {
+            self.push_toast(toast.message, toast.severity);
+        }
+
+        self.selected_task_idx = snapshot
+            .selected_task_id
+            .as_ref()
+            .and_then(|id| self.task_index.get(id).copied())
+            .or_else(|| (!self.task_order.is_empty()).then_some(0));
+        self.current_match = if self.fuzzy_matches.is_empty() {
+            None
+        } else {
+            Some(old_match.unwrap_or(0).min(self.fuzzy_matches.len() - 1))
+        };
+        self.scroll.content_height = self.visible_line_count() + 1;
+        self.scroll.content_width = self.max_line_width;
+
+        let new_selected_id = self.selected_task_id().map(str::to_owned);
+        if self.initial_load || was_at_top {
+            self.scroll.go_top();
+            self.initial_load = false;
+        } else if was_at_bottom {
+            self.scroll.go_bottom();
+        } else if old_selected_id == new_selected_id {
+            if let (Some(relative), Some(id)) = (old_relative_pos, new_selected_id.as_ref())
+                && let Some(original) = self.node_line_map.get(id)
+                && let Some(visible) = self.original_to_visible(*original)
+            {
+                self.scroll.offset_y = (visible as isize - relative).max(0) as usize;
+            } else {
+                self.scroll.offset_y = old_offset_y;
+            }
+            self.scroll.clamp();
+        } else {
+            self.needs_scroll_into_view = true;
+            self.scroll.clamp();
+        }
+
+        self.snapshot_generation = snapshot.generation;
+        self.last_graph_mtime = snapshot.graph_mtime;
+        self.last_heavy_refresh_at = Some(Instant::now());
+        self.graph_reload_pending = false;
+        self.graph_viz_stale = false;
+        self.last_refresh = Instant::now();
+        if let Some(engine) = self.snapshot_engine.as_mut() {
+            engine.retire(old);
+        }
+    }
+
+    fn poll_graph_snapshot(&mut self) -> bool {
+        let result = self
+            .snapshot_engine
+            .as_mut()
+            .and_then(|engine| engine.try_result());
+        let Some(result) = result else {
+            return false;
+        };
+        match result {
+            Ok(snapshot)
+                if snapshot.key == self.graph_view_key()
+                    && self.snapshot_matches_cached_graph(&snapshot) =>
+            {
+                self.install_graph_snapshot(snapshot);
+            }
+            Ok(snapshot) => {
+                if let Some(engine) = self.snapshot_engine.as_mut() {
+                    engine.retire(snapshot);
+                }
+                self.request_graph_snapshot();
+            }
+            Err(message) if message != "cancelled" => {
+                self.graph_reload_pending = false;
+                self.graph_viz_stale = true;
+                self.push_toast(
+                    format!("Graph refresh failed: {message}"),
+                    ToastSeverity::Warning,
+                );
+            }
+            Err(_) => {}
+        }
+        true
+    }
+
+    /// A newer filesystem parse may land while the CPU worker is completing
+    /// an older layout. Pointer identity is a stronger revision fence than
+    /// mtime (atomic replacements can preserve timestamps): only the graph
+    /// revision currently held by the async cache may be published.
+    fn snapshot_matches_cached_graph(&self, snapshot: &GraphViewSnapshot) -> bool {
+        self.async_fs.cached_graph().is_none_or(|(cached, _)| {
+            snapshot
+                .published_graph
+                .as_ref()
+                .is_some_and(|built| Arc::ptr_eq(built, &cached))
+        })
     }
 
     /// Load viz output from a pre-loaded graph, avoiding a redundant disk read.
     pub fn load_viz_from_graph(&mut self, graph: &worksgood::graph::WorkGraph) {
         let viz_result = self.generate_viz_from_graph(graph);
         self.apply_viz_result(viz_result);
+        self.rebuild_snapshot_indexes();
     }
 
     /// Apply a viz result (shared implementation for load_viz and load_viz_from_graph).
@@ -7270,7 +8740,7 @@ impl VizApp {
 
                 // Update sticky annotations: refresh last_seen for live ones, keep recent stale ones.
                 for (parent_id, info) in &live_annotations {
-                    self.sticky_annotations.insert(
+                    Arc::make_mut(&mut self.sticky_annotations).insert(
                         parent_id.clone(),
                         StickyAnnotation {
                             info: info.clone(),
@@ -7282,7 +8752,7 @@ impl VizApp {
                 // Build merged map: start with live annotations, then add stale stickies.
                 let mut merged = live_annotations;
                 let hold = std::time::Duration::from_secs(STICKY_ANNOTATION_HOLD_SECS);
-                self.sticky_annotations.retain(|parent_id, sticky| {
+                Arc::make_mut(&mut self.sticky_annotations).retain(|parent_id, sticky| {
                     if merged.contains_key(parent_id) {
                         // Still live — keep in sticky map, already in merged.
                         return true;
@@ -7458,13 +8928,6 @@ impl VizApp {
         }
     }
 
-    fn generate_viz(&self) -> Result<VizOutput> {
-        let mut opts = self.viz_options.clone();
-        opts.show_internal = self.show_system_tasks;
-        opts.show_internal_running_only = !self.show_system_tasks && self.show_running_system_tasks;
-        crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
-    }
-
     /// Generate viz output from a pre-loaded graph, avoiding a redundant disk read.
     fn generate_viz_from_graph(&self, graph: &worksgood::graph::WorkGraph) -> Result<VizOutput> {
         let mut opts = self.viz_options.clone();
@@ -7505,7 +8968,11 @@ impl VizApp {
     /// Map an original line index to its position in the visible set.
     fn original_to_visible(&self, orig_idx: usize) -> Option<usize> {
         match &self.filtered_indices {
-            Some(indices) => indices.iter().position(|&i| i == orig_idx),
+            Some(_) => self
+                .visible_position_by_line
+                .get(orig_idx)
+                .copied()
+                .flatten(),
             None => {
                 if orig_idx < self.lines.len() {
                     Some(orig_idx)
@@ -7614,6 +9081,14 @@ impl VizApp {
     /// Recompute the transitive upstream/downstream sets and line mappings
     /// based on the currently selected task.
     pub fn recompute_trace(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
+        self.recompute_trace_sync();
+    }
+
+    fn recompute_trace_sync(&mut self) {
         self.upstream_set.clear();
         self.downstream_set.clear();
         self.cycle_set.clear();
@@ -7792,18 +9267,11 @@ impl VizApp {
     /// Select the task at the given original line index, if any.
     /// Returns true if a task was found and selected.
     pub fn select_task_at_line(&mut self, orig_line: usize) -> bool {
-        // Reverse lookup: find which task_id lives at this line.
-        let task_id = self
-            .node_line_map
-            .iter()
-            .find(|&(_, line)| *line == orig_line)
-            .map(|(id, _)| id.clone());
-        let task_id = match task_id {
+        let task_id = match self.line_task_map.get(&orig_line).cloned() {
             Some(id) => id,
             None => return false,
         };
-        // Find its index in task_order.
-        let idx = match self.task_order.iter().position(|id| *id == task_id) {
+        let idx = match self.task_index.get(&task_id).copied() {
             Some(i) => i,
             None => return false,
         };
@@ -8041,6 +9509,10 @@ impl VizApp {
     /// Called on every keystroke while search is active.
     /// Performs incremental fuzzy matching and updates the filter.
     pub fn update_search(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         let query = &self.search_input;
         if query.is_empty() {
             self.fuzzy_matches.clear();
@@ -8089,6 +9561,10 @@ impl VizApp {
     /// keep match highlights and viewport position (vim-style search).
     pub fn accept_search(&mut self) {
         self.search_active = false;
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         self.filtered_indices = None;
         self.update_scroll_bounds();
         // Keep search_input, fuzzy_matches, current_match for highlights + navigation.
@@ -8143,6 +9619,10 @@ impl VizApp {
     pub fn clear_search(&mut self) {
         self.search_active = false;
         self.search_input.clear();
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+            return;
+        }
         self.fuzzy_matches.clear();
         self.current_match = None;
         self.filtered_indices = None;
@@ -8186,7 +9666,11 @@ impl VizApp {
 
     /// Get the fuzzy match info for an original line index, if any.
     pub fn match_for_line(&self, orig_idx: usize) -> Option<&FuzzyLineMatch> {
-        self.fuzzy_matches.iter().find(|m| m.line_idx == orig_idx)
+        self.fuzzy_match_index_by_line
+            .get(orig_idx)
+            .copied()
+            .flatten()
+            .and_then(|index| self.fuzzy_matches.get(index))
     }
 
     /// Get the original line index of the current match (for highlight).
@@ -8257,6 +9741,9 @@ impl VizApp {
     /// Update chat search results after query changes.
     /// Performs case-insensitive substring matching across all loaded messages.
     pub fn update_chat_search(&mut self) {
+        // Defense in depth: interactive search only ever scans the bounded
+        // live projection, even if a future producer bypasses a loader.
+        self.chat.enforce_history_projection();
         let query = self.chat.search.query.to_lowercase();
         self.chat.search.matches.clear();
         self.chat.search.current_match = None;
@@ -8365,13 +9852,7 @@ impl VizApp {
     /// Search through on-disk history pages that haven't been loaded yet.
     /// Loads pages until a match is found or all history is loaded.
     pub fn chat_search_load_all_history(&mut self) {
-        while self.chat.has_more_history {
-            if !self.load_more_chat_history() {
-                break;
-            }
-        }
-        // Re-run the search with all messages now loaded.
-        self.update_chat_search();
+        self.request_all_chat_history();
     }
 
     /// Return a human-readable chat search status string for the search bar.
@@ -8392,27 +9873,6 @@ impl VizApp {
         }
     }
 
-    /// Load task counts and token usage from the graph + live agent output.
-    pub fn load_stats(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
-                self.task_counts = TaskCounts::default();
-                self.total_usage = TokenUsage {
-                    cost_usd: 0.0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                };
-                self.task_token_map.clear();
-                return;
-            }
-        };
-        self.load_stats_from_graph(&graph);
-    }
-
     /// Load task counts and token usage from a pre-loaded graph.
     pub fn load_stats_from_graph(&mut self, graph: &worksgood::graph::WorkGraph) {
         let mut counts = TaskCounts::default();
@@ -8424,22 +9884,6 @@ impl VizApp {
             cache_creation_input_tokens: 0,
         };
         let mut task_token_map: HashMap<String, TokenUsage> = HashMap::new();
-
-        // Build a map of agent_id -> live token usage for in-progress agents.
-        // Uses the (path, mtime)-keyed cache so a no-op refresh is one
-        // metadata syscall per agent instead of a full JSONL parse.
-        let mut live_agent_usage: HashMap<String, TokenUsage> = HashMap::new();
-        if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
-            for (id, agent) in &registry.agents {
-                if agent.status != AgentStatus::Working || agent.output_file.is_empty() {
-                    continue;
-                }
-                let path = std::path::Path::new(&agent.output_file);
-                if let Some(usage) = parse_token_usage_live_cached(path) {
-                    live_agent_usage.insert(id.clone(), usage);
-                }
-            }
-        }
 
         let mut new_snapshots: HashMap<String, TaskSnapshot> = HashMap::new();
         let now = Instant::now();
@@ -8470,12 +9914,13 @@ impl VizApp {
                 }
             }
 
-            // Use stored token_usage if available, otherwise check live agent data
-            let usage = task.token_usage.as_ref().or_else(|| {
-                task.assigned
-                    .as_ref()
-                    .and_then(|aid| live_agent_usage.get(aid))
-            });
+            // Stored usage is authoritative. Active usage is an independently
+            // published, in-memory enrichment assembled by the bounded tail
+            // workers; base-graph derivation never opens an output log.
+            let usage = task
+                .token_usage
+                .as_ref()
+                .or_else(|| self.live_task_token_map.get(&task.id));
 
             if let Some(usage) = usage {
                 total_usage.accumulate(usage);
@@ -8660,7 +10105,7 @@ impl VizApp {
             0
         };
 
-        self.task_snapshots = new_snapshots;
+        self.task_snapshots = Arc::new(new_snapshots);
         self.task_counts = counts;
         self.total_usage = total_usage;
         self.task_token_map = task_token_map;
@@ -8763,130 +10208,25 @@ impl VizApp {
 
         // Enforce animation cap: drop oldest if we exceed MAX_ANIMATIONS.
         self.enforce_animation_cap();
-    }
-
-    /// Start a background file watcher on the `.wg/` directory.
-    /// Sets `fs_change_pending` flag when any file changes, which triggers
-    /// immediate panel reloads in `maybe_refresh()`. Also sets
-    /// `messages_change_pending` when a message file (under `messages/`,
-    /// excluding the `.cursors/` subdir) changes, since `wg msg send` writes
-    /// only there and doesn't bump graph.jsonl mtime — the message indicator
-    /// would otherwise stay stale until something else mutates the graph.
-    fn start_fs_watcher(&mut self) {
-        use notify_debouncer_mini::new_debouncer;
-        use std::time::Duration;
-
-        let flag = self.fs_change_pending.clone();
-        let messages_flag = self.messages_change_pending.clone();
-        let messages_dir = self.workgraph_dir.join("messages");
-        let cursors_segment = std::ffi::OsString::from(".cursors");
-        // 5ms debounce: just enough to coalesce a burst of events
-        // from one write (inotify can fire twice per append on some
-        // filesystems), not so much that the user perceives lag.
-        // On a chat write, we want the TUI to react within a single
-        // frame (16ms @ 60Hz), and 5ms leaves plenty of headroom.
-        let debouncer = new_debouncer(
-            Duration::from_millis(5),
-            move |res: notify_debouncer_mini::DebounceEventResult| {
-                if let Ok(events) = res {
-                    flag.store(true, Ordering::Relaxed);
-                    let touched_messages = events.iter().any(|e| {
-                        e.path.starts_with(&messages_dir)
-                            && !e
-                                .path
-                                .components()
-                                .any(|c| c.as_os_str() == cursors_segment.as_os_str())
-                    });
-                    if touched_messages {
-                        messages_flag.store(true, Ordering::Relaxed);
-                    }
-                }
-            },
-        );
-
-        match debouncer {
-            Ok(mut debouncer) => {
-                let watch_path = self.workgraph_dir.clone();
-                if debouncer
-                    .watcher()
-                    .watch(&watch_path, notify::RecursiveMode::Recursive)
-                    .is_ok()
-                {
-                    self._fs_watcher = Some(debouncer);
-                }
-            }
-            Err(_) => {
-                // File watching unavailable — fall back to polling (existing behavior).
-            }
-        }
-    }
-
-    fn apply_loaded_graph_refresh(
-        &mut self,
-        graph: &worksgood::graph::WorkGraph,
-        graph_mtime: Option<SystemTime>,
-    ) {
-        self.graph_reload_pending = false;
-        self.graph_viz_stale = false;
-        self.last_graph_mtime = graph_mtime;
-        self.last_heavy_refresh_at = Some(Instant::now());
-
-        let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-        let prev_hud_scroll = self.hud_scroll;
-        let prev_hud_follow = self.hud_follow;
-
-        self.smart_follow_active = self.scroll.is_at_bottom();
-        self.load_viz_from_graph(graph);
-        if !self.search_input.is_empty() {
-            self.rerun_search();
-        }
-        self.load_stats_from_graph(graph);
-        self.refresh_chat_tab_caches(graph);
-        self.load_agent_monitor();
-        self.update_agent_streams();
-        if self.right_panel_tab == RightPanelTab::Firehose {
-            self.update_firehose();
-        }
-        if self.right_panel_tab == RightPanelTab::Output {
-            self.update_output_pane();
-        }
-        if self.right_panel_tab == RightPanelTab::Log {
-            self.update_log_output();
-            self.update_log_stream_events();
-        }
-        self.invalidate_hud();
-        self.load_hud_detail();
-        if prev_hud_task.is_some()
-            && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-        {
-            if prev_hud_follow {
-                self.hud_scroll = usize::MAX;
-            } else {
-                self.hud_scroll = prev_hud_scroll;
-            }
-        }
-        if self.right_panel_tab == RightPanelTab::Log {
-            self.invalidate_log_pane();
-            self.load_log_pane();
-        }
-        if self.right_panel_tab == RightPanelTab::Agency {
-            self.invalidate_agency_lifecycle();
-            self.load_agency_lifecycle();
-        }
-        if self.right_panel_tab == RightPanelTab::Files
-            && let Some(ref mut fb) = self.file_browser
-        {
-            fb.refresh();
-        }
-        if self.right_panel_tab == RightPanelTab::CoordLog {
-            self.load_coord_log();
-            self.load_activity_feed();
-        }
+        self.visible_usage = self.compute_visible_token_usage();
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
+        let auxiliary_changed = self.poll_auxiliary_snapshots();
+        if self.poll_bootstrap() {
+            return true;
+        }
+        if auxiliary_changed {
+            return true;
+        }
+        if !self.bootstrap_complete {
+            return false;
+        }
+        if self.poll_graph_snapshot() {
+            return true;
+        }
         // Flush a deferred sort apply if the debounce window has elapsed.
         // Run before consuming fs events so a burst of events doesn't keep
         // pushing the flush forward indefinitely.
@@ -8901,7 +10241,7 @@ impl VizApp {
             && self.graph_reload_pending
             && let Some((graph, graph_mtime)) = self.async_fs.cached_graph()
         {
-            self.apply_loaded_graph_refresh(&graph, graph_mtime);
+            self.request_graph_snapshot_from(graph, graph_mtime);
             return true;
         }
 
@@ -8925,7 +10265,7 @@ impl VizApp {
             if streaming != prev {
                 self.chat.streaming_text = streaming;
                 // Also check outbox in case the response just completed.
-                self.poll_chat_messages();
+                self.request_chat_refresh();
                 return true;
             }
         }
@@ -8990,8 +10330,7 @@ impl VizApp {
                 // ✉ indicator and the right-panel Msg tab indicator update
                 // promptly.
                 if let Some((graph, _)) = self.async_fs.cached_graph() {
-                    self.load_viz_from_graph(&graph);
-                    self.load_stats_from_graph(&graph);
+                    self.request_graph_snapshot_from(graph, self.last_graph_mtime);
                     content_updated = true;
                 }
             }
@@ -9010,7 +10349,7 @@ impl VizApp {
                     self.last_messages_mtime = msg_mtime;
                     self.save_message_draft();
                     self.invalidate_messages_panel();
-                    self.load_messages_panel();
+                    self.request_messages_panel();
                     content_updated = true;
                 }
             }
@@ -9022,7 +10361,7 @@ impl VizApp {
                 let log_mtime = self.async_fs.cached_stat(&log_path);
                 if log_mtime != self.last_daemon_log_mtime {
                     self.last_daemon_log_mtime = log_mtime;
-                    self.load_coord_log();
+                    self.request_coordinator_log();
                     content_updated = true;
                 }
                 let ops_path = self.workgraph_dir.join("log").join("operations.jsonl");
@@ -9030,7 +10369,7 @@ impl VizApp {
                 let ops_mtime = self.async_fs.cached_stat(&ops_path);
                 if ops_mtime != self.last_ops_log_mtime {
                     self.last_ops_log_mtime = ops_mtime;
-                    self.load_activity_feed();
+                    self.request_coordinator_log();
                     content_updated = true;
                 }
             }
@@ -9045,8 +10384,7 @@ impl VizApp {
                 let outbox_mtime = self.async_fs.cached_stat(&outbox_path);
                 if outbox_mtime != self.last_chat_outbox_mtime {
                     self.last_chat_outbox_mtime = outbox_mtime;
-                    self.check_coordinator_status();
-                    self.poll_chat_messages();
+                    self.request_chat_refresh();
                     content_updated = true;
                 }
             }
@@ -9060,20 +10398,20 @@ impl VizApp {
 
             // Firehose: update if tab is active.
             if self.right_panel_tab == RightPanelTab::Firehose {
-                self.update_firehose();
+                self.request_firehose();
                 content_updated = true;
             }
 
             // Output pane: update if tab is active.
             if self.right_panel_tab == RightPanelTab::Output {
-                self.update_output_pane();
+                self.request_output_pane();
                 content_updated = true;
             }
 
             // Log pane: update agent output if tab is active.
             if self.right_panel_tab == RightPanelTab::Log {
-                self.update_log_output();
-                self.update_log_stream_events();
+                self.invalidate_log_pane();
+                self.request_log_pane();
                 content_updated = true;
             }
 
@@ -9097,7 +10435,7 @@ impl VizApp {
                     let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
                     let prev_hud_scroll = self.hud_scroll;
                     self.invalidate_hud();
-                    self.load_hud_detail();
+                    self.request_hud_detail();
                     if prev_hud_task.is_some()
                         && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
                     {
@@ -9127,14 +10465,12 @@ impl VizApp {
 
         // Update coordinator status and poll for new chat messages on every refresh tick.
         if self.chat.awaiting_response() || self.right_panel_tab == RightPanelTab::Chat {
-            self.check_coordinator_status();
-            self.poll_chat_messages();
+            self.request_chat_refresh();
         }
 
         // Poll service health every ~2 seconds for responsive agent count updates.
         if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(2) {
-            self.update_service_health();
-            self.update_vitals();
+            self.request_service_snapshot();
         }
 
         // Auto-refresh config panel when config.toml changes on disk,
@@ -9148,12 +10484,12 @@ impl VizApp {
             self.async_fs.request_stat(cfg_path.clone());
             let current_mtime = self.async_fs.cached_stat(&cfg_path);
             if current_mtime != self.config_panel.last_config_mtime {
-                self.load_config_panel();
+                self.request_config_panel();
             }
         }
 
         if self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10) {
-            self.update_time_counters();
+            self.request_service_snapshot();
         }
 
         // --- Heavy data refresh (graph-dependent) ---
@@ -9180,77 +10516,8 @@ impl VizApp {
             self.graph_viz_stale = true;
             self.async_fs.request_graph_load(graph_path.clone());
         } else if needs_token_refresh || has_expiring_stickies {
-            if let Some((graph, _)) = self.async_fs.cached_graph() {
-                // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
-                // recompute_trace() -> invalidate_hud() clears hud_detail.
-                let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
-                let prev_hud_scroll = self.hud_scroll;
-                let prev_hud_follow = self.hud_follow;
-
-                if has_expiring_stickies {
-                    // Update smart-follow state before reloading: track if user is at bottom.
-                    self.smart_follow_active = self.scroll.is_at_bottom();
-                    self.load_viz_from_graph(&graph);
-                    if !self.search_input.is_empty() {
-                        self.rerun_search();
-                    }
-                }
-                self.load_stats_from_graph(&graph);
-                self.refresh_chat_tab_caches(&graph);
-                self.load_agent_monitor();
-                self.update_agent_streams();
-                // Update firehose with new agent output if Firehose tab is active.
-                if self.right_panel_tab == RightPanelTab::Firehose {
-                    self.update_firehose();
-                }
-                // Update output pane with new agent output if Output tab is active.
-                if self.right_panel_tab == RightPanelTab::Output {
-                    self.update_output_pane();
-                }
-                // Update log pane agent output if Log tab is active.
-                if self.right_panel_tab == RightPanelTab::Log {
-                    self.update_log_output();
-                    self.update_log_stream_events();
-                }
-                // Preserve HUD scroll position when the selected task hasn't changed.
-                self.invalidate_hud();
-                // Eagerly reload so we can restore scroll before render.
-                self.load_hud_detail();
-                if prev_hud_task.is_some()
-                    && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-                {
-                    if prev_hud_follow {
-                        self.hud_scroll = usize::MAX; // renderer clamps to actual max
-                    } else {
-                        self.hud_scroll = prev_hud_scroll;
-                    }
-                }
-                // Reload log pane content if Log tab is active.
-                if self.right_panel_tab == RightPanelTab::Log {
-                    self.invalidate_log_pane();
-                    self.load_log_pane();
-                }
-                // Messages panel: NOT reloaded here. Message changes are detected
-                // by the fast-path mtime check (above), and task-selection changes
-                // are handled by recompute_trace (inside load_viz_from_graph).
-                // Reloading here on every tick caused the editor to be re-created
-                // each second, resetting the cursor to position 0.
-                // Reload agency lifecycle if Agency tab is active.
-                if self.right_panel_tab == RightPanelTab::Agency {
-                    self.invalidate_agency_lifecycle();
-                    self.load_agency_lifecycle();
-                }
-                // Refresh file browser tree if Files tab is active.
-                if self.right_panel_tab == RightPanelTab::Files
-                    && let Some(ref mut fb) = self.file_browser
-                {
-                    fb.refresh();
-                }
-                // Refresh coordinator log if CoordLog tab is active.
-                if self.right_panel_tab == RightPanelTab::CoordLog {
-                    self.load_coord_log();
-                    self.load_activity_feed();
-                }
+            if let Some((graph, graph_mtime)) = self.async_fs.cached_graph() {
+                self.request_graph_snapshot_from(graph, graph_mtime);
             }
         }
 
@@ -9275,10 +10542,13 @@ impl VizApp {
         true
     }
 
-    /// Whether a refresh tick is due (enough time has elapsed since last refresh,
-    /// or the file watcher detected changes).
+    /// Whether a refresh tick is due. While the initial snapshot is loading,
+    /// periodic redraws make the single thresholded phase indicator appear and
+    /// clear without requiring a keypress.
     pub fn is_refresh_due(&self) -> bool {
-        self.fs_change_pending.load(Ordering::Relaxed)
+        !self.bootstrap_complete
+            || self.graph_reload_pending
+            || self.fs_change_pending.load(Ordering::Relaxed)
             || self.last_refresh.elapsed() >= self.refresh_interval
     }
 
@@ -9352,8 +10622,8 @@ impl VizApp {
     /// Whether any time-based UI elements are active and need periodic redraws
     /// (animations, fading notifications, scrollbar timeouts, etc.).
     pub fn has_timed_ui_elements(&self) -> bool {
-        // File watcher detected changes — keep poll responsive for immediate updates.
-        if self.fs_change_pending.load(Ordering::Relaxed) {
+        // Bootstrap feedback and coalesced storage hints need prompt redraws.
+        if !self.bootstrap_complete || self.fs_change_pending.load(Ordering::Relaxed) {
             return true;
         }
         // Chat streaming: keep poll interval short for progressive display.
@@ -9493,6 +10763,10 @@ impl VizApp {
     /// Compute aggregate token usage for tasks currently visible on screen.
     /// Extracts task IDs from the plain_lines visible in the viewport.
     pub fn visible_token_usage(&self) -> TokenUsage {
+        self.visible_usage.clone()
+    }
+
+    fn compute_visible_token_usage(&self) -> TokenUsage {
         let mut usage = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,
@@ -9528,7 +10802,7 @@ impl VizApp {
             self.hud_detail = None;
             self.hud_scroll = 0;
         } else {
-            self.load_hud_detail();
+            self.request_hud_detail();
         }
     }
 
@@ -9576,6 +10850,16 @@ impl VizApp {
     /// Apply the current sort mode to reorder `task_order`.
     /// Preserves the selected task ID across the reorder.
     pub(crate) fn apply_sort_mode(&mut self) {
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.last_sort_apply = Some(Instant::now());
+            self.pending_sort_apply = false;
+            self.request_graph_snapshot();
+            return;
+        }
+        self.apply_sort_mode_sync();
+    }
+
+    fn apply_sort_mode_sync(&mut self) {
         // Record the apply timestamp regardless of whether anything changed,
         // so the debounce window resets on every legitimate flush. This must
         // run even on empty graphs so a flush request after a reload that
@@ -9612,36 +10896,6 @@ impl VizApp {
                 // 8/8-busy load deserialized the 3+MB JSONL file at the
                 // 5ms-debounced fs-watcher cadence (diagnose hot path #2).
                 //
-                // Bootstrap fallback: if the cache hasn't been populated
-                // yet (first sort before the first stats refresh, or a
-                // test fixture that bypassed load_stats_from_graph), do
-                // the load_graph here as a one-shot. Subsequent sorts
-                // hit the cache populated by the next stats refresh.
-                if self.sort_status_map.is_empty() {
-                    let graph_path = self.workgraph_dir.join("graph.jsonl");
-                    if let Ok(g) = load_graph(&graph_path) {
-                        self.sort_status_map = g
-                            .tasks()
-                            .map(|t| {
-                                let priority = match t.status {
-                                    Status::InProgress => 0,
-                                    Status::Failed => 1,
-                                    Status::Open => 2,
-                                    Status::Blocked => 3,
-                                    Status::Done => 4,
-                                    Status::Abandoned => 5,
-                                    Status::Waiting | Status::PendingValidation => 3,
-                                    Status::PendingEval | Status::FailedPendingEval => 0,
-                                    Status::Incomplete => 1,
-                                };
-                                (
-                                    t.id.clone(),
-                                    (priority, t.interaction_sort_key().to_string()),
-                                )
-                            })
-                            .collect();
-                    }
-                }
                 self.task_order.sort_by(|a, b| {
                     let default_meta = (99u8, String::new());
                     let ma = self.sort_status_map.get(a).unwrap_or(&default_meta);
@@ -9775,10 +11029,9 @@ impl VizApp {
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.hud_detail = None;
                 return;
             }
@@ -10556,10 +11809,9 @@ impl VizApp {
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.hud_detail = None;
                 return;
             }
@@ -11145,10 +12397,9 @@ impl VizApp {
             return;
         }
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.log_pane.rendered_lines.clear();
                 self.log_pane.task_id = None;
                 return;
@@ -11311,9 +12562,10 @@ impl VizApp {
             self.log_pane.scroll = usize::MAX;
             self.log_pane.auto_tail = true;
             self.log_pane.has_new_content = false;
-            // Pull in the newly-selected attempt's content immediately.
-            self.update_log_output();
-            self.update_log_stream_events();
+            // Pull in the newly-selected attempt without touching storage on
+            // the input thread.
+            self.invalidate_log_pane();
+            self.request_log_pane();
         }
     }
 
@@ -11408,8 +12660,7 @@ impl VizApp {
         } else {
             self.right_panel_visible = true;
             self.right_panel_tab = RightPanelTab::CoordLog;
-            self.load_coord_log();
-            self.load_activity_feed();
+            self.request_coordinator_log();
         }
     }
 
@@ -11615,13 +12866,11 @@ impl VizApp {
         self.messages_panel.summary = MessageSummary::default();
 
         // Look up the assigned agent for direction detection.
-        let assigned_agent = load_graph(self.workgraph_dir.join("graph.jsonl"))
-            .ok()
-            .and_then(|g| {
-                g.tasks()
-                    .find(|t| t.id == task_id)
-                    .and_then(|t| t.assigned.clone())
-            });
+        let assigned_agent = self.coherent_graph().and_then(|g| {
+            g.tasks()
+                .find(|t| t.id == task_id)
+                .and_then(|t| t.assigned.clone())
+        });
 
         match worksgood::messages::list_messages(&self.workgraph_dir, &task_id) {
             Ok(msgs) if msgs.is_empty() => {
@@ -11783,11 +13032,22 @@ impl VizApp {
             .collect();
         task_order.sort_by_key(|(_, line)| *line);
         let task_order: Vec<String> = task_order.into_iter().map(|(id, _)| id).collect();
+        let task_index = task_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect();
+        let line_task_map = viz
+            .node_line_map
+            .iter()
+            .map(|(id, line)| (*line, id.clone()))
+            .collect();
 
         let selected_task_idx = if task_order.is_empty() { None } else { Some(0) };
 
         Self {
             workgraph_dir: std::path::PathBuf::from("/tmp/test-workgraph"),
+            published_graph: None,
             viz_options: crate::commands::viz::VizOptions::default(),
             should_quit: false,
             exit_prompt_resolved: false,
@@ -11799,8 +13059,10 @@ impl VizApp {
             search_active: false,
             search_input: String::new(),
             fuzzy_matches: Vec::new(),
+            fuzzy_match_index_by_line: Vec::new(),
             current_match: None,
             filtered_indices: None,
+            visible_position_by_line: Vec::new(),
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
             total_usage: worksgood::graph::TokenUsage {
@@ -11811,6 +13073,14 @@ impl VizApp {
                 cache_creation_input_tokens: 0,
             },
             task_token_map: HashMap::new(),
+            live_task_token_map: Arc::new(HashMap::new()),
+            visible_usage: TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
@@ -11857,6 +13127,8 @@ impl VizApp {
             config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order,
+            task_index,
+            line_task_map,
             node_line_map: viz.node_line_map.clone(),
             forward_edges: viz.forward_edges.clone(),
             reverse_edges: viz.reverse_edges.clone(),
@@ -11867,7 +13139,7 @@ impl VizApp {
             char_edge_map: viz.char_edge_map.clone(),
             cycle_members: viz.cycle_members.clone(),
             annotation_map: viz.annotation_map.clone(),
-            sticky_annotations: HashMap::new(),
+            sticky_annotations: Arc::new(HashMap::new()),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
             hud_pin: None,
@@ -11945,6 +13217,7 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             activity_feed: ActivityFeedState::default(),
+            coordinator_runtime: CoordinatorRuntimeState::default(),
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
@@ -11961,7 +13234,7 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: false,
             splash_animations: HashMap::new(),
-            task_snapshots: HashMap::new(),
+            task_snapshots: Arc::new(HashMap::new()),
             animation_mode: AnimationMode::Normal,
             slide_animation: None,
             message_name_threshold: 8,
@@ -12007,7 +13280,6 @@ impl VizApp {
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
             messages_change_pending: Arc::new(AtomicBool::new(false)),
-            _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
             last_ops_log_mtime: None,
@@ -12021,36 +13293,20 @@ impl VizApp {
             key_feedback: VecDeque::new(),
             is_light_theme: false,
             async_fs: super::async_fs::AsyncFs::new(),
+            auxiliary: super::auxiliary::Lane::new(),
+            bootstrap: None,
+            snapshot_engine: None,
+            snapshot_generation: 0,
+            bootstrap_complete: true,
         }
     }
 
     /// Force an immediate refresh (manual `r` key).
     pub fn force_refresh(&mut self) {
-        self.last_graph_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-            .and_then(|m| m.modified())
-            .ok();
-        self.graph_viz_stale = false;
-        self.smart_follow_active = self.scroll.is_at_bottom();
-        // Load graph once and share between viz and stats.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
-        if let Ok(graph) = load_graph(&graph_path) {
-            self.load_viz_from_graph(&graph);
-            if !self.search_input.is_empty() {
-                self.rerun_search();
-            }
-            self.load_stats_from_graph(&graph);
-            self.refresh_chat_tab_caches(&graph);
-        } else {
-            self.load_viz();
-            if !self.search_input.is_empty() {
-                self.rerun_search();
-            }
-            self.load_stats();
-        }
-        self.load_agent_monitor();
-        self.sync_active_tabs_from_graph();
-        self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.last_refresh = Instant::now();
+        self.graph_reload_pending = true;
+        self.graph_viz_stale = true;
+        self.async_fs.request_graph_load(graph_path);
     }
 
     // ── Multi-panel methods ──
@@ -12332,14 +13588,17 @@ impl VizApp {
         // `.wg/.wg`. Use the parent directory as the CWD.
         #[cfg(not(test))]
         {
-            let project_root = self
-                .workgraph_dir
+            let workgraph_dir = self.workgraph_dir.clone();
+            let project_root = workgraph_dir
                 .parent()
-                .unwrap_or(&self.workgraph_dir)
+                .unwrap_or(&workgraph_dir)
                 .to_path_buf();
+            // Re-exec the running binary, not an unrelated/stale `wg` from
+            // PATH. This also keeps the TUI and its background commands on the
+            // same wire/storage version after an upgrade.
+            let wg_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wg"));
             std::thread::spawn(move || {
-                let result = Command::new("wg")
-                    .args(&args)
+                let result = isolated_wg_subprocess(&wg_binary, &workgraph_dir, &args)
                     .current_dir(&project_root)
                     .output();
                 let (success, output) = match result {
@@ -12450,12 +13709,15 @@ impl VizApp {
                             read_at: None,
                             msg_queue_id: None,
                         });
-                        save_chat_history_with_skip(
-                            &self.workgraph_dir,
-                            self.active_coordinator_id,
-                            &self.chat.messages,
-                            self.chat.skipped_history_count,
-                        );
+                        self.chat.enforce_history_projection();
+                        if self.chat.projection_reaches_history_tail() {
+                            save_chat_history_with_skip(
+                                &self.workgraph_dir,
+                                self.active_coordinator_id,
+                                &self.chat.messages,
+                                self.chat.skipped_history_count,
+                            );
+                        }
                         // Clear this request from the pending set — no response will come.
                         self.chat.pending_request_ids.remove(&request_id);
                         if self.chat.pending_request_ids.is_empty() {
@@ -12465,7 +13727,7 @@ impl VizApp {
                         // wg chat succeeded — response should be in the outbox.
                         // Poll immediately so message appears at the same time as
                         // the throbber disappears (avoids 1-second gap).
-                        self.poll_chat_messages();
+                        self.request_chat_refresh();
                         // If poll didn't find messages yet (edge case), keep
                         // awaiting_response true so the throbber persists until
                         // the next poll picks it up.
@@ -12686,8 +13948,7 @@ impl VizApp {
 
     /// Load agent monitor data from the agent registry.
     pub fn load_agent_monitor(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         match AgentRegistry::load(&self.workgraph_dir) {
             Ok(registry) => {
@@ -12907,6 +14168,33 @@ impl VizApp {
                 self.agent_streams.insert(agent_id.clone(), info.clone());
             }
         }
+
+        let next_live_usage: HashMap<String, TokenUsage> = self
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|entry| matches!(entry.status, AgentStatus::Working))
+            .filter_map(|entry| {
+                let task_id = entry.task_id.as_ref()?;
+                let graph = self.published_graph.as_ref()?;
+                if graph.get_task(task_id)?.token_usage.is_some() {
+                    return None;
+                }
+                let usage = self
+                    .agent_streams
+                    .get(&entry.agent_id)?
+                    .token_usage
+                    .clone()?;
+                Some((task_id.clone(), usage))
+            })
+            .collect();
+        if self.live_task_token_map.as_ref() != &next_live_usage {
+            self.live_task_token_map = Arc::new(next_live_usage);
+            // Token enrichment is a new graph presentation input, but the
+            // request is still latest-wins/capacity-one. The terminal thread
+            // does not parse, aggregate, or apply graph-sized state here.
+            self.request_graph_snapshot();
+        }
     }
 
     /// Polling cadence for per-agent tail threads. 100ms keeps the activity
@@ -12919,8 +14207,6 @@ impl VizApp {
     /// output.log into a shared `AgentStreamInfo`. Used by
     /// `update_agent_streams` (fix-tui-perf-2 fix 6).
     fn spawn_agent_tail(log_path: std::path::PathBuf) -> AgentTailHandle {
-        use std::io::{Read, Seek, SeekFrom};
-
         let info = std::sync::Arc::new(std::sync::Mutex::new(AgentStreamInfo::default()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let info_w = std::sync::Arc::clone(&info);
@@ -12933,19 +14219,11 @@ impl VizApp {
                 if let Some(meta) = metadata {
                     let len = meta.len();
                     if len > file_offset {
-                        if let Ok(mut file) = std::fs::File::open(&log_path) {
-                            if file.seek(SeekFrom::Start(file_offset)).is_ok() {
-                                let mut new_data = String::new();
-                                if file.read_to_string(&mut new_data).is_ok() {
-                                    file_offset = len;
-                                    if let Ok(mut info) = info_w.lock() {
-                                        info.file_offset = file_offset;
-                                        for line in new_data.lines() {
-                                            info.process_jsonl_line(line);
-                                        }
-                                    }
-                                }
-                            }
+                        if let Ok(mut info) = info_w.lock()
+                            && let Ok(page) =
+                                read_active_log_page(&log_path, file_offset, &mut info)
+                        {
+                            file_offset = page.next_offset;
                         }
                     } else if len < file_offset {
                         // File was rotated / truncated — restart from 0.
@@ -12970,8 +14248,6 @@ impl VizApp {
     /// Called when the Output tab is active. Reads incrementally from each agent's output.log
     /// and accumulates extracted markdown text.
     pub fn update_output_pane(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agents_dir = self.workgraph_dir.join("agents");
 
         // Check if iteration changed — if so, invalidate all cached text so we reload
@@ -13056,27 +14332,14 @@ impl VizApp {
                 text_entry.dirty = true;
             }
 
-            // Open file and seek to last known position.
-            let mut file = match std::fs::File::open(&log_path) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, text_entry.file_offset)
+            else {
+                continue;
             };
-
-            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if file_len <= text_entry.file_offset {
-                continue; // No new data.
-            }
-
-            if file.seek(SeekFrom::Start(text_entry.file_offset)).is_err() {
+            if page.next_offset == text_entry.file_offset {
                 continue;
             }
-
-            let mut new_data = String::new();
-            if file.read_to_string(&mut new_data).is_err() {
-                continue;
-            }
-
-            text_entry.file_offset = file_len;
+            text_entry.file_offset = page.next_offset;
 
             // Extract assistant text + tool results from the new JSONL lines.
             let new_text = extract_enriched_text_from_log(&new_data);
@@ -13128,8 +14391,6 @@ impl VizApp {
     /// Uses the same extraction function (`extract_enriched_text_from_log`) and data type
     /// (`OutputAgentText`) as the Output tab, ensuring identical rendering.
     pub fn update_log_output(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agent_id = match &self.log_pane.agent_id {
             Some(id) => id.clone(),
             None => return,
@@ -13164,26 +14425,14 @@ impl VizApp {
 
         let text_entry = &mut self.log_pane.agent_output;
 
-        let mut file = match std::fs::File::open(&log_path) {
-            Ok(f) => f,
-            Err(_) => return,
+        let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, text_entry.file_offset)
+        else {
+            return;
         };
-
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if file_len <= text_entry.file_offset {
-            return; // No new data.
-        }
-
-        if file.seek(SeekFrom::Start(text_entry.file_offset)).is_err() {
+        if page.next_offset == text_entry.file_offset {
             return;
         }
-
-        let mut new_data = String::new();
-        if file.read_to_string(&mut new_data).is_err() {
-            return;
-        }
-
-        text_entry.file_offset = file_len;
+        text_entry.file_offset = page.next_offset;
 
         // Same extraction as the Output tab.
         let new_text = extract_enriched_text_from_log(&new_data);
@@ -13222,8 +14471,6 @@ impl VizApp {
     }
 
     pub fn update_log_stream_events(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agent_id = match &self.log_pane.agent_id {
             Some(id) => id.clone(),
             None => return,
@@ -13235,29 +14482,15 @@ impl VizApp {
             return;
         }
 
-        let mut file = match std::fs::File::open(&stream_path) {
-            Ok(f) => f,
-            Err(_) => return,
+        let Ok((new_data, page)) =
+            read_bounded_jsonl_page(&stream_path, self.log_pane.raw_stream_offset)
+        else {
+            return;
         };
-
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if file_len <= self.log_pane.raw_stream_offset {
+        if page.next_offset == self.log_pane.raw_stream_offset {
             return;
         }
-
-        if file
-            .seek(SeekFrom::Start(self.log_pane.raw_stream_offset))
-            .is_err()
-        {
-            return;
-        }
-
-        let mut new_data = String::new();
-        if file.read_to_string(&mut new_data).is_err() {
-            return;
-        }
-
-        self.log_pane.raw_stream_offset = file_len;
+        self.log_pane.raw_stream_offset = page.next_offset;
 
         let mut had_new = false;
         for line in new_data.lines() {
@@ -13299,8 +14532,6 @@ impl VizApp {
     /// Each non-empty line is appended to the firehose buffer. The buffer is capped at
     /// FIREHOSE_MAX_LINES to prevent memory growth.
     pub fn update_firehose(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
-
         let agents_dir = self.workgraph_dir.join("agents");
 
         // Collect active agent IDs and their task IDs from the monitor.
@@ -13326,26 +14557,13 @@ impl VizApp {
                 .entry(agent_id.clone())
                 .or_insert(0);
 
-            let mut file = match std::fs::File::open(&log_path) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, *offset) else {
+                continue;
             };
-
-            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if file_len <= *offset {
+            if page.next_offset == *offset {
                 continue;
             }
-
-            if file.seek(SeekFrom::Start(*offset)).is_err() {
-                continue;
-            }
-
-            let mut new_data = String::new();
-            if file.read_to_string(&mut new_data).is_err() {
-                continue;
-            }
-
-            *offset = file_len;
+            *offset = page.next_offset;
 
             // Assign a stable color index for this agent.
             let color_idx = *self
@@ -13405,10 +14623,9 @@ impl VizApp {
             return;
         }
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.agency_lifecycle = None;
                 return;
             }
@@ -13775,9 +14992,8 @@ impl VizApp {
         }
 
         // Detect stuck tasks: in-progress tasks whose agent PID is dead
-        let graph_path = dir.join("graph.jsonl");
         let mut stuck = Vec::new();
-        if let Ok(graph) = worksgood::parser::load_graph(&graph_path) {
+        if let Some(graph) = self.coherent_graph() {
             for task in graph.tasks() {
                 if task.status == worksgood::graph::Status::InProgress
                     && let Some(ref agent_id) = task.agent
@@ -14065,9 +15281,10 @@ impl VizApp {
         // Also pre-load persisted chat for all other known coordinators so
         // switch_coordinator doesn't lose history. Use pagination for these too.
         let config = Config::load_or_default(&self.workgraph_dir);
-        let page_size = self
-            .history_depth_override
-            .unwrap_or(config.tui.chat_page_size);
+        let page_size = bounded_chat_page_size(
+            self.history_depth_override
+                .unwrap_or(config.tui.chat_page_size),
+        );
         let other_ids: Vec<u32> = self
             .list_coordinator_ids()
             .into_iter()
@@ -14080,8 +15297,8 @@ impl VizApp {
                 state.messages = result.messages;
                 state.has_more_history = result.has_more;
                 state.total_history_count = result.total_count;
-                state.skipped_history_count =
-                    result.total_count.saturating_sub(state.messages.len());
+                state.skipped_history_count = result.window_start;
+                state.enforce_history_projection();
                 // Set outbox cursor so we don't re-display old messages.
                 if let Ok(outbox) =
                     worksgood::chat::read_outbox_since_for(&self.workgraph_dir, cid, 0)
@@ -14096,24 +15313,26 @@ impl VizApp {
     /// Load chat history for a specific coordinator into self.chat (paginated).
     fn load_chat_history_for_coordinator(&mut self, coordinator_id: u32) {
         let config = Config::load_or_default(&self.workgraph_dir);
-        let page_size = self
-            .history_depth_override
-            .unwrap_or(config.tui.chat_page_size);
+        let page_size = bounded_chat_page_size(
+            self.history_depth_override
+                .unwrap_or(config.tui.chat_page_size),
+        );
         let result =
             load_persisted_chat_history_paginated(&self.workgraph_dir, coordinator_id, page_size);
         if !result.messages.is_empty() {
             self.chat.messages = result.messages;
             self.chat.has_more_history = result.has_more;
             self.chat.total_history_count = result.total_count;
-            self.chat.skipped_history_count =
-                result.total_count.saturating_sub(self.chat.messages.len());
+            self.chat.skipped_history_count = result.window_start;
+            self.chat.enforce_history_projection();
         } else {
             // Fall back to inbox/outbox (e.g. first run after upgrade).
             let history = worksgood::chat::read_history_for(&self.workgraph_dir, coordinator_id)
                 .unwrap_or_default();
 
             self.chat.messages.clear();
-            for msg in &history {
+            let fallback_start = history.len().saturating_sub(CHAT_HISTORY_PAGE_MAX_RECORDS);
+            for msg in &history[fallback_start..] {
                 let role = match msg.role.as_str() {
                     "user" => ChatRole::User,
                     "coordinator" => ChatRole::Coordinator,
@@ -14151,8 +15370,9 @@ impl VizApp {
                 });
             }
 
+            self.chat.enforce_history_projection();
             self.chat.has_more_history = false;
-            self.chat.total_history_count = self.chat.messages.len();
+            self.chat.total_history_count = history.len();
             self.chat.skipped_history_count = 0;
 
             // Persist the loaded history so next restart uses the file.
@@ -14179,21 +15399,25 @@ impl VizApp {
 
     /// Save all coordinator chat states to disk (called on TUI exit).
     pub fn save_all_chat_state(&self) {
-        // Save the active coordinator's chat, preserving unloaded older messages.
-        save_chat_history_with_skip(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.chat.messages,
-            self.chat.skipped_history_count,
-        );
-        // Save all other coordinators' chat states, preserving unloaded older messages.
-        for (cid, state) in &self.coordinator_chats {
+        // Save only projections that reach the persisted tail. Older
+        // replacement pages have an unloaded suffix and must remain read-only.
+        if self.chat.projection_reaches_history_tail() {
             save_chat_history_with_skip(
                 &self.workgraph_dir,
-                *cid,
-                &state.messages,
-                state.skipped_history_count,
+                self.active_coordinator_id,
+                &self.chat.messages,
+                self.chat.skipped_history_count,
             );
+        }
+        for (cid, state) in &self.coordinator_chats {
+            if state.projection_reaches_history_tail() {
+                save_chat_history_with_skip(
+                    &self.workgraph_dir,
+                    *cid,
+                    &state.messages,
+                    state.skipped_history_count,
+                );
+            }
         }
         // Save TUI focus state.
         let open_tabs = self.open_tab_labels_for_persistence();
@@ -14205,16 +15429,76 @@ impl VizApp {
         );
     }
 
+    /// Preserve the normal exit-state write without letting a slow or wedged
+    /// project filesystem delay terminal restoration indefinitely. All data
+    /// is copied from in-memory caches before the worker starts; the caller
+    /// waits only for the supplied bound and then proceeds.
+    pub fn save_all_chat_state_bounded(&self, timeout: Duration) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let active_coordinator_id = self.active_coordinator_id;
+        let active_history = self
+            .chat
+            .projection_reaches_history_tail()
+            .then(|| (self.chat.messages.clone(), self.chat.skipped_history_count));
+        let coordinator_histories: Vec<_> = self
+            .coordinator_chats
+            .iter()
+            .filter(|(_, state)| state.projection_reaches_history_tail())
+            .map(|(id, state)| (*id, state.messages.clone(), state.skipped_history_count))
+            .collect();
+        let right_panel_tab = self.right_panel_tab;
+        let open_tabs: Vec<String> = self
+            .active_tabs
+            .iter()
+            .filter(|id| !self.closed_tabs.contains(id))
+            .map(|id| {
+                self.cached_coordinator_id_set
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| worksgood::chat_id::format_chat_task_id(*id))
+            })
+            .collect();
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        if std::thread::Builder::new()
+            .name("wg-tui-exit-save".into())
+            .spawn(move || {
+                if let Some((active_messages, active_skipped)) = active_history {
+                    save_chat_history_with_skip(
+                        &workgraph_dir,
+                        active_coordinator_id,
+                        &active_messages,
+                        active_skipped,
+                    );
+                }
+                for (id, messages, skipped) in coordinator_histories {
+                    save_chat_history_with_skip(&workgraph_dir, id, &messages, skipped);
+                }
+                save_tui_state(
+                    &workgraph_dir,
+                    active_coordinator_id,
+                    &right_panel_tab,
+                    &open_tabs,
+                );
+                let _ = done_tx.try_send(());
+            })
+            .is_ok()
+        {
+            let _ = done_rx.recv_timeout(timeout);
+        }
+    }
+
     /// Persist the current tab list and active tab to tui-state.json.
     /// Best-effort: failure logs a warning but doesn't block operation.
-    pub fn persist_tab_state(&self) {
+    pub fn persist_tab_state(&mut self) {
         let open_tabs = self.open_tab_labels_for_persistence();
-        save_tui_state(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.right_panel_tab,
-            &open_tabs,
-        );
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let tab = self.right_panel_tab;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Persistence, move || {
+                save_tui_state(&workgraph_dir, cid, &tab, &open_tabs);
+                Box::new(|_| {})
+            });
     }
 
     fn open_tab_labels_for_persistence(&self) -> Vec<String> {
@@ -14237,10 +15521,11 @@ impl VizApp {
             .collect()
     }
 
-    /// Load the next page of older chat messages for the active coordinator.
-    /// Prepends older messages to the beginning of `self.chat.messages`.
-    /// When the active file is exhausted, loads from archive files.
-    /// Returns true if new messages were loaded.
+    /// Load the next bounded page of older chat messages for the active coordinator.
+    /// Pages replace one another so the live render/search projection never
+    /// accumulates with the depth of the persisted history. The initial page is
+    /// newest; each subsequent page moves toward older records.
+    /// Returns true if the page cursor advanced.
     pub fn load_more_chat_history(&mut self) -> bool {
         if self.no_history || !self.chat.has_more_history {
             // Check if we can still load from archives
@@ -14251,32 +15536,28 @@ impl VizApp {
         }
 
         let config = Config::load_or_default(&self.workgraph_dir);
-        let page_size = config.tui.chat_page_size;
-        let loaded_count = self.chat.messages.len();
+        let page_size = bounded_chat_page_size(
+            self.history_depth_override
+                .unwrap_or(config.tui.chat_page_size),
+        );
+        let prior_start = self.chat.skipped_history_count;
 
         let jsonl_path = chat_history_path(&self.workgraph_dir, self.active_coordinator_id);
-        let older_messages = load_jsonl_page(&jsonl_path, loaded_count, page_size);
-
-        if older_messages.is_empty() {
+        let page = load_jsonl_page(&jsonl_path, prior_start, page_size);
+        if page.window_start >= prior_start {
             self.chat.has_more_history = false;
-            // Try loading from archives when active file is exhausted
             if !self.chat.archives_loaded {
                 return self.load_archive_history();
             }
             return false;
         }
 
-        // Prepend older messages to the beginning.
-        let newly_loaded = older_messages.len();
-        let mut combined = older_messages;
-        combined.append(&mut self.chat.messages);
-        self.chat.messages = combined;
-
-        // Update pagination state.
-        self.chat.skipped_history_count =
-            self.chat.skipped_history_count.saturating_sub(newly_loaded);
-        self.chat.has_more_history = self.chat.skipped_history_count > 0;
-
+        self.chat.messages = page.messages;
+        self.chat.total_history_count = page.total_count;
+        self.chat.skipped_history_count = page.window_start;
+        self.chat.has_more_history = page.has_more;
+        self.chat.enforce_history_projection();
+        self.chat.scroll = 0;
         true
     }
 
@@ -14337,6 +15618,7 @@ impl VizApp {
                         msg_queue_id: None,
                     });
                 }
+                clamp_chat_messages(&mut archive_messages);
             }
         }
 
@@ -14365,8 +15647,9 @@ impl VizApp {
                 .collect();
             tui_archives.sort();
             for path in &tui_archives {
-                let result = load_jsonl_tail(path, usize::MAX);
+                let result = load_jsonl_tail(path, CHAT_HISTORY_PAGE_MAX_RECORDS);
                 archive_messages.extend(result.messages);
+                clamp_chat_messages(&mut archive_messages);
             }
         }
 
@@ -14381,6 +15664,7 @@ impl VizApp {
         archive_messages.append(&mut self.chat.messages);
         self.chat.messages = archive_messages;
         self.chat.skipped_history_count = 0;
+        self.chat.enforce_history_projection();
 
         loaded > 0
     }
@@ -14439,14 +15723,18 @@ impl VizApp {
                 msg_queue_id: None,
             });
         }
+        self.chat.enforce_history_projection();
 
-        // Persist updated chat history.
-        save_chat_history_with_skip(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.chat.messages,
-            self.chat.skipped_history_count,
-        );
+        // Persist only when this projection reaches the tail; an older page
+        // has an unloaded suffix that the prefix-only writer cannot replace.
+        if self.chat.projection_reaches_history_tail() {
+            save_chat_history_with_skip(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+                &self.chat.messages,
+                self.chat.skipped_history_count,
+            );
+        }
 
         // Phase 1 trigger: New message → Info toast (only when Chat panel isn't focused,
         // so we don't show redundant toasts when the user is already reading the chat).
@@ -14658,14 +15946,16 @@ impl VizApp {
             read_at: None,
             msg_queue_id: None,
         });
+        self.chat.enforce_history_projection();
 
-        // Persist updated chat history.
-        save_chat_history_with_skip(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.chat.messages,
-            self.chat.skipped_history_count,
-        );
+        if self.chat.projection_reaches_history_tail() {
+            save_chat_history_with_skip(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+                &self.chat.messages,
+                self.chat.skipped_history_count,
+            );
+        }
 
         // Reset scroll to bottom.
         self.chat.scroll = 0;
@@ -14869,12 +16159,14 @@ impl VizApp {
                             &new_text,
                         );
                     }
-                    save_chat_history_with_skip(
-                        &self.workgraph_dir,
-                        self.active_coordinator_id,
-                        &self.chat.messages,
-                        self.chat.skipped_history_count,
-                    );
+                    if self.chat.projection_reaches_history_tail() {
+                        save_chat_history_with_skip(
+                            &self.workgraph_dir,
+                            self.active_coordinator_id,
+                            &self.chat.messages,
+                            self.chat.skipped_history_count,
+                        );
+                    }
                 }
             }
             editor_clear(&mut self.chat.editor);
@@ -14901,12 +16193,14 @@ impl VizApp {
             );
         }
         self.chat.messages.remove(index);
-        save_chat_history_with_skip(
-            &self.workgraph_dir,
-            self.active_coordinator_id,
-            &self.chat.messages,
-            self.chat.skipped_history_count,
-        );
+        if self.chat.projection_reaches_history_tail() {
+            save_chat_history_with_skip(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+                &self.chat.messages,
+                self.chat.skipped_history_count,
+            );
+        }
         // Clear edit state
         self.chat.editing_index = None;
         self.chat.history_cursor = None;
@@ -15025,48 +16319,12 @@ impl VizApp {
         self.coordinator_chats
             .insert(self.active_coordinator_id, current);
 
-        // Load target chat state: try in-memory first, then persisted file (paginated), then default.
-        // --no-history: always start with empty chat for any coordinator.
-        self.chat = if self.no_history {
-            ChatState::default()
-        } else {
-            self.coordinator_chats
-                .remove(&target_id)
-                .unwrap_or_else(|| {
-                    let config = Config::load_or_default(&self.workgraph_dir);
-                    let page_size = self
-                        .history_depth_override
-                        .unwrap_or(config.tui.chat_page_size);
-                    let result = load_persisted_chat_history_paginated(
-                        &self.workgraph_dir,
-                        target_id,
-                        page_size,
-                    );
-                    if result.messages.is_empty() {
-                        ChatState::default()
-                    } else {
-                        ChatState {
-                            has_more_history: result.has_more,
-                            total_history_count: result.total_count,
-                            skipped_history_count: result
-                                .total_count
-                                .saturating_sub(result.messages.len()),
-                            messages: result.messages,
-                            ..Default::default()
-                        }
-                    }
-                })
-        };
-
-        // Initialize outbox cursor for newly created chat states so we don't
-        // re-display old messages or miss new ones (each coordinator has independent
-        // ID sequences — a cursor from coordinator-0 is meaningless for coordinator-6).
-        if self.chat.outbox_cursor == 0
-            && let Ok(msgs) =
-                worksgood::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
-        {
-            self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
-        }
+        // Never fall through to project storage from a tab-switch key. A
+        // missing in-memory chat paints an empty cached shell while the
+        // auxiliary worker loads its bounded initial page and outbox cursor.
+        let cached = self.coordinator_chats.remove(&target_id);
+        let needs_history_snapshot = !self.no_history && cached.is_none();
+        self.chat = cached.unwrap_or_default();
 
         // Always reset to Normal when switching coordinators so arrow-key
         // navigation doesn't get stuck in input mode. The user must explicitly
@@ -15082,6 +16340,9 @@ impl VizApp {
 
         self.active_coordinator_id = target_id;
         self.persist_tab_state();
+        if needs_history_snapshot {
+            self.request_initial_chat_history();
+        }
 
         // Auto-enter PTY mode when switching to a native-executor
         // coordinator (Step 1 of nex-as-everything). Harmless no-op for
@@ -15183,10 +16444,15 @@ impl VizApp {
         // binary (typically `claude`) for every chat tab, ignoring the
         // `--executor codex` / `--model codex:gpt-5` the user actually
         // picked when creating that chat — chat-launched-with bug.
-        let (executor, chat_model) = resolve_chat_pty_executor_and_model(
+        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let chat_task = self
+            .coherent_graph()
+            .and_then(|graph| graph.get_task(&task_id).cloned());
+        let (executor, chat_model) = resolve_chat_pty_executor_and_model_with_task(
             &self.workgraph_dir,
             &config,
             self.active_coordinator_id,
+            chat_task.as_ref(),
         );
         let chat_endpoint = crate::commands::service::CoordinatorState::load_for(
             &self.workgraph_dir,
@@ -15235,10 +16501,9 @@ impl VizApp {
         } else {
             None
         };
-        let chat_task_metadata =
-            worksgood::parser::load_graph(crate::commands::graph_path(&self.workgraph_dir))
-                .ok()
-                .and_then(|g| g.get_task(&task_id).cloned());
+        let chat_task_metadata = self
+            .coherent_graph()
+            .and_then(|g| g.get_task(&task_id).cloned());
         if let Some(mut task) = chat_task_metadata.clone()
             && task
                 .tags
@@ -15941,23 +17206,22 @@ impl VizApp {
 
         // Build the set of live chat refs from the graph: `chat-N` for
         // every non-archived/non-abandoned task with the chat-loop tag.
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let live_refs: std::collections::HashSet<String> =
-            worksgood::parser::load_graph(&graph_path)
-                .map(|g| {
-                    g.tasks()
-                        .filter(|t| {
-                            t.tags
-                                .iter()
-                                .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
-                        })
-                        .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
-                        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
-                        .filter_map(|t| worksgood::chat_id::parse_chat_task_id(&t.id))
-                        .map(|n| format!("chat-{}", n))
-                        .collect()
-                })
-                .unwrap_or_default();
+        let live_refs: std::collections::HashSet<String> = self
+            .coherent_graph()
+            .map(|g| {
+                g.tasks()
+                    .filter(|t| {
+                        t.tags
+                            .iter()
+                            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+                    })
+                    .filter(|t| !matches!(t.status, worksgood::graph::Status::Abandoned))
+                    .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+                    .filter_map(|t| worksgood::chat_id::parse_chat_task_id(&t.id))
+                    .map(|n| format!("chat-{}", n))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Enumerate all wg-chat-* sessions and kill the ones whose chat
         // ref isn't in `live_refs`.
@@ -16010,8 +17274,7 @@ impl VizApp {
         // Load the graph to check chat task titles directly.
         // list_coordinator_ids_and_labels() returns display labels like ".chat-N"
         // which don't match the "Chat: {user}" title format.
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = worksgood::parser::load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         // Find a non-archived chat task whose title matches (new or legacy)
         let existing_coord: Option<u32> = graph.as_ref().and_then(|g| {
@@ -16301,8 +17564,7 @@ impl VizApp {
 
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = worksgood::parser::load_graph(&graph_path).ok();
+        let graph = self.coherent_graph();
 
         let ids_and_labels = self.list_coordinator_ids_and_labels();
         let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
@@ -16367,10 +17629,9 @@ impl VizApp {
     /// graph (active + terminal), sort by cid, and present as a multi-
     /// selectable list for bulk-abandon. See `ChatManagerState`.
     pub fn open_chat_manager(&mut self) {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return,
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return,
         };
 
         let mut entries: Vec<ChatManagerEntry> = Vec::new();
@@ -16524,9 +17785,6 @@ impl VizApp {
         }
     }
 
-    /// Delete a coordinator session via IPC.
-    /// Sends the delete command to the backend; on success the effect handler
-    /// cleans up local chat state, switches to another coordinator, and refreshes.
     // ── Chat-exit prompt (tmux-persistence UX) ──────────────────────
 
     /// Returns chat ids that currently have a live tmux session for
@@ -16801,10 +18059,9 @@ impl VizApp {
     /// Returns 0 on a missing graph file rather than synthesizing a phantom
     /// chat-0 entry — empty graph means zero live chats.
     pub fn live_chat_count(&self) -> usize {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return 0,
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return 0,
         };
         worksgood::chat::count_live_chats(
             &self.workgraph_dir,
@@ -16817,10 +18074,9 @@ impl VizApp {
     /// Returns Vec of (id, label) where label is the canonical chat task id
     /// (`.chat-N`) matching what `wg show` / `wg list` use.
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return vec![(0, worksgood::chat_id::format_chat_task_id(0))],
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return vec![(0, worksgood::chat_id::format_chat_task_id(0))],
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
@@ -16967,10 +18223,9 @@ impl VizApp {
     /// Get user board entries from the graph.
     /// Returns Vec of (task_id, label) for active `.user-*` tasks.
     pub fn list_user_board_entries(&self) -> Vec<(String, String)> {
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match worksgood::parser::load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => return Vec::new(),
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => return Vec::new(),
         };
         let mut entries: Vec<(String, String)> = graph
             .tasks()
@@ -17018,7 +18273,16 @@ impl VizApp {
 
     /// Open the task creation form.
     pub fn open_task_form(&mut self) {
-        self.task_form = Some(TaskFormState::new(&self.workgraph_dir));
+        let all_tasks = self
+            .coherent_graph()
+            .map(|graph| {
+                graph
+                    .tasks()
+                    .map(|task| (task.id.clone(), task.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.task_form = Some(TaskFormState::from_tasks(all_tasks));
         self.input_mode = InputMode::TaskForm;
     }
 
@@ -17181,10 +18445,9 @@ impl VizApp {
             }
         };
 
-        let graph_path = self.workgraph_dir.join("graph.jsonl");
-        let graph = match load_graph(&graph_path) {
-            Ok(g) => g,
-            Err(_) => {
+        let graph = match self.coherent_graph() {
+            Some(graph) => graph,
+            None => {
                 self.push_toast("Failed to load graph".to_string(), ToastSeverity::Error);
                 return;
             }
@@ -17241,11 +18504,588 @@ impl VizApp {
         self.chat.deferred_user_indices.clear();
     }
 
+    // ── Auxiliary storage snapshots ──
+
+    fn selected_hud_target(&self) -> Option<String> {
+        let selected = self.selected_task_id()?.to_string();
+        Some(
+            self.hud_pin
+                .as_ref()
+                .filter(|pin| pin.anchor_parent_id == selected)
+                .map(|pin| pin.dot_task_id.clone())
+                .unwrap_or(selected),
+        )
+    }
+
+    /// Queue the selected task's full detail snapshot.
+    pub fn request_hud_detail(&mut self) {
+        let Some(target) = self.selected_hud_target() else {
+            self.hud_detail = None;
+            return;
+        };
+        self.request_hud_detail_target(target, true);
+    }
+
+    /// Queue a detail snapshot for a task reached from Agency/navigation.
+    pub fn request_hud_detail_for_task(&mut self, target: &str) {
+        self.request_hud_detail_target(target.to_string(), false);
+    }
+
+    fn request_hud_detail_target(&mut self, target: String, full: bool) {
+        let graph = self.published_graph.clone();
+        let workgraph_dir = self.workgraph_dir.clone();
+        let anchor = self.selected_task_id().map(str::to_string);
+        let viewing_iteration = self.viewing_iteration;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Detail, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.viewing_iteration = viewing_iteration;
+                if full {
+                    loader.load_hud_detail();
+                } else {
+                    loader.load_hud_detail_for_task(&target);
+                }
+                let detail = loader.hud_detail;
+                let archives = loader.iteration_archives;
+                let archives_task_id = loader.iteration_archives_task_id;
+                let output_mtime = detail.as_ref().and_then(|d| d.output_mtime);
+                Box::new(move |app| {
+                    if app.selected_task_id().map(str::to_string) != anchor {
+                        return;
+                    }
+                    app.hud_detail = detail;
+                    app.iteration_archives = archives;
+                    app.iteration_archives_task_id = archives_task_id;
+                    app.last_detail_output_mtime = output_mtime;
+                })
+            });
+    }
+
+    pub fn request_log_pane(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.invalidate_log_pane();
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        let json_mode = self.log_pane.json_mode;
+        let view_mode = self.log_pane.view_mode;
+        let summary_mode = self.log_pane.summary_mode;
+        let manual_pin = self.log_pane.manual_pin.clone();
+        let pinned_for_task = self.log_pane.pinned_for_task.clone();
+        let viewing_iteration = self.viewing_iteration;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Log, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.viewing_iteration = viewing_iteration;
+                loader.log_pane.json_mode = json_mode;
+                loader.log_pane.view_mode = view_mode;
+                loader.log_pane.summary_mode = summary_mode;
+                loader.log_pane.manual_pin = manual_pin;
+                loader.log_pane.pinned_for_task = pinned_for_task;
+                loader.load_agent_monitor();
+                loader.load_log_pane();
+                loader.update_log_output();
+                loader.update_log_stream_events();
+                let mut panel = loader.log_pane;
+                Box::new(move |app| {
+                    if app.selected_task_id() != Some(target.as_str()) {
+                        return;
+                    }
+                    panel.scroll = app.log_pane.scroll;
+                    panel.auto_tail = app.log_pane.auto_tail;
+                    panel.json_mode = app.log_pane.json_mode;
+                    panel.view_mode = app.log_pane.view_mode;
+                    panel.summary_mode = app.log_pane.summary_mode;
+                    app.log_pane = panel;
+                })
+            });
+    }
+
+    pub fn request_messages_panel(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.invalidate_messages_panel();
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Messages, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.load_messages_panel();
+                let rendered_lines = loader.messages_panel.rendered_lines;
+                let entries = loader.messages_panel.entries;
+                let summary = loader.messages_panel.summary;
+                let task_id = loader.messages_panel.task_id;
+                Box::new(move |app| {
+                    if app.selected_task_id() != Some(target.as_str()) {
+                        return;
+                    }
+                    app.messages_panel.rendered_lines = rendered_lines;
+                    app.messages_panel.entries = entries;
+                    app.messages_panel.summary = summary;
+                    app.messages_panel.task_id = task_id;
+                })
+            });
+    }
+
+    pub fn request_agency_lifecycle(&mut self) {
+        let Some(target) = self.selected_task_id().map(str::to_string) else {
+            self.agency_lifecycle = None;
+            return;
+        };
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Agency, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.task_order = vec![target.clone()];
+                loader.rebuild_snapshot_indexes();
+                loader.selected_task_idx = Some(0);
+                loader.load_agency_lifecycle();
+                let lifecycle = loader.agency_lifecycle;
+                Box::new(move |app| {
+                    if app.selected_task_id() == Some(target.as_str()) {
+                        app.agency_lifecycle = lifecycle;
+                    }
+                })
+            });
+    }
+
+    pub fn request_coordinator_log(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let coord_log = self.coord_log.clone();
+        let activity_feed = self.activity_feed.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::CoordinatorLog, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                loader.coord_log = coord_log;
+                loader.activity_feed = activity_feed;
+                loader.load_coord_log();
+                loader.load_activity_feed();
+                loader.load_coordinator_runtime();
+                let coord_log = loader.coord_log;
+                let activity_feed = loader.activity_feed;
+                let runtime = loader.coordinator_runtime;
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    if app.active_coordinator_id != cid {
+                        return;
+                    }
+                    app.coord_log = coord_log;
+                    app.activity_feed = activity_feed;
+                    app.coordinator_runtime = runtime;
+                    app.toasts.extend(toasts);
+                })
+            });
+    }
+
+    fn load_coordinator_runtime(&mut self) {
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let cid = self.active_coordinator_id;
+        let state =
+            worksgood::service::chat_compactor::ChatCompactorState::load(&self.workgraph_dir, cid);
+        let pending =
+            worksgood::chat::read_inbox_since_for(&self.workgraph_dir, cid, state.last_inbox_id)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                + worksgood::chat::read_outbox_since_for(
+                    &self.workgraph_dir,
+                    cid,
+                    state.last_outbox_id,
+                )
+                .map(|m| m.len())
+                .unwrap_or(0);
+        self.coordinator_runtime = CoordinatorRuntimeState {
+            coordinator_id: cid,
+            executor: config.coordinator.effective_executor(),
+            model: config.coordinator.model.clone().unwrap_or_else(|| {
+                config
+                    .resolve_model_for_role(worksgood::config::DispatchRole::Default)
+                    .model
+            }),
+            compaction_count: state.compaction_count,
+            last_compaction: state.last_compaction.unwrap_or_else(|| "never".to_string()),
+            pending,
+            threshold: config.chat.compact_threshold,
+            summary_present: worksgood::service::chat_compactor::context_summary_path(
+                &self.workgraph_dir,
+                cid,
+            )
+            .exists(),
+        };
+    }
+
+    pub fn request_agent_monitor(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::AgentMonitor, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.load_agent_monitor();
+                let monitor = loader.agent_monitor;
+                let dashboard = loader.dashboard;
+                Box::new(move |app| {
+                    app.agent_monitor = monitor;
+                    app.dashboard = dashboard;
+                    app.update_agent_streams();
+                })
+            });
+    }
+
+    pub fn request_firehose(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let prior = self.firehose.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Firehose, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.firehose = prior;
+                loader.update_firehose();
+                let firehose = loader.firehose;
+                Box::new(move |app| app.firehose = firehose)
+            });
+    }
+
+    pub fn request_output_pane(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let active_agent_id = self.output_pane.active_agent_id.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Output, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.output_pane.active_agent_id = active_agent_id.clone();
+                loader.update_output_pane();
+                let mut output = loader.output_pane;
+                Box::new(move |app| {
+                    if app.output_pane.active_agent_id == active_agent_id {
+                        output.agent_scrolls = std::mem::take(&mut app.output_pane.agent_scrolls);
+                        output.viewport_height = app.output_pane.viewport_height;
+                        output.total_rendered_lines = app.output_pane.total_rendered_lines;
+                        app.output_pane = output;
+                    }
+                })
+            });
+    }
+
+    pub fn request_chat_refresh(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_cursor = self.chat.outbox_cursor;
+        let start_len = self.chat.messages.len();
+        let chat = ChatStorageSnapshot::capture(&self.chat);
+        let tab = self.right_panel_tab;
+        self.auxiliary
+            .request(super::auxiliary::Kind::Chat, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                chat.install(&mut loader.chat);
+                loader.right_panel_tab = tab;
+                loader.check_coordinator_status();
+                loader.poll_chat_messages();
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    if app.active_coordinator_id != cid {
+                        return;
+                    }
+                    app.chat.coordinator_active = refreshed.coordinator_active;
+                    if app.chat.outbox_cursor != start_cursor
+                        || app.chat.messages.len() != start_len
+                    {
+                        return;
+                    }
+                    refreshed.install(&mut app.chat);
+                    app.toasts.extend(toasts);
+                })
+            });
+    }
+
+    pub fn request_service_snapshot(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let task_counts = self.task_counts.clone();
+        let counter_values = (
+            self.time_counters.service_uptime_secs,
+            self.time_counters.cumulative_secs,
+            self.time_counters.active_secs,
+            self.time_counters.active_agent_count,
+            self.time_counters.session_start,
+            self.time_counters.show_uptime,
+            self.time_counters.show_cumulative,
+            self.time_counters.show_active,
+            self.time_counters.show_session,
+        );
+        self.auxiliary
+            .request(super::auxiliary::Kind::Service, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.task_counts = task_counts;
+                loader.time_counters.service_uptime_secs = counter_values.0;
+                loader.time_counters.cumulative_secs = counter_values.1;
+                loader.time_counters.active_secs = counter_values.2;
+                loader.time_counters.active_agent_count = counter_values.3;
+                loader.time_counters.session_start = counter_values.4;
+                loader.time_counters.show_uptime = counter_values.5;
+                loader.time_counters.show_cumulative = counter_values.6;
+                loader.time_counters.show_active = counter_values.7;
+                loader.time_counters.show_session = counter_values.8;
+                loader.update_service_health();
+                loader.update_vitals();
+                loader.update_time_counters();
+                let mut health = loader.service_health;
+                let vitals = loader.vitals;
+                let counters = loader.time_counters;
+                Box::new(move |app| {
+                    health.detail_open = app.service_health.detail_open;
+                    health.detail_scroll = app.service_health.detail_scroll;
+                    health.panel_open = app.service_health.panel_open;
+                    health.panel_focus = app.service_health.panel_focus.clone();
+                    health.panic_confirm = app.service_health.panic_confirm;
+                    health.feedback = app.service_health.feedback.clone();
+                    app.service_health = health;
+                    app.vitals = vitals;
+                    app.time_counters = counters;
+                })
+            });
+    }
+
+    pub fn request_settings_panel(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Settings, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.load_settings_panel();
+                let entries = loader.settings_panel.entries;
+                Box::new(move |app| {
+                    app.settings_panel.selected = app
+                        .settings_panel
+                        .selected
+                        .min(entries.len().saturating_sub(1));
+                    app.settings_panel.entries = entries;
+                })
+            });
+    }
+
+    pub fn request_more_chat_history(&mut self) {
+        self.request_chat_history(false);
+    }
+
+    fn request_initial_chat_history(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_len = self.chat.messages.len();
+        let history_depth_override = self.history_depth_override;
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatHistory, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                loader.history_depth_override = history_depth_override;
+                loader.load_chat_history_for_coordinator(cid);
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                Box::new(move |app| {
+                    if app.active_coordinator_id == cid
+                        && app.chat.messages.len() == start_len
+                        && app.chat.outbox_cursor == 0
+                    {
+                        refreshed.install(&mut app.chat);
+                    }
+                })
+            });
+    }
+
+    pub fn request_all_chat_history(&mut self) {
+        self.request_chat_history(true);
+    }
+
+    fn request_chat_history(&mut self, all: bool) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let cid = self.active_coordinator_id;
+        let start_len = self.chat.messages.len();
+        let start_cursor = self.chat.outbox_cursor;
+        let chat = ChatStorageSnapshot::capture(&self.chat);
+        let no_history = self.no_history;
+        let search_query = self.chat.search.query.to_lowercase();
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatHistory, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.active_coordinator_id = cid;
+                chat.install(&mut loader.chat);
+                loader.no_history = no_history;
+                let mut loaded = false;
+                loop {
+                    let page_matches = !search_query.is_empty()
+                        && loader
+                            .chat
+                            .messages
+                            .iter()
+                            .any(|message| message.text.to_lowercase().contains(&search_query));
+                    if all && page_matches {
+                        break;
+                    }
+                    if !loader.load_more_chat_history() {
+                        break;
+                    }
+                    loaded = true;
+                    if !all {
+                        break;
+                    }
+                }
+                let refreshed = ChatStorageSnapshot::capture(&loader.chat);
+                Box::new(move |app| {
+                    if !loaded
+                        || app.active_coordinator_id != cid
+                        || app.chat.messages.len() != start_len
+                        || app.chat.outbox_cursor != start_cursor
+                    {
+                        return;
+                    }
+                    let added = refreshed.messages.len().saturating_sub(start_len);
+                    app.chat.scroll = app.chat.scroll.saturating_add(added * 3);
+                    refreshed.install(&mut app.chat);
+                    if all {
+                        app.update_chat_search();
+                    }
+                })
+            });
+    }
+
+    pub fn request_history_browser(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        let cid = self.active_coordinator_id;
+        self.auxiliary
+            .request(super::auxiliary::Kind::HistoryBrowser, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.active_coordinator_id = cid;
+                loader.open_history_browser();
+                let browser = loader.history_browser;
+                Box::new(move |app| {
+                    if app.active_coordinator_id == cid {
+                        app.history_browser = browser;
+                    }
+                })
+            });
+    }
+
+    pub fn request_chat_manager(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        let graph = self.published_graph.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::ChatManager, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
+                loader.open_chat_manager();
+                let manager = loader.chat_manager;
+                let toasts = loader.toasts;
+                Box::new(move |app| {
+                    app.chat_manager = manager;
+                    app.toasts.extend(toasts);
+                    if app.chat_manager.is_some() {
+                        app.input_mode = InputMode::ChatManager;
+                    }
+                })
+            });
+    }
+
+    pub fn request_file_browser(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::FileBrowser, move || {
+                let browser = super::file_browser::FileBrowser::new(&workgraph_dir);
+                Box::new(move |app| app.file_browser = Some(browser))
+            });
+    }
+
     // ── Config panel ──
+
+    /// Construct an empty worker-side app without touching project storage.
+    /// Blocking loader methods are invoked only on the auxiliary worker.
+    fn auxiliary_loader(
+        workgraph_dir: PathBuf,
+        graph: Option<Arc<worksgood::graph::WorkGraph>>,
+    ) -> Self {
+        let mut loader = Self::build(
+            workgraph_dir,
+            VizOptions::default(),
+            Some(false),
+            None,
+            false,
+            Config::default(),
+            None,
+            false,
+        );
+        loader.published_graph = graph;
+        loader.bootstrap_complete = true;
+        loader
+    }
+
+    /// Apply completed auxiliary snapshots. Completion closures are bounded
+    /// state swaps and identity checks; all storage work already finished on
+    /// the worker.
+    fn poll_auxiliary_snapshots(&mut self) -> bool {
+        let completed = self.auxiliary.drain();
+        let changed = !completed.is_empty();
+        for apply in completed {
+            apply(self);
+        }
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_for_auxiliary_snapshot(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            self.poll_auxiliary_snapshots();
+            if self.auxiliary.pending_len() == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("timed out waiting for TUI auxiliary snapshot");
+    }
+
+    /// Queue a config-panel rebuild on the shared auxiliary storage lane.
+    pub fn request_config_panel(&mut self) {
+        let workgraph_dir = self.workgraph_dir.clone();
+        self.auxiliary
+            .request(super::auxiliary::Kind::Config, move || {
+                let mut loader = Self::auxiliary_loader(workgraph_dir, None);
+                loader.load_config_panel();
+                let mut panel = loader.config_panel;
+                Box::new(move |app| {
+                    panel.selected = app
+                        .config_panel
+                        .selected
+                        .min(panel.entries.len().saturating_sub(1));
+                    panel.collapsed = std::mem::take(&mut app.config_panel.collapsed);
+                    panel.endpoint_test_results =
+                        std::mem::take(&mut app.config_panel.endpoint_test_results);
+                    panel.editing = app.config_panel.editing;
+                    panel.edit_buffer = std::mem::take(&mut app.config_panel.edit_buffer);
+                    panel.adding_endpoint = app.config_panel.adding_endpoint;
+                    panel.adding_model = app.config_panel.adding_model;
+                    app.config_panel = panel;
+                })
+            });
+    }
 
     /// Load configuration from disk and populate config panel entries.
     pub fn load_config_panel(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
+        self.config_panel.endpoint_names = config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| (index, endpoint.name.clone()))
+            .collect();
         let model_choices = load_model_choices(&self.workgraph_dir);
         let mut model_choices_with_default = vec!["(default)".to_string()];
         model_choices_with_default.extend(model_choices.iter().cloned());
@@ -18342,7 +20182,7 @@ impl VizApp {
                     value,
                     self.settings_panel.edit_scope.label()
                 ));
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Err(e) => {
                 self.settings_panel.last_error = Some(format!("Save failed: {}", e));
@@ -18389,7 +20229,7 @@ impl VizApp {
         match result {
             Ok(out) if out.status.success() => {
                 self.settings_panel.notice = Some(format!("Activated profile: {}", name));
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -18408,7 +20248,7 @@ impl VizApp {
         match worksgood::launcher_history::clear_history() {
             Ok(()) => {
                 self.settings_panel.notice = Some("Cleared launcher history".to_string());
-                self.load_settings_panel();
+                self.request_settings_panel();
             }
             Err(e) => {
                 self.settings_panel.last_error = Some(format!("Failed to clear history: {}", e));
@@ -22651,6 +24491,27 @@ mod tui_config_panel_tests {
     }
 
     #[test]
+    fn config_panel_background_request_is_coalesced_and_nonblocking() {
+        let (mut app, _temp) = build_config_test_app();
+
+        let started = Instant::now();
+        app.request_config_panel();
+        app.request_config_panel();
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "config snapshot submission blocked the caller"
+        );
+        assert_eq!(app.auxiliary.pending_len(), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !app.poll_auxiliary_snapshots() {
+            std::thread::yield_now();
+        }
+        assert_eq!(app.auxiliary.pending_len(), 0);
+        assert!(!app.config_panel.entries.is_empty());
+    }
+
+    #[test]
     fn test_config_panel_all_entries_save_roundtrip() {
         let (mut app, _temp) = build_config_test_app();
         app.load_config_panel();
@@ -26193,28 +28054,29 @@ mod tui_chat_tests {
         assert_eq!(tail.messages.len(), 3);
         assert_eq!(tail.messages[0].text, "message 7");
 
-        // Load next page of 3 (messages 4,5,6)
-        let page = load_jsonl_page(&path, 3, 3);
-        assert_eq!(page.len(), 3);
-        assert_eq!(page[0].text, "message 4");
-        assert_eq!(page[1].text, "message 5");
-        assert_eq!(page[2].text, "message 6");
+        // Load next page of 3 (messages 4,5,6). Pagination passes the
+        // prior page's source start, preserving newest-page-first order.
+        let page = load_jsonl_page(&path, tail.window_start, 3);
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(page.messages[0].text, "message 4");
+        assert_eq!(page.messages[1].text, "message 5");
+        assert_eq!(page.messages[2].text, "message 6");
 
         // Load next page of 3 (messages 1,2,3)
-        let page2 = load_jsonl_page(&path, 6, 3);
-        assert_eq!(page2.len(), 3);
-        assert_eq!(page2[0].text, "message 1");
-        assert_eq!(page2[1].text, "message 2");
-        assert_eq!(page2[2].text, "message 3");
+        let page2 = load_jsonl_page(&path, page.window_start, 3);
+        assert_eq!(page2.messages.len(), 3);
+        assert_eq!(page2.messages[0].text, "message 1");
+        assert_eq!(page2.messages[1].text, "message 2");
+        assert_eq!(page2.messages[2].text, "message 3");
 
         // Load remaining (message 0)
-        let page3 = load_jsonl_page(&path, 9, 3);
-        assert_eq!(page3.len(), 1);
-        assert_eq!(page3[0].text, "message 0");
+        let page3 = load_jsonl_page(&path, page2.window_start, 3);
+        assert_eq!(page3.messages.len(), 1);
+        assert_eq!(page3.messages[0].text, "message 0");
 
         // Nothing left
-        let page4 = load_jsonl_page(&path, 10, 3);
-        assert!(page4.is_empty());
+        let page4 = load_jsonl_page(&path, page3.window_start, 3);
+        assert!(page4.messages.is_empty());
     }
 
     #[test]
@@ -26317,6 +28179,162 @@ mod tui_chat_tests {
         assert_eq!(all[0].text, "message 0", "First original message preserved");
         assert_eq!(all[9].text, "message 9", "Last original message preserved");
         assert_eq!(all[10].text, "new response", "New message appended");
+    }
+
+    #[test]
+    fn chat_history_config_and_cli_overrides_publish_only_hard_projection() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            "[tui]\nchat_history = true\nchat_history_max = 1000\nchat_page_size = 100000\n",
+        )
+        .unwrap();
+
+        let messages: Vec<_> = (0..500)
+            .map(|i| make_chat_message(ChatRole::User, &format!("message {i}")))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        let mut configured = build_test_app(&viz, &wg_dir);
+        configured.load_chat_history_for_coordinator(0);
+        assert_eq!(
+            configured.chat.messages.len(),
+            CHAT_HISTORY_PAGE_MAX_RECORDS
+        );
+        assert_eq!(configured.chat.messages[0].text, "message 300");
+        assert_eq!(configured.chat.messages[199].text, "message 499");
+        assert!(
+            configured
+                .chat
+                .messages
+                .iter()
+                .map(chat_message_projection_bytes)
+                .sum::<usize>()
+                <= CHAT_HISTORY_PAGE_MAX_BYTES
+        );
+
+        let mut overridden = build_test_app(&viz, &wg_dir);
+        overridden.history_depth_override = Some(100_000);
+        overridden.load_chat_history_for_coordinator(0);
+        assert_eq!(
+            overridden.chat.messages.len(),
+            CHAT_HISTORY_PAGE_MAX_RECORDS
+        );
+        assert_eq!(overridden.chat.messages[0].text, "message 300");
+    }
+
+    #[test]
+    fn chat_history_projection_enforces_byte_budget_and_bounds_search() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            "[tui]\nchat_history = true\nchat_history_max = 1000\nchat_page_size = 100000\n",
+        )
+        .unwrap();
+
+        let messages: Vec<_> = (0..32)
+            .map(|i| {
+                make_chat_message(
+                    ChatRole::User,
+                    &format!("message-{i:02}-needle-{}", "x".repeat(96 * 1024)),
+                )
+            })
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        app.history_depth_override = Some(usize::MAX);
+        app.load_chat_history_for_coordinator(0);
+        let projected_bytes: usize = app
+            .chat
+            .messages
+            .iter()
+            .map(chat_message_projection_bytes)
+            .sum();
+        assert!(projected_bytes <= CHAT_HISTORY_PAGE_MAX_BYTES);
+        assert!(app.chat.messages.len() < 32);
+        assert!(
+            app.chat
+                .messages
+                .last()
+                .unwrap()
+                .text
+                .starts_with("message-31")
+        );
+
+        // Search is an interactive caller. Even deliberately bypassing the
+        // loaders cannot make it inspect/publish more than the hard projection.
+        app.chat.messages = (0..500)
+            .map(|i| make_chat_message(ChatRole::User, &format!("needle {i}")))
+            .collect();
+        app.chat.search.query = "needle".into();
+        app.update_chat_search();
+        assert_eq!(app.chat.messages.len(), CHAT_HISTORY_PAGE_MAX_RECORDS);
+        assert!(
+            app.chat
+                .search
+                .matches
+                .iter()
+                .all(|entry| entry.message_idx < CHAT_HISTORY_PAGE_MAX_RECORDS)
+        );
+    }
+
+    #[test]
+    fn chat_history_coordinator_fallback_and_pagination_stay_bounded() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            "[tui]\nchat_history = true\nchat_history_max = 1000\nchat_page_size = 100000\n",
+        )
+        .unwrap();
+
+        // No persisted TUI history: exercise the coordinator inbox/outbox fallback.
+        for i in 0..350 {
+            worksgood::chat::append_inbox_for(
+                &wg_dir,
+                0,
+                &format!("fallback {i}"),
+                &format!("request-{i}"),
+            )
+            .unwrap();
+        }
+        let mut fallback = build_test_app(&viz, &wg_dir);
+        fallback.history_depth_override = Some(100_000);
+        fallback.load_chat_history_for_coordinator(0);
+        assert_eq!(fallback.chat.messages.len(), CHAT_HISTORY_PAGE_MAX_RECORDS);
+        assert_eq!(fallback.chat.messages[0].text, "fallback 150");
+        assert_eq!(fallback.chat.messages[199].text, "fallback 349");
+
+        // Replace fallback persistence with a 500-record history and prove
+        // successive pages move newest -> older without accumulating in Chat.
+        let messages: Vec<_> = (0..500)
+            .map(|i| make_chat_message(ChatRole::User, &format!("page {i}")))
+            .collect();
+        save_chat_history(&wg_dir, 0, &messages);
+        let mut paged = build_test_app(&viz, &wg_dir);
+        paged.history_depth_override = Some(100_000);
+        paged.load_chat_history_for_coordinator(0);
+        assert_eq!(paged.chat.messages[0].text, "page 300");
+        assert!(paged.load_more_chat_history());
+        assert_eq!(paged.chat.messages.len(), CHAT_HISTORY_PAGE_MAX_RECORDS);
+        assert_eq!(paged.chat.messages[0].text, "page 100");
+        assert_eq!(paged.chat.messages[199].text, "page 299");
+        // An older replacement page is read-only for the prefix-preserving
+        // persistence writer; saving TUI state must not delete its newer suffix.
+        paged.save_all_chat_state();
+        assert_eq!(count_jsonl_records(&chat_history_path(&wg_dir, 0)), 500);
+        assert_eq!(
+            load_jsonl_tail(&chat_history_path(&wg_dir, 0), 1).messages[0].text,
+            "page 499"
+        );
+        assert!(paged.load_more_chat_history());
+        assert_eq!(paged.chat.messages.len(), 100);
+        assert_eq!(paged.chat.messages[0].text, "page 0");
+        assert_eq!(paged.chat.messages[99].text, "page 99");
+        assert!(!paged.chat.has_more_history);
     }
 
     #[test]
@@ -29087,8 +31105,8 @@ mod agent_stream_tests {
     /// asserts the pane gets non-empty content.
     #[test]
     fn test_log_view_renders_codex_stream_for_running_codex_agent() {
+        use crate::commands::viz::LayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
-        use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
         use worksgood::graph::{Node, Status, WorkGraph};
         use worksgood::parser::save_graph;
@@ -29192,8 +31210,8 @@ mod agent_stream_tests {
 
     #[test]
     fn test_log_view_renders_agent_stream_events_for_inprogress_task() {
+        use crate::commands::viz::LayoutMode;
         use crate::commands::viz::ascii::generate_ascii;
-        use crate::commands::viz::{LayoutMode, VizOutput};
         use std::collections::{HashMap, HashSet};
         use worksgood::graph::{Node, Status, WorkGraph};
         use worksgood::parser::save_graph;
@@ -31108,6 +33126,21 @@ mod message_indicator_refresh_tests {
         writeln!(f, "{}", line).unwrap();
     }
 
+    fn await_message_status(app: &mut VizApp, task_id: &str, expected: CoordinatorMessageStatus) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.maybe_refresh();
+            if app.task_message_statuses.get(task_id) == Some(&expected) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background message-index snapshot did not publish {expected:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     /// `wg msg send` from a non-coordinator-side sender (an agent or task
     /// alias) should make the M:Msg tab indicator appear after the next
     /// maybe_refresh, even though graph.jsonl mtime did not change.
@@ -31127,7 +33160,7 @@ mod message_indicator_refresh_tests {
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31148,7 +33181,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
         assert!(app.task_message_statuses.contains_key("t1"));
 
         // Simulate a subsequent unrelated fs change that does NOT touch the
@@ -31157,7 +33190,7 @@ mod message_indicator_refresh_tests {
         app.fs_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
         // messages_change_pending intentionally NOT set this time.
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31210,7 +33243,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Unseen);
         assert_eq!(
             app.task_message_statuses.get("t1"),
             Some(&CoordinatorMessageStatus::Unseen)
@@ -31227,7 +33260,7 @@ mod message_indicator_refresh_tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         app.messages_change_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        app.maybe_refresh();
+        await_message_status(&mut app, "t1", CoordinatorMessageStatus::Seen);
 
         assert_eq!(
             app.task_message_statuses.get("t1"),
@@ -31279,6 +33312,7 @@ mod activity_sort_debounce_tests {
         let viz = render_viz(graph);
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = tmp.path().to_path_buf();
+        app.load_stats_from_graph(graph);
         (app, tmp)
     }
 

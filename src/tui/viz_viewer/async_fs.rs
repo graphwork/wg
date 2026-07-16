@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -95,7 +95,11 @@ struct AsyncFsInner {
 }
 
 pub struct AsyncFs {
-    request_tx: Sender<FsRequest>,
+    bulk_tx: SyncSender<FsRequest>,
+    interactive_tx: SyncSender<FsRequest>,
+    bulk_rx: Option<Receiver<FsRequest>>,
+    interactive_rx: Option<Receiver<FsRequest>>,
+    response_tx: SyncSender<FsResponse>,
     response_rx: Receiver<FsResponse>,
     inner: Arc<AsyncFsInner>,
     /// Requests we've sent but haven't seen a response for yet.
@@ -108,8 +112,20 @@ pub struct AsyncFs {
 
 impl AsyncFs {
     pub fn new() -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<FsRequest>();
-        let (response_tx, response_rx) = mpsc::channel::<FsResponse>();
+        let mut service = Self::new_unstarted();
+        service.start();
+        service
+    }
+
+    /// Construct channel state without touching storage or spawning workers.
+    /// The real TUI uses this for its pre-first-frame shell.
+    pub fn new_unstarted() -> Self {
+        // Fixed lanes prevent a graph read stuck in NFS from head-of-line
+        // blocking active chat/stat work.  Every queue is bounded; UI callers
+        // use try_send and coalesce/drop refresh hints under pressure.
+        let (bulk_tx, bulk_rx) = mpsc::sync_channel::<FsRequest>(8);
+        let (interactive_tx, interactive_rx) = mpsc::sync_channel::<FsRequest>(32);
+        let (response_tx, response_rx) = mpsc::sync_channel::<FsResponse>(64);
         let inner = Arc::new(AsyncFsInner {
             graph_cache: Mutex::new(None),
             graph_version: AtomicU64::new(0),
@@ -118,18 +134,40 @@ impl AsyncFs {
             streaming_version: AtomicU64::new(0),
             last_slow_op: Mutex::new(None),
         });
-        let inner_for_worker = inner.clone();
-        let _ = thread::Builder::new()
-            .name("wg-tui-fs".into())
-            .spawn(move || worker_loop(request_rx, response_tx, inner_for_worker));
         Self {
-            request_tx,
+            bulk_tx,
+            interactive_tx,
+            bulk_rx: Some(bulk_rx),
+            interactive_rx: Some(interactive_rx),
+            response_tx,
             response_rx,
             inner,
             in_flight: HashSet::new(),
             last_seen_graph_version: 0,
             last_seen_streaming_version: 0,
         }
+    }
+
+    /// Start the two fixed storage lanes. Idempotent and called only after the
+    /// first terminal frame in production.
+    pub fn start(&mut self) {
+        let (Some(bulk_rx), Some(interactive_rx)) =
+            (self.bulk_rx.take(), self.interactive_rx.take())
+        else {
+            return;
+        };
+        let inner_for_bulk = self.inner.clone();
+        let bulk_responses = self.response_tx.clone();
+        let _ = thread::Builder::new()
+            .name("wg-tui-fs-bulk".into())
+            .spawn(move || worker_loop(bulk_rx, bulk_responses, inner_for_bulk));
+        let inner_for_interactive = self.inner.clone();
+        let interactive_responses = self.response_tx.clone();
+        let _ = thread::Builder::new()
+            .name("wg-tui-fs-interactive".into())
+            .spawn(move || {
+                worker_loop(interactive_rx, interactive_responses, inner_for_interactive)
+            });
     }
 
     /// Drain completed-request notifications. Call once per main-loop tick
@@ -189,7 +227,11 @@ impl AsyncFs {
         if !self.in_flight.insert(RequestKey::LoadGraph) {
             return;
         }
-        let _ = self.request_tx.send(FsRequest::LoadGraph(path));
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+            self.bulk_tx.try_send(FsRequest::LoadGraph(path))
+        {
+            self.in_flight.remove(&RequestKey::LoadGraph);
+        }
     }
 
     /// Read the cached graph (clones `Arc`, never blocks on disk).
@@ -218,7 +260,11 @@ impl AsyncFs {
         if !self.in_flight.insert(key) {
             return;
         }
-        let _ = self.request_tx.send(FsRequest::Stat(path));
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+            self.interactive_tx.try_send(FsRequest::Stat(path.clone()))
+        {
+            self.in_flight.remove(&RequestKey::Stat(path));
+        }
     }
 
     /// Read cached mtime for a path. None if never stat'd or if stat'd
@@ -248,7 +294,13 @@ impl AsyncFs {
 
     /// Synchronously seed the graph cache. Used at startup for the same reason.
     pub fn seed_graph(&self, graph: WorkGraph, mtime: Option<SystemTime>) {
-        *self.inner.graph_cache.lock().unwrap() = Some((Arc::new(graph), mtime));
+        self.seed_graph_arc(Arc::new(graph), mtime);
+    }
+
+    /// Atomically seed a pre-parsed graph without cloning its task set on the
+    /// UI thread.
+    pub fn seed_graph_arc(&self, graph: Arc<WorkGraph>, mtime: Option<SystemTime>) {
+        *self.inner.graph_cache.lock().unwrap() = Some((graph, mtime));
         self.inner.graph_version.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -258,9 +310,12 @@ impl AsyncFs {
         if !self.in_flight.insert(key) {
             return;
         }
-        let _ = self
-            .request_tx
-            .send(FsRequest::ReadStreaming { path, coord_id });
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self
+            .interactive_tx
+            .try_send(FsRequest::ReadStreaming { path, coord_id })
+        {
+            self.in_flight.remove(&RequestKey::Streaming(coord_id));
+        }
     }
 
     /// Read cached streaming text for a coordinator.
@@ -277,10 +332,12 @@ impl AsyncFs {
     /// Fire-and-forget chat-interaction bump. Performed off the main thread
     /// so a slow graph.jsonl write can't block keystroke echo.
     pub fn bump_chat_interaction(&self, workgraph_dir: PathBuf, session_ref: String) {
-        let _ = self.request_tx.send(FsRequest::BumpChatInteraction {
-            workgraph_dir,
-            session_ref,
-        });
+        let _ = self
+            .interactive_tx
+            .try_send(FsRequest::BumpChatInteraction {
+                workgraph_dir,
+                session_ref,
+            });
     }
 
     /// The most recent slow operation, if it happened within the last
@@ -302,7 +359,8 @@ impl Default for AsyncFs {
 
 impl Drop for AsyncFs {
     fn drop(&mut self) {
-        let _ = self.request_tx.send(FsRequest::Shutdown);
+        let _ = self.bulk_tx.try_send(FsRequest::Shutdown);
+        let _ = self.interactive_tx.try_send(FsRequest::Shutdown);
     }
 }
 
@@ -337,7 +395,7 @@ fn injected_latency() -> Duration {
     })
 }
 
-fn worker_loop(rx: Receiver<FsRequest>, tx: Sender<FsResponse>, inner: Arc<AsyncFsInner>) {
+fn worker_loop(rx: Receiver<FsRequest>, tx: SyncSender<FsResponse>, inner: Arc<AsyncFsInner>) {
     while let Ok(req) = rx.recv() {
         let inject = injected_latency();
         if !inject.is_zero() {

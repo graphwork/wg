@@ -98,6 +98,12 @@ pub struct Config {
     #[serde(default)]
     pub models: ModelRoutingConfig,
 
+    /// Explicit execution-failure policy. Tiers and registry rankings select a
+    /// route for a new call; they never authorize switching routes after a
+    /// failure. Only entries in this section may do that.
+    #[serde(default, skip_serializing_if = "ExecutionConfig::is_empty")]
+    pub execution: ExecutionConfig,
+
     /// Active provider profile name (e.g., "anthropic", "openrouter", "openai").
     /// When set, the profile supplies tier defaults. Explicit [tiers] entries
     /// and per-role [models] overrides still take precedence.
@@ -828,7 +834,9 @@ pub struct TuiConfig {
     /// Maximum number of chat messages to persist (default: 1000)
     #[serde(default = "default_chat_history_max")]
     pub chat_history_max: usize,
-    /// Number of chat messages to load per page in the TUI (default: 100)
+    /// Requested chat messages per TUI page (default: 100).
+    /// The live render/search projection is always hard-capped at 200 records
+    /// and 1 MiB, regardless of this value or the CLI history-depth override.
     #[serde(default = "default_chat_page_size")]
     pub chat_page_size: usize,
     /// Comma-separated counters to display: "uptime", "cumulative", "active", "session", "compact"
@@ -1728,6 +1736,120 @@ impl Default for ModelRegistryEntry {
             descriptors: Vec::new(),
         }
     }
+}
+
+/// Ordered, opt-in execution-failure policy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionConfig {
+    /// Exact primary route → explicitly authorized same-system alternatives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<ExecutionFallback>,
+}
+
+impl ExecutionConfig {
+    pub fn is_empty(&self) -> bool {
+        self.fallbacks.is_empty()
+    }
+
+    /// Alternatives for an exact primary route, preserving file order.
+    pub fn models_for(&self, primary: &str) -> &[String] {
+        self.fallbacks
+            .iter()
+            .find(|entry| entry.primary.trim() == primary.trim())
+            .map(|entry| entry.models.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
+/// One explicit same-system fallback declaration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionFallback {
+    /// Exact handler-first primary route this declaration applies to.
+    pub primary: String,
+    /// Ordered alternatives. Every entry must have the primary's execution-system key.
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+/// Handler + provider/wire identity. Route failure may change a model only
+/// while this key remains identical.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionSystemKey {
+    pub handler: String,
+    pub provider: String,
+}
+
+impl std::fmt::Display for ExecutionSystemKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.handler, self.provider)
+    }
+}
+
+/// Derive the execution-system identity for the one-shot handlers WG supports.
+/// Unknown/opaque handler dialects fail closed: without a provider key WG may
+/// retry only the exact route, never select another model.
+pub fn execution_system_key(raw_route: &str) -> anyhow::Result<ExecutionSystemKey> {
+    let route = raw_route.trim();
+    if route.is_empty() {
+        anyhow::bail!("empty model route has no execution-system key");
+    }
+
+    let handler = crate::dispatch::handler_for_model(route);
+    let provider = match handler {
+        crate::dispatch::ExecutorKind::Claude => {
+            // The lenient handler resolver historically maps every unknown bare
+            // token to Claude. Only actual Claude forms are safe here.
+            let lower = route.to_ascii_lowercase();
+            let is_alias = matches!(lower.as_str(), "opus" | "sonnet" | "haiku" | "fable")
+                || lower.starts_with("claude-")
+                || lower.starts_with("anthropic/claude-");
+            if !lower.starts_with("claude:") && !is_alias {
+                anyhow::bail!(
+                    "route {route:?} does not explicitly identify the claude execution system"
+                );
+            }
+            "anthropic-cli".to_string()
+        }
+        crate::dispatch::ExecutorKind::Codex => "openai-codex-cli".to_string(),
+        crate::dispatch::ExecutorKind::Pi => {
+            let inner = route
+                .strip_prefix("pi:")
+                .ok_or_else(|| anyhow::anyhow!("pi route {route:?} is not handler-first"))?;
+            let provider = inner
+                .split_once(':')
+                .map(|(p, _)| p)
+                .or_else(|| inner.split_once('/').map(|(p, _)| p))
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("pi route {route:?} does not identify a provider")
+                })?;
+            provider.to_ascii_lowercase()
+        }
+        crate::dispatch::ExecutorKind::Native => {
+            let inner = strip_native_handler_prefix(route);
+            parse_model_spec(inner)
+                .provider
+                .as_deref()
+                .map(provider_to_resolved_provider)
+                .unwrap_or("oai-compat")
+                .to_string()
+        }
+        other => anyhow::bail!(
+            "handler {} does not expose a lightweight execution-system key",
+            other.as_str()
+        ),
+    };
+
+    let handler = match handler {
+        // `Native` is the internal executor enum; `nex` is the canonical
+        // user-selected handler name and therefore the execution-system key.
+        crate::dispatch::ExecutorKind::Native => "nex",
+        other => other.as_str(),
+    };
+    Ok(ExecutionSystemKey {
+        handler: handler.to_string(),
+        provider,
+    })
 }
 
 /// Tier routing configuration: which model ID each tier resolves to.
@@ -2753,8 +2875,9 @@ pub fn provider_to_resolved_provider(provider: &str) -> &'static str {
 /// This is the single chokepoint shared by every path that *persists* the
 /// strong tier ([`Config::set_pi_tiers`], `profile::named::patch_pi_tiers`, and
 /// the model scout), so no write path can reintroduce a nex-routed strong spec.
-/// The weak/agency tier is deliberately NOT routed through here: it keeps its
-/// native route and the loud keyless-native `claude:haiku` fallback intact.
+/// The weak/agency tier is deliberately NOT routed through here: its selected
+/// handler/provider remains authoritative and failure does not authorize Pi or
+/// any other execution system.
 pub fn pi_strong_route(spec: &str) -> String {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -3096,29 +3219,34 @@ impl Config {
         self.effective_registry().into_iter().find(|e| e.id == id)
     }
 
-    /// The raw model spec for the **weak** two-tier label.
-    ///
-    /// In the two-tier model (`design-two-tier-pi-profile.md`) `weak` is the
-    /// 2-coloring of the `fast` quality tier — the cheap tier used for agency
-    /// judgment one-shots (`.flip` / `.assign` / `.evaluate`). This returns the
-    /// provider-qualified spec (e.g. `openrouter:deepseek/deepseek-chat`, or
-    /// `claude:haiku` for the bare default) so callers that need the route
-    /// prefix (not just the bare model id) get it intact. Always `Some` because
-    /// `effective_tiers()` carries a hardcoded Anthropic fallback.
+    /// The explicitly configured raw model spec for the **weak** two-tier
+    /// label. Built-in tier catalog defaults are deliberately excluded: they
+    /// are suggestions, not authorization to execute Claude (or any system).
     pub fn weak_tier_spec(&self) -> Option<String> {
-        self.effective_tiers().fast
+        let profile_tiers = self.resolve_profile_tiers();
+        self.tiers.fast.clone().or(profile_tiers.fast)
     }
 
-    /// The raw model spec for the **strong** two-tier label — the escalation target
-    /// for the content reviewer (WG-Review Pass 2). In the two-tier projection
-    /// (`design-two-tier-pi-profile.md`) `strong` is `premium + standard`; the
-    /// reviewer escalates to the strongest available, so this prefers `premium`
-    /// and falls back to `standard` (and finally the hardcoded Anthropic premium
-    /// default via `effective_tiers()`). Used by `run_review_llm_call` to get a
-    /// stronger second opinion on uncertainty / high sensitivity — never a human.
+    /// The explicitly configured raw model spec for the **strong** reviewer
+    /// tier. Built-in Anthropic fill values are not execution selection.
     pub fn strong_tier_spec(&self) -> Option<String> {
-        let tiers = self.effective_tiers();
-        tiers.premium.or(tiers.standard)
+        let profile_tiers = self.resolve_profile_tiers();
+        self.tiers
+            .premium
+            .clone()
+            .or(profile_tiers.premium)
+            .or_else(|| self.tiers.standard.clone())
+            .or(profile_tiers.standard)
+    }
+
+    /// Raw configured tier route without the built-in display/catalog fill.
+    pub fn configured_tier_spec(&self, tier: Tier) -> Option<String> {
+        let profile_tiers = self.resolve_profile_tiers();
+        match tier {
+            Tier::Fast => self.tiers.fast.clone().or(profile_tiers.fast),
+            Tier::Standard => self.tiers.standard.clone().or(profile_tiers.standard),
+            Tier::Premium => self.tiers.premium.clone().or(profile_tiers.premium),
+        }
     }
 
     /// Resolve a tier to a ResolvedModel via the tier config and registry.
@@ -4953,16 +5081,6 @@ impl Config {
         {
             return Ok(key);
         }
-        // Also check the default endpoint if provider didn't match
-        if let Some(ep) = self.llm_endpoints.find_default()
-            && ep.provider != provider
-        {
-            // Already tried provider-specific above; try default endpoint
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Ok(key);
-            }
-        }
-
         // 2. Environment variables based on provider
         for var_name in EndpointConfig::env_var_names_for_provider(provider) {
             if let Ok(key) = std::env::var(var_name) {
@@ -5736,6 +5854,46 @@ impl Config {
     /// Errors should block service start. Warnings should be displayed but allow startup.
     pub fn validate_config(&self) -> ConfigValidation {
         let mut result = ConfigValidation::default();
+
+        // Explicit execution fallbacks are all-or-nothing. A handler/provider
+        // change is a fatal configuration error, not a candidate to skip.
+        for declaration in &self.execution.fallbacks {
+            let primary_key = match execution_system_key(&declaration.primary) {
+                Ok(key) => key,
+                Err(error) => {
+                    result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-primary".into(),
+                        message: format!(
+                            "execution fallback primary {:?} is invalid: {error:#}",
+                            declaration.primary
+                        ),
+                        fix: "Use an explicit handler-first primary route.".into(),
+                    });
+                    continue;
+                }
+            };
+            for candidate in &declaration.models {
+                match execution_system_key(candidate) {
+                    Ok(candidate_key) if candidate_key == primary_key => {}
+                    Ok(candidate_key) => result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-cross-system".into(),
+                        message: format!(
+                            "fallback {:?} has system {} but primary {:?} has system {}",
+                            candidate, candidate_key, declaration.primary, primary_key
+                        ),
+                        fix: "Remove the candidate or use a model on the same handler and provider/wire."
+                            .into(),
+                    }),
+                    Err(error) => result.errors.push(ConfigDiagnostic {
+                        rule: "execution-fallback-candidate".into(),
+                        message: format!(
+                            "execution fallback candidate {candidate:?} is invalid: {error:#}"
+                        ),
+                        fix: "Use an explicit handler-first fallback route.".into(),
+                    }),
+                }
+            }
+        }
 
         // Check coordinator executor + model/provider combinations
         let executor = self.coordinator.effective_executor();
@@ -10549,5 +10707,59 @@ model = "codex:gpt-5.5"
         for k in Config::PI_STRONG_TOML_KEYS {
             assert!(!Config::PI_WEAK_TOML_KEYS.contains(k), "{k} in both tiers");
         }
+    }
+
+    #[test]
+    fn execution_system_key_keeps_handler_and_provider_boundaries() {
+        for (route, handler, provider) in [
+            ("claude:sonnet", "claude", "anthropic-cli"),
+            ("codex:gpt-5.5", "codex", "openai-codex-cli"),
+            ("pi:openai-codex:gpt-5.6-terra", "pi", "openai-codex"),
+            ("pi:openrouter:z-ai/glm-5.2", "pi", "openrouter"),
+            ("nex:openrouter:z-ai/glm-5.2", "nex", "openrouter"),
+            ("nex:qwen3-coder", "nex", "oai-compat"),
+        ] {
+            let key = execution_system_key(route).unwrap();
+            assert_eq!(key.handler, handler, "route={route}");
+            assert_eq!(key.provider, provider, "route={route}");
+        }
+    }
+
+    #[test]
+    fn execution_fallback_config_roundtrips_in_declared_order() {
+        let input = r#"
+[[execution.fallbacks]]
+primary = "pi:openai-codex:gpt-5.6-terra"
+models = ["pi:openai-codex:gpt-5.6-sol", "pi:openai-codex:gpt-5.6-luna"]
+"#;
+        let config: Config = toml::from_str(input).unwrap();
+        assert_eq!(
+            config.execution.models_for("pi:openai-codex:gpt-5.6-terra"),
+            [
+                "pi:openai-codex:gpt-5.6-sol",
+                "pi:openai-codex:gpt-5.6-luna"
+            ]
+        );
+    }
+
+    #[test]
+    fn config_validation_rejects_cross_system_execution_fallbacks() {
+        let mut config = Config::default();
+        config.execution.fallbacks.push(ExecutionFallback {
+            primary: "pi:openrouter:z-ai/glm-5.2".into(),
+            models: vec![
+                "pi:openai-codex:gpt-5.6-sol".into(),
+                "nex:openrouter:z-ai/glm-5.2".into(),
+                "claude:haiku".into(),
+            ],
+        });
+
+        let validation = config.validate_config();
+        let cross_system = validation
+            .errors
+            .iter()
+            .filter(|diagnostic| diagnostic.rule == "execution-fallback-cross-system")
+            .count();
+        assert_eq!(cross_system, 3);
     }
 }

@@ -67,6 +67,16 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
 
     let task = graph.get_task_or_err(task_id)?;
 
+    // Selection preflight must happen before plan resolution, worktree creation,
+    // registry writes, or the atomic claim. Shell tasks remain graph-only.
+    #[cfg(not(test))]
+    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        let explicit = model
+            .map(|m| (m, false))
+            .or_else(|| task.model.as_deref().map(|m| (m, true)));
+        worksgood::execution_selection::require(dir, explicit, "wg spawn")?;
+    }
+
     // Capture audit info before mutable borrows
     let task_title_for_audit = task.title.clone();
     let task_agent_for_audit = task.agent.clone();

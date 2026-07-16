@@ -53,6 +53,9 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .arg(wg_dir)
         .args(args)
         .env("HOME", fake_home_for(wg_dir))
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -66,6 +69,9 @@ fn wg_cmd_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> std::p
         .arg(wg_dir)
         .args(args)
         .env("HOME", fake_home_for(wg_dir))
+        .env_remove("WG_DIR")
+        .env_remove("WG_TASK_ID")
+        .env_remove("WG_AGENT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -114,7 +120,7 @@ fn init_workgraph(tmp: &TempDir) -> PathBuf {
 /// Write config.toml to enable the coordinator agent.
 fn enable_coordinator_agent(wg_dir: &Path) {
     let config_path = wg_dir.join("config.toml");
-    let config = "[dispatcher]\ncoordinator_agent = true\nregistry_refresh_interval = 0\n";
+    let config = "[agent]\nmodel = \"claude:opus\"\n[dispatcher]\ncoordinator_agent = true\nregistry_refresh_interval = 0\n";
     fs::write(&config_path, config).unwrap();
     wg_ok(wg_dir, &["chat", "create", "--name", "default", "--json"]);
 }

@@ -1691,7 +1691,8 @@ model = "codex:gpt-5.5"
         let assign_dispatch = worksgood::service::llm::resolve_agency_dispatch(
             eff.as_ref(),
             worksgood::config::DispatchRole::Assigner,
-        );
+        )
+        .unwrap();
         assert_eq!(
             assign_dispatch.handler,
             worksgood::dispatch::ExecutorKind::Codex
@@ -1702,7 +1703,8 @@ model = "codex:gpt-5.5"
         let eval_dispatch = worksgood::service::llm::resolve_agency_dispatch(
             eff.as_ref(),
             worksgood::config::DispatchRole::Evaluator,
-        );
+        )
+        .unwrap();
         assert_eq!(
             eval_dispatch.handler,
             worksgood::dispatch::ExecutorKind::Codex

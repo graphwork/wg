@@ -1467,6 +1467,34 @@ description = "Pins fix-tui-must: under simulated 500ms-latency filesystem (WG_A
 timeout_seconds = 600
 
 [[scenario]]
+name = "tui_first_frame_slow_storage"
+script = "scenarios/tui_first_frame_slow_storage.sh"
+owners = [
+    "implement-nonblocking-tui",
+]
+description = "Real tmux/PTY human-flow gate: with the bootstrap storage worker delayed by 1, 3, and 5 seconds, the neutral TUI shell paints before storage completes, the help key is acknowledged during the read, one thresholded phase-aware slow-storage slot appears and clears, the graph snapshot eventually lands, and quit remains bounded."
+timeout_seconds = 90
+
+[[scenario]]
+name = "tui_auxiliary_snapshot_latency"
+script = "scenarios/tui_auxiliary_snapshot_latency.sh"
+owners = [
+    "finish-aux-tui-snapshot-lanes",
+]
+description = "Real tmux/PTY auxiliary-lane gate: after the graph loads, an LD_PRELOAD shim delays matching stat/open/first-read calls by 500ms; the scenario visits every reachable inspector tab, forces Detail/Config/Settings refreshes, presses help, and requires visible acknowledgement below 100ms on every tab. It also proves all three syscall classes were delayed and statically rejects direct storage/subprocess calls or legacy synchronous loaders in production input/render code."
+timeout_seconds = 90
+
+[[scenario]]
+name = "tui_large_graph_continuous_mutation"
+script = "scenarios/tui_large_graph_continuous_mutation.sh"
+owners = [
+    "move-large-graph",
+    "validate-fully-async",
+]
+description = "Real tmux/PTY large-graph gate: load a 10k-task/50k-edge graph, atomically replace it at 20Hz while driving help/search keys, assert bounded key acknowledgement and RSS, preserve the live search draft, and prove the newest generation converges without stale rollback."
+timeout_seconds = 90
+
+[[scenario]]
 name = "publish_wcc_releases_paused_subgraph"
 script = "scenarios/publish_wcc_releases_paused_subgraph.sh"
 owners = [
@@ -1928,8 +1956,9 @@ name = "agency_pi_weak_tier_routes_to_pi_handler"
 script = "scenarios/agency_pi_weak_tier_routes_to_pi_handler.sh"
 owners = [
     "bug-flip-pi-route-uses-claude-cli",
+    "implement-same-system",
 ]
-description = "Pins bug-flip-pi-route-uses-claude-cli: a handler-first `pi:` weak tier (`tiers.fast = \"pi:openrouter:deepseek/deepseek-chat\"`) must dispatch the agency one-shot roles (Evaluator / FlipInference / FlipComparison / Assigner) to the Pi handler — NOT the claude-CLI catch-all in `run_lightweight_llm_call`. The bug silently routed `pi:` specs to claude CLI, which then failed with \"Claude CLI call failed ... subscription access disabled\" instead of honoring pi. Credential-free; stubs both `pi` (records invocation + emits canned NDJSON `translate_pi_stream` parses into a valid evaluator JSON reply) and `claude` (fails LOUDLY with the regression's own error signature if ever invoked). Falsifiable assertions: (1) `wg evaluate run` succeeds; (2) the stub `pi` was invoked (invocation marker file exists); (3) the stub `claude` was NOT invoked (no claude marker) and the regression signature string \"Claude CLI call failed\" is absent from the evaluate log — proving the pi handler path was taken, not the claude fallback."
+description = "Pins bug-flip-pi-route-uses-claude-cli and implement-same-system: a handler-first `pi:` weak tier must stay on Pi after failure. Credential-free stubs prove: the failing Terra primary returns structured WG-EXEC-ROUTE-FAILED diagnostics and never runs Claude when no fallback exists; after an explicit same-system fallback is configured, attempts run in declared Terra -> Sol order, the success diagnostic names the fallback, and Claude still never runs."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2006,6 +2035,15 @@ description = "Pins guardrails G1+G3 from docs/research/prevent-intake-as-evalua
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_large_active_log_enrichment"
+script = "scenarios/tui_large_active_log_enrichment.sh"
+owners = [
+    "bound-async-tui-log-enrichment",
+]
+description = "Real tmux TUI gate with a valid 105,000-record/101,955,000-byte working-agent output.log: neutral shell and help input stay below 100ms, while the base graph publishes below 2s independently of capacity-one, 1MiB/200-record active-log enrichment pages. Credential-free."
+timeout_seconds = 30
+
+[[scenario]]
 name = "pi_structured_reasoning_codex"
 script = "scenarios/pi_structured_reasoning_codex.sh"
 owners = [
@@ -2058,3 +2096,48 @@ owners = [
 ]
 description = "Pins add-direct-codex end-to-end: in an isolated fresh HOME, the single terminal command `wg profile use codex` activates the embedded direct Codex GPT-5.6 Sol/Luna profile, while a subsequent user-owned profile edit is not overwritten; config resolution shows Sol strong/default and Luna weak agency. A real dispatcher-generated worker run.sh then executes a fake Codex CLI and proves its actual argv contains Sol plus `-c model_reasoning_effort=\"high\"` alongside the independently configured `model_verbosity=\"high\"`. Credential-free."
 timeout_seconds = 60
+
+[[scenario]]
+name = "pi_json_closed_consumer"
+script = "scenarios/pi_json_closed_consumer.sh"
+owners = [
+    "fix-pi-json",
+]
+description = "Terminal-flow regression for Pi 0.80.6 output-guard EPIPE: a real Node pipe consumes only the first NDJSON event from the maintained patched Pi source and closes, while the producer must exit 0 without an unhandled broken-pipe exception. A normal full consumer must still receive the ordered session/turn stream and non-zero usage. Credential-free; the upstream Vitest patch separately pins transient retry success and the 101-attempt bound."
+timeout_seconds = 30
+
+[[scenario]]
+name = "pi_runtime_delivery"
+script = "scenarios/pi_runtime_delivery.sh"
+owners = [
+    "make-pi-epipe",
+]
+description = "Live installed-runtime delivery gate for make-pi-epipe: wg doctor content-inspects the actual Pi package reached through PATH and reports the fixed EPIPE + bounded-retry guard; the real human `pi --mode json -p ... | head -n1` terminal flow exits cleanly with no unhandled EPIPE; a normal full consumer receives ordered events plus non-zero turn usage; and source assertions pin the human chat, hermetic RPC handler, and JSON worker launch surfaces to that same PATH runtime. Loud SKIP (77) when Pi is not installed."
+timeout_seconds = 120
+
+[[scenario]]
+name = "explicit_execution_selection"
+script = "scenarios/explicit_execution_selection.sh"
+owners = [
+    "require-explicit-execution",
+]
+description = "Live terminal contract for explicit execution selection: isolated fresh HOME runs graph-only init/CRUD, real service start fails with WG-EXEC-UNSELECTED before daemon state, non-interactive setup without --route fails, explicit Codex setup writes only handler-first Codex routing, lint reports its source, and the real selected daemon lifecycle starts with Codex. Credential-free."
+timeout_seconds = 60
+
+[[scenario]]
+name = "tui_chat_history_projection_latency"
+script = "scenarios/tui_chat_history_projection_latency.sh"
+owners = [
+    "bound-tui-chat",
+]
+description = "Permanent real tmux/PTY regression for bound-tui-chat: creates the exact valid 100,000-record / 97,100,000-byte chat history with public [tui] chat_page_size=100000, waits for the newest Chat snapshot (not the neutral shell), sends the actual Help key, and requires visible acknowledgement below 100ms. Static assertions pin the shared 200-record / 1 MiB projection at configuration/CLI/pagination publication plus Chat draw/search. Credential-free and cleanup-safe on success, failure, INT, and TERM."
+timeout_seconds = 30
+
+[[scenario]]
+name = "tui_bootstrap_parent_graph_isolation"
+script = "scenarios/tui_bootstrap_parent_graph_isolation.sh"
+owners = [
+    "fix-integration-test",
+]
+description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker task/agent identity, wait for first-use chat bootstrap, require .chat-0 in scratch, and prove the parent graph hash/content is unchanged with no legacy .coordinator ghost. Credential-free."
+timeout_seconds = 30

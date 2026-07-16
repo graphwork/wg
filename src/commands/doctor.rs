@@ -238,6 +238,10 @@ fn check_host_tools() -> Vec<Check> {
         )),
     }
 
+    // Pi is optional, but when installed it must have the closed-consumer
+    // output guard used by both human Pi and WG's Pi worker/RPC paths.
+    out.push(check_pi_output_guard());
+
     // GNU timeout vs Windows TIMEOUT.EXE.
     // On Windows, the one on PATH may be either. The Windows one is an
     // interactive pause utility; the GNU one is a command wrapper.
@@ -280,6 +284,138 @@ fn check_host_tools() -> Vec<Check> {
     }
 
     out
+}
+
+// Pi 0.80.6 is the newest published @earendil-works/pi-coding-agent release,
+// but its dist/core/output-guard.js does not treat EPIPE as a clean closed
+// consumer and retries transient write failures forever. WG carries a pinned
+// upstream source patch, so inspect the actual package bytes rather than
+// trusting the version string (a patched development install is still 0.80.6).
+const PI_GUARD_RELATIVE_PATH: [&str; 3] = ["dist", "core", "output-guard.js"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiGuardKind {
+    Fixed,
+    Vulnerable,
+    Unknown,
+}
+
+fn classify_pi_output_guard(source: &str) -> PiGuardKind {
+    let handles_epipe = source.contains("EPIPE");
+    let bounds_retries = source.contains("RAW_STDOUT_MAX_RETRIES");
+    let has_legacy_transient_loop =
+        source.contains("ENOBUFS") && source.contains("EAGAIN") && source.contains("EWOULDBLOCK");
+
+    if handles_epipe && bounds_retries {
+        PiGuardKind::Fixed
+    } else if has_legacy_transient_loop {
+        PiGuardKind::Vulnerable
+    } else {
+        PiGuardKind::Unknown
+    }
+}
+
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let candidates = [
+        format!("{name}.exe"),
+        format!("{name}.cmd"),
+        format!("{name}.bat"),
+    ];
+    #[cfg(not(windows))]
+    let candidates = [name.to_string()];
+
+    std::env::split_paths(&path)
+        .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
+        .find(|candidate| candidate.is_file())
+}
+
+fn pi_package_root(executable: &Path) -> Option<PathBuf> {
+    let executable = std::fs::canonicalize(executable).ok()?;
+    executable.ancestors().take(5).find_map(|ancestor| {
+        let package = std::fs::read_to_string(ancestor.join("package.json")).ok()?;
+        if package.contains("\"name\": \"@earendil-works/pi-coding-agent\"")
+            || package.contains("\"name\":\"@earendil-works/pi-coding-agent\"")
+        {
+            Some(ancestor.to_path_buf())
+        } else {
+            None
+        }
+    })
+}
+
+fn inspect_pi_guard(executable: &Path) -> Option<(PathBuf, PiGuardKind)> {
+    let root = pi_package_root(executable)?;
+    let guard = PI_GUARD_RELATIVE_PATH
+        .iter()
+        .fold(root, |path, component| path.join(component));
+    let source = std::fs::read_to_string(&guard).ok()?;
+    Some((guard, classify_pi_output_guard(&source)))
+}
+
+fn check_pi_output_guard() -> Check {
+    let Some(executable) = executable_on_path("pi") else {
+        return Check::info(
+            "Pi output guard",
+            "pi not found on PATH (only required for pi: routes)",
+        );
+    };
+    let version = run_capture("pi", &["--version"])
+        .map(|(_, stdout, stderr)| {
+            let text = if stdout.trim().is_empty() {
+                stderr
+            } else {
+                stdout
+            };
+            text.lines().next().unwrap_or("unknown").trim().to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match inspect_pi_guard(&executable) {
+        Some((guard, PiGuardKind::Fixed)) => Check::ok(
+            "Pi output guard",
+            format!(
+                "pi {version} at {}\nfixed closed-consumer EPIPE handling and bounded retries: {}",
+                executable.display(),
+                guard.display()
+            ),
+        ),
+        Some((guard, PiGuardKind::Vulnerable)) => Check::warn(
+            "Pi output guard",
+            format!(
+                "pi {version} at {} has a known-vulnerable output guard: {}",
+                executable.display(),
+                guard.display()
+            ),
+            "From a WG source checkout run `make install-patched-pi`, then re-run `wg doctor`.",
+        ),
+        Some((guard, PiGuardKind::Unknown)) => Check::warn(
+            "Pi output guard",
+            format!(
+                "pi {version} at {} has an unrecognized output guard: {}",
+                executable.display(),
+                guard.display()
+            ),
+            "Upgrade Pi to a release with closed-consumer EPIPE handling, or install WG's pinned patch with `make install-patched-pi`.",
+        ),
+        None if version.trim() == "0.80.6" => Check::warn(
+            "Pi output guard",
+            format!(
+                "pi {version} at {} could not be inspected; the published 0.80.6 package is known vulnerable",
+                executable.display()
+            ),
+            "From a WG source checkout run `make install-patched-pi`, then re-run `wg doctor`.",
+        ),
+        None => Check::warn(
+            "Pi output guard",
+            format!(
+                "pi {version} at {} was found, but its package output guard could not be inspected",
+                executable.display()
+            ),
+            "Run `pi update --self`, then re-run `wg doctor`; WG Pi workers use this same PATH runtime.",
+        ),
+    }
 }
 
 // ── auth ──────────────────────────────────────────────────────────────
@@ -562,3 +698,77 @@ fn is_pid_alive(pid: u32) -> bool {
 // the Windows branches above.
 #[allow(dead_code)]
 fn _unused_import_suppressor(_p: &PathBuf) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VULNERABLE_GUARD: &str = r#"
+const RAW_STDOUT_RETRY_DELAY_MS = 10;
+if (code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") {
+  throw writeError;
+}
+"#;
+
+    const FIXED_GUARD: &str = r#"
+const RAW_STDOUT_MAX_RETRIES = 100;
+if (code === "EPIPE") rawStdoutClosed = true;
+if ((code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") || retryCount >= RAW_STDOUT_MAX_RETRIES) {
+  throw writeError;
+}
+"#;
+
+    #[test]
+    fn pi_guard_classifies_published_0806_as_vulnerable() {
+        assert_eq!(
+            classify_pi_output_guard(VULNERABLE_GUARD),
+            PiGuardKind::Vulnerable
+        );
+    }
+
+    #[test]
+    fn pi_guard_requires_epipe_and_bounded_retries_for_fixed() {
+        assert_eq!(classify_pi_output_guard(FIXED_GUARD), PiGuardKind::Fixed);
+        assert_eq!(
+            classify_pi_output_guard(&FIXED_GUARD.replace("EPIPE", "EIO")),
+            PiGuardKind::Vulnerable
+        );
+        assert_eq!(
+            classify_pi_output_guard(&FIXED_GUARD.replace("RAW_STDOUT_MAX_RETRIES", "MAX")),
+            PiGuardKind::Vulnerable
+        );
+    }
+
+    #[test]
+    fn pi_guard_inspects_the_package_reached_by_the_path_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .join("node_modules/@earendil-works/pi-coding-agent");
+        let dist = root.join("dist");
+        let guard = dist.join("core/output-guard.js");
+        std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.80.6"}"#,
+        )
+        .unwrap();
+        std::fs::write(&guard, FIXED_GUARD).unwrap();
+        let cli = dist.join("cli.js");
+        std::fs::write(&cli, "#!/usr/bin/env node\n").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&cli, tmp.path().join("pi")).unwrap();
+            let (found_guard, kind) = inspect_pi_guard(&tmp.path().join("pi")).unwrap();
+            assert_eq!(found_guard, guard);
+            assert_eq!(kind, PiGuardKind::Fixed);
+        }
+        #[cfg(not(unix))]
+        {
+            let (found_guard, kind) = inspect_pi_guard(&cli).unwrap();
+            assert_eq!(found_guard, guard);
+            assert_eq!(kind, PiGuardKind::Fixed);
+        }
+    }
+}

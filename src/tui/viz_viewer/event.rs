@@ -1,5 +1,6 @@
 use std::io;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -102,7 +103,7 @@ pub(crate) fn switch_chat_tab_relative(app: &mut VizApp, delta: i32) {
 /// Handle content reload when iteration changes.
 fn handle_iteration_change(app: &mut VizApp) {
     // Always reload Detail tab content
-    app.load_hud_detail();
+    app.request_hud_detail();
 
     // Invalidate Log and Messages panes so they reload with updated headers
     app.invalidate_log_pane();
@@ -111,10 +112,10 @@ fn handle_iteration_change(app: &mut VizApp) {
     // Force reload of the current tab's content
     match app.right_panel_tab {
         RightPanelTab::Log => {
-            app.load_log_pane();
+            app.request_log_pane();
         }
         RightPanelTab::Messages => {
-            app.load_messages_panel();
+            app.request_messages_panel();
         }
         _ => {} // Detail tab is already reloaded above
     }
@@ -338,8 +339,9 @@ pub fn run_event_loop(
 
     let result = run_event_loop_inner(terminal, app, shared_screen);
 
-    // Save all coordinator chat states and TUI focus state before exit.
-    app.save_all_chat_state();
+    // Preserve normal chat/tab persistence, but never let a final filesystem
+    // write hold terminal restoration hostage on NFS/sshfs.
+    app.save_all_chat_state_bounded(Duration::from_millis(100));
 
     // Always disable mouse capture on exit
     let _ = set_mouse_capture(false, false);
@@ -412,8 +414,14 @@ fn run_event_loop_inner(
                 // Drain remaining queued events so we only redraw once
                 // for a rapid burst (e.g. pasted text arriving as
                 // individual KeyEvents when bracketed paste is absent).
-                while let Ok(ev) = rx.try_recv() {
+                let drain_started = Instant::now();
+                let mut drained_events = 0usize;
+                while drained_events < 64 && drain_started.elapsed() < Duration::from_millis(2) {
+                    let Ok(ev) = rx.try_recv() else {
+                        break;
+                    };
                     dispatch_event(app, ev);
+                    drained_events += 1;
                     if app.should_quit {
                         break;
                     }
@@ -2182,7 +2190,7 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
                     CommandEffect::Notify(format!("Message sent to '{}'", task_id)),
                 );
                 app.invalidate_messages_panel();
-                app.load_messages_panel();
+                app.request_messages_panel();
             }
             return;
         }
@@ -2406,7 +2414,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Ctrl+H: open history browser
         KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.open_history_browser();
+            app.request_history_browser();
         }
 
         // Ctrl+R: quick resume when paused due to provider errors
@@ -2700,7 +2708,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // (fix-tui-chat). Takes precedence over the bare-graph "send
         // message" binding so chat-tab users get the cleanup UX.
         KeyCode::Char('M') if app.right_panel_tab == RightPanelTab::Chat => {
-            app.open_chat_manager();
+            app.request_chat_manager();
         }
         // M (graph context): send message to selected task's agent.
         KeyCode::Char('M') => {
@@ -2741,7 +2749,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                         app.focused_panel = FocusedPanel::RightPanel;
                     }
                 } else {
-                    app.load_hud_detail_for_task(&task_id);
+                    app.request_hud_detail_for_task(&task_id);
                     app.right_panel_visible = true;
                     app.right_panel_tab = RightPanelTab::Detail;
                     if is_agency_task_id(&task_id) {
@@ -3024,7 +3032,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
         // Ctrl+H: open history browser
         KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.open_history_browser();
+            app.request_history_browser();
         }
 
         // Ctrl+Tab / Ctrl+Shift+Tab: cycle chat tabs (Chat tab only).
@@ -3183,13 +3191,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('k') if app.right_panel_tab == RightPanelTab::Dashboard => {
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let agent_id = row.agent_id.clone();
-                let wg_dir = app.workgraph_dir.clone();
-                let _ = std::process::Command::new("wg")
-                    .arg("kill")
-                    .arg(&agent_id)
-                    .current_dir(&wg_dir)
-                    .output();
-                app.load_agent_monitor();
+                app.exec_command(
+                    vec!["kill".into(), agent_id.clone()],
+                    CommandEffect::RefreshAndNotify(format!("Killed {}", agent_id)),
+                );
+                app.request_agent_monitor();
             }
         }
         // Up/Down/k/j scroll the active panel content
@@ -3261,7 +3267,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                         app.nav_stack.push(NavEntry::AgentDetail {
                             agent_id: agent_id.clone(),
                         });
-                        app.load_hud_detail_for_task(&task_id);
+                        app.request_hud_detail_for_task(&task_id);
                         app.right_panel_tab = RightPanelTab::Detail;
                     }
                 }
@@ -3276,7 +3282,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                         app.selected_task_idx = Some(idx);
                     }
                     app.invalidate_log_pane();
-                    app.load_log_pane();
+                    app.request_log_pane();
                     app.right_panel_tab = RightPanelTab::Log;
                 }
             }
@@ -3299,7 +3305,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
         // Config tab: 'r' reloads config from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Config => {
-            app.load_config_panel();
+            app.request_config_panel();
         }
 
         // Config tab: 'g' installs project config as global default
@@ -3350,7 +3356,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
         // Settings tab: 'r' reloads from disk
         KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Settings => {
-            app.load_settings_panel();
+            app.request_settings_panel();
             app.settings_panel.notice = Some("Reloaded settings from disk".to_string());
         }
         // Settings tab: 'a' moves focus between entries and the action bar.
@@ -3390,7 +3396,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 && let Some(ref phase) = lifecycle.assignment
             {
                 let task_id = phase.task_id.clone();
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3399,7 +3405,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 && let Some(ref phase) = lifecycle.evaluation
             {
                 let task_id = phase.task_id.clone();
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3410,7 +3416,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let task_id = row.task_id.clone();
                 app.nav_stack.push(NavEntry::Dashboard);
-                app.load_hud_detail_for_task(&task_id);
+                app.request_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
@@ -3557,7 +3563,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
             app.detail_raw_json = !app.detail_raw_json;
             app.hud_detail = None; // force reload with new format
-            app.load_hud_detail();
+            app.request_hud_detail();
         }
 
         // Detail tab: Space toggles section collapse at current scroll position
@@ -3615,18 +3621,8 @@ fn maybe_load_more_chat_history(app: &mut VizApp) {
     // Load more when within one viewport height of the top.
     if scroll_from_top < viewport {
         let old_msg_count = app.chat.messages.len();
-        if app.load_more_chat_history() {
-            // Adjust scroll to maintain the user's visual position after prepending messages.
-            // The new messages added at the top will add rendered lines, so we need to
-            // increase the scroll-from-bottom by the approximate number of new lines.
-            // Since we don't know the exact rendered line count yet (that happens during
-            // rendering), we estimate based on message count change.
-            let new_msg_count = app.chat.messages.len();
-            let added_msgs = new_msg_count.saturating_sub(old_msg_count);
-            // Rough estimate: ~3 rendered lines per message (header + content + blank).
-            let estimated_new_lines = added_msgs * 3;
-            app.chat.scroll = app.chat.scroll.saturating_add(estimated_new_lines);
-        }
+        let _ = old_msg_count;
+        app.request_more_chat_history();
     }
 }
 
@@ -3908,10 +3904,8 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
                     return;
                 }
             }
-            while app.chat.has_more_history {
-                if !app.load_more_chat_history() {
-                    break;
-                }
+            if app.chat.has_more_history {
+                app.request_more_chat_history();
             }
             app.chat.scroll = usize::MAX;
         }
@@ -4631,7 +4625,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         anchor_parent_id: parent_id,
                                     });
                                 }
-                                app.load_hud_detail_for_task(dot_id);
+                                app.request_hud_detail_for_task(dot_id);
                             }
                             app.right_panel_visible = true;
                             app.right_panel_tab = RightPanelTab::Detail;
@@ -4699,7 +4693,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     app.right_panel_visible = true;
                                     app.right_panel_tab = RightPanelTab::Messages;
                                     app.invalidate_messages_panel();
-                                    app.load_messages_panel();
+                                    app.request_messages_panel();
                                 } else if app
                                     .selected_task_id()
                                     .map(worksgood::chat_id::is_chat_task_id)
@@ -4735,7 +4729,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         } else if content_col >= ps {
                                             app.right_panel_tab = RightPanelTab::Log;
                                             app.invalidate_log_pane();
-                                            app.load_log_pane();
+                                            app.request_log_pane();
                                         }
                                     }
                                     // If inspector is closed, just select — don't auto-open.
@@ -5972,7 +5966,7 @@ fn nav_stack_pop(app: &mut VizApp) {
             app.right_panel_tab = RightPanelTab::Output;
         }
         Some(NavEntry::TaskDetail { task_id }) => {
-            app.load_hud_detail_for_task(&task_id);
+            app.request_hud_detail_for_task(&task_id);
             app.right_panel_tab = RightPanelTab::Detail;
         }
         Some(NavEntry::TaskLog { task_id }) => {
@@ -5980,7 +5974,7 @@ fn nav_stack_pop(app: &mut VizApp) {
                 app.selected_task_idx = Some(idx);
             }
             app.invalidate_log_pane();
-            app.load_log_pane();
+            app.request_log_pane();
             app.right_panel_tab = RightPanelTab::Log;
         }
         None => {
@@ -8938,6 +8932,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = InputMode::Normal;
 
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
 
         assert_eq!(app.input_mode, InputMode::ChatManager);
         let mgr = app.chat_manager.as_ref().expect("manager must be open");
@@ -8959,6 +8954,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = InputMode::Normal;
 
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
         // Select all visible.
         super::handle_key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
         // Verify all 3 entries got selected.
@@ -9003,6 +8999,7 @@ mod chat_tab_navigation_tests {
         app.right_panel_tab = RightPanelTab::Chat;
         app.input_mode = InputMode::Normal;
         super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        app.wait_for_auxiliary_snapshot();
         assert_eq!(
             app.chat_manager.as_ref().unwrap().filter,
             ChatManagerFilter::All

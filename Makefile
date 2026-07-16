@@ -3,7 +3,7 @@
 # The canonical build/install is `cargo install --path . --locked` (see
 # CLAUDE.md "Development"); these targets cover the few multi-step chores.
 
-.PHONY: embed-pi-plugin embed-pi-plugin-check
+.PHONY: embed-pi-plugin embed-pi-plugin-check install-patched-pi
 
 # Regenerate the committed, version-locked plugin bundle the wg binary embeds.
 # Run this after editing anything under pi-plugin/src/** or bumping the
@@ -16,3 +16,9 @@ embed-pi-plugin:
 # differs from a fresh build. A source edit without a re-embed is caught here.
 embed-pi-plugin-check: embed-pi-plugin
 	git diff --exit-code pi-plugin/embedded pi-plugin/src/version.ts
+
+# Build and install the pinned Pi 0.80.6 source with WG's maintained EPIPE
+# patch. This is an explicit source-package install, never an in-place edit of
+# an arbitrary global node_modules tree.
+install-patched-pi:
+	scripts/install-patched-pi.sh

@@ -79,7 +79,12 @@ fn init_workgraph(tmp: &TempDir) -> PathBuf {
 
 fn write_config(wg_dir: &Path, content: &str) {
     let config_path = wg_dir.join("config.toml");
-    fs::write(&config_path, content).unwrap();
+    let selected = if content.contains("model =") {
+        content.to_string()
+    } else {
+        format!("[agent]\nmodel = \"claude:opus\"\n{content}")
+    };
+    fs::write(&config_path, selected).unwrap();
 }
 
 fn stop_daemon(wg_dir: &Path, env_vars: &[(&str, &str)]) {

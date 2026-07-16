@@ -1,0 +1,224 @@
+diff --git a/packages/coding-agent/src/core/output-guard.ts b/packages/coding-agent/src/core/output-guard.ts
+index 8781a51..5f3c38b 100644
+--- a/packages/coding-agent/src/core/output-guard.ts
++++ b/packages/coding-agent/src/core/output-guard.ts
+@@ -7,8 +7,22 @@ interface StdoutTakeoverState {
+ let stdoutTakeoverState: StdoutTakeoverState | undefined;
+ 
+ const RAW_STDOUT_RETRY_DELAY_MS = 10;
++const RAW_STDOUT_MAX_RETRIES = 100;
+ 
+ let rawStdoutWriteTail: Promise<void> = Promise.resolve();
++let rawStdoutClosed = false;
++
++function getErrorCode(error: unknown): unknown {
++	return error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
++}
++
++function handleRawStdoutError(error: Error): void {
++	if (getErrorCode(error) === "EPIPE") {
++		rawStdoutClosed = true;
++		return;
++	}
++	throw error;
++}
+ 
+ function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
+ 	if (stdoutTakeoverState) {
+@@ -18,7 +32,8 @@ function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
+ }
+ 
+ async function writeRawStdoutChunk(text: string): Promise<void> {
+-	while (true) {
++	let retryCount = 0;
++	while (!rawStdoutClosed) {
+ 		try {
+ 			await new Promise<void>((resolve, reject) => {
+ 				try {
+@@ -33,10 +48,18 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
+ 			return;
+ 		} catch (error) {
+ 			const writeError = error instanceof Error ? error : new Error(String(error));
+-			const code = (writeError as Error & { code?: unknown }).code;
+-			if (code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") {
++			const code = getErrorCode(writeError);
++			if (code === "EPIPE") {
++				rawStdoutClosed = true;
++				return;
++			}
++			if (
++				(code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") ||
++				retryCount >= RAW_STDOUT_MAX_RETRIES
++			) {
+ 				throw writeError;
+ 			}
++			retryCount += 1;
+ 			await new Promise<void>((resolve) => setTimeout(resolve, RAW_STDOUT_RETRY_DELAY_MS));
+ 		}
+ 	}
+@@ -51,6 +74,8 @@ export function takeOverStdout(): void {
+ 	const rawStderrWrite = process.stderr.write.bind(process.stderr) as StdoutTakeoverState["rawStderrWrite"];
+ 	const originalStdoutWrite = process.stdout.write;
+ 
++	rawStdoutClosed = false;
++	process.stdout.on("error", handleRawStdoutError);
+ 	process.stdout.write = ((
+ 		chunk: string | Uint8Array,
+ 		encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+@@ -75,7 +100,9 @@ export function restoreStdout(): void {
+ 	}
+ 
+ 	process.stdout.write = stdoutTakeoverState.originalStdoutWrite;
++	process.stdout.off("error", handleRawStdoutError);
+ 	stdoutTakeoverState = undefined;
++	rawStdoutClosed = false;
+ }
+ 
+ export function isStdoutTakenOver(): boolean {
+diff --git a/packages/coding-agent/test/output-guard.test.ts b/packages/coding-agent/test/output-guard.test.ts
+new file mode 100644
+index 0000000..ad40e56
+--- /dev/null
++++ b/packages/coding-agent/test/output-guard.test.ts
+@@ -0,0 +1,141 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const originalStdoutWrite = process.stdout.write;
++let restoreGuard: (() => void) | undefined;
++
++async function loadOutputGuard() {
++	vi.resetModules();
++	const guard = await import("../src/core/output-guard.ts");
++	restoreGuard = guard.restoreStdout;
++	return guard;
++}
++
++function callbackForWrite(
++	encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
++	callback?: (error?: Error | null) => void,
++): ((error?: Error | null) => void) | undefined {
++	return typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
++}
++
++beforeEach(() => {
++	process.stdout.write = originalStdoutWrite;
++	restoreGuard = undefined;
++});
++
++afterEach(() => {
++	restoreGuard?.();
++	process.stdout.write = originalStdoutWrite;
++	vi.restoreAllMocks();
++	vi.useRealTimers();
++});
++
++describe("output guard", () => {
++	it("treats a closed stdout reader as a graceful terminal condition", async () => {
++		const brokenPipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
++		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
++		vi.spyOn(process.stdout, "write").mockImplementation(((
++			_chunk: string | Uint8Array,
++			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
++			callback?: (error?: Error | null) => void,
++		) => {
++			const done = callbackForWrite(encodingOrCallback, callback);
++			queueMicrotask(() => {
++				process.stdout.emit("error", brokenPipe);
++				done?.(brokenPipe);
++			});
++			return false;
++		}) as typeof process.stdout.write);
++
++		const { takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout } = await loadOutputGuard();
++		takeOverStdout();
++		writeRawStdout('{"type":"session"}\n');
++
++		await expect(waitForRawStdoutBackpressure()).resolves.toBeUndefined();
++		expect(exit).not.toHaveBeenCalled();
++	});
++
++	it("delivers a complete NDJSON stream including usage", async () => {
++		const chunks: string[] = [];
++		vi.spyOn(process.stdout, "write").mockImplementation(((
++			chunk: string | Uint8Array,
++			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
++			callback?: (error?: Error | null) => void,
++		) => {
++			chunks.push(String(chunk));
++			queueMicrotask(() => callbackForWrite(encodingOrCallback, callback)?.());
++			return true;
++		}) as typeof process.stdout.write);
++
++		const { takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout } = await loadOutputGuard();
++		takeOverStdout();
++		writeRawStdout('{"type":"session","version":3}\n');
++		writeRawStdout('{"type":"turn_start"}\n');
++		writeRawStdout(
++			'{"type":"turn_end","message":{"usage":{"input":7,"output":3,"totalTokens":10,"cost":{"total":0.01}}}}\n',
++		);
++		await waitForRawStdoutBackpressure();
++
++		const events = chunks
++			.join("")
++			.trim()
++			.split("\n")
++			.map((line) => JSON.parse(line));
++		expect(events.map((event) => event.type)).toEqual(["session", "turn_start", "turn_end"]);
++		expect(events[2].message.usage).toEqual({ input: 7, output: 3, totalTokens: 10, cost: { total: 0.01 } });
++	});
++
++	it("retries transient stdout backpressure and preserves order", async () => {
++		let attempts = 0;
++		const chunks: string[] = [];
++		vi.spyOn(process.stdout, "write").mockImplementation(((
++			chunk: string | Uint8Array,
++			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
++			callback?: (error?: Error | null) => void,
++		) => {
++			attempts += 1;
++			const done = callbackForWrite(encodingOrCallback, callback);
++			if (attempts <= 2) {
++				queueMicrotask(() => done?.(Object.assign(new Error("try again"), { code: "EAGAIN" })));
++			} else {
++				chunks.push(String(chunk));
++				queueMicrotask(() => done?.());
++			}
++			return attempts > 2;
++		}) as typeof process.stdout.write);
++
++		const { takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout } = await loadOutputGuard();
++		takeOverStdout();
++		writeRawStdout("first\n");
++		writeRawStdout("second\n");
++		await waitForRawStdoutBackpressure();
++
++		expect(attempts).toBe(4);
++		expect(chunks.join("")).toBe("first\nsecond\n");
++	});
++
++	it("bounds retries when transient stdout backpressure does not clear", async () => {
++		vi.useFakeTimers();
++		let attempts = 0;
++		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
++		vi.spyOn(process.stdout, "write").mockImplementation(((
++			_chunk: string | Uint8Array,
++			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
++			callback?: (error?: Error | null) => void,
++		) => {
++			attempts += 1;
++			callbackForWrite(encodingOrCallback, callback)?.(Object.assign(new Error("still full"), { code: "ENOBUFS" }));
++			return false;
++		}) as typeof process.stdout.write);
++
++		const { takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout } = await loadOutputGuard();
++		takeOverStdout();
++		writeRawStdout("event\n");
++		const settled = waitForRawStdoutBackpressure();
++		const rejection = expect(settled).rejects.toMatchObject({ code: "ENOBUFS" });
++		await vi.runAllTimersAsync();
++		await rejection;
++
++		expect(attempts).toBe(101);
++		expect(exit).toHaveBeenCalledWith(1);
++	});
++});

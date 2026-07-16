@@ -104,7 +104,11 @@ fn config_init_global_writes_minimal_canonical() {
     fs::create_dir_all(&home).unwrap();
     let wg_dir = fresh_workgraph(&tmp);
 
-    let stdout = wg_ok(&wg_dir, &home, &["config", "init", "--global"]);
+    let stdout = wg_ok(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "claude-cli"],
+    );
     assert!(
         stdout.contains("Wrote minimal global config"),
         "init should announce what it wrote; got:\n{}",
@@ -268,7 +272,11 @@ fn config_init_refuses_to_clobber_existing_without_force() {
     )
     .unwrap();
 
-    let out = wg(&wg_dir, &home, &["config", "init", "--global"]);
+    let out = wg(
+        &wg_dir,
+        &home,
+        &["config", "init", "--global", "--route", "claude-cli"],
+    );
     assert!(
         !out.status.success(),
         "init --global should refuse to clobber an existing file"
@@ -295,7 +303,18 @@ fn config_init_force_makes_backup() {
     )
     .unwrap();
 
-    wg_ok(&wg_dir, &home, &["config", "init", "--global", "--force"]);
+    wg_ok(
+        &wg_dir,
+        &home,
+        &[
+            "config",
+            "init",
+            "--global",
+            "--route",
+            "claude-cli",
+            "--force",
+        ],
+    );
     let backup = home.join(".wg/config.toml.bak");
     assert!(
         backup.exists(),

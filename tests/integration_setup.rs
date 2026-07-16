@@ -548,23 +548,14 @@ fn setup_with_custom_model_id() {
 }
 
 #[test]
-fn setup_no_provider_in_non_tty_defaults_to_anthropic() {
-    // Without --provider and without a TTY, setup falls through to
-    // non-interactive mode which defaults to anthropic provider.
+fn setup_no_provider_in_non_tty_requires_explicit_route() {
+    // Detection and compatibility defaults must not choose a provider.
     let tmp = TempDir::new().unwrap();
     let (fake_home, wg_dir) = setup_env(&tmp);
 
     let output = wg_setup_cmd(&fake_home, &wg_dir, &["--skip-validation"]);
-    assert!(
-        output.status.success(),
-        "setup without --provider should default to anthropic: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let config = load_global_config(&fake_home);
-    assert_eq!(
-        config.coordinator.executor,
-        Some("claude".to_string()),
-        "should default to claude executor (anthropic provider)"
-    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requires an explicit route"), "{stderr}");
+    assert!(!fake_home.join(".wg/config.toml").exists());
 }

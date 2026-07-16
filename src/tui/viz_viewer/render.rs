@@ -117,44 +117,48 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     let vitals_area = chunks[2];
     let hints_area = chunks[3];
 
-    // Lazily load panel content if needed.
-    if app.hud_detail.is_none() && app.selected_task_idx.is_some() {
-        app.load_hud_detail();
-    }
-    if app.right_panel_tab == RightPanelTab::Log
-        && app.log_pane.task_id.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_log_pane();
-    }
-    if app.right_panel_tab == RightPanelTab::Messages
-        && app.messages_panel.task_id.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_messages_panel();
-    }
-    if app.right_panel_tab == RightPanelTab::Agency
-        && app.agency_lifecycle.is_none()
-        && app.selected_task_idx.is_some()
-    {
-        app.load_agency_lifecycle();
-    }
-    // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
-    if app.right_panel_tab == RightPanelTab::CoordLog {
-        if app.coord_log.rendered_lines.is_empty() {
-            app.load_coord_log();
+    // Lazy project loaders are forbidden while the asynchronous bootstrap is
+    // in flight.  The shell remains fully navigable and panel rendering below
+    // uses empty snapshots/placeholders until one coherent generation lands.
+    if app.bootstrap_complete {
+        if app.hud_detail.is_none() && app.selected_task_idx.is_some() {
+            app.request_hud_detail();
         }
-        if app.activity_feed.events.is_empty() {
-            app.load_activity_feed();
+        if app.right_panel_tab == RightPanelTab::Log
+            && app.log_pane.task_id.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.request_log_pane();
         }
-    }
-    // Lazy-init file browser on first switch to Files tab.
-    if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
-        app.file_browser = Some(super::file_browser::FileBrowser::new(&app.workgraph_dir));
-    }
-    // Lazy-load firehose data on first switch to Firehose tab.
-    if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
-        app.update_firehose();
+        if app.right_panel_tab == RightPanelTab::Messages
+            && app.messages_panel.task_id.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.request_messages_panel();
+        }
+        if app.right_panel_tab == RightPanelTab::Agency
+            && app.agency_lifecycle.is_none()
+            && app.selected_task_idx.is_some()
+        {
+            app.request_agency_lifecycle();
+        }
+        // Lazy-load coordinator log + activity feed on first switch to CoordLog tab.
+        if app.right_panel_tab == RightPanelTab::CoordLog {
+            if app.coord_log.rendered_lines.is_empty() {
+                app.request_coordinator_log();
+            }
+            if app.activity_feed.events.is_empty() {
+                app.request_coordinator_log();
+            }
+        }
+        // Lazy-init file browser on first switch to Files tab.
+        if app.right_panel_tab == RightPanelTab::Files && app.file_browser.is_none() {
+            app.request_file_browser();
+        }
+        // Lazy-load firehose data on first switch to Firehose tab.
+        if app.right_panel_tab == RightPanelTab::Firehose && app.firehose.lines.is_empty() {
+            app.request_firehose();
+        }
     }
 
     // ── Responsive breakpoint detection ──
@@ -2294,6 +2298,16 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .cloned();
     draw_tab_bar(frame, app, app.right_panel_tab, tab_area, msg_status);
 
+    if !app.bootstrap_complete {
+        frame.render_widget(
+            Paragraph::new("Loading project snapshot…")
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center),
+            content_area,
+        );
+        return;
+    }
+
     // Apply slide animation offset to the content area.
     let content_area = if let Some(ref anim) = app.slide_animation {
         if anim.is_done() {
@@ -2342,11 +2356,6 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_config_tab(frame, app, content_area);
         }
         RightPanelTab::Log => {
-            // Keep data fresh while the tab is visible. Cheap when nothing
-            // has changed on disk.
-            app.load_log_pane();
-            app.update_log_output();
-            app.update_log_stream_events();
             draw_log_tab(frame, app, content_area);
         }
         RightPanelTab::CoordLog => {
@@ -2356,12 +2365,11 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_dashboard_tab(frame, app, content_area);
         }
         RightPanelTab::Messages => {
-            app.load_messages_panel();
             draw_messages_tab(frame, app, content_area);
         }
         RightPanelTab::Settings => {
             if app.settings_panel.entries.is_empty() {
-                app.load_settings_panel();
+                app.request_settings_panel();
             }
             draw_settings_tab(frame, app, content_area);
         }
@@ -3073,6 +3081,9 @@ pub(super) fn compute_chat_bar_layout(
 
 /// Draw the Chat tab content with word-wrapped messages, scrolling, and input area.
 fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // This assertion boundary makes the render loop's work independent of
+    // persisted history depth, configuration, and CLI overrides.
+    app.chat.enforce_history_projection();
     let width = area.width as usize;
     if width < 4 || area.height < 3 {
         return;
@@ -5271,46 +5282,29 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
-    let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
-    let executor = config.coordinator.effective_executor();
-    let model = config.coordinator.model.clone().unwrap_or_else(|| {
-        config
-            .resolve_model_for_role(worksgood::config::DispatchRole::Default)
-            .model
-    });
-    let cid = app.active_coordinator_id;
-    let state =
-        worksgood::service::chat_compactor::ChatCompactorState::load(&app.workgraph_dir, cid);
-    let threshold = config.chat.compact_threshold;
-    let pending =
-        worksgood::chat::read_inbox_since_for(&app.workgraph_dir, cid, state.last_inbox_id)
-            .map(|m| m.len())
-            .unwrap_or(0)
-            + worksgood::chat::read_outbox_since_for(&app.workgraph_dir, cid, state.last_outbox_id)
-                .map(|m| m.len())
-                .unwrap_or(0);
-    let summary_present =
-        worksgood::service::chat_compactor::context_summary_path(&app.workgraph_dir, cid).exists();
-    let last = state
-        .last_compaction
-        .clone()
-        .unwrap_or_else(|| "never".to_string());
+    let runtime = &app.coordinator_runtime;
+    if runtime.coordinator_id != app.active_coordinator_id {
+        return Vec::new();
+    }
 
     vec![
         Line::from(vec![
             Span::styled(
-                format!("Chat {} ", cid),
+                format!("Chat {} ", runtime.coordinator_id),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("· "),
             Span::styled(
-                executor,
+                runtime.executor.clone(),
                 Style::default().fg(text_primary(app.is_light_theme)),
             ),
             Span::raw(" · "),
-            Span::styled(model, Style::default().fg(text_primary(app.is_light_theme))),
+            Span::styled(
+                runtime.model.clone(),
+                Style::default().fg(text_primary(app.is_light_theme)),
+            ),
         ]),
         Line::from(vec![
             // Coordinator-tab cyan matches the "↯ " prefix branding so the
@@ -5321,13 +5315,13 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
                 Style::default().fg(super::chat_palette::COORDINATOR_PREFIX),
             ),
             Span::raw("· "),
-            Span::raw(format!("{}x", state.compaction_count)),
+            Span::raw(format!("{}x", runtime.compaction_count)),
             Span::raw(" · "),
-            Span::raw(format!("last {}", last)),
+            Span::raw(format!("last {}", runtime.last_compaction)),
             Span::raw(" · "),
-            Span::raw(format!("pending {}/{}", pending, threshold)),
+            Span::raw(format!("pending {}/{}", runtime.pending, runtime.threshold)),
             Span::raw(" · "),
-            Span::raw(if summary_present {
+            Span::raw(if runtime.summary_present {
                 "summary present"
             } else {
                 "summary absent"
@@ -8409,6 +8403,15 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         Style::default().fg(text_primary(app.is_light_theme)),
     ));
 
+    if let Some(feedback) = app.bootstrap_feedback() {
+        spans.push(Span::styled(
+            format!("| {feedback} "),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     if c.archived > 0 {
         spans.push(Span::styled(
             format!("{} archived ", c.archived),
@@ -9862,14 +9865,10 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
 
 /// Draw the Config tab content: full configuration dashboard.
 fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    if app.config_panel.entries.is_empty() {
-        app.load_config_panel();
-    }
-
     let entries = &app.config_panel.entries;
     if entries.is_empty() {
         let msg =
-            Paragraph::new("No configuration found").style(Style::default().fg(Color::DarkGray));
+            Paragraph::new("Loading configuration…").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(msg, area);
         return;
     }
@@ -9890,16 +9889,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 
     // Precompute endpoint index → name for test status display.
-    let endpoint_names: HashMap<usize, String> = {
-        let config = worksgood::config::Config::load_or_default(&app.workgraph_dir);
-        config
-            .llm_endpoints
-            .endpoints
-            .iter()
-            .enumerate()
-            .map(|(i, ep)| (i, ep.name.clone()))
-            .collect()
-    };
+    let endpoint_names = &app.config_panel.endpoint_names;
 
     // Build display lines grouped by section with collapsible headers.
     let mut lines: Vec<(Line, bool)> = Vec::new(); // (line, is_selectable)
@@ -13064,6 +13054,7 @@ mod tests {
         assert!(app.settings_panel.editing);
         app.settings_panel.edit_buffer = "claude:sonnet".to_string();
         app.commit_settings_edit();
+        app.wait_for_auxiliary_snapshot();
 
         assert_eq!(
             app.settings_panel.last_error, None,
@@ -16288,7 +16279,7 @@ mod tests {
 
     /// Regression test for tui-log-view: when an in-progress task has an
     /// assigned agent whose raw_stream.jsonl file contains events, the Log
-    /// pane MUST render those events on first draw — NOT show
+    /// pane MUST render those events after its first asynchronous snapshot — NOT show
     /// "no agent output yet". This is the user-reported failure mode that
     /// the prior tui-agent-activity attempt did not catch end-to-end.
     #[test]
@@ -16350,10 +16341,13 @@ mod tests {
         app.right_panel_visible = true;
         app.right_panel_tab = RightPanelTab::Log;
 
-        // 4) Render via TestBackend — the user's first draw of the Log tab.
-        //    Wide enough to avoid Compact breakpoint clobbering layout.
+        // 4) Submit the same asynchronous request used by the first draw,
+        //    wait for completion, then draw the cached result. Wide enough to
+        //    avoid Compact breakpoint clobbering layout.
         let backend = TestBackend::new(140, 40);
         let mut terminal = Terminal::new(backend).unwrap();
+        app.request_log_pane();
+        app.wait_for_auxiliary_snapshot();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         let rendered = buffer_to_string(terminal.backend().buffer());
@@ -16368,7 +16362,7 @@ mod tests {
         );
         assert!(
             rendered.contains("UNIQUE_STREAM_MARKER_ALPHA"),
-            "Log tab must render the stream event text on first draw. Rendered:\n{}",
+            "Log tab must render the stream event text after the first snapshot. Rendered:\n{}",
             rendered
         );
     }
@@ -16989,16 +16983,27 @@ mod tests {
             "[tui]\ncolor_theme = \"light\"\n",
         )
         .unwrap();
-        let app = VizApp::new(
-            wg_dir,
+        let mut app = VizApp::new(
+            wg_dir.clone(),
             crate::commands::viz::VizOptions::default(),
             Some(false),
             None,
             true,
         );
+        let apply = VizApp::load_bootstrap(
+            wg_dir,
+            crate::commands::viz::VizOptions::default(),
+            Some(false),
+            None,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        apply(&mut app);
         assert!(
             app.is_light_theme,
-            "VizApp::new with color_theme='light' must set is_light_theme=true"
+            "async config snapshot with color_theme='light' must set is_light_theme=true"
         );
     }
 
