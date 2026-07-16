@@ -546,7 +546,11 @@ fn default_attractor_weight() -> f64 {
 }
 
 /// Executor types that represent human operators (not AI agents).
-const HUMAN_EXECUTORS: &[&str] = &["matrix", "email", "shell"];
+///
+/// `telegram` fronts a person reachable through a Telegram bot (the
+/// family-team onboarding shape — see `wg agency human add`), so it is a
+/// human executor: such agents are excluded from AI auto-assignment.
+const HUMAN_EXECUTORS: &[&str] = &["matrix", "email", "shell", "telegram"];
 
 /// Returns true if the given executor string represents a human operator.
 pub fn is_human_executor(executor: &str) -> bool {

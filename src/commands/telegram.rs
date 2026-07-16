@@ -6,7 +6,9 @@
 //! - `wg telegram status` - Show Telegram configuration status
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use worksgood::notify::NotificationChannel;
 use worksgood::notify::config::NotifyConfig;
@@ -14,66 +16,127 @@ use worksgood::notify::telegram::{TelegramChannel, TelegramConfig};
 
 /// Run the Telegram listener.
 ///
-/// Starts a long-running process that polls for incoming messages via the
-/// Telegram Bot API and dispatches WG commands.
+/// Starts a long-running process that long-polls for incoming messages via the
+/// Telegram Bot API and dispatches WG commands. Listens on **every** configured
+/// bot — the legacy top-level `[telegram]` bot *and* each `[telegram.bots.<id>]`
+/// named bot (the multi-bot form `wg agency human add` uses to front a
+/// per-human onboarding DM). Each inbound message is answered on the same bot
+/// and chat that received it, so a confirmation sent to a named bot is actually
+/// captured and replied to.
 pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
-    let config = load_telegram_config()?;
-    let effective_chat_id = chat_id
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| config.chat_id.clone());
+    let notify = NotifyConfig::load(Some(Path::new(".")))
+        .context("Failed to load notification config")?
+        .context("No notify.toml found. Create one at ~/.config/workgraph/notify.toml")?;
+    let channels = TelegramChannel::all_from_notify_config(&notify)
+        .context("Failed to build Telegram channels")?;
+    if channels.is_empty() {
+        anyhow::bail!(
+            "No Telegram bots configured. Add a [telegram] block (legacy) or \
+             [telegram.bots.<id>] tables to notify.toml — see `wg telegram list-bots`."
+        );
+    }
+
+    let chat_override = chat_id.map(|s| s.to_string());
 
     println!("Starting Telegram listener...");
-    println!("{}", bot_banner(&config));
-    println!("Chat ID: {}", effective_chat_id);
+    if let Ok(cfg) = TelegramConfig::from_notify_config(&notify) {
+        println!("{}", bot_banner(&cfg));
+    }
+    if let Some(ref forced) = chat_override {
+        println!("Reply chat override: {}", forced);
+    }
     println!("Press Ctrl+C to stop\n");
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
-    rt.block_on(async {
-        let channel = TelegramChannel::new(config);
-        let mut rx = channel
-            .listen()
-            .await
-            .context("Failed to start Telegram listener")?;
+    rt.block_on(async move {
+        // One long-poll task per bot, all fanned into a single receiver. Each
+        // bot's channel is kept (by channel_type) so replies go back through
+        // the bot that actually received the message.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+        let mut reply_channels: HashMap<String, Arc<TelegramChannel>> = HashMap::new();
+
+        for channel in channels {
+            let channel = Arc::new(channel);
+            let mut sub = channel.listen().await.with_context(|| {
+                format!("Failed to start listener for bot '{}'", channel.bot_id())
+            })?;
+            reply_channels.insert(channel.channel_type().to_string(), channel.clone());
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = sub.recv().await {
+                    if tx.send(msg).await.is_err() {
+                        break; // aggregator dropped
+                    }
+                }
+            });
+        }
+        drop(tx); // only the per-bot forwarders hold senders now
 
         let workgraph_dir = dir.to_path_buf();
         while let Some(msg) = rx.recv().await {
+            // Reply through the bot that received this message, to the chat it
+            // arrived in (or the operator's override), falling back to the
+            // bot's configured chat_id.
+            let reply_channel = reply_channels.get(&msg.channel);
+            let reply_target = resolve_reply_target(
+                chat_override.as_deref(),
+                msg.chat_id.as_deref(),
+                reply_channel.map(|c| c.chat_id()),
+            );
+            let display_sender = msg.sender_username.as_deref().unwrap_or(&msg.sender);
+            let reply_channel = reply_channel.map(|c| c.as_ref());
+
             // Try to parse as a command
             if let Some(cmd) = worksgood::telegram_commands::parse(&msg.body) {
                 println!(
-                    "[{}] Command from {}: {}",
+                    "[{}] Command from {} on {}: {}",
                     chrono::Utc::now().format("%H:%M:%S"),
-                    msg.sender,
+                    display_sender,
+                    msg.channel,
                     cmd.description()
                 );
 
                 let response =
                     worksgood::telegram_commands::execute(&workgraph_dir, &cmd, &msg.sender);
-
-                // Send response back
-                if let Err(e) = channel.send_text(&effective_chat_id, &response).await {
-                    eprintln!("Failed to send response: {e}");
-                }
+                send_reply(reply_channel, &reply_target, &response, &msg.channel).await;
             } else if let Some(ref action_id) = msg.action_id {
                 // Handle callback button presses
                 println!(
-                    "[{}] Button press from {}: {}",
+                    "[{}] Button press from {} on {}: {}",
                     chrono::Utc::now().format("%H:%M:%S"),
-                    msg.sender,
+                    display_sender,
+                    msg.channel,
                     action_id
                 );
 
                 // Action IDs follow the pattern "action:task_id" (e.g. "approve:my-task")
                 let response = handle_action(&workgraph_dir, action_id, &msg.sender);
-
-                if let Err(e) = channel.send_text(&effective_chat_id, &response).await {
-                    eprintln!("Failed to send response: {e}");
-                }
+                send_reply(reply_channel, &reply_target, &response, &msg.channel).await;
+            } else if let Some(name) = try_confirm_binding(
+                &workgraph_dir,
+                &msg.sender,
+                msg.sender_username.as_deref(),
+                &msg.body,
+            ) {
+                // A bound-but-unconfirmed human replied YES — record it and
+                // welcome them. This is the inbound half of the
+                // `wg agency human add` onboarding handshake (R21/R22).
+                println!(
+                    "[{}] {} ({}) confirmed on {} — joined via YES handshake",
+                    chrono::Utc::now().format("%H:%M:%S"),
+                    name,
+                    msg.sender,
+                    msg.channel,
+                );
+                let welcome = format!("Welcome aboard, {}! You're all set. \u{2705}", name);
+                send_reply(reply_channel, &reply_target, &welcome, &msg.channel).await;
             } else {
                 println!(
-                    "[{}] Message from {}: {}",
+                    "[{}] Message from {} on {}: {}",
                     chrono::Utc::now().format("%H:%M:%S"),
-                    msg.sender,
+                    display_sender,
+                    msg.channel,
                     msg.body
                 );
             }
@@ -81,6 +144,84 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
 
         Ok(())
     })
+}
+
+/// Choose where a listener reply should be sent.
+///
+/// Precedence: the operator's `--chat-id` override wins; otherwise the chat the
+/// message actually arrived in (so a multi-bot listener answers on the chat
+/// that received the confirmation, not a single global chat); otherwise the
+/// receiving bot's configured `chat_id`. Empty string only if nothing is known.
+fn resolve_reply_target(
+    override_chat: Option<&str>,
+    incoming_chat: Option<&str>,
+    channel_default: Option<&str>,
+) -> String {
+    override_chat
+        .or(incoming_chat)
+        .or(channel_default)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Send a listener reply back through the channel that received the message.
+///
+/// `channel` is the bot that received the inbound message (so the reply goes
+/// out on the same token/chat identity); `channel_tag` is used only for the
+/// diagnostic when no channel is available. Errors are logged, not propagated,
+/// so one failed reply never tears down the listener.
+async fn send_reply(
+    channel: Option<&TelegramChannel>,
+    target: &str,
+    text: &str,
+    channel_tag: &str,
+) {
+    match channel {
+        Some(ch) => {
+            if let Err(e) = ch.send_text(target, text).await {
+                eprintln!("Failed to send response via '{}': {e}", ch.bot_id());
+            }
+        }
+        None => eprintln!("No channel to reply on for '{channel_tag}' — dropping response"),
+    }
+}
+
+/// Try to confirm a human-onboarding binding from an inbound message.
+///
+/// If the inbound sender (canonical numeric `sender_id`, plus optional
+/// `sender_username`) has an unconfirmed Telegram binding (see
+/// `wg agency human add`) and `body` is an affirmative `YES`, mark the binding
+/// confirmed, persist it, and return the human's name. Otherwise return
+/// `None`. Persistence failures are logged and swallowed so the listener keeps
+/// running.
+fn try_confirm_binding(
+    workgraph_dir: &Path,
+    sender_id: &str,
+    sender_username: Option<&str>,
+    body: &str,
+) -> Option<String> {
+    use worksgood::agency::{TelegramBindingMap, apply_confirmation};
+
+    let agency_dir = workgraph_dir.join("agency");
+    let mut bindings = match TelegramBindingMap::load(&agency_dir) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Failed to load Telegram binding map: {e}");
+            return None;
+        }
+    };
+    let name = apply_confirmation(
+        &mut bindings,
+        sender_id,
+        sender_username,
+        body,
+        chrono::Utc::now(),
+    )?;
+    if let Err(e) = bindings.save(&agency_dir) {
+        eprintln!("Failed to persist Telegram binding confirmation: {e}");
+        return None;
+    }
+    Some(name)
 }
 
 /// Send a message to the configured Telegram chat.
@@ -397,87 +538,12 @@ async fn poll_once(
             new_offset = uid + 1;
         }
 
-        // Handle callback queries (button presses)
-        if let Some(cb) = update.get("callback_query") {
-            let chat_id = cb
-                .get("message")
-                .and_then(|m| m.get("chat"))
-                .and_then(|c| c.get("id"))
-                .and_then(|id| id.as_i64())
-                .map(|id| id.to_string());
-
-            if chat_id.as_deref() == Some(target_chat_id) {
-                let sender = cb
-                    .get("from")
-                    .and_then(|f| f.get("username"))
-                    .and_then(|u| u.as_str())
-                    .or_else(|| {
-                        cb.get("from")
-                            .and_then(|f| f.get("id"))
-                            .and_then(|i| i.as_i64())
-                            .map(|_| "unknown")
-                    })
-                    .unwrap_or("unknown");
-
-                let action_id = cb
-                    .get("data")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let reply_to = cb
-                    .get("message")
-                    .and_then(|m| m.get("message_id"))
-                    .and_then(|m| m.as_i64())
-                    .map(|mid| worksgood::notify::MessageId(mid.to_string()));
-
-                let msg = worksgood::notify::IncomingMessage {
-                    channel: "telegram".to_string(),
-                    sender: sender.to_string(),
-                    body: action_id.clone(),
-                    action_id: Some(action_id),
-                    reply_to,
-                };
-
-                return Ok(Some((msg, new_offset)));
-            }
-        }
-
-        // Handle regular messages
-        if let Some(message) = update.get("message") {
-            let chat_id = message
-                .get("chat")
-                .and_then(|c| c.get("id"))
-                .and_then(|id| id.as_i64())
-                .map(|id| id.to_string());
-
-            if chat_id.as_deref() == Some(target_chat_id) {
-                let sender = message
-                    .get("from")
-                    .and_then(|f| f.get("username"))
-                    .and_then(|u| u.as_str())
-                    .unwrap_or("unknown");
-
-                let body = message
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let reply_to = message
-                    .get("reply_to_message")
-                    .and_then(|r| r.get("message_id"))
-                    .and_then(|m| m.as_i64())
-                    .map(|mid| worksgood::notify::MessageId(mid.to_string()));
-
-                let msg = worksgood::notify::IncomingMessage {
-                    channel: "telegram".to_string(),
-                    sender: sender.to_string(),
-                    body,
-                    action_id: None,
-                    reply_to,
-                };
-
+        // Reuse the canonical parser so this path emits the same stable
+        // numeric sender and chat identity as the long-poll listener, then
+        // keep only messages from the chat we're polling.
+        if let Some(msg) = worksgood::notify::telegram::parse_update(update, channel.channel_type())
+        {
+            if msg.chat_id.as_deref() == Some(target_chat_id) {
                 return Ok(Some((msg, new_offset)));
             }
         }
@@ -637,5 +703,106 @@ mod tests {
     fn handle_action_malformed() {
         let result = handle_action(Path::new("/nonexistent"), "no-colon", "testuser");
         assert!(result.contains("Unknown action"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-bot listener contract (Erik's PR #49 gap 2). The listener must
+    // consume the configured NAMED bots — not just the legacy top-level token —
+    // and route replies back to the bot/chat that received the message. These
+    // exercise the actual listener wiring (channel selection + reply routing),
+    // not merely the startup banner.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn listener_consumes_named_bots_on_multibot_only_config() {
+        // A config with ONLY [telegram.bots.*] — the exact shape `wg agency
+        // human add` produces and PR #55 made non-panicking. The OLD listener
+        // built `TelegramChannel::new(config)`, which discards `bots` and polls
+        // an empty legacy token; a confirmation could never arrive. The
+        // listener now sources its channels from `all_from_notify_config`, so
+        // the named bot must be present with its qualified channel type.
+        let toml_str = r#"
+[telegram.bots.nadin]
+bot_token = "222:BBB"
+chat_id = "78901234"
+agent_id = "human-nadin"
+"#;
+        let notify: NotifyConfig = toml::from_str(toml_str).unwrap();
+        let channels = TelegramChannel::all_from_notify_config(&notify).unwrap();
+
+        // Exactly the named bot — no phantom legacy "default" channel.
+        assert_eq!(channels.len(), 1, "only the named bot should be polled");
+        let ch = &channels[0];
+        assert_eq!(ch.bot_id(), "nadin");
+        assert_eq!(ch.channel_type(), "telegram:nadin");
+        assert_eq!(ch.chat_id(), "78901234");
+        assert_eq!(ch.agent_id(), Some("human-nadin"));
+    }
+
+    #[test]
+    fn listener_routes_reply_to_receiving_bot_and_chat() {
+        // Two named bots. A message received on `nadin`'s channel must be
+        // answered via `nadin` (its token) on the chat it arrived in — never
+        // through the other bot or a single global chat.
+        let toml_str = r#"
+[telegram.bots.nadin]
+bot_token = "222:BBB"
+chat_id = "111"
+agent_id = "human-nadin"
+
+[telegram.bots.erik]
+bot_token = "333:CCC"
+chat_id = "222"
+agent_id = "human-erik"
+"#;
+        let notify: NotifyConfig = toml::from_str(toml_str).unwrap();
+        let channels = TelegramChannel::all_from_notify_config(&notify).unwrap();
+        let by_type: HashMap<String, &TelegramChannel> = channels
+            .iter()
+            .map(|c| (c.channel_type().to_string(), c))
+            .collect();
+
+        // A YES arrives on nadin's channel, in a specific chat.
+        let update = serde_json::json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 5,
+                "from": { "id": 78901234, "username": "nadin" },
+                "chat": { "id": 99999, "type": "private" },
+                "text": "YES"
+            }
+        });
+        let msg = worksgood::notify::telegram::parse_update(&update, "telegram:nadin").unwrap();
+
+        // The reply channel is selected by the receiving channel type.
+        let reply_channel = by_type.get(&msg.channel).copied();
+        assert!(reply_channel.is_some(), "reply routed to receiving bot");
+        assert_eq!(reply_channel.unwrap().bot_id(), "nadin");
+
+        // And the reply target is the chat the message arrived in.
+        let target = resolve_reply_target(
+            None,
+            msg.chat_id.as_deref(),
+            reply_channel.map(|c| c.chat_id()),
+        );
+        assert_eq!(target, "99999");
+    }
+
+    #[test]
+    fn resolve_reply_target_precedence() {
+        // Override beats everything.
+        assert_eq!(
+            resolve_reply_target(Some("override"), Some("incoming"), Some("default")),
+            "override"
+        );
+        // Then the chat the message came in on.
+        assert_eq!(
+            resolve_reply_target(None, Some("incoming"), Some("default")),
+            "incoming"
+        );
+        // Then the bot's configured chat.
+        assert_eq!(resolve_reply_target(None, None, Some("default")), "default");
+        // Nothing known → empty.
+        assert_eq!(resolve_reply_target(None, None, None), "");
     }
 }

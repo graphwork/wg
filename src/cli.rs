@@ -5082,6 +5082,12 @@ pub enum AgencyCommands {
     /// Seed agency with starter roles and tradeoffs
     Init,
 
+    /// Onboard and manage human teammates (Telegram handshake)
+    Human {
+        #[command(subcommand)]
+        command: HumanCommands,
+    },
+
     /// Migrate old-format agency store (roles/, motivations/, agents/) to primitive+cache format
     Migrate {
         /// Show what would be migrated without writing
@@ -5291,6 +5297,32 @@ pub enum AgencyCommands {
         /// Push from ~/.wg/agency/ instead of local project
         #[arg(long)]
         global: bool,
+    },
+}
+
+/// Subcommands for `wg agency human <sub>` — human-teammate onboarding.
+#[derive(Subcommand)]
+pub enum HumanCommands {
+    /// Add a human teammate: create their agent, per-user board, and a
+    /// Telegram binding, then DM a "reply YES to join" handshake (or print the
+    /// manual step when no bot is configured).
+    Add {
+        /// Display name of the human (e.g. "Nadin").
+        name: String,
+
+        /// Telegram user id (numeric) or @handle to bind and DM.
+        #[arg(long)]
+        telegram: String,
+
+        /// Project label used in the join message (default: project dir name).
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Manually record a human's YES confirmation (when no listener is running).
+    Confirm {
+        /// Telegram user id or @handle previously added.
+        telegram: String,
     },
 }
 

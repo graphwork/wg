@@ -406,74 +406,7 @@ impl NotificationChannel for TelegramChannel {
                         offset = uid + 1;
                     }
 
-                    // Handle callback queries (button presses)
-                    if let Some(cb) = update.get("callback_query") {
-                        let sender = cb
-                            .get("from")
-                            .and_then(|f| f.get("username"))
-                            .and_then(|u| u.as_str())
-                            .or_else(|| {
-                                cb.get("from")
-                                    .and_then(|f| f.get("id"))
-                                    .and_then(|i| i.as_i64())
-                                    .map(|_| "unknown")
-                            })
-                            .unwrap_or("unknown");
-
-                        let action_id = cb
-                            .get("data")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let reply_to = cb
-                            .get("message")
-                            .and_then(|m| m.get("message_id"))
-                            .and_then(|m| m.as_i64())
-                            .map(|mid| MessageId(mid.to_string()));
-
-                        let msg = IncomingMessage {
-                            channel: channel_tag.clone(),
-                            sender: sender.to_string(),
-                            body: action_id.clone(),
-                            action_id: Some(action_id),
-                            reply_to,
-                        };
-
-                        if tx.send(msg).await.is_err() {
-                            return; // receiver dropped
-                        }
-                        continue;
-                    }
-
-                    // Handle regular messages
-                    if let Some(message) = update.get("message") {
-                        let sender = message
-                            .get("from")
-                            .and_then(|f| f.get("username"))
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("unknown");
-
-                        let body = message
-                            .get("text")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let reply_to = message
-                            .get("reply_to_message")
-                            .and_then(|r| r.get("message_id"))
-                            .and_then(|m| m.as_i64())
-                            .map(|mid| MessageId(mid.to_string()));
-
-                        let msg = IncomingMessage {
-                            channel: channel_tag.clone(),
-                            sender: sender.to_string(),
-                            body,
-                            action_id: None,
-                            reply_to,
-                        };
-
+                    if let Some(msg) = parse_update(update, &channel_tag) {
                         if tx.send(msg).await.is_err() {
                             return; // receiver dropped
                         }
@@ -484,6 +417,97 @@ impl NotificationChannel for TelegramChannel {
 
         Ok(rx)
     }
+}
+
+/// Extract the canonical sender identity from a Telegram `from` object.
+///
+/// Returns `(id, username)` where `id` is the stable numeric `from.id` rendered
+/// as a string (the authorization identity) and `username` is the lowercased,
+/// `@`-less `from.username` when present. Returns `None` when there is no
+/// numeric id — without a stable id we have no identity to authorize against,
+/// so the update is not surfaced.
+fn parse_sender(from: &serde_json::Value) -> Option<(String, Option<String>)> {
+    let id = from.get("id").and_then(|i| i.as_i64())?;
+    let username = from
+        .get("username")
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.is_empty())
+        .map(|u| u.trim_start_matches('@').to_ascii_lowercase());
+    Some((id.to_string(), username))
+}
+
+/// Parse one Telegram Bot API `update` object into an [`IncomingMessage`].
+///
+/// This is the pure, unit-testable core of the long-poll listener: given a
+/// single element of the `result` array returned by `getUpdates` and the
+/// receiving bot's `channel_tag`, produce the message the listener would emit,
+/// or `None` for updates we don't surface (no supported payload, or no numeric
+/// sender id to authorize against).
+///
+/// The emitted `sender` is always the stable numeric `from.id` — the canonical
+/// authorization identity — with the username carried alongside in
+/// `sender_username`. The originating `chat.id` is preserved in `chat_id` so a
+/// reply can be routed back to the chat that actually received the message.
+pub fn parse_update(update: &serde_json::Value, channel_tag: &str) -> Option<IncomingMessage> {
+    // Callback queries (inline-button presses).
+    if let Some(cb) = update.get("callback_query") {
+        let (sender, sender_username) = parse_sender(cb.get("from")?)?;
+        let action_id = cb
+            .get("data")
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .to_string();
+        let message = cb.get("message");
+        let chat_id = message
+            .and_then(|m| m.get("chat"))
+            .and_then(|c| c.get("id"))
+            .and_then(|id| id.as_i64())
+            .map(|id| id.to_string());
+        let reply_to = message
+            .and_then(|m| m.get("message_id"))
+            .and_then(|m| m.as_i64())
+            .map(|mid| MessageId(mid.to_string()));
+        return Some(IncomingMessage {
+            channel: channel_tag.to_string(),
+            sender,
+            sender_username,
+            chat_id,
+            body: action_id.clone(),
+            action_id: Some(action_id),
+            reply_to,
+        });
+    }
+
+    // Regular text messages.
+    if let Some(message) = update.get("message") {
+        let (sender, sender_username) = parse_sender(message.get("from")?)?;
+        let body = message
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let chat_id = message
+            .get("chat")
+            .and_then(|c| c.get("id"))
+            .and_then(|id| id.as_i64())
+            .map(|id| id.to_string());
+        let reply_to = message
+            .get("reply_to_message")
+            .and_then(|r| r.get("message_id"))
+            .and_then(|m| m.as_i64())
+            .map(|mid| MessageId(mid.to_string()));
+        return Some(IncomingMessage {
+            channel: channel_tag.to_string(),
+            sender,
+            sender_username,
+            chat_id,
+            body,
+            action_id: None,
+            reply_to,
+        });
+    }
+
+    None
 }
 
 /// Add a visual prefix to button labels based on style.
@@ -750,5 +774,101 @@ agent_id = "nora"
         let json = serde_json::json!({"ok": true});
         let mid = TelegramChannel::extract_message_id(&json);
         assert_eq!(mid.0, "0");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_update: the canonical-sender contract (Erik's PR #49 gap 1).
+    // The listener MUST emit the stable numeric from.id as `sender`, carry the
+    // username separately, and preserve the originating chat id for replies.
+    // These start from representative Bot API update JSON.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_update_message_emits_numeric_id_username_and_chat() {
+        // A realistic getUpdates "message" element.
+        let update = serde_json::json!({
+            "update_id": 100,
+            "message": {
+                "message_id": 7,
+                "from": { "id": 78901234, "is_bot": false, "username": "Nadin" },
+                "chat": { "id": 55550000, "type": "private" },
+                "text": "YES"
+            }
+        });
+        let msg = parse_update(&update, "telegram:nadin").expect("message parses");
+        // sender is the STABLE numeric id, not the username.
+        assert_eq!(msg.sender, "78901234");
+        // username is carried alongside, lowercased and @-less.
+        assert_eq!(msg.sender_username.as_deref(), Some("nadin"));
+        // reply routing: chat and channel preserved.
+        assert_eq!(msg.chat_id.as_deref(), Some("55550000"));
+        assert_eq!(msg.channel, "telegram:nadin");
+        assert_eq!(msg.body, "YES");
+        assert_eq!(msg.action_id, None);
+    }
+
+    #[test]
+    fn parse_update_message_without_username_still_has_stable_id() {
+        // No username at all — the old parser emitted the literal "unknown",
+        // which could never match a numeric binding. Now sender is the id.
+        let update = serde_json::json!({
+            "update_id": 101,
+            "message": {
+                "message_id": 8,
+                "from": { "id": 78901234, "is_bot": false },
+                "chat": { "id": 55550000, "type": "private" },
+                "text": "yes"
+            }
+        });
+        let msg = parse_update(&update, "telegram").expect("message parses");
+        assert_eq!(msg.sender, "78901234");
+        assert_eq!(msg.sender_username, None);
+    }
+
+    #[test]
+    fn parse_update_callback_query_emits_numeric_id() {
+        let update = serde_json::json!({
+            "update_id": 102,
+            "callback_query": {
+                "id": "cb1",
+                "from": { "id": 78901234, "username": "nadin" },
+                "message": {
+                    "message_id": 9,
+                    "chat": { "id": 55550000, "type": "private" }
+                },
+                "data": "approve:my-task"
+            }
+        });
+        let msg = parse_update(&update, "telegram").expect("callback parses");
+        assert_eq!(msg.sender, "78901234");
+        assert_eq!(msg.sender_username.as_deref(), Some("nadin"));
+        assert_eq!(msg.chat_id.as_deref(), Some("55550000"));
+        assert_eq!(msg.action_id.as_deref(), Some("approve:my-task"));
+        assert_eq!(msg.body, "approve:my-task");
+    }
+
+    #[test]
+    fn parse_update_without_from_id_is_dropped() {
+        // No numeric id → nothing to authorize against → not surfaced.
+        let update = serde_json::json!({
+            "update_id": 103,
+            "message": {
+                "message_id": 10,
+                "from": { "username": "ghost" },
+                "chat": { "id": 1, "type": "private" },
+                "text": "YES"
+            }
+        });
+        assert!(parse_update(&update, "telegram").is_none());
+    }
+
+    #[test]
+    fn parse_update_ignores_unrelated_update_kinds() {
+        // e.g. an edited_message or my_chat_member update we don't handle.
+        let update = serde_json::json!({
+            "update_id": 104,
+            "edited_message": { "message_id": 11, "text": "hi" }
+        });
+        assert!(parse_update(&update, "telegram").is_none());
     }
 }

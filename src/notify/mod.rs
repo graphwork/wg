@@ -76,10 +76,24 @@ pub struct Action {
 /// An incoming message from a human.
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
-    /// Channel type that received this message.
+    /// Channel type that received this message (e.g. `"telegram"` or
+    /// `"telegram:<bot_id>"`). Identifies which bot/channel the message
+    /// arrived on so a reply can be routed back through the same one.
     pub channel: String,
-    /// Sender identifier (platform-specific).
+    /// Canonical sender identity — the stable, platform-specific id used for
+    /// authorization. For Telegram this is the numeric `from.id` (as a string),
+    /// which never changes and cannot be spoofed by a username edit. Downstream
+    /// authorization (e.g. the onboarding-handshake binding match) keys on this.
     pub sender: String,
+    /// Human-readable sender alias, when the platform provides one (Telegram
+    /// `from.username`, lowercased and without a leading `@`). Convenience only:
+    /// used for display and for matching `@handle` bindings. `None` when the
+    /// sender has no username.
+    pub sender_username: Option<String>,
+    /// Chat/room the message was received in, when known (Telegram `chat.id`,
+    /// as a string). Replies should go back to this chat via the receiving
+    /// channel. `None` when the platform does not expose it.
+    pub chat_id: Option<String>,
     /// Message body text.
     pub body: String,
     /// If the human clicked an action button, its id.
