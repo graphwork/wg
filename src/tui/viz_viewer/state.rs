@@ -4016,6 +4016,21 @@ pub struct PendingChatPtySpawn {
     pub tmux_session: Option<String>,
 }
 
+/// Immutable identity and atomic handler route for one selected chat surface.
+///
+/// The header, tab highlight, PTY lookup, and rendered terminal all key off the
+/// same coordinator id. Executor and model are captured from one authoritative
+/// metadata generation; a missing model means the selected handler's own
+/// default, never a model borrowed from unrelated global configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveChatIdentity {
+    pub coordinator_id: u32,
+    pub task_id: String,
+    pub label: String,
+    pub executor: Option<String>,
+    pub model: Option<String>,
+}
+
 /// State of the prioritized active-chat startup lane.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ChatStartupState {
@@ -7155,6 +7170,11 @@ pub struct VizApp {
     pub last_chat_input_area: Rect,
     /// The chat message history area from the last render frame (for click-to-focus).
     pub last_chat_message_area: Rect,
+    /// Pointer controls in the active-chat identity header. These live outside
+    /// the PTY hit region and are routed before terminal forwarding.
+    pub last_chat_prev_area: Rect,
+    pub last_chat_next_area: Rect,
+    pub last_chat_picker_area: Rect,
     /// The coordinator tab bar area from the last render frame (for click support).
     pub last_coordinator_bar_area: Rect,
     /// Per-tab hit areas for coordinator tab bar click testing.
@@ -7413,6 +7433,10 @@ pub struct VizApp {
     /// Prioritized active-chat metadata state, rendered independently of the
     /// full project snapshot.
     pub chat_startup_state: ChatStartupState,
+    /// Identity and route coherent with `active_coordinator_id`. This is
+    /// replaced in the same state transition as chat selection; delayed PTY
+    /// or graph results are never allowed to rewrite it for a different id.
+    pub active_chat_identity: Option<ActiveChatIdentity>,
     /// Fixed worker for tmux attach/new-session and PTY creation.
     chat_pty_engine: Option<super::chat_startup::PtyEngine>,
     /// Keystrokes accepted while an authoritative chat is connecting. Bounded
@@ -7839,6 +7863,110 @@ impl VizApp {
         Ok(app.into_bootstrap_apply())
     }
 
+    fn chat_identity_from_task(
+        coordinator_id: u32,
+        task: &worksgood::graph::Task,
+    ) -> ActiveChatIdentity {
+        let fallback_label = format!("Chat {coordinator_id}");
+        let title = task.title.trim();
+        let label =
+            if title.is_empty() || title == task.id || title.eq_ignore_ascii_case("coordinator") {
+                fallback_label
+            } else {
+                title.to_string()
+            };
+        ActiveChatIdentity {
+            coordinator_id,
+            task_id: task.id.clone(),
+            label,
+            executor: task
+                .executor_preset_name
+                .clone()
+                .or_else(|| (!task.command_argv.is_empty()).then(|| "command".to_string())),
+            model: task.model.clone(),
+        }
+    }
+
+    fn chat_identity_from_graph(&self, coordinator_id: u32) -> Option<ActiveChatIdentity> {
+        self.coherent_graph()?.tasks().find_map(|task| {
+            let task_cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                .or_else(|| (task.id == ".coordinator").then_some(0));
+            (task_cid == Some(coordinator_id)
+                && !task.tags.iter().any(|tag| tag == "archived")
+                && task
+                    .tags
+                    .iter()
+                    .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag)))
+            .then(|| Self::chat_identity_from_task(coordinator_id, task))
+        })
+    }
+
+    fn selected_chat_identity_or_placeholder(&self) -> Option<ActiveChatIdentity> {
+        let coordinator_id = self.active_coordinator_id;
+        if let Some(identity) = self
+            .active_chat_identity
+            .as_ref()
+            .filter(|identity| identity.coordinator_id == coordinator_id)
+        {
+            return Some(identity.clone());
+        }
+        if !self.active_tabs.contains(&coordinator_id) {
+            return None;
+        }
+        Some(ActiveChatIdentity {
+            coordinator_id,
+            task_id: worksgood::chat_id::format_chat_task_id(coordinator_id),
+            label: format!("Chat {coordinator_id}"),
+            executor: None,
+            model: None,
+        })
+    }
+
+    /// One immutable per-frame selection snapshot. Renderers use its task id
+    /// both for the identity header and the PTY lookup, preventing a delayed
+    /// result or rapid tab switch from producing a header/content mismatch.
+    pub fn active_chat_view_identity(&self) -> Option<ActiveChatIdentity> {
+        self.selected_chat_identity_or_placeholder()
+    }
+
+    pub fn active_chat_connection_label(&self, task_id: &str) -> &'static str {
+        match &self.chat_startup_state {
+            ChatStartupState::Loading => "loading",
+            ChatStartupState::Empty => "no selection",
+            ChatStartupState::Error(_) => "unavailable",
+            ChatStartupState::Ready if self.task_panes.contains_key(task_id) => "connected",
+            ChatStartupState::Ready
+                if self
+                    .pending_chat_pty_spawn
+                    .as_ref()
+                    .is_some_and(|pending| pending.task_id == task_id) =>
+            {
+                "connecting"
+            }
+            ChatStartupState::Ready if self.chat_pty_mode => "connecting",
+            ChatStartupState::Ready => "disconnected",
+        }
+    }
+
+    fn update_active_chat_route(&mut self, task_id: &str, executor: String, model: Option<String>) {
+        let coordinator_id = self.active_coordinator_id;
+        let mut identity = self
+            .selected_chat_identity_or_placeholder()
+            .unwrap_or_else(|| ActiveChatIdentity {
+                coordinator_id,
+                task_id: task_id.to_string(),
+                label: format!("Chat {coordinator_id}"),
+                executor: None,
+                model: None,
+            });
+        if identity.coordinator_id != coordinator_id || identity.task_id != task_id {
+            return;
+        }
+        identity.executor = Some(executor);
+        identity.model = model;
+        self.active_chat_identity = Some(identity);
+    }
+
     /// Load only the authoritative active-chat lane. This deliberately skips
     /// graph layout, stats, agent/log enrichment and persisted chat history.
     /// The resulting closure is a small state swap on the terminal thread.
@@ -7952,6 +8080,7 @@ impl VizApp {
             }
             return Ok(Box::new(|app| {
                 app.chat_startup_state = ChatStartupState::Empty;
+                app.active_chat_identity = None;
                 app.active_tabs.clear();
                 app.cached_chat_tab_entries.clear();
             }));
@@ -7974,6 +8103,7 @@ impl VizApp {
         loader.published_graph = Some(graph.clone());
         loader.active_coordinator_id = active;
         loader.active_tabs = vec![active];
+        loader.active_chat_identity = Some(Self::chat_identity_from_task(active, &task));
         loader.refresh_chat_tab_caches(&graph);
 
         let project_root = workgraph_dir
@@ -8041,6 +8171,7 @@ impl VizApp {
         let observer = loader.chat_pty_observer;
         let forwards = loader.chat_pty_forwards_stdin;
         let focused = loader.focused_panel;
+        let identity = loader.active_chat_identity;
         Ok(Box::new(move |app| {
             app.active_coordinator_id = active;
             app.active_tabs = tabs;
@@ -8053,6 +8184,7 @@ impl VizApp {
             app.focused_panel = focused;
             app.right_panel_tab = RightPanelTab::Chat;
             app.chat_startup_state = ChatStartupState::Ready;
+            app.active_chat_identity = identity;
         }))
     }
 
@@ -8138,6 +8270,9 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_chat_prev_area: Rect::default(),
+            last_chat_next_area: Rect::default(),
+            last_chat_picker_area: Rect::default(),
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
@@ -8227,6 +8362,7 @@ impl VizApp {
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
             chat_startup_state: ChatStartupState::Loading,
+            active_chat_identity: None,
             chat_pty_engine: None,
             pending_chat_keys: VecDeque::new(),
             first_chat_key_accepted: false,
@@ -8410,6 +8546,7 @@ impl VizApp {
         let cached_coordinator_id_set = std::mem::take(&mut self.cached_coordinator_id_set);
         let active_coordinator_id = self.active_coordinator_id;
         let active_tabs = std::mem::take(&mut self.active_tabs);
+        let active_chat_identity = self.active_chat_identity.take();
         self.chat.enforce_history_projection();
         let chat_messages = std::mem::take(&mut self.chat.messages);
         let chat_history = (
@@ -8489,6 +8626,7 @@ impl VizApp {
                 app.cached_coordinator_id_set = cached_coordinator_id_set;
                 app.active_coordinator_id = active_coordinator_id;
                 app.active_tabs = active_tabs;
+                app.active_chat_identity = active_chat_identity;
             }
             app.cached_user_board_entries = cached_user_board_entries;
             app.chat.messages = chat_messages;
@@ -13492,6 +13630,9 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_chat_prev_area: Rect::default(),
+            last_chat_next_area: Rect::default(),
+            last_chat_picker_area: Rect::default(),
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
@@ -13580,6 +13721,7 @@ impl VizApp {
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
             chat_startup_state: ChatStartupState::Ready,
+            active_chat_identity: None,
             chat_pty_engine: None,
             pending_chat_keys: VecDeque::new(),
             first_chat_key_accepted: false,
@@ -16672,6 +16814,13 @@ impl VizApp {
     /// focus surface that the chat tab renderer and key router consult.
     fn focus_newly_created_chat(&mut self, cid: u32) {
         self.chat_startup_state = ChatStartupState::Ready;
+        self.active_chat_identity = Some(ActiveChatIdentity {
+            coordinator_id: cid,
+            task_id: worksgood::chat_id::format_chat_task_id(cid),
+            label: format!("Chat {cid}"),
+            executor: None,
+            model: None,
+        });
         self.pending_new_chat_focus = Some(cid);
         self.closed_tabs.remove(&cid);
         if !self.active_tabs.contains(&cid) {
@@ -16688,9 +16837,32 @@ impl VizApp {
         self.rebuild_active_tab_entries_from_cache();
     }
 
-    /// Switch to a different coordinator session.
-    /// Saves the current chat state to the coordinator_chats map and loads the target.
+    /// Switch to a live coordinator session and attach/start its PTY when
+    /// authoritative metadata permits.
     pub fn switch_coordinator(&mut self, target_id: u32) {
+        self.switch_coordinator_with_pty(target_id, true);
+    }
+
+    /// Open a terminal/abandoned chat as history only. This deliberately does
+    /// not reattach or spawn a handler.
+    pub fn switch_coordinator_history(&mut self, target_id: u32) {
+        self.switch_coordinator_with_pty(target_id, false);
+    }
+
+    pub fn chat_is_live(&self, coordinator_id: u32) -> bool {
+        self.coherent_graph().is_some_and(|graph| {
+            graph.tasks().any(|task| {
+                let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                    .or_else(|| (task.id == ".coordinator").then_some(0));
+                cid == Some(coordinator_id)
+                    && !task.status.is_terminal()
+                    && !task.tags.iter().any(|tag| tag == "archived")
+            })
+        })
+    }
+
+    /// Saves the current chat state to the coordinator_chats map and loads the target.
+    fn switch_coordinator_with_pty(&mut self, target_id: u32, allow_pty: bool) {
         if self
             .pending_new_chat_focus
             .is_some_and(|pending| pending != target_id)
@@ -16698,6 +16870,18 @@ impl VizApp {
             self.pending_new_chat_focus = None;
         }
         if target_id == self.active_coordinator_id {
+            if !allow_pty {
+                self.pending_chat_pty_spawn = None;
+                self.chat_pty_mode = false;
+                self.chat_pty_forwards_stdin = false;
+            }
+            if self
+                .active_chat_identity
+                .as_ref()
+                .is_none_or(|identity| identity.coordinator_id != target_id)
+            {
+                self.active_chat_identity = self.chat_identity_from_graph(target_id);
+            }
             return;
         }
         // Save dismissed flag into the outgoing chat state
@@ -16726,16 +16910,32 @@ impl VizApp {
         self.chat_input_dismissed = self.chat.chat_input_dismissed;
 
         self.active_coordinator_id = target_id;
+        self.active_chat_identity = self.chat_identity_from_graph(target_id).or_else(|| {
+            Some(ActiveChatIdentity {
+                coordinator_id: target_id,
+                task_id: worksgood::chat_id::format_chat_task_id(target_id),
+                label: format!("Chat {target_id}"),
+                executor: None,
+                model: None,
+            })
+        });
         self.chat_startup_state = ChatStartupState::Ready;
         self.persist_tab_state();
         if needs_history_snapshot {
             self.request_initial_chat_history();
         }
 
-        // Auto-enter PTY mode when switching to a native-executor
-        // coordinator (Step 1 of nex-as-everything). Harmless no-op for
-        // claude/codex coordinators — those keep the file-tailing path.
-        self.maybe_auto_enable_chat_pty();
+        if allow_pty {
+            // Route resolution/spawn is permitted only for an authoritative
+            // live task. Picker/history selection of terminal chats uses the
+            // other branch and cannot resurrect a handler.
+            self.maybe_auto_enable_chat_pty();
+        } else {
+            self.pending_chat_pty_spawn = None;
+            self.chat_pty_mode = false;
+            self.chat_pty_forwards_stdin = false;
+            self.focused_panel = FocusedPanel::RightPanel;
+        }
 
         // Sync: highlight the corresponding coordinator task in the graph.
         let coord_task_id = if target_id == 0 {
@@ -16842,6 +17042,7 @@ impl VizApp {
             self.active_coordinator_id,
             chat_task.as_ref(),
         );
+        self.update_active_chat_route(&task_id, executor.clone(), chat_model.clone());
         let chat_endpoint = crate::commands::service::CoordinatorState::load_for(
             &self.workgraph_dir,
             self.active_coordinator_id,
@@ -18036,48 +18237,46 @@ impl VizApp {
 
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
-        let graph = self.coherent_graph();
-
-        let ids_and_labels = self.list_coordinator_ids_and_labels();
-        let mut entries: Vec<(u32, String, String, bool)> = Vec::new();
-
-        for (cid, label) in &ids_and_labels {
-            // Prefer .chat-N (new), fall back to .coordinator-N or bare .coordinator (legacy)
-            let task_id = if let Some(ref g) = graph {
-                let new_id = worksgood::chat_id::format_chat_task_id(*cid);
-                if g.get_task(&new_id).is_some() {
-                    new_id
-                } else if *cid == 0 && g.get_task(".coordinator").is_some() {
-                    ".coordinator".to_string()
-                } else {
-                    format!(".coordinator-{}", cid)
-                }
-            } else if *cid == 0 {
-                ".coordinator".to_string()
-            } else {
-                worksgood::chat_id::format_chat_task_id(*cid)
-            };
-
-            let (status_desc, is_alive) = if let Some(ref g) = graph {
-                if let Some(task) = g.get_task(&task_id) {
-                    let alive = matches!(task.status, Status::InProgress);
-                    let status_str = format!("{:?}", task.status).to_lowercase();
-                    let name = task.title.clone();
-                    let desc = if name != task_id {
-                        format!("{} ({})", name, status_str)
-                    } else {
-                        status_str
-                    };
-                    (desc, alive)
-                } else {
-                    ("no task".to_string(), false)
-                }
-            } else {
-                ("unknown".to_string(), false)
-            };
-
-            entries.push((*cid, label.clone(), status_desc, is_alive));
-        }
+        let mut entries: Vec<(u32, String, String, bool)> = self
+            .coherent_graph()
+            .map(|graph| {
+                graph
+                    .tasks()
+                    .filter(|task| {
+                        task.tags
+                            .iter()
+                            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+                            && !task.tags.iter().any(|tag| tag == "archived")
+                    })
+                    .filter_map(|task| {
+                        let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                            .or_else(|| (task.id == ".coordinator").then_some(0))?;
+                        let alive = !task.status.is_terminal();
+                        let status = format!("{:?}", task.status).to_lowercase();
+                        let recency = task
+                            .last_interaction_at
+                            .as_deref()
+                            .or(task.completed_at.as_deref())
+                            .or(task.started_at.as_deref())
+                            .unwrap_or("unknown");
+                        let route = match (&task.executor_preset_name, &task.model) {
+                            (Some(executor), Some(model)) => format!("{executor}/{model}"),
+                            (Some(executor), None) => executor.clone(),
+                            (None, Some(model)) => model.clone(),
+                            (None, None) if !task.command_argv.is_empty() => "command".to_string(),
+                            _ => "route unknown".to_string(),
+                        };
+                        Some((
+                            cid,
+                            task.id.clone(),
+                            format!("{} • {status} • {recency} • {route}", task.title),
+                            alive,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort_by_key(|(cid, _, _, _)| *cid);
 
         let current_idx = entries
             .iter()
@@ -18596,6 +18795,23 @@ impl VizApp {
             .collect()
     }
 
+    /// Cycle the selected live chat. Pointer and command-mode key paths share
+    /// this transition so header/highlight/PTY selection update atomically.
+    pub fn cycle_active_chat(&mut self, delta: i32) {
+        let ids = self.active_tabs.clone();
+        if ids.len() < 2 {
+            return;
+        }
+        let pos = ids
+            .iter()
+            .position(|id| *id == self.active_coordinator_id)
+            .unwrap_or(0) as i32;
+        let next = (pos + delta).rem_euclid(ids.len() as i32) as usize;
+        self.switch_coordinator(ids[next]);
+        self.right_panel_tab = RightPanelTab::Chat;
+        self.right_panel_visible = true;
+    }
+
     /// Scroll the chat tab bar by `delta` entries (positive = right, negative
     /// = left). Used by the click handlers on the ◀/▶ overflow arrows. The
     /// renderer clamps the offset and may re-adjust if the active tab is no
@@ -18696,6 +18912,13 @@ impl VizApp {
         // `.coordinator-N` ids keep their muted-gray treatment in the tab bar.
         self.cached_coordinator_id_set = current;
         self.rebuild_active_tab_entries_from_cache();
+        if self
+            .active_chat_identity
+            .as_ref()
+            .is_none_or(|identity| identity.coordinator_id != self.active_coordinator_id)
+        {
+            self.active_chat_identity = self.chat_identity_from_graph(self.active_coordinator_id);
+        }
 
         self.retry_chat_startup_if_authoritative_chat_appeared();
     }
@@ -18712,8 +18935,14 @@ impl VizApp {
             if let Some(&next) = self.active_tabs.first() {
                 self.switch_coordinator(next);
             } else {
-                // No tabs left — set to 0 (empty/welcome state)
+                // Detach the tab without killing/abandoning its process. With
+                // no canonical selection, PTY input must stop and the empty
+                // state must say so explicitly rather than showing chat-0.
                 self.active_coordinator_id = 0;
+                self.active_chat_identity = None;
+                self.chat_startup_state = ChatStartupState::Empty;
+                self.chat_pty_mode = false;
+                self.chat_pty_forwards_stdin = false;
             }
         }
         self.rebuild_active_tab_entries_from_cache();
@@ -32589,6 +32818,17 @@ mod prioritized_chat_startup_tests {
         let apply = VizApp::load_chat_startup(dir.clone()).unwrap();
         let mut app = VizApp::new(dir, VizOptions::default(), Some(false), None, true);
         apply(&mut app);
+        let identity = app
+            .active_chat_view_identity()
+            .expect("selected Pi identity");
+        assert_eq!(identity.coordinator_id, 0);
+        assert_eq!(identity.task_id, ".chat-0");
+        assert_eq!(identity.executor.as_deref(), Some("pi"));
+        assert_eq!(
+            identity.model.as_deref(),
+            Some("pi:openrouter:z-ai/glm-5.2")
+        );
+
         let pending = app.pending_chat_pty_spawn.expect("Pi plan");
         assert_eq!(pending.executor, "pi");
         assert_eq!(pending.bin, "pi");

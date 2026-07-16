@@ -263,10 +263,21 @@ fn worker_loop(
     }
 }
 
-/// Test-only latency injection for the real PTY path.  It runs exclusively on
-/// the bootstrap storage worker and therefore exercises the first-frame/input
-/// guarantee without sleeping the terminal thread.
+/// Test-only pathological storage injection for the real PTY path. It runs
+/// exclusively on the bootstrap storage worker and therefore exercises the
+/// first-frame/input guarantee without blocking the terminal thread.
+///
+/// `WG_TUI_TEST_STORAGE_STALL_PATH` may name a FIFO inside the project. The
+/// worker performs a real blocking filesystem read until the fixture closes
+/// its writer; this is intentionally distinct from the bounded latency shim.
 pub fn inject_test_storage_latency() {
+    if let Some(path) = std::env::var_os("WG_TUI_TEST_STORAGE_STALL_PATH") {
+        let _ = std::fs::File::open(path).and_then(|mut file| {
+            use std::io::Read as _;
+            let mut sink = Vec::new();
+            file.read_to_end(&mut sink).map(|_| ())
+        });
+    }
     let delay = std::env::var("WG_TUI_TEST_STORAGE_LATENCY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
