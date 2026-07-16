@@ -29,23 +29,35 @@
 //!   `grep`. These are the read-only "does the deliverable exist?" checks from
 //!   `docs/13` §3. Anything else (`cargo`, `rm`, `curl`, a bare prose bullet…)
 //!   is **skipped, never run**.
-//! * **Segments are vetted individually.** A line is split on `&&`, `||`, `|`,
-//!   and `;`; each segment's head must be allowlisted. One non-allowlisted
-//!   segment disqualifies the whole line.
-//! * **No filesystem-mutating shell metacharacters.** Any line containing a
-//!   redirection (`>`, `<`, `>>`) or a backtick is skipped outright — the
-//!   allowlisted commands never need them, and they are the classic write /
-//!   command-substitution escape hatches.
-//! * **Command substitution (`$(...)`) is skipped.** We only execute lines we
-//!   can fully vet; `$(...)` can smuggle a non-allowlisted command past a
-//!   segment-head check, so any line containing it is not run.
+//! * **Argument-aware parsing, not head-matching.** A line is tokenized with a
+//!   quote-aware parser ([`parse_line`]) that recognizes exactly four control
+//!   operators — `&&`, `||`, `|`, `;` — and REJECTS every other shell
+//!   metacharacter: a lone `&` (background), `<`/`>` (redirection), `(`/`)`
+//!   (subshell), a backtick or `$` (command / variable substitution), a `\`
+//!   escape, and newlines. Because we spawn the parsed `argv` *directly* (never
+//!   through `sh -c`), there is no shell re-parse that could resurrect a
+//!   rejected operator — closing the "`test -f x & <cmd>`" background escape.
+//! * **Per-command option validation.** Each command's head AND its options are
+//!   checked ([`validate_argv`]): `git ls-remote`'s `--upload-pack=<program>` /
+//!   `-u` (which make git *execute* a program) and other protocol-escape
+//!   options are refused, and only a small read-only option set is accepted.
+//!   Head allowlisting alone is not enough — `git ls-remote` is not intrinsically
+//!   read-only.
+//! * **Direct spawning + process-group timeout.** Every command is spawned in
+//!   its OWN process group (Unix `setsid`); a per-line deadline kills and reaps
+//!   the WHOLE group — leader plus any pipeline members / descendants — so a
+//!   hung check cannot leak a surviving child that keeps inherited pipes open.
 //! * **Skip is safe; only run-and-fail fails a task.** A line we refuse to run
 //!   never forces a failure — it simply is not machine-verified. A task is
 //!   forced to FAIL only when an allowlisted command actually *ran* and exited
-//!   non-zero. This bias means the evaluator can never fail a task because it
-//!   declined to execute something.
+//!   non-zero (a timeout counts as a run-and-fail). This bias means the
+//!   evaluator can never fail a task because it declined to execute something.
 
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Command heads the evaluator is permitted to execute. These are all
 /// read-only existence checks — none of them mutate the repo or the remote.
@@ -53,10 +65,6 @@ use std::path::Path;
 /// *subcommand* so a bare `git` / `gh` (which could push, delete, merge…) is
 /// never allowed.
 pub const ALLOWLIST: &[&str] = &["git ls-remote", "gh pr view", "gh pr list", "test", "grep"];
-
-/// Characters that, if present anywhere in a candidate line, disqualify it from
-/// execution. Redirections can write files; backticks are command substitution.
-const FORBIDDEN_CHARS: &[char] = &['>', '<', '`'];
 
 /// Default per-command validation timeout, in seconds. A single existence check
 /// (`git ls-remote`, `gh pr view/list`, `test`, `grep`) should finish in well
@@ -279,27 +287,347 @@ fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Is this whole command line safe to execute under the sandbox rules? Every
-/// pipeline/`&&`/`;` segment head must be allowlisted, there must be no
-/// forbidden character, and no `$(...)` command substitution.
+/// Is this whole command line safe to execute under the sandbox rules?
+///
+/// The line is tokenized with an argument-aware, quote-aware parser
+/// ([`parse_line`]) that understands exactly four control operators — `&&`,
+/// `||`, `|`, `;` — and REJECTS every other shell metacharacter: a lone `&`
+/// (background), `<`/`>` (redirection), `(`/`)` (subshell), a backtick / `$`
+/// (command & variable substitution), a `\` escape, and newlines. Each
+/// resulting `argv` must then pass [`validate_argv`], which pins the command
+/// head to the allowlist AND enforces a per-command option policy (e.g. the
+/// `git ls-remote --upload-pack=<program>` exec escape is refused). Because the
+/// vetted argv is exactly what [`run_sandboxed`] spawns — directly, never
+/// through `sh -c` — there is no shell re-parse that could resurrect a rejected
+/// operator or option.
 pub fn is_executable(cmd: &str) -> Result<(), String> {
-    if cmd.chars().any(|c| FORBIDDEN_CHARS.contains(&c)) {
-        return Err("contains a redirection or backtick".to_string());
-    }
-    if cmd.contains("$(") {
-        return Err("contains command substitution $(...)".to_string());
-    }
-    // Split on shell control operators and vet each segment head.
-    for segment in split_segments(cmd) {
-        let seg = segment.trim();
-        if seg.is_empty() {
-            continue;
-        }
-        if !passes_segment_signature(seg) {
-            return Err(format!("segment not allowlisted: `{}`", seg));
+    let stages = parse_line(cmd)?;
+    for stage in &stages {
+        for argv in &stage.pipeline {
+            validate_argv(argv)?;
         }
     }
     Ok(())
+}
+
+/// One control operator connecting a pipeline to the PREVIOUS pipeline in a
+/// line. `First` marks the leading pipeline (no predecessor).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Conn {
+    First,
+    And,  // &&
+    Or,   // ||
+    Semi, // ;
+}
+
+/// A pipeline (`cmd | cmd | …`) plus the operator that joins it to the previous
+/// stage. Each inner `Vec<String>` is one command's fully-tokenized argv.
+#[derive(Debug, Clone)]
+struct Stage {
+    pipeline: Vec<Vec<String>>,
+    conn: Conn,
+}
+
+/// Lexical token: a shell word (quotes resolved) or a supported operator.
+#[derive(Debug, PartialEq)]
+enum Tok {
+    Word(String),
+    And,
+    Or,
+    Pipe,
+    Semi,
+}
+
+/// Tokenize `line` into words and the four supported operators, honoring single
+/// and double quotes. ANY other shell metacharacter is a hard error — this is
+/// the parity guarantee that makes direct spawning safe: the tokens we vet are
+/// exactly what will be spawned, so nothing can be smuggled past into `sh`.
+fn tokenize(line: &str) -> Result<Vec<Tok>, String> {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+    let mut toks: Vec<Tok> = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+
+    while i < n {
+        let c = chars[i];
+        match c {
+            ' ' | '\t' => {
+                if in_word {
+                    toks.push(Tok::Word(std::mem::take(&mut cur)));
+                    in_word = false;
+                }
+                i += 1;
+            }
+            '\n' | '\r' => return Err("line contains a newline".to_string()),
+            '\'' => {
+                // Single quotes: everything literal until the closing quote.
+                in_word = true;
+                i += 1;
+                let mut closed = false;
+                while i < n {
+                    if chars[i] == '\'' {
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                    cur.push(chars[i]);
+                    i += 1;
+                }
+                if !closed {
+                    return Err("unterminated single quote".to_string());
+                }
+            }
+            '"' => {
+                // Double quotes: literal, but `$`/backtick/`\` would be special
+                // to a shell, so refuse them even here (defense in depth).
+                in_word = true;
+                i += 1;
+                let mut closed = false;
+                while i < n {
+                    match chars[i] {
+                        '"' => {
+                            closed = true;
+                            i += 1;
+                            break;
+                        }
+                        '`' => {
+                            return Err("contains a backtick (command substitution)".to_string());
+                        }
+                        '$' => {
+                            return Err("contains `$` (variable/command substitution)".to_string());
+                        }
+                        '\\' => return Err("contains a backslash escape".to_string()),
+                        d => {
+                            cur.push(d);
+                            i += 1;
+                        }
+                    }
+                }
+                if !closed {
+                    return Err("unterminated double quote".to_string());
+                }
+            }
+            '&' => {
+                if in_word {
+                    toks.push(Tok::Word(std::mem::take(&mut cur)));
+                    in_word = false;
+                }
+                if i + 1 < n && chars[i + 1] == '&' {
+                    toks.push(Tok::And);
+                    i += 2;
+                } else {
+                    return Err(
+                        "contains a lone `&` (background execution is not supported)".to_string(),
+                    );
+                }
+            }
+            '|' => {
+                if in_word {
+                    toks.push(Tok::Word(std::mem::take(&mut cur)));
+                    in_word = false;
+                }
+                if i + 1 < n && chars[i + 1] == '|' {
+                    toks.push(Tok::Or);
+                    i += 2;
+                } else {
+                    toks.push(Tok::Pipe);
+                    i += 1;
+                }
+            }
+            ';' => {
+                if in_word {
+                    toks.push(Tok::Word(std::mem::take(&mut cur)));
+                    in_word = false;
+                }
+                toks.push(Tok::Semi);
+                i += 1;
+            }
+            '<' | '>' => return Err("contains a redirection (`<`/`>`)".to_string()),
+            '(' | ')' => return Err("contains a subshell parenthesis".to_string()),
+            '`' => return Err("contains a backtick (command substitution)".to_string()),
+            '$' => return Err("contains `$` (variable/command substitution)".to_string()),
+            '\\' => return Err("contains a backslash escape".to_string()),
+            '{' | '}' => return Err("contains a brace (expansion)".to_string()),
+            _ => {
+                in_word = true;
+                cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    if in_word {
+        toks.push(Tok::Word(cur));
+    }
+    Ok(toks)
+}
+
+/// Parse a command line into ordered [`Stage`]s (pipelines joined by `&&` /
+/// `||` / `;`). Rejects empty segments and leading/trailing operators.
+fn parse_line(line: &str) -> Result<Vec<Stage>, String> {
+    let toks = tokenize(line)?;
+    let mut stages: Vec<Stage> = Vec::new();
+    let mut pipeline: Vec<Vec<String>> = Vec::new();
+    let mut simple: Vec<String> = Vec::new();
+    let mut conn = Conn::First;
+
+    for t in toks {
+        match t {
+            Tok::Word(w) => simple.push(w),
+            Tok::Pipe => {
+                if simple.is_empty() {
+                    return Err("`|` with no preceding command".to_string());
+                }
+                pipeline.push(std::mem::take(&mut simple));
+            }
+            Tok::And | Tok::Or | Tok::Semi => {
+                if simple.is_empty() {
+                    return Err("control operator with no preceding command".to_string());
+                }
+                pipeline.push(std::mem::take(&mut simple));
+                stages.push(Stage {
+                    pipeline: std::mem::take(&mut pipeline),
+                    conn,
+                });
+                conn = match t {
+                    Tok::And => Conn::And,
+                    Tok::Or => Conn::Or,
+                    _ => Conn::Semi,
+                };
+            }
+        }
+    }
+    if simple.is_empty() {
+        if stages.is_empty() && pipeline.is_empty() {
+            return Err("no command".to_string());
+        }
+        return Err("trailing control or pipe operator".to_string());
+    }
+    pipeline.push(simple);
+    stages.push(Stage { pipeline, conn });
+    Ok(stages)
+}
+
+/// Validate one command's argv: the head must be allowlisted, and its options
+/// must satisfy that command's per-command policy. This is where the
+/// `git ls-remote --upload-pack=<program>` exec escape is refused.
+fn validate_argv(argv: &[String]) -> Result<(), String> {
+    let head = argv.first().map(|s| s.as_str()).unwrap_or("");
+    match head {
+        "git" => {
+            if argv.get(1).map(|s| s.as_str()) != Some("ls-remote") {
+                return Err(format!(
+                    "git subcommand not allowlisted: `{}`",
+                    argv.get(1).cloned().unwrap_or_default()
+                ));
+            }
+            validate_git_ls_remote(&argv[2..])
+        }
+        "gh" => {
+            if argv.get(1).map(|s| s.as_str()) != Some("pr") {
+                return Err("only `gh pr view` / `gh pr list` are allowlisted".to_string());
+            }
+            match argv.get(2).map(|s| s.as_str()) {
+                Some("view") | Some("list") => validate_gh_pr(&argv[3..]),
+                other => Err(format!(
+                    "gh pr subcommand not allowlisted: `{}`",
+                    other.unwrap_or_default()
+                )),
+            }
+        }
+        "test" => validate_test(&argv[1..]),
+        "grep" => validate_grep(&argv[1..]),
+        other => Err(format!("command not allowlisted: `{}`", other)),
+    }
+}
+
+/// `git ls-remote` option policy. `--upload-pack` / `-u` hand git a program to
+/// EXECUTE (the escape Erik reproduced); `-o` / `--server-option` and
+/// `--receive-pack` are likewise protocol/exec vectors. Everything is refused
+/// unless it is on a small read-only allowlist, so an unknown option is skipped
+/// (safe) rather than forwarded to git. Non-`-` tokens are positional
+/// (repository URL / ref patterns) and pass through.
+fn validate_git_ls_remote(rest: &[String]) -> Result<(), String> {
+    const EXEC_OPTS: &[&str] = &[
+        "-u",
+        "--upload-pack",
+        "--exec",
+        "-o",
+        "--server-option",
+        "--receive-pack",
+    ];
+    const ALLOWED: &[&str] = &[
+        "--exit-code",
+        "-q",
+        "--quiet",
+        "-h",
+        "--heads",
+        "-t",
+        "--tags",
+        "--refs",
+        "--get-url",
+        "--symref",
+        "--sort",
+        "--",
+    ];
+    for arg in rest {
+        if !arg.starts_with('-') {
+            continue; // positional: repository URL / ref patterns
+        }
+        // Normalize `--flag=value` to `--flag` for matching.
+        let flag = arg.split('=').next().unwrap_or(arg.as_str());
+        if EXEC_OPTS.contains(&flag) {
+            return Err(format!(
+                "git ls-remote option `{}` can execute a program / escape the read-only contract",
+                flag
+            ));
+        }
+        if !ALLOWED.contains(&flag) {
+            return Err(format!(
+                "git ls-remote option `{}` is not on the read-only allowlist",
+                flag
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `gh pr view` / `gh pr list` option policy. These read-only subcommands take
+/// no program-executing options; we still hard-deny any `--upload-pack`-style
+/// exec flag defensively and otherwise accept the subcommand's own flags.
+fn validate_gh_pr(rest: &[String]) -> Result<(), String> {
+    for arg in rest {
+        if !arg.starts_with('-') {
+            continue;
+        }
+        let flag = arg.split('=').next().unwrap_or(arg.as_str());
+        if matches!(flag, "--upload-pack" | "--exec" | "--receive-pack") {
+            return Err(format!("gh option `{}` is not permitted", flag));
+        }
+    }
+    Ok(())
+}
+
+/// `test` needs a `-f`/`-e`/… file-test flag or a `=` / `!=` comparison; bare
+/// prose ("test the endpoint") never matches.
+fn validate_test(rest: &[String]) -> Result<(), String> {
+    let has_flag = rest.first().map(|a| a.starts_with('-')).unwrap_or(false);
+    let has_cmp = rest.iter().any(|a| a == "=" || a == "!=");
+    if has_flag || has_cmp {
+        Ok(())
+    } else {
+        Err("`test` needs a `-f`/`-e` flag or a `=`/`!=` comparison".to_string())
+    }
+}
+
+/// `grep` needs a leading flag (`-q`, `-r`, …); "grep the logs" prose does not.
+fn validate_grep(rest: &[String]) -> Result<(), String> {
+    if rest.first().map(|a| a.starts_with('-')).unwrap_or(false) {
+        Ok(())
+    } else {
+        Err("`grep` needs a flag (real invocations pass `-q`/`-r`…)".to_string())
+    }
 }
 
 /// Split a command line into segments on `&&`, `||`, `|`, `;`.
@@ -400,64 +728,310 @@ pub fn execute_validation_commands_with_timeout(
     outcome
 }
 
-/// Outcome of actually executing one vetted command.
+/// Outcome of actually executing one vetted command line.
 struct RunResult {
     exit_code: Option<i32>,
     passed: bool,
     timed_out: bool,
+    /// Process-group ids (Unix) / root child pids (Windows) that were spawned
+    /// for this line. Exposed so tests can prove that, after a timeout, the
+    /// whole spawned tree has been reaped (no lingering pid). Only read by the
+    /// descendant-cleanup regression, so it is dead outside `cfg(test)`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    group_ids: Vec<i32>,
 }
 
-/// Run one vetted command via `sh -c` in `cwd`, under a `timeout_secs` deadline.
-/// The line has already been proven to contain only allowlisted commands and no
-/// forbidden metacharacters, so `sh -c` only ever sees read-only checks.
-///
-/// The deadline is enforced with [`crate::platform_timeout`] — the same
-/// cross-platform `timeout(1)`-replacement the rest of workgraph shells out
-/// through (PR #52), dogfooded here. On Unix that wraps the command in
-/// `timeout <secs>s`, which exits **124** when it has to kill a runaway; on
-/// Windows a background thread `taskkill`s the tree at the deadline. Either way
-/// a command that overruns is reported as `timed_out` (a failure), so a hung
-/// `gh`/`git`/`grep` can never stall evaluation.
-fn run_sandboxed(cmd: &str, cwd: &Path, timeout_secs: u64) -> RunResult {
-    let spawned = crate::platform_timeout::spawn_with_timeout(
-        "sh",
-        |c| c.arg("-c").arg(cmd).current_dir(cwd),
-        timeout_secs,
-    );
-    let (child, _killer) = match spawned {
-        Ok(pair) => pair,
-        // If we cannot even spawn the check, treat it as not-passed rather than
-        // a timeout so infrastructure gaps don't masquerade as hangs.
-        Err(_) => {
-            return RunResult {
-                exit_code: None,
-                passed: false,
-                timed_out: false,
-            };
-        }
-    };
-    let start = std::time::Instant::now();
-    match child.wait_with_output() {
-        Ok(out) => {
-            let code = out.status.code();
-            let elapsed = start.elapsed();
-            // `timeout(1)` reports 124 on kill (Unix). On Windows the kill-thread
-            // terminates the child, so fall back to: ran to the full deadline and
-            // did not succeed. Either signal ⇒ timed out.
-            let timed_out = code == Some(124)
-                || (!out.status.success() && elapsed.as_secs_f64() >= timeout_secs as f64);
-            RunResult {
-                exit_code: code,
-                passed: out.status.success() && !timed_out,
-                timed_out,
-            }
-        }
-        Err(_) => RunResult {
+impl RunResult {
+    /// A line we could not spawn / vet: not a pass, not a timeout, no group.
+    fn not_run() -> Self {
+        RunResult {
             exit_code: None,
             passed: false,
             timed_out: false,
-        },
+            group_ids: Vec::new(),
+        }
     }
+}
+
+/// Execute one already-extracted validation command line in `cwd`, under a
+/// `timeout_secs` deadline.
+///
+/// The line is re-validated here (defense in depth) and then run by SPAWNING
+/// EACH command directly — never through `sh -c`, so no shell can re-parse a
+/// rejected operator. Every spawned command runs in its OWN process group
+/// (Unix `setsid`), so a hang is terminated by signalling the ENTIRE group
+/// (leader plus any pipeline members / descendants), not just the immediate
+/// child — the descendant-cleanup guarantee Erik required. Timeout completion
+/// is explicit: a dedicated watchdog sets a flag when — and only when — it
+/// actually kills the tree, so `timed_out` is deterministic rather than
+/// inferred from elapsed time.
+fn run_sandboxed(cmd: &str, cwd: &Path, timeout_secs: u64) -> RunResult {
+    let stages = match parse_line(cmd) {
+        Ok(s) => s,
+        Err(_) => return RunResult::not_run(),
+    };
+    for stage in &stages {
+        for argv in &stage.pipeline {
+            if validate_argv(argv).is_err() {
+                return RunResult::not_run();
+            }
+        }
+    }
+    run_stages(&stages, cwd, timeout_secs.max(1))
+}
+
+/// Run the parsed stages with short-circuit `&&` / `||` / `;` semantics under a
+/// single wall-clock deadline shared across the whole line.
+fn run_stages(stages: &[Stage], cwd: &Path, timeout_secs: u64) -> RunResult {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut last_ok = true;
+    let mut last_code: Option<i32> = None;
+    let mut group_ids: Vec<i32> = Vec::new();
+    let mut any_ran = false;
+
+    for stage in stages {
+        let should_run = match stage.conn {
+            Conn::First | Conn::Semi => true,
+            Conn::And => last_ok,
+            Conn::Or => !last_ok,
+        };
+        if !should_run {
+            continue;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return RunResult {
+                exit_code: Some(124),
+                passed: false,
+                timed_out: true,
+                group_ids,
+            };
+        }
+        let pr = run_pipeline(&stage.pipeline, cwd, remaining);
+        group_ids.extend(pr.group_ids.iter().copied());
+        any_ran = true;
+        if pr.timed_out {
+            return RunResult {
+                exit_code: Some(124),
+                passed: false,
+                timed_out: true,
+                group_ids,
+            };
+        }
+        last_code = pr.exit_code;
+        last_ok = pr.exit_code == Some(0);
+    }
+
+    if !any_ran {
+        return RunResult::not_run();
+    }
+    RunResult {
+        exit_code: last_code,
+        passed: last_ok,
+        timed_out: false,
+        group_ids,
+    }
+}
+
+/// Outcome of running one pipeline (`a | b | …`).
+struct PipeResult {
+    exit_code: Option<i32>,
+    timed_out: bool,
+    group_ids: Vec<i32>,
+}
+
+/// Spawn one pipeline directly (no shell), each command in its own process
+/// group, wired stdout→stdin. A watchdog thread SIGKILLs every group at the
+/// deadline; all direct children are reaped, and on timeout we wait for each
+/// group to fully disappear so no descendant lingers.
+fn run_pipeline(argvs: &[Vec<String>], cwd: &Path, budget: Duration) -> PipeResult {
+    let n = argvs.len();
+    let mut children: Vec<Child> = Vec::new();
+    let mut group_ids: Vec<i32> = Vec::new();
+    let mut prev_stdout: Option<std::process::ChildStdout> = None;
+
+    for (idx, argv) in argvs.iter().enumerate() {
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        cmd.current_dir(cwd);
+        match prev_stdout.take() {
+            Some(out) => {
+                cmd.stdin(Stdio::from(out));
+            }
+            None => {
+                cmd.stdin(Stdio::null());
+            }
+        }
+        if idx + 1 < n {
+            cmd.stdout(Stdio::piped());
+        } else {
+            // We only care about the exit status of a validation check, not its
+            // output. Discarding stdout also keeps the evaluator log clean.
+            cmd.stdout(Stdio::null());
+        }
+        cmd.stderr(Stdio::null());
+        set_own_process_group(&mut cmd);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => {
+                // Kill/reap whatever already started, then report not-run.
+                for g in &group_ids {
+                    kill_group(*g);
+                }
+                for mut c in children {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                return PipeResult {
+                    exit_code: None,
+                    timed_out: false,
+                    group_ids: Vec::new(),
+                };
+            }
+        };
+        prev_stdout = child.stdout.take();
+        group_ids.push(child.id() as i32);
+        children.push(child);
+    }
+
+    // Arm the watchdog. It fires exactly once, only if the pipeline is still
+    // running at the deadline, and records that fact so timeout is deterministic.
+    let done = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicBool::new(false));
+    let watch = {
+        let done = Arc::clone(&done);
+        let fired = Arc::clone(&fired);
+        let groups = group_ids.clone();
+        std::thread::spawn(move || {
+            let step = Duration::from_millis(25);
+            let mut waited = Duration::ZERO;
+            while waited < budget {
+                if done.load(Ordering::Acquire) {
+                    return;
+                }
+                std::thread::sleep(step);
+                waited += step;
+            }
+            if done.load(Ordering::Acquire) {
+                return;
+            }
+            fired.store(true, Ordering::Release);
+            for g in &groups {
+                kill_group(*g);
+            }
+        })
+    };
+
+    // Reap every direct child (waiting on all avoids zombies). The pipeline's
+    // exit status is the LAST command's.
+    let mut last_code: Option<i32> = None;
+    for (i, mut child) in children.into_iter().enumerate() {
+        if let Ok(status) = child.wait() {
+            if i + 1 == n {
+                last_code = status.code();
+            }
+        }
+    }
+    done.store(true, Ordering::Release);
+    let _ = watch.join();
+    let timed_out = fired.load(Ordering::Acquire);
+
+    if timed_out {
+        // Grandchildren killed via SIGKILL reparent to init and are reaped
+        // asynchronously; wait briefly to confirm each group is truly gone.
+        for g in &group_ids {
+            wait_group_gone(*g, Duration::from_secs(2));
+        }
+    }
+
+    PipeResult {
+        exit_code: if timed_out { Some(124) } else { last_code },
+        timed_out,
+        group_ids,
+    }
+}
+
+/// Put a to-be-spawned command in its own process group so the whole subtree
+/// can be signalled with a single group kill.
+#[cfg(unix)]
+fn set_own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `pre_exec` runs in the forked child before `execvp`. `setsid`
+    // (and the `setpgid` fallback) only rearrange process-group membership and
+    // report errors via errno; they allocate nothing and touch no shared state,
+    // so they are safe to call here. See memory bg-job-pid-macos-setsid — macOS
+    // ships no `setsid` binary, so we call `libc::setsid()` directly rather than
+    // shelling out.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                // Already a group leader (rare) → make a new group in-session.
+                let _ = libc::setpgid(0, 0);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn set_own_process_group(_cmd: &mut Command) {
+    // No cheap per-process job object here; `kill_group` uses `taskkill /T` to
+    // walk and terminate the child's whole tree by pid instead.
+}
+
+/// Best-effort SIGKILL of an entire process group (Unix) / process tree
+/// (Windows). Errors are ignored — the group may already be gone.
+#[cfg(unix)]
+fn kill_group(group_id: i32) {
+    // A negative pid signals the whole process group (leader + descendants).
+    // SAFETY: `kill(2)` validates its arguments and reports via errno.
+    unsafe {
+        libc::kill(-group_id as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill_group(group_id: i32) {
+    // /T terminates the whole tree rooted at the pid, /F forces.
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &group_id.to_string()])
+        .output();
+}
+
+/// Poll until process group `group_id` has no surviving member, or `budget`
+/// elapses. Returns `true` if the group is gone.
+#[cfg(unix)]
+fn wait_group_gone(group_id: i32, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        if !process_group_alive(group_id) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_group_gone(_group_id: i32, _budget: Duration) -> bool {
+    // `taskkill /T` above is synchronous, so the tree is already gone.
+    true
+}
+
+/// Does process group `group_id` still have any member? `kill(-pgid, 0)` sends
+/// no signal but performs the existence/permission check: `ESRCH` means the
+/// group is empty (fully reaped).
+#[cfg(unix)]
+fn process_group_alive(group_id: i32) -> bool {
+    let rc = unsafe { libc::kill(-group_id as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // rc == -1: ESRCH ⇒ gone; anything else (e.g. EPERM) ⇒ still exists.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// The trust inversion, expressed as a scoring rule: given the LLM's
@@ -612,10 +1186,26 @@ mod tests {
         // A pipeline where the second segment is NOT allowlisted.
         assert!(is_executable("git ls-remote origin | sh").is_err());
         assert!(is_executable("grep -q x file | tee out").is_err());
+        // BLOCKER 1(a): a lone `&` is a background-execution escape.
+        assert!(is_executable("test -f x & touch proof").is_err());
+        assert!(is_executable("test -f x & rm -rf /").is_err());
+        // BLOCKER 1(b): git ls-remote exec/protocol-escape options are refused
+        // in every spelling.
+        assert!(is_executable("git ls-remote --upload-pack=\"touch proof\" .").is_err());
+        assert!(is_executable("git ls-remote --upload-pack touch .").is_err());
+        assert!(is_executable("git ls-remote -u touch .").is_err());
+        assert!(is_executable("git ls-remote -o anything origin").is_err());
+        assert!(is_executable("git ls-remote --server-option=x origin").is_err());
+        // An unknown git ls-remote option is not on the read-only allowlist.
+        assert!(is_executable("git ls-remote --frobnicate origin").is_err());
+        // A `git` subcommand other than ls-remote is refused.
+        assert!(is_executable("git push origin main").is_err());
         // Allowlisted single and chained commands are accepted.
         assert!(is_executable("git ls-remote --exit-code origin refs/heads/x").is_ok());
+        assert!(is_executable("git ls-remote --heads --tags origin").is_ok());
         assert!(is_executable("test -f a && grep -q \"z\" a").is_ok());
         assert!(is_executable("gh pr view 42 --repo o/r --json state").is_ok());
+        assert!(is_executable("test -f a || test -f b").is_ok());
     }
 
     #[test]
@@ -630,62 +1220,168 @@ mod tests {
         );
     }
 
-    /// A validation command that hangs past the per-command deadline must be
-    /// killed and reported as a FAILURE — the core of Erik's PR #57 finding.
-    /// We use an allowlisted `test` head with a `&& git ls-remote` chain that
-    /// would block, but the simplest deterministic hang is a `test` whose file
-    /// argument forces a wait; instead we drive the timeout with a real slow
-    /// command via the sandbox's own `sh -c`. Because only allowlisted heads are
-    /// executable, we exercise the timeout through `run_sandboxed` directly.
-    #[test]
-    fn test_command_exceeding_timeout_is_a_failure() {
-        // A 1-second deadline against a 30-second sleep: the deadline wins.
-        let run = run_sandboxed("sleep 30", &tmp_dir(), 1);
-        assert!(
-            run.timed_out,
-            "a command that overruns the deadline must be flagged timed_out (exit={:?})",
-            run.exit_code
-        );
-        assert!(
-            !run.passed,
-            "a timed-out command must not be reported as passed"
-        );
+    /// Create a writer-less FIFO in the temp dir. An allowlisted `grep` reading
+    /// it blocks forever (no writer ever `open`s it for write), giving a
+    /// DETERMINISTIC hang driven by a genuinely allowlisted command — unlike the
+    /// old tests, which drove `run_sandboxed("sleep 30")` (a head the public
+    /// allowlist rejects) and then synthesized the outcome.
+    #[cfg(unix)]
+    fn make_fifo(tag: &str) -> PathBuf {
+        use std::ffi::CString;
+        let path =
+            std::env::temp_dir().join(format!("wg_eval_fifo_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_file(&path);
+        let c = CString::new(path.to_str().unwrap()).unwrap();
+        let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed for {:?}", path);
+        path
     }
 
-    /// End-to-end through the public API: a hung allowlisted command surfaces as
-    /// `has_failure()` and drives the score to FAIL, exactly like an absent
-    /// artifact does. We register the hang under an allowlisted `test` head by
-    /// chaining a benign `test` with a blocking segment is not possible (the
-    /// second segment must also be allowlisted), so we assert the timeout wiring
-    /// via `run_sandboxed` feeding a synthesized outcome.
+    /// BLOCKER 2, public path: a GENUINELY hanging ALLOWLISTED check (a real
+    /// `grep` blocked on a writer-less FIFO), driven all the way through the
+    /// public `execute_validation_commands_with_timeout`, must be killed at the
+    /// deadline and reported as a FAILURE — a hung check can never stall the
+    /// evaluator or pass silently.
+    #[cfg(unix)]
     #[test]
-    fn test_timeout_forces_validation_failure_and_zero_score() {
-        let run = run_sandboxed("sleep 30", &tmp_dir(), 1);
-        let outcome = ValidationOutcome {
-            timeout_secs: 1,
-            results: vec![CommandResult {
-                command: "git ls-remote --exit-code origin refs/heads/x".to_string(),
-                ran: true,
-                skip_reason: None,
-                exit_code: run.exit_code,
-                passed: run.passed,
-                timed_out: run.timed_out,
-            }],
-        };
-        assert!(outcome.any_ran());
-        assert!(outcome.any_timed_out(), "{}", outcome.summary());
-        assert!(outcome.has_failure(), "a timeout must count as a failure");
+    fn test_hanging_allowlisted_check_times_out_public_path() {
+        let fifo = make_fifo("public_hang");
+        let desc = format!("## Validation\n- [ ] grep -q needle {}\n", fifo.display());
+
+        let start = Instant::now();
+        let outcome = execute_validation_commands_with_timeout(&desc, &tmp_dir(), 1);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "the 1s deadline was not enforced (took {elapsed:?})"
+        );
+        assert!(
+            outcome.any_ran(),
+            "the grep must have actually run: {:?}",
+            outcome.results
+        );
+        assert!(
+            outcome.any_timed_out(),
+            "a hung allowlisted check must be reported as a timeout: {}",
+            outcome.summary()
+        );
+        assert!(
+            outcome.has_failure(),
+            "a timed-out check must fail the task: {}",
+            outcome.summary()
+        );
         // The trust inversion: a timed-out check caps the score at FAIL.
         assert_eq!(apply_validation_to_score(0.95, &outcome), 0.0);
         let note = failure_note(&outcome).expect("timeout should produce a failure note");
+        assert!(note.contains("timed out"), "note should name it: {note}");
+
+        let _ = std::fs::remove_file(&fifo);
+    }
+
+    /// BLOCKER 2, descendant cleanup: a hanging PIPELINE of two allowlisted
+    /// `grep`s (the first blocked on a writer-less FIFO, the second blocked
+    /// reading the never-written pipe). Under `sh -c` these would be
+    /// grandchildren of the runner and a naive single-pid SIGKILL would orphan
+    /// them; here each runs in its own process group and, after the timeout,
+    /// EVERY group must be gone — no lingering pid.
+    #[cfg(unix)]
+    #[test]
+    fn test_timeout_reaps_all_descendants() {
+        let fifo = make_fifo("reap");
+        let cmd = format!("grep -q x {} | grep -q y", fifo.display());
+        // Sanity: this pipeline is genuinely allowlisted (the public gate would
+        // run it), so the hang is exercised on the real execution path.
         assert!(
-            note.contains("timed out"),
-            "note should name the timeout: {note}"
+            is_executable(&cmd).is_ok(),
+            "the hanging pipeline must be allowlisted"
+        );
+
+        let run = run_sandboxed(&cmd, &tmp_dir(), 1);
+        assert!(
+            run.timed_out,
+            "the hang must trip the deadline (exit={:?})",
+            run.exit_code
+        );
+        assert!(!run.passed, "a timed-out pipeline must not pass");
+        assert_eq!(
+            run.group_ids.len(),
+            2,
+            "the two-stage pipeline should spawn two process groups"
+        );
+        for g in &run.group_ids {
+            assert!(
+                !process_group_alive(*g),
+                "process group {g} still has a surviving member after timeout — a descendant leaked"
+            );
+        }
+
+        let _ = std::fs::remove_file(&fifo);
+    }
+
+    /// BLOCKER 1(a), no side effect: the lone-`&` background escape
+    /// (`test -f x & touch <proof>`) must be REFUSED — recorded as skipped,
+    /// never executed — and the injected `touch` must NOT create its proof file.
+    #[test]
+    fn test_lone_ampersand_escape_refused_no_side_effect() {
+        let dir = std::env::temp_dir().join(format!("wg_eval_amp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = dir.join("amp_proof");
+        let _ = std::fs::remove_file(&proof);
+
+        let desc = format!("## Validation\n- [ ] test -f x & touch {}\n", proof.display());
+        let outcome = execute_validation_commands(&desc, &dir);
+
+        assert_eq!(outcome.results.len(), 1, "line should be considered once");
+        assert!(
+            outcome.results.iter().all(|r| !r.ran),
+            "the escape must be refused, never run: {:?}",
+            outcome.results
         );
         assert!(
-            note.contains("1s"),
-            "note should report the deadline: {note}"
+            outcome.results[0].skip_reason.is_some(),
+            "the refusal reason must be recorded for visibility"
         );
+        assert!(!outcome.has_failure(), "a refused line never fails a task");
+        assert!(
+            !proof.exists(),
+            "SIDE EFFECT: the injected `touch` executed — the RCE is NOT closed"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BLOCKER 1(b), no side effect: the `git ls-remote --upload-pack=<program>`
+    /// exec escape must be REFUSED and its payload must NOT run.
+    #[test]
+    fn test_ls_remote_upload_pack_escape_refused_no_side_effect() {
+        let dir = std::env::temp_dir().join(format!("wg_eval_up_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = dir.join("up_proof");
+        let _ = std::fs::remove_file(&proof);
+
+        let desc = format!(
+            "## Validation\n- [ ] git ls-remote --upload-pack=\"touch {}\" .\n",
+            proof.display()
+        );
+        let outcome = execute_validation_commands(&desc, &dir);
+
+        assert_eq!(outcome.results.len(), 1, "line should be considered once");
+        assert!(
+            outcome.results.iter().all(|r| !r.ran),
+            "the escape must be refused, never run: {:?}",
+            outcome.results
+        );
+        assert!(
+            outcome.results[0].skip_reason.is_some(),
+            "the refusal reason must be recorded for visibility"
+        );
+        assert!(
+            !proof.exists(),
+            "SIDE EFFECT: --upload-pack executed the payload — the RCE is NOT closed"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A fast allowlisted command well under the deadline is NOT flagged as a
