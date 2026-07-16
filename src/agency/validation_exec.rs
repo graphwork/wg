@@ -547,7 +547,11 @@ fn validate_argv(argv: &[String]) -> Result<(), String> {
 /// `--receive-pack` are likewise protocol/exec vectors. Everything is refused
 /// unless it is on a small read-only allowlist, so an unknown option is skipped
 /// (safe) rather than forwarded to git. Non-`-` tokens are positional
-/// (repository URL / ref patterns) and pass through.
+/// (repository URL / ref patterns); they pass through UNLESS they name a
+/// remote-helper transport (`ext::`, `fd::`, or the generic `<transport>::`
+/// form), which is refused because `ext::` in particular makes git *execute*
+/// the supplied program — the protocol escape Erik named alongside
+/// `--upload-pack`.
 fn validate_git_ls_remote(rest: &[String]) -> Result<(), String> {
     const EXEC_OPTS: &[&str] = &[
         "-u",
@@ -573,7 +577,28 @@ fn validate_git_ls_remote(rest: &[String]) -> Result<(), String> {
     ];
     for arg in rest {
         if !arg.starts_with('-') {
-            continue; // positional: repository URL / ref patterns
+            // Positional (repository URL / ref pattern). A legitimate remote —
+            // `origin`, `.`, `https://…`, `git@host:path`, `file://…` — never
+            // uses the `scheme::address` remote-helper syntax, so any positional
+            // whose leading `scheme::` marks a helper transport is refused. This
+            // closes `git ls-remote 'ext::sh -c <payload>' .`, which would make
+            // git execute the supplied program. (An IPv6 URL such as
+            // `ssh://[::1]/r` is unaffected: its `::` sits after `://[`, so the
+            // leading token is not a bare scheme.)
+            if let Some(idx) = arg.find("::") {
+                let scheme = &arg[..idx];
+                let is_helper_transport = !scheme.is_empty()
+                    && scheme
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+                if is_helper_transport {
+                    return Err(format!(
+                        "git ls-remote repository `{}` uses a remote-helper transport (`{}::`) that can execute a program",
+                        arg, scheme
+                    ));
+                }
+            }
+            continue;
         }
         // Normalize `--flag=value` to `--flag` for matching.
         let flag = arg.split('=').next().unwrap_or(arg.as_str());
@@ -1329,7 +1354,10 @@ mod tests {
         let proof = dir.join("amp_proof");
         let _ = std::fs::remove_file(&proof);
 
-        let desc = format!("## Validation\n- [ ] test -f x & touch {}\n", proof.display());
+        let desc = format!(
+            "## Validation\n- [ ] test -f x & touch {}\n",
+            proof.display()
+        );
         let outcome = execute_validation_commands(&desc, &dir);
 
         assert_eq!(outcome.results.len(), 1, "line should be considered once");
@@ -1382,6 +1410,70 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BLOCKER 1(c), no side effect: the `ext::` remote-helper transport escape
+    /// (`git ls-remote 'ext::sh -c <payload>' .`, which Erik named explicitly)
+    /// must be REFUSED and its payload must NOT run. Unlike `--upload-pack` the
+    /// program rides in a POSITIONAL repository argument, so this proves the
+    /// transport-escape guard covers positionals, not just options.
+    #[test]
+    fn test_ls_remote_ext_transport_escape_refused_no_side_effect() {
+        let dir = std::env::temp_dir().join(format!("wg_eval_ext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = dir.join("ext_proof");
+        let _ = std::fs::remove_file(&proof);
+
+        // The whole `ext::sh -c 'touch <proof>'` payload is one quoted repo arg,
+        // exactly the shape a task description could carry.
+        let desc = format!(
+            "## Validation\n- [ ] git ls-remote \"ext::sh -c 'touch {}'\" .\n",
+            proof.display()
+        );
+        let outcome = execute_validation_commands(&desc, &dir);
+
+        assert_eq!(outcome.results.len(), 1, "line should be considered once");
+        assert!(
+            outcome.results.iter().all(|r| !r.ran),
+            "the ext:: transport escape must be refused, never run: {:?}",
+            outcome.results
+        );
+        assert!(
+            outcome.results[0]
+                .skip_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("remote-helper transport")),
+            "the refusal reason must name the transport escape: {:?}",
+            outcome.results[0].skip_reason
+        );
+        assert!(!outcome.has_failure(), "a refused line never fails a task");
+        assert!(
+            !proof.exists(),
+            "SIDE EFFECT: the ext:: transport executed the payload — the escape is NOT closed"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Unit-level guard: `validate_git_ls_remote` refuses `ext::`/`fd::` helper
+    /// transports but still accepts ordinary remotes (including an IPv6 URL,
+    /// whose `::` must not be mistaken for a helper scheme).
+    #[test]
+    fn test_ls_remote_transport_policy() {
+        let refuse = |s: &str| is_executable(&format!("git ls-remote {s} .")).is_err();
+        let accept = |s: &str| is_executable(&format!("git ls-remote --exit-code {s}")).is_ok();
+
+        // Remote-helper transports that can execute a program → refused.
+        assert!(refuse("ext::sh"), "ext:: must be refused");
+        assert!(refuse("fd::7"), "fd:: must be refused");
+        // Ordinary read-only remotes → accepted (no `scheme::` helper form).
+        assert!(accept("origin refs/heads/x"));
+        assert!(accept("https://example.com/r.git"));
+        assert!(accept("git@github.com:o/r.git"));
+        assert!(
+            accept("ssh://[::1]/r.git"),
+            "IPv6 host `::` is not a helper transport"
+        );
     }
 
     /// A fast allowlisted command well under the deadline is NOT flagged as a
