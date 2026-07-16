@@ -1449,10 +1449,15 @@ fn handle_coordinator_picker_input(app: &mut VizApp, code: KeyCode) {
         }
         KeyCode::Enter => {
             if let Some(ref picker) = app.coordinator_picker {
-                if let Some((cid, _, _, _)) = picker.entries.get(picker.selected) {
+                if let Some((cid, _, _, is_alive)) = picker.entries.get(picker.selected) {
                     let target = *cid;
+                    let is_alive = *is_alive;
                     app.close_coordinator_picker();
-                    app.switch_coordinator(target);
+                    if is_alive {
+                        app.switch_coordinator(target);
+                    } else {
+                        app.switch_coordinator_history(target);
+                    }
                     app.right_panel_tab = RightPanelTab::Chat;
                     return;
                 }
@@ -2799,8 +2804,15 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 if worksgood::chat_id::is_chat_task_id(&task_id) {
                     // Chat node: Enter opens/focuses the chat tab.
                     if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&task_id) {
+                        let live = app.chat_is_live(cid);
                         if cid != app.active_coordinator_id {
-                            app.switch_coordinator(cid);
+                            if live {
+                                app.switch_coordinator(cid);
+                            } else {
+                                app.switch_coordinator_history(cid);
+                            }
+                        } else if !live {
+                            app.switch_coordinator_history(cid);
                         }
                         app.right_panel_tab = RightPanelTab::Chat;
                         app.right_panel_visible = true;
@@ -3192,15 +3204,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Left/Right: on Chat tab, cycle coordinators; on Output tab, cycle agents; otherwise cycle tabs
         KeyCode::Left => {
             if app.right_panel_tab == RightPanelTab::Chat {
-                let ids = app.active_tabs.clone();
-                if ids.len() > 1 {
-                    let pos = ids
-                        .iter()
-                        .position(|&id| id == app.active_coordinator_id)
-                        .unwrap_or(0);
-                    let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
-                    app.switch_coordinator(ids[prev]);
-                }
+                app.cycle_active_chat(-1);
             } else if app.right_panel_tab == RightPanelTab::Output {
                 let ids = app.output_pane_agent_ids();
                 if ids.len() > 1 {
@@ -3219,15 +3223,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
         KeyCode::Right => {
             if app.right_panel_tab == RightPanelTab::Chat {
-                let ids = app.active_tabs.clone();
-                if ids.len() > 1 {
-                    let pos = ids
-                        .iter()
-                        .position(|&id| id == app.active_coordinator_id)
-                        .unwrap_or(0);
-                    let next = (pos + 1) % ids.len();
-                    app.switch_coordinator(ids[next]);
-                }
+                app.cycle_active_chat(1);
             } else if app.right_panel_tab == RightPanelTab::Output {
                 let ids = app.output_pane_agent_ids();
                 if ids.len() > 1 {
@@ -4281,6 +4277,21 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
 
+            // Active-chat header controls are global pointer escapes from PTY
+            // capture. Route them before any terminal/message-area handling.
+            if app.last_chat_prev_area.width > 0 && app.last_chat_prev_area.contains(pos) {
+                app.cycle_active_chat(-1);
+                return;
+            }
+            if app.last_chat_next_area.width > 0 && app.last_chat_next_area.contains(pos) {
+                app.cycle_active_chat(1);
+                return;
+            }
+            if app.last_chat_picker_area.width > 0 && app.last_chat_picker_area.contains(pos) {
+                app.open_coordinator_picker();
+                return;
+            }
+
             // Service health badge click
             let in_service_badge =
                 app.last_service_badge_area.width > 0 && app.last_service_badge_area.contains(pos);
@@ -4762,8 +4773,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                         .selected_task_id()
                                         .and_then(worksgood::chat_id::parse_chat_task_id);
                                     if let Some(cid) = cid {
+                                        let live = app.chat_is_live(cid);
                                         if cid != app.active_coordinator_id {
-                                            app.switch_coordinator(cid);
+                                            if live {
+                                                app.switch_coordinator(cid);
+                                            } else {
+                                                app.switch_coordinator_history(cid);
+                                            }
+                                        } else if !live {
+                                            app.switch_coordinator_history(cid);
                                         }
                                         app.right_panel_tab = RightPanelTab::Chat;
                                         app.right_panel_visible = true;
@@ -10899,6 +10917,11 @@ mod chat_open_tests {
         let mut chat_task = make_task_with_status(".chat-1", "Chat 1", Status::InProgress);
         chat_task.tags = vec!["chat-loop".to_string()];
         graph.add_node(Node::Task(chat_task));
+        let mut terminal_chat = make_task_with_status(".chat-2", "Past Chat", Status::Abandoned);
+        terminal_chat.tags = vec!["chat-loop".to_string()];
+        terminal_chat.executor_preset_name = Some("pi".to_string());
+        terminal_chat.model = Some("pi:openrouter:example/past".to_string());
+        graph.add_node(Node::Task(terminal_chat));
         let regular = make_task_with_status("regular-task", "Regular Task", Status::Open);
         graph.add_node(Node::Task(regular));
         let other = make_task_with_status("other-task", "Other Task", Status::Open);
@@ -10994,6 +11017,47 @@ mod chat_open_tests {
         }
     }
 
+    #[test]
+    fn active_chat_header_pointer_boundaries_cycle_and_open_picker_before_pty() {
+        // Both boundary cells of prev/next must work while PTY capture owns
+        // printable input; the Chats control must open the existing picker.
+        for (area, expected) in [
+            (Rect::new(10, 5, 3, 1), 2u32),
+            (Rect::new(14, 5, 3, 1), 2u32),
+        ] {
+            for column in [area.x, area.x + area.width - 1] {
+                let (mut app, _tmp) = build_app_with_chat_node();
+                app.active_tabs = vec![1, 2];
+                app.active_coordinator_id = 1;
+                app.chat_pty_mode = true;
+                app.chat_pty_forwards_stdin = true;
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.last_chat_prev_area = if area.x == 10 { area } else { Rect::default() };
+                app.last_chat_next_area = if area.x == 14 { area } else { Rect::default() };
+                app.last_chat_picker_area = Rect::default();
+                handle_mouse(
+                    &mut app,
+                    MouseEventKind::Down(MouseButton::Left),
+                    area.y,
+                    column,
+                );
+                assert_eq!(app.active_coordinator_id, expected, "column {column}");
+            }
+        }
+
+        for column in [18, 24] {
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.active_tabs = vec![1];
+            app.active_coordinator_id = 1;
+            app.chat_pty_mode = true;
+            app.chat_pty_forwards_stdin = true;
+            app.last_chat_picker_area = Rect::new(18, 5, 7, 1);
+            handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 5, column);
+            assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+            assert!(app.coordinator_picker.is_some());
+        }
+    }
+
     /// Clicking a .chat-N node in the graph viewer opens/focuses the chat tab.
     #[test]
     fn clicking_chat_node_in_graph_opens_chat_tab() {
@@ -11037,6 +11101,43 @@ mod chat_open_tests {
         assert_eq!(
             app.active_coordinator_id, 1,
             "Clicking .chat-1 should activate coordinator 1"
+        );
+    }
+
+    #[test]
+    fn clicking_terminal_chat_opens_history_without_relaunch() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        setup_for_graph_click(&mut app);
+        app.active_coordinator_id = 1;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.pending_chat_pty_spawn = None;
+
+        let line = app.node_line_map[".chat-2"];
+        let col = app.plain_lines[line]
+            .chars()
+            .position(|c| c.is_alphanumeric())
+            .unwrap_or(0) as u16;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            line as u16,
+            col,
+        );
+
+        assert_eq!(app.active_coordinator_id, 2);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert!(!app.chat_pty_mode, "terminal chat must be history-only");
+        assert!(!app.chat_pty_forwards_stdin);
+        assert!(
+            app.pending_chat_pty_spawn.is_none(),
+            "terminal chat must never queue a handler"
+        );
+        let identity = app.active_chat_view_identity().unwrap();
+        assert_eq!(identity.task_id, ".chat-2");
+        assert_eq!(
+            identity.model.as_deref(),
+            Some("pi:openrouter:example/past")
         );
     }
 
