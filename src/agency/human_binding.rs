@@ -165,11 +165,26 @@ impl TelegramBindingMap {
         Ok(path)
     }
 
-    /// Find a binding by Telegram user id/handle.
+    /// Find a binding by Telegram user id/handle (exact-key equality).
     pub fn find_by_user(&self, telegram_user: &str) -> Option<&TelegramBinding> {
         self.bindings
             .iter()
             .find(|b| b.telegram_user == telegram_user)
+    }
+
+    /// Find a binding matching an inbound sender identity, using the exact
+    /// [`matches_sender`](TelegramBinding::matches_sender) contract that
+    /// `apply_confirmation` uses: a numeric binding matches only the stable
+    /// `id`, a `@handle` binding matches the `username`. This is what the live
+    /// listener/router must call — a confirmed handle binding is onboarded and
+    /// confirmed against `username`, so replies (which arrive as a numeric
+    /// `from.id` plus `from.username`) must resolve the same way. Keying only
+    /// on `id` (as exact `find_by_user` would) rejects every real reply to a
+    /// handle-bound human.
+    pub fn find_by_sender(&self, id: &str, username: Option<&str>) -> Option<&TelegramBinding> {
+        self.bindings
+            .iter()
+            .find(|b| b.matches_sender(id, username))
     }
 
     /// Find a binding by agency agent id.
@@ -270,6 +285,38 @@ mod tests {
             "111"
         );
         assert!(map.find_by_user("999").is_none());
+    }
+
+    #[test]
+    fn test_find_by_sender_matches_sender_contract() {
+        // Handle binding vs numeric binding, resolved via find_by_sender using
+        // the same matches_sender contract the live listener/router relies on.
+        let mut map = TelegramBindingMap::default();
+        map.add(binding("nadin", "human-nadin", "Nadin")).unwrap(); // @handle onboard
+        map.add(binding("78901234", "human-erik", "Erik")).unwrap(); // numeric onboard
+
+        // A handle binding matches the username, NOT the numeric id — a real
+        // inbound arrives as a numeric from.id plus from.username.
+        assert_eq!(
+            map.find_by_sender("500600", Some("nadin"))
+                .unwrap()
+                .agent_id,
+            "human-nadin"
+        );
+        // find_by_user (exact-key) would MISS the same live inbound.
+        assert!(map.find_by_user("500600").is_none());
+        // Wrong username → no handle match.
+        assert!(map.find_by_sender("500600", Some("mallory")).is_none());
+
+        // A numeric binding matches the stable id and ignores the username.
+        assert_eq!(
+            map.find_by_sender("78901234", Some("whatever"))
+                .unwrap()
+                .agent_id,
+            "human-erik"
+        );
+        // Wrong numeric id → no match, even if a username is present.
+        assert!(map.find_by_sender("999", Some("erik")).is_none());
     }
 
     #[test]

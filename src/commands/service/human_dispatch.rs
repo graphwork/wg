@@ -360,6 +360,7 @@ pub fn route_inbound_reply(
     dir: &Path,
     channel_type: &str,
     sender: &str,
+    sender_username: Option<&str>,
     body: &str,
 ) -> InboundReplyOutcome {
     let graph = match worksgood::parser::load_graph(&crate::commands::graph_path(dir)) {
@@ -381,9 +382,16 @@ pub fn route_inbound_reply(
 
     // Authorization: the sender must prove a CONFIRMED binding. The bound
     // agent id — not "any human" or the freshest ask — is the only human this
-    // reply may answer for.
+    // reply may answer for. Resolution uses the SAME `matches_sender(id,
+    // username)` identity contract as `apply_confirmation` (via
+    // `find_by_sender`): a numeric binding matches the stable `from.id`, a
+    // `@handle` binding matches `from.username`. A live inbound reply always
+    // arrives as a numeric `sender` (`from.id`) plus an optional
+    // `sender_username`, so a handle binding that was confirmed on `YES` must
+    // also route the subsequent numeric-sender replies — equality-only keying
+    // on `sender` would confirm the handshake and then reject every real reply.
     let bindings = TelegramBindingMap::load(&agency_dir).unwrap_or_default();
-    let authorized_agent = match bindings.find_by_user(sender) {
+    let authorized_agent = match bindings.find_by_sender(sender, sender_username) {
         None => {
             return InboundReplyOutcome::Rejected(format!(
                 "unrecognized sender '{sender}': no confirmed Telegram binding"
@@ -667,16 +675,26 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         write_human_agent(dir, "human-nadin", "Nadin");
-        // Nadin's confirmed binding: sender "nadin" is proven to be human-nadin.
+        // Nadin was onboarded by @handle (#49): the confirmed binding is keyed
+        // on the handle "nadin", NOT a numeric id. DISTINCT id vs handle values
+        // below so a value-equality lookup cannot masquerade as correct.
         write_binding(dir, "nadin", "human-nadin", "Nadin", true);
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
         park_and_persist(&mut graph, dir);
 
-        // A shared bot (no notify config → no agent binding) delivers a reply
-        // from Nadin's confirmed sender identity.
-        let routed = route_inbound_reply(dir, "telegram", "nadin", "eggs, milk, bread");
+        // Live-shaped inbound: a shared bot delivers the reply as the canonical
+        // numeric `from.id` "78901234" (which never equals the stored handle)
+        // plus `from.username` "nadin". Equality-only `find_by_user(sender)`
+        // would reject this; `matches_sender` routes it on the username.
+        let routed = route_inbound_reply(
+            dir,
+            "telegram",
+            "78901234",
+            Some("nadin"),
+            "eggs, milk, bread",
+        );
 
         assert_eq!(
             routed,
@@ -685,7 +703,7 @@ mod tests {
         let msgs = messages::list_messages(dir, "groceries").unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].body, "eggs, milk, bread");
-        assert_eq!(msgs[0].sender, "nadin");
+        assert_eq!(msgs[0].sender, "78901234");
         // The recorded message is a non-agent message, so it satisfies
         // WaitCondition::HumanInput on the next coordinator tick.
         assert!(!msgs[0].sender.starts_with("agent-"));
@@ -705,13 +723,20 @@ mod tests {
         graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
         park_and_persist(&mut graph, dir);
 
-        // "mallory" is not bound to anyone.
-        let routed = route_inbound_reply(dir, "telegram", "mallory", "eggs, milk, bread");
+        // Live-shaped spoof: a different person arrives with numeric id "424242"
+        // and username "mallory" — neither matches Nadin's handle binding.
+        let routed = route_inbound_reply(
+            dir,
+            "telegram",
+            "424242",
+            Some("mallory"),
+            "eggs, milk, bread",
+        );
 
         match routed {
             InboundReplyOutcome::Rejected(reason) => {
                 assert!(
-                    reason.contains("mallory"),
+                    reason.contains("424242"),
                     "reason names the sender: {reason}"
                 );
             }
@@ -741,8 +766,10 @@ mod tests {
         graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
         park_and_persist(&mut graph, dir);
 
-        // Erik (confirmed) replies, but nothing is his to answer.
-        let routed = route_inbound_reply(dir, "telegram", "erik", "eggs, milk, bread");
+        // Erik (confirmed via his handle) replies from his numeric id "700100",
+        // but nothing is his to answer.
+        let routed =
+            route_inbound_reply(dir, "telegram", "700100", Some("erik"), "eggs, milk, bread");
 
         assert_eq!(
             routed,
@@ -775,7 +802,9 @@ mod tests {
         graph.add_node(Node::Task(ready_task("erik-repairs", Some("human-erik"))));
         park_and_persist(&mut graph, dir);
 
-        let routed = route_inbound_reply(dir, "telegram", "erik", "fixed the sink");
+        // Erik's numeric id "700100" + username "erik" resolves to his handle
+        // binding; the reply must land on his task, not the freshest across all.
+        let routed = route_inbound_reply(dir, "telegram", "700100", Some("erik"), "fixed the sink");
 
         assert_eq!(
             routed,
@@ -807,7 +836,15 @@ mod tests {
         graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
         park_and_persist(&mut graph, dir);
 
-        let routed = route_inbound_reply(dir, "telegram", "nadin", "eggs, milk, bread");
+        // Numeric id "78901234" + username "nadin" resolves to Nadin's handle
+        // binding, but it never completed the YES handshake.
+        let routed = route_inbound_reply(
+            dir,
+            "telegram",
+            "78901234",
+            Some("nadin"),
+            "eggs, milk, bread",
+        );
 
         match routed {
             InboundReplyOutcome::Rejected(reason) => {
@@ -822,6 +859,76 @@ mod tests {
             messages::list_messages(dir, "groceries")
                 .unwrap_or_default()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn route_inbound_reply_handle_binding_rejects_wrong_username() {
+        // Live-shaped wrong-human via the handle path (#49 parity): a confirmed
+        // HANDLE binding must reject an inbound whose username is someone else,
+        // even though the numeric id is equally unknown. Guards against a router
+        // that mistakenly matched on the numeric id or ignored the username.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        write_human_agent(dir, "human-nadin", "Nadin");
+        // Nadin onboarded by handle "nadin"; confirmed.
+        write_binding(dir, "nadin", "human-nadin", "Nadin", true);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
+        park_and_persist(&mut graph, dir);
+
+        // A different person: numeric id "555000" + username "mallory".
+        let routed = route_inbound_reply(
+            dir,
+            "telegram",
+            "555000",
+            Some("mallory"),
+            "eggs, milk, bread",
+        );
+
+        match routed {
+            InboundReplyOutcome::Rejected(_) => {}
+            other => panic!("wrong username on a handle binding must be Rejected, got {other:?}"),
+        }
+        assert!(
+            messages::list_messages(dir, "groceries")
+                .unwrap_or_default()
+                .is_empty(),
+            "Nadin's task must not receive a reply from the wrong username"
+        );
+    }
+
+    #[test]
+    fn route_inbound_reply_numeric_binding_matches_on_id_ignoring_username() {
+        // The other half of the `matches_sender` contract: a binding keyed on a
+        // NUMERIC id authorizes on the stable `from.id` and is indifferent to
+        // the mutable `from.username`. DISTINCT id vs username values so the
+        // test cannot pass by accidental string equality.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        write_human_agent(dir, "human-nadin", "Nadin");
+        // Onboarded by stable numeric id, confirmed.
+        write_binding(dir, "78901234", "human-nadin", "Nadin", true);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(ready_task("groceries", Some("human-nadin"))));
+        park_and_persist(&mut graph, dir);
+
+        // Inbound carries the matching numeric id but a since-changed username;
+        // the numeric binding must still authorize on the id alone.
+        let routed = route_inbound_reply(
+            dir,
+            "telegram",
+            "78901234",
+            Some("nadin_new_handle"),
+            "eggs, milk, bread",
+        );
+
+        assert_eq!(
+            routed,
+            InboundReplyOutcome::Recorded("groceries".to_string()),
+            "a numeric binding must match the stable id regardless of username"
         );
     }
 

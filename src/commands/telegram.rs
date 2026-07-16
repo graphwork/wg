@@ -140,14 +140,22 @@ pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
                 // "awaiting-human task router" formerly deferred at
                 // src/notify/telegram.rs:42.)
                 //
-                // Authorization uses the canonical numeric `msg.sender`, matched
-                // against the confirmed binding; replies go back through the bot
-                // that received the message (the #49 multi-bot reply contract).
+                // Authorization matches the sender against the confirmed
+                // binding using the same `matches_sender(id, username)` contract
+                // as the `YES` handshake: the canonical numeric `msg.sender`
+                // (`from.id`) plus `msg.sender_username` (`from.username`). This
+                // preserves #49's `@handle` onboarding path — a handle binding
+                // confirmed on `YES` matches the numeric-sender replies that
+                // follow (they carry the same username), which a
+                // `sender`-equality-only lookup would reject. Replies go back
+                // through the bot that received the message (the #49 multi-bot
+                // reply contract).
                 use crate::commands::service::human_dispatch::InboundReplyOutcome;
                 match crate::commands::service::human_dispatch::route_inbound_reply(
                     &workgraph_dir,
                     &msg.channel,
                     &msg.sender,
+                    msg.sender_username.as_deref(),
                     &msg.body,
                 ) {
                     InboundReplyOutcome::Recorded(task_id) => {
