@@ -2141,3 +2141,12 @@ owners = [
 ]
 description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker task/agent identity, wait for first-use chat bootstrap, require .chat-0 in scratch, and prove the parent graph hash/content is unchanged with no legacy .coordinator ghost. Credential-free."
 timeout_seconds = 30
+
+[[scenario]]
+name = "tui_immediate_chat_startup"
+script = "scenarios/tui_immediate_chat_startup.sh"
+owners = [
+    "restore-immediate-chat",
+]
+description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, and a 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s before full bootstrap, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
+timeout_seconds = 30

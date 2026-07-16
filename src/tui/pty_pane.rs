@@ -456,12 +456,16 @@ impl PtyPane {
         // Attach client lives in our PTY child. `-d` detaches any other
         // clients first — single-attach semantics, even if a prior TUI
         // (or a stray `tmux attach` from a shell) is still glued on.
-        let attach_args = ["attach", "-d", "-t", session_name];
+        // A TUI commonly runs inside another tmux session. The embedded
+        // client has its own PTY, so explicitly remove TMUX for this process;
+        // merely setting it to an empty string still trips some tmux versions'
+        // nested-session guard.
+        let attach_args = ["-u", "TMUX", "tmux", "attach", "-d", "-t", session_name];
         let attach_env = vec![
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
         ];
-        let mut pane = Self::spawn_in("tmux", &attach_args, &attach_env, cwd, rows, cols)?;
+        let mut pane = Self::spawn_in("env", &attach_args, &attach_env, cwd, rows, cols)?;
         pane.tmux_session = Some(session_name.to_string());
         Ok(pane)
     }

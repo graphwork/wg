@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -2298,7 +2298,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .cloned();
     draw_tab_bar(frame, app, app.right_panel_tab, tab_area, msg_status);
 
-    if !app.bootstrap_complete {
+    if !app.bootstrap_complete && app.right_panel_tab != RightPanelTab::Chat {
         frame.render_widget(
             Paragraph::new("Loading project snapshot…")
                 .style(Style::default().fg(Color::DarkGray))
@@ -2965,11 +2965,14 @@ pub(super) struct ChatBarLayout {
     pub show_right_arrow: bool,
 }
 
+const NEW_CHAT_BUTTON_LABEL: &str = "[ New chat ]";
+const NEW_CHAT_BUTTON_WIDTH: usize = 12;
+
 /// Compute the visible-window layout for the chat tab bar.
 ///
 /// `widths`: per-entry render width (cells) excluding the inter-entry "│"
 ///   separator (1 cell), the leading bar space (1 cell), and the trailing
-///   `[+]` button (3 cells) — those are accounted for here.
+///   labeled New-chat button — those are accounted for here.
 /// `active_idx`: position of the active tab (if any). The returned `offset`
 ///   guarantees the active tab is in the visible window when at all possible.
 /// `bar_width`: total cells available on the bar (`tab_area.width`).
@@ -3003,8 +3006,9 @@ pub(super) fn compute_chat_bar_layout(
     // active tab is visible in the resulting window — None otherwise.
     let try_offset = |off: usize| -> Option<(usize, bool, bool)> {
         let show_left = off > 0;
-        // Reserve space for leading " " (1) + ◀+space (2 if shown) + [+] (3).
-        let reserve_no_right = 1 + if show_left { 2 } else { 0 } + 3;
+        // Reserve leading space, optional left arrow, and the full labeled
+        // New-chat pointer target (never only the old tiny `+` glyph).
+        let reserve_no_right = 1 + if show_left { 2 } else { 0 } + NEW_CHAT_BUTTON_WIDTH;
         let avail_no_right = bar_width.saturating_sub(reserve_no_right);
 
         // First pass: assume no right arrow, see how many fit.
@@ -3079,8 +3083,87 @@ pub(super) fn compute_chat_bar_layout(
     }
 }
 
+fn draw_chat_startup_state(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let button_height = area.height.min(3).max(1);
+    let body_height = area.height.saturating_sub(button_height);
+    let body = Rect::new(area.x, area.y, area.width, body_height);
+    let button = Rect::new(
+        area.x,
+        area.y.saturating_add(body_height),
+        area.width,
+        button_height,
+    );
+    let (text, color) = match &app.chat_startup_state {
+        super::state::ChatStartupState::Loading => (
+            "Connecting active chat…\n\nInput is accepted and buffered safely.\nCtrl+O enters commands.",
+            Color::Yellow,
+        ),
+        super::state::ChatStartupState::Empty => (
+            "No live chat exists.\n\nCreate one below, or press n in command mode.",
+            Color::DarkGray,
+        ),
+        super::state::ChatStartupState::Error(message) => {
+            let text = format!(
+                "Chat unavailable\n\n{message}\n\nPress r to retry, or create a new chat below."
+            );
+            frame.render_widget(
+                Paragraph::new(text)
+                    .style(Style::default().fg(Color::Red))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true }),
+                body,
+            );
+            ("", Color::Red)
+        }
+        super::state::ChatStartupState::Ready => unreachable!(),
+    };
+    if !text.is_empty() {
+        frame.render_widget(
+            Paragraph::new(text)
+                .style(Style::default().fg(color))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            body,
+        );
+    }
+
+    // This is deliberately a full-width, 1–3 row pointer target, outside the
+    // PTY message hit region. Mobile users can tap anywhere on the labeled
+    // control; the mouse router checks it before any PTY forwarding.
+    frame.render_widget(
+        Paragraph::new("New chat")
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().borders(Borders::ALL).title(" New chat ")),
+        button,
+    );
+    app.last_coordinator_bar_area = button;
+    app.coordinator_plus_hit = CoordinatorPlusHit {
+        start: button.x,
+        end: button.x.saturating_add(button.width),
+    };
+    app.coordinator_tab_hits.clear();
+    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+    app.last_chat_message_area = Rect::default();
+    app.last_chat_input_area = Rect::default();
+}
+
 /// Draw the Chat tab content with word-wrapped messages, scrolling, and input area.
 fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    if !matches!(
+        app.chat_startup_state,
+        super::state::ChatStartupState::Ready
+    ) && app.launcher.is_none()
+    {
+        draw_chat_startup_state(frame, app, area);
+        return;
+    }
     // This assertion boundary makes the render loop's work independent of
     // persisted history depth, configuration, and CLI overrides.
     app.chat.enforce_history_projection();
@@ -3121,7 +3204,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .saturating_sub(input_height)
         .saturating_sub(search_bar_height);
 
-    // Coordinator + user board tab bar — always visible so the user can discover [+]
+    // Coordinator + user board tab bar — always visible so the user can discover New chat.
     // Read from the per-tick cache populated in `maybe_refresh()` instead of
     // re-loading + re-parsing graph.jsonl (2 MB+) on every render frame.
     // Each redraw of the chat tab previously did this twice, which under
@@ -3398,8 +3481,14 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         };
 
         let plus_start = (bar_x as usize + col) as u16;
-        spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
-        col += 3;
+        spans.push(Span::styled(
+            NEW_CHAT_BUTTON_LABEL,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        col += NEW_CHAT_BUTTON_WIDTH;
         let plus_end = (bar_x as usize + col) as u16;
 
         app.coordinator_tab_hits = tab_hits;
@@ -4558,14 +4647,14 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         let hint_text = if app.chat_pty_mode && app.chat_pty_forwards_stdin {
             if app.focused_panel == FocusedPanel::RightPanel {
-                " [PTY]  Ctrl+O: command mode  PgUp/Dn: scroll".to_string()
+                " Chat input • Ctrl+O commands • tap New chat".to_string()
             } else {
-                " [CMD]  Ctrl+O: back to chat  n: new  w: close  ←→/[]: chats  ?: help".to_string()
+                " Commands • n New chat • w close tab • Ctrl+O return • ←→ chats".to_string()
             }
         } else if app.chat_pty_mode {
-            " Enter: chat  ↑↓: scroll  Ctrl+O: focus PTY".to_string()
+            " Commands • Enter chat input • n New chat • Ctrl+O focus PTY".to_string()
         } else if app.chat.pending_attachments.is_empty() {
-            " c: chat  \u{2191}\u{2193}: scroll".to_string()
+            " Commands • n New chat • Enter opens selected task".to_string()
         } else {
             format!(
                 " c: chat  \u{2191}\u{2193}: scroll  {} attached",
@@ -14181,8 +14270,8 @@ mod tests {
         for &w in &[80u16, 120, 200] {
             let row = render_chat_tab_bar_to_string(&mut app, w);
             assert!(
-                row.contains("[+]"),
-                "[+] button must always render at width {w}; row: {row}"
+                row.contains(NEW_CHAT_BUTTON_LABEL),
+                "labeled New-chat button must always render at width {w}; row: {row}"
             );
             assert!(
                 !row.contains('\u{FFFD}'),
@@ -14230,6 +14319,33 @@ mod tests {
         // Cannot go above max (n-1 = 4 for 5 tabs)
         app.scroll_chat_tabs(100);
         assert_eq!(app.chat_tab_scroll_offset, 4);
+    }
+
+    #[test]
+    fn new_chat_pointer_target_is_labeled_and_mobile_sized_in_all_states() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[0]);
+        let _ = render_chat_tab_to_buffer(&mut app);
+        assert_eq!(
+            app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
+            NEW_CHAT_BUTTON_WIDTH as u16
+        );
+
+        app.chat_startup_state = super::super::state::ChatStartupState::Empty;
+        let buf = render_chat_tab_to_buffer(&mut app);
+        let mut rendered = String::new();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                rendered.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(rendered.contains("New chat"), "{rendered}");
+        assert_eq!(app.last_coordinator_bar_area.height, 3);
+        assert_eq!(
+            app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
+            app.last_coordinator_bar_area.width,
+            "every cell across the large empty-state button must be clickable"
+        );
     }
 
     #[test]
