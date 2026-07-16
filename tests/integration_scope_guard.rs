@@ -4,10 +4,13 @@
 //! `WG_SCOPE=disposable`. A disposable-scoped agent must not be able to mint
 //! durable/persistent graph state: it may not run `wg agent create`,
 //! `wg add --tag persistent`, or an ordinary durable `wg add`. From disposable
-//! scope the `wg add` boundary is default-deny — only *explicitly* disposable
-//! child work (`--scope disposable` / `--tag disposable`) is allowed. These
-//! tests pin the policy at the library boundary so the CLI handlers can rely on
-//! it.
+//! scope the `wg add` boundary is default-deny — the *only* allowed add is an
+//! explicit, scope-carrying `--scope disposable` (which persists a
+//! `scope:disposable` tag the dispatcher propagates as `WG_SCOPE`). A bare
+//! `--tag disposable` is refused: it carries no `scope:` prefix, so the child
+//! would spawn unscoped and could mint durable grandchildren (Erik, PR #56
+//! rd3). These tests pin the policy at both the library boundary and the real
+//! CLI/dispatch wiring.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -84,7 +87,15 @@ fn test_disposable_caller_default_deny_resolution() {
         "disposable caller must not escalate a child to a non-disposable scope"
     );
 
-    // The allowed case: an explicit disposable child passes through verbatim.
+    // Bare `disposable` tag → denied (Erik PR #56 rd3): no `scope:` prefix, so
+    // plan_spawn would leave the child unscoped. Only `--scope disposable` is ok.
+    assert!(
+        resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["disposable".to_string()]).is_err(),
+        "a bare `--tag disposable` must be refused — it does not carry scope for propagation"
+    );
+
+    // The allowed case: an explicit --scope disposable child passes through, and
+    // the returned tag set carries scope:disposable for WG_SCOPE propagation.
     let resolved =
         resolve_add_scope_for(Some(SCOPE_DISPOSABLE), &["scope:disposable".to_string()]).unwrap();
     assert_eq!(
@@ -256,6 +267,97 @@ fn cli_disposable_scope_escalation_is_refused() {
     assert!(
         !out.status.success(),
         "disposable + --scope team must be refused"
+    );
+}
+
+/// Erik's rd3 blocking hole: `WG_SCOPE=disposable wg add child --tag disposable`
+/// must be REFUSED. A bare `disposable` tag carries no `scope:` prefix, so the
+/// dispatcher's `plan_spawn` would leave the child unscoped — free to mint
+/// durable grandchildren. The allowed route must be scope-carrying
+/// (`--scope disposable`); the bare tag mints nothing.
+#[test]
+fn cli_disposable_bare_disposable_tag_add_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(dir.path());
+
+    let out = wg_add(
+        &wg_dir,
+        &["scrape child", "--id", "bare-child", "--tag", "disposable"],
+        &[("WG_SCOPE", "disposable")],
+    );
+    assert!(
+        !out.status.success(),
+        "a bare `--tag disposable` from disposable scope must be refused.\nstdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("disposable"),
+        "error should explain the disposable boundary: {stderr}"
+    );
+    // Nothing was minted — no unscoped child slipped through.
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    assert!(
+        graph.get_task("bare-child").is_none(),
+        "refused bare-tag add must not create an unscoped child"
+    );
+}
+
+/// Erik's rd3 required regression #1: a real CLI run of `WG_SCOPE=disposable
+/// wg agent create ...` is refused AND no persona file is written. The prior
+/// `test_scoped_disposable_cannot_spawn_persistent` only exercised `check_scope`
+/// directly; this pins the actual `agent_crud` wiring end-to-end.
+#[test]
+fn cli_disposable_agent_create_is_refused_and_mints_nothing() {
+    let dir = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(dir.path());
+
+    let mut cmd = Command::new(wg_binary());
+    cmd.arg("--dir")
+        .arg(&wg_dir)
+        .args([
+            "agent",
+            "create",
+            "scratch-bot",
+            "--role",
+            "deadbeef",
+            "--tradeoff",
+            "deadbeef",
+            "--executor",
+            "claude",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd.env_remove("WG_DIR").env_remove("WG_TASK_ID");
+    cmd.env("WG_SCOPE", "disposable");
+    let out = cmd.output().expect("failed to run wg agent create");
+
+    assert!(
+        !out.status.success(),
+        "wg agent create from disposable scope must be refused.\nstdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("disposable"),
+        "refusal must come from the scope guard (mention `disposable`), not the \
+         role/tradeoff check: {stderr}"
+    );
+
+    // No persona file was written anywhere under the agency cache.
+    let agents_dir = wg_dir.join("agency").join("cache/agents");
+    let minted: Vec<_> = fs::read_dir(&agents_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        minted.is_empty(),
+        "refused agent create must not mint a persona file, found: {minted:?}"
     );
 }
 
