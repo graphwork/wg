@@ -26,6 +26,7 @@ use worksgood::parser::{load_graph, modify_graph};
 use worksgood::query::{blocked_open_cycle_diagnostics, ready_tasks_with_peers_cycle_aware};
 use worksgood::service::registry::AgentRegistry;
 
+use super::human_dispatch;
 use super::triage;
 use crate::commands::{graph_path, is_process_alive, kill_process_graceful, spawn};
 
@@ -574,6 +575,26 @@ fn evaluate_waiting_tasks(graph: &mut worksgood::graph::WorkGraph, dir: &Path) -
         let satisfied = evaluate_wait_spec(spec, graph, dir, task_id, wait_started.as_deref());
 
         if satisfied {
+            // Human-as-agent dispatch tail (R13): if this task is assigned to a
+            // human, their reply (the non-agent message that just satisfied the
+            // wait) completes it — record the reply as a reply-to-artifact for
+            // each declared deliverable and mark the task Done. Resuming to Open
+            // (the generic path below) would re-park it forever, since there is
+            // no AI agent to spawn for a human assignee.
+            if human_dispatch::try_complete_human_task_on_reply(
+                graph,
+                dir,
+                task_id,
+                wait_started.as_deref(),
+            ) {
+                modified = true;
+                eprintln!(
+                    "[dispatcher] Waiting task '{}' received human reply, marking Done",
+                    task_id
+                );
+                continue;
+            }
+
             // Build resume delta before mutating
             let delta = {
                 let task = graph.get_task(task_id).unwrap();
@@ -4793,7 +4814,12 @@ pub fn coordinator_tick(
     })
     .context("Failed to load/save graph during maintenance phases")?;
 
-    // Phases 3–4.7: Agency scaffolding (atomic load-modify-save).
+    // Phases 3–4.8: Agency scaffolding (atomic load-modify-save).
+    //
+    // `newly_parked_humans` is filled inside the closure by Phase 4.8 and
+    // notified AFTER the closure returns, so the (potentially network-bound)
+    // human notification never runs while the graph file lock is held.
+    let mut newly_parked_humans: Vec<human_dispatch::ParkedHumanTask> = Vec::new();
     let graph = modify_graph(&graph_path, |graph| {
         let mut modified = false;
 
@@ -4830,9 +4856,24 @@ pub fn coordinator_tick(
             modified |= build_auto_create_task(dir, graph, &config);
         }
 
+        // Phase 4.8: Human-as-agent dispatch tail (R10) — park ready tasks
+        // assigned to a human on WaitCondition::HumanInput so the AI spawn
+        // path skips them and the human's reply is what unblocks them. The
+        // returned list is notified below, outside this graph lock.
+        let parked = human_dispatch::park_ready_human_tasks(graph, dir);
+        if !parked.is_empty() {
+            modified = true;
+            newly_parked_humans = parked;
+        }
+
         modified
     })
     .context("Failed to save graph after auto-assign/auto-evaluate; aborting tick")?;
+
+    // Phase 4.8b: Render each newly parked task to its human (R11), out of lock.
+    for parked in &newly_parked_humans {
+        human_dispatch::notify_parked_human(dir, parked);
+    }
 
     // Phase 5: Check for ready tasks (after agency phases may have created new ones)
     if let Some(early_result) = check_ready_or_return(&graph, alive_count, dir) {
