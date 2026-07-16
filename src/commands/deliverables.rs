@@ -53,15 +53,24 @@ impl Deliverable {
 /// research/review no-regression path).
 pub fn parse_deliverables(description: &str) -> Vec<Deliverable> {
     if let Some(block) = extract_section(description, "Deliverables") {
-        let parsed = parse_bullets(&block);
+        // The `## Deliverables` block is the explicit machine contract.
+        // Negative-framing suppression NEVER applies here: every path /
+        // registry bullet is required exactly as written, so a legitimate
+        // filename that happens to contain a marker substring (e.g.
+        // `discard-policy.md`) is not silently dropped from the contract.
+        let parsed = parse_bullets(&block, false);
         if !parsed.is_empty() {
             return parsed;
         }
     }
     if let Some(block) = extract_section(description, "Validation") {
-        let parsed = parse_bullets(&block);
-        // The `## Validation` section is a rubric, not an explicit contract.
-        // When the task's real work happens in a *different*, externally
+        // The `## Validation` section is a heuristic rubric, not a contract,
+        // so negative-framing suppression applies here (and only here): a
+        // bullet whose trailing prose instructs that the file be discarded /
+        // not committed is not treated as a required output.
+        let parsed = parse_bullets(&block, true);
+        // For that same reason (rubric, not contract): when the task's real
+        // work happens in a *different*, externally
         // managed worktree/repo (e.g. the description points at
         // `/tmp/wg-fix-lint-49` or another project checkout), a bare filename
         // mentioned in the rubric cannot be reliably resolved against *this*
@@ -79,10 +88,14 @@ pub fn parse_deliverables(description: &str) -> Vec<Deliverable> {
     Vec::new()
 }
 
-/// Negative-framing markers: when a bullet instructs that a file be
-/// discarded, not committed, or is explicitly *not* a produced output, it is
-/// not a required deliverable. Matched case-insensitively as substrings of the
-/// bullet text.
+/// Negative-framing markers: when a bullet's trailing prose instructs that the
+/// named file be discarded, not committed, or is explicitly *not* a produced
+/// output, it is not a required deliverable. Matched case-insensitively, but
+/// only as the *leading* phrase of the prose that follows the path token (see
+/// [`trailing_prose_is_negative`]) — never anywhere in the bullet — so that
+/// (a) a filename containing a marker substring is not self-suppressing, and
+/// (b) descriptive prose such as "documents why operators must not discard
+/// logs" is not turned into a false negative.
 const NEGATIVE_FRAMING: &[&str] = &[
     "discard",
     "do not commit",
@@ -100,13 +113,35 @@ const NEGATIVE_FRAMING: &[&str] = &[
     "remove this",
 ];
 
-/// True when a bullet's text frames the mentioned file negatively (discard /
-/// do-not-commit / not-a-real-change). Such bullets are skipped by
-/// `parse_bullets` so a "discard foo.md" instruction is never mistaken for a
-/// "produce foo.md" deliverable.
-fn has_negative_framing(item: &str) -> bool {
-    let lower = item.to_ascii_lowercase();
-    NEGATIVE_FRAMING.iter().any(|m| lower.contains(m))
+/// True when the prose that *follows* the path token frames the file
+/// negatively (discard / do-not-commit / not-a-real-change). `rest` is
+/// everything in the bullet after the first (path) token.
+///
+/// The marker must be the *leading* phrase of that trailing prose (after any
+/// separator punctuation the author placed between the path and the
+/// instruction — an em dash, hyphen, colon, comma). This is deliberately
+/// specific:
+///
+/// - It never inspects the path token itself, so a filename such as
+///   `discard-policy.md` cannot suppress its own bullet.
+/// - It only fires when the negative instruction is directed at the file
+///   (immediately after it), so descriptive prose where the marker word
+///   appears mid-sentence — e.g. "documents why operators must not discard
+///   logs" — is not a false negative.
+///
+/// Note: a bullet whose negative verb *precedes* the filename (e.g.
+/// "discard foo.md") is already handled upstream — the first whitespace token
+/// is then the verb, which is not path-like, so no deliverable is parsed at
+/// all. Suppression therefore only needs to cover the "path first, instruction
+/// after" shape.
+fn trailing_prose_is_negative(rest: &str) -> bool {
+    // Strip separator punctuation/whitespace the author placed between the
+    // path token and the instruction. Only ASCII case matters for markers.
+    let prose = rest.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, '—' | '–' | '-' | ':' | ',')
+    });
+    let lower = prose.to_ascii_lowercase();
+    NEGATIVE_FRAMING.iter().any(|m| lower.starts_with(m))
 }
 
 /// Strong signals that a task's real work lives in a *different*,
@@ -167,34 +202,46 @@ fn extract_section(text: &str, heading: &str) -> Option<String> {
 /// Parse bullet items (`- ` / `* ` / `+ `) in a section body into
 /// deliverables. A bullet is a deliverable when it is a path-like token or a
 /// `registry:<file>:<id>` token; prose bullets are ignored.
-fn parse_bullets(section: &str) -> Vec<Deliverable> {
+///
+/// `apply_negative_framing` gates the discard/do-not-commit suppression: it is
+/// `true` only for the `## Validation` heuristic fallback and `false` for the
+/// explicit `## Deliverables` contract, which is always honored verbatim.
+fn parse_bullets(section: &str, apply_negative_framing: bool) -> Vec<Deliverable> {
     let mut out = Vec::new();
     for raw in section.lines() {
         let trimmed = raw.trim();
         let Some(item) = strip_bullet(trimmed) else {
             continue;
         };
-        // Negative framing: a bullet that says to discard / not commit / not
-        // produce the mentioned file is NOT a required deliverable. Skip it so
-        // "discard foo.md — do not commit it" is never treated as a required
-        // output that must exist in the worktree.
-        if has_negative_framing(item) {
-            continue;
-        }
-        // Take the first whitespace-delimited token (the path / registry
-        // token). Anything after is prose and ignored.
-        let token = item.split_whitespace().next().unwrap_or("");
+        let item = item.trim_start();
+        // Split into the first whitespace-delimited token (the path / registry
+        // token) and the trailing prose. Anything after the token is prose.
+        let mut split = item.splitn(2, char::is_whitespace);
+        let token = split.next().unwrap_or("");
+        let rest = split.next().unwrap_or("");
         if token.is_empty() {
             continue;
         }
         // Strip surrounding backticks if the author wrapped the path.
         let token = token.trim_matches('`');
-        if let Some(d) = parse_registry(token) {
-            out.push(d);
+        let deliverable = if let Some(d) = parse_registry(token) {
+            d
         } else if is_path_like(token) {
-            out.push(Deliverable::Path(token.to_string()));
+            Deliverable::Path(token.to_string())
+        } else {
+            // Prose bullet — ignore (strict grammar).
+            continue;
+        };
+        // Negative framing (`## Validation` fallback only): a bullet whose
+        // trailing prose instructs that the file be discarded / not committed /
+        // not produced is NOT a required deliverable. The check inspects only
+        // the trailing prose (never the path token) and only its leading
+        // phrase, so "discard-policy.md — do not commit it" is suppressed while
+        // "discard-policy.md exists and is non-empty" is kept.
+        if apply_negative_framing && trailing_prose_is_negative(rest) {
+            continue;
         }
-        // else: prose bullet — ignore (strict grammar).
+        out.push(deliverable);
     }
     out
 }
@@ -486,15 +533,20 @@ mod tests {
     }
 
     #[test]
-    fn negative_framing_variants_all_skipped() {
+    fn negative_framing_variants_all_skipped_in_validation_fallback() {
+        // These are the negative-framing variants the suppression is meant to
+        // relax — they belong in the `## Validation` heuristic fallback, NOT in
+        // the explicit `## Deliverables` contract (which never suppresses).
+        // Each bullet's path token comes first and the negative instruction
+        // follows it, which is the only shape suppression needs to catch.
         for line in [
             "- foo.md do not commit it",
             "- foo.md — discard this artifact",
             "- foo.md should not exist after the fix",
-            "- foo.md is not a real change",
-            "- foo.md do not create",
+            "- foo.md — not a real change, ignore it",
+            "- foo.md do not create it",
         ] {
-            let desc = format!("## Deliverables\n{}\n", line);
+            let desc = format!("## Validation\n{}\n", line);
             assert!(
                 parse_deliverables(&desc).is_empty(),
                 "expected no deliverable for {line:?}, got {:?}",
@@ -504,13 +556,68 @@ mod tests {
     }
 
     #[test]
-    fn positive_deliverable_still_parsed_without_negative_framing() {
-        // Guard against over-eager filtering: a normal produce-this bullet is
-        // still a deliverable.
-        let desc = "## Deliverables\n- out.bin produced by the run\n";
+    fn negative_framing_never_suppresses_explicit_deliverables_block() {
+        // The same variants under an explicit `## Deliverables` contract are
+        // ALWAYS honored — the machine contract is never weakened by prose.
+        for line in [
+            "- foo.md do not commit it",
+            "- foo.md — discard this artifact",
+            "- foo.md should not exist after the fix",
+        ] {
+            let desc = format!("## Deliverables\n{}\n", line);
+            assert_eq!(
+                parse_deliverables(&desc),
+                vec![Deliverable::Path("foo.md".to_string())],
+                "explicit deliverable must survive negative prose: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn positive_deliverable_still_parsed_in_validation_fallback() {
+        // Guard against over-eager filtering in the fallback path: a normal
+        // produce-this bullet is still a deliverable.
+        let desc = "## Validation\n- out.bin produced by the run\n";
         assert_eq!(
             parse_deliverables(desc),
             vec![Deliverable::Path("out.bin".to_string())]
+        );
+    }
+
+    #[test]
+    fn explicit_deliverable_with_marker_in_filename_is_required() {
+        // Erik's exact-head repro: a legitimately required filename that
+        // contains a negative-framing marker as a substring (`discard`) must
+        // remain in the machine contract, not be silently dropped.
+        let desc = "## Deliverables\n- discard-policy.md\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("discard-policy.md".to_string())]
+        );
+    }
+
+    #[test]
+    fn validation_marker_in_filename_is_not_self_suppressing() {
+        // Even in the `## Validation` fallback (where suppression applies), the
+        // marker check never inspects the path token itself, so a filename
+        // containing `discard` with positive trailing prose is still a
+        // deliverable.
+        let desc = "## Validation\n- discard-policy.md exists and is non-empty\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("discard-policy.md".to_string())]
+        );
+    }
+
+    #[test]
+    fn validation_positive_prose_with_marker_word_is_not_a_false_negative() {
+        // Descriptive prose that merely mentions a marker word mid-sentence
+        // ("must not discard logs") must NOT suppress the deliverable — the
+        // marker only counts when it leads the trailing prose.
+        let desc = "## Validation\n- audit.md documents why operators must not discard logs\n";
+        assert_eq!(
+            parse_deliverables(desc),
+            vec![Deliverable::Path("audit.md".to_string())]
         );
     }
 

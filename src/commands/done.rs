@@ -4807,4 +4807,76 @@ mod tests {
         let graph = load_graph(&graph_path(&wg_dir)).unwrap();
         assert_ne!(graph.get_task("t1").unwrap().status, Status::Done);
     }
+
+    #[test]
+    #[serial]
+    fn done_honors_explicit_deliverable_with_marker_in_name_for_assigned_worker() {
+        // Regression guard (PR #54 round 3, Erik CHANGES_REQUESTED): an
+        // explicit `## Deliverables` bullet whose filename contains a
+        // negative-framing marker substring (`discard-policy.md`) must remain
+        // a required deliverable. Previously `has_negative_framing` scanned the
+        // whole bullet, so the filename self-suppressed and the assigned worker
+        // could `wg done` a genuinely missing deliverable (exit 0, task Done,
+        // no `deliverable-missing` marker). Here the file is absent, so `wg
+        // done` — run as the assigned worker — must refuse, leave the task in
+        // progress, and record the `deliverable-missing` failure class.
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let desc = "## Description\nDocument the discard policy.\n\n## Deliverables\n- discard-policy.md\n";
+        let mut task = task_with_desc("explicit-discard-name", desc);
+        task.assigned = Some("agent-worker-1".to_string());
+        setup_with_project_root(project_root, vec![task]);
+        let wg_dir = project_root.join(".wg");
+
+        // Simulate the assigned worker running `wg done` (agent path).
+        unsafe { std::env::set_var("WG_AGENT_ID", "agent-worker-1") };
+        let result = run(
+            &wg_dir,
+            "explicit-discard-name",
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+
+        assert!(
+            result.is_err(),
+            "assigned worker must not promote a missing explicit deliverable whose name contains a marker"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("deliverable preflight refused"), "got: {err}");
+        assert!(err.contains("discard-policy.md"), "got: {err}");
+
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("explicit-discard-name").unwrap();
+        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.failure_class, Some(FailureClass::DeliverableMissing));
+        assert!(
+            task.log
+                .iter()
+                .any(|e| e.actor == Some("deliverable-preflight".to_string())),
+            "expected a deliverable-missing marker in the task log"
+        );
+
+        // And once the deliverable exists, the same worker can complete it.
+        std::fs::write(project_root.join("discard-policy.md"), b"policy text").unwrap();
+        unsafe { std::env::set_var("WG_AGENT_ID", "agent-worker-1") };
+        let ok = run(
+            &wg_dir,
+            "explicit-discard-name",
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        unsafe { std::env::remove_var("WG_AGENT_ID") };
+        assert!(ok.is_ok(), "got: {:?}", ok.err());
+        let graph = load_graph(&graph_path(&wg_dir)).unwrap();
+        let task = graph.get_task("explicit-discard-name").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.failure_class, None);
+    }
 }
