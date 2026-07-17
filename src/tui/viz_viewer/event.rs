@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
 use ratatui::layout::Position;
@@ -494,6 +494,22 @@ fn update_shared_screen(
     );
 }
 
+/// Normalize keys at the outer-terminal boundary according to the negotiated
+/// capability. This happens once, before native-composer/startup-buffer/vendor
+/// PTY routing, so every Chat path sees the same semantics.
+///
+/// Without a successfully negotiated reliable enhanced-keyboard transport,
+/// Shift on Enter is not trustworthy: legacy Enter has no modifier distinction
+/// and mosh can intermittently surface a physical plain Enter as CSI-u
+/// Shift+Enter. Remove only that untrusted bit. Ctrl/Alt and the key event's
+/// kind/state are preserved; Ctrl+J remains the multiline fallback.
+fn normalize_outer_key_event(mut key: KeyEvent, has_keyboard_enhancement: bool) -> KeyEvent {
+    if !has_keyboard_enhancement && key.code == KeyCode::Enter {
+        key.modifiers.remove(KeyModifiers::SHIFT);
+    }
+    key
+}
+
 /// Route a single crossterm event to the appropriate handler.
 pub fn dispatch_event(app: &mut VizApp, ev: Event) {
     // Record the event to the trace file (if tracing is enabled).
@@ -506,7 +522,9 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
 
     match ev {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            // Record key feedback for overlay before handling (so we capture all keys).
+            let key = normalize_outer_key_event(key, app.has_keyboard_enhancement);
+            // Feedback reflects the effective key the active route receives;
+            // the trace above deliberately retains the original parsed event.
             if app.key_feedback_enabled {
                 let label = key_label(key.code, key.modifiers);
                 app.record_key_feedback(label);
@@ -10458,6 +10476,148 @@ mod chat_tab_navigation_tests {
             super::super::state::editor_text(&app.chat.editor),
             "",
             "plain Enter must keep its submit-and-clear behavior"
+        );
+    }
+
+    #[test]
+    fn outer_enter_normalization_is_capability_gated_and_preserves_event_metadata() {
+        let original = KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        );
+
+        let legacy = normalize_outer_key_event(original, false);
+        assert_eq!(legacy.code, KeyCode::Enter);
+        assert_eq!(legacy.modifiers, KeyModifiers::CONTROL);
+        assert_eq!(legacy.kind, KeyEventKind::Repeat);
+
+        let enhanced = normalize_outer_key_event(original, true);
+        assert_eq!(enhanced.modifiers, original.modifiers);
+        assert_eq!(enhanced.kind, original.kind);
+    }
+
+    #[test]
+    fn unenhanced_shift_enter_submits_native_composer_instead_of_newline() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::ChatInput;
+        app.has_keyboard_enhancement = false;
+
+        for c in "mosh-plain-enter".chars() {
+            dispatch_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+            );
+        }
+        dispatch_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+        );
+
+        assert_eq!(
+            super::super::state::editor_text(&app.chat.editor),
+            "",
+            "an untrusted Shift bit must not turn physical Enter into a newline"
+        );
+    }
+
+    #[test]
+    fn unenhanced_shift_enter_is_normalized_before_startup_buffering() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.input_mode = super::InputMode::Normal;
+        app.chat_startup_state = super::super::state::ChatStartupState::Loading;
+        app.has_keyboard_enhancement = false;
+
+        dispatch_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+        );
+
+        assert_eq!(app.pending_chat_keys.len(), 1);
+        let buffered = app.pending_chat_keys.front().unwrap();
+        assert_eq!(buffered.code, KeyCode::Enter);
+        assert_eq!(buffered.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn unenhanced_shift_enter_vendor_pi_pty_forwards_one_byte() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        app.has_keyboard_enhancement = false;
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        // Pi and the other interactive vendor CLIs all use this exact embedded
+        // PtyPane route. `cat` is a credential-free stand-in for the child.
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        let before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        dispatch_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+        );
+
+        let after = app
+            .task_panes
+            .get(&task_id)
+            .unwrap()
+            .child_input_bytes_written();
+        assert_eq!(
+            after - before,
+            1,
+            "vendor PTY Enter must be one CR, not CR/LF"
+        );
+        assert_eq!(
+            app.pending_chat_keys.len(),
+            0,
+            "live PTY must not queue a late duplicate"
+        );
+    }
+
+    #[test]
+    fn trace_context_distinguishes_all_three_chat_input_routes() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+
+        app.input_mode = super::InputMode::ChatInput;
+        assert_eq!(
+            super::super::trace::capture_state_context(&app).chat_input_route,
+            Some("native_composer")
+        );
+
+        app.input_mode = super::InputMode::Normal;
+        app.chat_startup_state = super::super::state::ChatStartupState::Loading;
+        assert_eq!(
+            super::super::trace::capture_state_context(&app).chat_input_route,
+            Some("startup_buffer")
+        );
+
+        app.chat_startup_state = super::super::state::ChatStartupState::Ready;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        assert_eq!(
+            super::super::trace::capture_state_context(&app).chat_input_route,
+            Some("embedded_vendor_pty")
         );
     }
 

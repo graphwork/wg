@@ -7696,8 +7696,9 @@ pub struct VizApp {
     pub touch_echoes: Vec<TouchEcho>,
 
     // ── Keyboard enhancement ──
-    /// Whether the kitty keyboard protocol was successfully enabled.
-    /// When true, Shift+Enter is distinguishable from Enter.
+    /// Whether Kitty keyboard disambiguation was successfully negotiated over
+    /// a reliable outer transport. False under mosh even when TERM claims
+    /// support; only when true is Shift+Enter distinguishable from Enter.
     pub has_keyboard_enhancement: bool,
 
     pub editor_handler: EditorEventHandler,

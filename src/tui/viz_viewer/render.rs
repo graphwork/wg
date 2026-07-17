@@ -8157,31 +8157,43 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             } else {
                 "Chat"
             };
-            (
-                label,
-                "EDIT",
-                Color::Magenta,
+            let hints = if app.has_keyboard_enhancement {
                 vec![
                     ("Enter", "send"),
                     ("Esc", "cancel"),
                     ("↑↓", "history"),
                     ("S-Enter", "newline"),
                     ("Alt-Enter/C-j", "newline"),
-                ],
-            )
+                ]
+            } else {
+                vec![
+                    ("Enter", "send"),
+                    ("Esc", "cancel"),
+                    ("↑↓", "history"),
+                    ("Alt-Enter/C-j", "newline"),
+                ]
+            };
+            (label, "EDIT", Color::Magenta, hints)
         }
-        InputMode::MessageInput => (
-            "3:Msg",
-            "EDIT",
-            Color::Yellow,
-            vec![
-                ("Enter", "send"),
-                ("S-Enter", "newline"),
-                ("Alt-Enter/C-j", "newline"),
-                ("Ctrl+K/Y", "kill/yank"),
-                ("Esc", "exit"),
-            ],
-        ),
+        InputMode::MessageInput => {
+            let hints = if app.has_keyboard_enhancement {
+                vec![
+                    ("Enter", "send"),
+                    ("S-Enter", "newline"),
+                    ("Alt-Enter/C-j", "newline"),
+                    ("Ctrl+K/Y", "kill/yank"),
+                    ("Esc", "exit"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "send"),
+                    ("Alt-Enter/C-j", "newline"),
+                    ("Ctrl+K/Y", "kill/yank"),
+                    ("Esc", "exit"),
+                ]
+            };
+            ("3:Msg", "EDIT", Color::Yellow, hints)
+        }
         InputMode::TaskForm => (
             "New Task",
             "EDIT",
