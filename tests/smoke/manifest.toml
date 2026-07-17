@@ -2150,3 +2150,12 @@ owners = [
 ]
 description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, a real project-local FIFO storage stall, and a subsequent 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s while storage is blocked, its active identity/header/atomic route must agree, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
 timeout_seconds = 30
+
+[[scenario]]
+name = "tui_chat_close_lifecycle"
+script = "scenarios/tui_chat_close_lifecycle.sh"
+owners = [
+    "validate-and-land",
+]
+description = "Installed-binary real tmux/PTY flow for the repaired chat navigation and Close lifecycle: selecting abandoned .chat-36 opens its exact canonical Detail with no spawn/reattach or composer, returning to a live chat exposes the identity/state/atomic-route Close… modal, Cancel and Hide remain non-destructive, Stop uses canonical daemon termination and tears down the identity-matching TUI PTY while preserving an Open/resumable task, and Archive produces explicit Done+archived state while terminating its session. Unit/render tests pin pointer hitbox boundaries, narrow layout, stale async results, and wrong-chat confirmation protection. Credential-free."
+timeout_seconds = 60

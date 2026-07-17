@@ -1083,6 +1083,8 @@ impl ExitPromptState {
 pub enum ConfirmAction {
     MarkDone(String), // task_id
     Retry(String),    // task_id
+    StopChat(ChatCloseContext),
+    ArchiveChat(ChatCloseContext),
 }
 
 /// What action the text prompt dialog is for.
@@ -1953,6 +1955,17 @@ fn resolve_chat_pty_executor_and_model_with_task(
     coordinator_id: u32,
     chat_task: Option<&worksgood::graph::Task>,
 ) -> (String, Option<String>) {
+    // A persisted custom command is itself the atomic route. It must not
+    // inherit the project's Pi/Claude default (or stale CoordinatorState)
+    // merely because it has no executor_preset_name.
+    if chat_task.is_some_and(|task| {
+        !task.command_argv.is_empty()
+            && (task.executor_preset_name.as_deref() == Some("command")
+                || (task.executor_preset_name.is_none() && task.model.is_none()))
+    }) {
+        return ("command".to_string(), None);
+    }
+
     let coord_state =
         crate::commands::service::CoordinatorState::load_for(workgraph_dir, coordinator_id);
 
@@ -2768,8 +2781,18 @@ impl LauncherState {
 /// What action a choice dialog will perform when an option is selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChoiceDialogAction {
-    /// Remove/archive/stop a coordinator by its ID.
-    RemoveCoordinator(u32),
+    /// Identity-pinned close/lifecycle choices for one live chat.
+    CloseChat(ChatCloseContext),
+}
+
+/// Immutable identity shown in both stages of the live-chat Close flow.
+/// Capturing it when the modal opens prevents a later selection change or
+/// delayed graph refresh from acting on a different chat than the one named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatCloseContext {
+    pub identity: ActiveChatIdentity,
+    pub task_status: String,
+    pub connection: String,
 }
 
 /// State for a choice dialog with multiple selectable options.
@@ -7175,6 +7198,8 @@ pub struct VizApp {
     pub last_chat_prev_area: Rect,
     pub last_chat_next_area: Rect,
     pub last_chat_picker_area: Rect,
+    /// Full labeled Close… target in the live-chat identity header.
+    pub last_chat_close_area: Rect,
     /// The coordinator tab bar area from the last render frame (for click support).
     pub last_coordinator_bar_area: Rect,
     /// Per-tab hit areas for coordinator tab bar click testing.
@@ -7929,6 +7954,31 @@ impl VizApp {
         self.selected_chat_identity_or_placeholder()
     }
 
+    /// Snapshot the exact currently-selected live chat for the Close… modal.
+    /// Terminal/archived tasks deliberately return `None`: they are task
+    /// Detail surfaces and must never expose live-agent lifecycle controls.
+    pub fn chat_close_context(&self, coordinator_id: u32) -> Option<ChatCloseContext> {
+        let graph = self.coherent_graph()?;
+        let task = graph.tasks().find(|task| {
+            let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                .or_else(|| (task.id == ".coordinator").then_some(0));
+            cid == Some(coordinator_id)
+                && !task.status.is_terminal()
+                && !task.tags.iter().any(|tag| tag == "archived")
+        })?;
+        let identity = Self::chat_identity_from_task(coordinator_id, task);
+        let connection = if coordinator_id == self.active_coordinator_id {
+            self.active_chat_connection_label(&identity.task_id)
+        } else {
+            "background"
+        };
+        Some(ChatCloseContext {
+            task_status: task.status.to_string(),
+            connection: connection.to_string(),
+            identity,
+        })
+    }
+
     pub fn active_chat_connection_label(&self, task_id: &str) -> &'static str {
         match &self.chat_startup_state {
             ChatStartupState::Loading => "loading",
@@ -8273,6 +8323,7 @@ impl VizApp {
             last_chat_prev_area: Rect::default(),
             last_chat_next_area: Rect::default(),
             last_chat_picker_area: Rect::default(),
+            last_chat_close_area: Rect::default(),
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
@@ -9709,15 +9760,10 @@ impl VizApp {
             },
             None => return,
         };
-        if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&selected_id) {
-            if cid != self.active_coordinator_id {
-                self.switch_coordinator(cid);
-                // Only switch to Chat tab when actually changing coordinators.
-                self.right_panel_tab = RightPanelTab::Chat;
-            }
-        } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
-            self.switch_coordinator(0);
-            self.right_panel_tab = RightPanelTab::Chat;
+        if worksgood::chat_id::parse_chat_task_id(&selected_id).is_some()
+            || selected_id == ".coordinator"
+        {
+            self.open_chat_task_or_detail(&selected_id);
         } else if worksgood::graph::is_user_board(&selected_id) {
             // Switch to Messages tab for user board tasks.
             self.right_panel_tab = RightPanelTab::Messages;
@@ -13633,6 +13679,7 @@ impl VizApp {
             last_chat_prev_area: Rect::default(),
             last_chat_next_area: Rect::default(),
             last_chat_picker_area: Rect::default(),
+            last_chat_close_area: Rect::default(),
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
@@ -14413,9 +14460,31 @@ impl VizApp {
                 }
                 CommandEffect::StopCoordinator(cid) => {
                     if result.success {
+                        // `wg chat stop` terminates the daemon-owned handler and
+                        // resets the graph task to Open/resumable.  A TUI-owned
+                        // PTY is outside that daemon registry, so tear down the
+                        // identity-matching pane here as well; otherwise the
+                        // modal would claim "Stop" while the attached process
+                        // kept running.  Detach the now-stopped tab so no dead
+                        // composer is left on screen.
+                        let task_id = worksgood::chat_id::format_chat_task_id(cid);
+                        let chat_ref = format!("chat-{cid}");
+                        let chat_dir =
+                            worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                        worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                        if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                            pane.kill_underlying_session();
+                        } else {
+                            worksgood::chat_id::kill_chat_tmux_session_for_id(
+                                &self.workgraph_dir,
+                                cid,
+                            );
+                        }
+                        self.close_tab(cid);
                         self.force_refresh();
+                        self.persist_tab_state();
                         self.push_toast(
-                            format!("Stopped coordinator {}", cid),
+                            format!("Stopped chat agent {cid}; task remains resumable"),
                             ToastSeverity::Info,
                         );
                     } else {
@@ -16843,12 +16912,6 @@ impl VizApp {
         self.switch_coordinator_with_pty(target_id, true);
     }
 
-    /// Open a terminal/abandoned chat as history only. This deliberately does
-    /// not reattach or spawn a handler.
-    pub fn switch_coordinator_history(&mut self, target_id: u32) {
-        self.switch_coordinator_with_pty(target_id, false);
-    }
-
     pub fn chat_is_live(&self, coordinator_id: u32) -> bool {
         self.coherent_graph().is_some_and(|graph| {
             graph.tasks().any(|task| {
@@ -16859,6 +16922,97 @@ impl VizApp {
                     && !task.tags.iter().any(|tag| tag == "archived")
             })
         })
+    }
+
+    /// Apply the one semantic navigation rule shared by the chooser, chat
+    /// prev/next controls, tab clicks, and graph task rows. Only an
+    /// authoritative nonterminal, non-archived chat owns the interactive Chat
+    /// surface. Every terminal/abandoned/archived chat is an ordinary task and
+    /// therefore opens canonical Detail instead of a disconnected composer.
+    pub fn open_coordinator_target(&mut self, target_id: u32) {
+        let task = self.coherent_graph().and_then(|graph| {
+            graph.tasks().find_map(|task| {
+                let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                    .or_else(|| (task.id == ".coordinator").then_some(0));
+                (cid == Some(target_id)).then(|| task.clone())
+            })
+        });
+        let Some(task) = task else {
+            // Freshly-created chats can be selected before the graph snapshot
+            // catches up. Preserve that existing live-create path.
+            self.switch_coordinator(target_id);
+            self.right_panel_tab = RightPanelTab::Chat;
+            self.right_panel_visible = true;
+            self.focused_panel = FocusedPanel::RightPanel;
+            return;
+        };
+        self.open_chat_task_or_detail(&task.id);
+    }
+
+    pub fn open_chat_task_or_detail(&mut self, task_id: &str) {
+        let task = self
+            .coherent_graph()
+            .and_then(|graph| graph.tasks().find(|task| task.id == task_id).cloned());
+        let Some(task) = task else {
+            self.open_task_detail(task_id);
+            return;
+        };
+        let live = !task.status.is_terminal() && !task.tags.iter().any(|tag| tag == "archived");
+        if live {
+            let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                .or_else(|| (task.id == ".coordinator").then_some(0));
+            if let Some(cid) = cid {
+                // Chooser/task-row navigation can reopen a previously hidden
+                // live chat. Make that tab membership explicit before the
+                // switch; otherwise lifecycle Close on the reopened chat sees
+                // an empty tab list and navigation state drifts from the
+                // visible identity.
+                self.closed_tabs.remove(&cid);
+                if !self.active_tabs.contains(&cid) {
+                    self.active_tabs.push(cid);
+                }
+                self.switch_coordinator(cid);
+                self.right_panel_tab = RightPanelTab::Chat;
+                self.right_panel_visible = true;
+                self.focused_panel = FocusedPanel::RightPanel;
+                return;
+            }
+        }
+        self.open_task_detail(&task.id);
+    }
+
+    fn open_task_detail(&mut self, task_id: &str) {
+        if self
+            .pending_chat_pty_spawn
+            .as_ref()
+            .is_some_and(|pending| pending.task_id == task_id)
+        {
+            self.pending_chat_pty_spawn = None;
+        }
+        if self
+            .active_chat_identity
+            .as_ref()
+            .is_some_and(|identity| identity.task_id == task_id)
+        {
+            self.chat_pty_mode = false;
+            self.chat_pty_forwards_stdin = false;
+        }
+        if matches!(
+            self.input_mode,
+            InputMode::ChatInput | InputMode::MessageInput | InputMode::ScrollMode { .. }
+        ) {
+            self.input_mode = InputMode::Normal;
+            self.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+        }
+        self.hud_pin = None;
+        if let Some(idx) = self.task_order.iter().position(|id| id == task_id) {
+            self.selected_task_idx = Some(idx);
+            self.scroll_to_selected_task();
+        }
+        self.right_panel_visible = true;
+        self.right_panel_tab = RightPanelTab::Detail;
+        self.focused_panel = FocusedPanel::RightPanel;
+        self.request_hud_detail_for_task(task_id);
     }
 
     /// Saves the current chat state to the coordinator_chats map and loads the target.
@@ -16881,6 +17035,15 @@ impl VizApp {
                 .is_none_or(|identity| identity.coordinator_id != target_id)
             {
                 self.active_chat_identity = self.chat_identity_from_graph(target_id);
+            }
+            if allow_pty
+                && self.chat_is_live(target_id)
+                && !self
+                    .task_panes
+                    .contains_key(&worksgood::chat_id::format_chat_task_id(target_id))
+                && self.pending_chat_pty_spawn.is_none()
+            {
+                self.maybe_auto_enable_chat_pty();
             }
             return;
         }
@@ -18246,13 +18409,16 @@ impl VizApp {
                         task.tags
                             .iter()
                             .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
-                            && !task.tags.iter().any(|tag| tag == "archived")
                     })
                     .filter_map(|task| {
                         let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
                             .or_else(|| (task.id == ".coordinator").then_some(0))?;
-                        let alive = !task.status.is_terminal();
-                        let status = format!("{:?}", task.status).to_lowercase();
+                        let archived = task.tags.iter().any(|tag| tag == "archived");
+                        let alive = !task.status.is_terminal() && !archived;
+                        let mut status = format!("{:?}", task.status).to_lowercase();
+                        if archived {
+                            status.push_str("/archived");
+                        }
                         let recency = task
                             .last_interaction_at
                             .as_deref()
@@ -18795,21 +18961,46 @@ impl VizApp {
             .collect()
     }
 
-    /// Cycle the selected live chat. Pointer and command-mode key paths share
-    /// this transition so header/highlight/PTY selection update atomically.
+    /// Cycle every canonical chat task, not only live tabs. Pointer and
+    /// command-mode prev/next therefore apply the same semantic rule as the
+    /// chooser: live targets open Chat, while terminal/abandoned/archived
+    /// targets open their exact task Detail without resurrection.
     pub fn cycle_active_chat(&mut self, delta: i32) {
-        let ids = self.active_tabs.clone();
-        if ids.len() < 2 {
+        let mut targets: Vec<(u32, String)> = self
+            .coherent_graph()
+            .map(|graph| {
+                graph
+                    .tasks()
+                    .filter(|task| {
+                        task.tags
+                            .iter()
+                            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+                    })
+                    .filter_map(|task| {
+                        let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                            .or_else(|| (task.id == ".coordinator").then_some(0))?;
+                        Some((cid, task.id.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        targets.sort_by_key(|(cid, _)| *cid);
+        targets.dedup_by_key(|(cid, _)| *cid);
+        if targets.is_empty() {
             return;
         }
-        let pos = ids
+        let next = if let Some(pos) = targets
             .iter()
-            .position(|id| *id == self.active_coordinator_id)
-            .unwrap_or(0) as i32;
-        let next = (pos + delta).rem_euclid(ids.len() as i32) as usize;
-        self.switch_coordinator(ids[next]);
-        self.right_panel_tab = RightPanelTab::Chat;
-        self.right_panel_visible = true;
+            .position(|(cid, _)| *cid == self.active_coordinator_id)
+        {
+            (pos as i32 + delta).rem_euclid(targets.len() as i32) as usize
+        } else if delta < 0 {
+            targets.len() - 1
+        } else {
+            0
+        };
+        let task_id = targets[next].1.clone();
+        self.open_chat_task_or_detail(&task_id);
     }
 
     /// Scroll the chat tab bar by `delta` entries (positive = right, negative
@@ -18833,8 +19024,11 @@ impl VizApp {
     /// lane correctly reported an empty graph, start a fresh authoritative
     /// resolution as soon as a later graph publication observes that task.
     fn retry_chat_startup_if_authoritative_chat_appeared(&mut self) {
-        let authoritative_chat_appeared =
-            matches!(self.chat_startup_state, ChatStartupState::Empty)
+        let authoritative_chat_appeared = matches!(self.chat_startup_state, ChatStartupState::Empty)
+                // `Empty` also represents an intentional Hide/detach of the
+                // last tab. Closed tabs are explicit user state and must not
+                // be resurrected by the first-use bootstrap retry loop.
+                && self.closed_tabs.is_empty()
                 && self.coherent_graph().is_some_and(|graph| {
                     graph.tasks().any(|task| {
                         !task.status.is_terminal()
@@ -19757,7 +19951,7 @@ impl VizApp {
     /// Apply completed auxiliary snapshots. Completion closures are bounded
     /// state swaps and identity checks; all storage work already finished on
     /// the worker.
-    fn poll_auxiliary_snapshots(&mut self) -> bool {
+    pub(super) fn poll_auxiliary_snapshots(&mut self) -> bool {
         let completed = self.auxiliary.drain();
         let changed = !completed.is_empty();
         for apply in completed {
@@ -32294,6 +32488,32 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, expected_executor, "effective default executor");
         assert_eq!(model, expected_model, "effective default model");
+    }
+
+    #[test]
+    fn custom_command_chat_route_never_inherits_global_handler() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            b"[coordinator]\nexecutor = \"pi\"\nmodel = \"pi:openrouter:example/model\"\n",
+        )
+        .unwrap();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-0".to_string(),
+            title: "Chat: custom".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            command_argv: vec!["bash".to_string(), "-lc".to_string(), "cat".to_string()],
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+        let config = Config::load_or_default(wg_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model(wg_dir, &config, 0);
+        assert_eq!(executor, "command");
+        assert_eq!(model, None);
     }
 
     /// Mixed overrides: only model is per-chat, executor defaults

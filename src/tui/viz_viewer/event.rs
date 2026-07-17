@@ -73,10 +73,8 @@ use super::state::{
 /// Used by the Alt+N hotkey handler in the right-panel key flow.
 pub(crate) fn switch_chat_tab_to_index(app: &mut VizApp, idx: usize) {
     let ids = app.active_tabs.clone();
-    if let Some(&target) = ids.get(idx)
-        && target != app.active_coordinator_id
-    {
-        app.switch_coordinator(target);
+    if let Some(&target) = ids.get(idx) {
+        app.open_coordinator_target(target);
     }
 }
 
@@ -96,7 +94,7 @@ pub(crate) fn switch_chat_tab_relative(app: &mut VizApp, delta: i32) {
     let len = ids.len() as i32;
     let new_pos = ((pos + delta).rem_euclid(len)) as usize;
     if let Some(&target) = ids.get(new_pos) {
-        app.switch_coordinator(target);
+        app.open_coordinator_target(target);
     }
 }
 
@@ -893,32 +891,51 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
-    // Global Ctrl+W: close the active chat tab (removes from view, no graph
-    // change). Only fires when NOT in PTY focus — the PTY-focused branch
-    // above swallows it. Legacy alias for the `w` single-key binding in
-    // command mode (see implement-tui-command).
+    // Global Ctrl+W opens the same identity-explicit Close… modal as the
+    // header control. Only fires when NOT in PTY focus — the PTY-focused
+    // branch above still forwards it to the embedded editor.
     if matches!(code, KeyCode::Char('w'))
         && modifiers.contains(KeyModifiers::CONTROL)
         && app.right_panel_tab == RightPanelTab::Chat
         && !matches!(app.input_mode, InputMode::ChoiceDialog(_))
     {
-        app.focused_panel = FocusedPanel::Graph;
-        let cid = app.active_coordinator_id;
-        app.close_tab(cid);
+        open_retire_chat_dialog(app);
         return;
     }
 
-    // Bare 'w' in command mode (Normal input): close the active chat tab.
-    // Single-key alias for Ctrl+W; only fires outside text-entry modes so
-    // typing 'w' in ChatInput / search / etc. is not intercepted.
+    // Bare 'w' in command mode opens the exact same Close… modal. It only
+    // fires outside text-entry modes so typed conversation text is untouched.
     if matches!(code, KeyCode::Char('w'))
         && modifiers.is_empty()
         && matches!(app.input_mode, InputMode::Normal)
         && app.right_panel_tab == RightPanelTab::Chat
     {
-        app.focused_panel = FocusedPanel::Graph;
-        let cid = app.active_coordinator_id;
-        app.close_tab(cid);
+        open_retire_chat_dialog(app);
+        return;
+    }
+
+    // The chooser is a chat-level navigation surface, not a right-panel-only
+    // widget. Command mode deliberately focuses the graph after Ctrl+O, so
+    // `~`/`` ` `` must be global or the documented chooser becomes
+    // unreachable exactly when a live PTY owns the other panel.
+    if matches!(code, KeyCode::Char('~') | KeyCode::Char('`'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.right_panel_tab == RightPanelTab::Chat
+    {
+        app.open_coordinator_picker();
+        return;
+    }
+
+    // Keep the established quick-detach key available from either panel in
+    // command mode. Unlike `w`, `-` is intentionally non-modal and only hides
+    // the tab; the live agent and graph task are untouched.
+    if matches!(code, KeyCode::Char('-'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.right_panel_tab == RightPanelTab::Chat
+    {
+        app.close_tab(app.active_coordinator_id);
         return;
     }
 
@@ -1190,7 +1207,7 @@ fn handle_confirm_input(app: &mut VizApp, code: KeyCode) {
     };
 
     match code {
-        KeyCode::Char('y') | KeyCode::Enter => {
+        KeyCode::Char('y') => {
             match action {
                 ConfirmAction::MarkDone(task_id) => {
                     app.exec_command(
@@ -1204,8 +1221,41 @@ fn handle_confirm_input(app: &mut VizApp, code: KeyCode) {
                         CommandEffect::RefreshAndNotify(format!("Retried '{}'", task_id)),
                     );
                 }
+                ConfirmAction::StopChat(context) => {
+                    app.exec_command(
+                        vec![
+                            "chat".to_string(),
+                            "stop".to_string(),
+                            context.identity.task_id.clone(),
+                        ],
+                        CommandEffect::StopCoordinator(context.identity.coordinator_id),
+                    );
+                }
+                ConfirmAction::ArchiveChat(context) => {
+                    app.exec_command(
+                        vec![
+                            "chat".to_string(),
+                            "archive".to_string(),
+                            context.identity.task_id.clone(),
+                        ],
+                        CommandEffect::ArchiveCoordinator(context.identity.coordinator_id),
+                    );
+                }
             }
             app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            // Existing task confirmations retain Enter-as-yes. Destructive
+            // chat lifecycle actions require an explicit `y`; Enter defaults
+            // to Cancel so an accidental double-Enter cannot stop/archive.
+            match action {
+                ConfirmAction::MarkDone(_) | ConfirmAction::Retry(_) => {
+                    handle_confirm_input(app, KeyCode::Char('y'));
+                }
+                ConfirmAction::StopChat(_) | ConfirmAction::ArchiveChat(_) => {
+                    app.input_mode = InputMode::Normal;
+                }
+            }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
@@ -1339,8 +1389,7 @@ fn handle_choice_dialog_input(app: &mut VizApp, code: KeyCode) {
             }
         }
         KeyCode::Enter => {
-            execute_choice_dialog_option(app, &state.action, state.selected);
-            app.input_mode = InputMode::Normal;
+            app.input_mode = execute_choice_dialog_option(app, &state.action, state.selected);
         }
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
@@ -1348,76 +1397,69 @@ fn handle_choice_dialog_input(app: &mut VizApp, code: KeyCode) {
         KeyCode::Char(c) => {
             // Check if the char matches a hotkey
             if let Some(idx) = state.options.iter().position(|(h, _, _)| *h == c) {
-                execute_choice_dialog_option(app, &state.action, idx);
-                app.input_mode = InputMode::Normal;
+                app.input_mode = execute_choice_dialog_option(app, &state.action, idx);
             }
         }
         _ => {}
     }
 }
 
-/// Open the Archive/Stop/Abandon retire dialog for a specific coordinator.
-///
-/// This is the single source of truth for "user wants to retire chat tab N":
-/// invoked from the `-` hotkey, `Ctrl+W` escape hatch, the tab-bar `✕` mouse
-/// click, and the coordinator picker `-` action.
+/// Open the identity-pinned lifecycle dialog for a specific live chat.
+/// Merely opening it never mutates tabs, graph state, or processes.
 pub(crate) fn open_retire_dialog_for_coordinator(app: &mut VizApp, cid: u32) {
+    let Some(context) = app.chat_close_context(cid) else {
+        app.push_toast(
+            "Close… is available only for a live chat; terminal chats open as task Detail"
+                .to_string(),
+            super::state::ToastSeverity::Warning,
+        );
+        return;
+    };
     let options = vec![
-        ('a', "Archive".into(), "Mark as done — work complete".into()),
+        (
+            'h',
+            "Hide/detach tab".into(),
+            "Agent keeps running; reopen it from Choose chat".into(),
+        ),
         (
             's',
-            "Stop".into(),
-            "Pause coordinator — resume later".into(),
+            "Stop chat agent".into(),
+            "Requires daemon; terminates handler, keeps task/history resumable".into(),
         ),
-        ('x', "Abandon".into(), "Permanently discard".into()),
+        (
+            'a',
+            "Archive chat".into(),
+            "Stops live session, marks Done + archived, preserves chat directory".into(),
+        ),
+        ('c', "Cancel".into(), "Make no changes".into()),
     ];
     app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-        action: ChoiceDialogAction::RemoveCoordinator(cid),
+        action: ChoiceDialogAction::CloseChat(context),
         selected: 0,
         options,
     });
 }
 
-/// Open the retire dialog for the currently active chat tab.
+/// Open the Close… dialog for the currently active live chat tab.
 pub(crate) fn open_retire_chat_dialog(app: &mut VizApp) {
-    let cid = app.active_coordinator_id;
-    open_retire_dialog_for_coordinator(app, cid);
+    open_retire_dialog_for_coordinator(app, app.active_coordinator_id);
 }
 
-fn execute_choice_dialog_option(app: &mut VizApp, action: &ChoiceDialogAction, idx: usize) {
+fn execute_choice_dialog_option(
+    app: &mut VizApp,
+    action: &ChoiceDialogAction,
+    idx: usize,
+) -> InputMode {
     match action {
-        ChoiceDialogAction::RemoveCoordinator(cid) => {
-            let cid = *cid;
-            match idx {
-                0 => {
-                    // Archive
-                    app.exec_command(
-                        vec![
-                            "service".to_string(),
-                            "archive-coordinator".to_string(),
-                            cid.to_string(),
-                        ],
-                        CommandEffect::ArchiveCoordinator(cid),
-                    );
-                }
-                1 => {
-                    // Stop
-                    app.exec_command(
-                        vec![
-                            "service".to_string(),
-                            "stop-coordinator".to_string(),
-                            cid.to_string(),
-                        ],
-                        CommandEffect::StopCoordinator(cid),
-                    );
-                }
-                2 => {
-                    // Abandon (existing delete behavior)
-                    app.delete_coordinator(cid);
-                }
-                _ => {}
+        ChoiceDialogAction::CloseChat(context) => match idx {
+            0 => {
+                app.close_tab(context.identity.coordinator_id);
+                InputMode::Normal
             }
-        }
+            1 => InputMode::Confirm(ConfirmAction::StopChat(context.clone())),
+            2 => InputMode::Confirm(ConfirmAction::ArchiveChat(context.clone())),
+            _ => InputMode::Normal,
+        },
     }
 }
 
@@ -1449,16 +1491,10 @@ fn handle_coordinator_picker_input(app: &mut VizApp, code: KeyCode) {
         }
         KeyCode::Enter => {
             if let Some(ref picker) = app.coordinator_picker {
-                if let Some((cid, _, _, is_alive)) = picker.entries.get(picker.selected) {
-                    let target = *cid;
-                    let is_alive = *is_alive;
+                if let Some((_, task_id, _, _)) = picker.entries.get(picker.selected) {
+                    let task_id = task_id.clone();
                     app.close_coordinator_picker();
-                    if is_alive {
-                        app.switch_coordinator(target);
-                    } else {
-                        app.switch_coordinator_history(target);
-                    }
-                    app.right_panel_tab = RightPanelTab::Chat;
+                    app.open_chat_task_or_detail(&task_id);
                     return;
                 }
             }
@@ -2802,22 +2838,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Enter => {
             if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
                 if worksgood::chat_id::is_chat_task_id(&task_id) {
-                    // Chat node: Enter opens/focuses the chat tab.
-                    if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&task_id) {
-                        let live = app.chat_is_live(cid);
-                        if cid != app.active_coordinator_id {
-                            if live {
-                                app.switch_coordinator(cid);
-                            } else {
-                                app.switch_coordinator_history(cid);
-                            }
-                        } else if !live {
-                            app.switch_coordinator_history(cid);
-                        }
-                        app.right_panel_tab = RightPanelTab::Chat;
-                        app.right_panel_visible = true;
-                        app.focused_panel = FocusedPanel::RightPanel;
-                    }
+                    app.open_chat_task_or_detail(&task_id);
                 } else {
                     app.request_hud_detail_for_task(&task_id);
                     app.right_panel_visible = true;
@@ -3501,26 +3522,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // (PTY-forward branch moved to the top of
         // handle_right_panel_key — see comment there.)
         KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Chat => {
-            let ids = app.active_tabs.clone();
-            if ids.len() > 1 {
-                let pos = ids
-                    .iter()
-                    .position(|&id| id == app.active_coordinator_id)
-                    .unwrap_or(0);
-                let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
-                app.switch_coordinator(ids[prev]);
-            }
+            app.cycle_active_chat(-1);
         }
         KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Chat => {
-            let ids = app.active_tabs.clone();
-            if ids.len() > 1 {
-                let pos = ids
-                    .iter()
-                    .position(|&id| id == app.active_coordinator_id)
-                    .unwrap_or(0);
-                let next = (pos + 1) % ids.len();
-                app.switch_coordinator(ids[next]);
-            }
+            app.cycle_active_chat(1);
         }
         // Output tab: '[' switches to previous agent
         KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Output => {
@@ -4279,16 +4284,32 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 
             // Active-chat header controls are global pointer escapes from PTY
             // capture. Route them before any terminal/message-area handling.
-            if app.last_chat_prev_area.width > 0 && app.last_chat_prev_area.contains(pos) {
+            if app.right_panel_tab == RightPanelTab::Chat
+                && app.last_chat_prev_area.width > 0
+                && app.last_chat_prev_area.contains(pos)
+            {
                 app.cycle_active_chat(-1);
                 return;
             }
-            if app.last_chat_next_area.width > 0 && app.last_chat_next_area.contains(pos) {
+            if app.right_panel_tab == RightPanelTab::Chat
+                && app.last_chat_next_area.width > 0
+                && app.last_chat_next_area.contains(pos)
+            {
                 app.cycle_active_chat(1);
                 return;
             }
-            if app.last_chat_picker_area.width > 0 && app.last_chat_picker_area.contains(pos) {
+            if app.right_panel_tab == RightPanelTab::Chat
+                && app.last_chat_picker_area.width > 0
+                && app.last_chat_picker_area.contains(pos)
+            {
                 app.open_coordinator_picker();
+                return;
+            }
+            if app.right_panel_tab == RightPanelTab::Chat
+                && app.last_chat_close_area.width > 0
+                && app.last_chat_close_area.contains(pos)
+            {
+                open_retire_chat_dialog(app);
                 return;
             }
 
@@ -4331,7 +4352,6 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     if column >= hit.tab_start && column < hit.tab_end {
                         match &hit.kind {
                             TabBarEntryKind::Coordinator(cid) => {
-                                app.right_panel_tab = RightPanelTab::Chat;
                                 // Close button: abandon underlying chat task
                                 // AND hide tab immediately. Per user mental
                                 // model "X = gone for good" (fix-tui-chat).
@@ -4342,7 +4362,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     let cid = *cid;
                                     app.click_close_button(cid);
                                 } else {
-                                    app.switch_coordinator(*cid);
+                                    app.open_coordinator_target(*cid);
                                 }
                             }
                             TabBarEntryKind::UserBoard(task_id) => {
@@ -4768,24 +4788,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                                     .map(worksgood::chat_id::is_chat_task_id)
                                     .unwrap_or(false)
                                 {
-                                    // Chat node: click opens/focuses the chat tab.
-                                    let cid = app
-                                        .selected_task_id()
-                                        .and_then(worksgood::chat_id::parse_chat_task_id);
-                                    if let Some(cid) = cid {
-                                        let live = app.chat_is_live(cid);
-                                        if cid != app.active_coordinator_id {
-                                            if live {
-                                                app.switch_coordinator(cid);
-                                            } else {
-                                                app.switch_coordinator_history(cid);
-                                            }
-                                        } else if !live {
-                                            app.switch_coordinator_history(cid);
-                                        }
-                                        app.right_panel_tab = RightPanelTab::Chat;
-                                        app.right_panel_visible = true;
-                                        app.focused_panel = FocusedPanel::RightPanel;
+                                    if let Some(task_id) = app.selected_task_id().map(str::to_owned)
+                                    {
+                                        app.open_chat_task_or_detail(&task_id);
                                     }
                                 } else if let Some(line) = app.plain_lines.get(orig_line).cloned() {
                                     // A semantic click on any ordinary task is
@@ -8616,14 +8621,13 @@ mod chat_tab_navigation_tests {
     fn build_app_with_chats(coordinator_ids: &[u32]) -> (VizApp, tempfile::TempDir) {
         let mut graph = WorkGraph::new();
         for &cid in coordinator_ids {
-            let id = if cid == 0 {
-                ".coordinator".to_string()
-            } else {
-                format!(".coordinator-{}", cid)
-            };
-            let title = format!("Coordinator {}", cid);
+            let id = worksgood::chat_id::format_chat_task_id(cid);
+            let title = format!("Chat {}", cid);
             let mut task = make_task_with_status(&id, &title, Status::InProgress);
-            task.tags = vec!["coordinator-loop".to_string()];
+            task.tags = vec!["chat-loop".to_string()];
+            // Deliberately unsupported: tab-routing tests must not launch a
+            // real child and accidentally hand subsequent keys to a PTY.
+            task.executor_preset_name = Some("shell".to_string());
             graph.add_node(Node::Task(task));
         }
         // A regular task so the viz output isn't empty.
@@ -8957,7 +8961,7 @@ mod chat_tab_navigation_tests {
         let graph_path = app.workgraph_dir.join("graph.jsonl");
         let graph = worksgood::parser::load_graph(&graph_path).unwrap();
         let task = graph
-            .get_task(".coordinator-4")
+            .get_task(".chat-4")
             .expect("close_tab must NOT abandon/delete the graph task");
         assert_eq!(
             task.status,
@@ -9144,6 +9148,7 @@ mod chat_tab_navigation_tests {
         app.right_panel_tab = RightPanelTab::Chat;
         switch_chat_tab_to_index(&mut app, 1); // active = cid 4
         assert_eq!(app.active_coordinator_id, 4);
+        app.focused_panel = FocusedPanel::Graph;
 
         super::handle_key(&mut app, KeyCode::Char('-'), KeyModifiers::NONE);
 
@@ -9157,27 +9162,25 @@ mod chat_tab_navigation_tests {
         );
     }
 
-    /// `Ctrl+W` closes the active chat tab without opening a dialog.
+    /// `Ctrl+W` in command mode opens the same non-mutating Close… dialog.
     #[test]
-    fn ctrl_w_closes_tab_without_dialog() {
+    fn ctrl_w_opens_identity_pinned_close_dialog_without_mutation() {
         let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
-        app.focused_panel = FocusedPanel::RightPanel;
         app.right_panel_tab = RightPanelTab::Chat;
         switch_chat_tab_to_index(&mut app, 1); // cid = 4
+        app.focused_panel = FocusedPanel::Graph;
         assert_eq!(app.active_coordinator_id, 4);
 
         super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
 
-        assert!(
-            !matches!(app.input_mode, InputMode::ChoiceDialog(_)),
-            "Ctrl+W must NOT open a dialog"
-        );
-        assert!(
-            !app.active_tabs.contains(&4),
-            "Ctrl+W must remove tab from active_tabs"
-        );
-        // Focus moved off PTY
-        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+            panic!("Ctrl+W must open the Close… dialog");
+        };
+        let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+        assert_eq!(context.identity.coordinator_id, 4);
+        assert_eq!(context.identity.task_id, ".chat-4");
+        assert_eq!(dialog.selected, 0, "default is non-destructive detach");
+        assert!(app.active_tabs.contains(&4), "opening must not mutate tabs");
     }
 
     /// `Ctrl+W` does NOT escape PTY mode — only `Ctrl+O` is allowed to
@@ -9648,9 +9651,9 @@ mod chat_tab_navigation_tests {
         );
     }
 
-    /// Bare 'w' in Normal mode with Chat tab active closes the current tab.
+    /// Bare `w` opens the same modal; choosing default Hide only detaches.
     #[test]
-    fn test_command_mode_w_closes_tab() {
+    fn test_command_mode_w_opens_close_then_hide_detaches() {
         let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
         app.right_panel_tab = RightPanelTab::Chat;
         app.focused_panel = FocusedPanel::Graph;
@@ -9660,16 +9663,70 @@ mod chat_tab_navigation_tests {
 
         super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
 
-        assert!(
-            !app.active_tabs.contains(&4),
-            "'w' in command mode must remove the current tab from active_tabs"
-        );
+        let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+            panic!("w must open Close…");
+        };
+        let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+        assert_eq!(context.identity.coordinator_id, 4);
+        assert!(app.active_tabs.contains(&4), "opening is non-mutating");
+        super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.active_tabs.contains(&4), "default Hide detaches tab");
         let graph = worksgood::parser::load_graph(app.workgraph_dir.join("graph.jsonl")).unwrap();
         assert_eq!(
-            graph.get_task(".coordinator-4").unwrap().status,
+            graph.get_task(".chat-4").unwrap().status,
             Status::InProgress,
             "w closes only the local tab; it must not abandon/kill the chat task"
         );
+    }
+
+    #[test]
+    fn destructive_close_choice_remains_pinned_to_named_chat_after_selection_changes() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.right_panel_tab = RightPanelTab::Chat;
+        switch_chat_tab_to_index(&mut app, 1);
+        app.focused_panel = FocusedPanel::Graph;
+
+        super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.active_coordinator_id = 0; // simulate a rapid external/refresh selection change
+        super::handle_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+
+        let result = app
+            .cmd_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("confirmed operation must enqueue a command result");
+        match result.effect {
+            CommandEffect::StopCoordinator(cid) => assert_eq!(cid, 4),
+            _ => panic!("confirmation must retain the modal's original chat identity"),
+        }
+    }
+
+    #[test]
+    fn destructive_close_choice_requires_explicit_confirmation_and_enter_cancels() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        switch_chat_tab_to_index(&mut app, 1);
+        app.focused_panel = FocusedPanel::Graph;
+
+        super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        let InputMode::Confirm(ConfirmAction::StopChat(context)) = &app.input_mode else {
+            panic!("Stop must enter a second confirmation stage");
+        };
+        assert_eq!(context.identity.task_id, ".chat-4");
+        assert!(app.active_tabs.contains(&4));
+
+        // Enter is the safe default at the destructive confirmation stage.
+        super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.active_tabs.contains(&4));
+        assert_eq!(app.active_coordinator_id, 4);
     }
 
     /// Bare 'w' in ChatInput mode must NOT close the tab (user is typing).
@@ -10315,14 +10372,14 @@ mod chat_tab_navigation_tests {
 
         let graph_path = app.workgraph_dir.join("graph.jsonl");
         worksgood::parser::modify_graph(&graph_path, |graph| {
-            let task = graph.get_task_mut(".coordinator-1").unwrap();
+            let task = graph.get_task_mut(".chat-1").unwrap();
             task.last_interaction_at = Some("2026-04-30T00:00:00+00:00".to_string());
             true
         })
         .unwrap();
         let before = load_graph(&graph_path)
             .unwrap()
-            .get_task(".coordinator-1")
+            .get_task(".chat-1")
             .unwrap()
             .last_interaction_at
             .clone();
@@ -10351,7 +10408,7 @@ mod chat_tab_navigation_tests {
         while std::time::Instant::now() < deadline {
             after = load_graph(&graph_path)
                 .unwrap()
-                .get_task(".coordinator-1")
+                .get_task(".chat-1")
                 .unwrap()
                 .last_interaction_at
                 .clone();
@@ -10922,6 +10979,13 @@ mod chat_open_tests {
         terminal_chat.executor_preset_name = Some("pi".to_string());
         terminal_chat.model = Some("pi:openrouter:example/past".to_string());
         graph.add_node(Node::Task(terminal_chat));
+        let mut other_live_chat =
+            make_task_with_status(".chat-3", "Other Live Chat", Status::InProgress);
+        other_live_chat.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(other_live_chat));
+        let mut archived_chat = make_task_with_status(".chat-4", "Filed Chat", Status::Open);
+        archived_chat.tags = vec!["chat-loop".to_string(), "archived".to_string()];
+        graph.add_node(Node::Task(archived_chat));
         let regular = make_task_with_status("regular-task", "Regular Task", Status::Open);
         graph.add_node(Node::Task(regular));
         let other = make_task_with_status("other-task", "Other Task", Status::Open);
@@ -11020,15 +11084,18 @@ mod chat_open_tests {
     #[test]
     fn active_chat_header_pointer_boundaries_cycle_and_open_picker_before_pty() {
         // Both boundary cells of prev/next must work while PTY capture owns
-        // printable input; the Chats control must open the existing picker.
-        for (area, expected) in [
-            (Rect::new(10, 5, 3, 1), 2u32),
-            (Rect::new(14, 5, 3, 1), 2u32),
+        // printable input. Navigation includes non-live chats: previous from
+        // live chat 1 is archived chat 4, next is abandoned chat 2, and both
+        // must open exact Detail without changing the active live identity.
+        for (area, expected_task) in [
+            (Rect::new(10, 5, 3, 1), ".chat-4"),
+            (Rect::new(14, 5, 3, 1), ".chat-2"),
         ] {
             for column in [area.x, area.x + area.width - 1] {
                 let (mut app, _tmp) = build_app_with_chat_node();
-                app.active_tabs = vec![1, 2];
+                app.active_tabs = vec![1, 3];
                 app.active_coordinator_id = 1;
+                app.right_panel_tab = RightPanelTab::Chat;
                 app.chat_pty_mode = true;
                 app.chat_pty_forwards_stdin = true;
                 app.focused_panel = FocusedPanel::RightPanel;
@@ -11041,7 +11108,10 @@ mod chat_open_tests {
                     area.y,
                     column,
                 );
-                assert_eq!(app.active_coordinator_id, expected, "column {column}");
+                assert_eq!(app.active_coordinator_id, 1, "column {column}");
+                assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+                assert_eq!(app.selected_task_id(), Some(expected_task));
+                assert!(app.pending_chat_pty_spawn.is_none());
             }
         }
 
@@ -11049,12 +11119,34 @@ mod chat_open_tests {
             let (mut app, _tmp) = build_app_with_chat_node();
             app.active_tabs = vec![1];
             app.active_coordinator_id = 1;
+            app.right_panel_tab = RightPanelTab::Chat;
             app.chat_pty_mode = true;
             app.chat_pty_forwards_stdin = true;
             app.last_chat_picker_area = Rect::new(18, 5, 7, 1);
             handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 5, column);
             assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
             assert!(app.coordinator_picker.is_some());
+        }
+
+        // Every cell in the labeled Close… control opens an identity-pinned,
+        // non-mutating modal even while the PTY nominally owns input.
+        for column in [27, 34] {
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.active_tabs = vec![1, 3];
+            app.active_coordinator_id = 1;
+            app.right_panel_tab = RightPanelTab::Chat;
+            app.chat_pty_mode = true;
+            app.chat_pty_forwards_stdin = true;
+            app.last_chat_close_area = Rect::new(27, 5, 8, 1);
+            handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 5, column);
+            let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+                panic!("Close… boundary {column} must open modal");
+            };
+            let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+            assert_eq!(context.identity.task_id, ".chat-1");
+            assert_eq!(context.identity.label, "Chat 1");
+            assert_eq!(context.task_status, "in-progress");
+            assert!(app.active_tabs.contains(&1));
         }
     }
 
@@ -11105,10 +11197,11 @@ mod chat_open_tests {
     }
 
     #[test]
-    fn clicking_terminal_chat_opens_history_without_relaunch() {
+    fn clicking_terminal_chat_opens_canonical_detail_without_relaunch() {
         let (mut app, _tmp) = build_app_with_chat_node();
         setup_for_graph_click(&mut app);
         app.active_coordinator_id = 1;
+        app.active_tabs = vec![1, 3];
         app.chat_pty_mode = true;
         app.chat_pty_forwards_stdin = true;
         app.pending_chat_pty_spawn = None;
@@ -11125,20 +11218,115 @@ mod chat_open_tests {
             col,
         );
 
-        assert_eq!(app.active_coordinator_id, 2);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
-        assert!(!app.chat_pty_mode, "terminal chat must be history-only");
-        assert!(!app.chat_pty_forwards_stdin);
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "opening a terminal task must not make it the active chat"
+        );
+        assert_eq!(app.selected_task_id(), Some(".chat-2"));
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
         assert!(
             app.pending_chat_pty_spawn.is_none(),
             "terminal chat must never queue a handler"
         );
-        let identity = app.active_chat_view_identity().unwrap();
-        assert_eq!(identity.task_id, ".chat-2");
-        assert_eq!(
-            identity.model.as_deref(),
-            Some("pi:openrouter:example/past")
+        assert!(!app.task_panes.contains_key(".chat-2"));
+
+        // A stale header rectangle from the prior live frame must not act on
+        // the background live chat while terminal Detail is visible.
+        app.last_chat_close_area = Rect::new(20, 30, 8, 1);
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 30, 20);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert!(!matches!(app.input_mode, InputMode::ChoiceDialog(_)));
+    }
+
+    #[test]
+    fn chooser_routes_archived_chat_to_canonical_detail() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.active_tabs = vec![1, 3];
+        app.active_coordinator_id = 1;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        app.open_coordinator_picker();
+        let (archived, alive) = app
+            .coordinator_picker
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .enumerate()
+            .find_map(|(index, (_, task_id, _, alive))| {
+                (task_id == ".chat-4").then_some((index, *alive))
+            })
+            .expect("archived chat must remain available as a task in the chooser");
+        assert!(!alive, "archived chat must never be marked live");
+        app.coordinator_picker.as_mut().unwrap().selected = archived;
+        handle_coordinator_picker_input(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.selected_task_id(), Some(".chat-4"));
+        assert_eq!(app.active_coordinator_id, 1);
+        assert!(app.pending_chat_pty_spawn.is_none());
+        assert!(!app.task_panes.contains_key(".chat-4"));
+    }
+
+    #[test]
+    fn chooser_routes_abandoned_to_detail_and_live_to_chat_without_stale_result() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.active_tabs = vec![1, 3];
+        app.active_coordinator_id = 1;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.pending_chat_pty_spawn = None;
+
+        app.open_coordinator_picker();
+        let abandoned = app
+            .coordinator_picker
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|(_, task_id, _, _)| task_id == ".chat-2")
+            .expect("abandoned chat must be offered by the chooser");
+        app.coordinator_picker.as_mut().unwrap().selected = abandoned;
+        handle_coordinator_picker_input(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.selected_task_id(), Some(".chat-2"));
+        assert_eq!(app.active_coordinator_id, 1);
+        assert!(!app.task_panes.contains_key(".chat-2"));
+        assert!(app.pending_chat_pty_spawn.is_none());
+
+        // Immediately reopen another live chat before the abandoned task's
+        // asynchronous Detail snapshot can land. Model the real Hide path so
+        // chooser selection must restore tab membership as well as content.
+        app.close_tab(3);
+        app.open_coordinator_picker();
+        let live = app
+            .coordinator_picker
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|(_, task_id, _, _)| task_id == ".chat-3")
+            .expect("second live chat must be offered by the chooser");
+        app.coordinator_picker.as_mut().unwrap().selected = live;
+        handle_coordinator_picker_input(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(app.active_coordinator_id, 3);
+        assert_eq!(app.selected_task_id(), Some(".chat-3"));
+        assert!(app.active_tabs.contains(&3));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            app.poll_auxiliary_snapshots();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_ne!(
+            app.hud_detail
+                .as_ref()
+                .map(|detail| detail.task_id.as_str()),
+            Some(".chat-2"),
+            "late abandoned-chat Detail must be discarded after live selection"
         );
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
     }
 
     /// Clicking a non-chat node atomically selects it and opens Detail rather
