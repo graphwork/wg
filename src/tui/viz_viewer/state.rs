@@ -11027,15 +11027,17 @@ impl VizApp {
         // indicators stay fresh even when the reload is slow.
         self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
 
-        // Update coordinator status and poll for new chat messages on every refresh tick.
-        if self.chat.awaiting_response() || self.right_panel_tab == RightPanelTab::Chat {
-            self.request_chat_refresh();
-        }
-
-        // Poll service health every ~2 seconds for responsive agent count updates.
-        if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(2) {
-            self.request_service_snapshot();
-        }
+        // Poll service health before chat when both are due. The auxiliary lane has a
+        // one-slot queue, so always submitting Chat first can prevent Service from ever
+        // entering the lane while the Chat tab is active. Chat is still attempted on the
+        // same tick and, while Service is pending, coalescing leaves the next queue slot
+        // available for it.
+        let chat_refresh_due =
+            self.chat.awaiting_response() || self.right_panel_tab == RightPanelTab::Chat;
+        let service_snapshot_due = self.service_health.last_poll.elapsed()
+            >= std::time::Duration::from_secs(2)
+            || self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10);
+        self.request_periodic_auxiliary_snapshots(chat_refresh_due, service_snapshot_due);
 
         // Auto-refresh config panel when config.toml changes on disk,
         // but only when the user is not actively editing.
@@ -11050,10 +11052,6 @@ impl VizApp {
             if current_mtime != self.config_panel.last_config_mtime {
                 self.request_config_panel();
             }
-        }
-
-        if self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10) {
-            self.request_service_snapshot();
         }
 
         // --- Heavy data refresh (graph-dependent) ---
@@ -19700,6 +19698,21 @@ impl VizApp {
             });
     }
 
+    /// Schedule periodic auxiliary snapshots in starvation-safe order.
+    ///
+    /// Service goes first when both snapshots are due because Chat is requested on every
+    /// refresh while its tab is active. Both requests are still attempted: if Service fills
+    /// the queue, Chat can enter as soon as the worker starts Service; if it cannot, the next
+    /// tick coalesces the pending Service request and gives Chat another chance.
+    fn request_periodic_auxiliary_snapshots(&mut self, chat_due: bool, service_due: bool) {
+        if service_due {
+            self.request_service_snapshot();
+        }
+        if chat_due {
+            self.request_chat_refresh();
+        }
+    }
+
     pub fn request_chat_refresh(&mut self) {
         let workgraph_dir = self.workgraph_dir.clone();
         let cid = self.active_coordinator_id;
@@ -25356,6 +25369,78 @@ mod service_health_tests {
     fn no_degraded_label() {
         let h = ServiceHealthState::default();
         assert!(!h.label.contains("DEGRADED"));
+    }
+}
+
+#[cfg(test)]
+mod periodic_auxiliary_scheduler_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn periodic_service_snapshot_wins_saturated_slot_without_starving_chat() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        let mut app = VizApp::build(
+            wg_dir,
+            VizOptions::default(),
+            Some(false),
+            None,
+            false,
+            Config::default(),
+            None,
+            false,
+        );
+
+        // Hold the worker on a running job so its one queue slot cannot be
+        // consumed between the two periodic submissions. This makes the old
+        // Chat-before-Service starvation ordering deterministic: only the
+        // first request can enter the saturated lane.
+        let blocker_started = Arc::new(AtomicBool::new(false));
+        let release_blocker = Arc::new(AtomicBool::new(false));
+        let worker_started = blocker_started.clone();
+        let worker_release = release_blocker.clone();
+        assert!(
+            app.auxiliary
+                .request(super::super::auxiliary::Kind::Config, move || {
+                    worker_started.store(true, Ordering::Release);
+                    while !worker_release.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Box::new(|_| {})
+                })
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !blocker_started.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(blocker_started.load(Ordering::Acquire));
+
+        app.request_periodic_auxiliary_snapshots(true, true);
+        assert!(
+            app.auxiliary
+                .is_pending(super::super::auxiliary::Kind::Service),
+            "Service must get the bounded queue slot when Chat and Service are both due"
+        );
+        assert!(
+            !app.auxiliary
+                .is_pending(super::super::auxiliary::Kind::Chat),
+            "the saturated one-slot queue should reject the second request"
+        );
+
+        release_blocker.store(true, Ordering::Release);
+        app.wait_for_auxiliary_snapshot();
+
+        // Service priority must not disable chat refreshes: on a chat-only
+        // tick, Chat still enters and completes through the same lane.
+        app.request_periodic_auxiliary_snapshots(true, false);
+        assert!(
+            app.auxiliary
+                .is_pending(super::super::auxiliary::Kind::Chat)
+        );
+        app.wait_for_auxiliary_snapshot();
     }
 }
 
