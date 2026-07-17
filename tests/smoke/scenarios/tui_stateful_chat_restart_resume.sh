@@ -95,11 +95,12 @@ PY
 printf '%s\n' '{"active_coordinator_id":0,"right_panel_tab":"Chat","open_tabs":[".chat-0"],"active":".chat-0"}' >"$G/tui-state.json"
 
 project_tag=$(basename "$scratch" | tr ':.' '--')
-inner="wg-chat-${project_tag}-chat-0"
+path_hash=$(printf '%s' "$(realpath "$G")" | sha256sum | cut -c1-16)
+inner="wg-chat-${project_tag}-${path_hash}-chat-0"
 outer="wgsmoke-stateful-$$"
 outer2="${outer}-restart"
 outer3="${outer}-empty-first-use"
-empty_inner="wg-chat-empty-chat-0"
+empty_inner=""
 cleanup_sessions() {
     tmux kill-session -t "$outer" 2>/dev/null || true
     tmux kill-session -t "$outer2" 2>/dev/null || true
@@ -214,6 +215,8 @@ cat >"$empty_g/config.toml" <<'TOML'
 model = "pi:openai-codex:gpt-5.6-sol"
 TOML
 empty_trace="$scratch/empty-startup.jsonl"
+empty_hash=$(printf '%s' "$(realpath "$empty_g")" | sha256sum | cut -c1-16)
+empty_inner="wg-chat-empty-${empty_hash}-chat-0"
 tmux new-session -d -s "$outer3" -x 170 -y 48 \
     "env PATH='$PATH' HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' TMUX_TMPDIR='$TMUX_TMPDIR' PI_STATEFUL_LOG='$PI_STATEFUL_LOG' WG_TUI_STARTUP_TRACE='$empty_trace' '$WG_BIN' --dir '$empty_g' tui --no-mouse"
 wait_screen "$outer3" 'PI_STATEFUL_READY' \

@@ -5,6 +5,9 @@
 //! Use `wg migrate chat-rename` to rewrite legacy IDs.
 
 use crate::graph::WorkGraph;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub const CHAT_PREFIX: &str = ".chat-";
 pub const LEGACY_COORDINATOR_PREFIX: &str = ".coordinator-";
@@ -86,14 +89,119 @@ pub fn is_chat_loop_tag(tag: &str) -> bool {
 /// sessions whose backing chat task no longer exists.
 pub const CHAT_TMUX_SESSION_PREFIX: &str = "wg-chat-";
 
-/// Canonical persistent tmux session for a chat in this project.
-pub fn chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u32) -> String {
+/// Stable, path-unique tmux namespace for one WG graph.
+///
+/// The readable basename is retained for diagnostics, while the digest is
+/// computed from the canonical `.wg` path. Basename-only names let two graphs
+/// such as `/a/shared/.wg` and `/b/shared/.wg` claim the same tmux process.
+pub fn chat_tmux_project_tag(workgraph_dir: &Path) -> String {
+    let identity_path = stable_graph_path(workgraph_dir);
+    let digest = Sha256::digest(identity_path.to_string_lossy().as_bytes());
+    let hash = hex::encode(&digest[..8]);
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
+    let basename = project_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    let readable: String = sanitize_session_segment(basename)
+        .chars()
+        .take(48)
+        .collect();
+    format!("{readable}-{hash}")
+}
+
+fn stable_graph_path(workgraph_dir: &Path) -> PathBuf {
+    std::fs::canonicalize(workgraph_dir).unwrap_or_else(|_| {
+        if workgraph_dir.is_absolute() {
+            workgraph_dir.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(workgraph_dir)
+        }
+    })
+}
+
+fn legacy_chat_tmux_session_for_id(workgraph_dir: &Path, chat_id: u32) -> String {
     let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
     let project_tag = project_root
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("project");
     chat_tmux_session_name(project_tag, &format_chat_session_ref(chat_id))
+}
+
+/// Canonical persistent tmux session for a chat in this project.
+pub fn chat_tmux_session_for_id(workgraph_dir: &Path, chat_id: u32) -> String {
+    chat_tmux_session_name(
+        &chat_tmux_project_tag(workgraph_dir),
+        &format_chat_session_ref(chat_id),
+    )
+}
+
+/// Prefix shared by canonical chat tmux sessions belonging to this exact graph.
+pub fn chat_tmux_session_prefix_for_dir(workgraph_dir: &Path) -> String {
+    format!(
+        "{}{}-",
+        CHAT_TMUX_SESSION_PREFIX,
+        chat_tmux_project_tag(workgraph_dir)
+    )
+}
+
+fn tmux_has_session(session: &str) -> bool {
+    Command::new("tmux")
+        .args(["has-session", "-t", session])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// A legacy basename-only session is safe to migrate only when its
+/// session-scoped environment identifies this exact graph. All TUI-created chat
+/// sessions carry `WG_DIR`; an unmarked or differently-owned legacy session is
+/// deliberately ignored rather than guessed from its colliding basename.
+fn legacy_tmux_session_belongs_to(session: &str, workgraph_dir: &Path) -> bool {
+    let output = match Command::new("tmux")
+        .args(["show-environment", "-t", session, "WG_DIR"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => return false,
+    };
+    let value = match std::str::from_utf8(&output)
+        .ok()
+        .and_then(|line| line.trim().strip_prefix("WG_DIR="))
+    {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => return false,
+    };
+    stable_graph_path(&value) == stable_graph_path(workgraph_dir)
+}
+
+/// Return the path-unique session name, migrating a provably-owned legacy
+/// basename-only session in place when possible. `tmux rename-session` keeps
+/// the pane PID and transcript intact, so a normal same-graph restart
+/// reattaches without launching a second vendor process.
+pub fn prepare_chat_tmux_session_for_id(workgraph_dir: &Path, chat_id: u32) -> String {
+    let canonical = chat_tmux_session_for_id(workgraph_dir, chat_id);
+    if tmux_has_session(&canonical) {
+        return canonical;
+    }
+
+    let legacy = legacy_chat_tmux_session_for_id(workgraph_dir, chat_id);
+    if legacy != canonical
+        && tmux_has_session(&legacy)
+        && legacy_tmux_session_belongs_to(&legacy, workgraph_dir)
+    {
+        let _ = Command::new("tmux")
+            .args(["rename-session", "-t", &legacy, &canonical])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    canonical
 }
 
 /// True when the persistent TUI-owned tmux session for this chat exists.
@@ -103,15 +211,9 @@ pub fn chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u32) -
 /// independent, authoritative runtime owner: CLI status and the daemon
 /// supervisor must consult it rather than calling a visibly-live pane
 /// "stopped" or spawning a duplicate handler beside it.
-pub fn chat_tmux_session_is_live(workgraph_dir: &std::path::Path, chat_id: u32) -> bool {
-    let session = chat_tmux_session_for_id(workgraph_dir, chat_id);
-    std::process::Command::new("tmux")
-        .args(["has-session", "-t", &session])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+pub fn chat_tmux_session_is_live(workgraph_dir: &Path, chat_id: u32) -> bool {
+    let session = prepare_chat_tmux_session_for_id(workgraph_dir, chat_id);
+    tmux_has_session(&session)
 }
 
 /// Best-effort: kill the tmux session backing a given chat id. No-op
@@ -121,17 +223,17 @@ pub fn chat_tmux_session_is_live(workgraph_dir: &std::path::Path, chat_id: u32) 
 ///
 /// Returns `true` iff a session was actually killed (useful for emitting
 /// "Closed N tmux sessions" toasts; callers can ignore otherwise).
-pub fn kill_chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u32) -> bool {
-    let session = chat_tmux_session_for_id(workgraph_dir, chat_id);
+pub fn kill_chat_tmux_session_for_id(workgraph_dir: &Path, chat_id: u32) -> bool {
+    let session = prepare_chat_tmux_session_for_id(workgraph_dir, chat_id);
     // Quick has-session probe: avoids spawning kill-session when there's
     // nothing there (so the no-op case is silent + cheap).
-    if !chat_tmux_session_is_live(workgraph_dir, chat_id) {
+    if !tmux_has_session(&session) {
         return false;
     }
-    std::process::Command::new("tmux")
+    Command::new("tmux")
         .args(["kill-session", "-t", &session])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -178,6 +280,11 @@ pub fn parse_chat_tmux_session(name: &str, project_tag: &str) -> Option<String> 
     }
 }
 
+/// Parse only canonical sessions owned by this exact graph path.
+pub fn parse_chat_tmux_session_for_dir(name: &str, workgraph_dir: &Path) -> Option<String> {
+    parse_chat_tmux_session(name, &chat_tmux_project_tag(workgraph_dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +318,21 @@ mod tests {
         assert!(is_chat_loop_tag("chat-loop"));
         assert!(is_chat_loop_tag("coordinator-loop"));
         assert!(!is_chat_loop_tag("compact-loop"));
+    }
+
+    #[test]
+    fn path_unique_tmux_sessions_do_not_collide_for_equal_basenames() {
+        let td = tempfile::TempDir::new().unwrap();
+        let graph_a = td.path().join("a/shared/.wg");
+        let graph_b = td.path().join("b/shared/.wg");
+        std::fs::create_dir_all(&graph_a).unwrap();
+        std::fs::create_dir_all(&graph_b).unwrap();
+
+        let session_a = chat_tmux_session_for_id(&graph_a, 0);
+        let session_b = chat_tmux_session_for_id(&graph_b, 0);
+        assert_ne!(session_a, session_b);
+        assert!(session_a.ends_with("-chat-0"), "{session_a}");
+        assert!(session_b.ends_with("-chat-0"), "{session_b}");
     }
 
     #[test]

@@ -602,6 +602,28 @@ pub(crate) fn reconstruct_resume_metadata(
     (executor, model)
 }
 
+fn validate_chat_resumable(graph: &WorkGraph, cid: u32) -> Result<()> {
+    let task = chat_id::find_chat_task(graph, cid)
+        .with_context(|| format!("Chat task for id {cid} not found in graph"))?;
+    if task.status.is_terminal() || task.tags.iter().any(|tag| tag == "archived") {
+        anyhow::bail!(
+            "Cannot resume chat {cid}: authoritative task {} is terminal ({}){}",
+            task.id,
+            task.status,
+            if task.tags.iter().any(|tag| tag == "archived") {
+                " and archived"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
+}
+
+fn resume_runtime_proof_is_valid(graph: &WorkGraph, cid: u32, runtime_live: bool) -> bool {
+    runtime_live && validate_chat_resumable(graph, cid).is_ok()
+}
+
 const RESUME_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const RESUME_LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -631,6 +653,10 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
+    // Terminal graph state is authoritative. Reject it before consulting the
+    // daemon, clearing sentinels, reconstructing route metadata, or accepting
+    // any tmux process as runtime evidence.
+    validate_chat_resumable(&graph, cid)?;
     if !service_is_running(dir) {
         anyhow::bail!(
             "Cannot resume chat {}: service daemon is not running. \
@@ -663,6 +689,12 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     // though the metadata was on disk. We reconstruct it here so the user
     // never has to supply the (non-existent) flags. See
     // `reconstruct_resume_metadata`.
+    // Re-read immediately before scheduling: archive/abandon may have raced
+    // the earlier reference resolution while we inspected runtime metadata.
+    let scheduling_graph = worksgood::parser::load_graph(&graph_path(dir))
+        .with_context(|| "Failed to reload graph before scheduling chat resume")?;
+    validate_chat_resumable(&scheduling_graph, cid)?;
+
     let (executor, model) = reconstruct_resume_metadata(dir, cid);
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::send_request;
@@ -706,6 +738,16 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
             );
         }
         anyhow::bail!(msg);
+    }
+
+    // Runtime proof is not sufficient by itself: a stale tmux session can
+    // outlive an archive/abandon racing the supervisor acknowledgement. Re-read
+    // the graph before reporting success and require both facts together.
+    let proof_graph = worksgood::parser::load_graph(&graph_path(dir))
+        .with_context(|| "Failed to reload graph while validating chat resume")?;
+    if !resume_runtime_proof_is_valid(&proof_graph, cid, chat_handler_is_live(dir, cid)) {
+        validate_chat_resumable(&proof_graph, cid)?;
+        anyhow::bail!("Cannot resume chat {cid}: runtime ownership proof disappeared");
     }
 
     if json {
@@ -919,12 +961,8 @@ pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
 }
 
 fn chat_tmux_session_for_dir(dir: &Path, cid: u32) -> Option<String> {
-    let project_root = dir.parent().unwrap_or(dir).to_path_buf();
-    let project_tag = project_root.file_name().and_then(|n| n.to_str())?;
-    let chat_ref = format!("chat-{}", cid);
-    Some(worksgood::chat_id::chat_tmux_session_name(
-        project_tag,
-        &chat_ref,
+    Some(worksgood::chat_id::prepare_chat_tmux_session_for_id(
+        dir, cid,
     ))
 }
 
@@ -1238,6 +1276,37 @@ mod tests {
                 status,
                 ChatRuntimeStatus::Dormant,
                 "Daemon down — every chat should be Dormant"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_chat_tasks_cannot_be_resumed_even_with_runtime_proof() {
+        for (status, archived) in [
+            (Status::Done, false),
+            (Status::Done, true),
+            (Status::Abandoned, false),
+            (Status::Failed, false),
+        ] {
+            let mut graph = WorkGraph::new();
+            let mut tags = vec![chat_id::CHAT_LOOP_TAG.to_string()];
+            if archived {
+                tags.push("archived".to_string());
+            }
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: ".chat-9".to_string(),
+                status,
+                tags,
+                ..Default::default()
+            }));
+
+            assert!(
+                validate_chat_resumable(&graph, 9).is_err(),
+                "terminal status {status:?} must reject resume"
+            );
+            assert!(
+                !resume_runtime_proof_is_valid(&graph, 9, true),
+                "stale tmux proof must not revive {status:?}"
             );
         }
     }

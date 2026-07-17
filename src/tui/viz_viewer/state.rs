@@ -8162,12 +8162,9 @@ impl VizApp {
             .parent()
             .unwrap_or(&workgraph_dir)
             .to_path_buf();
-        let project_tag = project_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("project");
         let chat_ref = worksgood::chat_id::format_chat_session_ref(active);
-        let tmux_session = worksgood::chat_id::chat_tmux_session_name(project_tag, &chat_ref);
+        let tmux_session =
+            worksgood::chat_id::prepare_chat_tmux_session_for_id(&workgraph_dir, active);
         let existing_tmux = crate::tui::pty_pane::tmux_available()
             && crate::tui::pty_pane::tmux_has_session(&tmux_session);
 
@@ -17448,19 +17445,10 @@ impl VizApp {
             if let Some(ref m) = chat_model {
                 env.push(("WG_MODEL".to_string(), m.clone()));
             }
-            let project_root = self
-                .workgraph_dir
-                .parent()
-                .unwrap_or(&self.workgraph_dir)
-                .to_path_buf();
-            let project_tag = project_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project");
             let tmux_session = if crate::tui::pty_pane::tmux_available() {
-                Some(worksgood::chat_id::chat_tmux_session_name(
-                    project_tag,
-                    &chat_ref,
+                Some(worksgood::chat_id::prepare_chat_tmux_session_for_id(
+                    &self.workgraph_dir,
+                    self.active_coordinator_id,
                 ))
             } else {
                 warn_chat_tmux_missing_once();
@@ -17793,19 +17781,10 @@ impl VizApp {
         // survives TUI exit (the persistence design — see
         // docs/design/chat-agent-persistence.md). Falls back to plain
         // spawn with a one-time stderr warning when tmux is missing.
-        let project_root = self
-            .workgraph_dir
-            .parent()
-            .unwrap_or(&self.workgraph_dir)
-            .to_path_buf();
-        let project_tag = project_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project");
         let tmux_session = if crate::tui::pty_pane::tmux_available() {
-            Some(worksgood::chat_id::chat_tmux_session_name(
-                project_tag,
-                &chat_ref,
+            Some(worksgood::chat_id::prepare_chat_tmux_session_for_id(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
             ))
         } else {
             warn_chat_tmux_missing_once();
@@ -18055,30 +18034,16 @@ impl VizApp {
     /// backing chat task is no longer alive in the graph. Runs once
     /// at TUI startup. No-op when tmux isn't installed.
     ///
-    /// Only matches sessions whose project tag equals the current
-    /// project root's basename — so two different projects' TUIs can
-    /// run side-by-side without sweeping each other's sessions.
+    /// Only matches sessions whose project tag includes the current graph's
+    /// canonical-path digest, so even equal-basename projects can run
+    /// side-by-side without sweeping each other's sessions.
     /// Project-namespaced prefix matching every `wg-chat-*` tmux session
     /// for THIS project (`wg-chat-<project>-`). Used by orphan-sweep,
     /// settings-sync, and the chat-exit prompt to scope tmux operations
     /// to this project so co-running TUIs in sibling projects don't
     /// touch each other's sessions.
     fn chat_tmux_session_prefix(&self) -> String {
-        let project_root = self
-            .workgraph_dir
-            .parent()
-            .unwrap_or(&self.workgraph_dir)
-            .to_path_buf();
-        let project_tag = project_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
-        format!(
-            "{}{}-",
-            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
-            project_tag.replace([':', '.'], "-")
-        )
+        worksgood::chat_id::chat_tmux_session_prefix_for_dir(&self.workgraph_dir)
     }
 
     /// Re-assert wg's desired tmux session options across every chat
@@ -18097,17 +18062,6 @@ impl VizApp {
         if !crate::tui::pty_pane::tmux_available() {
             return;
         }
-        let project_root = self
-            .workgraph_dir
-            .parent()
-            .unwrap_or(&self.workgraph_dir)
-            .to_path_buf();
-        let project_tag = project_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
-
         // Build the set of live chat refs from the graph: `chat-N` for
         // every non-archived/non-abandoned task with the chat-loop tag.
         let live_refs: std::collections::HashSet<String> = self
@@ -18127,16 +18081,22 @@ impl VizApp {
             })
             .unwrap_or_default();
 
-        // Enumerate all wg-chat-* sessions and kill the ones whose chat
-        // ref isn't in `live_refs`.
-        let prefix = format!(
-            "{}{}-",
-            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
-            project_tag.replace([':', '.'], "-")
-        );
+        // Migrate only legacy sessions whose WG_DIR proves ownership by this
+        // graph, then enumerate the path-unique namespace. An ambiguous
+        // basename-only session is never swept or attached.
+        for chat_ref in &live_refs {
+            if let Some(cid) = chat_ref
+                .strip_prefix("chat-")
+                .and_then(|n| n.parse::<u32>().ok())
+            {
+                worksgood::chat_id::prepare_chat_tmux_session_for_id(&self.workgraph_dir, cid);
+            }
+        }
+        let prefix = self.chat_tmux_session_prefix();
         let sessions = crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix);
         for session in &sessions {
-            let Some(chat_ref) = worksgood::chat_id::parse_chat_tmux_session(session, &project_tag)
+            let Some(chat_ref) =
+                worksgood::chat_id::parse_chat_tmux_session_for_dir(session, &self.workgraph_dir)
             else {
                 continue;
             };
@@ -18701,24 +18661,12 @@ impl VizApp {
         if !crate::tui::pty_pane::tmux_available() {
             return Vec::new();
         }
-        let project_root = self
-            .workgraph_dir
-            .parent()
-            .unwrap_or(&self.workgraph_dir)
-            .to_path_buf();
-        let project_tag = project_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
-        let prefix = format!(
-            "{}{}-",
-            worksgood::chat_id::CHAT_TMUX_SESSION_PREFIX,
-            project_tag.replace([':', '.'], "-")
-        );
+        let prefix = self.chat_tmux_session_prefix();
         crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix)
             .into_iter()
-            .filter_map(|s| worksgood::chat_id::parse_chat_tmux_session(&s, &project_tag))
+            .filter_map(|s| {
+                worksgood::chat_id::parse_chat_tmux_session_for_dir(&s, &self.workgraph_dir)
+            })
             .filter_map(|cref| {
                 cref.strip_prefix("chat-")
                     .and_then(|n| n.parse::<u32>().ok())
