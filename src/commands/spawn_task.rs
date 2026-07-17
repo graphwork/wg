@@ -472,6 +472,10 @@ fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Res
             .arg("--session-dir")
             .arg(&session_dir);
         cmd.env("WG_DIR", workgraph_dir);
+        cmd.env("WG_CHAT_REF", chat_ref);
+        if let Some(chat_id) = worksgood::chat_id::canonical_task_id_from_ref(chat_ref) {
+            cmd.env("WG_CHAT_ID", chat_id);
+        }
         let err = cmd.exec();
         Err(anyhow!("exec pi failed: {}", err))
     }

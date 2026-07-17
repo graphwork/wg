@@ -655,6 +655,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // Add task ID and agent ID to environment
     cmd.env("WG_TASK_ID", task_id);
     if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
+        cmd.env("WG_CHAT_ID", task_id);
         cmd.env(
             "WG_CHAT_REF",
             worksgood::chat_id::format_chat_session_ref(chat_id),

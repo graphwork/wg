@@ -13,7 +13,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { WgBackend } from "../dist/index.js";
+import { canonicalChatId, readWgEnv, WgBackend } from "../dist/index.js";
 
 type ExecArgs = { command: string; args: string[] };
 
@@ -32,16 +32,16 @@ function fakeHost(result: { stdout?: string; stderr?: string; code: number }) {
 describe("WgBackend.setModelOverride exit-code handling", () => {
   it("rejects when `wg chat model` exits non-zero (no longer a silent no-op)", async () => {
     const { host } = fakeHost({ stderr: "error: unrecognized subcommand 'model'", code: 2 });
-    const backend = new WgBackend(host, { chatId: "chat-1", dir: "/proj" });
+    const backend = new WgBackend(host, { chatId: ".chat-1", dir: "/proj" });
 
     await expect(backend.setModelOverride("openrouter:openai/gpt-4o")).rejects.toThrow(
-      /'wg chat model chat-1 openrouter:openai\/gpt-4o' exited 2/,
+      /model override for \.chat-1 failed \(wg exit 2\)/,
     );
   });
 
   it("surfaces the wg stderr/stdout in the rejection so the failure is diagnosable", async () => {
     const { host } = fakeHost({ stderr: "error: unrecognized subcommand 'model'", code: 2 });
-    const backend = new WgBackend(host, { chatId: "chat-1" });
+    const backend = new WgBackend(host, { chatId: ".chat-1" });
 
     await expect(backend.setModelOverride("claude:opus")).rejects.toThrow(
       /unrecognized subcommand 'model'/,
@@ -50,28 +50,62 @@ describe("WgBackend.setModelOverride exit-code handling", () => {
 
   it("resolves with the ExecResult when the verb succeeds (exit 0)", async () => {
     const { host, calls } = fakeHost({ stdout: "model set", code: 0 });
-    const backend = new WgBackend(host, { chatId: "chat-1", dir: "/proj" });
+    const backend = new WgBackend(host, { chatId: ".chat-1", dir: "/proj" });
 
     const r = await backend.setModelOverride("claude:opus");
-    expect(r.code).toBe(0);
-    // The verb is invoked with the --dir prefix + the chat + spec.
+    expect(r?.code).toBe(0);
+    // The verb is invoked with the --dir prefix + the canonical chat task id.
     expect(calls[0].command).toBe("wg");
-    expect(calls[0].args).toEqual(["--dir", "/proj", "chat", "model", "chat-1", "claude:opus"]);
+    expect(calls[0].args).toEqual([
+      "--dir",
+      "/proj",
+      "chat",
+      "model",
+      ".chat-1",
+      "claude:opus",
+      "--warm-pi-writeback",
+    ]);
   });
 
-  it("rejects (does not silently swallow) when no chat id is available", async () => {
+  it("is a safe no-op when no chat id is available", async () => {
     const { host } = fakeHost({ code: 0 });
     const backend = new WgBackend(host, {}); // no chatId
 
-    await expect(backend.setModelOverride("claude:opus")).rejects.toThrow(/no chat id/);
+    await expect(backend.setModelOverride("claude:opus")).resolves.toBeNull();
+    expect(backend.hasChatContext()).toBe(false);
     expect(host.exec).not.toHaveBeenCalled();
   });
 
-  it("prefers an explicit chatRef over the env chat id", async () => {
+  it("prefers an explicit canonical chatRef over the env chat id", async () => {
     const { host, calls } = fakeHost({ code: 0 });
-    const backend = new WgBackend(host, { chatId: "env-chat" });
+    const backend = new WgBackend(host, { chatId: ".chat-1" });
 
-    await backend.setModelOverride("claude:opus", "explicit-chat");
-    expect(calls[0].args).toEqual(["chat", "model", "explicit-chat", "claude:opus"]);
+    await backend.setModelOverride("claude:opus", ".chat-8");
+    expect(calls[0].args).toEqual([
+      "chat",
+      "model",
+      ".chat-8",
+      "claude:opus",
+      "--warm-pi-writeback",
+    ]);
+  });
+});
+
+describe("WG chat launch context", () => {
+  it("prefers canonical WG_CHAT_ID and accepts WG_CHAT_REF compatibility alias", () => {
+    expect(canonicalChatId({ WG_CHAT_ID: ".chat-7", WG_CHAT_REF: "chat-8" })).toBe(".chat-7");
+    expect(readWgEnv({ WG_CHAT_REF: "chat-8" }).chatId).toBe(".chat-8");
+    expect(readWgEnv({ WG_CHAT_REF: "coordinator-2" }).chatId).toBe(".coordinator-2");
+  });
+
+  it("does not invent chat identity from ambient project or task state", () => {
+    expect(
+      readWgEnv({
+        WG_TASK_ID: ".chat-99",
+        WG_DIR: "/project/.wg",
+        WG_PROJECT_ROOT: "/project",
+      }).chatId,
+    ).toBeUndefined();
+    expect(readWgEnv({ WG_CHAT_ID: "not-a-canonical-chat" }).chatId).toBeUndefined();
   });
 });

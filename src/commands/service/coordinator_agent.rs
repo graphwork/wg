@@ -1031,6 +1031,11 @@ fn subprocess_coordinator_loop(
         cmd.arg("--dir").arg(dir).arg("spawn-task").arg(&task_id);
         cmd.current_dir(dir.parent().unwrap_or(dir));
         cmd.env("WG_DIR", dir);
+        cmd.env("WG_CHAT_ID", &task_id);
+        cmd.env(
+            "WG_CHAT_REF",
+            worksgood::chat_id::format_chat_session_ref(coordinator_id),
+        );
         cmd.env("WG_EXECUTOR_TYPE", &effective_exec);
         if let Some(p) = provider {
             cmd.env("WG_PROVIDER", p);

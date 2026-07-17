@@ -13,11 +13,18 @@ Topology B the SDK Node host). See
 |---|---|
 | **Tools** (LLM/human callable) | `wg_ready`, `wg_show`, `wg_add`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
 | **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-model <provider:id>` (warm in-session swap) |
-| **Model bridge** | `registerProvider(WG endpoints/keys)` + `model_select` → WG `CoordinatorState.model_override` write-back |
+| **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
 
-WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_STATE_DIR`,
-`WG_DAEMON_SOCKET`, `WG_PROJECT_DIR`) rides in via environment variables read
-inside the extension factory. The backend shells the `wg` binary today
+WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_CHAT_REF`,
+`WG_STATE_DIR`, `WG_DAEMON_SOCKET`, `WG_PROJECT_DIR`) rides in via environment
+variables read inside the extension factory. `WG_CHAT_ID=.chat-N` is the
+canonical persistence identity; `WG_CHAT_REF=chat-N` is accepted as a
+compatibility alias and normalized to that task id. Without either explicit
+chat variable the model bridge is inert: standalone Pi can cycle any provider's
+models without invoking `wg`. Project cwd, `WG_DIR`, `WG_TASK_ID`, and Pi session
+metadata never imply chat identity.
+
+The backend shells the `wg` binary today
 (`pi.exec("wg", …)`) and is structured to swap to a daemon-IPC client later
 without touching the tool/command surface.
 

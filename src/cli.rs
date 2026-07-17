@@ -5440,6 +5440,18 @@ pub enum ChatCommands {
         message: String,
     },
 
+    /// Switch one chat's model. Pi's plugin uses the hidden warm-writeback
+    /// flag after an in-process Ctrl-P or /model selection.
+    Model {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+        /// Selected provider/model spec.
+        spec: String,
+        /// Internal: pi already switched in-process; persist without respawn.
+        #[arg(long = "warm-pi-writeback", hide = true)]
+        warm_pi_writeback: bool,
+    },
+
     /// SIGTERM the live handler (chat entity stays in graph). Reversible
     /// via `wg chat resume`. Requires the service daemon.
     Stop {

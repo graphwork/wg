@@ -10,18 +10,34 @@
 function firstNonEmpty(...vals) {
     for (const v of vals) {
         if (v != null && v.trim() !== "")
-            return v;
+            return v.trim();
     }
     return undefined;
+}
+/**
+ * Normalize only the explicit chat launch contract into a graph task id.
+ *
+ * WG_CHAT_ID is canonical (`.chat-N`; legacy `.coordinator-N` remains
+ * addressable for migrated graphs). WG_CHAT_REF is the supported session alias
+ * (`chat-N` / `coordinator-N`). Deliberately do not consult WG_TASK_ID, cwd,
+ * WG_DIR, session id, or any other ambient state: a standalone pi process in a
+ * WG checkout is not thereby a managed WG chat.
+ */
+export function canonicalChatId(env = process.env) {
+    const raw = firstNonEmpty(env.WG_CHAT_ID, env.WG_CHAT_REF);
+    if (!raw)
+        return undefined;
+    if (/^\.(?:chat|coordinator)-\d+$/.test(raw))
+        return raw;
+    const alias = raw.match(/^(chat|coordinator)-(\d+)$/);
+    return alias ? `.${alias[1]}-${alias[2]}` : undefined;
 }
 /** Read the WG context from the process environment (or an injected map for tests). */
 export function readWgEnv(env = process.env) {
     return {
         taskId: firstNonEmpty(env.WG_TASK_ID),
         agentId: firstNonEmpty(env.WG_AGENT_ID),
-        // WG_CHAT_ID is the spec'd name; WG_CHAT_REF is the addressable alias WG
-        // also exports — accept either.
-        chatId: firstNonEmpty(env.WG_CHAT_ID, env.WG_CHAT_REF),
+        chatId: canonicalChatId(env),
         // WG_STATE_DIR is the spec'd name (forward-looking); WG_PROJECT_ROOT /
         // WG_GLOBAL_DIR are what WG exports today.
         stateDir: firstNonEmpty(env.WG_STATE_DIR, env.WG_PROJECT_ROOT, env.WG_GLOBAL_DIR),
@@ -101,35 +117,35 @@ export class WgBackend {
         return this.run(args, { ...opts, json: true });
     }
     // ── model bridge ────────────────────────────────────────────────────────
+    /** True only when this process was explicitly launched for a WG chat. */
+    hasChatContext() {
+        return this.env.chatId !== undefined;
+    }
     /**
-     * Persist a model choice into the chat's `CoordinatorState.model_override`
-     * so a pi-native warm `setModel` survives a WG-side respawn (the identity
-     * bridge, plugin-research.md §1.3).
+     * Persist a pi-native warm model choice into the managed chat override.
      *
-     * This shells the `wg chat model <chat> <spec>` verb, which is delivered by
-     * the downstream `pi-plugin-impl-chat-model-verb` task. Until that verb
-     * lands the call exits non-zero at runtime ("unknown subcommand").
-     *
-     * CRITICAL: `pi.exec` RESOLVES on a non-zero exit (it only rejects on spawn
-     * failure), so returning the raw {@link ExecResult} would make a failed
-     * write-back a SILENT no-op — the `model_select` handler's catch never fires
-     * and nothing is logged (the bug fix-pi-model addresses). Unlike the
-     * read/display verbs that surface `r.code` to the user, this write only
-     * succeeds when the override is actually persisted, so a non-zero exit is an
-     * error: we **reject** with a message naming the verb, exit code, and the
-     * `wg` stderr/stdout so the failure is visible (and the warm pi swap keeps
-     * working regardless — the caller swallows the rejection into a log line).
+     * Standalone pi sessions are a normal topology, not an error. The event
+     * boundary checks `hasChatContext()` and this backend repeats the guard so a
+     * future caller cannot accidentally mutate a graph or produce stack noise.
+     * A managed failure remains an error: `pi.exec` resolves non-zero exits, so
+     * inspect the code and reject with one bounded, actionable line.
      */
     async setModelOverride(spec, chatRef, opts = {}) {
-        const chat = chatRef ?? this.env.chatId;
-        if (!chat) {
-            throw new Error("wg-pi-plugin: cannot write model override — no chat id (set $WG_CHAT_ID)");
-        }
-        const r = await this.run(["chat", "model", chat, spec], opts);
+        const chat = chatRef
+            ? canonicalChatId({ WG_CHAT_ID: chatRef })
+            : this.env.chatId;
+        if (!chat)
+            return null;
+        const r = await this.run(["chat", "model", chat, spec, "--warm-pi-writeback"], opts);
         if (r.code !== 0) {
-            const detail = (r.stderr || r.stdout).trim();
-            throw new Error(`wg-pi-plugin: 'wg chat model ${chat} ${spec}' exited ${r.code}` +
-                (detail ? `: ${detail}` : ""));
+            // Clap/IPC errors can be multi-line. One line is enough here; the full
+            // command names the exact target and can be rerun directly by the user.
+            const detail = (r.stderr || r.stdout)
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find(Boolean);
+            throw new Error(`model override for ${chat} failed (wg exit ${r.code})` +
+                (detail ? `: ${detail}` : "; rerun `wg chat model` for details"));
         }
         return r;
     }

@@ -4040,6 +4040,23 @@ pub struct PendingChatPtySpawn {
     pub tmux_session: Option<String>,
 }
 
+/// Canonical environment for every TUI-owned chat child. `WG_CHAT_ID` names
+/// the exact graph task while `WG_CHAT_REF` preserves the session-dir alias.
+fn chat_pty_env(
+    workgraph_dir: &std::path::Path,
+    task_id: &str,
+    chat_ref: &str,
+    executor: &str,
+) -> Vec<(String, String)> {
+    vec![
+        ("WG_DIR".to_string(), workgraph_dir.display().to_string()),
+        ("WG_CHAT_REF".to_string(), chat_ref.to_string()),
+        ("WG_CHAT_ID".to_string(), task_id.to_string()),
+        ("WG_EXECUTOR_TYPE".to_string(), executor.to_string()),
+        ("TERM".to_string(), "xterm-256color".to_string()),
+    ]
+}
+
 /// Immutable identity and atomic handler route for one selected chat surface.
 ///
 /// The header, tab highlight, PTY lookup, and rendered terminal all key off the
@@ -17433,15 +17450,7 @@ impl VizApp {
                     )
                 });
             self.chat_pty_observer = false;
-            let mut env: Vec<(String, String)> = vec![
-                (
-                    "WG_DIR".to_string(),
-                    self.workgraph_dir.display().to_string(),
-                ),
-                ("WG_CHAT_REF".to_string(), chat_ref.clone()),
-                ("WG_EXECUTOR_TYPE".to_string(), "command".to_string()),
-                ("TERM".to_string(), "xterm-256color".to_string()),
-            ];
+            let mut env = chat_pty_env(&self.workgraph_dir, &task_id, &chat_ref, "command");
             if let Some(ref m) = chat_model {
                 env.push(("WG_MODEL".to_string(), m.clone()));
             }
@@ -17754,22 +17763,11 @@ impl VizApp {
             };
         self.chat_pty_observer = observer_mode && executor == "native";
 
-        let mut env: Vec<(String, String)> = vec![
-            (
-                "WG_DIR".to_string(),
-                self.workgraph_dir.display().to_string(),
-            ),
-            ("WG_CHAT_REF".to_string(), chat_ref.clone()),
-            // Override inherited WG_EXECUTOR_TYPE so spawn-task
-            // dispatches the same executor the TUI chose from config.
-            ("WG_EXECUTOR_TYPE".to_string(), executor.clone()),
-            // Vendor CLIs (claude in particular) expect a real-looking
-            // TERM. portable-pty doesn't set one by default; inheriting
-            // the wg-tui parent's TERM works but passing an explicit
-            // xterm-256color avoids oddities when WG_TUI runs under a
-            // minimal terminal like linux console or dumb.
-            ("TERM".to_string(), "xterm-256color".to_string()),
-        ];
+        // Override inherited WG_EXECUTOR_TYPE so spawn-task dispatches the
+        // same executor the TUI chose. Also bind both canonical chat identity
+        // and session alias; Pi's plugin uses only these explicit variables to
+        // decide whether model selection is persistence-eligible.
+        let mut env = chat_pty_env(&self.workgraph_dir, &task_id, &chat_ref, &executor);
         // Propagate the resolved per-chat model so any nested
         // `wg spawn-task` invocation (e.g. native's `wg nex` re-execing)
         // honors it instead of falling back to `[dispatcher].model`.
@@ -33301,6 +33299,28 @@ mod chat_pty_deferred_spawn_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("background PTY lane did not publish {task_id}");
+    }
+
+    #[test]
+    fn pi_chat_pty_env_carries_exact_canonical_identity() {
+        let env = chat_pty_env(
+            std::path::Path::new("/project/.wg"),
+            ".chat-12",
+            "chat-12",
+            "pi",
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "WG_CHAT_ID" && v == ".chat-12")
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "WG_CHAT_REF" && v == "chat-12")
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "WG_EXECUTOR_TYPE" && v == "pi")
+        );
     }
 
     /// `consume_pending_chat_pty_spawn` is a no-op when no spawn is

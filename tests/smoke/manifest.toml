@@ -2199,3 +2199,12 @@ owners = [
 ]
 description = "Real tmux/TUI ownership regression for fix-path-unique: two FS-isolated graphs with the same project basename get distinct path-hashed chat sessions, cannot report or attach each other's Pi pane, and normal same-graph restart reattaches the exact PID. A provably-owned legacy basename-only session is migrated in place using its WG_DIR marker. With a daemon live, done/archived/abandoned chat tasks plus a stale canonical tmux session are rejected before SetChatExecutor and cannot mutate task, route/session metadata, or tmux ownership. Credential-free fake Pi."
 timeout_seconds = 90
+
+[[scenario]]
+name = "pi_plugin_model_cycle_context"
+script = "scenarios/pi_plugin_model_cycle_context.sh"
+owners = [
+    "fix-pi-plugin",
+]
+description = "Pins the standalone Pi Ctrl-P regression from docs/bugs/wg-pi-plugin-no-chat-id-model-writeback.md. Always-on credential-free event flow emits real model_select(source=cycle) shapes for OpenRouter Qwen and local llama.cpp: selected model changes while absent chat env yields zero backend wg calls and zero console errors. Canonical WG_CHAT_ID and WG_CHAT_REF alias each produce exactly one warm write-back to the exact .chat-N; a managed nonzero result stays one concise actionable line with no stack duplication. With tmux and the current binary, a real WG TUI launches a fake Pi child, proves WG_CHAT_ID=.chat-0 plus WG_CHAT_REF=chat-0, emits a model cycle, and verifies only coordinator-state-0 changes. When Pi+python3 are installed, it also drives the actual Ctrl-P byte repeatedly through a real standalone Pi TUI PTY with the built extension and dummy-auth custom models, asserting no graph call or write-back stack noise."
+timeout_seconds = 180

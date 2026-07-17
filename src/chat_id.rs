@@ -32,6 +32,31 @@ pub fn format_chat_session_ref(id: u32) -> String {
     format!("chat-{}", id)
 }
 
+/// Convert an explicit chat task/session reference into the canonical graph id
+/// exported as `WG_CHAT_ID`. This deliberately accepts only WG's addressable
+/// numeric launch contract; callers must not synthesize identity from cwd,
+/// `WG_DIR`, or unrelated task/runtime state.
+pub fn canonical_task_id_from_ref(reference: &str) -> Option<String> {
+    if let Some(id) = parse_chat_task_id(reference) {
+        return Some(if reference.starts_with(LEGACY_COORDINATOR_PREFIX) {
+            format!("{LEGACY_COORDINATOR_PREFIX}{id}")
+        } else {
+            format_chat_task_id(id)
+        });
+    }
+    if let Some(rest) = reference.strip_prefix("chat-")
+        && let Ok(id) = rest.parse::<u32>()
+    {
+        return Some(format_chat_task_id(id));
+    }
+    if let Some(rest) = reference.strip_prefix("coordinator-")
+        && let Ok(id) = rest.parse::<u32>()
+    {
+        return Some(format!("{LEGACY_COORDINATOR_PREFIX}{id}"));
+    }
+    None
+}
+
 /// Parse a chat task ID (accepts both `.chat-N` and legacy `.coordinator-N`).
 pub fn parse_chat_task_id(s: &str) -> Option<u32> {
     if let Some(rest) = s.strip_prefix(CHAT_PREFIX) {
@@ -303,6 +328,24 @@ mod tests {
         assert_eq!(parse_chat_task_id(".coordinator-99"), Some(99));
         assert_eq!(parse_chat_task_id("not-a-chat"), None);
         assert_eq!(parse_chat_task_id(".chat-abc"), None);
+    }
+
+    #[test]
+    fn canonical_identity_comes_only_from_explicit_chat_refs() {
+        assert_eq!(
+            canonical_task_id_from_ref("chat-42").as_deref(),
+            Some(".chat-42")
+        );
+        assert_eq!(
+            canonical_task_id_from_ref(".chat-42").as_deref(),
+            Some(".chat-42")
+        );
+        assert_eq!(
+            canonical_task_id_from_ref("coordinator-3").as_deref(),
+            Some(".coordinator-3")
+        );
+        assert_eq!(canonical_task_id_from_ref("project-chat"), None);
+        assert_eq!(canonical_task_id_from_ref("42"), None);
     }
 
     #[test]

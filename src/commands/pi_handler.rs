@@ -1024,6 +1024,7 @@ pub fn run(
         &plugin.compat,
         &plugin.root,
         workgraph_dir,
+        chat_ref,
     ));
 
     logger.info(&format!(
@@ -1151,6 +1152,8 @@ pub fn run(
 ///     real guarantee is that we point pi at our own embedded bytes).
 ///   - `WG_PI_PLUGIN_DIR` — so `executor_discovery` + the Node host agree on the
 ///     resolved plugin root.
+///   - `WG_CHAT_ID` / `WG_CHAT_REF` — canonical graph identity plus supported
+///     session alias, derived from this handler's explicit `--chat` argument.
 ///   - `WG_DIR` — the resolved project dir, bound EXPLICITLY so the plugin's
 ///     `wg add`/`wg done`/… calls reach THIS graph via `--dir <project>`
 ///     (`wg-backend.ts` prefers `WG_DIR` over cwd inference). Production dispatch
@@ -1164,8 +1167,9 @@ fn plugin_child_env(
     plugin_compat: &str,
     plugin_root: &Path,
     workgraph_dir: &Path,
+    chat_ref: &str,
 ) -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         (
             "WG_PI_PLUGIN_COMPAT_VERSION".to_string(),
             plugin_compat.to_string(),
@@ -1178,7 +1182,12 @@ fn plugin_child_env(
             "WG_DIR".to_string(),
             workgraph_dir.to_string_lossy().to_string(),
         ),
-    ]
+        ("WG_CHAT_REF".to_string(), chat_ref.to_string()),
+    ];
+    if let Some(chat_id) = worksgood::chat_id::canonical_task_id_from_ref(chat_ref) {
+        env.push(("WG_CHAT_ID".to_string(), chat_id));
+    }
+    env
 }
 
 fn parse_coordinator_id(chat_ref: &str) -> Option<u32> {
@@ -1478,6 +1487,7 @@ mod tests {
             "0.1.0",
             Path::new("/cache/wg/pi-plugin/0.1.0"),
             Path::new("/proj/wg"),
+            "chat-7",
         );
         let wg_dir = pairs
             .iter()
@@ -1501,6 +1511,14 @@ mod tests {
                 .1,
             "/cache/wg/pi-plugin/0.1.0"
         );
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "WG_CHAT_REF").unwrap().1,
+            "chat-7"
+        );
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "WG_CHAT_ID").unwrap().1,
+            ".chat-7"
+        );
     }
 
     #[test]
@@ -1519,6 +1537,7 @@ mod tests {
             "0.1.0",
             Path::new("/cache/wg/pi-plugin/0.1.0"),
             workgraph_dir,
+            "chat-1",
         ));
         let wg_dir = secret_env
             .iter()

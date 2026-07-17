@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use worksgood::chat_id;
+use worksgood::dispatch::handler_for_model;
 use worksgood::graph::{Status, WorkGraph};
 
 use crate::commands::graph_path;
@@ -534,6 +535,105 @@ pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Resul
                 " Service is not running — message will be processed when daemon starts."
             }
         );
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Subcommand: model
+// ============================================================================
+
+/// Convert pi's native `provider:model-id` event identity into WG's
+/// handler-first route. An already-handler-qualified `pi:...` route is kept.
+fn pi_model_writeback_spec(spec: &str) -> String {
+    let trimmed = spec.trim();
+    if trimmed.starts_with("pi:") {
+        trimmed.to_string()
+    } else {
+        format!("pi:{trimmed}")
+    }
+}
+
+/// Persist an override only when it actually changed. This keeps duplicate Pi
+/// notifications idempotent and avoids needless state-file rewrites.
+fn persist_chat_model_override(dir: &Path, cid: u32, executor: &str, model: &str) -> Result<bool> {
+    let mut state = crate::commands::service::CoordinatorState::load_or_default_for(dir, cid);
+    if state.executor_override.as_deref() == Some(executor)
+        && state.model_override.as_deref() == Some(model)
+    {
+        return Ok(false);
+    }
+    state.executor_override = Some(executor.to_string());
+    state.model_override = Some(model.to_string());
+    state.save_for(dir, cid);
+    Ok(true)
+}
+
+/// `wg chat model <ref> <spec>` — persist a per-chat model override.
+///
+/// The plugin passes `--warm-pi-writeback` after Pi has already changed the
+/// model in-process. That path must never signal/respawn the live Pi process;
+/// it records executor=pi plus a handler-first `pi:<provider>:<model>` route for
+/// the next resume. Ordinary CLI use retains the existing cold SetChatExecutor
+/// behavior when the service is running.
+pub fn run_model(
+    dir: &Path,
+    reference: &str,
+    spec: &str,
+    warm_pi_writeback: bool,
+    json: bool,
+) -> Result<()> {
+    if spec.trim().is_empty() {
+        anyhow::bail!("model spec must not be empty");
+    }
+    let graph =
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+    let cid = resolve_chat_id(&graph, reference)
+        .with_context(|| format!("No chat matching '{reference}'"))?;
+    let task = chat_id::find_chat_task(&graph, cid)
+        .with_context(|| format!("No graph chat task for canonical id .chat-{cid}"))?;
+    if !task.tags.iter().any(|tag| chat_id::is_chat_loop_tag(tag)) {
+        anyhow::bail!("task '{}' is not a WG chat", task.id);
+    }
+
+    let (executor, model) = if warm_pi_writeback {
+        ("pi".to_string(), pi_model_writeback_spec(spec))
+    } else {
+        let model = spec.trim().to_string();
+        (handler_for_model(&model).as_str().to_string(), model)
+    };
+
+    let changed = if !warm_pi_writeback && service_is_running(dir) {
+        crate::commands::service::run_set_coordinator_executor(
+            dir,
+            cid,
+            Some(&executor),
+            Some(&model),
+            json,
+        )?;
+        true
+    } else {
+        persist_chat_model_override(dir, cid, &executor, &model)?
+    };
+
+    if warm_pi_writeback || !service_is_running(dir) {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chat_id": cid,
+                    "task_id": task.id,
+                    "executor": executor,
+                    "model": model,
+                    "warm": warm_pi_writeback,
+                    "changed": changed,
+                }))?
+            );
+        } else if changed {
+            println!("Chat {} model override recorded: {}", task.id, model);
+        } else {
+            println!("Chat {} already uses {}; no change", task.id, model);
+        }
     }
     Ok(())
 }
@@ -1150,6 +1250,53 @@ mod tests {
             "inbox.jsonl should contain the message: {}",
             contents
         );
+    }
+
+    #[test]
+    fn warm_pi_model_writeback_targets_exact_chat_and_is_idempotent() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(
+            dir,
+            Some("pi-chat"),
+            Some("pi:openrouter:qwen/old"),
+            Some("pi"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        run_model(dir, ".chat-0", "openrouter:qwen/qwen3.6-flash", true, true).unwrap();
+        let state = crate::commands::service::CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(state.executor_override.as_deref(), Some("pi"));
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("pi:openrouter:qwen/qwen3.6-flash")
+        );
+
+        // A duplicate notification is a successful no-op, not a second write.
+        assert!(
+            !persist_chat_model_override(dir, 0, "pi", "pi:openrouter:qwen/qwen3.6-flash").unwrap()
+        );
+        assert!(
+            crate::commands::service::CoordinatorState::load_for(dir, 1).is_none(),
+            "write-back must not leak into any other chat"
+        );
+    }
+
+    #[test]
+    fn warm_pi_model_writeback_rejects_nonexistent_canonical_chat() {
+        let td = mk_workgraph_dir();
+        let err = run_model(
+            td.path(),
+            ".chat-41",
+            "llamacpp:llama-3.3-local",
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("No graph chat task"));
     }
 
     #[test]

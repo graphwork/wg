@@ -15,5 +15,5 @@
  * The plugin factory (`src/index.ts`) asserts this value against the wg binary
  * at startup and fails LOUDLY on mismatch.
  */
-export const WG_PI_PLUGIN_COMPAT_VERSION = "0.1.0";
+export const WG_PI_PLUGIN_COMPAT_VERSION = "0.1.1";
 //# sourceMappingURL=version.js.map
