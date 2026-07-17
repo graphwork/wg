@@ -3743,10 +3743,11 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
     app.chat_pty_takeover_pending_since = None;
 
     if timed_out && !released {
-        eprintln!(
-            "[tui] takeover timed out for {} — handler still busy; \
-             retry by sending another message.",
-            task_id
+        app.push_toast(
+            format!(
+                "Takeover timed out for {task_id} — handler still busy; retry by sending another message"
+            ),
+            super::state::ToastSeverity::Warning,
         );
         return true;
     }

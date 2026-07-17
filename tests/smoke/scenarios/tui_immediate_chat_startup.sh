@@ -24,7 +24,7 @@ env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
     wg init --no-agency >init.log 2>&1 \
     || loud_fail "wg init failed: $(tail -10 init.log)"
 env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
-    wg chat new --name immediate --command cat >chat.log 2>&1 \
+    wg chat create --name immediate --command cat >chat.log 2>&1 \
     || loud_fail "custom chat fixture failed: $(cat chat.log)"
 
 # Persist the active tab explicitly: the fast lane must validate this pointer
@@ -39,7 +39,13 @@ truncate -s 104857600 .wg/chat-history-0.jsonl
 mkdir -p .wg/agents/huge
 truncate -s 104857600 .wg/agents/huge/output.log
 
-project_tag=$(basename "$scratch" | tr ':.' '--')
+project_basename=$(basename "$scratch" | tr ':.' '--')
+project_hash=$(python3 - "$scratch/.wg" <<'PY'
+import hashlib, os, sys
+print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:16])
+PY
+)
+project_tag="${project_basename}-${project_hash}"
 inner="wg-chat-${project_tag}-chat-0"
 outer="wgsmoke-immediate-chat-$$"
 trace="$scratch/startup.jsonl"
@@ -61,6 +67,7 @@ capture() {
 # Reattach must preserve its pane PID; creating a second handler/session is a
 # failure even if echo appears.
 tmux new-session -d -s "$inner" -x 120 -y 36 -- tee "$delivery"
+tmux resize-window -t "$inner" -x 120 -y 36
 inner_pid_before=$(tmux display-message -p -t "$inner" '#{pane_pid}')
 
 # The active chat remains the first authoritative record, so the minimal lane
@@ -104,6 +111,7 @@ now_ms() { date +%s%3N; }
 start_ms=$(now_ms)
 tmux new-session -d -s "$outer" -x 140 -y 42 \
     "env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER WG_TUI_STARTUP_TRACE='$trace' WG_TUI_TEST_STORAGE_STALL_PATH='$storage_fifo' WG_TUI_TEST_STORAGE_LATENCY_MS=5000 wg tui"
+tmux resize-window -t "$outer" -x 140 -y 42
 
 # Wait only for the neutral first frame, then type immediately. Do not wait for
 # the active chat pane or the delayed graph snapshot.

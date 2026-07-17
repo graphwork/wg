@@ -295,13 +295,10 @@ impl PtyPane {
                             if elapsed >= GROWTH_RATE_WINDOW_SECS && window_bytes > 0 {
                                 let rate = window_bytes / elapsed.max(1);
                                 if rate > GROWTH_RATE_WARN_BYTES_PER_SEC {
-                                    if !reader_growth_warned.swap(true, Ordering::Relaxed) {
-                                        eprintln!(
-                                            "[pty] growth-rate guard: {} KB/s sustained — \
-                                             truncating scrollback to prevent OOM",
-                                            rate / 1024
-                                        );
-                                    }
+                                    // Record the condition for the owning pane/UI, but never
+                                    // print from this reader thread: stdout/stderr belong to
+                                    // ratatui's outer alternate screen.
+                                    reader_growth_warned.store(true, Ordering::Relaxed);
                                     if let Ok(mut p) = reader_parser.lock() {
                                         p.screen_mut().set_scrollback(0);
                                     }
@@ -1679,6 +1676,55 @@ mod tests {
 
     const SILENT_KILL_CHILD_ENV: &str = "WG_TEST_TUI_SILENT_TMUX_KILL_CHILD";
 
+    #[test]
+    fn tui_runtime_never_writes_process_stderr() {
+        let pty_runtime = include_str!("pty_pane.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("pty tests marker")
+            .0;
+        for (path, source) in [
+            ("src/tui/pty_pane.rs", pty_runtime),
+            (
+                "src/tui/viz_viewer/event.rs",
+                include_str!("viz_viewer/event.rs"),
+            ),
+            (
+                "src/tui/viz_viewer/state.rs",
+                include_str!("viz_viewer/state.rs"),
+            ),
+            (
+                "src/tui/viz_viewer/chat_startup.rs",
+                include_str!("viz_viewer/chat_startup.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains("eprintln!"),
+                "{path} writes directly to inherited stderr while ratatui may own the alternate screen"
+            );
+        }
+    }
+
+    #[test]
+    fn tui_host_helpers_never_inherit_the_outer_terminal() {
+        let source = include_str!("pty_pane.rs");
+        let runtime = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("pty tests marker")
+            .0;
+        assert_eq!(
+            runtime.matches(".status()").count(),
+            1,
+            "runtime host commands must all route through the one terminal-silent status helper"
+        );
+        assert!(runtime.contains("command.stdout(Stdio::null()).stderr(Stdio::null()).status()"));
+
+        let state = include_str!("viz_viewer/state.rs");
+        assert!(
+            !state.contains(".status()"),
+            "viz state commands must capture output; an inherited status child can corrupt ratatui"
+        );
+    }
+
     /// Child-process half of `already_gone_lifecycle_cleanup_inherits_no_output`.
     /// Running in a subprocess is important: it lets the parent inspect the
     /// actual inherited stdout/stderr boundary instead of libtest's capture.
@@ -1695,7 +1741,6 @@ mod tests {
     #[test]
     fn already_gone_lifecycle_cleanup_inherits_no_output() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping silent lifecycle cleanup test");
             return;
         }
         let missing = format!(
@@ -3801,7 +3846,6 @@ sleep 5
     #[test]
     fn drop_does_not_kill_underlying_tmux_session() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping persistence invariant test");
             return;
         }
         // Use a wg-chat-test-* prefix so we land in the same namespace
@@ -3863,7 +3907,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_reattaches_existing_session() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping reattach test");
             return;
         }
         let suffix = format!(
@@ -3947,7 +3990,6 @@ sleep 5
     #[test]
     fn tmux_wrapped_scroll_up_advances_render_without_writing_to_child() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping tmux scroll test");
             return;
         }
         let suffix = format!(
@@ -4065,7 +4107,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_disables_status_bar() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping status-bar test");
             return;
         }
         let suffix = format!(
@@ -4115,7 +4156,6 @@ sleep 5
     #[test]
     fn send_key_cancels_tmux_copy_mode() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping send_key-cancels-copy-mode test");
             return;
         }
         let suffix = format!(
@@ -4200,7 +4240,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_disables_mouse_mode() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping mouse-mode test");
             return;
         }
         let suffix = format!(
@@ -4317,7 +4356,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_reverts_drifted_status() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping drift-revert test");
             return;
         }
         let prefix = unique_tmux_test_prefix("revert");
@@ -4364,7 +4402,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_is_idempotent() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping idempotency test");
             return;
         }
         let prefix = unique_tmux_test_prefix("idem");
@@ -4405,7 +4442,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_skips_non_matching_sessions() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping scope test");
             return;
         }
         let prefix = unique_tmux_test_prefix("scope");
@@ -4474,7 +4510,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_no_matching_sessions_is_noop() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping no-match test");
             return;
         }
         // Prefix designed to match nothing real.
@@ -4490,7 +4525,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_reasserts_status_on_reattach() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping reattach-reassert test");
             return;
         }
         let prefix = unique_tmux_test_prefix("reassert");

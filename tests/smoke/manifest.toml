@@ -2167,6 +2167,7 @@ script = "scenarios/tui_immediate_chat_startup.sh"
 owners = [
     "restore-immediate-chat",
     "fix-immediate-chat",
+    "reproduce-and-fix",
 ]
 description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, a real project-local FIFO storage stall, and a subsequent 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s while storage is blocked, its active identity/header/atomic route must agree, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
 timeout_seconds = 30
@@ -2177,6 +2178,7 @@ script = "scenarios/tui_chat_close_lifecycle.sh"
 owners = [
     "validate-and-land",
     "fix-tui-screen",
+    "reproduce-and-fix",
 ]
 description = "Installed-binary real tmux/PTY flow for the repaired chat navigation and Close lifecycle: selecting abandoned .chat-36 opens its exact canonical Detail with no spawn/reattach or composer, returning to a live chat exposes the identity/state/atomic-route Close… modal, Cancel and Hide remain non-destructive, Stop uses canonical daemon termination and tears down the identity-matching TUI PTY while preserving an Open/resumable task, and Archive produces explicit Done+archived state while exercising the present-session CLI kill followed by the already-gone idempotent completion cleanup. After each Archive, the physical outer pane must contain every sentinel graph row and active identity exactly once, no stale archived identity or subprocess text, and one coherent border pair. Unit/render tests pin pointer hitbox boundaries, narrow layout, stale async results, no-local-pane cleanup, and wrong-chat confirmation protection. Credential-free."
 timeout_seconds = 60
@@ -2217,3 +2219,12 @@ owners = [
 ]
 description = "Pins the standalone Pi Ctrl-P regression from docs/bugs/wg-pi-plugin-no-chat-id-model-writeback.md. Always-on credential-free event flow emits real model_select(source=cycle) shapes for OpenRouter Qwen and local llama.cpp: selected model changes while absent chat env yields zero backend wg calls and zero console errors. Canonical WG_CHAT_ID and WG_CHAT_REF alias each produce exactly one warm write-back to the exact .chat-N; a managed nonzero result stays one concise actionable line with no stack duplication. With tmux and the current binary, a real WG TUI launches a fake Pi child, proves WG_CHAT_ID=.chat-0 plus WG_CHAT_REF=chat-0, emits a model cycle, and verifies only coordinator-state-0 changes. When Pi+python3 are installed, it also drives the actual Ctrl-P byte repeatedly through a real standalone Pi TUI PTY with the built extension and dummy-auth custom models, asserting no graph call or write-back stack noise."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_wg_add_output_confinement"
+script = "scenarios/tui_wg_add_output_confinement.sh"
+owners = [
+    "reproduce-and-fix",
+]
+description = "Installed-binary real tmux/nested-PTY regression for reproduce-and-fix: a custom chat issues four visible wg add commands while graph snapshots refresh rapidly, the mosh-compatible input policy is active, and the outer pane resizes down/back. The child proves stdout/stderr belong to its embedded PTY rather than ratatui's outer PTY; physical capture and tui-dump agree that Added task/Use --after appear once only in Chat while every graph row appears once. A deliberately unwritable tui-state path exercises terminal-silent diagnostics, then post-burst Close/Hide proves live input and a coherent graph-only repaint with no stale output or displaced borders. Credential-free."
+timeout_seconds = 60

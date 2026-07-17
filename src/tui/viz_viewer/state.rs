@@ -3972,11 +3972,12 @@ fn save_tui_state(
         open_tabs: open_tabs.to_vec(),
         active,
     };
-    if let Ok(json) = serde_json::to_string(&state)
-        && worksgood::atomic_file::write_atomic(&tui_state_path(workgraph_dir), json.as_bytes())
-            .is_err()
-    {
-        eprintln!("wg: warning: failed to persist TUI tab state");
+    if let Ok(json) = serde_json::to_string(&state) {
+        // Best-effort state persistence must remain terminal-silent. The TUI
+        // owns stdout/stderr while ratatui is in the alternate screen; writing
+        // a warning there would desynchronize the physical and diff buffers.
+        let _ =
+            worksgood::atomic_file::write_atomic(&tui_state_path(workgraph_dir), json.as_bytes());
     }
 }
 
@@ -16821,7 +16822,11 @@ impl VizApp {
                 &request_id,
                 attachments,
             ) {
-                eprintln!("[tui] direct inbox write failed for {}: {}", request_id, e);
+                self.chat.pending_request_ids.remove(&request_id);
+                self.push_toast(
+                    format!("Could not send chat request {request_id}: {e}"),
+                    ToastSeverity::Error,
+                );
             }
             // No exec_command + no CommandEffect::ChatResponse — the
             // response arrives by `poll_chat_messages` tailing the
@@ -16870,7 +16875,10 @@ impl VizApp {
             let chat_ref = worksgood::chat_id::format_chat_session_ref(self.active_coordinator_id);
             let chat_dir = worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
             if let Err(e) = worksgood::session_lock::request_release(&chat_dir) {
-                eprintln!("[tui] failed to write release marker for takeover: {}", e);
+                self.push_toast(
+                    format!("Could not request chat takeover: {e}"),
+                    ToastSeverity::Warning,
+                );
             } else {
                 self.chat_pty_takeover_pending_since = Some(std::time::Instant::now());
             }
@@ -17465,12 +17473,10 @@ impl VizApp {
             ) {
                 Ok(prepared) => Some(prepared),
                 Err(e) => {
-                    eprintln!(
-                        "[tui] Pi chat {} storage could not be prepared: {e}. \
-                         The pane was not opened; retry after `wg service reload` \
-                         or create a new chat.",
+                    self.chat_startup_state = ChatStartupState::Error(format!(
+                        "Pi chat {} storage could not be prepared: {e}; retry after `wg service reload` or create a new chat",
                         self.active_coordinator_id
-                    );
+                    ));
                     self.chat_pty_mode = false;
                     self.chat_pty_forwards_stdin = false;
                     return;
@@ -17569,7 +17575,10 @@ impl VizApp {
         if let Err(e) =
             worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
         {
-            eprintln!("[tui] failed to write TUI driver sentinel: {}", e);
+            self.push_toast(
+                format!("Could not claim the chat terminal: {e}"),
+                ToastSeverity::Warning,
+            );
         }
         if observer_mode {
             let _ = worksgood::session_lock::request_release(&chat_dir);
@@ -17588,7 +17597,8 @@ impl VizApp {
         // directly in the persistent pane instead of routing through an
         // LLM preset adapter.
         if let Some(task) = chat_task_metadata.as_ref()
-            && task.executor_preset_name.is_none()
+            && (task.executor_preset_name.is_none()
+                || task.executor_preset_name.as_deref() == Some("command"))
             && !task.command_argv.is_empty()
         {
             let bin = task.command_argv[0].clone();
@@ -17616,7 +17626,12 @@ impl VizApp {
                     self.active_coordinator_id,
                 ))
             } else {
-                warn_chat_tmux_missing_once();
+                if warn_chat_tmux_missing_once() {
+                    self.push_toast(
+                        "tmux is not installed; this chat will not survive TUI exit".to_string(),
+                        ToastSeverity::Warning,
+                    );
+                }
                 None
             };
             self.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
@@ -17821,12 +17836,10 @@ impl VizApp {
                         chat_model.as_deref().is_some_and(|m| !m.trim().is_empty());
                     let marg = crate::commands::pi_handler::pi_model_arg(chat_model.as_deref());
                     if explicit_model && marg.is_none() {
-                        eprintln!(
-                            "[tui] pi chat pane: could not resolve a \
-                                 provider/model from {:?}; refusing to spawn \
-                                 explicit model",
+                        self.chat_startup_state = ChatStartupState::Error(format!(
+                            "could not resolve a Pi provider/model from {:?}; refusing to spawn the explicit model",
                             chat_model
-                        );
+                        ));
                         return;
                     }
                     let session_dir = prepared_pi_session
@@ -17892,10 +17905,6 @@ impl VizApp {
                     ) {
                         Ok(p) => p,
                         Err(e) => {
-                            eprintln!(
-                                "[tui] failed to write dexto agent config in {}: {e}",
-                                chat_dir.display()
-                            );
                             worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                             self.chat_startup_state = ChatStartupState::Error(format!(
                                 "could not prepare Dexto chat: {e}; press r to retry"
@@ -17934,14 +17943,19 @@ impl VizApp {
         // tmux-wrap the chat process when tmux is on PATH so it
         // survives TUI exit (the persistence design — see
         // docs/design/chat-agent-persistence.md). Falls back to plain
-        // spawn with a one-time stderr warning when tmux is missing.
+        // spawn with a one-time in-pane warning when tmux is missing.
         let tmux_session = if crate::tui::pty_pane::tmux_available() {
             Some(worksgood::chat_id::prepare_chat_tmux_session_for_id(
                 &self.workgraph_dir,
                 self.active_coordinator_id,
             ))
         } else {
-            warn_chat_tmux_missing_once();
+            if warn_chat_tmux_missing_once() {
+                self.push_toast(
+                    "tmux is not installed; this chat will not survive TUI exit".to_string(),
+                    ToastSeverity::Warning,
+                );
+            }
             None
         };
 
@@ -18105,10 +18119,9 @@ impl VizApp {
             ) {
                 Ok(pane) => Ok(pane),
                 Err(e) => {
-                    eprintln!(
-                        "[tui] tmux-wrapped chat spawn failed ({}): falling back to \
-                         direct spawn (chat will not persist across TUI exit)",
-                        e
+                    self.push_toast(
+                        format!("tmux chat spawn failed ({e}); using a non-persistent direct pane"),
+                        ToastSeverity::Warning,
                     );
                     crate::tui::pty_pane::PtyPane::spawn_in(
                         &pending.bin,
@@ -18168,11 +18181,12 @@ impl VizApp {
                         worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
                     worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                 }
-                eprintln!(
-                    "[tui] auto-enable chat PTY for executor '{}' failed ({}): \
-                     falling back to file-tailing. \
-                     Is the `{}` binary on PATH?",
-                    pending.executor, e, pending.bin
+                self.push_toast(
+                    format!(
+                        "Could not open the '{}' chat terminal ({e}); is `{}` on PATH? Using file history instead",
+                        pending.executor, pending.bin
+                    ),
+                    ToastSeverity::Error,
                 );
                 self.chat_pty_mode = false;
                 self.chat_pty_forwards_stdin = false;
@@ -18252,10 +18266,6 @@ impl VizApp {
                 continue;
             };
             if !live_refs.contains(&chat_ref) {
-                eprintln!(
-                    "[wg-tui] sweeping orphan chat tmux session: {} (no live task)",
-                    session
-                );
                 crate::tui::pty_pane::tmux_kill_session(session);
             }
         }
@@ -22457,19 +22467,13 @@ fn find_all_archives(
     entries
 }
 
-/// Print the "tmux missing → no chat persistence" warning at most once
-/// per process. Without the once-guard, every chat tab the user opens
-/// in this TUI session would re-emit the same banner.
-fn warn_chat_tmux_missing_once() {
+/// Request the in-pane "tmux missing → no chat persistence" warning at most
+/// once per process. Without the guard, every opened chat tab would enqueue
+/// the same toast.
+fn warn_chat_tmux_missing_once() -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "[wg-tui] tmux not installed — chat agents will NOT survive TUI exit. \
-             Install tmux for codex/claude resume integrity. \
-             (See docs/design/chat-agent-persistence.md.)"
-        );
-    }
+    !WARNED.swap(true, Ordering::Relaxed)
 }
 
 /// Deterministic session UUID for a coordinator, derived from CWD + session name.
