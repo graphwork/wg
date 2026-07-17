@@ -140,26 +140,24 @@ fn socket_path_for(tmp_root: &Path) -> String {
     format!("{}/wg-test.sock", tmp_root.display())
 }
 
-/// Helper: add a task with a shell exec command.
+/// Helper: atomically add a task with a shell exec command.
 fn add_shell_task(wg_dir: &Path, task_id: &str, title: &str, exec_cmd: &str) {
-    // wg add doesn't support --exec directly, so we add the task then patch the JSONL
-    wg_ok(wg_dir, &["add", title, "--id", task_id, "--immediate"]);
-
-    // Patch the graph to add exec field
-    let graph_path = wg_dir.join("graph.jsonl");
-    let content = fs::read_to_string(&graph_path).unwrap();
-    let mut new_lines = Vec::new();
-    for line in content.lines() {
-        if line.contains(&format!("\"id\":\"{}\"", task_id)) {
-            // Parse, add exec, re-serialize
-            let mut val: serde_json::Value = serde_json::from_str(line).unwrap();
-            val["exec"] = serde_json::Value::String(exec_cmd.to_string());
-            new_lines.push(serde_json::to_string(&val).unwrap());
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-    fs::write(&graph_path, new_lines.join("\n") + "\n").unwrap();
+    // Supplying --exec at creation time is load-bearing: adding an open task and
+    // patching graph.jsonl afterward races the daemon's graph watcher. The daemon
+    // can otherwise claim the half-configured task with the default LLM executor
+    // before the shell command is written.
+    wg_ok(
+        wg_dir,
+        &[
+            "add",
+            title,
+            "--id",
+            task_id,
+            "--exec",
+            exec_cmd,
+            "--immediate",
+        ],
+    );
 }
 
 /// Helper: read task status from graph using `wg show --json`.
@@ -705,44 +703,61 @@ fn test_crash_scenarios_multiple_agent_crash() {
     });
     assert!(all_picked_up, "Not all tasks were picked up by agents");
 
-    // Collect agent PIDs
-    let mut agent_pids = Vec::new();
-    let mut agent_ids = Vec::new();
+    // Snapshot one distinct live agent for every task. Task claims are written
+    // before registry entries, so accumulating partial registry reads can count
+    // the same agent twice and miss another task's agent entirely.
+    let mut crashed_agents: Vec<(String, i32)> = Vec::new();
+    let found_all_agents = wait_for(Duration::from_secs(5), 100, || {
+        let Some(registry) = read_registry(&wg_dir) else {
+            return false;
+        };
+        let Some(agents) = registry["agents"].as_object() else {
+            return false;
+        };
 
-    for _ in 0..3 {
-        std::thread::sleep(Duration::from_millis(500));
-        if let Some(registry) = read_registry(&wg_dir) {
-            if let Some(agents) = registry["agents"].as_object() {
-                for agent in agents.values() {
-                    if let Some(task_id) = agent["task_id"].as_str() {
-                        if task_ids.contains(&task_id) && agent["status"].as_str() != Some("dead") {
-                            if let Some(pid) = agent["pid"].as_u64() {
-                                if let Some(id) = agent["id"].as_str() {
-                                    agent_pids.push(pid as i32);
-                                    agent_ids.push(id.to_string());
-                                }
-                            }
-                        }
+        let snapshot: Option<Vec<_>> = task_ids
+            .iter()
+            .map(|task_id| {
+                agents.values().find_map(|agent| {
+                    let status = agent["status"].as_str()?;
+                    if agent["task_id"].as_str() != Some(*task_id)
+                        || !matches!(status, "starting" | "working" | "idle")
+                    {
+                        return None;
                     }
-                }
-            }
+                    Some((
+                        agent["id"].as_str()?.to_string(),
+                        agent["pid"].as_u64()? as i32,
+                    ))
+                })
+            })
+            .collect();
+
+        if let Some(snapshot) = snapshot {
+            crashed_agents = snapshot;
+            true
+        } else {
+            false
         }
-        if agent_pids.len() >= 3 {
-            break;
-        }
-    }
+    });
 
     assert!(
-        agent_pids.len() >= 3,
-        "Should have found at least 3 agent PIDs, found {}",
-        agent_pids.len()
+        found_all_agents,
+        "Should have found one live agent for every crash task; registry={:?}",
+        read_registry(&wg_dir)
     );
+    let (agent_ids, agent_pids): (Vec<_>, Vec<_>) = crashed_agents.into_iter().unzip();
 
-    // Kill all agents simultaneously with SIGKILL
-    for pid in &agent_pids {
-        unsafe {
-            libc::kill(*pid, libc::SIGKILL);
-        }
+    // Kill all agents simultaneously with SIGKILL. A failed kill would make the
+    // subsequent dead-state assertion meaningless, so verify every signal lands.
+    for (agent_id, pid) in agent_ids.iter().zip(&agent_pids) {
+        let result = unsafe { libc::kill(*pid, libc::SIGKILL) };
+        assert_eq!(
+            result,
+            0,
+            "Failed to SIGKILL {agent_id} (PID {pid}): {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     // Give time for signals to process
@@ -771,7 +786,8 @@ fn test_crash_scenarios_multiple_agent_crash() {
 
     assert!(
         all_dead,
-        "All agents should have been detected as dead after multiple crashes"
+        "All agents should have been detected as dead after multiple crashes; ids={agent_ids:?}, pids={agent_pids:?}, registry={:?}",
+        read_registry(&wg_dir)
     );
 
     // Verify tasks are back to "open" or reassigned
