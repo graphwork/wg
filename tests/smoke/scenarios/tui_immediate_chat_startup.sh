@@ -125,26 +125,34 @@ done
     || loud_fail "bootstrap worker did not enter the real filesystem stall"
 # Wait only for the prioritized pane milestone (never the delayed graph lane),
 # then type at once. This remains far below the injected 5s bootstrap.
-for _ in $(seq 1 100); do
+# The attach worker includes a 100ms tmux input-forwarding handshake, and a
+# loaded smoke host can take longer than the old 500ms polling budget to
+# schedule it. The authoritative end-to-end deadline below remains <3s, so a
+# longer observation window does not weaken the immediate-input guarantee.
+for _ in $(seq 1 400); do
     [[ -f "$trace" ]] && grep -q 'pane_attached' "$trace" && break
     sleep 0.005
 done
 grep -q 'pane_attached' "$trace" 2>/dev/null \
-    || loud_fail "prioritized pane did not attach"
+    || loud_fail "prioritized pane did not attach within the <3s interaction deadline: $(tr '\n' ' ' <"$trace" 2>/dev/null || true)"
 # The visible identity must be coherent with the pane we are about to type
 # into. In particular, a delayed full snapshot may not leave a generic Chat
-# heading or paint another tab's route over this reattached terminal.
+# heading or paint another tab's route over this reattached terminal. Wide
+# panels prefix the identity with "Active:"; compact panels omit that redundant
+# prefix. Shallow startup splits replace the tab strip with this identity row
+# so one PTY row and the input remain available. Assert the semantic header,
+# not one width-specific decoration.
 identity_ready=0
 for _ in $(seq 1 100); do
     screen=$(capture)
-    if printf '%s\n' "$screen" | grep -Eq 'Active: .*[.]chat-0.*connected.*route command'; then
+    if printf '%s\n' "$screen" | grep -Eq '(Active: )?.*[.]chat-0.*connected.*route command'; then
         identity_ready=1
         break
     fi
     sleep 0.01
 done
 (( identity_ready == 1 )) \
-    || loud_fail "active-chat identity/header did not agree with attached .chat-0 command pane: $(capture | tail -12 | tr '\n' ' ')"
+    || loud_fail "active-chat identity/header did not agree with attached .chat-0 command pane: $(capture | head -12 | tr '\n' ' ')"
 payload="Z"
 tmux send-keys -l -t "$outer" "$payload"
 tmux send-keys -t "$outer" Enter

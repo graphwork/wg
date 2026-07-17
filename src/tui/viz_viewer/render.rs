@@ -3294,8 +3294,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // accounted for ~55 % of `wg tui` CPU (see fix-wg-tui).
     let coordinator_entries = app.cached_chat_tab_entries.clone();
     let user_board_entries = app.cached_user_board_entries.clone();
-    let identity_bar_height: u16 = u16::from(area.height >= 4);
-    let tab_bar_height: u16 = 1 + identity_bar_height;
+    // When the split leaves at least four rows, identity gets its own row.
+    // In the common three-row PTY startup layout, it replaces the redundant
+    // tab strip instead: identity must never disappear exactly while the fast
+    // attach lane is publishing it, and we still preserve one terminal row
+    // plus the input row.
+    let identity_has_own_row = area.height >= 4;
+    let tab_bar_height: u16 = if identity_has_own_row { 2 } else { 1 };
     // Capture once per frame. The same immutable task id is used by the
     // identity header and the PTY lookup below.
     let active_view = app.active_chat_view_identity();
@@ -3589,9 +3594,19 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }
 
-    if identity_bar_height > 0 {
-        let identity_area = Rect::new(area.x, area.y + 1, area.width, 1);
+    if area.height > 0 {
+        let identity_y = area.y + u16::from(identity_has_own_row);
+        let identity_area = Rect::new(area.x, identity_y, area.width, 1);
         draw_active_chat_identity_header(frame, app, identity_area, active_view.as_ref());
+        if !identity_has_own_row {
+            // The responsive identity row visually replaces the tab strip, so
+            // its hidden tab targets must not remain clickable underneath it.
+            app.last_coordinator_bar_area = Rect::default();
+            app.coordinator_tab_hits.clear();
+            app.coordinator_plus_hit = CoordinatorPlusHit::default();
+            app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+            app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+        }
     }
 
     // New-chat launcher: render as a centered modal over the FULL frame
@@ -14603,6 +14618,36 @@ mod tests {
             "narrow identity disappeared: {narrow_header}"
         );
         assert!(!narrow_header.contains('\u{fffd}'));
+
+        // A shallow split is the real startup shape while the graph lane is
+        // still blocked. The identity row replaces (rather than stacks below)
+        // the tab strip, preserving both one PTY/message row and the input.
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, &mut app, area);
+            })
+            .unwrap();
+        let shallow = terminal.backend().buffer();
+        let shallow_row = |y: u16| -> String {
+            (0..shallow.area().width)
+                .map(|x| shallow.cell((x, y)).unwrap().symbol())
+                .collect()
+        };
+        assert!(
+            shallow_row(0).contains("Chat 4 (.chat-4)"),
+            "shallow identity disappeared: {}",
+            shallow_row(0)
+        );
+        assert!(
+            shallow_row(2).contains("Commands"),
+            "shallow identity consumed the command/input row: {}",
+            shallow_row(2)
+        );
+        assert_eq!(app.last_coordinator_bar_area, Rect::default());
+        assert!(app.coordinator_tab_hits.is_empty());
     }
 
     #[test]
