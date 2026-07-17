@@ -54,7 +54,7 @@ This creates a **feedback loop**:
 
 ### Why It's Worse When Opening a New Coordinator
 
-When a new coordinator is created (via `+` in TUI or `ensure_user_coordinator`), it calls `build_coordinator_context()` on its first turn. At that point, the user board may have accumulated messages from all previous coordinator interactions (since `forward_chat_to_user_board` has been running). The new coordinator sees **all** of those historical messages in its context, making it look like those messages were sent to it.
+When a new coordinator was created (via the explicit New-chat control, or historically via the now-removed `ensure_user_coordinator` bootstrap), it called `build_coordinator_context()` on its first turn. At that point, the user board may have accumulated messages from all previous coordinator interactions (since `forward_chat_to_user_board` has been running). The new coordinator sees **all** of those historical messages in its context, making it look like those messages were sent to it.
 
 ## Message Flow Diagram
 

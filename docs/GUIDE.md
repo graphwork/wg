@@ -419,6 +419,11 @@ wg key list
 wg tui [--refresh-rate 2000]   # default: 2000ms
 ```
 
+Opening the TUI never creates or starts a chat implicitly. On an empty or
+terminal-only graph, the Chat inspector shows **No chat selected**; press `n`
+in command mode or use the visible **New chat** control to choose a route and
+create one.
+
 Three main views plus an inspector panel:
 
 - **Dashboard** — split-pane: tasks (left) and agents (right) with status bars.

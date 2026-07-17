@@ -179,19 +179,15 @@ if ! wait_for_input_mode "Normal" 30; then
     loud_fail "TUI never reached InputMode::Normal after launch (got '$(tui_input_mode)')"
 fi
 
-if ! wait_for_chat_tab_count 1 30; then
-    loud_fail "default chat tab never appeared in tab bar"
-fi
+initial_text=$(tui_dump_text)
+printf '%s' "$initial_text" | grep -q 'No chat selected' \
+    || loud_fail "empty TUI did not render No chat selected"
 default_chat_count=$(count_visible_chat_tabs)
-echo "phase 0: default chat auto-spawned (visible: ${default_chat_count})"
+[[ "$default_chat_count" -eq 0 ]] \
+    || loud_fail "TUI bootstrap implicitly created $default_chat_count chat tab(s)"
+echo "phase 0: empty TUI stayed graph-only"
 
-# ── Step 2: open the launcher (Ctrl+O to escape PTY mode, then 'n') ─
-text_at_launch=$(tui_dump_text)
-if printf '%s' "$text_at_launch" | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$session" "C-o"
-    sleep 0.5
-fi
-
+# ── Step 2: explicitly open the launcher with command-mode n ────────
 tmux send-keys -t "$session" "n"
 if ! wait_for_input_mode "Launcher" 20; then
     loud_fail "pressing 'n' did not open the launcher (input_mode=$(tui_input_mode), focused=$(tui_focused))"
@@ -217,7 +213,7 @@ sleep 0.3
 # ── Step 5: Enter to submit ──────────────────────────────────────────
 tmux send-keys -t "$session" "Enter"
 
-target_tab_count=$((default_chat_count + 1))
+target_tab_count=1
 if ! wait_for_chat_tab_count "$target_tab_count" 60; then
     loud_fail "after launcher submit, new chat tab did not appear within 30s"
 fi

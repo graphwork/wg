@@ -2158,7 +2158,7 @@ script = "scenarios/tui_bootstrap_parent_graph_isolation.sh"
 owners = [
     "fix-integration-test",
 ]
-description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker task/agent identity, wait for first-use chat bootstrap, require .chat-0 in scratch, and prove the parent graph hash/content is unchanged with no legacy .coordinator ghost. Credential-free."
+description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker identity, prove opening alone leaves both graphs unchanged, then drive explicit command-mode n/Enter, require .chat-0 in scratch, and prove the parent graph remains unchanged with no legacy .coordinator ghost. Credential-free."
 timeout_seconds = 30
 
 [[scenario]]
@@ -2199,6 +2199,15 @@ owners = [
 ]
 description = "Real tmux/TUI ownership regression for fix-path-unique: two FS-isolated graphs with the same project basename get distinct path-hashed chat sessions, cannot report or attach each other's Pi pane, and normal same-graph restart reattaches the exact PID. A provably-owned legacy basename-only session is migrated in place using its WG_DIR marker. With a daemon live, done/archived/abandoned chat tasks plus a stale canonical tmux session are rejected before SetChatExecutor and cannot mutate task, route/session metadata, or tmux ownership. Credential-free fake Pi."
 timeout_seconds = 90
+
+[[scenario]]
+name = "tui_open_non_mutating"
+script = "scenarios/tui_open_non_mutating.sh"
+owners = [
+    "remove-implicit-chat",
+]
+description = "Installed-binary real tmux/PTY gate for remove-implicit-chat: opens/restarts an authoritative empty TUI twenty times across missing/corrupt route metadata and daemon down/up, injects delayed full bootstrap, and proves No chat selected + visible New chat with zero graph rows, UUID/chat dirs, session aliases, synthetic TUI/history state, handler tmux sessions, or provider argv. A terminal-only graph stays terminal. Then real command-mode n and a real SGR pointer click each open the chooser and create exactly one identity-pinned chat only after confirmation. Credential-free fake provider binaries."
+timeout_seconds = 120
 
 [[scenario]]
 name = "pi_plugin_model_cycle_context"

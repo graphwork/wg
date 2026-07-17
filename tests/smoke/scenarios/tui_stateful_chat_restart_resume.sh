@@ -99,14 +99,10 @@ path_hash=$(printf '%s' "$(realpath "$G")" | sha256sum | cut -c1-16)
 inner="wg-chat-${project_tag}-${path_hash}-chat-0"
 outer="wgsmoke-stateful-$$"
 outer2="${outer}-restart"
-outer3="${outer}-empty-first-use"
-empty_inner=""
 cleanup_sessions() {
     tmux kill-session -t "$outer" 2>/dev/null || true
     tmux kill-session -t "$outer2" 2>/dev/null || true
-    tmux kill-session -t "$outer3" 2>/dev/null || true
     tmux kill-session -t "$inner" 2>/dev/null || true
-    tmux kill-session -t "$empty_inner" 2>/dev/null || true
 }
 add_cleanup_hook cleanup_sessions
 
@@ -198,36 +194,4 @@ assert s["active_coordinator_id"] == 0, s
 assert s.get("active") == ".chat-0", s
 PY
 
-# Truly empty first-use project: the authoritative Empty publication may create
-# exactly one chat, and route resolution must use the effective Pi profile.
-# End the prior TUI/pane first so this phase also proves there is no accidental
-# cross-project tmux/session reuse.
-tmux kill-session -t "$outer2" 2>/dev/null || true
-tmux kill-session -t "$inner" 2>/dev/null || true
-sleep 0.3
-empty_root="$scratch/empty"
-empty_g="$empty_root/.wg"
-mkdir -p "$empty_root"
-"$WG_BIN" --dir "$empty_g" init --no-agency >"$scratch/empty-init.log" 2>&1 \
-    || loud_fail "empty-project init failed: $(cat "$scratch/empty-init.log")"
-cat >"$empty_g/config.toml" <<'TOML'
-[dispatcher]
-model = "pi:openai-codex:gpt-5.6-sol"
-TOML
-empty_trace="$scratch/empty-startup.jsonl"
-empty_hash=$(printf '%s' "$(realpath "$empty_g")" | sha256sum | cut -c1-16)
-empty_inner="wg-chat-empty-${empty_hash}-chat-0"
-tmux new-session -d -s "$outer3" -x 170 -y 48 \
-    "env PATH='$PATH' HOME='$HOME' XDG_CONFIG_HOME='$XDG_CONFIG_HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' TMUX_TMPDIR='$TMUX_TMPDIR' PI_STATEFUL_LOG='$PI_STATEFUL_LOG' WG_TUI_STARTUP_TRACE='$empty_trace' '$WG_BIN' --dir '$empty_g' tui --no-mouse"
-wait_screen "$outer3" 'PI_STATEFUL_READY' \
-    || loud_fail "empty project did not auto-create/start its profile-aware Pi chat: $(capture "$outer3" | tail -20) pi=$(cat "$pi_log" 2>/dev/null) graph=$(cat "$empty_g/graph.jsonl" 2>/dev/null) state=$(cat "$empty_g/tui-state.json" 2>/dev/null) trace=$(cat "$empty_trace" 2>/dev/null)"
-python3 - "$empty_g/graph.jsonl" <<'PY'
-import json, sys
-chats=[json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if json.loads(line).get("id", "").startswith(".chat-")]
-assert len(chats) == 1, chats
-assert chats[0].get("executor_preset_name") == "pi", chats[0]
-assert chats[0].get("model") == "pi:openai-codex:gpt-5.6-sol", chats[0]
-assert "claude" not in chats[0].get("command_argv", []), chats[0]
-PY
-
-echo "PASS: route-less Pi chat persisted exact route; TUI restart reattached chat-0 with zero new rows; CLI/tmux liveness agreed; dead pane resurrected with continuous history; authoritative empty first-use auto-created one Pi chat"
+echo "PASS: route-less Pi chat persisted exact route; TUI restart reattached chat-0 with zero new rows; CLI/tmux liveness agreed; dead pane resurrected with continuous history"
