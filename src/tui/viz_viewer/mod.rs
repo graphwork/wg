@@ -21,10 +21,11 @@ mod editor_tests;
 #[cfg(test)]
 mod scroll_mode_tests;
 
+use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -47,6 +48,47 @@ use crate::commands::viz::VizOptions;
 /// Returns true when running inside an asciinema recording session.
 fn detect_asciinema() -> bool {
     std::env::var_os("ASCIINEMA_REC").is_some()
+}
+
+/// Policy for negotiating enhanced keyboard input with the *outer* terminal.
+///
+/// Mosh transports screen state rather than a byte-transparent terminal
+/// stream. Its Kitty/CSI-u handling is not reliable enough to distinguish a
+/// physical Enter from Shift+Enter, including when mosh launches or attaches
+/// tmux. Environment markers survive that tmux hop, so decide once at startup
+/// and never infer the transport from mutable chat/runtime metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OuterKeyboardEnhancementPolicy {
+    Probe,
+    DisabledForRecording,
+    DisabledForMosh,
+}
+
+impl OuterKeyboardEnhancementPolicy {
+    fn detect_with(recording: bool, mut env_var: impl FnMut(&str) -> Option<OsString>) -> Self {
+        if recording {
+            return Self::DisabledForRecording;
+        }
+        // MOSH_SERVER_PID is the canonical marker used elsewhere in the TUI.
+        // MOSH_IP covers mosh installations/wrappers that expose the peer but
+        // not the server pid. Do not use MOSH_PREDICTION_DISPLAY: users often
+        // export it globally even for ordinary SSH/local terminals.
+        if env_var("MOSH_SERVER_PID").is_some() || env_var("MOSH_IP").is_some() {
+            return Self::DisabledForMosh;
+        }
+        Self::Probe
+    }
+
+    fn detect(recording: bool) -> Self {
+        Self::detect_with(recording, |name| std::env::var_os(name))
+    }
+
+    /// Run the terminal query only when the transport can carry the protocol.
+    /// Keeping the probe behind this pure startup policy makes the mosh path
+    /// deterministic and guarantees it performs no query/response I/O.
+    fn resolve(self, probe: impl FnOnce() -> bool) -> bool {
+        matches!(self, Self::Probe) && probe()
+    }
 }
 
 /// Run the viz viewer TUI.
@@ -78,10 +120,13 @@ pub fn run(
     }
 
     let recording = recording || detect_asciinema();
+    let outer_keyboard_policy = OuterKeyboardEnhancementPolicy::detect(recording);
+    let keyboard_enhancement_pushed = Arc::new(AtomicBool::new(false));
 
     let original_hook = std::panic::take_hook();
+    let panic_keyboard_enhancement_pushed = keyboard_enhancement_pushed.clone();
     std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = restore_terminal();
+        let _ = restore_terminal(panic_keyboard_enhancement_pushed.load(Ordering::Relaxed));
         original_hook(panic_info);
     }));
 
@@ -101,21 +146,20 @@ pub fn run(
         EnableFocusChange
     )?;
 
-    // Enable kitty keyboard protocol if supported — this lets us distinguish
-    // Shift+Enter from Enter (and other modified special keys).
-    // Skip in recording mode: the query/response escape sequences pollute
-    // the .cast file and can confuse asciinema-player.
-    let has_keyboard_enhancement = if recording {
-        false
-    } else {
-        supports_keyboard_enhancement().unwrap_or(false)
-    };
-    if has_keyboard_enhancement {
-        let _ = execute!(
+    // Enable Kitty keyboard disambiguation only across a byte-reliable outer
+    // transport. In particular, do not even query through mosh: a positive
+    // reply from the terminal beyond mosh does not make mosh a reliable CSI-u
+    // carrier. Shift+Enter is therefore unavailable there and Ctrl+J remains
+    // the reliable multiline fallback.
+    let terminal_supports_keyboard_enhancement =
+        outer_keyboard_policy.resolve(|| supports_keyboard_enhancement().unwrap_or(false));
+    let has_keyboard_enhancement = terminal_supports_keyboard_enhancement
+        && execute!(
             io::stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
-    }
+        )
+        .is_ok();
+    keyboard_enhancement_pushed.store(has_keyboard_enhancement, Ordering::Relaxed);
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to create terminal for TUI")?;
@@ -171,20 +215,25 @@ pub fn run(
     // Signal the dump server to shut down and clean up the socket.
     dump_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let _ = restore_terminal();
+    let _ = restore_terminal(keyboard_enhancement_pushed.load(Ordering::Relaxed));
 
     result
 }
 
-fn restore_terminal() -> Result<()> {
+fn restore_terminal(keyboard_enhancement_pushed: bool) -> Result<()> {
     use io::Write;
     // Best-effort cleanup: don't short-circuit on individual failures
     // so that later steps still run even if an earlier one fails.
     let r1 = disable_raw_mode();
     // Disable mouse modes with raw escape sequences (matching event.rs set_mouse_capture)
     let r2 = io::stdout().write_all(b"\x1b[?1003l\x1b[?1006l\x1b[?1002l");
-    // Pop kitty keyboard enhancement (no-op if it wasn't pushed).
-    let r3 = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    // Pop only WG's own successful push. Emitting a pop after a policy-skipped
+    // negotiation could otherwise consume an ancestor terminal/tmux flag.
+    let r3 = if keyboard_enhancement_pushed {
+        execute!(io::stdout(), PopKeyboardEnhancementFlags)
+    } else {
+        Ok(())
+    };
     let r4 = execute!(
         io::stdout(),
         DisableFocusChange,
@@ -196,4 +245,72 @@ fn restore_terminal() -> Result<()> {
     let _ = r3; // Ignore error — may not have been pushed.
     r4?;
     Ok(())
+}
+
+#[cfg(test)]
+mod outer_keyboard_policy_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::collections::HashMap;
+
+    fn detect(recording: bool, vars: &[(&str, &str)]) -> OuterKeyboardEnhancementPolicy {
+        let vars: HashMap<&str, &str> = vars.iter().copied().collect();
+        OuterKeyboardEnhancementPolicy::detect_with(recording, |name| {
+            vars.get(name).map(OsString::from)
+        })
+    }
+
+    #[test]
+    fn mosh_markers_disable_keyboard_enhancement_without_probing() {
+        for marker in ["MOSH_SERVER_PID", "MOSH_IP"] {
+            let policy = detect(false, &[(marker, "present")]);
+            assert_eq!(policy, OuterKeyboardEnhancementPolicy::DisabledForMosh);
+
+            let probed = Cell::new(false);
+            assert!(!policy.resolve(|| {
+                probed.set(true);
+                true
+            }));
+            assert!(!probed.get(), "mosh policy must not touch terminal I/O");
+        }
+    }
+
+    #[test]
+    fn tmux_alone_preserves_probe_but_tmux_over_mosh_disables_it() {
+        assert_eq!(
+            detect(false, &[("TMUX", "/tmp/tmux-1000/default,1,0")]),
+            OuterKeyboardEnhancementPolicy::Probe,
+            "tmux is capable of forwarding negotiated extended keys"
+        );
+        assert_eq!(
+            detect(
+                false,
+                &[
+                    ("TMUX", "/tmp/tmux-1000/default,1,0"),
+                    ("MOSH_SERVER_PID", "4242"),
+                ],
+            ),
+            OuterKeyboardEnhancementPolicy::DisabledForMosh,
+            "the outer mosh transport remains authoritative through tmux"
+        );
+    }
+
+    #[test]
+    fn non_mosh_terminal_probes_and_recording_never_does() {
+        let policy = detect(false, &[("TERM", "xterm-kitty")]);
+        assert_eq!(policy, OuterKeyboardEnhancementPolicy::Probe);
+        assert!(policy.resolve(|| true));
+
+        let probed = Cell::new(false);
+        let recording = detect(true, &[("TERM", "xterm-kitty")]);
+        assert_eq!(
+            recording,
+            OuterKeyboardEnhancementPolicy::DisabledForRecording
+        );
+        assert!(!recording.resolve(|| {
+            probed.set(true);
+            true
+        }));
+        assert!(!probed.get());
+    }
 }

@@ -33,6 +33,10 @@ pub struct StateContext {
     pub search_active: bool,
     /// Whether help overlay is shown.
     pub show_help: bool,
+    /// Exact host input mode before this event is routed.
+    pub input_mode: String,
+    /// Active Chat input owner, when the Chat panel has keyboard focus.
+    pub chat_input_route: Option<&'static str>,
 }
 
 /// A single trace entry written as one JSONL line.
@@ -219,6 +223,31 @@ pub fn capture_state_context(app: &super::state::VizApp) -> StateContext {
         .and_then(|idx| app.task_order.get(idx))
         .cloned();
 
+    let chat_input_route = if app.right_panel_visible
+        && app.right_panel_tab == RightPanelTab::Chat
+        && app.focused_panel == FocusedPanel::RightPanel
+    {
+        if matches!(app.input_mode, super::state::InputMode::ChatInput) {
+            Some("native_composer")
+        } else if matches!(app.input_mode, super::state::InputMode::Normal)
+            && app.chat_is_connecting()
+        {
+            Some("startup_buffer")
+        } else if matches!(app.input_mode, super::state::InputMode::Normal)
+            && app.chat_pty_mode
+            && app.chat_pty_forwards_stdin
+            && !app.chat_pty_observer
+        {
+            Some("embedded_vendor_pty")
+        } else if app.chat_pty_observer {
+            Some("embedded_vendor_pty_observer")
+        } else {
+            Some("host_chat_navigation")
+        }
+    } else {
+        None
+    };
+
     StateContext {
         focused_panel,
         right_panel_tab,
@@ -226,6 +255,8 @@ pub fn capture_state_context(app: &super::state::VizApp) -> StateContext {
         right_panel_visible: app.right_panel_visible,
         search_active: app.search_active,
         show_help: app.show_help,
+        input_mode: format!("{:?}", app.input_mode),
+        chat_input_route,
     }
 }
 
@@ -245,6 +276,8 @@ mod tests {
             right_panel_visible: true,
             search_active: false,
             show_help: false,
+            input_mode: "Normal".into(),
+            chat_input_route: None,
         }
     }
 
