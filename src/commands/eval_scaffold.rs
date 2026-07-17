@@ -88,7 +88,8 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
         return false;
     }
 
-    let flip_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+    let flip_resolved =
+        config.resolve_model_for_role(worksgood::config::DispatchRole::FlipInference);
 
     // Calculate auto-priority for flip task
     let priority = calculate_auto_priority(graph, task_id, "flip");
@@ -105,8 +106,10 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
         after: vec![task_id.to_string()],
         tags: vec!["flip".to_string(), "agency".to_string()],
         exec: Some(format!("wg evaluate run {} --flip", task_id)),
-        model: Some(flip_resolved.model),
+        model: Some(flip_resolved.spawn_model_spec()),
         provider: flip_resolved.provider,
+        endpoint: flip_resolved.endpoint,
+        reasoning: flip_resolved.reasoning,
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),
         created_at: Some(Utc::now().to_rfc3339()),
@@ -200,7 +203,7 @@ pub fn scaffold_full_pipeline(
     let run_flip = should_run_flip(graph, task_id, config);
     if run_flip && graph.get_task(&flip_task_id).is_none() {
         let flip_resolved =
-            config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+            config.resolve_model_for_role(worksgood::config::DispatchRole::FlipInference);
         let flip_task = Task {
             id: flip_task_id.clone(),
             title: format!("FLIP: {}", task_id),
@@ -212,8 +215,10 @@ pub fn scaffold_full_pipeline(
             after: vec![task_id.to_string()],
             tags: vec!["flip".to_string(), "agency".to_string()],
             exec: Some(format!("wg evaluate run {} --flip", task_id)),
-            model: Some(flip_resolved.model),
+            model: Some(flip_resolved.spawn_model_spec()),
             provider: flip_resolved.provider,
+            endpoint: flip_resolved.endpoint,
+            reasoning: flip_resolved.reasoning,
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
             created_at: Some(Utc::now().to_rfc3339()),
@@ -259,8 +264,10 @@ pub fn scaffold_full_pipeline(
             after: eval_after,
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             exec: Some(format!("wg evaluate run {}", task_id)),
-            model: Some(eval_resolved.model),
+            model: Some(eval_resolved.spawn_model_spec()),
             provider: eval_resolved.provider,
+            endpoint: eval_resolved.endpoint,
+            reasoning: eval_resolved.reasoning,
             agent: config.agency.evaluator_agent.clone(),
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
@@ -516,6 +523,7 @@ pub fn scaffold_eval_tasks_batch(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use worksgood::config::{ReasoningLevel, RoleModelConfig};
     use worksgood::graph::{Node, Status, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -668,6 +676,45 @@ mod tests {
         );
         assert_eq!(flip.exec_mode, Some("bare".to_string()));
         assert_eq!(flip.visibility, "internal");
+    }
+
+    #[test]
+    fn test_scaffold_flip_preserves_qualified_route_across_serialization() {
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        config.models.flip_inference = Some(RoleModelConfig {
+            provider: None,
+            model: Some("codex:gpt-5.4-mini".to_string()),
+            tier: None,
+            endpoint: Some("codex-cli".to_string()),
+            reasoning: Some(ReasoningLevel::High),
+        });
+        // A distinct evaluator route proves FLIP uses its own role.
+        config.models.evaluator = Some(RoleModelConfig {
+            provider: None,
+            model: Some("claude:haiku".to_string()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("route-roundtrip", "Route round trip")));
+
+        assert!(scaffold_flip_task(&mut graph, "route-roundtrip", &config));
+        let flip = graph.get_task(".flip-route-roundtrip").unwrap();
+        assert_eq!(flip.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(flip.provider.as_deref(), Some("codex"));
+        assert_eq!(flip.endpoint.as_deref(), Some("codex-cli"));
+        assert_eq!(flip.reasoning, Some(ReasoningLevel::High));
+        worksgood::config::execution_system_key(flip.model.as_deref().unwrap()).unwrap();
+
+        let encoded = serde_json::to_string(flip).unwrap();
+        let reloaded: Task = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(reloaded.model.as_deref(), Some("codex:gpt-5.4-mini"));
+        assert_eq!(reloaded.provider.as_deref(), Some("codex"));
+        assert_eq!(reloaded.endpoint.as_deref(), Some("codex-cli"));
+        assert_eq!(reloaded.reasoning, Some(ReasoningLevel::High));
+        worksgood::config::execution_system_key(reloaded.model.as_deref().unwrap()).unwrap();
     }
 
     #[test]

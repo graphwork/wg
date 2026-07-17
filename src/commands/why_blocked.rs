@@ -10,6 +10,7 @@ struct BlockingNode {
     id: String,
     status: Status,
     is_phantom: bool,
+    failure_reason: Option<String>,
     children: Vec<BlockingNode>,
 }
 
@@ -93,6 +94,7 @@ fn build_blocking_tree(
         id: task_id.to_string(),
         status,
         is_phantom,
+        failure_reason: task.and_then(|t| t.failure_reason.clone()),
         children: vec![],
     };
 
@@ -122,13 +124,22 @@ fn build_blocking_tree(
                         id: blocker_id.clone(),
                         status: remote.status,
                         is_phantom: false,
+                        failure_reason: None,
                         children: vec![], // Don't recurse into remote graphs
                     };
                     node.children.push(child);
                 }
-            } else if let Some(blocker) = graph.get_task(blocker_id) {
+            } else if graph.get_task(blocker_id).is_some() {
                 // Local dependency — only include if still actively blocking
-                if !blocker.status.is_terminal() {
+                // Match dispatcher readiness exactly. In particular, a system
+                // lifecycle task may run from a PendingEval parent; that parent
+                // is therefore context, not the actionable root blocker.
+                if !worksgood::query::is_blocker_satisfied_with_eval_gate(
+                    blocker_id,
+                    graph,
+                    Some(dir),
+                    task.id.starts_with('.'),
+                ) {
                     let child = build_blocking_tree(graph, blocker_id, visited, dir);
                     node.children.push(child);
                 }
@@ -138,6 +149,7 @@ fn build_blocking_tree(
                     id: blocker_id.clone(),
                     status: Status::Open,
                     is_phantom: true,
+                    failure_reason: None,
                     children: vec![],
                 };
                 node.children.push(child);
@@ -170,9 +182,14 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     if task.status != Status::Open {
         return false;
     }
-    task.after
-        .iter()
-        .all(|blocker_id| worksgood::query::is_blocker_satisfied(blocker_id, graph, Some(dir)))
+    task.after.iter().all(|blocker_id| {
+        worksgood::query::is_blocker_satisfied_with_eval_gate(
+            blocker_id,
+            graph,
+            Some(dir),
+            task.id.starts_with('.'),
+        )
+    })
 }
 
 fn count_blockers(node: &BlockingNode) -> usize {
@@ -288,6 +305,9 @@ fn print_tree(node: &BlockingNode, prefix: &str, depth: usize) {
             "{} \\-- blocked by: {} {}{}",
             prefix, node.id, status_str, root_marker
         );
+        if let Some(reason) = node.failure_reason.as_deref() {
+            println!("{}     dispatch failure: {}", prefix, reason);
+        }
     }
 
     // Calculate the prefix for children
@@ -351,6 +371,9 @@ fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
     });
     if node.is_phantom {
         obj["phantom"] = serde_json::Value::Bool(true);
+    }
+    if let Some(reason) = node.failure_reason.as_deref() {
+        obj["failure_reason"] = serde_json::Value::String(reason.to_string());
     }
     obj
 }
@@ -445,6 +468,59 @@ mod tests {
 
         assert_eq!(tree.id, "blocked");
         assert!(tree.children.is_empty()); // Done blocker excluded
+    }
+
+    #[test]
+    fn test_system_task_pending_eval_parent_is_not_reported_as_root_blocker() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("parent", "Parent");
+        parent.status = Status::PendingEval;
+        let mut flip = make_task(".flip-parent", "FLIP parent");
+        flip.after = vec!["parent".to_string()];
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(flip));
+
+        let mut visited = HashSet::new();
+        let tree = build_blocking_tree(&graph, ".flip-parent", &mut visited, Path::new("/tmp"));
+        assert!(
+            tree.children.is_empty(),
+            "PendingEval is bypassed for system tasks"
+        );
+        assert!(is_task_ready(
+            &graph,
+            graph.get_task(".flip-parent").unwrap(),
+            Path::new("/tmp")
+        ));
+    }
+
+    #[test]
+    fn test_incomplete_flip_keeps_route_failure_as_actionable_root() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("parent", "Parent");
+        parent.status = Status::PendingEval;
+        let mut flip = make_task(".flip-parent", "FLIP parent");
+        flip.status = Status::Incomplete;
+        flip.after = vec!["parent".to_string()];
+        flip.failure_reason =
+            Some("invalid invocation-scoped evaluator route \"gpt-5.4-mini\"".to_string());
+        let mut evaluator = make_task(".evaluate-parent", "Evaluate parent");
+        evaluator.after = vec![".flip-parent".to_string()];
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(flip));
+        graph.add_node(Node::Task(evaluator));
+
+        let mut visited = HashSet::new();
+        let tree = build_blocking_tree(&graph, ".evaluate-parent", &mut visited, Path::new("/tmp"));
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].id, ".flip-parent");
+        assert!(tree.children[0].children.is_empty());
+        assert!(
+            tree.children[0]
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("invalid invocation-scoped evaluator route")
+        );
     }
 
     #[test]
