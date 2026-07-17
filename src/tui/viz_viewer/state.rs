@@ -33308,6 +33308,68 @@ mod chat_agent_death_tests {
 }
 
 #[cfg(test)]
+mod chat_lifecycle_completion_tests {
+    use super::*;
+    use crate::commands::viz::VizOutput;
+
+    fn empty_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::new(),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+        VizApp::from_viz_output_for_test(&viz)
+    }
+
+    #[test]
+    fn archive_completion_without_local_pane_is_idempotent() {
+        let unique = format!(
+            "wg-tui-archive-no-pane-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let root = std::env::temp_dir().join(unique);
+        let workgraph_dir = root.join(".wg");
+        std::fs::create_dir_all(&workgraph_dir).expect("create isolated workgraph dir");
+
+        let mut app = empty_app();
+        app.workgraph_dir = workgraph_dir;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        let cid = 987_654_321;
+        let task_id = worksgood::chat_id::format_chat_task_id(cid);
+        assert!(!app.task_panes.contains_key(&task_id));
+        app.cmd_tx
+            .send(CommandResult {
+                success: true,
+                output: String::new(),
+                effect: CommandEffect::ArchiveCoordinator(cid),
+            })
+            .expect("inject archive completion");
+
+        assert!(app.drain_commands(), "archive completion should be drained");
+        assert!(!app.task_panes.contains_key(&task_id));
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message == format!("Archived coordinator {cid}")),
+            "successful no-pane archive should complete normally"
+        );
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
 mod chat_pty_redraw_trigger_tests {
     //! Pin the demand-driven redraw signal that drives codex / claude
     //! animation rendering between user keypresses. Before

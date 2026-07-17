@@ -116,10 +116,13 @@ pub fn kill_chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u
     if !exists {
         return false;
     }
-    let _ = std::process::Command::new("tmux")
+    std::process::Command::new("tmux")
         .args(["kill-session", "-t", &session])
-        .status();
-    true
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Build the canonical tmux session name for a chat. Format:

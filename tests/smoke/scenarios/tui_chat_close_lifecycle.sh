@@ -86,6 +86,30 @@ has_archived = "archived" in row.get("tags", [])
 assert has_archived == (sys.argv[4] == "yes"), row
 PY
 }
+assert_coherent_archive_frame() {
+    local archived_id=$1; shift
+    capture >.wg/archive-screen.txt
+    if ! python3 - .wg/archive-screen.txt "$archived_id" "$@" <<'PY'
+import sys
+screen_path, archived, *sentinels = sys.argv[1:]
+screen = open(screen_path, encoding="utf-8").read()
+lines = screen.splitlines()
+assert "can't find session" not in screen, screen
+assert archived not in screen, (archived, screen)
+header = "Chat: cancel (.chat-0)"
+assert screen.count(header) == 1, (header, screen.count(header), screen)
+for sentinel in sentinels:
+    count = sum(line.startswith(sentinel + " ") for line in lines)
+    assert count == 1, (sentinel, count, screen)
+tops = [line for line in lines if line.startswith("┌") and line.endswith("┐")]
+bottoms = [line for line in lines if line.startswith("└") and line.endswith("┘")]
+assert len(tops) == 1 and len(bottoms) == 1, (tops, bottoms, screen)
+assert len(tops[0]) == len(bottoms[0]), (len(tops[0]), len(bottoms[0]), screen)
+PY
+    then
+        loud_fail "Archive frame was physically incoherent: $(capture | tr '\n' '|')"
+    fi
+}
 
 tmux new-session -d -s "$outer" -x 120 -y 36 \
     "env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER wg tui"
@@ -240,5 +264,8 @@ done
 assert_graph .chat-2 done yes
 ! tmux has-session -t "$chat2_session" 2>/dev/null \
     || loud_fail "Archive left the chat-2 agent session running"
+wait_not_screen '.chat-2  (' 'Archive graph row did not leave the physical frame'
+wait_screen 'Chat: cancel (.chat-0)' 'Archive did not settle on one live identity'
+assert_coherent_archive_frame .chat-2 .chat-0 .chat-1 .chat-36
 
-echo 'PASS: abandoned .chat-36 opened exact Detail with zero spawn; Close… Cancel/Hide/Stop/Archive lifecycle semantics verified on the installed TUI'
+echo 'PASS: exact Detail + Close… Cancel/Hide/Stop + Archive present→already-gone cleanup leave one coherent installed-TUI frame'
