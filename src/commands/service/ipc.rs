@@ -1561,6 +1561,26 @@ pub fn create_chat_in_graph(
             "--command cannot be combined with --exec/--executor, --model, or --endpoint"
         );
     }
+
+    // A route-less chat creation is not a request for the historical Claude
+    // default. Resolve the selected config/profile route atomically and persist
+    // that exact (handler, model) pair on the chat. This makes CLI, TUI
+    // first-use, daemon boot and later resume agree even if the active profile
+    // changes after creation.
+    let mut effective_model = model.map(str::to_string);
+    let mut effective_executor = executor.map(str::to_string);
+    if command.is_none() && effective_executor.is_none() {
+        let selection = worksgood::execution_selection::require(
+            dir,
+            model.map(|route| (route, false)),
+            "wg chat create",
+        )?;
+        effective_model = selection.route;
+        effective_executor = selection.system.map(|system| system.handler);
+    }
+    let model = effective_model.as_deref();
+    let executor = effective_executor.as_deref();
+
     if let Some(msg) = worker_only_live_chat_executor_error(executor) {
         anyhow::bail!("{}", msg);
     }
@@ -1633,9 +1653,9 @@ pub fn create_chat_in_graph(
         }),
         // Per-task overrides — `plan_spawn` reads these directly off the
         // chat task on every supervisor iteration. Setting them here means
-        // the supervisor honors the user's launcher choices on first spawn
-        // AND on respawn after handler crash.
-        model: model.map(String::from),
+        // the supervisor honors the resolved profile/launcher choices on first
+        // spawn AND on respawn after handler crash.
+        model: effective_model.clone(),
         endpoint: endpoint.map(String::from),
         command_argv,
         working_dir,
@@ -1672,19 +1692,21 @@ pub fn create_chat_in_graph(
     })
     .with_context(|| "Failed to save graph")?;
 
-    // Record executor/model/endpoint combo in launcher history
-    {
-        let exec = executor.unwrap_or("claude");
+    // Record the effective executor/model/endpoint combo, never a fabricated
+    // Claude fallback that was not selected by the user.
+    if let Some(exec) = executor {
         let _ = worksgood::launcher_history::record_use(
             &worksgood::launcher_history::HistoryEntry::new(exec, model, endpoint, "tui"),
         );
     }
 
-    // Write per-coordinator state file with model/executor/endpoint overrides if specified.
-    if model.is_some() || executor.is_some() || endpoint.is_some() {
+    // Persist one atomic route generation for every built-in chat. Resume and
+    // daemon lazy-spawn read this before global config, so an active-profile
+    // switch cannot cross an old executor with a new model.
+    if command.is_none() {
         let mut state = super::CoordinatorState::load_or_default_for(dir, next_id);
-        state.model_override = model.map(String::from);
-        state.executor_override = executor.map(String::from);
+        state.model_override = effective_model;
+        state.executor_override = effective_executor;
         state.endpoint_override = endpoint.map(String::from);
         state.save_for(dir, next_id);
     }
@@ -1992,9 +2014,12 @@ fn handle_set_coordinator_executor(
 
     // Signal the live handler to exit so the supervisor respawns
     // with the new executor_override in effect.
-    let chat_dir = dir
-        .join("chat")
-        .join(format!("coordinator-{}", coordinator_id));
+    // Resolve through the dot-less chat alias to the canonical UUID directory.
+    // The legacy `chat/coordinator-N` literal split-brained resume: it looked
+    // for a lock in a directory the real handler never used, so no generation
+    // was signalled even though IPC reported success.
+    let chat_ref = worksgood::chat_id::format_chat_session_ref(coordinator_id);
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
     let mut handler_pid: Option<u32> = None;
     if let Ok(Some(info)) = worksgood::session_lock::read_holder(&chat_dir)
         && info.alive
@@ -2108,27 +2133,20 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
 
     let mut coordinators = Vec::new();
     for task in graph.tasks() {
-        if task.tags.iter().any(|t| t == "coordinator-loop") {
-            // Skip abandoned or archived coordinators
+        if task
+            .tags
+            .iter()
+            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+        {
+            // Skip abandoned or archived chats.
             if matches!(task.status, worksgood::graph::Status::Abandoned) {
                 continue;
             }
             if task.tags.iter().any(|t| t == "archived") {
                 continue;
             }
-            // Extract coordinator ID from task ID (.coordinator-N)
-            let cid = task
-                .id
-                .strip_prefix(".coordinator-")
-                .and_then(|s: &str| s.parse::<u32>().ok())
-                .or_else(|| {
-                    // Legacy .coordinator (no suffix) → ID 0
-                    if task.id == ".coordinator" {
-                        Some(0)
-                    } else {
-                        None
-                    }
-                });
+            let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                .or_else(|| (task.id == ".coordinator").then_some(0));
             if let Some(id) = cid {
                 coordinators.push(serde_json::json!({
                     "coordinator_id": id,
@@ -2136,6 +2154,7 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
                     "title": task.title,
                     "status": format!("{:?}", task.status),
                     "loop_iteration": task.loop_iteration,
+                    "runtime_live": worksgood::chat::chat_runtime_is_live(dir, id),
                 }));
             }
         }
@@ -2153,6 +2172,14 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn select_claude_route(dir: &Path) {
+        fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_ipc_request_serialization() {
@@ -3287,6 +3314,30 @@ poll_interval = 120
     }
 
     #[test]
+    fn test_handle_list_coordinators_includes_new_chat_tag_with_runtime_evidence() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+            id: ".chat-8".to_string(),
+            title: "Pi chat".to_string(),
+            status: worksgood::graph::Status::InProgress,
+            tags: vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()],
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_list_coordinators(dir);
+        let rows = resp.data.unwrap()["coordinators"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rows.len(), 1, "new .chat-N tasks must reach ListChats");
+        assert_eq!(rows[0]["coordinator_id"], 8);
+        assert_eq!(rows[0]["runtime_live"], false);
+    }
+
+    #[test]
     fn test_handle_list_coordinators_excludes_archived() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path();
@@ -3329,6 +3380,7 @@ poll_interval = 120
         // Create empty graph
         let graph = worksgood::graph::WorkGraph::new();
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        select_claude_route(dir);
 
         // Create chat agent labeled "alice"
         let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
@@ -3366,6 +3418,7 @@ poll_interval = 120
         // Create empty graph and two coordinators
         let graph = worksgood::graph::WorkGraph::new();
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        select_claude_route(dir);
 
         let _ = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
         let _ = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
@@ -3590,6 +3643,44 @@ poll_interval = 120
     /// CoordinatorState file so the supervisor reads them on respawn /
     /// reattach. Without this, restarting the TUI silently drops the
     /// endpoint override and the chat hits the default endpoint instead.
+    #[test]
+    fn test_route_less_chat_persists_effective_pi_profile_route() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            &dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        // `wg profile use pi-codex` materializes this handler-first route in
+        // global config. A local fixture exercises the identical merged/source
+        // resolution without mutating the test runner's active profile.
+        fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"pi:openai-codex:gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+
+        let id = create_chat_in_graph(dir, Some("profile-default"), None, None, None, None)
+            .expect("selected Pi route should create a chat");
+        let graph = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let task = graph
+            .get_task(&worksgood::chat_id::format_chat_task_id(id))
+            .unwrap();
+        assert_eq!(task.executor_preset_name.as_deref(), Some("pi"));
+        assert_eq!(task.model.as_deref(), Some("pi:openai-codex:gpt-5.6-sol"));
+        assert_eq!(task.command_argv.first().map(String::as_str), Some("pi"));
+        assert!(!task.command_argv.iter().any(|arg| arg == "claude"));
+
+        let state = CoordinatorState::load_for(dir, id).expect("atomic route state");
+        assert_eq!(state.executor_override.as_deref(), Some("pi"));
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("pi:openai-codex:gpt-5.6-sol")
+        );
+    }
+
     #[test]
     fn test_create_chat_persists_endpoint_override() {
         let tmp = TempDir::new().unwrap();
@@ -3834,6 +3925,7 @@ poll_interval = 120
             }));
         }
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        select_claude_route(dir);
 
         // Default max_coordinators is 4. We have 2 live + 2 archived =
         // 2/4 — creation must succeed (fresh chat 4 lands).
@@ -3875,6 +3967,7 @@ poll_interval = 120
             }));
         }
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        select_claude_route(dir);
 
         // 4 zombies + cap of 4 = pre-fix would bail with "Chat cap
         // reached (4/4)". Post-fix the zombies don't count and creation

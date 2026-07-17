@@ -30,9 +30,9 @@ use crate::commands::is_process_alive;
 /// Liveness category for `wg chat list` / `show`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRuntimeStatus {
-    /// Chat task exists in graph; service daemon is running and a
-    /// supervisor entry exists for this chat (handler may be alive
-    /// or about to be respawned by the supervisor).
+    /// Chat task has a concrete live runtime owner: a daemon handler lock or
+    /// a persistent TUI-owned tmux pane. The historical label remains
+    /// `supervised` for output compatibility.
     Supervised,
     /// Chat task exists in graph; service daemon is NOT running.
     /// Inbox messages will be queued until the daemon is started.
@@ -140,30 +140,31 @@ fn classify_chat_task(
 /// chat is running, not "stopped". Acceptance criterion for
 /// fix-nex-chat23-eof-resume: show/status must agree on a live handler.
 fn chat_handler_is_live(dir: &Path, cid: u32) -> bool {
-    // Use the dot-less session ref the handler runs under, not the
-    // `.chat-N` task id — only the former resolves to the UUID dir where
-    // the lock actually lives.
-    let chat_ref = chat_id::format_chat_session_ref(cid);
-    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
-    worksgood::session_lock::read_holder(&chat_dir)
-        .ok()
-        .flatten()
-        .is_some_and(|info| info.alive)
+    worksgood::chat::chat_runtime_is_live(dir, cid)
 }
 
-/// Promote a `Stopped` classification to `Supervised` when a live handler
-/// actually holds the lock. Leaves every other status untouched (an
-/// archived/deleted/dormant chat stays as classified).
+/// Promote a dormant/stopped classification when a concrete runtime owner is
+/// live. A TUI-owned tmux pane remains live even when the daemon is down and
+/// vendor panes do not hold `.handler.pid`, so daemon state alone cannot be
+/// the liveness authority. Archived/deleted chats remain terminal.
+fn refine_status_with_runtime(status: ChatRuntimeStatus, runtime_live: bool) -> ChatRuntimeStatus {
+    if matches!(
+        status,
+        ChatRuntimeStatus::Stopped | ChatRuntimeStatus::Dormant
+    ) && runtime_live
+    {
+        ChatRuntimeStatus::Supervised
+    } else {
+        status
+    }
+}
+
 fn refine_status_with_live_handler(
     status: ChatRuntimeStatus,
     dir: &Path,
     cid: u32,
 ) -> ChatRuntimeStatus {
-    if matches!(status, ChatRuntimeStatus::Stopped) && chat_handler_is_live(dir, cid) {
-        ChatRuntimeStatus::Supervised
-    } else {
-        status
-    }
+    refine_status_with_runtime(status, chat_handler_is_live(dir, cid))
 }
 
 fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
@@ -185,6 +186,12 @@ fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
         None => return Vec::new(),
     };
     arr.iter()
+        .filter(|value| {
+            value
+                .get("runtime_live")
+                .and_then(|flag| flag.as_bool())
+                .unwrap_or(false)
+        })
         .filter_map(|v| v.get("coordinator_id").and_then(|x| x.as_u64()))
         .map(|n| n as u32)
         .collect()
@@ -431,6 +438,8 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .ok()
         .flatten()
         .filter(|info| info.alive);
+    let tmux_session = chat_id::chat_tmux_session_for_id(dir, cid);
+    let tmux_live = chat_id::chat_tmux_session_is_live(dir, cid);
 
     if json {
         let v = serde_json::json!({
@@ -447,6 +456,10 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
                 "kind": info.kind.map(|k| k.label()),
                 "started_at": info.started_at,
             })),
+            "tmux": {
+                "session": tmux_session,
+                "live": tmux_live,
+            },
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -473,6 +486,7 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
             info.pid,
             info.kind.map(|k| k.label()).unwrap_or("unknown")
         ),
+        None if tmux_live => println!("  handler  : live tmux={tmux_session}"),
         None => println!("  handler  : none"),
     }
     Ok(())
@@ -588,8 +602,30 @@ pub(crate) fn reconstruct_resume_metadata(
     (executor, model)
 }
 
-/// `wg chat resume` — ask the supervisor to (re)spawn the handler.
-/// Requires the daemon. Errors clearly when down.
+const RESUME_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const RESUME_LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+fn wait_for_chat_runtime_with(
+    timeout: std::time::Duration,
+    poll: std::time::Duration,
+    mut is_live: impl FnMut() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_live() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(std::time::Instant::now())));
+    }
+}
+
+/// `wg chat resume` — ask the supervisor to (re)spawn the handler and wait for
+/// concrete liveness. An accepted IPC is scheduling acknowledgement, not user
+/// success: this command returns success only after a handler lock or the
+/// persistent TUI tmux owner becomes live within a bounded interval.
 pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
         worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
@@ -650,12 +686,39 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         }
         anyhow::bail!("{}", msg);
     }
-    if json {
-        if let Some(d) = resp.data {
-            println!("{}", serde_json::to_string_pretty(&d)?);
+    if !wait_for_chat_runtime_with(RESUME_LIVE_TIMEOUT, RESUME_LIVE_POLL, || {
+        chat_handler_is_live(dir, cid)
+    }) {
+        let msg = format!(
+            "Supervisor accepted resume for chat {cid}, but no live handler or TUI tmux session appeared within {}s. Inspect {}/service/daemon.log and retry after fixing the recorded spawn error.",
+            RESUME_LIVE_TIMEOUT.as_secs(),
+            dir.display()
+        );
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chat_id": cid,
+                    "resumed": false,
+                    "runtime_status": "stopped",
+                    "error": msg,
+                }))?
+            );
         }
+        anyhow::bail!(msg);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "chat_id": cid,
+                "resumed": true,
+                "runtime_status": "supervised",
+            }))?
+        );
     } else {
-        println!("Asked supervisor to resume chat {}.", cid);
+        println!("Resumed chat {} — runtime is live.", cid);
     }
     Ok(())
 }
@@ -898,6 +961,11 @@ mod tests {
         let dir = td.path();
         std::fs::create_dir_all(dir.join("service")).unwrap();
         std::fs::write(dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
         td
     }
 
@@ -1172,6 +1240,51 @@ mod tests {
                 "Daemon down — every chat should be Dormant"
             );
         }
+    }
+
+    #[test]
+    fn resume_wait_never_turns_scheduling_ack_into_false_success() {
+        let mut probes = 0;
+        let live = wait_for_chat_runtime_with(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            || {
+                probes += 1;
+                false
+            },
+        );
+        assert!(!live);
+        assert!(probes >= 1);
+    }
+
+    #[test]
+    fn resume_wait_observes_delayed_runtime_within_bound() {
+        let mut probes = 0;
+        let live = wait_for_chat_runtime_with(
+            std::time::Duration::from_millis(20),
+            std::time::Duration::from_millis(1),
+            || {
+                probes += 1;
+                probes >= 3
+            },
+        );
+        assert!(live);
+    }
+
+    #[test]
+    fn tui_owned_runtime_promotes_stopped_and_dormant_to_supervised() {
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Stopped, true),
+            ChatRuntimeStatus::Supervised
+        );
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Dormant, true),
+            ChatRuntimeStatus::Supervised
+        );
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Stopped, false),
+            ChatRuntimeStatus::Stopped
+        );
     }
 
     #[test]

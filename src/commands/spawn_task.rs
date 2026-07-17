@@ -446,6 +446,20 @@ fn dispatch_pi(chat_ref: &str, model: Option<&str>, workgraph_dir: &Path) -> Res
         let session_dir = chat_dir.join("pi-sessions");
         std::fs::create_dir_all(&session_dir)
             .with_context(|| format!("create pi session dir {:?}", session_dir))?;
+        // Unlike the RPC `pi-handler`, this chat path execs interactive Pi
+        // directly. Acquire the canonical runtime lock before exec and leave
+        // its file owned by this PID; exec preserves the PID, so CLI liveness,
+        // resume signalling, and the daemon all observe the real Pi process.
+        // On exit the file becomes detectably stale and the next generation's
+        // acquire recovers it. (Forgetting the RAII guard is intentional: its
+        // Drop cannot run after a successful exec.)
+        let lock = worksgood::session_lock::SessionLock::acquire(
+            &chat_dir,
+            worksgood::session_lock::HandlerKind::Adapter,
+        )
+        .with_context(|| format!("acquire Pi chat runtime lock for {chat_ref}"))?;
+        std::mem::forget(lock);
+
         let mut cmd = std::process::Command::new("pi");
         if let Some(marg) = crate::commands::pi_handler::pi_model_arg(model) {
             cmd.arg("--provider")

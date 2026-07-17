@@ -30,7 +30,6 @@ pub(crate) enum Kind {
     HistoryBrowser,
     ChatManager,
     FileBrowser,
-    Persistence,
 }
 
 struct Job {

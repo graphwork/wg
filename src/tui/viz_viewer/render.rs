@@ -3705,6 +3705,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 },
             );
             app.task_panes.remove(&task_id);
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+            let chat_dir = worksgood::chat::chat_dir_for_ref(&app.workgraph_dir, &chat_ref);
+            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
         }
 
         // Lazy spawn at the actual msg_area dimensions. If

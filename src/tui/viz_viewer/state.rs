@@ -3849,10 +3849,11 @@ fn save_tui_state(
         open_tabs: open_tabs.to_vec(),
         active,
     };
-    if let Ok(json) = serde_json::to_string(&state) {
-        if std::fs::write(tui_state_path(workgraph_dir), &json).is_err() {
-            eprintln!("wg: warning: failed to persist TUI tab state");
-        }
+    if let Ok(json) = serde_json::to_string(&state)
+        && worksgood::atomic_file::write_atomic(&tui_state_path(workgraph_dir), json.as_bytes())
+            .is_err()
+    {
+        eprintln!("wg: warning: failed to persist TUI tab state");
     }
 }
 
@@ -8534,6 +8535,11 @@ impl VizApp {
             app.load_viz_from_graph(&graph);
             app.load_stats_from_graph(&graph);
             app.refresh_chat_tab_caches(&graph);
+            // Full bootstrap owns an authoritative complete graph. Publish it
+            // before startup housekeeping; otherwise coherent_graph() is None
+            // and orphan sweep interprets every persistent chat tmux pane as
+            // orphaned (the restart resurrection failure).
+            app.published_graph = Some(Arc::new(graph.clone()));
             app.async_fs.seed_graph(graph, graph_mtime);
         } else {
             app.lines = vec!["(error loading graph)".to_string()];
@@ -8541,11 +8547,15 @@ impl VizApp {
             app.search_lines = app.lines.clone();
             app.max_line_width = app.lines[0].len();
         }
-        // Restore TUI focus state from previous session (before ensure_user_coordinator
-        // so that the user's last-focused coordinator is preserved).
+        // Restore TUI focus state from previous session. Destructive tmux
+        // housekeeping is allowed only when this bootstrap successfully
+        // published a complete authoritative graph; a transient parse/open
+        // failure must never mean "zero live chats" and sweep every pane.
         app.restore_tui_state();
-        app.ensure_user_coordinator();
-        app.sync_active_tabs_from_graph();
+        if app.published_graph.is_some() {
+            app.ensure_user_coordinator();
+            app.sync_active_tabs_from_graph();
+        }
         app.load_agent_monitor();
         app.check_coordinator_status();
         app.update_service_health();
@@ -8766,6 +8776,12 @@ impl VizApp {
         match result {
             Ok(apply) => {
                 apply(self);
+                // First-use creation is legal only after this independent lane
+                // has authoritatively scanned graph.jsonl and published Empty.
+                // Do not run full-graph tmux housekeeping here: this lane
+                // intentionally publishes only the selected chat, so treating
+                // it as the complete live set would kill other valid panes.
+                self.maybe_auto_create_first_chat();
                 if let Some(reporter) = self.startup_reporter.as_ref() {
                     let detail = format!(".chat-{}", self.active_coordinator_id);
                     reporter.record("active_chat_metadata_ready", Some(&detail));
@@ -9130,6 +9146,11 @@ impl VizApp {
         self.cached_chat_tab_entries = std::mem::take(&mut snapshot.cached_chat_tab_entries);
         self.cached_user_board_entries = std::mem::take(&mut snapshot.cached_user_board_entries);
         self.cached_coordinator_id_set = std::mem::take(&mut snapshot.cached_coordinator_id_set);
+        let newly_published_chat = self.pending_new_chat_focus.filter(|cid| {
+            self.cached_coordinator_id_set.contains_key(cid)
+                && *cid == self.active_coordinator_id
+                && !self.closed_tabs.contains(cid)
+        });
         for toast in std::mem::take(&mut snapshot.toasts) {
             self.push_toast(toast.message, toast.severity);
         }
@@ -9176,6 +9197,17 @@ impl VizApp {
         self.last_refresh = Instant::now();
         if let Some(engine) = self.snapshot_engine.as_mut() {
             engine.retire(old);
+        }
+        if let Some(cid) = newly_published_chat {
+            self.pending_new_chat_focus = None;
+            self.active_chat_identity = self.chat_identity_from_graph(cid);
+            if !self
+                .task_panes
+                .contains_key(&worksgood::chat_id::format_chat_task_id(cid))
+                && self.pending_chat_pty_spawn.is_none()
+            {
+                self.maybe_auto_enable_chat_pty();
+            }
         }
         self.retry_chat_startup_if_authoritative_chat_appeared();
     }
@@ -14329,7 +14361,17 @@ impl VizApp {
                         } else {
                             self.push_toast("New chat created".to_string(), ToastSeverity::Info);
                         }
+                        // This selector is the input to the prioritized retry
+                        // below, so commit it synchronously and atomically. A
+                        // deferred write could still point at the prior tab and
+                        // produce a false corrupt-metadata startup error.
                         self.persist_tab_state();
+                        // The create IPC is authoritative and graph persistence
+                        // completed before its response. Re-run the prioritized
+                        // active-chat lane now that tui-state points at the new
+                        // id; this resolves/spawns the saved route even when the
+                        // slower graph snapshot publication is still lagging.
+                        self.retry_chat_startup();
                     } else {
                         // Reset the in-flight flag so the user can fix
                         // their selection and retry without reopening
@@ -14350,6 +14392,13 @@ impl VizApp {
                             // "Failed provisioning ... renders an error
                             // state in the tab, not silent drop").
                             l.last_error = Some(err.clone());
+                        } else {
+                            // First-use auto-create has no launcher pane. Keep
+                            // the failure visible/actionable instead of leaving
+                            // startup in an endless Loading shell.
+                            self.chat_startup_state = ChatStartupState::Error(format!(
+                                "first chat could not be created: {err}; configure a route and press r"
+                            ));
                         }
                         self.push_toast(
                             format!("Failed to create chat: {}", err),
@@ -16084,17 +16133,20 @@ impl VizApp {
     }
 
     /// Persist the current tab list and active tab to tui-state.json.
-    /// Best-effort: failure logs a warning but doesn't block operation.
+    ///
+    /// This deliberately stays synchronous: selector writes are tiny, and
+    /// enqueueing them on the coalescing auxiliary lane allowed an older tab
+    /// switch to land after a newer one (or after process exit). The atomic
+    /// writer keeps concurrent readers from observing partial JSON while this
+    /// call preserves the user's exact last selection.
     pub fn persist_tab_state(&mut self) {
         let open_tabs = self.open_tab_labels_for_persistence();
-        let workgraph_dir = self.workgraph_dir.clone();
-        let cid = self.active_coordinator_id;
-        let tab = self.right_panel_tab;
-        self.auxiliary
-            .request(super::auxiliary::Kind::Persistence, move || {
-                save_tui_state(&workgraph_dir, cid, &tab, &open_tabs);
-                Box::new(|_| {})
-            });
+        save_tui_state(
+            &self.workgraph_dir,
+            self.active_coordinator_id,
+            &self.right_panel_tab,
+            &open_tabs,
+        );
     }
 
     fn open_tab_labels_for_persistence(&self) -> Vec<String> {
@@ -16961,6 +17013,11 @@ impl VizApp {
             let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
                 .or_else(|| (task.id == ".coordinator").then_some(0));
             if let Some(cid) = cid {
+                // Selecting a live tab is also an explicit resurrection
+                // request. Clear a prior death panel before switch_coordinator
+                // queues the saved route; otherwise render suppresses the new
+                // pending spawn forever and the click silently stays dead.
+                self.chat_agent_death.remove(&cid);
                 // Chooser/task-row navigation can reopen a previously hidden
                 // live chat. Make that tab membership explicit before the
                 // switch; otherwise lifecycle Close on the reopened chat sees
@@ -17686,6 +17743,10 @@ impl VizApp {
                                 "[tui] failed to write dexto agent config in {}: {e}",
                                 chat_dir.display()
                             );
+                            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                            self.chat_startup_state = ChatStartupState::Error(format!(
+                                "could not prepare Dexto chat: {e}; press r to retry"
+                            ));
                             return;
                         }
                     };
@@ -17697,7 +17758,9 @@ impl VizApp {
                     ("dexto".to_string(), args, Some(project_root))
                 }
                 _ => {
-                    // Unknown executor — leave file-tailing path in charge.
+                    // Unknown/custom executors use the file-backed chat view;
+                    // there is no embedded vendor PTY for the TUI to own.
+                    worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
                     return;
                 }
             };
@@ -17851,6 +17914,12 @@ impl VizApp {
                 true
             }
             Err(error) => {
+                if let Some(cid) = pending_cid {
+                    let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+                    let chat_dir =
+                        worksgood::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                    worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                }
                 if still_active {
                     self.chat_pty_mode = false;
                     self.chat_pty_forwards_stdin = false;
@@ -18081,6 +18150,25 @@ impl VizApp {
         }
     }
 
+    fn authoritative_chat_scan_allows_first_use_create(&self) -> bool {
+        matches!(self.chat_startup_state, ChatStartupState::Empty)
+            && self.active_chat_identity.is_none()
+    }
+
+    fn maybe_auto_create_first_chat(&mut self) {
+        if !self.authoritative_chat_scan_allows_first_use_create() {
+            return;
+        }
+        let user = worksgood::current_user();
+        if user == "unknown" {
+            return;
+        }
+        // Move out of Empty before enqueueing so no later bootstrap ordering
+        // can submit a second create while IPC is in flight.
+        self.chat_startup_state = ChatStartupState::Loading;
+        self.create_coordinator(Some(user));
+    }
+
     pub fn ensure_user_coordinator(&mut self) {
         // Orphan-sweep tmux chat sessions whose backing task is gone
         // before any chat-tab spawn might reattach to one. Cheap (one
@@ -18098,7 +18186,7 @@ impl VizApp {
         self.sync_chat_tmux_settings();
 
         let user = worksgood::current_user();
-        // Don't auto-create for the fallback "unknown" identity
+        // Don't auto-create for the fallback "unknown" identity.
         if user == "unknown" {
             return;
         }
@@ -18134,24 +18222,7 @@ impl VizApp {
                 .next()
         });
 
-        if existing_coord.is_none() {
-            // No chat for this user — check if ANY chat agents exist
-            let any_exist = graph.as_ref().is_some_and(|g| {
-                g.tasks().any(|t| {
-                    t.tags
-                        .iter()
-                        .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
-                        && !matches!(t.status, worksgood::graph::Status::Abandoned)
-                        && !t.tags.iter().any(|tag| tag == "archived")
-                })
-            });
-            if !any_exist {
-                // No coordinators at all — create one for first-use experience
-                self.create_coordinator(Some(user.clone()));
-            }
-            // If other coordinators exist but none for this user, don't auto-create.
-            // The user can use the plus (+) key to add one manually.
-        }
+        self.maybe_auto_create_first_chat();
 
         // Only switch to the user's coordinator if no valid focus was restored
         // from tui-state.json (i.e., still on the default coordinator 0).
@@ -19111,6 +19182,23 @@ impl VizApp {
             .is_none_or(|identity| identity.coordinator_id != self.active_coordinator_id)
         {
             self.active_chat_identity = self.chat_identity_from_graph(self.active_coordinator_id);
+        }
+
+        // Creation acknowledgement can beat graph publication. Once the exact
+        // pending chat appears in an authoritative graph, resolve its saved
+        // route and queue the PTY. Without this edge, first-use auto-create
+        // produced a visible tab that stayed permanently in file/NAV mode.
+        if pending_seen_in_graph
+            && self.chat_is_live(self.active_coordinator_id)
+            && !self
+                .task_panes
+                .contains_key(&worksgood::chat_id::format_chat_task_id(
+                    self.active_coordinator_id,
+                ))
+            && self.pending_chat_pty_spawn.is_none()
+        {
+            self.active_chat_identity = self.chat_identity_from_graph(self.active_coordinator_id);
+            self.maybe_auto_enable_chat_pty();
         }
 
         self.retry_chat_startup_if_authoritative_chat_appeared();
@@ -33075,6 +33163,29 @@ mod prioritized_chat_startup_tests {
     }
 
     #[test]
+    fn partial_full_graph_never_authorizes_first_use_chat_creation() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("graph.jsonl"), "").unwrap();
+        let mut app = VizApp::new(dir, VizOptions::default(), Some(false), None, true);
+
+        // Model the reported ordering: a full-bootstrap publication exists but
+        // contains no chats while the independent authoritative lane is still
+        // Loading. Creation must remain impossible regardless of that partial
+        // graph. Only the lane's explicit Empty publication flips the gate.
+        app.published_graph = Some(Arc::new(WorkGraph::new()));
+        app.chat_startup_state = ChatStartupState::Loading;
+        app.active_chat_identity = None;
+        assert!(!app.authoritative_chat_scan_allows_first_use_create());
+
+        app.chat_startup_state = ChatStartupState::Ready;
+        assert!(!app.authoritative_chat_scan_allows_first_use_create());
+        app.chat_startup_state = ChatStartupState::Empty;
+        assert!(app.authoritative_chat_scan_allows_first_use_create());
+    }
+
+    #[test]
     fn corrupt_active_metadata_fails_closed_without_a_spawn_plan() {
         let project = tempfile::tempdir().unwrap();
         let dir = project.path().join(".wg");
@@ -33151,6 +33262,52 @@ mod prioritized_chat_startup_tests {
                 .any(|pair| pair == ["--model", "z-ai/glm-5.2"])
         );
         assert!(!pending.args.iter().any(|arg| arg.contains("claude")));
+    }
+
+    #[test]
+    fn selecting_dead_live_chat_resurrects_saved_route() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status(".chat-4", "Saved Pi", Status::InProgress);
+        task.tags = vec!["chat-loop".to_string()];
+        task.executor_preset_name = Some("pi".to_string());
+        task.model = Some("pi:openai-codex:gpt-5.6-sol".to_string());
+        task.command_argv =
+            worksgood::chat_command::argv_for_preset("pi", task.model.as_deref(), None, "wg");
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+
+        let mut app = VizApp::new(dir, VizOptions::default(), Some(false), None, true);
+        app.published_graph = Some(Arc::new(graph));
+        app.active_coordinator_id = 4;
+        app.active_tabs = vec![4];
+        app.chat_startup_state = ChatStartupState::Ready;
+        app.pending_chat_pty_spawn = None;
+        app.chat_agent_death.insert(
+            4,
+            ChatAgentDeathInfo {
+                exit_status: "exit 1".to_string(),
+                executor: "pi".to_string(),
+                spawn_cmd: "pi --session-id chat-4".to_string(),
+            },
+        );
+
+        app.open_chat_task_or_detail(".chat-4");
+
+        assert!(!app.chat_agent_death.contains_key(&4));
+        let pending = app
+            .pending_chat_pty_spawn
+            .as_ref()
+            .expect("selecting a dead live tab must queue resurrection");
+        assert_eq!(pending.executor, "pi");
+        assert!(
+            pending
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--session-id", "chat-4"])
+        );
     }
 }
 

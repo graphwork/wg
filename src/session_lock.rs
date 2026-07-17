@@ -420,38 +420,21 @@ pub fn clear_tui_driver_sentinel(chat_dir: &Path) {
     }
 }
 
-/// True when a live `wg tui` sentinel is paired with a live session
-/// handler. This is the only state where the daemon supervisor should
-/// defer its own respawn: the TUI has claimed the surface and there is
-/// an actual handler generation available to receive input.
+/// True when a live `wg tui` process has claimed this chat surface.
 ///
-/// A live TUI process alone is not enough. If `.tui-driven` survives a
-/// failed PTY startup or a turns=0 EOF exit while `.handler.pid` is gone
-/// or stale, treating the marker as authoritative strands the chat with
-/// no handler. In that stale case this helper clears the sentinel and
-/// returns `None` so callers can respawn normally.
+/// The sentinel is written before the asynchronous PTY/tmux spawn so the
+/// daemon cannot race a duplicate handler into that short handoff window.
+/// Vendor CLIs such as Pi and Codex run directly in tmux and never acquire
+/// WG's `.handler.pid`, so requiring a lock here incorrectly erased their
+/// valid ownership. The TUI now clears the sentinel on every pane-spawn error
+/// and child-death path; PID identity checking still reaps dead/recycled
+/// markers (including the historical wedge shape).
 pub fn active_tui_driver_pid(chat_dir: &Path) -> Option<u32> {
     let tui = read_tui_driver_sentinel(chat_dir).ok().flatten()?;
-    // `tui.alive` is a bare `kill(pid, 0)` probe; also reject a PID that has
-    // been recycled to a foreign process (fix-wedge). Either way the sentinel
-    // is stale and the supervisor must respawn rather than defer forever.
     if !pid_is_live_ours(tui.pid) {
         clear_tui_driver_sentinel(chat_dir);
         return None;
     }
-
-    match read_holder(chat_dir) {
-        Ok(Some(holder)) if pid_is_live_ours(holder.pid) => {}
-        Ok(Some(_)) => {
-            clear_tui_driver_sentinel(chat_dir);
-            return None;
-        }
-        Ok(None) | Err(_) => {
-            clear_tui_driver_sentinel(chat_dir);
-            return None;
-        }
-    }
-
     Some(tui.pid)
 }
 
@@ -816,17 +799,16 @@ mod tests {
     }
 
     #[test]
-    fn active_tui_driver_requires_live_handler_lock() {
+    fn active_tui_driver_covers_vendor_pty_without_handler_lock() {
         let dir = tempdir().unwrap();
         write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
 
-        assert_eq!(active_tui_driver_pid(dir.path()), None);
+        assert_eq!(active_tui_driver_pid(dir.path()), Some(std::process::id()));
         assert!(
-            read_tui_driver_sentinel(dir.path()).unwrap().is_none(),
-            "stale sentinel should be cleared when no live handler lock exists"
+            read_tui_driver_sentinel(dir.path()).unwrap().is_some(),
+            "a live TUI-owned Pi/Codex pane has no WG handler lock; its claim must survive"
         );
 
-        write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
         let _lock = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex).unwrap();
         assert_eq!(active_tui_driver_pid(dir.path()), Some(std::process::id()));
     }

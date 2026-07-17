@@ -27,9 +27,15 @@ pi_invocations="$scratch/pi-invocations.log"
 cat >"$fake_bin/pi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$WG_FAKE_PI_INVOCATIONS"
-# The daemon's direct Pi chat gets null stdin, so this exits successfully and
-# deterministically forces the supervisor's clean-idle no-respawn return path.
-exit 0
+count=$(wc -l <"$WG_FAKE_PI_INVOCATIONS" 2>/dev/null || echo 0)
+# The first direct Pi launch exits successfully and deterministically forces
+# the supervisor's clean-idle return path. The resumed generation stays live
+# long enough for `wg chat resume`'s bounded liveness contract to observe it;
+# scheduling acknowledgement alone is no longer reported as success.
+if [[ "$count" -le 1 ]]; then
+    exit 0
+fi
+sleep 30
 SH
 chmod +x "$fake_bin/pi"
 export PATH="$fake_bin:$PATH"
@@ -69,7 +75,7 @@ before_count=$(wc -l <"$pi_invocations" 2>/dev/null || echo 0)
 resume_out=$(wg --dir "$wgd" chat resume "$cid" 2>&1)
 resume_rc=$?
 if [[ "$resume_rc" -ne 0 ]]; then
-    loud_fail "wg chat resume failed: $resume_out"
+    loud_fail "wg chat resume failed: $resume_out daemon=$(tail -80 "$wgd/service/daemon.log" 2>/dev/null) handlers=$(find "$wgd/chat" -maxdepth 3 -type f -name 'handler.log' -exec tail -30 {} \; 2>/dev/null)"
 fi
 if ! wg --dir "$wgd" chat send "$cid" "wake after idle" >send.log 2>&1; then
     loud_fail "wg chat send failed: $(cat send.log)"

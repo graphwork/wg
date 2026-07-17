@@ -52,7 +52,7 @@ pub fn is_legacy_coordinator_id(s: &str) -> bool {
 }
 
 /// Look up a chat task by numeric ID, trying `.chat-N` first then `.coordinator-N`.
-pub fn find_chat_task<'g>(graph: &'g WorkGraph, id: u32) -> Option<&'g crate::graph::Task> {
+pub fn find_chat_task(graph: &WorkGraph, id: u32) -> Option<&crate::graph::Task> {
     let new_id = format_chat_task_id(id);
     if let Some(t) = graph.get_task(&new_id) {
         return Some(t);
@@ -86,6 +86,34 @@ pub fn is_chat_loop_tag(tag: &str) -> bool {
 /// sessions whose backing chat task no longer exists.
 pub const CHAT_TMUX_SESSION_PREFIX: &str = "wg-chat-";
 
+/// Canonical persistent tmux session for a chat in this project.
+pub fn chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u32) -> String {
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
+    let project_tag = project_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    chat_tmux_session_name(project_tag, &format_chat_session_ref(chat_id))
+}
+
+/// True when the persistent TUI-owned tmux session for this chat exists.
+///
+/// Vendor chat panes (Pi/Codex/Claude/OpenCode) run directly in tmux and do
+/// not hold WG's `.handler.pid` lock.  The tmux session is therefore an
+/// independent, authoritative runtime owner: CLI status and the daemon
+/// supervisor must consult it rather than calling a visibly-live pane
+/// "stopped" or spawning a duplicate handler beside it.
+pub fn chat_tmux_session_is_live(workgraph_dir: &std::path::Path, chat_id: u32) -> bool {
+    let session = chat_tmux_session_for_id(workgraph_dir, chat_id);
+    std::process::Command::new("tmux")
+        .args(["has-session", "-t", &session])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Best-effort: kill the tmux session backing a given chat id. No-op
 /// when tmux is not on PATH or the session doesn't exist. Used by every
 /// chat-archive / chat-delete path so we don't accumulate orphan
@@ -94,26 +122,10 @@ pub const CHAT_TMUX_SESSION_PREFIX: &str = "wg-chat-";
 /// Returns `true` iff a session was actually killed (useful for emitting
 /// "Closed N tmux sessions" toasts; callers can ignore otherwise).
 pub fn kill_chat_tmux_session_for_id(workgraph_dir: &std::path::Path, chat_id: u32) -> bool {
-    let project_root = workgraph_dir
-        .parent()
-        .unwrap_or(workgraph_dir)
-        .to_path_buf();
-    let project_tag = project_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-    let chat_ref = format!("chat-{}", chat_id);
-    let session = chat_tmux_session_name(project_tag, &chat_ref);
+    let session = chat_tmux_session_for_id(workgraph_dir, chat_id);
     // Quick has-session probe: avoids spawning kill-session when there's
     // nothing there (so the no-op case is silent + cheap).
-    let exists = std::process::Command::new("tmux")
-        .args(["has-session", "-t", &session])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !exists {
+    if !chat_tmux_session_is_live(workgraph_dir, chat_id) {
         return false;
     }
     std::process::Command::new("tmux")
