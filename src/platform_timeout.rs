@@ -124,6 +124,26 @@ where
 
     let mut cmd = Command::new(program);
     configure(&mut cmd);
+    // Put the child in its OWN process group so the watchdog can SIGKILL the
+    // WHOLE tree (leader + descendants), not just the immediate child — a lone
+    // `kill(pid)` leaves a pipeline/background grandchild alive holding inherited
+    // pipes open. See memory bg-job-pid-macos-setsid: macOS ships no `setsid`
+    // binary, so we call `libc::setsid()` in `pre_exec` directly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid`/`setpgid` only rearrange process-group membership in
+        // the forked child before `execvp`; they allocate nothing, touch no
+        // shared state, and report errors via errno.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    let _ = libc::setpgid(0, 0);
+                }
+                Ok(())
+            });
+        }
+    }
     let child = cmd.spawn()?;
     let pid = child.id();
 
@@ -149,15 +169,21 @@ fn kill_process_tree(pid: u32) {
         .output();
 }
 
-/// Best-effort kill of the process identified by `pid`. Errors are ignored:
-/// the child may have just finished on its own (and its pid been reaped),
-/// which is fine.
+/// Best-effort kill of the process (group) rooted at `pid`. The child was
+/// spawned as its own session/group leader (`pid == pgid`), so signalling the
+/// negative pid reaps the WHOLE tree — leader plus any pipeline/background
+/// descendants that would otherwise survive a lone `kill(pid)` and keep
+/// inherited pipes open. We also signal `pid` directly as a fallback in case
+/// the `setsid` in `spawn_with_watchdog` did not take. Errors are ignored: the
+/// child may have just finished on its own.
 #[cfg(unix)]
 fn kill_process_tree(pid: u32) {
     // SAFETY: `kill(2)` is always safe to call — it validates the pid and
     // signal itself and reports failure via errno rather than UB. We ignore
     // the return value because this is best-effort at a deadline.
     unsafe {
+        // Negative pid ⇒ signal the entire process group led by `pid`.
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
 }

@@ -596,8 +596,11 @@ mod tests {
     /// purely a test-harness artifact. Waiting for `exec` to land removes the
     /// race without weakening the real identity/liveness checks.
     fn spawn_foreign_child() -> std::process::Child {
+        // `sleep 120` (not 30): the child must outlive the exec-wait below plus
+        // the rest of the test even on a badly starved runner. Every caller
+        // kills+waits it, so the long duration never lingers.
         let child = std::process::Command::new("sleep")
-            .arg("30")
+            .arg("120")
             .spawn()
             .expect("spawn sleep");
         #[cfg(target_os = "linux")]
@@ -608,11 +611,20 @@ mod tests {
                     .and_then(|id| id.split_whitespace().next().map(str::to_owned))
             };
             let mine_comm = comm_of(std::process::id()).unwrap_or_default();
-            // Poll until the child's comm is readable and differs from ours,
-            // i.e. `exec` has replaced the shared image. ~2s of 1ms polls is far
-            // longer than an `exec` takes even on a saturated runner; a genuine
-            // hang surfaces as the test's own assertion, not an infinite loop.
-            for _ in 0..2000 {
+            // Wait until the child's comm is readable and differs from ours,
+            // i.e. `exec` of `sleep` has replaced the still-shared parent image.
+            // This is bounded by a *wall-clock* deadline, not an iteration count:
+            // the earlier 2000×1ms budget could elapse in real time before a
+            // forked-but-unscheduled child ever ran its `exec` on a saturated CI
+            // runner, so the helper returned a child whose comm still shadowed
+            // the harness's — `pid_reused_by_foreign`'s "same executable as us"
+            // guard then read `false` and the foreignness assert flaked
+            // (graphwork/wg CI runs 29137074236, 29162578216). A 30s deadline is
+            // orders of magnitude longer than a real `exec` and well inside the
+            // child's 120s lifetime; exceeding it is a genuine environment fault,
+            // surfaced as a clear panic rather than a confusing downstream assert.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
                 match comm_of(pid) {
                     Some(their_comm)
                         if !their_comm.is_empty()
@@ -621,7 +633,15 @@ mod tests {
                     {
                         break;
                     }
-                    _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    _ => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "foreign child (pid {pid}) never completed `exec` within 30s: \
+                             comm still reads {:?} vs ours {mine_comm:?}",
+                            comm_of(pid)
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
                 }
             }
         }
