@@ -56,8 +56,8 @@ if [ -z "$_wg_openrouter_key" ]; then
 fi
 
 repo="$(cd "$HERE/../../.." && pwd)"
-plugin="$repo/pi-plugin"
-[ -f "$plugin/package-lock.json" ] || loud_fail "missing pi-plugin/package-lock.json"
+plugin="$repo/worksgood-pi"
+[ -f "$plugin/package-lock.json" ] || loud_fail "missing worksgood-pi/package-lock.json"
 
 if [ ! -d "$plugin/node_modules" ]; then
     npm --prefix "$plugin" ci >/tmp/wg-pi-live-npm-ci.log 2>&1 || \
@@ -74,7 +74,7 @@ mkdir -p "$fake_home/.pi/agent" "$project"
 cat >"$fake_home/.pi/agent/settings.json" <<JSON
 {
   "extensions": [
-    "$plugin/dist/index.js"
+    "$plugin/pi-worksgood/index.js"
   ]
 }
 JSON

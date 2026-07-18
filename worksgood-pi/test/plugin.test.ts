@@ -1,17 +1,17 @@
 /**
- * Verifies the plugin's registration entry: calling wgPlugin(fakePi) must
+ * Verifies the extension registration entry: calling worksgoodPi(fakePi) must
  * register the full wg tool family and the /wg + /wg-model commands, and
  * subscribe to the documented non-UI lifecycle events.
  *
- * Tests run against the built artifact (dist/) — `npm test` builds first.
+ * Tests run against the built `pi-worksgood/` artifact — `npm test` builds first.
  */
 
 import { readFile } from "node:fs/promises";
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import wgPlugin from "../dist/index.js";
+import worksgoodPi from "../pi-worksgood/index.js";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { registerWgTools } from "../dist/tools.js";
+import { registerWgTools } from "../pi-worksgood/tools.js";
 
 interface FakePi {
   registerTool: ReturnType<typeof vi.fn>;
@@ -57,10 +57,10 @@ const EXPECTED_TOOLS = [
   "wg_run",
 ];
 
-describe("wgPlugin registration entry", () => {
+describe("pi-worksgood registration entry", () => {
   it("registers the full wg tool family", () => {
     const pi = makeFakePi();
-    wgPlugin(pi);
+    worksgoodPi(pi);
     for (const name of EXPECTED_TOOLS) {
       expect(pi.toolNames, `tool ${name} should be registered`).toContain(name);
     }
@@ -69,7 +69,7 @@ describe("wgPlugin registration entry", () => {
 
   it("registers the /wg and /wg-model commands", () => {
     const pi = makeFakePi();
-    wgPlugin(pi);
+    worksgoodPi(pi);
     expect(pi.commandNames).toContain("wg");
     expect(pi.commandNames).toContain("wg-model");
     expect(pi.registerCommand).toHaveBeenCalledWith("wg", expect.any(Object));
@@ -78,7 +78,7 @@ describe("wgPlugin registration entry", () => {
 
   it("does not install passive ready-task UI hooks", () => {
     const pi = makeFakePi();
-    wgPlugin(pi);
+    worksgoodPi(pi);
     expect(pi.subscribedEvents).toEqual(expect.arrayContaining(["session_start", "model_select", "session_shutdown"]));
     expect(pi.subscribedEvents).not.toContain("turn_end");
   });
@@ -88,7 +88,7 @@ describe("wgPlugin registration entry", () => {
     delete process.env.WG_PI_BASE_URL;
     try {
       const pi = makeFakePi();
-      wgPlugin(pi);
+      worksgoodPi(pi);
       expect(pi.registerProvider).not.toHaveBeenCalled();
     } finally {
       if (saved !== undefined) process.env.WG_PI_BASE_URL = saved;

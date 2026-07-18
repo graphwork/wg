@@ -8,7 +8,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "./dist",
+    "outDir": "./pi-worksgood",
     "rootDir": "./src",
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -18,5 +18,5 @@
     "verbatimModuleSyntax": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "test", "host"]
+  "exclude": ["pi-worksgood", "node_modules", "test", "host"]
 }

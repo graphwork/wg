@@ -1,5 +1,8 @@
 # Pi Codex Account Routing Decision Memo
 
+> Historical naming note (2026-07-18): legacy `pi-plugin/` paths in this
+> research predate the `@worksgood/pi` package and `worksgood-pi/` component.
+
 Date: 2026-07-10
 Task: `define-pi-codex`
 

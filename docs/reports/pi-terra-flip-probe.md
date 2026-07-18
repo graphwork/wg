@@ -1,5 +1,8 @@
 # Pi Terra probe for FLIP and agency routing
 
+> Historical naming note (2026-07-18): captured paths below predate the rename
+> to `@worksgood/pi` (`pi-worksgood`) and the `worksgood-pi/` component.
+
 **Task:** `probe-pi-terra`  
 **Probe date:** 2026-07-13 UTC  
 **Decision:** Use Terra as the default Pi evaluator/reviewer/FLIP tier, after the separate WG lifecycle fix is landed. Keep Luna for bounded assignment/triage work and Sol for strong work and escalation.

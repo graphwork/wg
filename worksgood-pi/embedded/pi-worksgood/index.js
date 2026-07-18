@@ -1,5 +1,5 @@
 /**
- * @worksgood/wg-pi-plugin — the WG integration channel for the pi coding agent.
+ * @worksgood/pi — connect Pi agents to WorksGood graphs, tools, and context.
  *
  * One artifact, loaded the same way whether a human launched pi (Topology C,
  * auto-discovered) or WG spawned it (Topology A `pi --mode rpc`, or Topology B
@@ -39,8 +39,8 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
 function assertCompatVersionSync() {
     const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
     if (expected && expected !== EMBEDDED_COMPAT) {
-        throw new Error(`wg-pi-plugin compat mismatch: plugin=${EMBEDDED_COMPAT} wg=${expected}. ` +
-            `The loaded pi plugin build does not match the wg binary that spawned it; ` +
+        throw new Error(`WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${expected}. ` +
+            `The loaded WorksGood Pi integration build does not match the wg binary that spawned it; ` +
             "run `wg pi-plugin install` to repair (or rebuild + re-embed in dev).");
     }
 }
@@ -60,14 +60,14 @@ async function assertCompatVersionAsync(backend) {
         return; // no `wg` on PATH / older wg without the verb — nothing to assert.
     }
     if (found && found !== EMBEDDED_COMPAT) {
-        const msg = `wg-pi-plugin compat mismatch: plugin=${EMBEDDED_COMPAT} wg=${found}. ` +
+        const msg = `WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${found}. ` +
             "Reinstall the matching plugin with `wg pi-plugin install`.";
         // A factory cannot turn an async result into a load-time throw, so the
         // guaranteed signal for the console direction is a loud stderr line.
-        console.error(`[wg-pi-plugin] ${msg}`);
+        console.error(`[pi-worksgood] ${msg}`);
     }
 }
-export default function wgPlugin(pi) {
+export default function worksgoodPi(pi) {
     assertCompatVersionSync(); // wg→pi: throw → extension load error (loud, testable)
     const env = readWgEnv();
     const backend = new WgBackend(pi, env);

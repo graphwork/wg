@@ -1,7 +1,7 @@
 {
-  "name": "@worksgood/wg-pi-plugin",
+  "name": "@worksgood/pi",
   "version": "0.1.0",
-  "description": "WG task-graph integration for the pi coding agent: wg tools, /wg and /wg-model commands, and a model bridge that round-trips pi model selections back into WG's CoordinatorState.",
+  "description": "Connect Pi agents to WorksGood graphs, tools, and context.",
   "keywords": [
     "pi-package",
     "wg",
@@ -9,26 +9,26 @@
   ],
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./pi-worksgood/index.js",
+  "types": "./pi-worksgood/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./pi-worksgood/index.d.ts",
+      "import": "./pi-worksgood/index.js"
     }
   },
   "files": [
-    "dist",
+    "pi-worksgood",
     "host",
     "README.md"
   ],
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./pi-worksgood/index.js"
     ]
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rm -rf pi-worksgood",
     "build": "tsc -p tsconfig.json",
     "pretest": "npm run build",
     "test": "vitest run",

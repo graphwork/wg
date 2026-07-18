@@ -159,9 +159,9 @@ const EXECUTORS: &[ExecutorSpec] = &[
 pub struct PiNodeHost {
     /// Absolute path to the `node` binary.
     pub node: PathBuf,
-    /// Absolute path to `pi-plugin/host/wg-pi-host.mjs`.
+    /// Absolute path to `worksgood-pi/host/wg-pi-host.mjs`.
     pub host_script: PathBuf,
-    /// Absolute path to the built plugin bundle `pi-plugin/dist/index.js`.
+    /// Absolute path to `worksgood-pi/pi-worksgood/index.js`.
     pub plugin_bundle: PathBuf,
 }
 
@@ -203,11 +203,11 @@ fn which_in_dirs(dirs: &[PathBuf], candidates: &[&str]) -> Option<PathBuf> {
 
 /// Locate a plugin root that holds BOTH the SDK host script and the built
 /// bundle. Returns `(host_script, plugin_bundle)` for the first candidate dir
-/// where `host/wg-pi-host.mjs` and `dist/index.js` both exist.
+/// where `host/wg-pi-host.mjs` and `pi-worksgood/index.js` both exist.
 fn locate_pi_node_host(plugin_dirs: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
     for dir in plugin_dirs {
         let host_script = dir.join("host").join("wg-pi-host.mjs");
-        let plugin_bundle = dir.join("dist").join("index.js");
+        let plugin_bundle = dir.join("pi-worksgood").join("index.js");
         if host_script.is_file() && plugin_bundle.is_file() {
             return Some((host_script, plugin_bundle));
         }
@@ -241,22 +241,22 @@ pub fn pi_route_availability_in(
     }
 }
 
-/// Candidate `pi-plugin/` roots to probe for the Node-host bundle, in
+/// Candidate `worksgood-pi/` roots to probe for the Node-host bundle, in
 /// precedence order: explicit `WG_PI_PLUGIN_DIR`, the in-repo source tree
 /// (dev builds), next to the running binary, then the global pi-extension
-/// install (`~/.pi/agent/extensions/wg-pi-plugin`).
+/// install (`~/.pi/agent/extensions/pi-worksgood`).
 pub fn pi_plugin_candidate_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(explicit) = std::env::var_os("WG_PI_PLUGIN_DIR") {
         dirs.push(PathBuf::from(explicit));
     }
-    // In-repo source tree (dev): <crate>/pi-plugin.
-    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pi-plugin"));
-    // Alongside the installed binary: <exe_dir>/pi-plugin.
+    // In-repo source tree (dev): <crate>/worksgood-pi.
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("worksgood-pi"));
+    // Alongside the installed binary: <exe_dir>/worksgood-pi.
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        dirs.push(parent.join("pi-plugin"));
+        dirs.push(parent.join("worksgood-pi"));
     }
     // Global pi-extension install.
     if let Some(home) = std::env::var_os("HOME") {
@@ -265,7 +265,7 @@ pub fn pi_plugin_candidate_dirs() -> Vec<PathBuf> {
                 .join(".pi")
                 .join("agent")
                 .join("extensions")
-                .join("wg-pi-plugin"),
+                .join("pi-worksgood"),
         );
     }
     dirs
@@ -413,15 +413,19 @@ mod tests {
         touch_exe(bin.path(), "node"); // node present, but NO pi binary
         let plugin = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(plugin.path().join("host")).unwrap();
-        std::fs::create_dir_all(plugin.path().join("dist")).unwrap();
+        std::fs::create_dir_all(plugin.path().join("pi-worksgood")).unwrap();
         std::fs::write(plugin.path().join("host").join("wg-pi-host.mjs"), b"//host").unwrap();
-        std::fs::write(plugin.path().join("dist").join("index.js"), b"//bundle").unwrap();
+        std::fs::write(
+            plugin.path().join("pi-worksgood").join("index.js"),
+            b"//bundle",
+        )
+        .unwrap();
 
         let avail =
             pi_route_availability_in(&[bin.path().to_path_buf()], &[plugin.path().to_path_buf()]);
         assert!(
             avail.satisfiable(),
-            "node + wg-pi-host.mjs + dist/index.js must satisfy pi:"
+            "node + wg-pi-host.mjs + pi-worksgood/index.js must satisfy pi:"
         );
         assert!(avail.pi_binary.is_none(), "no pi binary in this scenario");
         let host = avail.node_host.expect("node host triple present");
@@ -434,7 +438,7 @@ mod tests {
         // node exists but the bundle does NOT, and there is no pi binary.
         let bin = tempfile::TempDir::new().unwrap();
         touch_exe(bin.path(), "node");
-        let empty_plugin = tempfile::TempDir::new().unwrap(); // no host/ or dist/
+        let empty_plugin = tempfile::TempDir::new().unwrap(); // no host/ or pi-worksgood/
         let avail = pi_route_availability_in(
             &[bin.path().to_path_buf()],
             &[empty_plugin.path().to_path_buf()],
@@ -456,9 +460,13 @@ mod tests {
         let bin = tempfile::TempDir::new().unwrap(); // empty PATH dir
         let plugin = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(plugin.path().join("host")).unwrap();
-        std::fs::create_dir_all(plugin.path().join("dist")).unwrap();
+        std::fs::create_dir_all(plugin.path().join("pi-worksgood")).unwrap();
         std::fs::write(plugin.path().join("host").join("wg-pi-host.mjs"), b"//host").unwrap();
-        std::fs::write(plugin.path().join("dist").join("index.js"), b"//bundle").unwrap();
+        std::fs::write(
+            plugin.path().join("pi-worksgood").join("index.js"),
+            b"//bundle",
+        )
+        .unwrap();
         let avail =
             pi_route_availability_in(&[bin.path().to_path_buf()], &[plugin.path().to_path_buf()]);
         assert!(

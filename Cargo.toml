@@ -51,7 +51,7 @@ toml = "0.8"
 serde_yaml = "0.9"
 dirs = "5.0"
 sha2 = "0.10"
-# Embeds the committed, version-locked pi-plugin bundle (pi-plugin/embedded/)
+# Embeds the committed, version-locked WorksGood Pi bundle (worksgood-pi/embedded/)
 # into the binary at compile time so `cargo install --path .` stays node-free.
 include_dir = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "signal"] }

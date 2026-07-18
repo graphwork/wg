@@ -1474,7 +1474,7 @@ pub enum Commands {
         command: SkillCommands,
     },
 
-    /// Install / inspect the wg-pi-plugin (pi coding-agent integration).
+    /// Install / inspect pi-worksgood (`@worksgood/pi`).
     ///
     /// Mirrors `wg skill install`. The three wiring points (`wg setup`,
     /// `wg profile use pi`, and the JIT `wg pi-handler` pre-flight) call this
@@ -2711,12 +2711,12 @@ pub enum Commands {
     },
 
     /// Bridge pi.dev (pi-coding-agent) output ↔ chat/<ref>/*.jsonl,
-    /// routed THROUGH the wg-pi-plugin (not prompt-munging).
+    /// routed through the WorksGood Pi integration (not prompt-munging).
     ///
     /// Peer of `wg opencode-handler` for the `pi` executor. Topology A
     /// spawns a long-lived `pi --mode rpc` (piped stdio ⇒ headless, no
     /// terminal takeover) and drives it over the JSONL RPC protocol;
-    /// Topology B spawns `node pi-plugin/host/wg-pi-host.mjs`. The
+    /// Topology B spawns `node worksgood-pi/host/wg-pi-host.mjs`. The
     /// transport is auto-selected from what's installed (`WG_PI_TOPOLOGY`
     /// forces `rpc`/`node`). Plain Pi chats omit provider/model overrides so
     /// Pi can use its own configured/default model; explicit `--model` routes
@@ -5063,10 +5063,10 @@ pub enum SkillCommands {
 
 #[derive(Subcommand)]
 pub enum PiPluginCommands {
-    /// Install the wg-pi-plugin for the human `pi` console: materialize the
+    /// Install pi-worksgood for the human `pi` console: materialize the
     /// version-locked build and wire `~/.pi/agent/settings.json`. Idempotent.
     Install {
-        /// Point the settings entry at the live in-repo `pi-plugin/dist`
+        /// Point settings at the live in-repo `worksgood-pi/pi-worksgood`
         /// (dev inner-loop) instead of the embedded → cache copy.
         #[arg(long)]
         dev: bool,
@@ -5075,7 +5075,7 @@ pub enum PiPluginCommands {
     /// Print resolved source, cache path, compat version, and wired/drift state.
     Status,
 
-    /// Print the resolved `dist/index.js` path (scriptable).
+    /// Print the resolved `pi-worksgood/index.js` path (scriptable).
     Path,
 
     /// Print WG_PI_PLUGIN_COMPAT_VERSION (the plugin's runtime assertion reads this).

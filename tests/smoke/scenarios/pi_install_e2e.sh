@@ -20,7 +20,7 @@
 # at pi startup before any model connection):
 #   3. HERMETIC HANDLER SPAWN (scenario 1, the primary reliability claim): from a
 #      CLEAN ~/.pi, `wg pi-handler` ensures the plugin from the cache (source=Cache)
-#      and spawns `pi --mode rpc … -e <cache>/<compat>/dist/index.js -ne` — and
+#      and spawns `pi --mode rpc … -e <cache>/<compat>/pi-worksgood/index.js -ne` — and
 #      NEVER writes a global `~/.pi/agent/settings.json` plugin entry (hermetic).
 #   4. LOUD COMPAT MISMATCH (scenario 5): a version-skewed plugin makes real
 #      `pi --mode rpc -e <cache dist> -ne` fail LOUDLY and early with a
@@ -61,18 +61,18 @@ prof_out=$( cd "$s2/proj" && clean_env HOME="$s2/home" XDG_CACHE_HOME="$s2/cache
     XDG_CONFIG_HOME="$s2/home/.config" WG_PI_PLUGIN_FORCE_CACHE=1 \
     wg profile use pi 2>&1 ) || loud_fail "wg profile use pi failed: $prof_out"
 
-grep -qi "Ensured wg-pi-plugin" <<<"$prof_out" \
+grep -qi "Ensured pi-worksgood" <<<"$prof_out" \
     || loud_fail "'wg profile use pi' did not declaratively ensure the plugin. Got: $prof_out"
 
 settings="$s2/home/.pi/agent/settings.json"
-cache_dist="$s2/cache/wg/pi-plugin/$compat/dist/index.js"
+cache_dist="$s2/cache/wg/worksgood-pi/$compat/pi-worksgood/index.js"
 [ -f "$settings" ]   || loud_fail "profile use pi did not write $settings"
 [ -f "$cache_dist" ] || loud_fail "profile use pi did not materialize $cache_dist"
 grep -qF "$cache_dist" "$settings" \
     || loud_fail "settings.json is not wired to the cache dist. Got: $(cat "$settings")"
 
 # version-matched
-got_compat=$(grep -o '"compat"[^,}]*' "$s2/cache/wg/pi-plugin/$compat/version.json" 2>/dev/null)
+got_compat=$(grep -o '"compat"[^,}]*' "$s2/cache/wg/worksgood-pi/$compat/version.json" 2>/dev/null)
 grep -qF "$compat" <<<"$got_compat" \
     || loud_fail "cache version.json not matched to compat $compat: $got_compat"
 
@@ -108,9 +108,9 @@ fi
 nl_out=$(PATH="$s6/bin" clean_env HOME="$s6/home" XDG_CACHE_HOME="$s6/cache" \
     WG_PI_PLUGIN_FORCE_CACHE=1 wg pi-plugin install 2>&1) \
     || loud_fail "node-less wg pi-plugin install failed (should be node-free): $nl_out"
-[ -f "$s6/cache/wg/pi-plugin/$compat/dist/index.js" ] \
+[ -f "$s6/cache/wg/worksgood-pi/$compat/pi-worksgood/index.js" ] \
     || loud_fail "node-less install did not extract the embedded bundle"
-[ -f "$s6/cache/wg/pi-plugin/$compat/.wg-ok" ] \
+[ -f "$s6/cache/wg/worksgood-pi/$compat/.wg-ok" ] \
     || loud_fail "node-less install did not write the .wg-ok stamp"
 [ -f "$s6/home/.pi/agent/settings.json" ] \
     || loud_fail "node-less install did not wire settings.json"
@@ -147,7 +147,7 @@ if command -v pi >/dev/null 2>&1; then
     [ -f "$hlog" ] || loud_fail "pi-handler wrote no handler.log"
     grep -q "ensured plugin source=Cache" "$hlog" \
         || loud_fail "pi-handler did not ensure the plugin from the CACHE. Log: $(cat "$hlog")"
-    sh_cache_dist="$sh/cache/wg/pi-plugin/$compat/dist/index.js"
+    sh_cache_dist="$sh/cache/wg/worksgood-pi/$compat/pi-worksgood/index.js"
     grep -qF -- "-e $sh_cache_dist -ne" "$hlog" \
         || loud_fail "pi-handler spawn argv missing the hermetic '-e <cache dist> -ne'. Log: $(cat "$hlog")"
     # Hermetic: the wg→pi direction must NEVER write a global pi plugin entry.
@@ -160,7 +160,7 @@ if command -v pi >/dev/null 2>&1; then
     mkdir -p "$sm/home" "$sm/cache"
     clean_env HOME="$sm/home" XDG_CACHE_HOME="$sm/cache" WG_PI_PLUGIN_FORCE_CACHE=1 \
         wg pi-plugin install >/dev/null 2>&1 || loud_fail "install for mismatch check failed"
-    sm_dist="$sm/cache/wg/pi-plugin/$compat/dist/index.js"
+    sm_dist="$sm/cache/wg/worksgood-pi/$compat/pi-worksgood/index.js"
     mism=$(printf '{"type":"prompt","message":"hi"}\n' | timeout "${WG_SMOKE_TIMEOUT_SECS:-30}" \
         env -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY \
             WG_PI_PLUGIN_COMPAT_VERSION="9.9.9-e2e-skew" \

@@ -63,11 +63,11 @@ model = "openrouter:deepseek/deepseek-chat"
 model = "openrouter:deepseek/deepseek-chat"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PLUGIN INSTALL / PLACEMENT (wg-pi-plugin)
+# WORKSGOOD PI INSTALL / PLACEMENT (`@worksgood/pi`, display: pi-worksgood)
 # ─────────────────────────────────────────────────────────────────────────────
 # Routing a `pi:` model spec to the pi handler is only half the integration:
 # pi gains its WG tools (`wg_ready`/`wg_show`/`wg_add`/`wg_done`/… and the `/wg`
-# command) from the `@worksgood/wg-pi-plugin` extension, which must be present in
+# command) from the `@worksgood/pi` extension, which must be present in
 # the pi process WG spawns. There are three placement options (see
 # docs/pi-integration/integration-plan-v2.md §2.1 + §4):
 #
@@ -92,7 +92,7 @@ model = "openrouter:deepseek/deepseek-chat"
 #      DefaultResourceLoader({ extensionFactories: [wgPlugin], eventBus })
 #    so there is no extensions-dir lookup and no terminal at all. This is the
 #    deterministic-version path (the bundle ships alongside the wg binary at
-#    pi-plugin/) and the clean event-bus ↔ WG-IPC bridge. Discovery accepts a
+#    worksgood-pi/) and the clean event-bus ↔ WG-IPC bridge. Discovery accepts a
 #    `pi:` route satisfied by EITHER a `pi` binary (Topology A/C) OR Node +
 #    wg-pi-host + the plugin bundle (Topology B); see src/executor_discovery.rs.
 #

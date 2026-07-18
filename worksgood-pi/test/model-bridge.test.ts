@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { installModelBridge, wgSpecFromModel, buildProviderConfig, WgBackend } from "../dist/index.js";
+import { installModelBridge, wgSpecFromModel, buildProviderConfig, WgBackend } from "../pi-worksgood/index.js";
 
 type ModelSelectHandler = (event: unknown) => unknown | Promise<unknown>;
 

@@ -1,4 +1,4 @@
-# Pi Plugin/Extension API + `wg-pi-plugin` Package Design
+# Pi Plugin/Extension API + `pi-worksgood` Package Design
 
 **Task:** `pi-plugin-research` · **Date:** 2026-06-22
 **Status:** **Investigation only — no production code changed.**
@@ -175,14 +175,14 @@ be analyzed separately — see §3, which is the authoritative treatment.
 
 ---
 
-## 2. The `wg-pi-plugin` package
+## 2. The `pi-worksgood` package
 
 ### 2.1 Name & shape
 
-- **Package name:** `@worksgood/wg-pi-plugin` (npm-publishable pi package) with the
+- **Package name:** `@worksgood/pi` (npm-publishable pi package) with the
   `pi-package` keyword (`packages.md:116`). Bin-less; it is a resource bundle, not
   a CLI.
-- **In-repo home:** `pi-plugin/` at the WG repo root (TS sources), built/bundled
+- **In-repo home:** `worksgood-pi/` at the WG repo root (TS sources), built/bundled
   into the package. Keeping it **in-repo** (not a separate repo) is recommended so
   it version-locks to the WG binary it shells to and ships in the same release.
   Distribute the built artifact to npm (and/or a pinned `git:` ref) so
@@ -191,12 +191,12 @@ be analyzed separately — see §3, which is the authoritative treatment.
 
   ```json
   {
-    "name": "@worksgood/wg-pi-plugin",
+    "name": "@worksgood/pi",
     "version": "0.1.0",
     "keywords": ["pi-package"],
     "type": "module",
-    "main": "./dist/index.js",
-    "pi": { "extensions": ["./dist/index.js"] },
+    "main": "./pi-worksgood/index.js",
+    "pi": { "extensions": ["./pi-worksgood/index.js"] },
     "peerDependencies": {
       "@earendil-works/pi-coding-agent": "*",
       "@earendil-works/pi-tui": "*",
@@ -211,7 +211,7 @@ be analyzed separately — see §3, which is the authoritative treatment.
 ### 2.2 Layout
 
 ```
-pi-plugin/
+worksgood-pi/
 ├── package.json            # pi-package manifest (above)
 ├── src/
 │   ├── index.ts            # export default function (pi: ExtensionAPI) — registration entry
@@ -272,7 +272,7 @@ influence it.** Two directions follow.
 ### Direction (1) — pi-as-host + wg plugin: takeover is **moot** (the product)
 
 A **human** runs `pi` interactively (or attaches it to a WG chat via
-`--session-id`). The wg-pi-plugin is auto-discovered from
+`--session-id`). The WorksGood Pi extension is auto-discovered from
 `~/.pi/agent/extensions/` (or installed as a pi package). Here the full-screen
 takeover is exactly what the user wants — pi's native TUI, `/model` picker,
 steering, fork/clone, plus the plugin's `/wg` commands, wg tools, and task-graph
@@ -356,7 +356,7 @@ WG ships a tiny Node host (`wg-pi-host.mjs`) that does:
 ```ts
 import { createAgentSession, DefaultResourceLoader, createEventBus,
          ModelRegistry, AuthStorage, SessionManager } from "@earendil-works/pi-coding-agent";
-import wgPlugin from "@worksgood/wg-pi-plugin";
+import wgPlugin from "@worksgood/pi";
 
 const eventBus = createEventBus();
 const loader = new DefaultResourceLoader({ extensionFactories: [wgPlugin], eventBus });
@@ -419,7 +419,7 @@ branch except the staged P5 patch under `docs/pi-integration/upstream-patch/`.
 
 **New work the plugin pivot introduces (not in P0–P5):**
 
-- **`wg-pi-plugin` package** — the `pi-plugin/` TS sources + npm/git packaging
+- **`pi-worksgood` package** — the `worksgood-pi/` TS sources + npm/git packaging
   (§2). This is the center of gravity of the new direction.
 - **`wg-pi-host.mjs`** — the SDK embedding host for Topology B (§4.2).
 - **Plugin↔WG backend client** — `pi.exec("wg")` now, daemon-IPC later (§4.4).

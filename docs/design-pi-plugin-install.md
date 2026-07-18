@@ -1,8 +1,12 @@
-# Design: systematic pi-plugin install (`ensure-pi-plugin` primitive + embedded version-lock)
+# Design: WorksGood Pi install (`@worksgood/pi`, display `pi-worksgood`)
 
-**Status:** design (no runtime/behavior changes in the task that authored this).
-A chained implementation task (`implement-pi-plugin`) consumes the
-"Implementation plan" at the end.
+**Status:** implemented. The operational compatibility command remains
+`wg pi-plugin`; it is not the package or display identity.
+
+**Canonical identity:** npm `@worksgood/pi`; Pi startup label `pi-worksgood`;
+repository component `worksgood-pi/`; cache component `worksgood-pi`; executable
+`wg`. The approved description is “Connect Pi agents to WorksGood graphs,
+tools, and context.”
 
 **Scope:** make *"pi is correctly wired to wg"* a declarative, idempotent
 consequence of choosing pi — never a manual step that drifts. This document
@@ -19,17 +23,19 @@ Every manual / copy-based mechanism in this repo drifts:
 - a glm-5.2 401 where the handler pointed at a route with no credential and the
   failure was invisible until an agent died at ~1s.
 
-The pi plugin makes this worse by construction: `pi-plugin/src/wg-backend.ts`
+At the time this design was adopted, the WorksGood Pi integration made this
+worse by construction:
+`worksgood-pi/src/wg-backend.ts`
 states *"Today every call shells out to the `wg` binary via `pi.exec('wg', …)`"*,
 so a **version-skewed plugin silently sends the wrong flags** to whatever `wg` is
-on `PATH`. And the install is, today, *absent*:
+on `PATH`. And the install was *absent*:
 
 - `~/.pi/agent/extensions/` is empty (no global plugin),
-- there is **no `wg pi-plugin install` command** (only `wg skill install` exists
-  as precedent — `src/commands/skills.rs::run_install`),
+- there was **no `wg pi-plugin install` command** (`wg skill install` supplied
+  the precedent — `src/commands/skills.rs::run_install`),
 - `pi-handler`'s Topology-A spawn (`src/commands/pi_handler.rs::rpc_spawn_args`)
-  passes **no** `-e`/`-ne` flags, so it relies on an ambient global plugin that
-  does not exist. The handler comment claims the plugin is *"installed in
+  passed **no** `-e`/`-ne` flags, so it relied on an ambient global extension that
+  did not exist. The handler comment claimed the extension was *"installed in
   `~/.pi/agent/extensions/`, via `pi -e <plugin>`, or settings `packages`"* — none
   of which is actually arranged. That gap is the drift.
 
@@ -57,7 +63,7 @@ shell back to `wg`.
 
 ## 2. Two directions need different things
 
-The plugin is loaded in two fundamentally different situations. Conflating them
+The extension is loaded in two fundamentally different situations. Conflating them
 is how the current design drifts.
 
 ### 2.1 `wg → pi` (handler/worker — the OSS-execution path): **HERMETIC**
@@ -93,7 +99,7 @@ additionally writes the pi-side settings entry.
 
 **Options considered:**
 
-- **(a) `build.rs` runs `npm run build` then `include_bytes!`s `dist/`.**
+- **(a) `build.rs` runs `npm run build` then `include_bytes!`s `pi-worksgood/`.**
   *Rejected.* This forces a working `node` + `npm` toolchain at **`cargo install`
   time**, which breaks node-less installs of `wg`. The repo's whole point is that
   `cargo install --path .` is node-free (CLAUDE.md "Development"). It also makes
@@ -108,18 +114,18 @@ additionally writes the pi-side settings entry.
 
 **How (b) is wired (and how staleness is *prevented*):**
 
-1. **Committed embed dir** — `pi-plugin/embedded/` (tracked; distinct from the
-   gitignored dev `pi-plugin/dist/` in `pi-plugin/.gitignore`). It contains only
+1. **Committed embed dir** — `worksgood-pi/embedded/` (tracked; distinct from the
+   gitignored dev `worksgood-pi/pi-worksgood/` in `worksgood-pi/.gitignore`). It contains only
    the **runtime** files, so diffs stay small and the binary stays lean:
 
    ```
-   pi-plugin/embedded/
-     dist/index.js            # + the sibling .js modules index.js imports:
-     dist/wg-backend.js       #   wg-backend, tools, commands,
-     dist/tools.js            #   model-bridge, graph-widget
-     dist/commands.js
-     dist/model-bridge.js
-     dist/graph-widget.js
+   worksgood-pi/embedded/
+     pi-worksgood/index.js    # + sibling modules imported by index.js:
+     pi-worksgood/wg-backend.js
+     pi-worksgood/tools.js
+     pi-worksgood/commands.js
+     pi-worksgood/model-bridge.js
+     pi-worksgood/graph-widget.js
      host/wg-pi-host.mjs      # Topology-B host (verbatim copy)
      package.json             # curated: name, version, type:module, pi.extensions, peerDeps
      version.json             # { "compat": "<WG_PI_PLUGIN_COMPAT_VERSION>" } — the wire-compat stamp
@@ -128,16 +134,16 @@ additionally writes the pi-side settings entry.
    `.d.ts`, `*.map`, `*.tsbuildinfo` are **excluded** (not needed at runtime;
    they make diffs noisy and bloat the binary).
 
-2. **Regeneration target** — `make embed-pi-plugin` (thin wrapper over a
+2. **Regeneration target** — `make embed-worksgood-pi` (thin wrapper over a
    `cargo xtask` or a shell script) does:
-   `npm --prefix pi-plugin ci && npm --prefix pi-plugin run build`, then copies
-   the curated subset into `pi-plugin/embedded/` and stamps `version.json` from
+   `npm --prefix worksgood-pi ci && npm --prefix worksgood-pi run build`, then copies
+   the curated subset into `worksgood-pi/embedded/` and stamps `version.json` from
    the Rust `WG_PI_PLUGIN_COMPAT_VERSION` const (§Decision 1 single-source rule
    below).
 
 3. **Embed into the binary** — use the `include_dir` crate (small, widely used)
-   to embed `pi-plugin/embedded/` as a compile-time directory:
-   `static EMBEDDED_PI_PLUGIN: include_dir::Dir = include_dir!("$CARGO_MANIFEST_DIR/pi-plugin/embedded");`.
+   to embed `worksgood-pi/embedded/` as a compile-time directory:
+   `static EMBEDDED_PI_PLUGIN: include_dir::Dir = include_dir!("$CARGO_MANIFEST_DIR/worksgood-pi/embedded");`.
    *No-new-dependency fallback:* a generated `embedded_pi_plugin.rs` holding a
    `&[(&str, &[u8])]` slice produced by the `make` step (mirrors how `skills.rs`
    uses `include_str!`, just for many files). Recommend `include_dir` for
@@ -145,10 +151,10 @@ additionally writes the pi-side settings entry.
 
 4. **CI staleness gate** (the anti-drift guarantee) — a CI job rebuilds the
    plugin into a temp dir with the *same* curated copy logic and asserts it is
-   byte-identical to the committed `pi-plugin/embedded/` (effectively
-   `make embed-pi-plugin && git diff --exit-code pi-plugin/embedded`). If a dev
-   edits `pi-plugin/src/**` without re-running the embed step, CI fails. This is
-   what makes "committed dist == fresh build" an invariant, not a hope.
+   byte-identical to the committed `worksgood-pi/embedded/` (effectively
+   `make embed-worksgood-pi && git diff --exit-code worksgood-pi/embedded`). If a dev
+   edits `worksgood-pi/src/**` without re-running the embed step, CI fails. This is
+   what makes "committed runtime == fresh build" an invariant, not a hope.
 
    *Determinism note:* `tsc` output is deterministic given the pinned
    `package-lock.json` + the `rust-toolchain`-style pin already in the repo;
@@ -192,7 +198,7 @@ pi list                     List installed extensions from settings
 ```
 
 Extensions are loaded via **jiti** (TypeScript loads without compilation; plain
-`.js` loads too — our built artifact is `dist/index.js`). pi-core packages stay
+`.js` loads too — our built artifact is `pi-worksgood/index.js`). pi-core packages stay
 in `peerDependencies: "*"` and are **provided by pi at load**, so the embedded
 bundle carries *no* `node_modules`.
 
@@ -200,7 +206,7 @@ bundle carries *no* `node_modules`.
 
 - **`wg → pi` hermetic, Topology A (primary):**
   `wg pi-handler` spawns
-  `pi --mode rpc -e <cache>/<compat>/dist/index.js -ne …`.
+  `pi --mode rpc -e <cache>/<compat>/pi-worksgood/index.js -ne …`.
   `-e` loads *exactly* the embedded build by absolute path; `-ne` disables **all**
   discovery (no `~/.pi` global, no project `.pi`, and — deliberately — none of the
   user's other global `packages` like `pi-web-access`). Per the help text, "*explicit
@@ -212,19 +218,19 @@ bundle carries *no* `node_modules`.
 - **`pi → wg` global console:**
   `ensure-pi-plugin` (Console mode) writes an idempotent **`settings.json`
   `extensions` entry** — an absolute path into the versioned cache:
-  `"extensions": ["<cache>/<compat>/dist/index.js"]` in
+  `"extensions": ["<cache>/<compat>/pi-worksgood/index.js"]` in
   `~/.pi/agent/settings.json`. Chosen over the alternatives because it is
   offline, needs no `npm`, sidesteps the project trust gate (it is the *global*
   settings file), and is trivially idempotent. Documented alternatives:
   `pi install <cache>/<compat>` (blessed, but runs a production `npm install
   --omit=dev` and may hit the network) and a symlink at
-  `~/.pi/agent/extensions/wg-pi-plugin` (the `*/index.ts` discovery form — note
+  `~/.pi/agent/extensions/pi-worksgood` (the `*/index.ts` discovery form — note
   the table globs `.ts`, so prefer the settings entry for our `.js` artifact).
 
 - **Topology B (`node wg-pi-host.mjs`) loading** is unchanged in mechanism: the
   host loads the bundle **in-process** via
   `DefaultResourceLoader({ extensionFactories: [wgPlugin], eventBus })`
-  (`pi-plugin/host/wg-pi-host.mjs`). This is *not* a path/CLI load and is not the
+  (`worksgood-pi/host/wg-pi-host.mjs`). This is *not* a path/CLI load and is not the
   hermetic primary — see the §4.2 caveat (it needs the pi SDK resolvable via
   `node_modules`, which only the in-repo dev tree has).
 
@@ -236,46 +242,46 @@ losing hermeticity but preserving correctness. The impl task should pin the
 verified flags and add a one-line capability probe (`pi --help | grep -- -e`) so
 a future regression fails loudly rather than silently.
 
-### Decision 3 — Cache location + invalidation → **`${XDG_CACHE_HOME:-~/.cache}/wg/pi-plugin/<compat-version>/`**
+### Decision 3 — Cache location + invalidation → **`${XDG_CACHE_HOME:-~/.cache}/wg/worksgood-pi/<compat-version>/`**
 
-- **Path:** `${XDG_CACHE_HOME:-$HOME/.cache}/wg/pi-plugin/<compat-version>/`,
+- **Path:** `${XDG_CACHE_HOME:-$HOME/.cache}/wg/worksgood-pi/<compat-version>/`,
   honoring `XDG_CACHE_HOME` (the repo has no existing cache helper — grep finds
   none — so introduce a tiny `wg_cache_dir()` that resolves
   `XDG_CACHE_HOME` then `$HOME/.cache`, falling back to a temp dir if neither is
   writable, for headless/CI safety). The `<compat-version>` segment is the
   invalidation key: a `wg` binary with a new compat version writes a **new**
   directory and never collides with an old one.
-- **Layout under the version dir:** mirrors the embed — `dist/`, `host/`,
+- **Layout under the version dir:** mirrors the embed — `pi-worksgood/`, `host/`,
   `package.json`, `version.json`, plus a `.wg-ok` integrity stamp written **last**.
 - **Atomic extraction:** extract into a sibling temp dir
-  (`…/pi-plugin/.<compat>.tmp-<pid>`), `fsync`, then `rename` into place. A crash
+  (`…/worksgood-pi/.<compat>.tmp-<pid>`), `fsync`, then `rename` into place. A crash
   mid-extract leaves a `.tmp-*` dir (GC'd) and **no** `.wg-ok` in the live dir, so
   the next `ensure` re-extracts. This prevents a half-written cache from being
   trusted.
 - **GC of stale versions:** on every `ensure`, best-effort remove sibling
-  `…/pi-plugin/<other-version>/` directories whose name ≠ the current compat
+  `…/worksgood-pi/<other-version>/` directories whose name ≠ the current compat
   version, and any leftover `.tmp-*`. Skip removal on any error (never fatal). The
   cache is disposable: deleting it entirely just forces a re-extract on next use.
 
-### Decision 4 — Dev vs user source of truth → **dev tracks live `pi-plugin/dist`; user uses embedded→cache**
+### Decision 4 — Dev vs user source of truth → **dev tracks live `worksgood-pi/pi-worksgood`; user uses embedded→cache**
 
 `ensure-pi-plugin` selects the source in this precedence:
 
 1. **Explicit override:** `WG_PI_PLUGIN_DIR` set → use it verbatim (already an
    honored env in `executor_discovery::pi_plugin_candidate_dirs`). Escape hatch
    for testing a hand-built bundle.
-2. **Dev (repo present):** if the compile-time `pi-plugin/` tree exists *and*
-   looks like the wg repo (guard: `pi-plugin/package.json` parses with
-   `"name": "@worksgood/wg-pi-plugin"`) *and* `pi-plugin/dist/index.js` exists →
-   **point at the live `pi-plugin/dist`** so it tracks the working build (a
+2. **Dev (repo present):** if the compile-time `worksgood-pi/` tree exists *and*
+   looks like the wg repo (guard: `worksgood-pi/package.json` parses with
+   `"name": "@worksgood/pi"`) *and* `worksgood-pi/pi-worksgood/index.js` exists →
+   **point at the live `worksgood-pi/pi-worksgood`** so it tracks the working build (a
    `npm run build` is reflected immediately, no re-embed). This matches
    `pi_plugin_candidate_dirs`' "in-repo first" precedence and keeps the dev
-   inner-loop tight. *Caveat documented:* the in-repo `dist` can be stale if the
+   inner-loop tight. *Caveat documented:* the in-repo `pi-worksgood` build can be stale if the
    dev forgot to rebuild; the compat tripwire (§Decision below / §5) catches a
    *version* mismatch but not a same-version stale build — devs must
-   `npm run build`. (`make embed-pi-plugin` and a `/reload` in attended pi are the
+   `npm run build`. (`make embed-worksgood-pi` and a `/reload` in attended pi are the
    two ways to refresh.)
-3. **User (cargo-installed, no repo):** the compile-time `pi-plugin/` path is
+3. **User (cargo-installed, no repo):** the compile-time `worksgood-pi/` path is
    absent (or fails the repo guard) → **extract the embedded bundle into the
    versioned cache** and use that. Node-free, offline, version-locked.
 
@@ -285,20 +291,20 @@ still exist from accidentally loading an unrelated tree.
 
 ### Decision 5 — Idempotency + self-heal contract → **"already correct" is a 3-(or-4-)part predicate; repair = re-materialize the embedded truth**
 
-For a target location `T` (the chosen cache version dir, or the dev `dist`),
+For a target location `T` (the chosen cache version dir, or the dev build),
 `ensure-pi-plugin` treats `T` as **already correct** iff **all** hold:
 
-1. **Present:** `T/dist/index.js` exists (and, when Topology B is in play,
+1. **Present:** `T/pi-worksgood/index.js` exists (and, when Topology B is in play,
    `T/host/wg-pi-host.mjs`).
 2. **Version-matched:** `T/version.json`'s `compat` equals the binary's
-   `WG_PI_PLUGIN_COMPAT_VERSION`. (For the dev `dist` source, the version comes
+   `WG_PI_PLUGIN_COMPAT_VERSION`. (For the dev source, the version comes
    from the built bundle's stamp; a mismatch means "rebuild/re-embed".)
 3. **Intact:** the `.wg-ok` integrity stamp is present (proves a complete atomic
-   extraction). *(Dev `dist` is exempt from the stamp — it is managed by `tsc`,
+   extraction). *(The dev build is exempt from the stamp — it is managed by `tsc`,
    not by extraction; presence + version are sufficient there.)*
 4. **(Console mode only) Wired:** `~/.pi/agent/settings.json` contains an
-   `extensions` entry whose absolute path resolves to `T/dist/index.js` (or the
-   current cache `dist/index.js`).
+   `extensions` entry whose absolute path resolves to `T/pi-worksgood/index.js` (or the
+   current cache `pi-worksgood/index.js`).
 
 If all hold → **no-op** (cost: a handful of `stat`s + one small JSON read).
 Otherwise **repair**, always by *re-materializing the embedded truth* (never
@@ -314,6 +320,31 @@ partial patching of suspect bytes):
 Repair is convergent: running `ensure-pi-plugin` twice in a row leaves the second
 run a pure no-op.
 
+### Legacy settings migration (rename-pi-integration)
+
+Console ensure recognizes both prior installation forms:
+
+- npm `@worksgood/wg-pi-plugin`, including version-pinned strings and object
+  entries with Pi package filters;
+- managed paths under `…/wg/pi-plugin/<compat>/dist/index.js` or an in-repo
+  `pi-plugin/dist/index.js`.
+
+Pi treats npm packages and direct extension paths as distinct identities, and a
+legacy package cannot be safely rewritten to `@worksgood/pi` while offline: the
+new package may not be installed yet, which would leave the console with no
+WorksGood tools. Console ensure therefore retains each legacy/canonical package
+record and version pin, converts it to Pi's object form when necessary, and sets
+its `extensions` filter to `[]`. It then removes stale managed paths and loads
+exactly one compat-locked
+`…/worksgood-pi/<compat>/pi-worksgood/index.js`. The old package remains inert
+until the user removes it with `pi remove npm:@worksgood/wg-pi-plugin`.
+
+The first legacy-package acceptance prints that actionable compatibility notice;
+subsequent idempotent ensures are silent. Unrelated Pi packages, extension paths,
+ordering, and package configuration remain intact. This simultaneously preserves
+offline operation, prevents duplicate tool/command registration, and guarantees
+that Pi derives the public `pi-worksgood` label from the managed entry's parent.
+
 ### Compat handshake — `WG_PI_PLUGIN_COMPAT_VERSION` (mirrors `WG_AGENCY_COMPAT_VERSION`)
 
 Reuse the established compat-version precedent:
@@ -323,28 +354,28 @@ sibling:
 
 ```rust
 // e.g. src/pi_plugin/mod.rs (new module) — single source of truth
-pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.1.0";
+pub const WG_PI_PLUGIN_COMPAT_VERSION: &str = "0.2.0";
 ```
 
-**Single-source rule:** this Rust const is authoritative. `make embed-pi-plugin`
-stamps it into `pi-plugin/embedded/version.json`, and the plugin build stamps the
+**Single-source rule:** this Rust const is authoritative. `make embed-worksgood-pi`
+stamps it into `worksgood-pi/embedded/version.json`, and the plugin build stamps the
 **same** value into the bundle (a generated `src/version.ts` written from the
 const at embed time, or read from `package.json` with a unit test asserting
 equality). A Rust unit test asserts
 `WG_PI_PLUGIN_COMPAT_VERSION == embedded/version.json.compat` so they can never
 silently diverge. (This is a *wire-compat* number, deliberately decoupled from the
-npm `package.json` `version` of `@worksgood/wg-pi-plugin` — exactly as agency's
+npm `package.json` `version` of `@worksgood/pi` — exactly as agency's
 `1.2.4` is decoupled from any package version. Bump it whenever the wg↔plugin
 flag/contract surface changes.)
 
 **Runtime assertion (the loud-fail tripwire), in the plugin factory
-(`pi-plugin/src/index.ts`):**
+(`worksgood-pi/src/index.ts`):**
 
 ```
 EXPECTED = process.env.WG_PI_PLUGIN_COMPAT_VERSION         // wg→pi: injected at spawn
         ?? (await pi.exec("wg", ["pi-plugin", "compat-version"])).stdout.trim()   // pi→wg: ask the wg on PATH
 if (EXPECTED && EXPECTED !== EMBEDDED_COMPAT)
-    throw new Error(`wg-pi-plugin compat mismatch: plugin=${EMBEDDED_COMPAT} wg=${EXPECTED}; run \`wg pi-plugin install\``)
+    throw new Error(`WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${EXPECTED}; run \`wg pi-plugin install\``)
 ```
 
 - **`wg → pi`:** `wg pi-handler` injects `WG_PI_PLUGIN_COMPAT_VERSION` into the
@@ -357,7 +388,7 @@ if (EXPECTED && EXPECTED !== EMBEDDED_COMPAT)
   global plugin, or vice versa).
 - **Failure surfacing:** a thrown factory error is collected by the SDK as an
   extension load error — the Node host already reads `extensionsResult.errors`
-  (`pi-plugin/host/wg-pi-host.mjs` `collectRegistrations` / `runSelftest`), and
+  (`worksgood-pi/host/wg-pi-host.mjs` `collectRegistrations` / `runSelftest`), and
   attended pi shows the load error in its UI. The `wg pi-plugin compat-version`
   verb is added alongside `wg pi-plugin install` (§4.3).
 
@@ -377,8 +408,8 @@ fn ensure_pi_plugin(mode: EnsureMode) -> Result<ResolvedPlugin>
 enum EnsureMode { Hermetic, Console }
 
 struct ResolvedPlugin {
-    root: PathBuf,            // the version dir (cache) or the dev pi-plugin/ root
-    dist_entry: PathBuf,      // <root>/dist/index.js  — for `pi -e`
+    root: PathBuf,            // the version dir (cache) or the dev worksgood-pi/ root
+    dist_entry: PathBuf,      // <root>/pi-worksgood/index.js  — for `pi -e`
     host_script: PathBuf,     // <root>/host/wg-pi-host.mjs — for Topology B
     compat: String,           // WG_PI_PLUGIN_COMPAT_VERSION it materialized
     source: Source,           // Dev | Cache | EnvOverride
@@ -411,7 +442,7 @@ Topology selection becomes plugin-aware:
   version-locked.
 - **Topology B (dev convenience only):** chosen when there is **no** `pi` binary
   (or `WG_PI_TOPOLOGY=node`) **and** `plugin.has_node_modules` (i.e. the in-repo
-  dev tree, which has `pi-plugin/node_modules` from `npm install`). A *cache-only*
+  dev tree, which has `worksgood-pi/node_modules` from `npm install`). A *cache-only*
   Topology B is **out of scope**: a bare `node` cannot resolve the pi SDK
   (`@earendil-works/pi-*`) without `node_modules`, and we deliberately do not
   vendor `node_modules` or run `npm install` from `ensure-pi-plugin` (that breaks
@@ -420,7 +451,7 @@ Topology selection becomes plugin-aware:
   bundler step (e.g. esbuild) that *still* cannot supply the peer-dep pi SDK, or a
   vendored SDK — both larger than this design. The hermetic guarantee rides on
   Topology A `pi -e`. (`executor_discovery::pi_route_availability` may still
-  *report* a `~/.pi/.../wg-pi-plugin` dir as Topology-B-satisfying; the impl task
+  *report* a `~/.pi/.../pi-worksgood` dir as Topology-B-satisfying; the impl task
   should gate the Node-host transport on `has_node_modules` so that report cannot
   lead to a spawn that dies on an unresolved import.)
 
@@ -462,7 +493,7 @@ handle, exactly as `wg skill install` does.
    `ensure_pi_plugin(Console)` when the activated profile resolves any `pi:`
    route. The daemon hot-reload already happens; the next spawned worker is
    guaranteed a matching plugin. `pi.toml` already *documents* placement
-   (`src/profile/templates/pi.toml` "PLUGIN INSTALL / PLACEMENT") — this makes the
+   (`src/profile/templates/pi.toml` "WORKSGOOD PI INSTALL / PLACEMENT") — this makes the
    documentation *executed* instead of read.
 3. **JIT at `wg pi-handler` spawn — safety net.** `ensure_pi_plugin(Hermetic)` at
    the top of `pi_handler::run` (§4.2), before topology selection and spawn. This
@@ -482,14 +513,14 @@ drift.
 ensure_pi_plugin(Hermetic):
   source = pick_source()                         # Dev | Cache | EnvOverride
   if source == Cache:
-     T = <XDG_CACHE_HOME|~/.cache>/wg/pi-plugin/<compat>/
-     if  exists(T/dist/index.js)
+     T = <XDG_CACHE_HOME|~/.cache>/wg/worksgood-pi/<compat>/
+     if  exists(T/pi-worksgood/index.js)
      and exists(T/host/wg-pi-host.mjs)
      and read(T/version.json).compat == WG_PI_PLUGIN_COMPAT_VERSION
      and exists(T/.wg-ok):
          pass                                     # already correct → no-op
      else:
-         tmp = <…>/pi-plugin/.<compat>.tmp-<pid>
+         tmp = <…>/worksgood-pi/.<compat>.tmp-<pid>
          extract EMBEDDED_PI_PLUGIN -> tmp; write tmp/version.json; fsync
          touch tmp/.wg-ok; rename(tmp, T)         # atomic repair
      gc_sibling_versions(except = <compat>)       # best-effort
@@ -510,11 +541,11 @@ settings entry, or corrupting the bundle all self-heal on the next call.
 
 ## 6. Touch-points (real symbols)
 
-- **`pi-plugin/`** — `src/{index,tools,commands,model-bridge,wg-backend,graph-widget}.ts`,
-  `dist/` (gitignored dev build, `pi-plugin/.gitignore`), `host/wg-pi-host.mjs`,
-  `package.json` (`@worksgood/wg-pi-plugin` `0.1.0`, `pi.extensions: ["./dist/index.js"]`,
+- **`worksgood-pi/`** — `src/{index,tools,commands,model-bridge,wg-backend,graph-widget}.ts`,
+  `pi-worksgood/` (gitignored dev build, `worksgood-pi/.gitignore`), `host/wg-pi-host.mjs`,
+  `package.json` (`@worksgood/pi` `0.1.0`, `pi.extensions: ["./pi-worksgood/index.js"]`,
   peer deps `*`), the `selftest` script + faux-provider `host/`. **New:**
-  `pi-plugin/embedded/` (committed), generated `src/version.ts` (compat stamp).
+  `worksgood-pi/embedded/` (committed), generated `src/version.ts` (compat stamp).
 - **`src/commands/pi_handler.rs`** — `run`, `rpc_spawn_args` (gains `-e`/`-ne`),
   `select_topology` (gains `has_node_modules` gate), `RpcTransport`/`NodeHostTransport`.
 - **`src/executor_discovery.rs`** — `pi_route_availability(_in)`, `PiNodeHost`,
@@ -541,7 +572,7 @@ settings entry, or corrupting the bundle all self-heal on the next call.
 
 ---
 
-## 7. Implementation plan (ordered — turnkey for `implement-pi-plugin`)
+## 7. Original implementation plan (completed)
 
 > Each step lists its file scope. Steps 1–4 have no behavior change and can land
 > first; behavior wiring is 5–8. No two parallelizable steps share a file.
@@ -549,14 +580,14 @@ settings entry, or corrupting the bundle all self-heal on the next call.
 1. **Compat const + module.** Add `src/pi_plugin/mod.rs` with
    `WG_PI_PLUGIN_COMPAT_VERSION` (start `"0.1.0"`). Wire `mod pi_plugin;`.
    *Validation:* `cargo build`; unit test that the const is non-empty + semver-ish.
-2. **Embed pipeline.** Add `make embed-pi-plugin` (+ `xtask`/script): build the
-   plugin, copy the curated runtime subset into committed `pi-plugin/embedded/`,
-   stamp `version.json` from the const, generate `pi-plugin/src/version.ts`. Commit
-   the first `pi-plugin/embedded/`. *Validation:* `make embed-pi-plugin` is a
+2. **Embed pipeline.** Add `make embed-worksgood-pi` (+ `xtask`/script): build the
+   plugin, copy the curated runtime subset into committed `worksgood-pi/embedded/`,
+   stamp `version.json` from the const, generate `worksgood-pi/src/version.ts`. Commit
+   the first `worksgood-pi/embedded/`. *Validation:* `make embed-worksgood-pi` is a
    no-op on a clean tree; `version.json.compat == WG_PI_PLUGIN_COMPAT_VERSION`.
 3. **Embed into binary + CI gate.** `include_dir!`(or generated slice) of
-   `pi-plugin/embedded/`; add the CI staleness job (rebuild → `git diff
-   --exit-code pi-plugin/embedded`). *Validation:* a Rust test asserts the
+   `worksgood-pi/embedded/`; add the CI staleness job (rebuild → `git diff
+   --exit-code worksgood-pi/embedded`). *Validation:* a Rust test asserts the
    embedded `version.json` parses and equals the const; CI gate green.
 4. **`ensure-pi-plugin` core.** New `src/commands/pi_plugin_install.rs` (or under
    `src/pi_plugin/`): `EnsureMode`, `ResolvedPlugin`, `wg_cache_dir()`, source
@@ -567,7 +598,7 @@ settings entry, or corrupting the bundle all self-heal on the next call.
    `src/main.rs`: `install`/`status`/`path`/`compat-version`. *Validation:*
    `wg pi-plugin install` then `wg pi-plugin status` reports "wired", second run
    is a no-op; `compat-version` prints the const.
-6. **Plugin runtime compat assertion.** In `pi-plugin/src/index.ts`, read
+6. **Plugin runtime compat assertion.** In `worksgood-pi/src/index.ts`, read
    `EMBEDDED_COMPAT` from generated `version.ts`, compare against
    `WG_PI_PLUGIN_COMPAT_VERSION` env or `wg pi-plugin compat-version`; throw on
    mismatch. *Validation:* extend `host/wg-pi-host.mjs --selftest` to assert a

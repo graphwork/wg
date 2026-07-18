@@ -1,5 +1,5 @@
 //! `wg pi-handler` — pi.dev bridge for multi-turn chat, routed THROUGH the
-//! `wg-pi-plugin`, not via prompt-munging (`integration-plan-v2.md` §2.1, §4;
+//! `pi-worksgood`, not via prompt-munging (`integration-plan-v2.md` §2.1, §4;
 //! the plugin-first ADAPT of the old wrapper `pi-impl-p1a-handler`).
 //!
 //! Peer of `wg codex-handler` / `wg claude-handler` / `wg opencode-handler`.
@@ -8,13 +8,13 @@
 //! ## Two deployment topologies (`integration-plan-v2.md` §2.1)
 //!
 //! - **Topology A — RPC + auto-loaded plugin (ship first):** spawn a long-lived
-//!   `pi --mode rpc` with the wg-pi-plugin present (installed in
+//!   `pi --mode rpc` with the WorksGood Pi integration present (installed in
 //!   `~/.pi/agent/extensions/`, via `pi -e <plugin>`, or settings `packages`).
 //!   stdio is piped (headless ⇒ no terminal takeover, Axis 2 (b)). Each WG inbox
 //!   message becomes one JSONL `prompt` command; we read pi's JSONL event stream
 //!   until `agent_end` and write the assistant text to the WG outbox.
 //! - **Topology B — SDK Node host (default for unattended):** spawn
-//!   `node pi-plugin/host/wg-pi-host.mjs` (from `pi-plugin-impl-package`), which
+//!   `node worksgood-pi/host/wg-pi-host.mjs`, which
 //!   loads the plugin in-process via `DefaultResourceLoader` and bridges the
 //!   plugin event bus to WG over stdio. No terminal is ever grabbed.
 //!
@@ -879,7 +879,7 @@ enum Topology {
 /// NOT vendor it (that would break the node-free/offline promise). So Topology B
 /// is the in-repo dev tree only; a cache-only build refuses B and rides the
 /// hermetic Topology A `pi -e` (§4.2). This prevents a `pi_route_availability`
-/// report of a `~/.pi/.../wg-pi-plugin` dir from leading to a spawn that dies on
+/// report of a stale legacy extension dir from leading to a spawn that dies on
 /// an unresolved import.
 fn select_topology(
     avail: &PiRouteAvailability,
@@ -906,7 +906,7 @@ fn select_topology(
                     "WG_PI_TOPOLOGY requested the Node-host topology, but the resolved plugin \
                      has no `node_modules` to supply the pi SDK peer deps (cache-only Topology B \
                      is out of scope). Use a `pi` binary (Topology A) or run from the in-repo \
-                     dev tree after `npm --prefix pi-plugin ci`."
+                     dev tree after `npm --prefix worksgood-pi ci`."
                 );
             }
             anyhow::bail!(
@@ -925,9 +925,9 @@ fn select_topology(
             } else {
                 anyhow::bail!(
                     "no usable pi transport: neither a `pi` binary nor a Node host with \
-                     resolvable peer deps (node + wg-pi-host.mjs + dist/index.js + node_modules) \
+                     resolvable peer deps (node + wg-pi-host.mjs + pi-worksgood/index.js + node_modules) \
                      is available. Install pi, or run from the in-repo dev tree after \
-                     `npm --prefix pi-plugin ci && npm --prefix pi-plugin run build`."
+                     `npm --prefix worksgood-pi ci && npm --prefix worksgood-pi run build`."
                 )
             }
         }
@@ -1389,7 +1389,7 @@ mod tests {
             provider: "openrouter".into(),
             model: "anthropic/claude-3.5-haiku".into(),
         };
-        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let dist = Path::new("/cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js");
         let args = rpc_spawn_args(
             Some(&marg),
             None,
@@ -1403,7 +1403,7 @@ mod tests {
         let midx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(args[midx + 1], "anthropic/claude-3.5-haiku");
         assert!(args.contains(&"--mode".to_string()) && args.contains(&"rpc".to_string()));
-        // Hermetic plugin load: `-e <abs dist/index.js>` + `-ne` are present.
+        // Hermetic load: `-e <abs pi-worksgood/index.js>` + `-ne` are present.
         let eidx = args
             .iter()
             .position(|a| a == "-e")
@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn test_rpc_spawn_args_plain_pi_omits_provider_and_model() {
-        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let dist = Path::new("/cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js");
         let args = rpc_spawn_args(None, None, "chat-1", Path::new("/tmp/pi-sessions"), dist);
         assert!(args.contains(&"--mode".to_string()) && args.contains(&"rpc".to_string()));
         assert!(
@@ -1451,7 +1451,7 @@ mod tests {
             provider: "openai-codex".into(),
             model: "gpt-5.6-sol".into(),
         };
-        let dist = Path::new("/cache/wg/pi-plugin/0.1.0/dist/index.js");
+        let dist = Path::new("/cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js");
         let args = rpc_spawn_args(
             Some(&marg),
             Some(ReasoningLevel::High),
@@ -1485,7 +1485,7 @@ mod tests {
         // without ambient WG_DIR inheritance.
         let pairs = plugin_child_env(
             "0.1.0",
-            Path::new("/cache/wg/pi-plugin/0.1.0"),
+            Path::new("/cache/wg/worksgood-pi/0.2.0"),
             Path::new("/proj/wg"),
             "chat-7",
         );
@@ -1509,7 +1509,7 @@ mod tests {
                 .find(|(k, _)| k == "WG_PI_PLUGIN_DIR")
                 .unwrap()
                 .1,
-            "/cache/wg/pi-plugin/0.1.0"
+            "/cache/wg/worksgood-pi/0.2.0"
         );
         assert_eq!(
             pairs.iter().find(|(k, _)| k == "WG_CHAT_REF").unwrap().1,
@@ -1535,7 +1535,7 @@ mod tests {
         let mut secret_env = secret.env_pairs();
         secret_env.extend(plugin_child_env(
             "0.1.0",
-            Path::new("/cache/wg/pi-plugin/0.1.0"),
+            Path::new("/cache/wg/worksgood-pi/0.2.0"),
             workgraph_dir,
             "chat-1",
         ));
@@ -1731,7 +1731,7 @@ mod tests {
             node_host: node.then(|| PiNodeHost {
                 node: "/usr/bin/node".into(),
                 host_script: "/p/host/wg-pi-host.mjs".into(),
-                plugin_bundle: "/p/dist/index.js".into(),
+                plugin_bundle: "/p/pi-worksgood/index.js".into(),
             }),
         }
     }

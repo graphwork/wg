@@ -848,13 +848,22 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     // not abort activation (the JIT pre-spawn ensure is the safety net).
     if crate::commands::config_cmd::config_has_pi_route(&prof.config) {
         match worksgood::pi_plugin::ensure_pi_plugin(worksgood::pi_plugin::EnsureMode::Console) {
-            Ok(p) => println!(
-                "  Ensured wg-pi-plugin (compat {}): {}",
-                p.compat,
-                p.dist_entry.display()
-            ),
+            Ok(p) => {
+                println!(
+                    "  Ensured pi-worksgood (compat {}): {}",
+                    p.compat,
+                    p.dist_entry.display()
+                );
+                if p.legacy_package_accepted {
+                    println!(
+                        "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
+                    );
+                } else if p.legacy_settings_migrated {
+                    println!("  Migrated the legacy managed extension path to pi-worksgood.");
+                }
+            }
             Err(e) => eprintln!(
-                "  Warning: could not ensure wg-pi-plugin ({e}); run `wg pi-plugin install`."
+                "  Warning: could not ensure pi-worksgood ({e}); run `wg pi-plugin install`."
             ),
         }
     }

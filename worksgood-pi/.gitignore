@@ -1,0 +1,7 @@
+node_modules/
+# Dev build output, anchored to the package root. The committed, embedded
+# runtime under embedded/pi-worksgood/ is NOT ignored (it is vendored into the wg binary
+# by `make embed-worksgood-pi`).
+/pi-worksgood/
+*.tsbuildinfo
+coverage/

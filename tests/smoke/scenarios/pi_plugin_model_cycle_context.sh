@@ -11,7 +11,7 @@ command -v npm >/dev/null 2>&1 || loud_skip "MISSING NPM" "npm is required for t
 command -v node >/dev/null 2>&1 || loud_skip "MISSING NODE" "node is required for the pi plugin regression"
 
 repo="$(cd "$HERE/../../.." && pwd)"
-plugin="$repo/pi-plugin"
+plugin="$repo/worksgood-pi"
 if [ ! -d "$plugin/node_modules" ]; then
     npm --prefix "$plugin" ci >/tmp/fix-pi-plugin-npm-ci.log 2>&1 || \
         loud_skip "PI PLUGIN DEPS UNAVAILABLE" "npm ci failed: $(tail -20 /tmp/fix-pi-plugin-npm-ci.log)"
@@ -23,7 +23,7 @@ npm --prefix "$plugin" run build >/tmp/fix-pi-plugin-build.log 2>&1 || \
 # order: Pi changes its selected model, then emits model_select(source=cycle).
 node --input-type=module - "$plugin" <<'NODE' || loud_fail "plugin model-cycle context contract failed"
 const plugin = process.argv[2];
-const { installModelBridge, readWgEnv, WgBackend } = await import(`${plugin}/dist/index.js`);
+const { installModelBridge, readWgEnv, WgBackend } = await import(`${plugin}/pi-worksgood/index.js`);
 
 function runner() {
   let handler;
@@ -127,8 +127,8 @@ if command -v tmux >/dev/null 2>&1; then
     wg_bin="$repo/target/debug/wg"
     if [ ! -x "$wg_bin" ]; then
         wg_bin="$(command -v wg 2>/dev/null || true)"
-        if [ -n "$wg_bin" ] && [ "$("$wg_bin" pi-plugin compat-version 2>/dev/null || true)" != "0.1.1" ]; then
-            echo "pi_plugin_model_cycle_context: managed TUI sub-check deferred (installed wg predates compat 0.1.1)" >&2
+        if [ -n "$wg_bin" ] && [ "$("$wg_bin" pi-plugin compat-version 2>/dev/null || true)" != "0.2.0" ]; then
+            echo "pi_plugin_model_cycle_context: managed TUI sub-check deferred (installed wg predates compat 0.2.0)" >&2
             wg_bin=""
         fi
     fi
@@ -193,7 +193,7 @@ SH
       MANAGED_ENV_FILE="$managed_env" MANAGED_DONE_FILE="$managed_done" \
       MANAGED_EMITTER="$managed_scratch/emit-cycle.mjs" \
       MANAGED_EMITTER_LOG="$managed_scratch/emitter.log" \
-      MANAGED_PLUGIN_ENTRY="file://$plugin/dist/index.js" MANAGED_WG_BIN="$wg_bin" \
+      MANAGED_PLUGIN_ENTRY="file://$plugin/pi-worksgood/index.js" MANAGED_WG_BIN="$wg_bin" \
       tmux -L "$managed_sock" new-session -d -s "$managed_session" -x 160 -y 40 \
       "$wg_bin --dir $managed_graph tui"
 
@@ -263,7 +263,7 @@ JSON
 JSON
     env -u WG_CHAT_ID -u WG_CHAT_REF \
       HOME="$home" PATH="$fakebin:$PATH" PI_OFFLINE=1 \
-      MODEL_CYCLE_WG_CALLS="$calls" PLUGIN_ENTRY="$plugin/dist/index.js" PI_CAPTURE="$output" \
+      MODEL_CYCLE_WG_CALLS="$calls" PLUGIN_ENTRY="$plugin/pi-worksgood/index.js" PI_CAPTURE="$output" \
       python3 <<'PY'
 import os, pty, select, signal, subprocess, time
 cmd = ["pi", "--provider", "openrouter", "--model", "qwen/qwen3.6-flash", "-e", os.environ["PLUGIN_ENTRY"], "-ne"]

@@ -1,5 +1,11 @@
 # End-to-end test report: pi ↔ wg setup (install technique reliability)
 
+> Historical naming note (2026-07-18): this report preserves validation output
+> from the former `@worksgood/wg-pi-plugin` / `pi-plugin/` layout. The current
+> package is `@worksgood/pi`, its Pi display identity is `pi-worksgood`, and its
+> repository component is `worksgood-pi/`. Old paths and messages below are
+> quoted test evidence, not current installation guidance.
+
 **Task:** `test-end-to` — end-to-end test the whole pi↔wg setup produced by the
 chained design (`docs/design-pi-plugin-install.md`) + impl (`implement-pi-plugin`)
 tasks, proving the install technique is reliable from a clean state, in **both**

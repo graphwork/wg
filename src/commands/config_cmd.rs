@@ -2939,9 +2939,9 @@ fn pi_route_lint(
     }
     Some(
         "warning: a configured model route targets the `pi` executor, but neither a `pi` \
-         binary nor the Node host bundle (node + wg-pi-host.mjs + dist/index.js) is available \
-         — this `pi:` route cannot run. Install pi (`pi`) or build the wg-pi-plugin bundle \
-         (`npm --prefix pi-plugin run build`), or repoint the route to an available executor."
+         binary nor the Node host bundle (node + wg-pi-host.mjs + pi-worksgood/index.js) is available \
+         — this `pi:` route cannot run. Install pi (`pi`) or build pi-worksgood \
+         (`npm --prefix worksgood-pi run build`), or repoint the route to an available executor."
             .to_string(),
     )
 }
@@ -3135,7 +3135,7 @@ mod tests {
             node_host: Some(PiNodeHost {
                 node: "/usr/bin/node".into(),
                 host_script: "/p/host/wg-pi-host.mjs".into(),
-                plugin_bundle: "/p/dist/index.js".into(),
+                plugin_bundle: "/p/pi-worksgood/index.js".into(),
             }),
         };
         assert!(pi_route_lint(&config, &with_host).is_none());

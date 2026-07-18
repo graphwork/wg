@@ -18,7 +18,7 @@ orthogonal takeover-fix and other-tools path. It is the v2 the
   `registerTool`/`registerCommand`/`registerProvider`, `setModel`, `ctx.ui.*`,
   lifecycle hooks, `DefaultResourceLoader({extensionFactories,eventBus})`.
   Extensions load in **all four** pi modes (tui/rpc/json/print). Designs the
-  `wg-pi-plugin` package, three deployment topologies, and a replaces-vs-keeps §5.
+  `pi-worksgood` package, three deployment topologies, and a replaces-vs-keeps §5.
 - [`terminal-host-research.md`](terminal-host-research.md) — the terminal-takeover
   problem is **generic**, not pi-specific; proposes a WG-owned
   `HostedChild`/`TerminalProfile`/`TerminalHost` layer (modes a–e) so any
@@ -64,7 +64,7 @@ orthogonal takeover-fix and other-tools path. It is the v2 the
 
 1. **Plugin-first: ALL pi-backed wg tasks and chat go through a pi-side `wg`
    plugin.** The integration lives *inside* a pi session as a loaded module
-   (`@worksgood/wg-pi-plugin`), the same artifact whether a human launched pi or
+   (`@worksgood/pi`), the same artifact whether a human launched pi or
    WG did. WG stops prompt-munging/scraping pi as a subordinate CLI; instead the
    plugin registers wg tools/commands, surfaces the task graph, and bridges model
    state — natively, inside pi's lifecycle (`plugin-research.md` §1).
@@ -106,7 +106,7 @@ orthogonal takeover-fix and other-tools path. It is the v2 the
 ```
                        ┌──────────────────────────────────────────────┐
                        │  AXIS 1 — INTEGRATION CHANNEL (the plugin)      │
-                       │  @worksgood/wg-pi-plugin loaded inside pi:      │
+                       │  @worksgood/pi loaded inside pi:      │
                        │  • wg tools (LLM/human call wg verbs)           │
                        │  • /wg, /wg-model commands                      │
                        │  • registerProvider(WG endpoints/keys)          │
@@ -147,15 +147,15 @@ This is exactly why pi misbehaves where `claude -p`, headless `codex`,
 
 ---
 
-## 2. Axis 1 — the `wg-pi-plugin` package (integration channel)
+## 2. Axis 1 — the `pi-worksgood` package (integration channel)
 
 Full design in [`plugin-research.md`](plugin-research.md) §2. Summary:
 
-- **Package:** `@worksgood/wg-pi-plugin`, keyword `pi-package`, in-repo at
-  `pi-plugin/` so it version-locks to the `wg` binary it shells to. Pi-core deps
+- **Package:** `@worksgood/pi`, keyword `pi-package`, in-repo at
+  `worksgood-pi/` so it version-locks to the `wg` binary it shells to. Pi-core deps
   in `peerDependencies: "*"` (provided by pi at load). Built artifact published to
   npm and/or pinned `git:` ref.
-- **Layout (`pi-plugin/src/`):** `index.ts` (registration entry), `tools.ts`
+- **Layout (`worksgood-pi/src/`):** `index.ts` (registration entry), `tools.ts`
   (`wg_ready`/`wg_show`/`wg_add`/`wg_done`/`wg_fail`/`wg_msg_*`/`wg_run`),
   `commands.ts` (`/wg`, `/wg-model`), `graph-widget.ts`
   (legacy no-op compatibility exports), `model-bridge.ts`
@@ -405,7 +405,7 @@ consumer.
 Same-file sequencing enforced (golden rule: same file ⇒ sequential edge).
 
 **Shared-file ledger:**
-- `pi-plugin/**` — only `pi-plugin-impl-package`.
+- `worksgood-pi/**` — only `pi-plugin-impl-package`.
 - `src/commands/pi_handler.rs` — `pi-plugin-impl-handler`, then
   `pi-plugin-impl-pi-takeover-fix` (sequential).
 - `src/cli.rs` — `pi-plugin-impl-handler`, then `pi-plugin-impl-chat-model-verb`
@@ -422,7 +422,7 @@ Same-file sequencing enforced (golden rule: same file ⇒ sequential edge).
 ```
 pi-plugin-replan (this replan, human-reviewed via .flip)
  ├─ pi-plugin-impl-package ───────────────┐
- │   (pi-plugin/ TS pkg + wg-pi-host.mjs;  │
+ │   (worksgood-pi/ TS pkg + wg-pi-host.mjs;  │
  │    model-bridge subsumes P3 pi half)    │
  │                                         ▼
  │                              pi-plugin-impl-handler ──┬─ pi-plugin-impl-chat-model-verb ─┬─ pi-plugin-impl-tui-model-picker
@@ -491,7 +491,7 @@ the trait foundation + the pi consumer on the pi critical path.
 ## Sources
 
 - [`docs/pi-integration/plugin-research.md`](plugin-research.md) — pi extension
-  API verdict, `wg-pi-plugin` package, three topologies, replaces-vs-keeps §5,
+  API verdict, `pi-worksgood` package, three topologies, replaces-vs-keeps §5,
   two-direction takeover analysis §3.
 - [`docs/pi-integration/terminal-host-research.md`](terminal-host-research.md) —
   generic `TerminalHost`/`TerminalProfile` layer (modes a–e), plugin-orthogonality

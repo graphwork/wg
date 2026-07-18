@@ -2,7 +2,7 @@
 # Scenario: pi_plugin_install_hermetic
 #
 # Pins implement-pi-plugin: the `ensure-pi-plugin` install primitive and the
-# hermetic `pi -e <cache>/dist/index.js -ne` load.
+# hermetic `pi -e <cache>/pi-worksgood/index.js -ne` load.
 #
 # Always-on (pure `wg` binary, no node/pi/creds):
 #   * `wg pi-plugin compat-version` prints the embedded compat version.
@@ -50,9 +50,9 @@ out1=$(run_pi_plugin install 2>&1) || loud_fail "wg pi-plugin install failed: $o
 
 settings="$fake_home/.pi/agent/settings.json"
 [ -f "$settings" ] || loud_fail "install did not write $settings"
-cache_dist="$cache/wg/pi-plugin/$compat/dist/index.js"
+cache_dist="$cache/wg/worksgood-pi/$compat/pi-worksgood/index.js"
 [ -f "$cache_dist" ] || loud_fail "install did not extract embedded bundle to $cache_dist"
-[ -f "$cache/wg/pi-plugin/$compat/.wg-ok" ] || loud_fail "install did not write the .wg-ok integrity stamp"
+[ -f "$cache/wg/worksgood-pi/$compat/.wg-ok" ] || loud_fail "install did not write the .wg-ok integrity stamp"
 grep -qF "$cache_dist" "$settings" \
     || loud_fail "settings.json does not list the cache extension entry. Got: $(cat "$settings")"
 
@@ -64,14 +64,14 @@ sum2=$(sha256sum "$settings" | cut -d' ' -f1)
 
 # ── corrupted cache is detected + repaired (self-heal) ──────────────
 printf '// CORRUPTED\n' > "$cache_dist"
-rm -f "$cache/wg/pi-plugin/$compat/.wg-ok"
+rm -f "$cache/wg/worksgood-pi/$compat/.wg-ok"
 ready_bad=$(run_pi_plugin status 2>/dev/null | grep -i "build ready")
 grep -qi "NO" <<<"$ready_bad" || loud_fail "corrupted cache was not detected as not-ready: $ready_bad"
 run_pi_plugin install >/dev/null 2>&1 || loud_fail "repair install failed"
 if head -c 32 "$cache_dist" | grep -q CORRUPTED; then
     loud_fail "corrupted cache was NOT repaired (index.js still corrupted)"
 fi
-[ -f "$cache/wg/pi-plugin/$compat/.wg-ok" ] || loud_fail "repair did not restore the .wg-ok stamp"
+[ -f "$cache/wg/worksgood-pi/$compat/.wg-ok" ] || loud_fail "repair did not restore the .wg-ok stamp"
 
 # ── Live hermetic load through REAL pi (only if a pi binary exists) ──
 if command -v pi >/dev/null 2>&1; then

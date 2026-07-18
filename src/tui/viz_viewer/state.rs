@@ -31075,7 +31075,7 @@ mod launcher_redesign_tests {
         // it must NOT be included in the launch args.
         let mut state = make_state();
         state.mode = LauncherMode::AddNew;
-        state.add_executor_idx = 0; // claude
+        state.add_executor_idx = exec_idx("claude");
         state.add_model = "claude:sonnet".into();
         state.add_endpoint = "https://stale.example".into();
         let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
@@ -32078,7 +32078,7 @@ mod launcher_model_autocomplete_tests {
         // claude executor should float the anthropic model above an
         // openrouter one on an empty query (boost on tie).
         let state = model_state(
-            0, // claude
+            exec_idx("claude"),
             vec![
                 sug("minimax/minimax-m3", "openrouter", "curated"),
                 sug("anthropic/claude-opus-4-6", "anthropic", "frontier"),
@@ -33435,7 +33435,13 @@ mod prioritized_chat_startup_tests {
 
         let pending = app.pending_chat_pty_spawn.expect("Pi plan");
         assert_eq!(pending.executor, "pi");
-        assert_eq!(pending.bin, "pi");
+        assert_eq!(
+            std::path::Path::new(&pending.bin)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("pi"),
+            "Pi discovery may resolve an absolute executable path"
+        );
         assert!(
             pending
                 .args

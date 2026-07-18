@@ -9,24 +9,24 @@ command -v npm >/dev/null 2>&1 || loud_skip "MISSING NPM" "npm is required for t
 command -v node >/dev/null 2>&1 || loud_skip "MISSING NODE" "node is required for the pi-plugin load contract"
 
 repo="$(cd "$HERE/../../.." && pwd)"
-plugin="$repo/pi-plugin"
-[ -f "$plugin/package-lock.json" ] || loud_fail "missing pi-plugin/package-lock.json"
+plugin="$repo/worksgood-pi"
+[ -f "$plugin/package-lock.json" ] || loud_fail "missing worksgood-pi/package-lock.json"
 
 if [ ! -d "$plugin/node_modules" ]; then
-    npm --prefix "$plugin" ci >/tmp/wg-pi-plugin-npm-ci.log 2>&1 || \
-        loud_skip "PI PLUGIN DEPS UNAVAILABLE" "npm ci failed: $(tail -20 /tmp/wg-pi-plugin-npm-ci.log)"
+    npm --prefix "$plugin" ci >/tmp/pi-worksgood-npm-ci.log 2>&1 || \
+        loud_skip "PI PLUGIN DEPS UNAVAILABLE" "npm ci failed: $(tail -20 /tmp/pi-worksgood-npm-ci.log)"
 fi
 
-npm --prefix "$plugin" test >/tmp/wg-pi-plugin-test.log 2>&1 || \
-    loud_fail "pi-plugin npm test failed: $(tail -80 /tmp/wg-pi-plugin-test.log)"
+npm --prefix "$plugin" test >/tmp/pi-worksgood-test.log 2>&1 || \
+    loud_fail "pi-worksgood npm test failed: $(tail -80 /tmp/pi-worksgood-test.log)"
 
-npm --prefix "$plugin" run selftest >/tmp/wg-pi-plugin-selftest.log 2>&1 || \
-    loud_fail "pi-plugin host selftest failed: $(tail -80 /tmp/wg-pi-plugin-selftest.log)"
+npm --prefix "$plugin" run selftest >/tmp/pi-worksgood-selftest.log 2>&1 || \
+    loud_fail "pi-worksgood host selftest failed: $(tail -80 /tmp/pi-worksgood-selftest.log)"
 
-node --input-type=module - "$plugin" <<'NODE' >/tmp/wg-pi-plugin-contract.log 2>&1 || \
-    loud_fail "pi-plugin registration contract smoke failed: $(cat /tmp/wg-pi-plugin-contract.log)"
+node --input-type=module - "$plugin" <<'NODE' >/tmp/pi-worksgood-contract.log 2>&1 || \
+    loud_fail "pi-worksgood registration contract smoke failed: $(cat /tmp/pi-worksgood-contract.log)"
 const plugin = process.argv[2];
-const mod = await import(`${plugin}/dist/index.js`);
+const mod = await import(`${plugin}/pi-worksgood/index.js`);
 const lines = mod.renderWidget([
   { id: "task-a", title: "Alpha" },
   { id: "task-b", title: "Beta" },

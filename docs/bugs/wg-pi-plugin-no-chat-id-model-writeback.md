@@ -1,5 +1,10 @@
 # Pi plugin model cycling without a WG chat identity
 
+> Historical naming note (2026-07-18): this report records behavior of the
+> former `@worksgood/wg-pi-plugin` package and `pi-plugin/` component. The
+> current integration is `@worksgood/pi`, displays as `pi-worksgood`, and lives
+> under `worksgood-pi/`. Commands shown below are retained as incident evidence.
+
 **Status:** fixed by `fix-pi-plugin` (2026-07-17)  
 **Affected artifact:** `@worksgood/wg-pi-plugin` 0.1.0
 

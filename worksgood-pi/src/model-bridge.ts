@@ -149,7 +149,7 @@ export function installModelBridge(
       // persistence failure. Logging one rendered string (rather than the Error
       // object) prevents ExtensionRunner from producing duplicate stack spam.
       const detail = err instanceof Error ? err.message : String(err);
-      console.error(`wg-pi-plugin: model write-back failed for ${spec}: ${detail}`);
+      console.error(`pi-worksgood: model write-back failed for ${spec}: ${detail}`);
     }
   });
 }

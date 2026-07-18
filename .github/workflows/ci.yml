@@ -94,8 +94,8 @@ jobs:
         run: cargo test --test integration_service -- --test-threads=1
         timeout-minutes: 10
 
-  pi-plugin:
-    name: Pi-plugin build, selftest & embed staleness
+  worksgood-pi:
+    name: pi-worksgood build, selftest & embed staleness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,21 +107,21 @@ jobs:
 
       - name: Build plugin + selftests
         run: |
-          npm --prefix pi-plugin ci
-          npm --prefix pi-plugin run build
-          npm --prefix pi-plugin run selftest
-          node pi-plugin/host/wg-pi-host.mjs --selftest --force-compat-mismatch
-          npm --prefix pi-plugin test
+          npm --prefix worksgood-pi ci
+          npm --prefix worksgood-pi run build
+          npm --prefix worksgood-pi run selftest
+          node worksgood-pi/host/wg-pi-host.mjs --selftest --force-compat-mismatch
+          npm --prefix worksgood-pi test
 
       # Anti-drift gate: re-embed from the just-built dist and fail if the
-      # committed pi-plugin/embedded/ (or generated version.ts) differs. A source
-      # edit under pi-plugin/src/** without a `make embed-pi-plugin` re-embed is
+      # committed worksgood-pi/embedded/ (or generated version.ts) differs. A source
+      # edit under worksgood-pi/src/** without a re-embed is
       # caught here, keeping "committed dist == fresh build" an invariant.
       - name: Embed staleness gate
         run: |
-          scripts/embed-pi-plugin.sh --no-install
-          git diff --exit-code pi-plugin/embedded pi-plugin/src/version.ts \
-            || { echo "::error::pi-plugin/embedded is stale — run \`make embed-pi-plugin\` and commit the result"; exit 1; }
+          scripts/embed-worksgood-pi.sh --no-install
+          git diff --exit-code worksgood-pi/embedded worksgood-pi/src/version.ts \
+            || { echo "::error::worksgood-pi/embedded is stale — run \`make embed-worksgood-pi\` and commit the result"; exit 1; }
 
   nightly:
     name: Build & Test (nightly)

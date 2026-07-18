@@ -3,8 +3,8 @@
  * wg-pi-host.mjs — Topology B: WG embeds pi as a library.
  *
  * Instead of spawning the `pi` binary, WG's ExecutorKind::Pi can spawn
- * `node wg-pi-host.mjs`. This host loads @worksgood/wg-pi-plugin as an
- * in-process JS object via DefaultResourceLoader({extensionFactories:[wgPlugin],
+ * `node wg-pi-host.mjs`. This host loads @worksgood/pi as an
+ * in-process JS object via DefaultResourceLoader({extensionFactories:[worksgoodPi],
  * eventBus}) and bridges the shared event bus to WG over stdio. No terminal is
  * ever grabbed (headless by construction), so the Axis-2 takeover never occurs
  * (integration-plan-v2.md §2.1 / plugin-research.md §4.2).
@@ -42,14 +42,14 @@ function die(msg, code = 1) {
   process.exit(code);
 }
 
-/** Dynamically import the built plugin, with a clear error if dist/ is missing. */
+/** Dynamically import the built extension, with a clear error if it is missing. */
 async function loadPlugin() {
-  const builtUrl = pathToFileURL(resolve(__dirname, "..", "dist", "index.js")).href;
+  const builtUrl = pathToFileURL(resolve(__dirname, "..", "pi-worksgood", "index.js")).href;
   try {
     const mod = await import(builtUrl);
-    return mod.default ?? mod.wgPlugin;
+    return mod.default ?? mod.worksgoodPi;
   } catch (err) {
-    die(`could not load built plugin at ${builtUrl} — run \`npm run build\` first.\n${err?.stack || err}`);
+    die(`could not load pi-worksgood at ${builtUrl} — run \`npm run build\` first.\n${err?.stack || err}`);
   }
 }
 
@@ -70,8 +70,8 @@ async function loadPi() {
  * with no credentials (real auth/model is injected by the WG handler in prod).
  */
 async function buildSession({ hermetic }) {
-  const wgPlugin = await loadPlugin();
-  if (typeof wgPlugin !== "function") die("plugin default export is not a function");
+  const worksgoodPi = await loadPlugin();
+  if (typeof worksgoodPi !== "function") die("WorksGood Pi default export is not a function");
 
   const { core, ai } = await loadPi();
   const { createAgentSession, DefaultResourceLoader, createEventBus, AuthStorage, ModelRegistry, SessionManager } = core;
@@ -92,7 +92,7 @@ async function buildSession({ hermetic }) {
     cwd,
     agentDir,
     eventBus,
-    extensionFactories: [wgPlugin],
+    extensionFactories: [worksgoodPi],
     noContextFiles: true,
   });
   await resourceLoader.reload();

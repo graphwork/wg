@@ -47,9 +47,11 @@ exec "$script" "$@"
 FAKE_NODE
     chmod +x "$bindir/node"
 
-    plugin_dir="$scratch/wg-pi-plugin"
-    mkdir -p "$plugin_dir/host" "$plugin_dir/dist"
-    : >"$plugin_dir/dist/index.js"
+    plugin_dir="$scratch/worksgood-pi"
+    # The explicit override models a checked-out development component. The
+    # Node-host topology intentionally requires peer dependencies to exist.
+    mkdir -p "$plugin_dir/host" "$plugin_dir/pi-worksgood" "$plugin_dir/node_modules"
+    : >"$plugin_dir/pi-worksgood/index.js"
     cat >"$plugin_dir/host/wg-pi-host.mjs" <<'FAKE_HOST'
 #!/usr/bin/env bash
 set -euo pipefail

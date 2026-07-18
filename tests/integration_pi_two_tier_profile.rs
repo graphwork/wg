@@ -111,11 +111,13 @@ fn test_pi_partial_apply_leaves_other_tier_unchanged() {
 }
 
 #[test]
-fn test_pi_apply_preserves_plugin_comment_block() {
-    // The hand-written plugin-placement documentation must survive a write
+fn test_pi_apply_preserves_worksgood_integration_comment_block() {
+    // The hand-written integration-placement documentation must survive a write
     // (this is why the patcher is line-based, not a toml round-trip).
     let patched = patch_in_memory(STARTER_PI, Some("openrouter:z-ai/glm-5.2"), None);
-    assert!(patched.contains("PLUGIN INSTALL"));
+    assert!(patched.contains("WORKSGOOD PI INSTALL"));
+    assert!(patched.contains("@worksgood/pi"));
+    assert!(patched.contains("pi-worksgood"));
     assert!(patched.contains("wg-pi-host.mjs"));
     assert!(patched.contains("~/.pi/agent/extensions/"));
 }

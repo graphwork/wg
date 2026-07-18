@@ -1992,7 +1992,7 @@ assigner_agent = "local-agent"
             .unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             // Comment block survives the write.
-            assert!(content.contains("PLUGIN INSTALL"));
+            assert!(content.contains("WORKSGOOD PI INSTALL"));
             // Parse and verify the full key-set via the reader. The strong tier
             // is normalized to a pi: route on write (so it runs through the
             // self-authenticating pi handler, not the in-process nex OpenRouter
@@ -2152,7 +2152,7 @@ reasoning = "high"
             .unwrap();
             let content = std::fs::read_to_string(&path).unwrap();
             // Comments survive.
-            assert!(content.contains("PLUGIN INSTALL"));
+            assert!(content.contains("WORKSGOOD PI INSTALL"));
             let cfg: Config = toml::from_str(&content).unwrap();
             // default stays on the starter GLM route (untouched).
             assert_eq!(

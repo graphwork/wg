@@ -1,6 +1,13 @@
-# @worksgood/wg-pi-plugin
+# @worksgood/pi
 
-The **integration channel** between [WG](../) and the [pi coding agent](https://pi.dev).
+Connect Pi agents to WorksGood graphs, tools, and context.
+
+The npm package is **`@worksgood/pi`** and Pi displays the extension as
+**`pi-worksgood`**. The operational compatibility command remains
+`wg pi-plugin`; it installs, inspects, and repairs the WorksGood integration.
+
+This is the integration channel between [WorksGood](../) and the
+[Pi coding agent](https://pi.dev).
 Loaded *inside* a pi session — the same artifact whether a human launched pi
 (Topology C, auto-discovered) or WG spawned it (Topology A `pi --mode rpc`, or
 Topology B the SDK Node host). See
@@ -31,7 +38,7 @@ without touching the tool/command surface.
 ## Layout
 
 ```
-src/index.ts          registration entry — default export wgPlugin(pi)
+src/index.ts          registration entry — default export worksgoodPi(pi)
 src/tools.ts          the wg verb family
 src/commands.ts       /wg and /wg-model (+ autocomplete)
 src/model-bridge.ts   registerProvider + model_select write-back
@@ -43,12 +50,21 @@ host/wg-pi-host.mjs   Topology B: embed pi as a library with the plugin loaded
 
 ```sh
 npm install        # peer deps (pi-coding-agent/pi-ai/pi-tui) installed for dev
-npm run build      # tsc → dist/ (no type errors)
+npm run build      # tsc → pi-worksgood/ (no type errors)
 npm test           # vitest unit tests (builds first)
 npm run selftest   # node host/wg-pi-host.mjs --selftest → exit 0
 ```
 
 Pi-core packages are `peerDependencies: "*"` (provided by pi at load) and are
 **not** bundled. The package carries the `pi-package` keyword and points
-`pi.extensions` at the built `dist/index.js`, so `pi install` / settings
+`pi.extensions` at the built `pi-worksgood/index.js`, so `pi install` / settings
 `packages` can pull it.
+
+## Legacy installs
+
+`wg pi-plugin install` recognizes the former
+`@worksgood/wg-pi-plugin` package and `…/wg/pi-plugin/…/dist/index.js`
+settings. It retains legacy package records/version pins with their extension
+resource disabled, replaces old managed paths with one compatible
+`pi-worksgood/index.js`, and prints a one-time removal command. This avoids
+duplicate tools and keeps offline consoles working during migration.

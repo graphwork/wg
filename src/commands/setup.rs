@@ -2734,11 +2734,9 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
             // Wiring point #1 (onboarding): choosing pi declares "I want pi", so
             // place the version-locked plugin + wire the global pi settings entry.
             // ensure-pi-plugin is idempotent and headless-safe.
-            println!(
-                "A human `pi` console needs the wg-pi-plugin to get the wg tools + /wg commands."
-            );
+            println!("A human `pi` console needs pi-worksgood to get the wg tools + /wg commands.");
             let install = Confirm::new()
-                .with_prompt("Install the wg-pi-plugin for the pi console? (recommended)")
+                .with_prompt("Install pi-worksgood for the Pi console? (recommended)")
                 .default(true)
                 .interact()?;
             if install {
@@ -2746,17 +2744,26 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
                     worksgood::pi_plugin::EnsureMode::Console,
                 ) {
                     Ok(p) => {
-                        println!("  Installed wg-pi-plugin (compat {}).", p.compat);
-                        Ok(format!("wg-pi-plugin installed ✓ (compat {})", p.compat))
+                        println!("  Installed pi-worksgood (compat {}).", p.compat);
+                        if p.legacy_package_accepted {
+                            println!(
+                                "  Retained the legacy @worksgood/wg-pi-plugin package record with extension loading disabled; remove it after verification with `pi remove npm:@worksgood/wg-pi-plugin`."
+                            );
+                        } else if p.legacy_settings_migrated {
+                            println!(
+                                "  Migrated the legacy managed extension path to pi-worksgood."
+                            );
+                        }
+                        Ok(format!("pi-worksgood installed ✓ (compat {})", p.compat))
                     }
                     Err(e) => {
                         println!("  Install failed: {e}");
-                        Ok("wg-pi-plugin install FAILED — run `wg pi-plugin install`".to_string())
+                        Ok("pi-worksgood install FAILED — run `wg pi-plugin install`".to_string())
                     }
                 }
             } else {
                 println!("  You can install it later with: wg pi-plugin install");
-                Ok("wg-pi-plugin NOT installed — run `wg pi-plugin install`".to_string())
+                Ok("pi-worksgood NOT installed — run `wg pi-plugin install`".to_string())
             }
         }
         _ => {

@@ -8,12 +8,12 @@
  * and the `model_select` handler's catch never fired. setModelOverride now
  * inspects `.code` and rejects on failure so the write-back error is visible.
  *
- * Tests run against the built artifact (dist/) — `npm test` builds first.
+ * Tests run against the built `pi-worksgood/` artifact — `npm test` builds first.
  */
 
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { canonicalChatId, readWgEnv, WgBackend } from "../dist/index.js";
+import { canonicalChatId, readWgEnv, WgBackend } from "../pi-worksgood/index.js";
 
 type ExecArgs = { command: string; args: string[] };
 

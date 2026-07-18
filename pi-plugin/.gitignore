@@ -1,7 +1,0 @@
-node_modules/
-# Dev build output, anchored to the package root. The committed, embedded
-# runtime under embedded/dist/ is NOT ignored (it is vendored into the wg binary
-# by `make embed-pi-plugin`).
-/dist/
-*.tsbuildinfo
-coverage/

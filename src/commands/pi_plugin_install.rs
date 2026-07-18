@@ -1,4 +1,4 @@
-//! `wg pi-plugin` — explicit install / inspect surface for the wg-pi-plugin.
+//! `wg pi-plugin` — compatibility install/inspect surface for `@worksgood/pi`.
 //!
 //! The escape hatch that mirrors `wg skill install` (`src/commands/skills.rs`).
 //! Nobody *needs* to run it — the three wiring points (`wg setup`,
@@ -35,12 +35,12 @@ fn run_install(dev: bool) -> Result<()> {
         pi_plugin::ensure_pi_plugin(EnsureMode::Console)?
     };
     let source = match plugin.source {
-        Source::Dev => "in-repo pi-plugin/dist (dev)",
+        Source::Dev => "in-repo worksgood-pi/pi-worksgood (dev)",
         Source::Cache => "embedded → versioned cache",
         Source::EnvOverride => "WG_PI_PLUGIN_DIR override",
     };
     println!(
-        "Installed wg-pi-plugin (compat {}) from {}.",
+        "Installed pi-worksgood (npm: @worksgood/pi, compat {}) from {}.",
         plugin.compat, source
     );
     println!("  extension: {}", plugin.dist_entry.display());
@@ -51,6 +51,16 @@ fn run_install(dev: bool) -> Result<()> {
     println!(
         "A human `pi` session in this project will now auto-load the wg tools + /wg commands."
     );
+    if plugin.legacy_package_accepted {
+        println!(
+            "  Compatibility: retained the legacy @worksgood/wg-pi-plugin package record with its extension disabled; pi-worksgood now loads once from the compatible embedded cache."
+        );
+        println!(
+            "  After verifying your console, remove the unused legacy install with: pi remove npm:@worksgood/wg-pi-plugin"
+        );
+    } else if plugin.legacy_settings_migrated {
+        println!("  Compatibility: migrated the legacy managed extension path to pi-worksgood.");
+    }
     Ok(())
 }
 
@@ -58,11 +68,11 @@ fn run_install(dev: bool) -> Result<()> {
 fn run_status() -> Result<()> {
     let s = pi_plugin::status();
     let source = match s.source {
-        Source::Dev => "Dev (in-repo pi-plugin/dist)",
+        Source::Dev => "Dev (in-repo worksgood-pi/pi-worksgood)",
         Source::Cache => "Cache (embedded → versioned cache)",
         Source::EnvOverride => "EnvOverride (WG_PI_PLUGIN_DIR)",
     };
-    println!("wg-pi-plugin status");
+    println!("WorksGood Pi integration status (pi-worksgood / @worksgood/pi)");
     println!("  compat version:   {}", s.compat);
     println!("  source:           {}", source);
     println!("  resolved entry:   {}", s.dist_entry.display());
@@ -87,7 +97,7 @@ fn run_status() -> Result<()> {
     Ok(())
 }
 
-/// `wg pi-plugin path` — print the resolved dist entry (scriptable).
+/// `wg pi-plugin path` — print the resolved `pi-worksgood` entry (scriptable).
 fn run_path() -> Result<()> {
     println!("{}", pi_plugin::status().dist_entry.display());
     Ok(())
