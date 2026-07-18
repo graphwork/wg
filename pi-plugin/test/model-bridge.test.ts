@@ -22,8 +22,9 @@ function fakePi() {
   return { pi, fire: (event: unknown) => modelSelectHandler!(event) };
 }
 
-function fakeBackend() {
+function fakeBackend(chatId = ".chat-1") {
   return {
+    hasChatContext: vi.fn(() => chatId !== ""),
     setModelOverride: vi.fn(async () => ({ stdout: "", stderr: "", code: 0, killed: false })),
   };
 }
@@ -66,18 +67,28 @@ describe("installModelBridge model_select write-back", () => {
     expect(backend.setModelOverride).not.toHaveBeenCalled();
   });
 
-  it("does not throw if the backend write fails (verb/chat may be absent)", async () => {
-    const { pi, fire } = fakePi();
-    const backend = {
-      setModelOverride: vi.fn(async () => {
-        throw new Error("no chat id");
-      }),
-    };
-    installModelBridge(pi, backend, {});
-    await expect(
-      fire({ type: "model_select", model: { provider: "claude", id: "opus" }, source: "set" }),
-    ).resolves.not.toThrow();
-  });
+  it.each([
+    ["OpenRouter", { provider: "openrouter", id: "qwen/qwen3.6-flash" }],
+    ["local llama.cpp", { provider: "llamacpp", id: "llama-3.3-local" }],
+  ])(
+    "lets a standalone Ctrl-P cycle select %s with zero WG calls and zero errors",
+    async (_label, model) => {
+      const { pi, fire } = fakePi();
+      const backend = fakeBackend("");
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        installModelBridge(pi, backend, {});
+        await expect(
+          fire({ type: "model_select", model, source: "cycle" }),
+        ).resolves.not.toThrow();
+        expect(backend.hasChatContext).toHaveBeenCalledTimes(1);
+        expect(backend.setModelOverride).not.toHaveBeenCalled();
+        expect(errSpy).not.toHaveBeenCalled();
+      } finally {
+        errSpy.mockRestore();
+      }
+    },
+  );
 
   it("logs a write-back warning when `wg chat model` exits non-zero (not a silent no-op)", async () => {
     // Regression guard for fix-pi-model: wire a REAL WgBackend over a fake exec
@@ -93,7 +104,7 @@ describe("installModelBridge model_select write-back", () => {
         killed: false,
       })),
     };
-    const backend = new WgBackend(host, { chatId: "chat-1" });
+    const backend = new WgBackend(host, { chatId: ".chat-1" });
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       installModelBridge(pi, backend, {});
@@ -101,12 +112,17 @@ describe("installModelBridge model_select write-back", () => {
         fire({ type: "model_select", model: { provider: "openrouter", id: "openai/gpt-4o" }, source: "set" }),
       ).resolves.not.toThrow();
 
-      // The non-zero exit was NOT swallowed: the failure was logged loudly.
+      // The non-zero exit was NOT swallowed: one concise, actionable line is
+      // visible, without passing an Error object (which prints a full stack).
       expect(host.exec).toHaveBeenCalledTimes(1);
       expect(errSpy).toHaveBeenCalledTimes(1);
-      const logged = errSpy.mock.calls[0].join(" ");
+      expect(errSpy.mock.calls[0]).toHaveLength(1);
+      const logged = errSpy.mock.calls[0][0];
       expect(logged).toContain("model write-back failed");
       expect(logged).toContain("openrouter:openai/gpt-4o");
+      expect(logged).toContain(".chat-1");
+      expect(logged).not.toContain("\n");
+      expect(logged).not.toContain("    at ");
     } finally {
       errSpy.mockRestore();
     }

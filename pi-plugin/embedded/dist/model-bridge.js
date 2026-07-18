@@ -108,17 +108,23 @@ export function installModelBridge(pi, backend, env = process.env) {
     }
     pi.on("model_select", async (event) => {
         // A "restore" select just re-applies the already-persisted model on
-        // session load — nothing new to write back.
-        if (event.source === "restore")
+        // session load — nothing new to write back. More importantly, standalone
+        // pi is a supported topology: gate at the event boundary before touching
+        // the backend. Eligibility depends only on explicit WG chat identity, not
+        // on whether the selected provider is OpenRouter, llama.cpp, or anything
+        // else.
+        if (event.source === "restore" || !backend.hasChatContext())
             return;
         const spec = wgSpecFromModel(event.model);
         try {
             await backend.setModelOverride(spec);
         }
         catch (err) {
-            // The `wg chat model` verb (pi-plugin-impl-chat-model-verb) or a chat id
-            // may be absent; keep the warm pi swap working regardless.
-            console.error(`wg-pi-plugin: model write-back failed for ${spec}:`, err);
+            // Keep the warm pi selection, but do not hide a genuine managed-chat
+            // persistence failure. Logging one rendered string (rather than the Error
+            // object) prevents ExtensionRunner from producing duplicate stack spam.
+            const detail = err instanceof Error ? err.message : String(err);
+            console.error(`wg-pi-plugin: model write-back failed for ${spec}: ${detail}`);
         }
     });
 }

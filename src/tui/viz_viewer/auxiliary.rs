@@ -30,7 +30,6 @@ pub(crate) enum Kind {
     HistoryBrowser,
     ChatManager,
     FileBrowser,
-    Persistence,
 }
 
 struct Job {
@@ -119,6 +118,11 @@ impl Lane {
     #[cfg(test)]
     pub(crate) fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self, kind: Kind) -> bool {
+        self.pending.contains(&kind)
     }
 }
 

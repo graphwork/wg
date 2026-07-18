@@ -830,6 +830,23 @@ pub fn read_history(workgraph_dir: &Path) -> Result<Vec<ChatMessage>> {
     read_history_for(workgraph_dir, 0)
 }
 
+/// True when a chat has a concrete live runtime owner.
+///
+/// Daemon-hosted handlers advertise ownership with `.handler.pid`. TUI-hosted
+/// vendor panes advertise it with the project-scoped persistent tmux session;
+/// Pi/Codex/Claude do not know how to acquire WG's lock themselves. Keeping
+/// both probes here gives the TUI, daemon supervisor, and `wg chat list/show`
+/// one liveness definition.
+pub fn chat_runtime_is_live(workgraph_dir: &Path, coordinator_id: u32) -> bool {
+    let chat_ref = crate::chat_id::format_chat_session_ref(coordinator_id);
+    let chat_dir = chat_dir_for_ref(workgraph_dir, &chat_ref);
+    let handler_live = crate::session_lock::read_holder(&chat_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|holder| holder.alive);
+    handler_live || crate::chat_id::chat_tmux_session_is_live(workgraph_dir, coordinator_id)
+}
+
 /// True when the chat session for `coordinator_id` has no work pending and
 /// no recently-active consumer.
 ///

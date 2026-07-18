@@ -133,6 +133,11 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     let resolved_executor_name = plan.executor.as_str();
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
     let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
+    // One opaque run identity ties the spawned route, completion outcome, and
+    // dead-agent triage together. Unlike PID/timestamps, it cannot collide on
+    // a fast restart or PID reuse.
+    let spawn_run_id = uuid::Uuid::new_v4().to_string();
+    let health_route = worksgood::service::HealthRouteKey::from_spawn_plan(&plan);
 
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
@@ -655,6 +660,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     // Add task ID and agent ID to environment
     cmd.env("WG_TASK_ID", task_id);
     if let Some(chat_id) = worksgood::chat_id::parse_chat_task_id(task_id) {
+        cmd.env("WG_CHAT_ID", task_id);
         cmd.env(
             "WG_CHAT_REF",
             worksgood::chat_id::format_chat_session_ref(chat_id),
@@ -674,6 +680,7 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             .as_secs()
             .to_string(),
     );
+    cmd.env("WG_SPAWN_RUN_ID", &spawn_run_id);
     // Propagate user identity to spawned agents
     cmd.env("WG_USER", worksgood::current_user());
     if let Some(ref m) = effective_model {
@@ -956,6 +963,8 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         "model": &effective_model,
         "reasoning": resolved_reasoning.map(|r| r.as_str()),
         "started_at": Utc::now().to_rfc3339(),
+        "run_id": &spawn_run_id,
+        "health_route": &health_route,
         "timeout_secs": effective_timeout_secs,
     });
     if let Some(ref wt) = worktree_info {

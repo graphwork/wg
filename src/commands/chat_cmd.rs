@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use worksgood::chat_id;
+use worksgood::dispatch::handler_for_model;
 use worksgood::graph::{Status, WorkGraph};
 
 use crate::commands::graph_path;
@@ -30,9 +31,9 @@ use crate::commands::is_process_alive;
 /// Liveness category for `wg chat list` / `show`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRuntimeStatus {
-    /// Chat task exists in graph; service daemon is running and a
-    /// supervisor entry exists for this chat (handler may be alive
-    /// or about to be respawned by the supervisor).
+    /// Chat task has a concrete live runtime owner: a daemon handler lock or
+    /// a persistent TUI-owned tmux pane. The historical label remains
+    /// `supervised` for output compatibility.
     Supervised,
     /// Chat task exists in graph; service daemon is NOT running.
     /// Inbox messages will be queued until the daemon is started.
@@ -140,30 +141,31 @@ fn classify_chat_task(
 /// chat is running, not "stopped". Acceptance criterion for
 /// fix-nex-chat23-eof-resume: show/status must agree on a live handler.
 fn chat_handler_is_live(dir: &Path, cid: u32) -> bool {
-    // Use the dot-less session ref the handler runs under, not the
-    // `.chat-N` task id — only the former resolves to the UUID dir where
-    // the lock actually lives.
-    let chat_ref = chat_id::format_chat_session_ref(cid);
-    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
-    worksgood::session_lock::read_holder(&chat_dir)
-        .ok()
-        .flatten()
-        .is_some_and(|info| info.alive)
+    worksgood::chat::chat_runtime_is_live(dir, cid)
 }
 
-/// Promote a `Stopped` classification to `Supervised` when a live handler
-/// actually holds the lock. Leaves every other status untouched (an
-/// archived/deleted/dormant chat stays as classified).
+/// Promote a dormant/stopped classification when a concrete runtime owner is
+/// live. A TUI-owned tmux pane remains live even when the daemon is down and
+/// vendor panes do not hold `.handler.pid`, so daemon state alone cannot be
+/// the liveness authority. Archived/deleted chats remain terminal.
+fn refine_status_with_runtime(status: ChatRuntimeStatus, runtime_live: bool) -> ChatRuntimeStatus {
+    if matches!(
+        status,
+        ChatRuntimeStatus::Stopped | ChatRuntimeStatus::Dormant
+    ) && runtime_live
+    {
+        ChatRuntimeStatus::Supervised
+    } else {
+        status
+    }
+}
+
 fn refine_status_with_live_handler(
     status: ChatRuntimeStatus,
     dir: &Path,
     cid: u32,
 ) -> ChatRuntimeStatus {
-    if matches!(status, ChatRuntimeStatus::Stopped) && chat_handler_is_live(dir, cid) {
-        ChatRuntimeStatus::Supervised
-    } else {
-        status
-    }
+    refine_status_with_runtime(status, chat_handler_is_live(dir, cid))
 }
 
 fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
@@ -185,6 +187,12 @@ fn supervised_chat_ids(dir: &Path) -> Vec<u32> {
         None => return Vec::new(),
     };
     arr.iter()
+        .filter(|value| {
+            value
+                .get("runtime_live")
+                .and_then(|flag| flag.as_bool())
+                .unwrap_or(false)
+        })
         .filter_map(|v| v.get("coordinator_id").and_then(|x| x.as_u64()))
         .map(|n| n as u32)
         .collect()
@@ -431,6 +439,8 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .ok()
         .flatten()
         .filter(|info| info.alive);
+    let tmux_session = chat_id::chat_tmux_session_for_id(dir, cid);
+    let tmux_live = chat_id::chat_tmux_session_is_live(dir, cid);
 
     if json {
         let v = serde_json::json!({
@@ -447,6 +457,10 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
                 "kind": info.kind.map(|k| k.label()),
                 "started_at": info.started_at,
             })),
+            "tmux": {
+                "session": tmux_session,
+                "live": tmux_live,
+            },
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
@@ -473,6 +487,7 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
             info.pid,
             info.kind.map(|k| k.label()).unwrap_or("unknown")
         ),
+        None if tmux_live => println!("  handler  : live tmux={tmux_session}"),
         None => println!("  handler  : none"),
     }
     Ok(())
@@ -520,6 +535,105 @@ pub fn run_send(dir: &Path, reference: &str, message: &str, json: bool) -> Resul
                 " Service is not running — message will be processed when daemon starts."
             }
         );
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Subcommand: model
+// ============================================================================
+
+/// Convert pi's native `provider:model-id` event identity into WG's
+/// handler-first route. An already-handler-qualified `pi:...` route is kept.
+fn pi_model_writeback_spec(spec: &str) -> String {
+    let trimmed = spec.trim();
+    if trimmed.starts_with("pi:") {
+        trimmed.to_string()
+    } else {
+        format!("pi:{trimmed}")
+    }
+}
+
+/// Persist an override only when it actually changed. This keeps duplicate Pi
+/// notifications idempotent and avoids needless state-file rewrites.
+fn persist_chat_model_override(dir: &Path, cid: u32, executor: &str, model: &str) -> Result<bool> {
+    let mut state = crate::commands::service::CoordinatorState::load_or_default_for(dir, cid);
+    if state.executor_override.as_deref() == Some(executor)
+        && state.model_override.as_deref() == Some(model)
+    {
+        return Ok(false);
+    }
+    state.executor_override = Some(executor.to_string());
+    state.model_override = Some(model.to_string());
+    state.save_for(dir, cid);
+    Ok(true)
+}
+
+/// `wg chat model <ref> <spec>` — persist a per-chat model override.
+///
+/// The plugin passes `--warm-pi-writeback` after Pi has already changed the
+/// model in-process. That path must never signal/respawn the live Pi process;
+/// it records executor=pi plus a handler-first `pi:<provider>:<model>` route for
+/// the next resume. Ordinary CLI use retains the existing cold SetChatExecutor
+/// behavior when the service is running.
+pub fn run_model(
+    dir: &Path,
+    reference: &str,
+    spec: &str,
+    warm_pi_writeback: bool,
+    json: bool,
+) -> Result<()> {
+    if spec.trim().is_empty() {
+        anyhow::bail!("model spec must not be empty");
+    }
+    let graph =
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+    let cid = resolve_chat_id(&graph, reference)
+        .with_context(|| format!("No chat matching '{reference}'"))?;
+    let task = chat_id::find_chat_task(&graph, cid)
+        .with_context(|| format!("No graph chat task for canonical id .chat-{cid}"))?;
+    if !task.tags.iter().any(|tag| chat_id::is_chat_loop_tag(tag)) {
+        anyhow::bail!("task '{}' is not a WG chat", task.id);
+    }
+
+    let (executor, model) = if warm_pi_writeback {
+        ("pi".to_string(), pi_model_writeback_spec(spec))
+    } else {
+        let model = spec.trim().to_string();
+        (handler_for_model(&model).as_str().to_string(), model)
+    };
+
+    let changed = if !warm_pi_writeback && service_is_running(dir) {
+        crate::commands::service::run_set_coordinator_executor(
+            dir,
+            cid,
+            Some(&executor),
+            Some(&model),
+            json,
+        )?;
+        true
+    } else {
+        persist_chat_model_override(dir, cid, &executor, &model)?
+    };
+
+    if warm_pi_writeback || !service_is_running(dir) {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chat_id": cid,
+                    "task_id": task.id,
+                    "executor": executor,
+                    "model": model,
+                    "warm": warm_pi_writeback,
+                    "changed": changed,
+                }))?
+            );
+        } else if changed {
+            println!("Chat {} model override recorded: {}", task.id, model);
+        } else {
+            println!("Chat {} already uses {}; no change", task.id, model);
+        }
     }
     Ok(())
 }
@@ -588,13 +702,61 @@ pub(crate) fn reconstruct_resume_metadata(
     (executor, model)
 }
 
-/// `wg chat resume` — ask the supervisor to (re)spawn the handler.
-/// Requires the daemon. Errors clearly when down.
+fn validate_chat_resumable(graph: &WorkGraph, cid: u32) -> Result<()> {
+    let task = chat_id::find_chat_task(graph, cid)
+        .with_context(|| format!("Chat task for id {cid} not found in graph"))?;
+    if task.status.is_terminal() || task.tags.iter().any(|tag| tag == "archived") {
+        anyhow::bail!(
+            "Cannot resume chat {cid}: authoritative task {} is terminal ({}){}",
+            task.id,
+            task.status,
+            if task.tags.iter().any(|tag| tag == "archived") {
+                " and archived"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
+}
+
+fn resume_runtime_proof_is_valid(graph: &WorkGraph, cid: u32, runtime_live: bool) -> bool {
+    runtime_live && validate_chat_resumable(graph, cid).is_ok()
+}
+
+const RESUME_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const RESUME_LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+fn wait_for_chat_runtime_with(
+    timeout: std::time::Duration,
+    poll: std::time::Duration,
+    mut is_live: impl FnMut() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_live() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(std::time::Instant::now())));
+    }
+}
+
+/// `wg chat resume` — ask the supervisor to (re)spawn the handler and wait for
+/// concrete liveness. An accepted IPC is scheduling acknowledgement, not user
+/// success: this command returns success only after a handler lock or the
+/// persistent TUI tmux owner becomes live within a bounded interval.
 pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     let graph =
         worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
+    // Terminal graph state is authoritative. Reject it before consulting the
+    // daemon, clearing sentinels, reconstructing route metadata, or accepting
+    // any tmux process as runtime evidence.
+    validate_chat_resumable(&graph, cid)?;
     if !service_is_running(dir) {
         anyhow::bail!(
             "Cannot resume chat {}: service daemon is not running. \
@@ -627,6 +789,12 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     // though the metadata was on disk. We reconstruct it here so the user
     // never has to supply the (non-existent) flags. See
     // `reconstruct_resume_metadata`.
+    // Re-read immediately before scheduling: archive/abandon may have raced
+    // the earlier reference resolution while we inspected runtime metadata.
+    let scheduling_graph = worksgood::parser::load_graph(&graph_path(dir))
+        .with_context(|| "Failed to reload graph before scheduling chat resume")?;
+    validate_chat_resumable(&scheduling_graph, cid)?;
+
     let (executor, model) = reconstruct_resume_metadata(dir, cid);
     use crate::commands::service::ipc::IpcRequest;
     use crate::commands::service::send_request;
@@ -650,12 +818,49 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         }
         anyhow::bail!("{}", msg);
     }
-    if json {
-        if let Some(d) = resp.data {
-            println!("{}", serde_json::to_string_pretty(&d)?);
+    if !wait_for_chat_runtime_with(RESUME_LIVE_TIMEOUT, RESUME_LIVE_POLL, || {
+        chat_handler_is_live(dir, cid)
+    }) {
+        let msg = format!(
+            "Supervisor accepted resume for chat {cid}, but no live handler or TUI tmux session appeared within {}s. Inspect {}/service/daemon.log and retry after fixing the recorded spawn error.",
+            RESUME_LIVE_TIMEOUT.as_secs(),
+            dir.display()
+        );
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "chat_id": cid,
+                    "resumed": false,
+                    "runtime_status": "stopped",
+                    "error": msg,
+                }))?
+            );
         }
+        anyhow::bail!(msg);
+    }
+
+    // Runtime proof is not sufficient by itself: a stale tmux session can
+    // outlive an archive/abandon racing the supervisor acknowledgement. Re-read
+    // the graph before reporting success and require both facts together.
+    let proof_graph = worksgood::parser::load_graph(&graph_path(dir))
+        .with_context(|| "Failed to reload graph while validating chat resume")?;
+    if !resume_runtime_proof_is_valid(&proof_graph, cid, chat_handler_is_live(dir, cid)) {
+        validate_chat_resumable(&proof_graph, cid)?;
+        anyhow::bail!("Cannot resume chat {cid}: runtime ownership proof disappeared");
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "chat_id": cid,
+                "resumed": true,
+                "runtime_status": "supervised",
+            }))?
+        );
     } else {
-        println!("Asked supervisor to resume chat {}.", cid);
+        println!("Resumed chat {} — runtime is live.", cid);
     }
     Ok(())
 }
@@ -856,12 +1061,8 @@ pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
 }
 
 fn chat_tmux_session_for_dir(dir: &Path, cid: u32) -> Option<String> {
-    let project_root = dir.parent().unwrap_or(dir).to_path_buf();
-    let project_tag = project_root.file_name().and_then(|n| n.to_str())?;
-    let chat_ref = format!("chat-{}", cid);
-    Some(worksgood::chat_id::chat_tmux_session_name(
-        project_tag,
-        &chat_ref,
+    Some(worksgood::chat_id::prepare_chat_tmux_session_for_id(
+        dir, cid,
     ))
 }
 
@@ -898,6 +1099,11 @@ mod tests {
         let dir = td.path();
         std::fs::create_dir_all(dir.join("service")).unwrap();
         std::fs::write(dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[dispatcher]\nmodel = \"claude:opus\"\n",
+        )
+        .unwrap();
         td
     }
 
@@ -1047,6 +1253,53 @@ mod tests {
     }
 
     #[test]
+    fn warm_pi_model_writeback_targets_exact_chat_and_is_idempotent() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(
+            dir,
+            Some("pi-chat"),
+            Some("pi:openrouter:qwen/old"),
+            Some("pi"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        run_model(dir, ".chat-0", "openrouter:qwen/qwen3.6-flash", true, true).unwrap();
+        let state = crate::commands::service::CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(state.executor_override.as_deref(), Some("pi"));
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("pi:openrouter:qwen/qwen3.6-flash")
+        );
+
+        // A duplicate notification is a successful no-op, not a second write.
+        assert!(
+            !persist_chat_model_override(dir, 0, "pi", "pi:openrouter:qwen/qwen3.6-flash").unwrap()
+        );
+        assert!(
+            crate::commands::service::CoordinatorState::load_for(dir, 1).is_none(),
+            "write-back must not leak into any other chat"
+        );
+    }
+
+    #[test]
+    fn warm_pi_model_writeback_rejects_nonexistent_canonical_chat() {
+        let td = mk_workgraph_dir();
+        let err = run_model(
+            td.path(),
+            ".chat-41",
+            "llamacpp:llama-3.3-local",
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("No graph chat task"));
+    }
+
+    #[test]
     fn resume_errors_clearly_when_service_down() {
         let td = mk_workgraph_dir();
         let dir = td.path();
@@ -1172,6 +1425,82 @@ mod tests {
                 "Daemon down — every chat should be Dormant"
             );
         }
+    }
+
+    #[test]
+    fn terminal_chat_tasks_cannot_be_resumed_even_with_runtime_proof() {
+        for (status, archived) in [
+            (Status::Done, false),
+            (Status::Done, true),
+            (Status::Abandoned, false),
+            (Status::Failed, false),
+        ] {
+            let mut graph = WorkGraph::new();
+            let mut tags = vec![chat_id::CHAT_LOOP_TAG.to_string()];
+            if archived {
+                tags.push("archived".to_string());
+            }
+            graph.add_node(worksgood::graph::Node::Task(worksgood::graph::Task {
+                id: ".chat-9".to_string(),
+                status,
+                tags,
+                ..Default::default()
+            }));
+
+            assert!(
+                validate_chat_resumable(&graph, 9).is_err(),
+                "terminal status {status:?} must reject resume"
+            );
+            assert!(
+                !resume_runtime_proof_is_valid(&graph, 9, true),
+                "stale tmux proof must not revive {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_wait_never_turns_scheduling_ack_into_false_success() {
+        let mut probes = 0;
+        let live = wait_for_chat_runtime_with(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            || {
+                probes += 1;
+                false
+            },
+        );
+        assert!(!live);
+        assert!(probes >= 1);
+    }
+
+    #[test]
+    fn resume_wait_observes_delayed_runtime_within_bound() {
+        let mut probes = 0;
+        let live = wait_for_chat_runtime_with(
+            std::time::Duration::from_millis(20),
+            std::time::Duration::from_millis(1),
+            || {
+                probes += 1;
+                probes >= 3
+            },
+        );
+        assert!(live);
+    }
+
+    #[test]
+    fn tui_owned_runtime_promotes_stopped_and_dormant_to_supervised() {
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Stopped, true),
+            ChatRuntimeStatus::Supervised
+        );
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Dormant, true),
+            ChatRuntimeStatus::Supervised
+        );
+        assert_eq!(
+            refine_status_with_runtime(ChatRuntimeStatus::Stopped, false),
+            ChatRuntimeStatus::Stopped
+        );
     }
 
     #[test]

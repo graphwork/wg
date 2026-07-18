@@ -90,7 +90,7 @@ export default function wgPlugin(pi: ExtensionAPI): void {
 }
 
 // Re-export the building blocks so the SDK host and tests can use them directly.
-export { WgBackend, readWgEnv } from "./wg-backend.js";
+export { WgBackend, readWgEnv, canonicalChatId } from "./wg-backend.js";
 export type { WgEnv, ExecHost } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";

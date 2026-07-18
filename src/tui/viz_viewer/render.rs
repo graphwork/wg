@@ -3093,39 +3093,40 @@ fn draw_chat_startup_state(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         area.width,
         button_height,
     );
+    let intended = app
+        .active_chat_view_identity()
+        .map(|identity| format!("{} ({})", identity.label, identity.task_id));
     let (text, color) = match &app.chat_startup_state {
         super::state::ChatStartupState::Loading => (
-            "Connecting active chat…\n\nInput is accepted and buffered safely.\nCtrl+O enters commands.",
+            format!(
+                "Loading {}…\n\nInput is accepted and buffered safely.\nCtrl+O enters commands.",
+                intended.as_deref().unwrap_or("active-chat metadata")
+            ),
             Color::Yellow,
         ),
         super::state::ChatStartupState::Empty => (
-            "No live chat exists.\n\nCreate one below, or press n in command mode.",
+            "No chat selected.\n\nCreate one below, or press n in command mode.".to_string(),
             Color::DarkGray,
         ),
-        super::state::ChatStartupState::Error(message) => {
-            let text = format!(
-                "Chat unavailable\n\n{message}\n\nPress r to retry, or create a new chat below."
-            );
-            frame.render_widget(
-                Paragraph::new(text)
-                    .style(Style::default().fg(Color::Red))
-                    .alignment(Alignment::Center)
-                    .wrap(Wrap { trim: true }),
-                body,
-            );
-            ("", Color::Red)
-        }
+        super::state::ChatStartupState::Error(message) => (
+            format!(
+                "Chat unavailable{}\n\n{message}\n\nPress r to retry, or create a new chat below.",
+                intended
+                    .as_deref()
+                    .map(|identity| format!(": {identity}"))
+                    .unwrap_or_default()
+            ),
+            Color::Red,
+        ),
         super::state::ChatStartupState::Ready => unreachable!(),
     };
-    if !text.is_empty() {
-        frame.render_widget(
-            Paragraph::new(text)
-                .style(Style::default().fg(color))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true }),
-            body,
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(Style::default().fg(color))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        body,
+    );
 
     // This is deliberately a full-width, 1–3 row pointer target, outside the
     // PTY message hit region. Mobile users can tap anywhere on the labeled
@@ -3152,6 +3153,87 @@ fn draw_chat_startup_state(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
     app.last_chat_message_area = Rect::default();
     app.last_chat_input_area = Rect::default();
+    app.last_chat_prev_area = Rect::default();
+    app.last_chat_next_area = Rect::default();
+    app.last_chat_picker_area = Rect::default();
+    app.last_chat_close_area = Rect::default();
+}
+
+fn draw_active_chat_identity_header(
+    frame: &mut Frame,
+    app: &mut VizApp,
+    area: Rect,
+    identity: Option<&super::state::ActiveChatIdentity>,
+) {
+    let compact = area.width <= 120;
+    let prev = if compact { "[‹]" } else { "[ ‹ Prev ]" };
+    let next = if compact { "[›]" } else { "[ Next › ]" };
+    let picker = if compact {
+        "[Chats]"
+    } else {
+        "[ Choose chat ]"
+    };
+    let close = if compact {
+        "[Close…]"
+    } else {
+        "[ Close… ]"
+    };
+    let mut x = area.x;
+    let width = |text: &str| text.chars().count() as u16;
+    app.last_chat_prev_area = Rect::new(x, area.y, width(prev), 1);
+    x = x.saturating_add(width(prev) + 1);
+    app.last_chat_next_area = Rect::new(x, area.y, width(next), 1);
+    x = x.saturating_add(width(next) + 1);
+    app.last_chat_picker_area = Rect::new(x, area.y, width(picker), 1);
+    x = x.saturating_add(width(picker) + 1);
+    app.last_chat_close_area = if identity.is_some() {
+        Rect::new(x, area.y, width(close), 1)
+    } else {
+        Rect::default()
+    };
+
+    let identity_text = if let Some(identity) = identity {
+        let status = app.active_chat_connection_label(&identity.task_id);
+        let route = match (&identity.executor, &identity.model) {
+            (Some(executor), Some(model)) => format!(" • route {executor} / {model}"),
+            (Some(executor), None) => format!(" • route {executor} / handler default"),
+            (None, _) => " • route loading".to_string(),
+        };
+        if compact {
+            format!(
+                "{} ({}) • {}{}",
+                identity.label, identity.task_id, status, route
+            )
+        } else {
+            format!(
+                "Active: {} ({}) • {}{}",
+                identity.label, identity.task_id, status, route
+            )
+        }
+    } else {
+        "No chat selected".to_string()
+    };
+    let status = identity
+        .map(|identity| app.active_chat_connection_label(&identity.task_id))
+        .unwrap_or("no selection");
+    let color = match status {
+        "connected" => Color::Green,
+        "connecting" | "loading" => Color::Yellow,
+        "unavailable" => Color::Red,
+        _ => Color::DarkGray,
+    };
+    let text = if identity.is_some() {
+        format!("{prev} {next} {picker} {close} {identity_text}")
+    } else {
+        format!("{prev} {next} {picker} {identity_text}")
+    };
+    // Paragraph deliberately stays one line: ratatui clips optional route
+    // detail on narrow/mobile terminals while preserving all three pointer
+    // controls and canonical identity at the left.
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        area,
+    );
 }
 
 /// Draw the Chat tab content with word-wrapped messages, scrolling, and input area.
@@ -3212,7 +3294,16 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // accounted for ~55 % of `wg tui` CPU (see fix-wg-tui).
     let coordinator_entries = app.cached_chat_tab_entries.clone();
     let user_board_entries = app.cached_user_board_entries.clone();
-    let tab_bar_height: u16 = 1;
+    // When the split leaves at least four rows, identity gets its own row.
+    // In the common three-row PTY startup layout, it replaces the redundant
+    // tab strip instead: identity must never disappear exactly while the fast
+    // attach lane is publishing it, and we still preserve one terminal row
+    // plus the input row.
+    let identity_has_own_row = area.height >= 4;
+    let tab_bar_height: u16 = if identity_has_own_row { 2 } else { 1 };
+    // Capture once per frame. The same immutable task id is used by the
+    // identity header and the PTY lookup below.
+    let active_view = app.active_chat_view_identity();
 
     {
         let tab_area = Rect {
@@ -3503,6 +3594,21 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }
 
+    if area.height > 0 {
+        let identity_y = area.y + u16::from(identity_has_own_row);
+        let identity_area = Rect::new(area.x, identity_y, area.width, 1);
+        draw_active_chat_identity_header(frame, app, identity_area, active_view.as_ref());
+        if !identity_has_own_row {
+            // The responsive identity row visually replaces the tab strip, so
+            // its hidden tab targets must not remain clickable underneath it.
+            app.last_coordinator_bar_area = Rect::default();
+            app.coordinator_tab_hits.clear();
+            app.coordinator_plus_hit = CoordinatorPlusHit::default();
+            app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+            app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+        }
+    }
+
     // New-chat launcher: render as a centered modal over the FULL frame
     // rather than the (often thin) chat panel. When a chat PTY is live the
     // chat panel is only a handful of rows tall — enough to clip the lower
@@ -3557,8 +3663,17 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // below continues to render normally; keys route to the PTY via
     // the vendor_pty_active branch in event.rs (Ctrl+O escapes focus).
     if app.chat_pty_mode {
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
-        let cid = app.active_coordinator_id;
+        let view = active_view
+            .clone()
+            .unwrap_or_else(|| super::state::ActiveChatIdentity {
+                coordinator_id: app.active_coordinator_id,
+                task_id: worksgood::chat_id::format_chat_task_id(app.active_coordinator_id),
+                label: format!("Chat {}", app.active_coordinator_id),
+                executor: None,
+                model: None,
+            });
+        let task_id = view.task_id;
+        let cid = view.coordinator_id;
 
         // Dead-handler detection: if the embedded process exited, capture
         // its exit status into `chat_agent_death` before removing the pane.
@@ -3590,6 +3705,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 },
             );
             app.task_panes.remove(&task_id);
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+            let chat_dir = worksgood::chat::chat_dir_for_ref(&app.workgraph_dir, &chat_ref);
+            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
         }
 
         // Lazy spawn at the actual msg_area dimensions. If
@@ -3690,7 +3808,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Press 'c' or ':' to start typing.",
+                    "Ready for conversation.",
                     Style::default().fg(Color::DarkGray),
                 )),
                 Line::from(Span::styled(
@@ -6516,26 +6634,65 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 // Overlay widgets
 // ══════════════════════════════════════════════════════════════════════════════
 
+fn close_context_route(context: &super::state::ChatCloseContext) -> String {
+    match (&context.identity.executor, &context.identity.model) {
+        (Some(executor), Some(model)) => format!("{executor} / {model}"),
+        (Some(executor), None) => format!("{executor} / handler default"),
+        (None, Some(model)) => format!("route unresolved / {model}"),
+        (None, None) => "route unresolved".to_string(),
+    }
+}
+
 /// Draw a confirmation dialog overlay. Returns the dialog area for click-outside detection.
 fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) -> Rect {
-    let message = match action {
-        ConfirmAction::MarkDone(id) => format!("Mark '{}' done?", id),
-        ConfirmAction::Retry(id) => format!("Retry '{}'?", id),
+    let (title, lines, destructive_chat) = match action {
+        ConfirmAction::MarkDone(id) => (
+            " Confirm ".to_string(),
+            vec![Line::from(format!("Mark '{id}' done?"))],
+            false,
+        ),
+        ConfirmAction::Retry(id) => (
+            " Confirm ".to_string(),
+            vec![Line::from(format!("Retry '{id}'?"))],
+            false,
+        ),
+        ConfirmAction::StopChat(context) | ConfirmAction::ArchiveChat(context) => {
+            let verb = if matches!(action, ConfirmAction::StopChat(_)) {
+                "Stop chat agent"
+            } else {
+                "Archive chat"
+            };
+            (
+                format!(" Confirm {verb} "),
+                vec![
+                    Line::from(format!(
+                        "Chat: {} ({})",
+                        context.identity.label, context.identity.task_id
+                    )),
+                    Line::from(format!(
+                        "State: {} • {}",
+                        context.task_status, context.connection
+                    )),
+                    Line::from(format!("Route: {}", close_context_route(context))),
+                    Line::from(""),
+                    Line::from(format!("Really {verb}?")),
+                ],
+                true,
+            )
+        }
     };
 
     let size = frame.area();
-    let width = (message.len() as u16 + 6)
-        .min(size.width.saturating_sub(4))
-        .max(30);
-    let height = 5;
-    let x = (size.width.saturating_sub(width)) / 2;
-    let y = (size.height.saturating_sub(height)) / 2;
+    let width = size.width.saturating_sub(2).clamp(1, 96);
+    let height = if destructive_chat { 11 } else { 6 }
+        .min(size.height.saturating_sub(2))
+        .max(1);
+    let x = size.x + size.width.saturating_sub(width) / 2;
+    let y = size.y + size.height.saturating_sub(height) / 2;
     let area = Rect::new(x, y, width, height);
-
     frame.render_widget(Clear, area);
-
     let block = Block::default()
-        .title(" Confirm ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(
             Style::default()
@@ -6545,43 +6702,42 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) -> Rect {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = vec![
-        Line::from(Span::raw(&message)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "[y]",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Yes  "),
-            Span::styled(
-                "[n]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" No"),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(lines), inner);
+    let mut lines = lines;
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "[y]",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(if destructive_chat {
+            " Confirm  "
+        } else {
+            " Yes  "
+        }),
+        Span::styled("[n/Esc/Enter]", Style::default().fg(Color::Green)),
+        Span::raw(" Cancel"),
+    ]));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     area
 }
 
-/// Draw a choice dialog overlay with multiple selectable options. Returns the dialog area.
+/// Draw the responsive identity-explicit Close… choice dialog.
 fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     use super::state::ChoiceDialogAction;
 
-    let title = match &state.action {
-        ChoiceDialogAction::RemoveCoordinator(cid) => format!(" Close Chat {} ", cid),
-    };
-
+    let ChoiceDialogAction::CloseChat(context) = &state.action;
+    let title = format!(
+        " Close Chat {} ({}) ",
+        context.identity.label, context.identity.task_id
+    );
     let size = frame.area();
-    let width: u16 = 45;
-    let height: u16 = 3 + state.options.len() as u16 + 2; // border + options + footer + border
-    let x = (size.width.saturating_sub(width)) / 2;
-    let y = (size.height.saturating_sub(height)) / 2;
+    let width = size.width.saturating_sub(2).clamp(1, 100);
+    let height = (12 + state.options.len() as u16)
+        .min(size.height.saturating_sub(2))
+        .max(1);
+    let x = size.x + size.width.saturating_sub(width) / 2;
+    let y = size.y + size.height.saturating_sub(height) / 2;
     let area = Rect::new(x, y, width, height);
-
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -6595,42 +6751,37 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = Vec::new();
+    let mut lines: Vec<Line> = vec![
+        Line::from(format!(
+            "Chat: {} ({})",
+            context.identity.label, context.identity.task_id
+        )),
+        Line::from(format!(
+            "State: {} • {}",
+            context.task_status, context.connection
+        )),
+        Line::from(format!("Route: {}", close_context_route(context))),
+        Line::from(""),
+    ];
     for (i, (hotkey, label, desc)) in state.options.iter().enumerate() {
-        let is_selected = i == state.selected;
-        let style = if is_selected {
+        let selected = i == state.selected;
+        let style = if selected {
             Style::default().bg(Color::DarkGray).fg(Color::White)
         } else {
             Style::default()
         };
-        let hotkey_style = if is_selected {
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        };
         lines.push(Line::from(vec![
-            Span::styled(format!(" [{}] ", hotkey), hotkey_style),
-            Span::styled(format!("{:<8}", label), style.add_modifier(Modifier::BOLD)),
-            Span::styled(format!("— {}", desc), style),
+            Span::styled(
+                format!(" [{}] ", hotkey),
+                style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(label.clone(), style.add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" — {desc}"), style),
         ]));
     }
-    // Empty line + footer
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(" [↑↓]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Navigate  "),
-        Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Select  "),
-        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Cancel"),
-    ]));
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines.push(Line::from(" ↑↓ navigate • Enter select • Esc cancel "));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     area
 }
 
@@ -6798,7 +6949,7 @@ fn draw_coordinator_picker(
     active_cid: u32,
 ) -> Rect {
     let size = frame.area();
-    let width: u16 = 50.min(size.width.saturating_sub(4));
+    let width: u16 = 90.min(size.width.saturating_sub(4));
     let height: u16 = (3 + picker.entries.len() as u16 + 2).min(size.height.saturating_sub(2)); // border + entries + footer + border
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
@@ -6807,7 +6958,7 @@ fn draw_coordinator_picker(
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Switch Chat ")
+        .title(" Choose Chat • terminal entries open task Detail ")
         .borders(Borders::ALL)
         .border_style(
             Style::default()
@@ -8024,31 +8175,43 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             } else {
                 "Chat"
             };
-            (
-                label,
-                "EDIT",
-                Color::Magenta,
+            let hints = if app.has_keyboard_enhancement {
                 vec![
                     ("Enter", "send"),
                     ("Esc", "cancel"),
                     ("↑↓", "history"),
                     ("S-Enter", "newline"),
                     ("Alt-Enter/C-j", "newline"),
-                ],
-            )
+                ]
+            } else {
+                vec![
+                    ("Enter", "send"),
+                    ("Esc", "cancel"),
+                    ("↑↓", "history"),
+                    ("Alt-Enter/C-j", "newline"),
+                ]
+            };
+            (label, "EDIT", Color::Magenta, hints)
         }
-        InputMode::MessageInput => (
-            "3:Msg",
-            "EDIT",
-            Color::Yellow,
-            vec![
-                ("Enter", "send"),
-                ("S-Enter", "newline"),
-                ("Alt-Enter/C-j", "newline"),
-                ("Ctrl+K/Y", "kill/yank"),
-                ("Esc", "exit"),
-            ],
-        ),
+        InputMode::MessageInput => {
+            let hints = if app.has_keyboard_enhancement {
+                vec![
+                    ("Enter", "send"),
+                    ("S-Enter", "newline"),
+                    ("Alt-Enter/C-j", "newline"),
+                    ("Ctrl+K/Y", "kill/yank"),
+                    ("Esc", "exit"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "send"),
+                    ("Alt-Enter/C-j", "newline"),
+                    ("Ctrl+K/Y", "kill/yank"),
+                    ("Esc", "exit"),
+                ]
+            };
+            ("3:Msg", "EDIT", Color::Yellow, hints)
+        }
         InputMode::TaskForm => (
             "New Task",
             "EDIT",
@@ -14349,6 +14512,228 @@ mod tests {
     }
 
     #[test]
+    fn rapid_chat_switch_keeps_header_highlight_route_and_pty_identity_atomic() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[2, 4]);
+        app.chat.coordinator_active = true;
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 2,
+            task_id: ".chat-2".to_string(),
+            label: "Chat 2".to_string(),
+            executor: Some("pi".to_string()),
+            model: Some("pi:openrouter:example/chat-2".to_string()),
+        });
+
+        // Switch selection before an old metadata/pane result completes, then
+        // model that stale completion by leaving the old identity behind. The
+        // per-frame selector must reject it rather than paint Chat 2's route
+        // above Chat 4's highlighted row/content.
+        app.switch_coordinator(4);
+        app.pending_chat_pty_spawn = None;
+        app.chat_pty_mode = false;
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 2,
+            task_id: ".chat-2".to_string(),
+            label: "Chat 2".to_string(),
+            executor: Some("pi".to_string()),
+            model: Some("pi:openrouter:example/chat-2".to_string()),
+        });
+
+        let rejected = app
+            .active_chat_view_identity()
+            .expect("Chat 4 placeholder while its authoritative route is pending");
+        assert_eq!(rejected.coordinator_id, 4);
+        assert_eq!(rejected.task_id, ".chat-4");
+        assert_eq!(
+            rejected.executor, None,
+            "stale Chat 2 route must be rejected"
+        );
+
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 4,
+            task_id: ".chat-4".to_string(),
+            label: "Chat 4".to_string(),
+            executor: Some("pi".to_string()),
+            model: Some("pi:openrouter:example/chat-4".to_string()),
+        });
+        let buf = render_chat_tab_to_buffer(&mut app);
+        let row = |y: u16| -> String {
+            (0..buf.area().width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect()
+        };
+        let tabs = row(0);
+        let header = row(1);
+        assert!(tabs.contains("◉ .chat-4"), "active row mismatch: {tabs}");
+        assert!(header.contains("Chats"), "picker control missing: {header}");
+        assert!(app.last_chat_prev_area.width >= 3);
+        assert!(
+            app.last_chat_next_area.x >= app.last_chat_prev_area.x + app.last_chat_prev_area.width
+        );
+        assert!(
+            app.last_chat_picker_area.x
+                >= app.last_chat_next_area.x + app.last_chat_next_area.width
+        );
+        assert!(
+            app.last_chat_close_area.x
+                >= app.last_chat_picker_area.x + app.last_chat_picker_area.width
+        );
+        assert!(header.contains("Close…"), "Close control missing: {header}");
+        assert!(
+            header.contains("Chat 4 (.chat-4)"),
+            "identity header mismatch: {header}"
+        );
+        assert!(
+            header.contains("route pi / pi:openrouter:example/chat-4"),
+            "atomic route missing: {header}"
+        );
+        assert!(
+            !header.contains("chat-2"),
+            "stale identity leaked: {header}"
+        );
+        let rendered = app.active_chat_view_identity().unwrap();
+        assert_eq!(
+            rendered.task_id, ".chat-4",
+            "PTY/content key must match header"
+        );
+
+        // Narrow/mobile layout keeps the identity-bearing left edge and clips
+        // optional route detail instead of wrapping over terminal content.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(48, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, &mut app, area);
+            })
+            .unwrap();
+        let narrow = terminal.backend().buffer();
+        let narrow_header: String = (0..narrow.area().width)
+            .map(|x| narrow.cell((x, 1)).unwrap().symbol())
+            .collect();
+        assert!(
+            narrow_header.contains("[‹] [›] [Chats] [Close…]"),
+            "narrow controls disappeared: {narrow_header}"
+        );
+        assert!(
+            narrow_header.contains("Chat 4 (.chat-4)"),
+            "narrow identity disappeared: {narrow_header}"
+        );
+        assert!(!narrow_header.contains('\u{fffd}'));
+
+        // A shallow split is the real startup shape while the graph lane is
+        // still blocked. The identity row replaces (rather than stacks below)
+        // the tab strip, preserving both one PTY/message row and the input.
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, &mut app, area);
+            })
+            .unwrap();
+        let shallow = terminal.backend().buffer();
+        let shallow_row = |y: u16| -> String {
+            (0..shallow.area().width)
+                .map(|x| shallow.cell((x, y)).unwrap().symbol())
+                .collect()
+        };
+        assert!(
+            shallow_row(0).contains("Chat 4 (.chat-4)"),
+            "shallow identity disappeared: {}",
+            shallow_row(0)
+        );
+        assert!(
+            shallow_row(2).contains("Commands"),
+            "shallow identity consumed the command/input row: {}",
+            shallow_row(2)
+        );
+        assert_eq!(app.last_coordinator_bar_area, Rect::default());
+        assert!(app.coordinator_tab_hits.is_empty());
+    }
+
+    #[test]
+    fn close_chat_modal_is_responsive_and_repeats_exact_identity_state_route() {
+        use super::super::state::{
+            ActiveChatIdentity, ChatCloseContext, ChoiceDialogAction, ChoiceDialogState,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let context = ChatCloseContext {
+            identity: ActiveChatIdentity {
+                coordinator_id: 36,
+                task_id: ".chat-36".to_string(),
+                label: "Dinner planning".to_string(),
+                executor: Some("pi".to_string()),
+                model: Some("pi:openrouter:example/model".to_string()),
+            },
+            task_status: "in-progress".to_string(),
+            connection: "connected".to_string(),
+        };
+        let state = ChoiceDialogState {
+            action: ChoiceDialogAction::CloseChat(context),
+            selected: 0,
+            options: vec![
+                ('h', "Hide/detach tab".into(), "Agent keeps running".into()),
+                ('s', "Stop chat agent".into(), "Keeps task resumable".into()),
+                ('a', "Archive chat".into(), "Marks Done + archived".into()),
+                ('c', "Cancel".into(), "Make no changes".into()),
+            ],
+        };
+
+        for width in [38, 60, 120] {
+            let backend = TestBackend::new(width, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut modal = Rect::default();
+            terminal
+                .draw(|frame| modal = draw_choice_dialog(frame, &state))
+                .unwrap();
+            assert!(modal.width <= width && modal.height <= 20);
+            let rendered = buffer_to_string(terminal.backend().buffer());
+            assert!(rendered.contains(".chat-36"), "width={width}: {rendered}");
+            assert!(
+                rendered.contains("in-progress"),
+                "width={width}: {rendered}"
+            );
+            assert!(rendered.contains("connected"), "width={width}: {rendered}");
+            assert!(
+                rendered.contains("pi:openrouter"),
+                "width={width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("Hide/detach"),
+                "width={width}: {rendered}"
+            );
+            assert!(rendered.contains("Cancel"), "width={width}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn closing_last_chat_renders_explicit_no_selection_without_killing_pane() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[0]);
+        app.close_tab(0);
+        assert!(app.task_panes.is_empty(), "fixture has no pane to kill");
+        assert!(app.active_chat_view_identity().is_none());
+        assert_eq!(
+            app.chat_startup_state,
+            super::super::state::ChatStartupState::Empty
+        );
+        let buf = render_chat_tab_to_buffer(&mut app);
+        let rendered: String = (0..buf.area().height)
+            .flat_map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol())
+                    .chain(std::iter::once("\n"))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(rendered.contains("No chat selected"), "{rendered}");
+        assert!(rendered.contains("New chat"), "{rendered}");
+    }
+
+    #[test]
     fn test_chat_tab_renders_hotkey_hint_for_first_nine_tabs() {
         // The tab bar should render `[1]`, `[2]`, ... hints so users
         // discover the Alt+N hotkey for tab switching.
@@ -15063,6 +15448,28 @@ mod tests {
             "Hit region should cover [∴ evaluating], got: {:?}",
             found
         );
+    }
+
+    #[test]
+    fn done_parent_with_active_responder_renders_clickable_responding_child() {
+        let app = build_e2e_annotation_app(
+            "parent",
+            "Parent Task",
+            Status::Done,
+            ".respond-to-parent",
+            "Respond to parent",
+            "chat-response",
+            vec!["parent"],
+        );
+
+        assert_eq!(app.annotation_hit_regions.len(), 1);
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(region.dot_task_ids, vec![".respond-to-parent"]);
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(found.contains("[↻ responding]"), "got: {found:?}");
+        assert!(!found.contains("evaluating"), "got: {found:?}");
     }
 
     #[test]

@@ -917,6 +917,21 @@ fn subprocess_coordinator_loop(
         };
         let chat_ref = format!("chat-{}", coordinator_id);
         let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+        // A persistent vendor pane can outlive the outer TUI process. Pi,
+        // Codex, Claude and OpenCode do not hold WG's `.handler.pid`, so the
+        // project-scoped tmux session itself is the runtime owner. Never spawn
+        // a daemon handler beside it; the CLI uses the same liveness probe.
+        if worksgood::chat_id::chat_tmux_session_is_live(dir, coordinator_id) {
+            tui_deferrals = tui_deferrals.saturating_add(1);
+            if should_log_tui_deferral(tui_deferrals) {
+                logger.info(&format!(
+                    "Coordinator-{}: persistent TUI tmux pane is live — deferring daemon respawn 5s",
+                    coordinator_id
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            continue;
+        }
         // A live TUI owning this chat legitimately defers the daemon's own
         // respawn. `tui_driver_deferral_pid` already reaps a stale/recycled
         // sentinel (returns None), so reaching this branch means a genuinely
@@ -1016,6 +1031,11 @@ fn subprocess_coordinator_loop(
         cmd.arg("--dir").arg(dir).arg("spawn-task").arg(&task_id);
         cmd.current_dir(dir.parent().unwrap_or(dir));
         cmd.env("WG_DIR", dir);
+        cmd.env("WG_CHAT_ID", &task_id);
+        cmd.env(
+            "WG_CHAT_REF",
+            worksgood::chat_id::format_chat_session_ref(coordinator_id),
+        );
         cmd.env("WG_EXECUTOR_TYPE", &effective_exec);
         if let Some(p) = provider {
             cmd.env("WG_PROVIDER", p);
@@ -2001,14 +2021,15 @@ mod tests {
     }
 
     #[test]
-    fn test_tui_sentinel_defers_supervisor_respawn_only_while_alive() {
+    fn test_tui_sentinel_defers_supervisor_respawn_for_vendor_or_locked_runtime() {
         let tmp = TempDir::new().unwrap();
         let chat_dir = tmp.path().join("chat");
         worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
 
-        assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
+        // Pi/Codex panes are owned directly by the live TUI and intentionally
+        // do not acquire WG's native `.handler.pid` lock.
+        assert_eq!(tui_driver_deferral_pid(&chat_dir), Some(std::process::id()));
 
-        worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
         let lock = worksgood::session_lock::SessionLock::acquire(
             &chat_dir,
             worksgood::session_lock::HandlerKind::InteractiveNex,

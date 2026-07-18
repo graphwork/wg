@@ -209,6 +209,8 @@ fn compute_phase_annotation(internal_task: &Task) -> &'static str {
         "[⊞ assigning]"
     } else if id.starts_with(".verify-") {
         "[∴ validating]"
+    } else if id.starts_with(".respond-to-") {
+        "[↻ responding]"
     } else {
         "[∴ evaluating]"
     }
@@ -1552,6 +1554,31 @@ mod tests {
             "Expected 'assigning' annotation, got: {}",
             annot.text
         );
+    }
+
+    #[test]
+    fn active_respond_child_annotates_done_parent_as_responding() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::Done;
+        let mut responder = make_internal_task(
+            ".respond-to-my-task",
+            "Respond to my-task",
+            "chat-response",
+            vec!["my-task"],
+        );
+        responder.status = Status::InProgress;
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(responder));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (_filtered, annots) = filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
+        let annotation = annots
+            .get("my-task")
+            .expect("active responder must annotate its completed parent");
+        assert_eq!(annotation.text, "[↻ responding]");
+        assert_eq!(annotation.dot_task_ids, vec![".respond-to-my-task"]);
+        assert!(!annotation.text.contains("evaluating"));
     }
 
     #[test]

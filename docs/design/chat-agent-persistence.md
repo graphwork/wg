@@ -322,10 +322,11 @@ the same chat) that need separate UX thought. The implementation should not
   on first chat spawn and killed only when the chat is explicitly archived
   / deleted / abandoned.
 - If a tmux session exists but its chat task has been deleted from the graph,
-  it is an orphan. A startup sweep at TUI launch (`fn ensure_user_coordinator`
-  at `state.rs:13294` is the right hook point) lists `tmux list-sessions`
-  and kills any `wg-chat-<project>-*` session whose chat_ref no longer
-  resolves to a live task.
+  it is an orphan. `maintain_existing_chat_sessions` may sweep graph-proven
+  orphans while reattaching an existing live chat. Empty and terminal-only TUI
+  bootstrap is strictly non-mutating, so merely opening the dashboard never
+  kills panes or rewrites tmux settings; explicit lifecycle commands own that
+  cleanup boundary.
 - Drop on the attach-client PtyPane never kills the server-side session.
   This is the new invariant; it inverts the current `Drop::kill` contract
   for tmux-wrapped panes specifically. Plain (non-chat) PtyPanes elsewhere

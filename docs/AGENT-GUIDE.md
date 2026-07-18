@@ -661,14 +661,14 @@ wg watch                       # stream wg events as JSON lines
 
 #### TUI views and keybindings
 
-`wg tui` launches a full-screen terminal dashboard with task list, detail pane, and log viewer. Key bindings:
+`wg tui` launches a full-screen terminal dashboard with task list, detail pane, and log viewer. Opening it is non-mutating: with no live chat it shows **No chat selected** and starts no provider. Press command-mode `n`, click **New chat**, or run `wg chat create` to create one explicitly.
 
 | Key | Action |
 |-----|--------|
 | `j`/`k` or `↑`/`↓` | Navigate tasks |
 | `Enter` | View task detail |
 | `/` | Search tasks |
-| `n`/`N` | Next/previous search match |
+| `n`/`N` | New chat when no search matches / previous search match |
 | `Tab`/`Shift-Tab` | Next/previous match (in search mode) |
 | `q` | Quit |
 

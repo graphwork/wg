@@ -1,5 +1,11 @@
 # TUI Coordinator Resumption — Investigation Findings
 
+> **Historical investigation.** The `ensure_user_coordinator` implicit-create
+> bootstrap described below no longer exists. Current `wg tui` startup is
+> non-mutating when no live chat is selected; only command-mode `n`, the
+> visible **New chat** control, or `wg chat create` creates a chat. Existing
+> identity-pinned chats still reattach through the prioritized startup lane.
+
 ## 1. Flow Diagram (ASCII)
 
 ### Session ID lifecycle for the `claude` executor (primary path):

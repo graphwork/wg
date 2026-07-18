@@ -54,7 +54,7 @@ KITTY_QUERY = b"\x1b[?u\x1b[c"
 KITTY_REPLY = b"\x1b[?1u\x1b[?64;1;2c"
 KITTY_PUSH = b"\x1b[>1u"
 SHIFT_ENTER = b"\x1b[13;2u"
-CTRL_T = b"\x14"
+CTRL_O = b"\x0f"
 CTRL_J = b"\x0a"
 ENTER = b"\r"
 
@@ -195,9 +195,9 @@ if not replied:
 if KITTY_PUSH not in startup and KITTY_PUSH not in bytes(buf):
     fail("wg tui did not push Kitty keyboard disambiguation after the positive query reply")
 
-# The cat chat owns the PTY on startup. Ctrl+T returns focus to wg, then `c`
-# enters the chat composer from graph context.
-os.write(fd, CTRL_T)
+# The cat chat owns the PTY on startup. Ctrl+O is the canonical host escape;
+# then `c` enters the native chat composer from graph context.
+os.write(fd, CTRL_O)
 drain(0.3)
 os.write(fd, b"c")
 if not wait_dump_field("input_mode", "ChatInput", timeout=6.0):

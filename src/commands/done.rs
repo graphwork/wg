@@ -1400,7 +1400,7 @@ pub fn run(
     skip_smoke: bool,
 ) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
-    run_inner(
+    let result = run_inner(
         dir,
         id,
         converged,
@@ -1409,7 +1409,25 @@ pub fn run(
         is_agent,
         full_smoke,
         skip_smoke,
-    )
+    );
+
+    // Provider health consumes this typed provenance, not this command's
+    // human-facing stderr. The write is best-effort so an observability
+    // failure can never change `wg done` semantics; triage later validates
+    // agent/task/run identity against spawn metadata before trusting it.
+    if is_agent {
+        let outcome = match &result {
+            Ok(()) => worksgood::service::ExecutionOutcome::CompletionAccepted,
+            Err(error) => worksgood::service::ExecutionOutcome::CompletionRefused {
+                code: worksgood::service::completion_refusal_code(&error.to_string()),
+            },
+        };
+        if let Err(error) = worksgood::service::record_done_outcome(dir, id, outcome) {
+            eprintln!("Warning: failed to record wg done outcome: {error}");
+        }
+    }
+
+    result
 }
 
 fn run_inner(

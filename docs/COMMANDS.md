@@ -3954,7 +3954,10 @@ wg quickstart
 
 ### `wg tui`
 
-Launch the interactive terminal dashboard.
+Launch the interactive terminal dashboard. Opening the TUI is graph-only: an
+empty or terminal-only graph shows **No chat selected** and does not create a
+chat, resolve a route, or start a provider. Create one explicitly with
+command-mode `n`, the visible **New chat** control, or `wg chat create`.
 
 ```bash
 wg tui [OPTIONS]

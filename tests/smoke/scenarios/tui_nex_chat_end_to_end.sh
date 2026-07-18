@@ -35,14 +35,9 @@
 #
 # ── Implementation notes (read before changing this scenario) ──
 #
-# (a) The TUI auto-spawns a PTY pane for the default coordinator on
-#     launch (claude/codex/native — anything that has an entry in
-#     `maybe_auto_enable_chat_pty`). The PTY captures every keystroke
-#     except Ctrl+O (the documented modal-toggle escape hatch). To
-#     drive the launcher dialog, the smoke MUST first send Ctrl+O to
-#     flip to [CMD] mode (focused_panel→Graph) so plain 'n' and the
-#     subsequent navigation keys are interpreted by the TUI command
-#     system rather than being typed into the embedded vendor CLI.
+# (a) An empty TUI is graph-only and leaves command mode focused. It must show
+#     `No chat selected` until this scenario explicitly presses `n`; no default
+#     PTY or route is chosen during bootstrap.
 #
 # (b) The TUI's create-coordinator IPC call does not pass `--json`
 #     today, so the post-create JSON parsing in
@@ -182,42 +177,17 @@ if ! wait_for_input_mode "Normal" 30; then
     loud_fail "TUI never reached InputMode::Normal after launch (got '$(tui_input_mode)')"
 fi
 
-# The TUI auto-creates a default chat on first run when the graph is
-# empty (claude executor → claude PTY). Wait for the default chat tab
-# to appear and the [PTY]/[CMD] indicator to render.
-if ! wait_for_chat_tab_count 1 30; then
-    loud_fail "default chat tab never appeared in the tab bar (auto-create regression?). text head: $(tui_text | head -c 400)"
-fi
+# Opening alone must remain graph-only. The explicit `n` below is the first
+# action allowed to choose a route or create a task.
+initial_text=$(tui_text)
+printf '%s' "$initial_text" | grep -q 'No chat selected' \
+    || loud_fail "empty TUI did not show No chat selected: $(printf '%s' "$initial_text" | head -c 400)"
 default_chat_count=$(count_visible_chat_tabs)
-echo "phase 0: default chat auto-spawned (visible chat tabs: ${default_chat_count})"
+[[ "$default_chat_count" -eq 0 ]] \
+    || loud_fail "TUI bootstrap implicitly created a chat before n: count=$default_chat_count"
+echo "phase 0: empty TUI stayed graph-only (zero visible chat tabs)"
 
-# ── Step 2: escape PTY mode if needed, then open the launcher ──────────
-# See implementation note (a): the PTY pane swallows every key except
-# Ctrl+O. Send Ctrl+O to flip to [CMD] mode (focused_panel→Graph) so
-# plain 'n' opens the launcher rather than being typed into the
-# embedded claude CLI.
-text_at_launch=$(tui_text)
-if printf '%s' "$text_at_launch" | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$session" "C-o"
-    sleep 0.5
-    saw_cmd=0
-    for _ in $(seq 1 12); do
-        cur=$(tui_text)
-        if printf '%s' "$cur" | grep -q '\[CMD\]'; then
-            saw_cmd=1
-            break
-        fi
-        sleep 0.25
-    done
-    if [[ "$saw_cmd" -ne 1 ]]; then
-        # No [CMD] indicator means either the PTY pane was never live
-        # (so we never were in [PTY] in the first place — fall through)
-        # or Ctrl+O failed to toggle. Try once more, then fall through.
-        tmux send-keys -t "$session" "C-o"
-        sleep 0.5
-    fi
-fi
-
+# ── Step 2: explicitly open the launcher ──────────────────────────────
 # 'n' from Graph focus opens the launcher (event.rs handle_graph_key
 # Char('n') handler).
 tmux send-keys -t "$session" "n"
@@ -273,8 +243,8 @@ echo "phase 2: AddNew form populated (executor=nex model=$MODEL endpoint=$ENDPOI
 tmux send-keys -t "$session" "Enter"
 
 # Wait for launcher to dismiss + a new chat tab to appear in the bar.
-# Number of tabs should grow from default_chat_count to default+1.
-target_tab_count=$((default_chat_count + 1))
+# Number of tabs should grow from zero to exactly one.
+target_tab_count=1
 if ! wait_for_chat_tab_count "$target_tab_count" 60; then
     loud_fail "after launcher submit, the new chat tab did not appear within 30s. tab count stayed at $(count_visible_chat_tabs); expected ≥ ${target_tab_count}. tab bar: $(tui_text | head -c 500)"
 fi

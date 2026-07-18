@@ -24,7 +24,7 @@ env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
     wg init --no-agency >init.log 2>&1 \
     || loud_fail "wg init failed: $(tail -10 init.log)"
 env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
-    wg chat new --name immediate --command cat >chat.log 2>&1 \
+    wg chat create --name immediate --command cat >chat.log 2>&1 \
     || loud_fail "custom chat fixture failed: $(cat chat.log)"
 
 # Persist the active tab explicitly: the fast lane must validate this pointer
@@ -39,12 +39,20 @@ truncate -s 104857600 .wg/chat-history-0.jsonl
 mkdir -p .wg/agents/huge
 truncate -s 104857600 .wg/agents/huge/output.log
 
-project_tag=$(basename "$scratch" | tr ':.' '--')
+project_basename=$(basename "$scratch" | tr ':.' '--')
+project_hash=$(python3 - "$scratch/.wg" <<'PY'
+import hashlib, os, sys
+print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:16])
+PY
+)
+project_tag="${project_basename}-${project_hash}"
 inner="wg-chat-${project_tag}-chat-0"
 outer="wgsmoke-immediate-chat-$$"
 trace="$scratch/startup.jsonl"
 delivery="$scratch/chat-delivery.log"
 cleanup_sessions() {
+    [[ -n "${stall_writer:-}" ]] && kill "$stall_writer" 2>/dev/null || true
+    rm -f "${storage_fifo:-}" 2>/dev/null || true
     tmux kill-session -t "$outer" 2>/dev/null || true
     tmux kill-session -t "$inner" 2>/dev/null || true
 }
@@ -59,6 +67,7 @@ capture() {
 # Reattach must preserve its pane PID; creating a second handler/session is a
 # failure even if echo appears.
 tmux new-session -d -s "$inner" -x 120 -y 36 -- tee "$delivery"
+tmux resize-window -t "$inner" -x 120 -y 36
 inner_pid_before=$(tmux display-message -p -t "$inner" '#{pane_pid}')
 
 # The active chat remains the first authoritative record, so the minimal lane
@@ -84,10 +93,25 @@ PY
 [[ $(wc -l <.wg/graph.jsonl) -ge 10001 ]] \
     || loud_fail "large graph fixture was not created"
 
+# A real project-local FIFO is the pathological storage data plane. The
+# bootstrap worker blocks in File::read_to_end until we close this writer;
+# meanwhile the independent authoritative chat lane must reattach and accept
+# conversation bytes. After release, the same worker also exercises 5s latency.
+storage_fifo="$scratch/.wg/bootstrap-storage-stall"
+stall_ready="$scratch/storage-reader-is-blocked"
+mkfifo "$storage_fifo"
+(
+    exec 9>"$storage_fifo"
+    : >"$stall_ready"
+    sleep 30
+) &
+stall_writer=$!
+
 now_ms() { date +%s%3N; }
 start_ms=$(now_ms)
 tmux new-session -d -s "$outer" -x 140 -y 42 \
-    "env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER WG_TUI_STARTUP_TRACE='$trace' WG_TUI_TEST_STORAGE_LATENCY_MS=5000 wg tui"
+    "env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER WG_TUI_STARTUP_TRACE='$trace' WG_TUI_TEST_STORAGE_STALL_PATH='$storage_fifo' WG_TUI_TEST_STORAGE_LATENCY_MS=5000 wg tui"
+tmux resize-window -t "$outer" -x 140 -y 42
 
 # Wait only for the neutral first frame, then type immediately. Do not wait for
 # the active chat pane or the delayed graph snapshot.
@@ -101,14 +125,42 @@ for _ in $(seq 1 100); do
     sleep 0.01
 done
 (( first == 1 )) || loud_fail "storage-independent first frame did not paint"
+for _ in $(seq 1 200); do
+    [[ -f "$stall_ready" ]] && break
+    sleep 0.01
+done
+[[ -f "$stall_ready" ]] \
+    || loud_fail "bootstrap worker did not enter the real filesystem stall"
 # Wait only for the prioritized pane milestone (never the delayed graph lane),
 # then type at once. This remains far below the injected 5s bootstrap.
-for _ in $(seq 1 100); do
+# The attach worker includes a 100ms tmux input-forwarding handshake, and a
+# loaded smoke host can take longer than the old 500ms polling budget to
+# schedule it. The authoritative end-to-end deadline below remains <3s, so a
+# longer observation window does not weaken the immediate-input guarantee.
+for _ in $(seq 1 400); do
     [[ -f "$trace" ]] && grep -q 'pane_attached' "$trace" && break
     sleep 0.005
 done
 grep -q 'pane_attached' "$trace" 2>/dev/null \
-    || loud_fail "prioritized pane did not attach"
+    || loud_fail "prioritized pane did not attach within the <3s interaction deadline: $(tr '\n' ' ' <"$trace" 2>/dev/null || true)"
+# The visible identity must be coherent with the pane we are about to type
+# into. In particular, a delayed full snapshot may not leave a generic Chat
+# heading or paint another tab's route over this reattached terminal. Wide
+# panels prefix the identity with "Active:"; compact panels omit that redundant
+# prefix. Shallow startup splits replace the tab strip with this identity row
+# so one PTY row and the input remain available. Assert the semantic header,
+# not one width-specific decoration.
+identity_ready=0
+for _ in $(seq 1 100); do
+    screen=$(capture)
+    if printf '%s\n' "$screen" | grep -Eq '(Active: )?.*[.]chat-0.*connected.*route command'; then
+        identity_ready=1
+        break
+    fi
+    sleep 0.01
+done
+(( identity_ready == 1 )) \
+    || loud_fail "active-chat identity/header did not agree with attached .chat-0 command pane: $(capture | head -12 | tr '\n' ' ')"
 payload="Z"
 tmux send-keys -l -t "$outer" "$payload"
 tmux send-keys -t "$outer" Enter
@@ -135,6 +187,12 @@ inner_pid_after=$(tmux display-message -p -t "$inner" '#{pane_pid}')
     || loud_fail "reattach replaced the existing handler: before=$inner_pid_before after=$inner_pid_after"
 count=$(tmux list-sessions -F '#{session_name}' | grep -Fx "$inner" | wc -l | tr -d ' ')
 [[ "$count" == 1 ]] || loud_fail "duplicate chat tmux session detected: count=$count"
+# The delivery above happened while the storage worker was blocked on a real
+# FIFO. Release it now; the worker then observes the separate 5s latency shim.
+kill "$stall_writer" 2>/dev/null || true
+wait "$stall_writer" 2>/dev/null || true
+stall_writer=""
+rm -f "$storage_fifo"
 
 # Exact state-dependent command flow on the real PTY: plain n is child text;
 # Ctrl+O is the host escape; n then opens New chat. Close it and return to
@@ -181,6 +239,21 @@ graph_dir="$WG_SMOKE_DAEMON_DIR"
     done
 ) &
 mutator=$!
+# Daemon startup may publish a fresh graph between command-mode and PTY focus
+# events; reassert the visible capture state before testing conversation bytes.
+screen=$(capture)
+if ! printf '%s\n' "$screen" | grep -q '\[PTY\]'; then
+    tmux send-keys -t "$outer" Escape
+    sleep 0.05
+    tmux send-keys -t "$outer" C-o
+fi
+for _ in $(seq 1 100); do
+    screen=$(capture)
+    printf '%s\n' "$screen" | grep -q '\[PTY\]' && break
+    sleep 0.01
+done
+printf '%s\n' "$screen" | grep -q '\[PTY\]' \
+    || loud_fail "daemon-on phase could not focus the existing chat PTY: $(capture | tail -12 | tr '\n' ' ')"
 second="Y"
 tmux send-keys -t "$outer" Y Enter
 for _ in $(seq 1 100); do
@@ -190,7 +263,7 @@ for _ in $(seq 1 100); do
 done
 wait "$mutator" || true
 grep -q "$second" "$delivery" 2>/dev/null \
-    || loud_fail "daemon-on continuous graph mutation starved chat input"
+    || loud_fail "daemon-on continuous graph mutation starved chat input; outer=$(capture | tail -12 | tr '\n' ' '); delivery=$(tail -8 "$delivery" 2>/dev/null | tr '\n' ' '); inner=$(tmux display-message -p -t "$inner" '#{pane_current_command}:#{pane_pid}' 2>/dev/null || true)"
 inner_pid_daemon=$(tmux display-message -p -t "$inner" '#{pane_pid}')
 [[ "$inner_pid_daemon" == "$inner_pid_before" ]] \
     || loud_fail "daemon-on phase raced/replaced the attached chat handler: before=$inner_pid_before after=$inner_pid_daemon pane=$(tmux display-message -p -t "$inner" '#{pane_current_command}' 2>/dev/null || true) outer_alive=$(tmux has-session -t "$outer" 2>/dev/null && echo yes || echo no) service=$(tail -8 "$graph_dir/service/service.log" 2>/dev/null | tr '\n' ' ')"
@@ -214,4 +287,4 @@ assert names.index("first_frame") < names.index("active_chat_metadata_ready") < 
 # parser-level first_keystroke_echoed remains instrumented for normal panes.
 PY
 
-echo "PASS: existing chat accepted immediate input in ${reach_ms}ms while full bootstrap/history/log work remained delayed; no duplicate handler"
+echo "PASS: existing chat accepted immediate input in ${reach_ms}ms during a real filesystem stall while full bootstrap/history/log work remained delayed; no duplicate handler"

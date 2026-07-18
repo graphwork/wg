@@ -34,6 +34,7 @@
 //! embedded process correctly.
 
 use std::io::{Read, Write};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -43,6 +44,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::Frame;
 use ratatui::layout::Rect;
+
+/// Run a host-side helper without ever inheriting the outer TUI terminal.
+///
+/// While ratatui owns the alternate screen, even one diagnostic byte from a
+/// subprocess makes the physical terminal diverge from ratatui's previous
+/// buffer. The next differential draw then leaves shifted/duplicated content.
+/// Host-side tmux IPC is deliberately invisible; embedded child output still
+/// travels through the pane's PTY and vt100 parser.
+fn status_silently(command: &mut Command) -> std::io::Result<ExitStatus> {
+    command.stdout(Stdio::null()).stderr(Stdio::null()).status()
+}
 
 /// Default scrollback for the vt100 parser. Matches common terminal
 /// emulator defaults (macOS Terminal, iTerm2) — enough to scroll back
@@ -283,13 +295,10 @@ impl PtyPane {
                             if elapsed >= GROWTH_RATE_WINDOW_SECS && window_bytes > 0 {
                                 let rate = window_bytes / elapsed.max(1);
                                 if rate > GROWTH_RATE_WARN_BYTES_PER_SEC {
-                                    if !reader_growth_warned.swap(true, Ordering::Relaxed) {
-                                        eprintln!(
-                                            "[pty] growth-rate guard: {} KB/s sustained — \
-                                             truncating scrollback to prevent OOM",
-                                            rate / 1024
-                                        );
-                                    }
+                                    // Record the condition for the owning pane/UI, but never
+                                    // print from this reader thread: stdout/stderr belong to
+                                    // ratatui's outer alternate screen.
+                                    reader_growth_warned.store(true, Ordering::Relaxed);
                                     if let Ok(mut p) = reader_parser.lock() {
                                         p.screen_mut().set_scrollback(0);
                                     }
@@ -434,9 +443,7 @@ impl PtyPane {
             for a in args {
                 tmux_args.push(a.to_string());
             }
-            let status = std::process::Command::new("tmux")
-                .args(&tmux_args)
-                .status()
+            let status = status_silently(Command::new("tmux").args(&tmux_args))
                 .context("failed to invoke tmux new-session")?;
             if !status.success() {
                 anyhow::bail!(
@@ -480,11 +487,8 @@ impl PtyPane {
     /// the chat process inside it). No-op for non-tmux-wrapped panes.
     /// Idempotent — safe to call after `Drop` or `kill`.
     pub fn kill_underlying_session(&mut self) {
-        if let Some(name) = self.tmux_session.clone() {
-            let _ = std::process::Command::new("tmux")
-                .args(["kill-session", "-t", &name])
-                .status();
-            self.tmux_session = None;
+        if let Some(name) = self.tmux_session.take() {
+            tmux_kill_session(&name);
         }
     }
 
@@ -603,13 +607,15 @@ impl PtyPane {
         } else if let Some(session) = self.tmux_session.clone() {
             // Enter copy mode (idempotent) then jump to history top.
             if self.tmux_scroll_lines == 0 {
-                let _ = std::process::Command::new("tmux")
-                    .args(["copy-mode", "-t", &session])
-                    .status();
+                let _ = status_silently(Command::new("tmux").args(["copy-mode", "-t", &session]));
             }
-            let _ = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", &session, "-X", "history-top"])
-                .status();
+            let _ = status_silently(Command::new("tmux").args([
+                "send-keys",
+                "-t",
+                &session,
+                "-X",
+                "history-top",
+            ]));
             // Tmux history is bounded; we can't know the exact line
             // count without querying. Mark "scrolled" via a large
             // sentinel — render only uses it for the ↓N indicator
@@ -632,9 +638,13 @@ impl PtyPane {
         } else if let Some(session) = self.tmux_session.clone() {
             if self.tmux_scroll_lines > 0 {
                 // `cancel` exits copy mode, restoring the live tail.
-                let _ = std::process::Command::new("tmux")
-                    .args(["send-keys", "-t", &session, "-X", "cancel"])
-                    .status();
+                let _ = status_silently(Command::new("tmux").args([
+                    "send-keys",
+                    "-t",
+                    &session,
+                    "-X",
+                    "cancel",
+                ]));
             }
             self.tmux_scroll_lines = 0;
             self.auto_follow = true;
@@ -652,21 +662,17 @@ impl PtyPane {
     /// `scroll-up` command has somewhere to land.
     fn tmux_scroll_up(&mut self, session: &str, n: usize) {
         if self.tmux_scroll_lines == 0 {
-            let _ = std::process::Command::new("tmux")
-                .args(["copy-mode", "-t", session])
-                .status();
+            let _ = status_silently(Command::new("tmux").args(["copy-mode", "-t", session]));
         }
-        let _ = std::process::Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                session,
-                "-X",
-                "-N",
-                &n.to_string(),
-                "scroll-up",
-            ])
-            .status();
+        let _ = status_silently(Command::new("tmux").args([
+            "send-keys",
+            "-t",
+            session,
+            "-X",
+            "-N",
+            &n.to_string(),
+            "scroll-up",
+        ]));
         self.tmux_scroll_lines = self.tmux_scroll_lines.saturating_add(n);
         self.auto_follow = false;
     }
@@ -678,24 +684,26 @@ impl PtyPane {
             // Already at live tail — nothing to do.
             return;
         }
-        let _ = std::process::Command::new("tmux")
-            .args([
-                "send-keys",
-                "-t",
-                session,
-                "-X",
-                "-N",
-                &n.to_string(),
-                "scroll-down",
-            ])
-            .status();
+        let _ = status_silently(Command::new("tmux").args([
+            "send-keys",
+            "-t",
+            session,
+            "-X",
+            "-N",
+            &n.to_string(),
+            "scroll-down",
+        ]));
         self.tmux_scroll_lines = self.tmux_scroll_lines.saturating_sub(n);
         if self.tmux_scroll_lines == 0 {
             // Reached live tail — exit copy mode so subsequent live
             // output flows through normally.
-            let _ = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", session, "-X", "cancel"])
-                .status();
+            let _ = status_silently(Command::new("tmux").args([
+                "send-keys",
+                "-t",
+                session,
+                "-X",
+                "cancel",
+            ]));
             self.auto_follow = true;
         }
     }
@@ -711,11 +719,13 @@ impl PtyPane {
             return;
         }
         if let Some(session) = self.tmux_session.clone() {
-            let _ = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", &session, "-X", "cancel"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            let _ = status_silently(Command::new("tmux").args([
+                "send-keys",
+                "-t",
+                &session,
+                "-X",
+                "cancel",
+            ]));
         }
         self.tmux_scroll_lines = 0;
         self.auto_follow = true;
@@ -827,11 +837,8 @@ impl PtyPane {
     pub fn interrupt_foreground(&mut self) -> Result<()> {
         self.exit_tmux_copy_mode();
         if let Some(session) = self.tmux_session.clone() {
-            let _ = std::process::Command::new("tmux")
-                .args(["send-keys", "-t", &session, "C-c"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            let _ =
+                status_silently(Command::new("tmux").args(["send-keys", "-t", &session, "C-c"]));
             self.auto_follow = true;
             return Ok(());
         }
@@ -995,11 +1002,7 @@ pub fn tmux_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        std::process::Command::new("tmux")
-            .arg("-V")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+        status_silently(Command::new("tmux").arg("-V"))
             .map(|s| s.success())
             .unwrap_or(false)
     })
@@ -1009,11 +1012,7 @@ pub fn tmux_available() -> bool {
 /// Cheap shell-out — used during `spawn_via_tmux` to decide whether to
 /// create a fresh session or reattach to an existing one.
 pub fn tmux_has_session(name: &str) -> bool {
-    std::process::Command::new("tmux")
-        .args(["has-session", "-t", name])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+    status_silently(Command::new("tmux").args(["has-session", "-t", name]))
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -1038,11 +1037,13 @@ pub fn tmux_list_sessions_with_prefix(prefix: &str) -> Vec<String> {
 }
 
 /// Tear down a tmux session by name. No-op when the session doesn't
-/// exist. Idempotent.
+/// exist. Idempotent and terminal-silent. The existence probe avoids a
+/// redundant kill after `wg chat archive` already removed the session; the
+/// kill itself is also silenced to close the probe/kill race.
 pub fn tmux_kill_session(name: &str) {
-    let _ = std::process::Command::new("tmux")
-        .args(["kill-session", "-t", name])
-        .status();
+    if tmux_has_session(name) {
+        let _ = status_silently(Command::new("tmux").args(["kill-session", "-t", name]));
+    }
 }
 
 /// Apply wg's desired tmux session options to `session_name`. Idempotent
@@ -1066,16 +1067,20 @@ pub fn tmux_kill_session(name: &str) {
 ///   emits copy-mode escape sequences into our vt100 parser and the
 ///   rendered output garbles after the first few lines.
 pub fn apply_session_options(session_name: &str) {
-    let _ = std::process::Command::new("tmux")
-        .args(["set-option", "-t", session_name, "status", "off"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    let _ = std::process::Command::new("tmux")
-        .args(["set-option", "-t", session_name, "mouse", "off"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let _ = status_silently(Command::new("tmux").args([
+        "set-option",
+        "-t",
+        session_name,
+        "status",
+        "off",
+    ]));
+    let _ = status_silently(Command::new("tmux").args([
+        "set-option",
+        "-t",
+        session_name,
+        "mouse",
+        "off",
+    ]));
 }
 
 /// Re-assert wg's desired tmux session options across every existing
@@ -1668,6 +1673,127 @@ fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SILENT_KILL_CHILD_ENV: &str = "WG_TEST_TUI_SILENT_TMUX_KILL_CHILD";
+
+    #[test]
+    fn tui_runtime_never_writes_process_stderr() {
+        let pty_runtime = include_str!("pty_pane.rs")
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("pty tests marker")
+            .0;
+        for (path, source) in [
+            ("src/tui/pty_pane.rs", pty_runtime),
+            (
+                "src/tui/viz_viewer/event.rs",
+                include_str!("viz_viewer/event.rs"),
+            ),
+            (
+                "src/tui/viz_viewer/state.rs",
+                include_str!("viz_viewer/state.rs"),
+            ),
+            (
+                "src/tui/viz_viewer/chat_startup.rs",
+                include_str!("viz_viewer/chat_startup.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains("eprintln!"),
+                "{path} writes directly to inherited stderr while ratatui may own the alternate screen"
+            );
+        }
+    }
+
+    #[test]
+    fn tui_host_helpers_never_inherit_the_outer_terminal() {
+        let source = include_str!("pty_pane.rs");
+        let runtime = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("pty tests marker")
+            .0;
+        assert_eq!(
+            runtime.matches(".status()").count(),
+            1,
+            "runtime host commands must all route through the one terminal-silent status helper"
+        );
+        assert!(runtime.contains("command.stdout(Stdio::null()).stderr(Stdio::null()).status()"));
+
+        let state = include_str!("viz_viewer/state.rs");
+        assert!(
+            !state.contains(".status()"),
+            "viz state commands must capture output; an inherited status child can corrupt ratatui"
+        );
+    }
+
+    /// Child-process half of `already_gone_lifecycle_cleanup_inherits_no_output`.
+    /// Running in a subprocess is important: it lets the parent inspect the
+    /// actual inherited stdout/stderr boundary instead of libtest's capture.
+    #[test]
+    fn already_gone_lifecycle_cleanup_child() {
+        if std::env::var_os(SILENT_KILL_CHILD_ENV).is_none() {
+            return;
+        }
+        let session = std::env::var("WG_TEST_TUI_MISSING_TMUX_SESSION")
+            .expect("parent supplies the missing session name");
+        tmux_kill_session(&session);
+    }
+
+    #[test]
+    fn already_gone_lifecycle_cleanup_inherits_no_output() {
+        if !tmux_available() {
+            return;
+        }
+        let missing = format!(
+            "wg-chat-test-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        assert!(
+            !tmux_has_session(&missing),
+            "fixture session must be absent"
+        );
+
+        // Pin the tmux behavior that caused the archive corruption: a direct
+        // duplicate kill really does emit an error on this platform.
+        let direct = Command::new("tmux")
+            .args(["kill-session", "-t", &missing])
+            .output()
+            .expect("tmux duplicate-kill control command should run");
+        assert!(!direct.status.success());
+        assert!(
+            !direct.stderr.is_empty(),
+            "control command should demonstrate tmux's missing-session diagnostic"
+        );
+
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "tui::pty_pane::tests::already_gone_lifecycle_cleanup_child",
+                "--nocapture",
+            ])
+            .env(SILENT_KILL_CHILD_ENV, "1")
+            .env("WG_TEST_TUI_MISSING_TMUX_SESSION", &missing)
+            .output()
+            .expect("spawn lifecycle-cleanup child test");
+        assert!(
+            output.status.success(),
+            "child test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.stderr,
+            b"",
+            "already-gone lifecycle cleanup inherited terminal stderr: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("can't find session"),
+            "already-gone lifecycle cleanup inherited terminal stdout"
+        );
+    }
 
     #[test]
     fn ctrl_a_maps_to_soh() {
@@ -3720,7 +3846,6 @@ sleep 5
     #[test]
     fn drop_does_not_kill_underlying_tmux_session() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping persistence invariant test");
             return;
         }
         // Use a wg-chat-test-* prefix so we land in the same namespace
@@ -3782,7 +3907,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_reattaches_existing_session() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping reattach test");
             return;
         }
         let suffix = format!(
@@ -3866,7 +3990,6 @@ sleep 5
     #[test]
     fn tmux_wrapped_scroll_up_advances_render_without_writing_to_child() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping tmux scroll test");
             return;
         }
         let suffix = format!(
@@ -3984,7 +4107,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_disables_status_bar() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping status-bar test");
             return;
         }
         let suffix = format!(
@@ -4034,7 +4156,6 @@ sleep 5
     #[test]
     fn send_key_cancels_tmux_copy_mode() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping send_key-cancels-copy-mode test");
             return;
         }
         let suffix = format!(
@@ -4119,7 +4240,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_disables_mouse_mode() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping mouse-mode test");
             return;
         }
         let suffix = format!(
@@ -4236,7 +4356,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_reverts_drifted_status() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping drift-revert test");
             return;
         }
         let prefix = unique_tmux_test_prefix("revert");
@@ -4283,7 +4402,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_is_idempotent() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping idempotency test");
             return;
         }
         let prefix = unique_tmux_test_prefix("idem");
@@ -4324,7 +4442,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_skips_non_matching_sessions() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping scope test");
             return;
         }
         let prefix = unique_tmux_test_prefix("scope");
@@ -4393,7 +4510,6 @@ sleep 5
     #[test]
     fn sync_chat_session_settings_no_matching_sessions_is_noop() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping no-match test");
             return;
         }
         // Prefix designed to match nothing real.
@@ -4409,7 +4525,6 @@ sleep 5
     #[test]
     fn spawn_via_tmux_reasserts_status_on_reattach() {
         if !tmux_available() {
-            eprintln!("tmux not installed — skipping reattach-reassert test");
             return;
         }
         let prefix = unique_tmux_test_prefix("reassert");

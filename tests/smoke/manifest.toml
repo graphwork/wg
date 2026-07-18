@@ -138,6 +138,15 @@ description = "Pins fix-last-interaction: typing and sending in a real wg tui ch
 timeout_seconds = 45
 
 [[scenario]]
+name = "tui_chat_service_health_restart"
+script = "scenarios/tui_chat_service_health_restart.sh"
+owners = [
+    "fix-tui-service",
+]
+description = "Pins fix-tui-service through the real tmux/PTY human flow: keep the TUI on its continuously-refreshing Chat tab, stop the daemon until the visible badge/vitals show DOWN, restart it externally, and require both HUD surfaces to recover live without a tab/TUI restart while the credential-free cat chat remains responsive."
+timeout_seconds = 45
+
+[[scenario]]
 name = "tui_pi_chat_pty_embedded"
 script = "scenarios/tui_pi_chat_pty_embedded.sh"
 owners = [
@@ -161,8 +170,18 @@ name = "tui_chat_composer_newlines_pty"
 script = "scenarios/tui_chat_composer_newlines_pty.sh"
 owners = [
     "bug-wg-tui",
+    "fix-periodic-plain",
 ]
-description = "Pins bug-wg-tui: drives the real wg tui chat composer through a PTY that positively answers the Kitty keyboard-enhancement query, sends CSI-u Shift+Enter plus Ctrl+J, asserts neither chord submits early, then presses plain Enter and verifies exactly one persisted chat message contains the embedded newlines. Credential-free cat chat; no live LLM endpoint required."
+description = "Pins bug-wg-tui and fix-periodic-plain's non-mosh half: drives the real wg tui native chat composer through a PTY that positively answers the Kitty keyboard-enhancement query, sends CSI-u Shift+Enter plus Ctrl+J, asserts neither chord submits early, then presses plain Enter and verifies exactly one persisted chat message contains the embedded newlines. Credential-free cat chat; no live LLM endpoint required."
+timeout_seconds = 45
+
+[[scenario]]
+name = "tui_chat_mosh_plain_enter_pty"
+script = "scenarios/tui_chat_mosh_plain_enter_pty.sh"
+owners = [
+    "fix-periodic-plain",
+]
+description = "Pins fix-periodic-plain through the real wg tui PTY boundary with MOSH_SERVER_PID/MOSH_IP and Kitty-capable TERM: asserts no Kitty query/push/set crosses mosh, drives the native composer, preserves Ctrl+J multiline input, sends 12 literal plain CR Enter presses, then models the observed transport corruption with 12 CSI-u Shift+Enter events for that physical key. Every payload must submit exactly once/in order with no newline or late duplicate; trace records both parsed forms plus chat_input_route=native_composer. Credential-free cat chat; no live LLM endpoint required."
 timeout_seconds = 45
 
 [[scenario]]
@@ -2139,7 +2158,7 @@ script = "scenarios/tui_bootstrap_parent_graph_isolation.sh"
 owners = [
     "fix-integration-test",
 ]
-description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker task/agent identity, wait for first-use chat bootstrap, require .chat-0 in scratch, and prove the parent graph hash/content is unchanged with no legacy .coordinator ghost. Credential-free."
+description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker identity, prove opening alone leaves both graphs unchanged, then drive explicit command-mode n/Enter, require .chat-0 in scratch, and prove the parent graph remains unchanged with no legacy .coordinator ghost. Credential-free."
 timeout_seconds = 30
 
 [[scenario]]
@@ -2147,6 +2166,83 @@ name = "tui_immediate_chat_startup"
 script = "scenarios/tui_immediate_chat_startup.sh"
 owners = [
     "restore-immediate-chat",
+    "fix-immediate-chat",
+    "reproduce-and-fix",
 ]
-description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, and a 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s before full bootstrap, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
+description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, a real project-local FIFO storage stall, and a subsequent 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s while storage is blocked, its active identity/header/atomic route must agree, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
 timeout_seconds = 30
+
+[[scenario]]
+name = "tui_chat_close_lifecycle"
+script = "scenarios/tui_chat_close_lifecycle.sh"
+owners = [
+    "validate-and-land",
+    "fix-tui-screen",
+    "reproduce-and-fix",
+]
+description = "Installed-binary real tmux/PTY flow for the repaired chat navigation and Close lifecycle: selecting abandoned .chat-36 opens its exact canonical Detail with no spawn/reattach or composer, returning to a live chat exposes the identity/state/atomic-route Close… modal, Cancel and Hide remain non-destructive, Stop uses canonical daemon termination and tears down the identity-matching TUI PTY while preserving an Open/resumable task, and Archive produces explicit Done+archived state while exercising the present-session CLI kill followed by the already-gone idempotent completion cleanup. After each Archive, the physical outer pane must contain every sentinel graph row and active identity exactly once, no stale archived identity or subprocess text, and one coherent border pair. Unit/render tests pin pointer hitbox boundaries, narrow layout, stale async results, no-local-pane cleanup, and wrong-chat confirmation protection. Credential-free."
+timeout_seconds = 60
+
+[[scenario]]
+name = "tui_stateful_chat_restart_resume"
+script = "scenarios/tui_stateful_chat_restart_resume.sh"
+owners = [
+    "fix-tui-restart",
+    "fix-path-unique",
+]
+description = "Real tmux/PTY stateful-resume regression: route-less chat creation under a Pi/Codex handler-first profile persists the exact Pi route with no Claude fallback; the first TUI and a restarted TUI keep exactly one .chat-0 row, reattach the same persistent pane PID selected by tui-state.json, preserve Pi session history, and accept input; wg chat show agrees the TUI-owned tmux runtime is live; killing the pane surfaces the real recovery panel and R resurrects the saved route/session without adding a row. Credential-free fake Pi."
+timeout_seconds = 60
+
+[[scenario]]
+name = "chat_tmux_path_unique_terminal_resume"
+script = "scenarios/chat_tmux_path_unique_terminal_resume.sh"
+owners = [
+    "fix-path-unique",
+]
+description = "Real tmux/TUI ownership regression for fix-path-unique: two FS-isolated graphs with the same project basename get distinct path-hashed chat sessions, cannot report or attach each other's Pi pane, and normal same-graph restart reattaches the exact PID. A provably-owned legacy basename-only session is migrated in place using its WG_DIR marker. With a daemon live, done/archived/abandoned chat tasks plus a stale canonical tmux session are rejected before SetChatExecutor and cannot mutate task, route/session metadata, or tmux ownership. Credential-free fake Pi."
+timeout_seconds = 90
+
+[[scenario]]
+name = "tui_open_non_mutating"
+script = "scenarios/tui_open_non_mutating.sh"
+owners = [
+    "remove-implicit-chat",
+]
+description = "Installed-binary real tmux/PTY gate for remove-implicit-chat: opens/restarts an authoritative empty TUI twenty times across missing/corrupt route metadata and daemon down/up, injects delayed full bootstrap, and proves No chat selected + visible New chat with zero graph rows, UUID/chat dirs, session aliases, synthetic TUI/history state, handler tmux sessions, or provider argv. A terminal-only graph stays terminal. Then real command-mode n and a real SGR pointer click each open the chooser and create exactly one identity-pinned chat only after confirmation. Credential-free fake provider binaries."
+timeout_seconds = 120
+
+[[scenario]]
+name = "pi_plugin_model_cycle_context"
+script = "scenarios/pi_plugin_model_cycle_context.sh"
+owners = [
+    "fix-pi-plugin",
+]
+description = "Pins the standalone Pi Ctrl-P regression from docs/bugs/wg-pi-plugin-no-chat-id-model-writeback.md. Always-on credential-free event flow emits real model_select(source=cycle) shapes for OpenRouter Qwen and local llama.cpp: selected model changes while absent chat env yields zero backend wg calls and zero console errors. Canonical WG_CHAT_ID and WG_CHAT_REF alias each produce exactly one warm write-back to the exact .chat-N; a managed nonzero result stays one concise actionable line with no stack duplication. With tmux and the current binary, a real WG TUI launches a fake Pi child, proves WG_CHAT_ID=.chat-0 plus WG_CHAT_REF=chat-0, emits a model cycle, and verifies only coordinator-state-0 changes. When Pi+python3 are installed, it also drives the actual Ctrl-P byte repeatedly through a real standalone Pi TUI PTY with the built extension and dummy-auth custom models, asserting no graph call or write-back stack noise."
+timeout_seconds = 180
+
+[[scenario]]
+name = "tui_wg_add_output_confinement"
+script = "scenarios/tui_wg_add_output_confinement.sh"
+owners = [
+    "reproduce-and-fix",
+]
+description = "Installed-binary real tmux/nested-PTY regression for reproduce-and-fix: a custom chat issues four visible wg add commands while graph snapshots refresh rapidly, the mosh-compatible input policy is active, and the outer pane resizes down/back. The child proves stdout/stderr belong to its embedded PTY rather than ratatui's outer PTY; physical capture and tui-dump agree that Added task/Use --after appear once only in Chat while every graph row appears once. A deliberately unwritable tui-state path exercises terminal-silent diagnostics, then post-burst Close/Hide proves live input and a coherent graph-only repaint with no stale output or displaced borders. Credential-free."
+timeout_seconds = 60
+
+[[scenario]]
+name = "provider_completion_refusal_breaker"
+script = "scenarios/provider_completion_refusal_breaker.sh"
+owners = [
+    "integrate-luca-provider",
+]
+description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route."
+timeout_seconds = 90
+
+[[scenario]]
+name = "nex_bg_process_group_pty"
+script = "scenarios/nex_bg_process_group_pty.sh"
+owners = [
+    "integrate-luca-detached",
+]
+description = "Live human terminal flow for Luca detached-process integration: a real PTY drives wg nex /bg run, status, output, kill, and /cancel. The job persists a start-validated session/process-group identity, produces output through Rust-opened descriptors, and a TERM-ignoring descendant is gone after kill with no orphan group. Credential-free; no model request is made."
+timeout_seconds = 45

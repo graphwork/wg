@@ -23,7 +23,10 @@ pub use executor::{
     ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
 };
 pub use provider_health::{
-    ProviderErrorKind, ProviderHealth, ProviderHealthStatus, classify_error, extract_provider_id,
+    AgentExecutionOutcome, CompletionRefusalCode, ExecutionOutcome, ExecutorFailure,
+    HealthRouteKey, ProviderErrorKind, ProviderHealth, ProviderHealthStatus, classify_error,
+    classify_execution_outcome, completion_refusal_code, extract_provider_id, load_agent_outcome,
+    record_done_outcome,
 };
 pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
 
