@@ -7568,6 +7568,53 @@ mod scrollbar_tests {
     }
 
     #[test]
+    fn fullscreen_edges_map_to_opposite_inspector_docks() {
+        use super::super::state::{FullscreenEdge, InspectorDock};
+
+        assert_eq!(
+            super::fullscreen_edge_to_dock(FullscreenEdge::Left),
+            InspectorDock::Right
+        );
+        assert_eq!(
+            super::fullscreen_edge_to_dock(FullscreenEdge::Right),
+            InspectorDock::Left
+        );
+        assert_eq!(
+            super::fullscreen_edge_to_dock(FullscreenEdge::Top),
+            InspectorDock::Bottom
+        );
+        assert_eq!(
+            super::fullscreen_edge_to_dock(FullscreenEdge::Bottom),
+            InspectorDock::Top
+        );
+    }
+
+    #[test]
+    fn divider_drag_direction_and_percentage_follow_dock() {
+        use super::super::state::InspectorDock;
+
+        // Side docks use width. Moving the divider toward the graph grows the
+        // inspector; moving it toward the inspector shrinks it.
+        assert_eq!(
+            super::divider_ratio_from_drag(InspectorDock::Right, 60, 100, 10, 20),
+            50
+        );
+        assert_eq!(
+            super::divider_ratio_from_drag(InspectorDock::Left, 60, 100, 10, 20),
+            70
+        );
+        // Top/bottom docks use height with the corresponding inverted edge.
+        assert_eq!(
+            super::divider_ratio_from_drag(InspectorDock::Bottom, 60, 40, 10, 14),
+            50
+        );
+        assert_eq!(
+            super::divider_ratio_from_drag(InspectorDock::Top, 60, 40, 10, 14),
+            70
+        );
+    }
+
+    #[test]
     fn general_divider_drag_start_does_not_snap() {
         // Regression: clicking the divider in normal split mode used to cause a
         // 1-2 column snap on the first drag event due to lossy percent↔width
