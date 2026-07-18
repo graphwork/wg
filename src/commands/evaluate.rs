@@ -4,11 +4,11 @@ use std::path::Path;
 use std::process::Command;
 
 use worksgood::agency::{
-    self, Evaluation, EvaluatorInput, FlipComparisonInput, FlipInferenceInput, eval_source,
-    load_all_evaluations_or_warn, load_role, load_tradeoff, record_evaluation,
-    record_evaluation_with_inference, render_evaluator_prompt, render_flip_comparison_prompt,
-    render_flip_inference_prompt, render_identity_prompt_rich, resolve_all_components_for_scope,
-    resolve_outcome,
+    self, Evaluation, EvaluatorInput, FlipComparisonInput, FlipInferenceInput,
+    bound_evaluator_artifact_diff, eval_source, load_all_evaluations_or_warn, load_role,
+    load_tradeoff, record_evaluation, record_evaluation_with_inference, render_evaluator_prompt,
+    render_flip_comparison_prompt, render_flip_inference_prompt, render_identity_prompt_rich,
+    resolve_all_components_for_scope, resolve_outcome,
 };
 use worksgood::config::Config;
 use worksgood::graph::{LogEntry, Status, TokenUsage};
@@ -34,10 +34,6 @@ fn extract_spawn_model(log: &[LogEntry]) -> Option<String> {
     }
     None
 }
-
-/// Maximum length (in bytes) for the artifact diff included in the evaluator prompt.
-/// Diffs exceeding this are truncated with a notice.
-const MAX_DIFF_BYTES: usize = 30_000;
 
 /// Compute a git diff of artifact files, diffing from the commit closest to
 /// `started_at` up to HEAD. Returns `None` if git is unavailable, there are no
@@ -83,21 +79,7 @@ fn compute_artifact_diff(artifacts: &[String], started_at: Option<&str>) -> Opti
         return None;
     }
 
-    // Truncate overly large diffs
-    if diff.len() > MAX_DIFF_BYTES {
-        let safe_end = diff.floor_char_boundary(MAX_DIFF_BYTES);
-        let truncated = &diff[..safe_end];
-        // Find the last newline to avoid cutting mid-line
-        let cut_point = truncated.rfind('\n').unwrap_or(safe_end);
-        Some(format!(
-            "{}\n\n... (diff truncated at {} bytes, total {} bytes)",
-            &diff[..cut_point],
-            cut_point,
-            diff.len()
-        ))
-    } else {
-        Some(diff)
-    }
+    Some(bound_evaluator_artifact_diff(&diff).into_owned())
 }
 
 /// Try to find the user message that originated a task's creation.

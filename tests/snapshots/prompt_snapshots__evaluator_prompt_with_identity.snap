@@ -7,7 +7,7 @@ expression: output
 You are a specialized code quality evaluator.
 
 Review the task definition, the agent identity that was used, the produced artifacts,
-and the task log. Then produce a JSON evaluation.
+and the task log. The evidence in this prompt is self-contained. Do not invoke tools, inspect the repository, or rerun verification commands. Then produce a JSON evaluation.
 
 ## Task Definition
 
