@@ -9,9 +9,9 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
     ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
-    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint,
-    RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView, SortMode,
-    TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
+    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, InspectorDock, LayoutMode,
+    ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView,
+    SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
     VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
@@ -34,6 +34,63 @@ const SIDE_MIN_WIDTH: u16 = 100;
 /// Width at which the inspector restores to side-by-side after being moved to the bottom.
 /// Higher than SIDE_MIN_WIDTH to prevent flapping at the boundary (hysteresis).
 const SIDE_RESTORE_WIDTH: u16 = 120;
+const MIN_GRAPH_COLS: u16 = 24;
+const MIN_PANEL_COLS: u16 = 20;
+const MIN_GRAPH_ROWS: u16 = 6;
+const MIN_PANEL_ROWS: u16 = 6;
+
+/// Derive graph/inspector rectangles from desired dock+ratio and the current
+/// viewport. No coordinates survive a frame or restart.
+fn split_areas(area: Rect, dock: InspectorDock, percent: u16) -> Option<(Rect, Rect)> {
+    let percent = percent.clamp(10, 90);
+    if dock.is_horizontal() {
+        if area.width < MIN_GRAPH_COLS + MIN_PANEL_COLS {
+            return None;
+        }
+        let panel_width = ((area.width as u32 * percent as u32 / 100) as u16)
+            .clamp(MIN_PANEL_COLS, area.width - MIN_GRAPH_COLS);
+        let graph_width = area.width - panel_width;
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(if dock == InspectorDock::Left {
+                    panel_width
+                } else {
+                    graph_width
+                }),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        Some(if dock == InspectorDock::Left {
+            (split[1], split[0])
+        } else {
+            (split[0], split[1])
+        })
+    } else {
+        if area.height < MIN_GRAPH_ROWS + MIN_PANEL_ROWS {
+            return None;
+        }
+        let panel_height = ((area.height as u32 * percent as u32 / 100) as u16)
+            .clamp(MIN_PANEL_ROWS, area.height - MIN_GRAPH_ROWS);
+        let graph_height = area.height - panel_height;
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(if dock == InspectorDock::Top {
+                    panel_height
+                } else {
+                    graph_height
+                }),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        Some(if dock == InspectorDock::Top {
+            (split[1], split[0])
+        } else {
+            (split[0], split[1])
+        })
+    }
+}
 
 /// Creates a [`Line`] with the lightning-wave animation and elapsed time.
 ///
@@ -161,9 +218,24 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         }
     }
 
-    // ── Responsive breakpoint detection ──
-    // Recomputed each frame from the terminal width. Drives layout decisions below.
-    app.responsive_breakpoint = ResponsiveBreakpoint::from_width(area.width);
+    // ── Responsive breakpoint + dock resolution ──
+    // Resize during a pointer adjustment invalidates the drag-start geometry.
+    if app
+        .layout_drag
+        .is_some_and(|drag| drag.viewport != main_area)
+    {
+        app.layout_drag = None;
+        if matches!(
+            app.scrollbar_drag,
+            Some(super::state::ScrollbarDragTarget::Divider)
+                | Some(super::state::ScrollbarDragTarget::HorizontalDivider)
+        ) {
+            app.scrollbar_drag = None;
+        }
+    }
+    app.layout_viewport = main_area;
+    app.update_responsive_breakpoint(area.width, main_area.height);
+    let resolved_dock = app.resolved_inspector_dock(area.width);
 
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
     match app.responsive_breakpoint {
@@ -266,24 +338,15 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_right_border_area = Rect::default();
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
-                    // Narrow mode is always below SIDE_MIN_WIDTH, so inspector
-                    // goes to the bottom (vertical split) to avoid oscillation.
-                    app.inspector_is_beside = false;
                     if app.right_panel_visible {
-                        let panel_height =
-                            (main_area.height as u32 * app.right_panel_percent as u32 / 100).max(5)
-                                as u16;
-                        let top_height = main_area.height.saturating_sub(panel_height);
-                        let split = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(top_height),
-                                Constraint::Length(panel_height),
-                            ])
-                            .split(main_area);
-                        app.last_graph_area = split[0];
-                        app.scroll.viewport_height = split[0].height as usize;
-                        app.scroll.viewport_width = split[0].width as usize;
+                        if let Some((graph_area, panel_area)) =
+                            split_areas(main_area, resolved_dock, app.right_panel_percent)
+                        {
+                            app.last_graph_area = graph_area;
+                            app.last_right_panel_area = panel_area;
+                            app.scroll.viewport_height = graph_area.height as usize;
+                            app.scroll.viewport_width = graph_area.width as usize;
+                        }
                     } else {
                         app.last_graph_area = main_area;
                         app.last_right_panel_area = Rect::default();
@@ -373,44 +436,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
                     if app.right_panel_visible {
-                        // Hysteresis: use different thresholds for switching directions
-                        // to prevent oscillation at the boundary.
-                        let use_side = if app.inspector_is_beside {
-                            area.width >= SIDE_MIN_WIDTH
-                        } else {
-                            area.width >= SIDE_RESTORE_WIDTH
-                        };
-                        app.inspector_is_beside = use_side;
-                        if use_side {
-                            let right_width = (main_area.width as u32
-                                * app.right_panel_percent as u32
-                                / 100) as u16;
-                            let left_width = main_area.width.saturating_sub(right_width);
-                            let split = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([
-                                    Constraint::Length(left_width),
-                                    Constraint::Length(right_width),
-                                ])
-                                .split(main_area);
-                            app.last_graph_area = split[0];
-                            app.scroll.viewport_height = split[0].height as usize;
-                            app.scroll.viewport_width = split[0].width as usize;
-                        } else {
-                            let panel_height =
-                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
-                                    .max(5) as u16;
-                            let top_height = main_area.height.saturating_sub(panel_height);
-                            let split = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Length(top_height),
-                                    Constraint::Length(panel_height),
-                                ])
-                                .split(main_area);
-                            app.last_graph_area = split[0];
-                            app.scroll.viewport_height = split[0].height as usize;
-                            app.scroll.viewport_width = split[0].width as usize;
+                        if let Some((graph_area, panel_area)) =
+                            split_areas(main_area, resolved_dock, app.right_panel_percent)
+                        {
+                            app.last_graph_area = graph_area;
+                            app.last_right_panel_area = panel_area;
+                            app.scroll.viewport_height = graph_area.height as usize;
+                            app.scroll.viewport_width = graph_area.width as usize;
                         }
                     } else {
                         app.last_graph_area = main_area;
@@ -497,23 +529,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     );
                 }
                 _ => {
-                    // Narrow mode: inspector below (vertical split).
                     if app.right_panel_visible {
-                        let panel_height =
-                            (main_area.height as u32 * app.right_panel_percent as u32 / 100).max(5)
-                                as u16;
-                        let top_height = main_area.height.saturating_sub(panel_height);
-                        let split = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(top_height),
-                                Constraint::Length(panel_height),
-                            ])
-                            .split(main_area);
-
-                        let viz_area = split[0];
-                        let right_area = split[1];
-
+                        let viz_area = app.last_graph_area;
+                        let panel_area = app.last_right_panel_area;
                         draw_viz_content(frame, app, viz_area);
                         if app.scroll.content_height > app.scroll.viewport_height
                             && app.graph_scrollbar_visible()
@@ -528,7 +546,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                             app.scroll.offset_x,
                             app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
                         );
-                        draw_right_panel(frame, app, right_area);
+                        draw_right_panel(frame, app, panel_area);
                     } else {
                         draw_viz_content(frame, app, main_area);
                         if app.scroll.content_height > app.scroll.viewport_height
@@ -585,72 +603,23 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 | LayoutMode::HalfInspector
                 | LayoutMode::TwoThirdsInspector => {
                     if app.right_panel_visible {
-                        // Use the hysteresis state computed in Phase 1.
-                        if app.inspector_is_beside {
-                            let right_width = (main_area.width as u32
-                                * app.right_panel_percent as u32
-                                / 100) as u16;
-                            let left_width = main_area.width.saturating_sub(right_width);
-                            let split = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([
-                                    Constraint::Length(left_width),
-                                    Constraint::Length(right_width),
-                                ])
-                                .split(main_area);
-
-                            let viz_area = split[0];
-                            let right_area = split[1];
-
-                            draw_viz_content(frame, app, viz_area);
-                            if app.scroll.content_height > app.scroll.viewport_height
-                                && app.graph_scrollbar_visible()
-                            {
-                                draw_scrollbar(frame, app, viz_area);
-                            }
-                            app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
-                                frame,
-                                viz_area,
-                                app.scroll.content_width,
-                                app.scroll.viewport_width,
-                                app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow()
-                                    && app.graph_hscrollbar_visible(),
-                            );
-                            draw_right_panel(frame, app, right_area);
-                        } else {
-                            let panel_height =
-                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
-                                    .max(5) as u16;
-                            let top_height = main_area.height.saturating_sub(panel_height);
-                            let split = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Length(top_height),
-                                    Constraint::Length(panel_height),
-                                ])
-                                .split(main_area);
-
-                            let viz_area = split[0];
-                            let right_area = split[1];
-
-                            draw_viz_content(frame, app, viz_area);
-                            if app.scroll.content_height > app.scroll.viewport_height
-                                && app.graph_scrollbar_visible()
-                            {
-                                draw_scrollbar(frame, app, viz_area);
-                            }
-                            app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
-                                frame,
-                                viz_area,
-                                app.scroll.content_width,
-                                app.scroll.viewport_width,
-                                app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow()
-                                    && app.graph_hscrollbar_visible(),
-                            );
-                            draw_right_panel(frame, app, right_area);
+                        let viz_area = app.last_graph_area;
+                        let panel_area = app.last_right_panel_area;
+                        draw_viz_content(frame, app, viz_area);
+                        if app.scroll.content_height > app.scroll.viewport_height
+                            && app.graph_scrollbar_visible()
+                        {
+                            draw_scrollbar(frame, app, viz_area);
                         }
+                        app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                            frame,
+                            viz_area,
+                            app.scroll.content_width,
+                            app.scroll.viewport_width,
+                            app.scroll.offset_x,
+                            app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                        );
+                        draw_right_panel(frame, app, panel_area);
                     } else {
                         draw_viz_content(frame, app, main_area);
                         if app.scroll.content_height > app.scroll.viewport_height
@@ -689,9 +658,16 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     if app.show_help {
         draw_help_overlay(frame, app.is_light_theme);
     }
+    if matches!(app.input_mode, InputMode::Layout)
+        && let Some(overlay) = app.layout_overlay
+    {
+        app.last_dialog_area = draw_layout_overlay(frame, overlay, app.is_light_theme);
+    }
 
     // Confirmation dialog overlay
-    if let InputMode::Confirm(ref action) = app.input_mode {
+    if matches!(app.input_mode, InputMode::Layout) {
+        // Layout overlay assigned its hit area above.
+    } else if let InputMode::Confirm(ref action) = app.input_mode {
         app.last_dialog_area = draw_confirm_dialog(frame, action);
     } else if let InputMode::ChoiceDialog(ref state) = app.input_mode {
         app.last_dialog_area = draw_choice_dialog(frame, state);
@@ -2066,6 +2042,99 @@ fn draw_horizontal_scrollbar(
     scrollbar_area
 }
 
+fn draw_layout_overlay(
+    frame: &mut Frame,
+    overlay: super::state::LayoutOverlayState,
+    is_light: bool,
+) -> Rect {
+    let viewport = frame.area();
+    let width = 64.min(viewport.width.saturating_sub(2)).max(1);
+    let height = 15.min(viewport.height.saturating_sub(2)).max(1);
+    let area = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width) / 2,
+        viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    let draft = overlay.draft;
+    let selected = |active: bool| {
+        if active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(text_primary(is_light))
+        }
+    };
+    let dock_line = Line::from(vec![
+        Span::raw("Dock  "),
+        Span::styled("[a] Auto ", selected(draft.dock == InspectorDock::Auto)),
+        Span::styled("[l] Left ", selected(draft.dock == InspectorDock::Left)),
+        Span::styled("[r] Right ", selected(draft.dock == InspectorDock::Right)),
+        Span::styled("[t] Top ", selected(draft.dock == InspectorDock::Top)),
+        Span::styled("[b] Bottom", selected(draft.dock == InspectorDock::Bottom)),
+    ]);
+    let mode_line = Line::from(vec![
+        Span::raw("Mode  "),
+        Span::styled(
+            "[s] Split ",
+            selected(draft.mode == super::state::InspectorMode::Split),
+        ),
+        Span::styled(
+            "[f] Full ",
+            selected(draft.mode == super::state::InspectorMode::Full),
+        ),
+        Span::styled(
+            "[h] Hide",
+            selected(draft.mode == super::state::InspectorMode::Hidden),
+        ),
+    ]);
+    let size_line = Line::from(vec![
+        Span::raw("Size  "),
+        Span::styled("[1] 1/3 ", selected(draft.size_percent == 33)),
+        Span::styled("[2] 1/2 ", selected(draft.size_percent == 50)),
+        Span::styled("[3] 2/3 ", selected(draft.size_percent == 67)),
+        Span::styled(
+            format!("  [-] shrink   [+] grow   {}%", draft.size_percent),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]);
+    let original = overlay.original;
+    let body = vec![
+        Line::raw(""),
+        dock_line,
+        Line::raw(""),
+        size_line,
+        Line::raw(""),
+        mode_line,
+        Line::raw(""),
+        Line::styled(
+            format!(
+                "Current: {} {}% {:?}",
+                original.dock.label(),
+                original.size_percent,
+                original.mode
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "[Enter/p] Apply    [Esc/c] Cancel",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let block = Block::default()
+        .title(" Layout — keyboard works through Termux / mosh / tmux ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(Paragraph::new(body).block(block), area);
+    area
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Fullscreen inspector borders
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2216,25 +2285,29 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     let is_full_panel = app.layout_mode == LayoutMode::FullInspector;
 
-    // Store divider hit areas for mouse-based resize.
-    // Vertical divider: only in side-by-side mode (inspector beside graph).
-    // Horizontal divider: only in stacked mode (inspector below graph).
-    if !is_full_panel && area.width > 0 && app.last_graph_area.width > 0 && app.inspector_is_beside
-    {
-        // Hit area: 3 columns centered on the left border for easier grabbing.
-        let div_x = area.x.saturating_sub(1);
-        let div_w = 3.min(area.x.saturating_sub(app.last_graph_area.x) + 1);
-        app.last_divider_area = Rect::new(div_x, area.y, div_w, area.height);
+    // Store divider hit areas for all four dock directions. Infer orientation
+    // and boundary from the rectangles derived for this frame.
+    let graph = app.last_graph_area;
+    let side_by_side =
+        area.width > 0 && graph.width > 0 && area.y == graph.y && area.height == graph.height;
+    let stacked =
+        area.height > 0 && graph.height > 0 && area.x == graph.x && area.width == graph.width;
+    if !is_full_panel && side_by_side {
+        let boundary = if area.x < graph.x {
+            area.x + area.width
+        } else {
+            area.x
+        };
+        app.last_divider_area = Rect::new(boundary.saturating_sub(1), area.y, 3, area.height);
         app.last_horizontal_divider_area = Rect::default();
-    } else if !is_full_panel
-        && area.height > 0
-        && app.last_graph_area.height > 0
-        && !app.inspector_is_beside
-    {
-        // Hit area: 3 rows centered on the top border for easier grabbing.
-        let div_y = area.y.saturating_sub(1);
-        let div_h = 3.min(area.y.saturating_sub(app.last_graph_area.y) + 1);
-        app.last_horizontal_divider_area = Rect::new(area.x, div_y, area.width, div_h);
+    } else if !is_full_panel && stacked {
+        let boundary = if area.y < graph.y {
+            area.y + area.height
+        } else {
+            area.y
+        };
+        app.last_horizontal_divider_area =
+            Rect::new(area.x, boundary.saturating_sub(1), area.width, 3);
         app.last_divider_area = Rect::default();
     } else {
         app.last_divider_area = Rect::default();
@@ -8156,6 +8229,17 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
 /// `hints` is a list of (key, description) pairs ordered by importance.
 fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
     match &app.input_mode {
+        InputMode::Layout => (
+            "Layout",
+            "LAYOUT",
+            Color::Yellow,
+            vec![
+                ("a/l/r/t/b", "dock"),
+                ("1/2/3 +/-", "size"),
+                ("Enter", "apply"),
+                ("Esc", "cancel"),
+            ],
+        ),
         InputMode::Search => (
             "Search",
             "SEARCH",
