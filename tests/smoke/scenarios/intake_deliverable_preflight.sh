@@ -60,6 +60,11 @@ git init -b main "$project_root" >/dev/null 2>&1 \
 cd "$project_root"
 wg --dir "$wg_dir" init >/dev/null 2>&1 \
     || loud_fail "wg init failed in scratch dir"
+# Fresh graphs are intentionally graph-only. Select the Claude CLI route
+# explicitly; setup itself is credential-free, and this scenario only needs
+# spawn to render prompt.txt before any model interaction.
+wg --dir "$wg_dir" setup --route claude-cli --scope local --yes >/dev/null 2>&1 \
+    || loud_fail "credential-free Claude CLI route setup failed in scratch dir"
 
 DESC='## Description
 Refresh the e97 seed checkpoint.
