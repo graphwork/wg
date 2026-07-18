@@ -2237,3 +2237,12 @@ owners = [
 ]
 description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route."
 timeout_seconds = 90
+
+[[scenario]]
+name = "nex_bg_process_group_pty"
+script = "scenarios/nex_bg_process_group_pty.sh"
+owners = [
+    "integrate-luca-detached",
+]
+description = "Live human terminal flow for Luca detached-process integration: a real PTY drives wg nex /bg run, status, output, kill, and /cancel. The job persists a start-validated session/process-group identity, produces output through Rust-opened descriptors, and a TERM-ignoring descendant is gone after kill with no orphan group. Credential-free; no model request is made."
+timeout_seconds = 45

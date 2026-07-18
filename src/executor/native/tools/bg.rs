@@ -59,6 +59,7 @@ impl BackgroundTool {
             "command": job.command,
             "status": format!("{:?}", job.status).to_lowercase(),
             "pid": job.pid,
+            "process_group": job.process_group,
             "created_at": job.created_at.to_rfc3339(),
             "output_lines": output_lines,
             "exit_code": job.exit_code,
@@ -191,7 +192,7 @@ impl BackgroundTool {
     }
 
     /// Handle the 'status' action.
-    fn status_action(&self, input: &serde_json::Value, store: &JobStore) -> ToolOutput {
+    fn status_action(&self, input: &serde_json::Value, store: &mut JobStore) -> ToolOutput {
         let job_id = match input.get("job").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => {
@@ -199,6 +200,9 @@ impl BackgroundTool {
             }
         };
 
+        if let Err(error) = store.check_and_update_status(job_id) {
+            return ToolOutput::error(format!("Failed to refresh job: {error}"));
+        }
         match store.get(job_id) {
             Some(job) => {
                 let output = json!({
@@ -211,7 +215,10 @@ impl BackgroundTool {
     }
 
     /// Handle the 'list' action.
-    fn list_action(&self, store: &JobStore) -> ToolOutput {
+    fn list_action(&self, store: &mut JobStore) -> ToolOutput {
+        if let Err(error) = store.refresh() {
+            return ToolOutput::error(format!("Failed to refresh jobs: {error}"));
+        }
         let jobs: Vec<serde_json::Value> =
             store.list().iter().map(|j| self.format_job(j)).collect();
 
