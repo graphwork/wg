@@ -1041,12 +1041,23 @@ pub struct LayoutDragSnapshot {
     pub start_column: u16,
     pub start_row: u16,
     pub start_percent: u16,
+    /// Complete desired-state snapshot used when SIGWINCH cancels a drag.
+    pub original: LayoutPreference,
+    /// Pointer-down alone is not a layout edit. This becomes true only after
+    /// movement on the dock's active axis.
+    pub moved: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutOverlayState {
+    /// Complete pre-modal desired state. Escape restores this verbatim.
     pub original: LayoutPreference,
+    /// State currently rendered behind the overlay (live preview).
     pub draft: LayoutPreference,
+    /// Focus is presentation state rather than a persisted preference, but is
+    /// still part of the user's pre-modal snapshot for reliable cancellation.
+    pub original_focus: FocusedPanel,
+    pub original_single_panel_view: SinglePanelView,
 }
 
 /// Responsive layout breakpoint determined by terminal width.
@@ -14243,21 +14254,55 @@ impl VizApp {
         }
     }
 
+    /// Cancel a coordinate-based adjustment and restore its pointer-down
+    /// desired state. Used by both the Resize event path and the renderer's
+    /// viewport guard so a queued stale Drag can never jump the divider.
+    pub fn cancel_layout_drag(&mut self) {
+        if let Some(snapshot) = self.layout_drag.take() {
+            self.set_layout_preference(snapshot.original);
+        }
+        if matches!(
+            self.scrollbar_drag,
+            Some(ScrollbarDragTarget::Divider) | Some(ScrollbarDragTarget::HorizontalDivider)
+        ) {
+            self.scrollbar_drag = None;
+        }
+    }
+
     pub fn open_layout_overlay(&mut self) {
         self.layout_overlay = Some(LayoutOverlayState {
             original: self.layout_preference,
             draft: self.layout_preference,
+            original_focus: self.focused_panel,
+            original_single_panel_view: self.single_panel_view,
         });
         self.input_mode = InputMode::Layout;
     }
 
+    /// Update the visible modal draft and immediately derive the pane geometry
+    /// from it. Nothing is persisted until Enter, so Escape can still restore
+    /// the complete pre-modal snapshot after any number of live previews.
+    pub fn preview_layout_overlay(&mut self, draft: LayoutPreference) {
+        let draft = draft.bounded();
+        if let Some(overlay) = self.layout_overlay.as_mut() {
+            overlay.draft = draft;
+            self.set_layout_preference(draft);
+        }
+    }
+
     pub fn cancel_layout_overlay(&mut self) {
-        self.layout_overlay = None;
+        if let Some(overlay) = self.layout_overlay.take() {
+            self.set_layout_preference(overlay.original);
+            self.focused_panel = overlay.original_focus;
+            self.single_panel_view = overlay.original_single_panel_view;
+        }
         self.input_mode = InputMode::Normal;
     }
 
     pub fn apply_layout_overlay(&mut self) {
         if let Some(overlay) = self.layout_overlay.take() {
+            // The live preview already applied the draft. Re-apply it here so
+            // this method also remains correct for programmatic callers.
             self.set_layout_preference(overlay.draft);
             self.persist_tab_state();
         }

@@ -574,7 +574,13 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
         Event::Mouse(mouse) if app.mouse_enabled => {
             handle_mouse(app, mouse.kind, mouse.row, mouse.column);
         }
-        Event::Resize(_, _) => {} // handled by next redraw
+        Event::Resize(_, _) => {
+            // A pointer adjustment is expressed in coordinates from its
+            // pointer-down viewport. Cancel immediately, before a queued Drag
+            // can be interpreted against the resized terminal. The next draw
+            // derives fresh rectangles from the pointer-down preference.
+            app.cancel_layout_drag();
+        }
         Event::FocusGained => {
             // OS focus returned to wg's window. tmux re-mirrors the active
             // pane's modes onto the outer terminal lazily, leaving a brief
@@ -1157,40 +1163,75 @@ fn handle_paste(app: &mut VizApp, text: &str) {
 }
 
 fn handle_layout_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    if !modifiers.is_empty() {
+    // Plain keys are authoritative through Termux → mosh → tmux. Shift is
+    // accepted because many terminals report '+' as Shift+'+', but Ctrl/Alt/
+    // Meta remain reserved and cannot accidentally mutate the modal.
+    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META) {
         return;
     }
-    let Some(overlay) = app.layout_overlay.as_mut() else {
+    let Some(mut draft) = app.layout_overlay.map(|overlay| overlay.draft) else {
         app.input_mode = InputMode::Normal;
         return;
     };
     match code {
-        KeyCode::Esc | KeyCode::Char('c') => app.cancel_layout_overlay(),
-        KeyCode::Enter | KeyCode::Char('p') => app.apply_layout_overlay(),
-        KeyCode::Char('a') => overlay.draft.dock = InspectorDock::Auto,
-        KeyCode::Char('l') => overlay.draft.dock = InspectorDock::Left,
-        KeyCode::Char('r') => overlay.draft.dock = InspectorDock::Right,
-        KeyCode::Char('t') => overlay.draft.dock = InspectorDock::Top,
-        KeyCode::Char('b') => overlay.draft.dock = InspectorDock::Bottom,
-        KeyCode::Char('1') => overlay.draft.size_percent = 33,
-        KeyCode::Char('2') => overlay.draft.size_percent = 50,
-        KeyCode::Char('3') => overlay.draft.size_percent = 67,
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            overlay.draft.size_percent =
-                (overlay.draft.size_percent + 5).min(super::state::LayoutPreference::MAX_PERCENT);
+        KeyCode::Esc => {
+            app.cancel_layout_overlay();
+            return;
+        }
+        KeyCode::Enter => {
+            app.apply_layout_overlay();
+            return;
+        }
+        // Vim directions make the four docks easy to remember on a phone:
+        // h=left, j=bottom, k=top, l=right.
+        KeyCode::Char('h') => {
+            draft.dock = InspectorDock::Left;
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('j') => {
+            draft.dock = InspectorDock::Bottom;
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('k') => {
+            draft.dock = InspectorDock::Top;
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('l') => {
+            draft.dock = InspectorDock::Right;
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('a') => {
+            draft.dock = InspectorDock::Auto;
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('+') => {
+            draft.size_percent =
+                (draft.size_percent + 5).min(super::state::LayoutPreference::MAX_PERCENT);
+            draft.mode = InspectorMode::Split;
         }
         KeyCode::Char('-') => {
-            overlay.draft.size_percent = overlay
-                .draft
+            draft.size_percent = draft
                 .size_percent
                 .saturating_sub(5)
                 .max(super::state::LayoutPreference::MIN_PERCENT);
+            draft.mode = InspectorMode::Split;
         }
-        KeyCode::Char('s') => overlay.draft.mode = InspectorMode::Split,
-        KeyCode::Char('f') => overlay.draft.mode = InspectorMode::Full,
-        KeyCode::Char('h') => overlay.draft.mode = InspectorMode::Hidden,
-        _ => {}
+        // '=' cycles the robust, named presets independent of the current
+        // arbitrary percentage: 1/3 → 1/2 → 2/3 → 1/3.
+        KeyCode::Char('=') => {
+            draft.size_percent = match draft.size_percent {
+                0..=32 => 33,
+                33..=49 => 50,
+                50..=66 => 67,
+                _ => 33,
+            };
+            draft.mode = InspectorMode::Split;
+        }
+        KeyCode::Char('f') => draft.mode = InspectorMode::Full,
+        KeyCode::Char('0') => draft.mode = InspectorMode::Hidden,
+        _ => return,
     }
+    app.preview_layout_overlay(draft);
 }
 
 fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
@@ -2443,6 +2484,16 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // docs/bugs/tui-keymap-routing.md §6 Option A).
     if is_ctrl_chord(code, modifiers, 'o') && app.right_panel_tab == RightPanelTab::Chat {
         toggle_chat_pty_mode(app);
+        return;
+    }
+    // Command-mode `p` opens the keyboard-authoritative Panel/Layout modal.
+    // Ctrl+O always lands on graph focus, so this does not collide with the
+    // Settings panel's established `p = activate profile` binding.
+    if matches!(code, KeyCode::Char('p'))
+        && modifiers.is_empty()
+        && app.focused_panel == FocusedPanel::Graph
+    {
+        app.open_layout_overlay();
         return;
     }
     // Global chat-tab navigation: works regardless of focused_panel so
@@ -4209,12 +4260,31 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
     if app.layout_viewport.width > 0 && app.layout_viewport.height > 0 {
         return app.layout_viewport;
     }
-    let graph = app.last_graph_area;
-    let panel = app.last_right_panel_area;
-    let x = graph.x.min(panel.x);
-    let y = graph.y.min(panel.y);
-    let right = (graph.x + graph.width).max(panel.x + panel.width);
-    let bottom = (graph.y + graph.height).max(panel.y + panel.height);
+    // Test/synthetic callers may not have a renderer-owned viewport yet.
+    // Union every non-empty current layout rectangle, including fullscreen
+    // edge strips, rather than letting Rect::default() pull the origin to 0.
+    let rects = [
+        app.last_graph_area,
+        app.last_right_panel_area,
+        app.last_fullscreen_restore_area,
+        app.last_fullscreen_right_border_area,
+        app.last_fullscreen_top_border_area,
+        app.last_fullscreen_bottom_border_area,
+    ];
+    let mut nonempty = rects
+        .into_iter()
+        .filter(|rect| rect.width > 0 && rect.height > 0);
+    let Some(first) = nonempty.next() else {
+        return ratatui::layout::Rect::default();
+    };
+    let (mut x, mut y) = (first.x, first.y);
+    let (mut right, mut bottom) = (first.right(), first.bottom());
+    for rect in nonempty {
+        x = x.min(rect.x);
+        y = y.min(rect.y);
+        right = right.max(rect.right());
+        bottom = bottom.max(rect.bottom());
+    }
     ratatui::layout::Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
 }
 
@@ -4225,11 +4295,7 @@ fn start_fullscreen_edge_drag(app: &mut VizApp, edge: FullscreenEdge, row: u16, 
     if viewport.width == 0 || viewport.height == 0 {
         return;
     }
-    app.set_layout_preference(super::state::LayoutPreference {
-        dock,
-        size_percent: super::state::LayoutPreference::MAX_PERCENT,
-        mode: InspectorMode::Split,
-    });
+    let original = app.layout_preference;
     app.layout_drag = Some(LayoutDragSnapshot {
         dock,
         viewport,
@@ -4238,10 +4304,29 @@ fn start_fullscreen_edge_drag(app: &mut VizApp, edge: FullscreenEdge, row: u16, 
         // Fullscreen begins at 100%; the first inward motion peels graph space
         // off the dragged edge. The visible split remains bounded at 90%.
         start_percent: 100,
+        original,
+        moved: false,
     });
+    // Preserve the legacy no-jump observable on pointer-down without changing
+    // desired state: one border cell leaves a 99%-ish effective panel. The
+    // renderer remains Full until actual inward motion arrives.
+    let extent = if dock.is_horizontal() {
+        viewport.width
+    } else {
+        viewport.height
+    };
+    app.right_panel_percent = if extent > 1 {
+        ((extent.saturating_sub(1) as u32 * 100) / extent as u32) as u16
+    } else {
+        100
+    };
     app.divider_drag_start_pct = 100;
     app.divider_drag_start_col = column;
     app.divider_drag_start_row = row;
+    app.divider_drag_offset = match edge {
+        FullscreenEdge::Left | FullscreenEdge::Top => -1,
+        FullscreenEdge::Right | FullscreenEdge::Bottom => 1,
+    };
     app.scrollbar_drag = Some(if dock.is_horizontal() {
         ScrollbarDragTarget::Divider
     } else {
@@ -4286,8 +4371,7 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
         && app.layout_viewport.height > 0
         && snapshot.viewport != app.layout_viewport
     {
-        app.layout_drag = None;
-        app.scrollbar_drag = None;
+        app.cancel_layout_drag();
         return;
     }
     let (extent, start_axis, current_axis) = if snapshot.dock.is_horizontal() {
@@ -4295,6 +4379,9 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     } else {
         (snapshot.viewport.height, snapshot.start_row, row)
     };
+    if current_axis == start_axis {
+        return;
+    }
     let pct = divider_ratio_from_drag(
         snapshot.dock,
         snapshot.start_percent,
@@ -4302,13 +4389,16 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
         start_axis,
         current_axis,
     );
-    app.right_panel_percent = pct;
-    app.layout_preference.size_percent = pct;
-    app.layout_preference.mode = InspectorMode::Split;
-    app.layout_mode = VizApp::layout_mode_for_percent(pct);
-    app.right_panel_visible = true;
+    app.set_layout_preference(super::state::LayoutPreference {
+        dock: snapshot.dock,
+        size_percent: pct,
+        mode: InspectorMode::Split,
+    });
     app.last_split_percent = pct;
     app.last_split_mode = app.layout_mode;
+    if let Some(drag) = app.layout_drag.as_mut() {
+        drag.moved = true;
+    }
 }
 
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
@@ -4656,6 +4746,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     start_column: column,
                     start_row: row,
                     start_percent: app.right_panel_percent,
+                    original: app.layout_preference,
+                    moved: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_horizontal_divider {
@@ -4673,6 +4765,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     start_column: column,
                     start_row: row,
                     start_percent: app.right_panel_percent,
+                    original: app.layout_preference,
+                    moved: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::HorizontalDivider);
             } else if in_graph_hscrollbar {
@@ -5033,14 +5127,23 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             let finished_layout_drag = app.scrollbar_drag == Some(ScrollbarDragTarget::Divider)
                 || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
             if finished_layout_drag {
-                app.layout_preference.size_percent = app.right_panel_percent.clamp(
-                    super::state::LayoutPreference::MIN_PERCENT,
-                    super::state::LayoutPreference::MAX_PERCENT,
-                );
-                app.layout_preference.mode = InspectorMode::Split;
-                app.persist_tab_state();
+                if app.layout_drag.is_some_and(|drag| !drag.moved) {
+                    // Pointer-down/click is not an edit; restore the exact Full
+                    // or Split preference captured at drag start.
+                    app.cancel_layout_drag();
+                } else {
+                    // Compatibility for synthetic callers without snapshots.
+                    if app.layout_drag.is_none() {
+                        app.set_layout_preference(super::state::LayoutPreference {
+                            dock: app.layout_preference.dock,
+                            size_percent: app.right_panel_percent,
+                            mode: InspectorMode::Split,
+                        });
+                    }
+                    app.persist_tab_state();
+                }
             }
-            if app.scrollbar_drag.is_some() {
+            if finished_layout_drag || app.scrollbar_drag.is_some() {
                 app.scrollbar_drag = None;
                 app.divider_drag_offset = 0;
                 app.divider_drag_start_pct = 0;
@@ -7683,6 +7786,37 @@ mod scrollbar_tests {
             super::divider_ratio_from_drag(InspectorDock::Top, 60, 40, 10, 14),
             70
         );
+    }
+
+    #[test]
+    fn resize_cancels_drag_snapshot_and_stale_motion_cannot_jump_layout() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+
+        let (mut app, _tmp) = build_test_app();
+        let original = LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 55,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(original);
+        app.layout_viewport = Rect::new(0, 0, 100, 40);
+        app.last_graph_area = Rect::new(0, 0, 45, 40);
+        app.last_right_panel_area = Rect::new(45, 0, 55, 40);
+        app.last_divider_area = Rect::new(44, 0, 3, 40);
+
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 45);
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 35);
+        assert_eq!(app.layout_preference.size_percent, 65);
+        assert!(app.layout_drag.is_some());
+
+        super::dispatch_event(&mut app, crossterm::event::Event::Resize(80, 30));
+        assert_eq!(app.layout_preference, original);
+        assert!(app.layout_drag.is_none());
+        assert!(app.scrollbar_drag.is_none());
+
+        // A motion event already queued by the old viewport is harmless.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 90);
+        assert_eq!(app.layout_preference, original);
     }
 
     #[test]
@@ -11228,6 +11362,97 @@ mod chat_tab_navigation_tests {
         assert!(
             !l.filtered_model_suggestions().is_empty(),
             "a bare fragment re-exposes fuzzy suggestions"
+        );
+    }
+
+    #[test]
+    fn ctrl_o_then_plain_p_layout_modal_live_previews_and_cancel_restores() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        let original = super::super::state::LayoutPreference {
+            dock: InspectorDock::Auto,
+            size_percent: 35,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(original);
+        app.focused_panel = FocusedPanel::RightPanel;
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        app.task_panes.insert(task_id, pane);
+
+        // The printable belongs to the child while PTY focus is active.
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(app.layout_overlay.is_none());
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+
+        super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(app.input_mode, InputMode::Layout);
+
+        // Every operation live-previews behind the modal.
+        super::handle_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(app.layout_preference.dock, InspectorDock::Left);
+        super::handle_key(&mut app, KeyCode::Char('='), KeyModifiers::NONE);
+        assert_eq!(app.layout_preference.size_percent, 50);
+        super::handle_key(&mut app, KeyCode::Char('+'), KeyModifiers::SHIFT);
+        assert_eq!(app.layout_preference.size_percent, 55);
+        super::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Full);
+
+        // Escape restores desired state AND pre-modal focus, without saving.
+        super::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.layout_preference, original);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn keyboard_layout_apply_persists_only_tui_state() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.focused_panel = FocusedPanel::Graph;
+        let graph_before = std::fs::read(app.workgraph_dir.join("graph.jsonl")).unwrap();
+        let config_before = std::fs::read(app.workgraph_dir.join("config.toml")).unwrap();
+
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('='), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('0'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(app.layout_preference.dock, InspectorDock::Bottom);
+        assert_eq!(app.layout_preference.size_percent, 50);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Hidden);
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(app.workgraph_dir.join("tui-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["layout"]["dock"], "bottom");
+        assert_eq!(persisted["layout"]["size_percent"], 50);
+        assert_eq!(persisted["layout"]["mode"], "hidden");
+        assert_eq!(
+            std::fs::read(app.workgraph_dir.join("graph.jsonl")).unwrap(),
+            graph_before,
+            "layout persistence must not mutate/create chats"
+        );
+        assert_eq!(
+            std::fs::read(app.workgraph_dir.join("config.toml")).unwrap(),
+            config_before,
+            "layout persistence must not mutate provider config"
         );
     }
 }

@@ -26,14 +26,11 @@ fn text_primary(is_light: bool) -> Color {
     if is_light { Color::Reset } else { Color::White }
 }
 
-/// Minimum terminal width for side-by-side right panel layout.
-/// When the inspector is currently on the right and terminal shrinks below this,
-/// the inspector moves to the bottom.
+// Auto-dock hysteresis thresholds are implemented in `VizApp`; retain the
+// names here because renderer regression tests pin the same public behavior.
+#[cfg(test)]
 const SIDE_MIN_WIDTH: u16 = 100;
 
-/// Width at which the inspector restores to side-by-side after being moved to the bottom.
-/// Higher than SIDE_MIN_WIDTH to prevent flapping at the boundary (hysteresis).
-const SIDE_RESTORE_WIDTH: u16 = 120;
 const MIN_GRAPH_COLS: u16 = 24;
 const MIN_PANEL_COLS: u16 = 20;
 const MIN_GRAPH_ROWS: u16 = 6;
@@ -224,18 +221,19 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         .layout_drag
         .is_some_and(|drag| drag.viewport != main_area)
     {
-        app.layout_drag = None;
-        if matches!(
-            app.scrollbar_drag,
-            Some(super::state::ScrollbarDragTarget::Divider)
-                | Some(super::state::ScrollbarDragTarget::HorizontalDivider)
-        ) {
-            app.scrollbar_drag = None;
-        }
+        app.cancel_layout_drag();
     }
     app.layout_viewport = main_area;
     app.update_responsive_breakpoint(area.width, main_area.height);
     let resolved_dock = app.resolved_inspector_dock(area.width);
+    // Compact is a temporary presentation fallback, never a rewrite of the
+    // desired dock/ratio/mode. Extreme modes still choose their sole visible
+    // pane; Split remembers the user's compact pane across phone rotations.
+    let compact_view = match app.layout_preference.mode {
+        super::state::InspectorMode::Full => SinglePanelView::Detail,
+        super::state::InspectorMode::Hidden => SinglePanelView::Graph,
+        super::state::InspectorMode::Split => app.single_panel_view,
+    };
 
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
     match app.responsive_breakpoint {
@@ -247,7 +245,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.last_fullscreen_right_border_area = Rect::default();
             app.last_fullscreen_top_border_area = Rect::default();
             app.last_fullscreen_bottom_border_area = Rect::default();
-            match app.single_panel_view {
+            match compact_view {
                 SinglePanelView::Graph => {
                     app.last_graph_area = main_area;
                     app.last_right_panel_area = Rect::default();
@@ -471,8 +469,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Phase 3: Draw content using the (possibly updated) scroll offset.
     match app.responsive_breakpoint {
         ResponsiveBreakpoint::Compact => {
-            // Single-panel mode: draw only the active panel.
-            match app.single_panel_view {
+            // Single-panel mode: draw only the effective temporary pane.
+            match compact_view {
                 SinglePanelView::Graph => {
                     draw_viz_content(frame, app, main_area);
                     if app.scroll.content_height > app.scroll.viewport_height
@@ -2048,8 +2046,8 @@ fn draw_layout_overlay(
     is_light: bool,
 ) -> Rect {
     let viewport = frame.area();
-    let width = 64.min(viewport.width.saturating_sub(2)).max(1);
-    let height = 15.min(viewport.height.saturating_sub(2)).max(1);
+    let width = 68.min(viewport.width.saturating_sub(2)).max(1);
+    let height = 16.min(viewport.height.saturating_sub(2)).max(1);
     let area = Rect::new(
         viewport.x + viewport.width.saturating_sub(width) / 2,
         viewport.y + viewport.height.saturating_sub(height) / 2,
@@ -2070,16 +2068,16 @@ fn draw_layout_overlay(
     };
     let dock_line = Line::from(vec![
         Span::raw("Dock  "),
-        Span::styled("[a] Auto ", selected(draft.dock == InspectorDock::Auto)),
-        Span::styled("[l] Left ", selected(draft.dock == InspectorDock::Left)),
-        Span::styled("[r] Right ", selected(draft.dock == InspectorDock::Right)),
-        Span::styled("[t] Top ", selected(draft.dock == InspectorDock::Top)),
-        Span::styled("[b] Bottom", selected(draft.dock == InspectorDock::Bottom)),
+        Span::styled("[h] Left ", selected(draft.dock == InspectorDock::Left)),
+        Span::styled("[j] Bottom ", selected(draft.dock == InspectorDock::Bottom)),
+        Span::styled("[k] Top ", selected(draft.dock == InspectorDock::Top)),
+        Span::styled("[l] Right ", selected(draft.dock == InspectorDock::Right)),
+        Span::styled("[a] Auto", selected(draft.dock == InspectorDock::Auto)),
     ]);
     let mode_line = Line::from(vec![
         Span::raw("Mode  "),
         Span::styled(
-            "[s] Split ",
+            "[split via dock/size] ",
             selected(draft.mode == super::state::InspectorMode::Split),
         ),
         Span::styled(
@@ -2087,17 +2085,18 @@ fn draw_layout_overlay(
             selected(draft.mode == super::state::InspectorMode::Full),
         ),
         Span::styled(
-            "[h] Hide",
+            "[0] Hide",
             selected(draft.mode == super::state::InspectorMode::Hidden),
         ),
     ]);
     let size_line = Line::from(vec![
         Span::raw("Size  "),
-        Span::styled("[1] 1/3 ", selected(draft.size_percent == 33)),
-        Span::styled("[2] 1/2 ", selected(draft.size_percent == 50)),
-        Span::styled("[3] 2/3 ", selected(draft.size_percent == 67)),
         Span::styled(
-            format!("  [-] shrink   [+] grow   {}%", draft.size_percent),
+            "[=] preset ",
+            selected(matches!(draft.size_percent, 33 | 50 | 67)),
+        ),
+        Span::styled(
+            format!("[-] shrink  [+] grow  {}%", draft.size_percent),
             Style::default().fg(Color::Cyan),
         ),
     ]);
@@ -2121,7 +2120,11 @@ fn draw_layout_overlay(
         ),
         Line::raw(""),
         Line::styled(
-            "[Enter/p] Apply    [Esc/c] Cancel",
+            "h/j/k/l dock • a auto • +/- size • = preset • f full • 0 hide",
+            Style::default().fg(Color::Yellow),
+        ),
+        Line::styled(
+            "[Enter] Apply    [Esc] restore snapshot / Cancel",
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -2173,14 +2176,15 @@ fn fullscreen_panel_area(main_area: Rect, app: &super::state::VizApp) -> Rect {
 /// Draw all four fullscreen borders — only on hover (or always when mouse not
 /// supported, for the left restore strip which doubles as click target).
 fn draw_fullscreen_borders(frame: &mut Frame, app: &super::state::VizApp) {
-    let no_mouse = !app.any_motion_mouse;
+    let layout_active = matches!(app.input_mode, InputMode::Layout);
+    let show_keyboard_edges = !app.any_motion_mouse || layout_active;
 
     // Left border (restore strip).
     // Always render so the area is claimed — invisible when not hovered.
     let left = app.last_fullscreen_restore_area;
     if left.width > 0 {
-        if app.fullscreen_restore_hover {
-            draw_restore_strip(frame, left, true);
+        if app.fullscreen_restore_hover || show_keyboard_edges {
+            draw_restore_strip(frame, left, app.fullscreen_restore_hover || layout_active);
         } else {
             // Invisible: plain spaces with default terminal background.
             frame.render_widget(Clear, left);
@@ -2191,8 +2195,13 @@ fn draw_fullscreen_borders(frame: &mut Frame, app: &super::state::VizApp) {
     // Always render so the area is claimed — invisible when not hovered.
     let right = app.last_fullscreen_right_border_area;
     if right.width > 0 {
-        if app.fullscreen_right_hover {
-            draw_fullscreen_border_col(frame, right, '▐', true);
+        if app.fullscreen_right_hover || show_keyboard_edges {
+            draw_fullscreen_border_col(
+                frame,
+                right,
+                '▐',
+                app.fullscreen_right_hover || layout_active,
+            );
         } else {
             // Invisible: plain spaces with default terminal background.
             frame.render_widget(Clear, right);
@@ -2201,14 +2210,19 @@ fn draw_fullscreen_borders(frame: &mut Frame, app: &super::state::VizApp) {
 
     // Top border.
     let top = app.last_fullscreen_top_border_area;
-    if top.height > 0 && (app.fullscreen_top_hover || no_mouse) {
-        draw_fullscreen_border_row(frame, top, '▀', app.fullscreen_top_hover);
+    if top.height > 0 && (app.fullscreen_top_hover || show_keyboard_edges) {
+        draw_fullscreen_border_row(frame, top, '▀', app.fullscreen_top_hover || layout_active);
     }
 
     // Bottom border.
     let bottom = app.last_fullscreen_bottom_border_area;
-    if bottom.height > 0 && (app.fullscreen_bottom_hover || no_mouse) {
-        draw_fullscreen_border_row(frame, bottom, '▄', app.fullscreen_bottom_hover);
+    if bottom.height > 0 && (app.fullscreen_bottom_hover || show_keyboard_edges) {
+        draw_fullscreen_border_row(
+            frame,
+            bottom,
+            '▄',
+            app.fullscreen_bottom_hover || layout_active,
+        );
     }
 }
 
@@ -2314,7 +2328,8 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         app.last_horizontal_divider_area = Rect::default();
     }
 
-    let divider_active = app.divider_hover
+    let divider_active = matches!(app.input_mode, InputMode::Layout)
+        || app.divider_hover
         || app.horizontal_divider_hover
         || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::Divider)
         || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::HorizontalDivider);
@@ -8234,10 +8249,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             "LAYOUT",
             Color::Yellow,
             vec![
-                ("a/l/r/t/b", "dock"),
-                ("1/2/3 +/-", "size"),
-                ("Enter", "apply"),
-                ("Esc", "cancel"),
+                ("h/j/k/l/a", "dock/auto"),
+                ("+/-/=", "size/preset"),
+                ("f/0", "full/hide"),
+                ("Enter/Esc", "apply/cancel"),
             ],
         ),
         InputMode::Search => (
@@ -15865,6 +15880,73 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════
     // Responsive breakpoint tests
     // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn four_sided_split_geometry_honors_dock_ratio_and_minimums() {
+        let area = Rect::new(5, 7, 100, 40);
+
+        let (graph, panel) = split_areas(area, InspectorDock::Left, 30).unwrap();
+        assert_eq!(panel, Rect::new(5, 7, 30, 40));
+        assert_eq!(graph, Rect::new(35, 7, 70, 40));
+
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 30).unwrap();
+        assert_eq!(graph, Rect::new(5, 7, 70, 40));
+        assert_eq!(panel, Rect::new(75, 7, 30, 40));
+
+        let (graph, panel) = split_areas(area, InspectorDock::Top, 30).unwrap();
+        assert_eq!(panel, Rect::new(5, 7, 100, 12));
+        assert_eq!(graph, Rect::new(5, 19, 100, 28));
+
+        let (graph, panel) = split_areas(area, InspectorDock::Bottom, 30).unwrap();
+        assert_eq!(graph, Rect::new(5, 7, 100, 28));
+        assert_eq!(panel, Rect::new(5, 35, 100, 12));
+
+        // Ratios yield to hard pane minima, never the other way around.
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 90).unwrap();
+        assert_eq!(graph.width, MIN_GRAPH_COLS);
+        assert_eq!(panel.width, area.width - MIN_GRAPH_COLS);
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 10).unwrap();
+        assert_eq!(panel.width, MIN_PANEL_COLS);
+        assert_eq!(graph.width, area.width - MIN_PANEL_COLS);
+        assert!(split_areas(Rect::new(0, 0, 43, 40), InspectorDock::Left, 50).is_none());
+        assert!(split_areas(Rect::new(0, 0, 100, 11), InspectorDock::Top, 50).is_none());
+    }
+
+    #[test]
+    fn explicit_dock_and_ratio_survive_phone_rotation_compact_fallback() {
+        use crate::tui::viz_viewer::state::{
+            InspectorMode, LayoutPreference, ResponsiveBreakpoint,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let desired = LayoutPreference {
+            dock: InspectorDock::Left,
+            size_percent: 63,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(desired);
+
+        let mut wide = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        wide.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
+
+        let mut phone = Terminal::new(TestBackend::new(40, 24)).unwrap();
+        phone.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
+        assert_eq!(app.layout_preference, desired);
+
+        // Rotating back past compact hysteresis restores the exact explicit
+        // edge and ratio; Auto policy is never allowed to overwrite it.
+        let mut rotated = Terminal::new(TestBackend::new(70, 40)).unwrap();
+        rotated.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
+        assert_eq!(app.layout_preference, desired);
+        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
+        assert_eq!(app.last_right_panel_area.width, 44); // floor(70 * .63)
+    }
 
     #[test]
     fn test_responsive_breakpoint_from_width() {
