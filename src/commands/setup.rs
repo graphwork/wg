@@ -1776,7 +1776,14 @@ pub fn run() -> Result<()> {
             .map(|i| i + 1)
             .unwrap_or(0)
     } else {
-        0
+        // `wg setup` is itself an explicit configuration action. Recommend Pi
+        // here, but keep the graph-only option visible; no file is written
+        // until the user completes and confirms the wizard.
+        route_choices
+            .iter()
+            .position(|route| *route == SetupRoute::Pi)
+            .map(|i| i + 1)
+            .unwrap_or(0)
     };
 
     let route_idx = Select::new()
@@ -2294,7 +2301,7 @@ fn configure_openrouter(
 fn configure_pi(
     scope: SetupScope,
     existing_global: &Config,
-    _existing: &Config,
+    existing: &Config,
 ) -> Result<(
     Option<EndpointChoices>,
     bool,
@@ -2408,12 +2415,38 @@ fn configure_pi(
         }
     };
 
-    Ok((
-        endpoint,
-        inherit_global_endpoints,
-        vec![],
-        "pi:openrouter/z-ai/glm-5.2".to_string(),
-    ))
+    println!();
+    println!(
+        "Pi's OpenRouter routes require an OpenRouter credential in Pi, including free models."
+    );
+    println!("Free model aliases are volatile, so WG does not silently pin or replace one.");
+    let configured = existing
+        .coordinator
+        .model
+        .as_deref()
+        .filter(|model| model.starts_with("pi:"))
+        .or_else(|| {
+            existing
+                .agent
+                .model
+                .starts_with("pi:")
+                .then_some(existing.agent.model.as_str())
+        });
+    let model: String = Input::new()
+        .with_prompt("Pi provider/model (handler-first)")
+        .default(
+            configured
+                .unwrap_or("pi:openrouter/z-ai/glm-5.2")
+                .to_string(),
+        )
+        .interact_text()?;
+    if !model.starts_with("pi:") {
+        bail!(
+            "Pi setup requires a handler-first `pi:<provider>/<model>` route; no fallback was applied"
+        );
+    }
+
+    Ok((endpoint, inherit_global_endpoints, vec![], model))
 }
 
 /// Configure OpenAI provider.

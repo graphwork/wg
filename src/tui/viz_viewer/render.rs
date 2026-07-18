@@ -7342,8 +7342,13 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
+                let recommendation = if choice.internal_executor == "pi" {
+                    " (recommended · open source)"
+                } else {
+                    ""
+                };
                 spans.push(Span::styled(
-                    format!("{} {}", bullet, choice.label),
+                    format!("{} {}{}", bullet, choice.label, recommendation),
                     chosen_style,
                 ));
                 if i + 1 < ADD_NEW_EXECUTOR_CHOICES.len() {
@@ -7357,7 +7362,12 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             let mut tile_x = area.x.saturating_add(15);
             let exec_y = area.y.saturating_add(exec_row_idx as u16);
             for (i, choice) in ADD_NEW_EXECUTOR_CHOICES.iter().enumerate() {
-                let tile_w: u16 = (choice.label.len() as u16) + 4; // "◉ X  "
+                let recommendation_width = if choice.internal_executor == "pi" {
+                    28
+                } else {
+                    0
+                };
+                let tile_w: u16 = (choice.label.len() as u16) + recommendation_width + 4;
                 app.launcher_add_executor_hits.push((
                     i,
                     Rect {

@@ -471,3 +471,20 @@ These are *the only two* that have a tentative-but-not-final answer. Everything 
 Every key-scope decision in §1 cites a row in `docs/config-canonical.md` §2 (full key inventory). The audit's §3 stale-value list maps to §6's migration drop list. The audit's §4 minimal-global is the §3.1 example. The audit's §5 minimal-project is the §3.3 example. The audit's §6 migration plan is the basis for §6 of this doc (we adopt items 1, 2, 3, 4, 5).
 
 If a reviewer disagrees with a scope assignment in §1, the resolution path is: open the audit row for that key and re-decide there. The audit is the source of truth; this design doc just commits to a UX over it.
+
+## Pi-first recommendation is not a dispatch default
+
+Pi is listed first and labeled **recommended · open source** in the explicit
+New Chat launcher, and is preselected in the attended `wg setup` route chooser.
+This is product guidance inside an action the user deliberately opened—not an
+implicit route. A fresh install and `wg tui` open/reopen remain graph-only and
+must not write a config, activate a profile, create a chat, or select a provider.
+Only confirming setup or New Chat persists the selected route.
+
+The setup wizard accepts an exact handler-first `pi:<provider>/<model>` route
+and preserves an already configured Pi route as its initial value. OpenRouter
+requires a credential in Pi even for zero-price models. Free aliases are
+volatile, so WG does not permanently hardcode, silently substitute, or fall
+back across execution systems when one disappears; the user must select and
+confirm another available Pi model. Saved chat identity and configured profile
+remain authoritative over this recommendation.

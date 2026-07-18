@@ -1378,12 +1378,14 @@ pub struct AddNewExecutorChoice {
 
 /// The executor options offered in Add-new mode.
 ///
-/// Order is user-visible in the new-chat radio: `claude`, `codex`, `pi`,
-/// then the remaining executors. Pi is intentionally third (after Claude
-/// and Codex, before Nex) per fix-tui-new-chat-pi-executor — this makes the
-/// implemented Pi chat path reachable from the normal create-chat flow instead
-/// of only via `--executor pi` on the CLI.
+/// Pi is intentionally first: opening New Chat is an explicit create action,
+/// so it may recommend and preselect Pi without changing the graph, profile, or
+/// provider. Nothing is persisted until the user confirms creation.
 pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
+    AddNewExecutorChoice {
+        label: "pi",
+        internal_executor: "pi",
+    },
     AddNewExecutorChoice {
         label: "claude",
         internal_executor: "claude",
@@ -1391,10 +1393,6 @@ pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
     AddNewExecutorChoice {
         label: "codex",
         internal_executor: "codex",
-    },
-    AddNewExecutorChoice {
-        label: "pi",
-        internal_executor: "pi",
     },
     // External chat-capable CLIs prototyped after the established executors so
     // their addition does not shift the core indices the launcher tests pin
@@ -31148,9 +31146,9 @@ mod launcher_redesign_tests {
         assert_eq!(
             labels,
             vec![
+                "pi",
                 "claude",
                 "codex",
-                "pi",
                 "opencode",
                 "nex",
                 "octomind",

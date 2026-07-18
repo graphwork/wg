@@ -1731,8 +1731,9 @@ name = "tui_new_chat_launcher_pi_executor"
 script = "scenarios/tui_new_chat_launcher_pi_executor.sh"
 owners = [
     "fix-tui-new-chat-pi-executor",
+    "make-pi-the",
 ]
-description = "Pins fix-tui-new-chat-pi-executor: the wg tui new-chat launcher (+) MUST visibly include a `pi` executor radio option, ordered third (after claude and codex, before nex/opencode). Selecting pi + entering model openrouter/z-ai/glm-5.2 creates a .chat-N task with executor resolving to pi and model preserving the OpenRouter route. Drives a real wg tui inside tmux; metadata assertions suffice (no live model call). Fails if the Pi option is absent or ordered incorrectly."
+description = "Pins Pi-first explicit creation: the real tmux-driven New Chat launcher shows Pi first, preselected, and labeled recommended/open source; opening it alone creates no graph row. Confirming Pi plus an exact handler-first model creates one .chat-N row resolving to Pi and preserves the route."
 timeout_seconds = 90
 
 [[scenario]]

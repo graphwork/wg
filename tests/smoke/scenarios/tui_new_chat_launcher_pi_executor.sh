@@ -238,25 +238,18 @@ echo "codex_pos=${codex_pos:-?} pi_pos=${pi_pos:-?} nex_pos=${nex_pos:-?} openco
 if [[ -z "$codex_pos" || -z "$pi_pos" ]]; then
     loud_fail "could not locate codex/pi positions for ordering assertion"
 fi
-if [[ "$pi_pos" -le "$codex_pos" ]]; then
-    loud_fail "pi appears BEFORE codex (expected third, after codex): pi_pos=$pi_pos codex_pos=$codex_pos"
+if [[ "$pi_pos" -ge "$claude_pos" || "$pi_pos" -ge "$codex_pos" ]]; then
+    loud_fail "pi is not first: pi_pos=$pi_pos claude_pos=$claude_pos codex_pos=$codex_pos"
 fi
-if [[ -n "$nex_pos" && "$pi_pos" -ge "$nex_pos" ]]; then
-    loud_fail "pi appears AFTER nex (expected third, before nex): pi_pos=$pi_pos nex_pos=$nex_pos"
+if ! grep -q 'recommended.*open source' <<<"$launcher_text"; then
+    loud_fail "pi is first but lacks the recommended/open-source explanation"
 fi
-if [[ -n "$opencode_pos" && "$pi_pos" -ge "$opencode_pos" ]]; then
-    loud_fail "pi appears AFTER opencode (expected third, before opencode): pi_pos=$pi_pos opencode_pos=$opencode_pos"
-fi
-echo "phase 2: pi ordered after codex and before nex/opencode (third overall) ✓"
+echo "phase 2: pi is first and clearly recommended as open source ✓"
 
-# ── Phase 3: select pi, enter model, launch ───────────────────────────
-# Already in Add-new mode with Executor field focused (from Phase 2).
-# The executor radio starts at claude (index 0). Press Right (or 'l') twice
-# to reach pi (index 2: claude=0, codex=1, pi=2).
-tmux send-keys -t "$session" "Right"
-sleep 0.2
-tmux send-keys -t "$session" "Right"
-sleep 0.5
+# ── Phase 3: accept preselected pi, enter model, launch ───────────────
+# Already in Add-new mode with Executor focused. Pi is index 0 and is
+# preselected by this explicit create action; opening the launcher alone did
+# not create a graph row.
 
 # Verify pi is now the highlighted executor.
 exec_text=$(tui_text)

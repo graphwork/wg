@@ -51,7 +51,9 @@ impl SetupRoute {
             Self::Openrouter => "OpenRouter — one API key, every major provider (uses nex)",
             Self::ClaudeCli => "Claude Code CLI — local `claude` login, Anthropic models",
             Self::CodexCli => "OpenAI Codex CLI — local `codex` login, OpenAI models",
-            Self::Pi => "Pi — self-auth pi worker/chat routes, optional WG OpenRouter for agency",
+            Self::Pi => {
+                "Pi (recommended) — open-source execution system; choose any Pi provider/model"
+            }
             Self::Local => "Local — Ollama / vLLM / llama.cpp on localhost (uses nex)",
             Self::NexCustom => {
                 "Custom — bring your own OAI-compatible URL + key + model (uses nex)"
@@ -75,10 +77,10 @@ impl SetupRoute {
     /// All six routes, in display order.
     pub fn all() -> &'static [SetupRoute] {
         &[
+            Self::Pi,
             Self::Openrouter,
             Self::ClaudeCli,
             Self::CodexCli,
-            Self::Pi,
             Self::Local,
             Self::NexCustom,
         ]
