@@ -672,6 +672,32 @@ fn rewrite_config_reset_argv(args: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Restore the conventional Unix CLI behavior for an output-only command.
+///
+/// Rust ignores SIGPIPE by default, which turns a closed downstream pipe into
+/// an `EPIPE`; the standard `println!` macros then panic while reporting that
+/// otherwise-routine condition. `wg show` is commonly piped into short readers
+/// such as `head`, so let the kernel terminate it quietly with SIGPIPE instead.
+/// This is deliberately scoped to `show`: long-lived service/network commands
+/// retain Rust's ignored-SIGPIPE behavior, and output failures other than a
+/// closed pipe are still reported normally.
+#[cfg(unix)]
+fn restore_default_sigpipe_for_show() -> Result<()> {
+    // SAFETY: installing SIG_DFL for SIGPIPE is an async-signal-safe libc
+    // operation. This runs on the main thread before `show` starts writing.
+    let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    if previous == libc::SIG_ERR {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to restore default SIGPIPE handling for wg show");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe_for_show() -> Result<()> {
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // Handle subcommand-level help before clap parses (since we disable_help_flag globally)
     maybe_print_subcommand_help();
@@ -1513,7 +1539,10 @@ fn main() -> Result<()> {
                 commands::gc::run(&workgraph_dir, dry_run, include_done, older.as_deref())
             }
         }
-        Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
+        Commands::Show { id } => {
+            restore_default_sigpipe_for_show()?;
+            commands::show::run(&workgraph_dir, &id, cli.json)
+        }
         Commands::Trace { command } => match command {
             TraceCommands::Show {
                 id,
