@@ -2228,3 +2228,12 @@ owners = [
 ]
 description = "Installed-binary real tmux/nested-PTY regression for reproduce-and-fix: a custom chat issues four visible wg add commands while graph snapshots refresh rapidly, the mosh-compatible input policy is active, and the outer pane resizes down/back. The child proves stdout/stderr belong to its embedded PTY rather than ratatui's outer PTY; physical capture and tui-dump agree that Added task/Use --after appear once only in Chat while every graph row appears once. A deliberately unwritable tui-state path exercises terminal-silent diagnostics, then post-burst Close/Hide proves live input and a coherent graph-only repaint with no stale output or displaced borders. Credential-free."
 timeout_seconds = 60
+
+[[scenario]]
+name = "provider_completion_refusal_breaker"
+script = "scenarios/provider_completion_refusal_breaker.sh"
+owners = [
+    "integrate-luca-provider",
+]
+description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route."
+timeout_seconds = 90

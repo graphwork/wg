@@ -9,12 +9,16 @@ use std::path::Path;
 use worksgood::agency;
 use worksgood::config::Config;
 use worksgood::graph::{
-    LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage, parse_wg_tokens,
+    FailureClass, LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage,
+    parse_wg_tokens,
 };
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::profile;
 use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
-use worksgood::service::{ProviderErrorKind, ProviderHealth, classify_error, extract_provider_id};
+use worksgood::service::{
+    ExecutionOutcome, HealthRouteKey, ProviderErrorKind, ProviderHealth, classify_error,
+    classify_execution_outcome, extract_provider_id, load_agent_outcome,
+};
 use worksgood::stream_event::{self, StreamEvent};
 
 use crate::commands::is_process_alive;
@@ -573,8 +577,26 @@ fn track_provider_health(
             }
         };
 
-        // Extract provider ID from agent executor and model
-        let provider_id = extract_provider_id(&agent.executor, agent.model.as_deref());
+        // Spawn persists the canonical handler+wire+endpoint breaker domain.
+        // Historical rows fall back to the explicitly-labelled legacy bucket;
+        // never guess Pi/Nex endpoint identity from model substrings for new rows.
+        let spawn_metadata = load_spawn_health_metadata(output_file).unwrap_or_else(|error| {
+            eprintln!(
+                "[provider-health] Warning: invalid spawn metadata for agent {}: {}",
+                agent_id, error
+            );
+            None
+        });
+        let provider_id = spawn_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.health_route.as_ref())
+            .map(HealthRouteKey::id)
+            .unwrap_or_else(|| {
+                format!(
+                    "legacy:{}",
+                    extract_provider_id(&agent.executor, agent.model.as_deref())
+                )
+            });
 
         // Get task to check for failure information
         let task = match graph.get_task(task_id) {
@@ -585,15 +607,25 @@ fn track_provider_health(
             }
         };
 
-        // Extract error information
+        // Extract legacy diagnostics only after checking typed provenance.
         let (exit_code, stderr) = extract_error_info(&task.failure_reason, output_file);
-
-        // Classify the error
-        let error_kind = classify_error(exit_code, &stderr);
+        let outcome = validated_agent_outcome(agent_id, task_id, output_file, &spawn_metadata);
+        let error_kind = outcome
+            .as_ref()
+            .and_then(|record| classify_execution_outcome(&record.outcome))
+            .or_else(|| {
+                if outcome.is_some() {
+                    // CompletionAccepted/CompletionRefused are explicitly not
+                    // provider failures. Do not let blocker titles or verify
+                    // stderr override that structural result.
+                    None
+                } else {
+                    classify_typed_or_legacy_failure(task.failure_class, exit_code, &stderr)
+                }
+            });
 
         match error_kind {
-            ProviderErrorKind::FatalProvider => {
-                // This is a provider-level failure - track it
+            Some(ProviderErrorKind::FatalProvider) => {
                 eprintln!(
                     "[provider-health] Fatal provider error for '{}': {} (exit: {:?}, stderr: {})",
                     provider_id,
@@ -604,20 +636,28 @@ fn track_provider_health(
 
                 provider_health.record_failure(
                     &provider_id,
-                    error_kind,
+                    ProviderErrorKind::FatalProvider,
                     task.failure_reason
                         .as_deref()
                         .unwrap_or("unknown error")
                         .to_string(),
                 );
             }
-            ProviderErrorKind::Transient | ProviderErrorKind::FatalTask => {
-                // For successful completion or non-provider errors, record success to reset counters
-                // But only if the task actually completed successfully
-                if task.status == worksgood::graph::Status::Done {
+            Some(ProviderErrorKind::Transient | ProviderErrorKind::FatalTask) | None => {
+                // Only an actual accepted+Done completion proves route health.
+                // Refusals and task failures leave any earlier outage signal
+                // unchanged; they neither increment nor reset the breaker.
+                if task.status == worksgood::graph::Status::Done
+                    && outcome.as_ref().is_none_or(|record| {
+                        matches!(record.outcome, ExecutionOutcome::CompletionAccepted)
+                    })
+                {
+                    // Preserve the legacy success-reset contract for historical
+                    // runs that predate outcome sidecars. A typed refusal can
+                    // never masquerade as success, but missing provenance alone
+                    // does not change established counter policy.
                     provider_health.record_success(&provider_id);
                 }
-                // For transient/task errors, don't count against provider health
             }
         }
     }
@@ -651,6 +691,89 @@ fn track_provider_health(
     provider_health.save(dir)?;
 
     Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SpawnHealthMetadata {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    health_route: Option<HealthRouteKey>,
+}
+
+fn load_spawn_health_metadata(output_file: &str) -> Result<Option<SpawnHealthMetadata>> {
+    let Some(agent_dir) = Path::new(output_file).parent() else {
+        return Ok(None);
+    };
+    let path = agent_dir.join("metadata.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path)?;
+    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+        format!("Failed to parse spawn metadata from {}", path.display())
+    })?))
+}
+
+fn validated_agent_outcome(
+    agent_id: &str,
+    task_id: &str,
+    output_file: &str,
+    metadata: &Option<SpawnHealthMetadata>,
+) -> Option<worksgood::service::AgentExecutionOutcome> {
+    let outcome = match load_agent_outcome(output_file) {
+        Ok(outcome) => outcome?,
+        Err(error) => {
+            eprintln!(
+                "[provider-health] Warning: invalid execution outcome for agent {}: {}",
+                agent_id, error
+            );
+            return None;
+        }
+    };
+    let Some(metadata) = metadata else {
+        eprintln!(
+            "[provider-health] Ignoring outcome for agent {} without spawn metadata",
+            agent_id
+        );
+        return None;
+    };
+    let identity_matches = metadata.agent_id.as_deref() == Some(agent_id)
+        && metadata.task_id.as_deref() == Some(task_id)
+        && metadata.run_id.as_deref() == Some(outcome.run_id.as_str())
+        && outcome.agent_id == agent_id
+        && outcome.task_id == task_id;
+    if !identity_matches {
+        eprintln!(
+            "[provider-health] Ignoring execution outcome with mismatched agent/task/run identity for {}",
+            agent_id
+        );
+        return None;
+    }
+    Some(outcome)
+}
+
+fn classify_typed_or_legacy_failure(
+    failure_class: Option<FailureClass>,
+    exit_code: Option<i32>,
+    stderr: &str,
+) -> Option<ProviderErrorKind> {
+    let kind = match failure_class {
+        Some(FailureClass::ApiError400Document)
+        | Some(FailureClass::AgentHardTimeout)
+        | Some(FailureClass::DeliverableMissing)
+        | Some(FailureClass::NoOperationalOutput) => ProviderErrorKind::FatalTask,
+        Some(FailureClass::ApiError429RateLimit)
+        | Some(FailureClass::ApiError5xxTransient)
+        | Some(FailureClass::WrapperInternal) => ProviderErrorKind::Transient,
+        Some(FailureClass::ExecutorConfig) => ProviderErrorKind::FatalProvider,
+        Some(FailureClass::AgentExitNonzero) | None => classify_error(exit_code, stderr),
+    };
+    Some(kind)
 }
 
 /// Extract error information from task failure reason and output file
@@ -1650,6 +1773,154 @@ mod tests {
             task.assigned.as_deref(),
             Some("agent-1"),
             "Task should remain assigned during grace period"
+        );
+    }
+
+    #[test]
+    fn provider_breaker_uses_completion_provenance_not_refusal_prose() {
+        use worksgood::config::ExecutionSystemKey;
+        use worksgood::service::{
+            AgentExecutionOutcome, CompletionRefusalCode, ExecutionOutcome, HealthRouteKey,
+            ProviderHealth,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let graph_path = dir.join("graph.jsonl");
+        let refusal = "Cannot mark 'satellite' as done: blocked by 1 unresolved task(s):\n  - parent (Authentication failed HTTP 401 quota): FailedPendingEval";
+
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(Task {
+            id: "satellite".to_string(),
+            title: "Satellite".to_string(),
+            status: Status::Failed,
+            failure_class: Some(FailureClass::AgentExitNonzero),
+            failure_reason: Some(refusal.to_string()),
+            ..Default::default()
+        }));
+        graph.add_node(worksgood::graph::Node::Task(Task {
+            id: "provider-auth".to_string(),
+            title: "Provider auth".to_string(),
+            status: Status::Failed,
+            failure_class: Some(FailureClass::AgentExitNonzero),
+            failure_reason: Some("Agent exited with code 1".to_string()),
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &graph_path).unwrap();
+
+        let route = HealthRouteKey {
+            system: ExecutionSystemKey {
+                handler: "codex".to_string(),
+                provider: "openai-codex-cli".to_string(),
+            },
+            endpoint_fingerprint: "self-authenticated".to_string(),
+        };
+        let route_id = route.id();
+        let mut registry = AgentRegistry::new();
+        let mut refused_dead = Vec::new();
+        let mut auth_dead = Vec::new();
+
+        for index in 0..3 {
+            let agent_dir = dir.join("agents").join(format!("refusal-{index}"));
+            fs::create_dir_all(&agent_dir).unwrap();
+            let output = agent_dir.join("output.log");
+            fs::write(&output, format!("{refusal}\n")).unwrap();
+            let agent_id = registry.register_agent_with_model(
+                99_000 + index,
+                "satellite",
+                "codex",
+                &output.to_string_lossy(),
+                Some("gpt-5.5"),
+            );
+            let run_id = format!("refusal-run-{index}");
+            fs::write(
+                agent_dir.join("metadata.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "agent_id": agent_id,
+                    "task_id": "satellite",
+                    "run_id": run_id,
+                    "health_route": route,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                agent_dir.join(worksgood::service::provider_health::AGENT_OUTCOME_FILE),
+                serde_json::to_vec(&AgentExecutionOutcome {
+                    agent_id: agent_id.clone(),
+                    task_id: "satellite".to_string(),
+                    run_id,
+                    recorded_at: chrono::Utc::now().to_rfc3339(),
+                    outcome: ExecutionOutcome::CompletionRefused {
+                        code: CompletionRefusalCode::Blocked,
+                    },
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            refused_dead.push((
+                agent_id,
+                "satellite".to_string(),
+                99_000 + index,
+                output.to_string_lossy().to_string(),
+                DeadReason::ProcessExited,
+            ));
+        }
+
+        for index in 0..3 {
+            let agent_dir = dir.join("agents").join(format!("auth-{index}"));
+            fs::create_dir_all(&agent_dir).unwrap();
+            let output = agent_dir.join("output.log");
+            fs::write(&output, "authentication failed (HTTP 401)\n").unwrap();
+            let agent_id = registry.register_agent_with_model(
+                98_000 + index,
+                "provider-auth",
+                "codex",
+                &output.to_string_lossy(),
+                Some("gpt-5.5"),
+            );
+            let run_id = format!("auth-run-{index}");
+            fs::write(
+                agent_dir.join("metadata.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "agent_id": agent_id,
+                    "task_id": "provider-auth",
+                    "run_id": run_id,
+                    "health_route": route,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            auth_dead.push((
+                agent_id,
+                "provider-auth".to_string(),
+                98_000 + index,
+                output.to_string_lossy().to_string(),
+                DeadReason::ProcessExited,
+            ));
+        }
+        registry.save(dir).unwrap();
+        let locked = AgentRegistry::load_locked(dir).unwrap();
+        let mut config = Config::default();
+        config.coordinator.provider_failure_threshold = 3;
+        config.coordinator.on_provider_failure = "pause".to_string();
+
+        track_provider_health(dir, &refused_dead, &locked, &config).unwrap();
+        let health = ProviderHealth::load(dir).unwrap();
+        assert!(
+            health.providers.is_empty(),
+            "typed graph refusals must neither create nor increment a provider counter"
+        );
+        assert!(!health.service_paused);
+
+        track_provider_health(dir, &auth_dead, &locked, &config).unwrap();
+        let health = ProviderHealth::load(dir).unwrap();
+        let provider = health.providers.get(&route_id).unwrap();
+        assert_eq!(provider.consecutive_failures, 3);
+        assert!(provider.is_paused);
+        assert!(
+            health.service_paused,
+            "real provider auth failures remain visible"
         );
     }
 
