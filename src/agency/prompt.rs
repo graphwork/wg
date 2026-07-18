@@ -406,14 +406,18 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         out.push_str("\n\n");
         out.push_str(
             "Review the task definition, the agent identity that was used, the produced artifacts,\n\
-             and the task log. Then produce a JSON evaluation.\n\n",
+             and the task log. The evidence in this prompt is self-contained: do not invoke\n\
+             tools, inspect the repository, or rerun verification commands. Then produce a JSON\n\
+             evaluation.\n\n",
         );
     } else {
         out.push_str("# Evaluator Instructions\n\n");
         out.push_str(
             "You are an evaluator assessing the quality of work performed by an AI agent.\n\
              Review the task definition, the agent identity that was used, the produced artifacts,\n\
-             and the task log. Then produce a JSON evaluation.\n\n",
+             and the task log. The evidence in this prompt is self-contained: do not invoke\n\
+             tools, inspect the repository, or rerun verification commands. Then produce a JSON\n\
+             evaluation.\n\n",
         );
     }
 
@@ -482,6 +486,16 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
             let _ = writeln!(out, "- `{}`", artifact);
         }
         out.push('\n');
+    }
+
+    if let Some(diff) = input.artifact_diff {
+        out.push_str("## Artifact Diff\n\n");
+        out.push_str("```diff\n");
+        out.push_str(diff);
+        if !diff.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n\n");
     }
 
     // -- Log --
@@ -1339,7 +1353,7 @@ mod tests {
             log_entries: &log,
             started_at: Some("2025-05-01T10:00:00Z"),
             completed_at: Some("2025-05-01T11:00:00Z"),
-            artifact_diff: None,
+            artifact_diff: Some("diff --git a/src/main.rs b/src/main.rs\n+fn feature_x() {}\n"),
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
@@ -1380,6 +1394,10 @@ mod tests {
         assert!(output.contains("## Task Artifacts"));
         assert!(output.contains("- `src/main.rs`"));
         assert!(output.contains("- `tests/test_main.rs`"));
+        assert!(output.contains("## Artifact Diff"));
+        assert!(output.contains("diff --git a/src/main.rs b/src/main.rs"));
+        assert!(output.contains("+fn feature_x() {}"));
+        assert!(output.contains("do not invoke\ntools"));
 
         // Log
         assert!(output.contains("## Task Log"));
