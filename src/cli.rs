@@ -9,7 +9,7 @@ use worksgood::nex_cli::NexArgs;
 #[command(disable_help_flag = true)]
 #[command(disable_help_subcommand = true)]
 pub struct Cli {
-    /// Path to the WG directory (default: .wg in current dir; legacy .workgraph accepted)
+    /// Path to the graph directory (default: .wg; legacy .workgraph accepted for compatibility)
     #[arg(long, global = true)]
     pub dir: Option<PathBuf>,
 
@@ -915,7 +915,7 @@ pub enum Commands {
     /// Check the graph for issues (cycles, orphan references)
     Check,
 
-    /// Diagnose the workgraph environment (host tools, auth, daemon state).
+    /// Diagnose the WorksGood environment (host tools, auth, daemon state).
     /// Exit code 0 = all green, 1 = warnings, 2 = errors.
     Doctor,
 
@@ -2282,6 +2282,10 @@ pub enum Commands {
 
     /// Interactive configuration wizard for first-time setup
     Setup {
+        /// Repair or migrate WorksGood-managed agent guides in this project
+        /// and ~/.claude/CLAUDE.md, preserving all user-authored surrounding text.
+        #[arg(long)]
+        repair_guides: bool,
         /// One of the named routes: openrouter, claude-cli, codex-cli, pi, local, nex-custom.
         /// Picks a complete, working config end-to-end (executor + tiers + login/profile wiring
         /// when applicable). Use with `--yes` for non-interactive setup.
@@ -2920,20 +2924,20 @@ pub enum HtmlPublishCommands {
         rsync_flags: Option<String>,
 
         /// Title shown at the top of the rendered page. Wins over
-        /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`
+        /// `[project].title` / `[project].name` in `<graph_dir>/config.toml`
         /// and overrides the default `hostname:/repo/path` source label for
         /// portable public exports.
         #[arg(long = "title")]
         title: Option<String>,
 
         /// One-line byline / tagline shown under the title. Wins over
-        /// `[project].byline` in `<workgraph_dir>/config.toml`.
+        /// `[project].byline` in `<graph_dir>/config.toml`.
         #[arg(long = "byline")]
         byline: Option<String>,
 
         /// Path to a markdown file rendered as the page abstract (relative
-        /// to `<workgraph_dir>` if not absolute). When unset, the renderer
-        /// falls back to `<workgraph_dir>/about.md`.
+        /// to `<graph_dir>` if not absolute). When unset, the renderer
+        /// falls back to `<graph_dir>/about.md`.
         #[arg(long = "abstract")]
         abstract_path: Option<String>,
     },
@@ -3596,7 +3600,7 @@ pub enum PilotCommands {
         #[arg(long = "dry-run")]
         dry_run: bool,
         /// Where to keep the pilot's runtime state (node pid/url, minted identities).
-        /// Default: `<workgraph_dir>/pilot`.
+        /// Default: `<graph_dir>/pilot`.
         #[arg(long = "state-dir")]
         state_dir: Option<String>,
         /// Stand up the nodes + wiring but SKIP the live end-to-end check (faster; for a
@@ -3608,7 +3612,7 @@ pub enum PilotCommands {
     /// Show the pilot's current state — node URL/pid, minted identities, applied safe
     /// defaults — read from the state dir.
     Status {
-        /// The pilot state dir (default: `<workgraph_dir>/pilot`).
+        /// The pilot state dir (default: `<graph_dir>/pilot`).
         #[arg(long = "state-dir")]
         state_dir: Option<String>,
     },
@@ -3616,7 +3620,7 @@ pub enum PilotCommands {
     /// Tear down the pilot: stop the fed-node(s). Idempotent — a `down` with nothing
     /// running is a clean no-op. By default identities are KEPT (in `wg secret` custody).
     Down {
-        /// The pilot state dir (default: `<workgraph_dir>/pilot`).
+        /// The pilot state dir (default: `<graph_dir>/pilot`).
         #[arg(long = "state-dir")]
         state_dir: Option<String>,
         /// Also wipe the minted identities/keystore + graph state (the rehearsal cleanup).

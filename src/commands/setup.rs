@@ -19,15 +19,34 @@ use crate::commands::login::{
 };
 use worksgood::secret::{Backend, SecretsConfig, resolve_ref};
 
-/// Marker used to detect whether WG directives are already present in agent guides.
-const CLAUDE_MD_MARKER: &str = "<!-- WG-managed -->";
+/// Versioned delimiters for the WorksGood-owned region in agent guides.
+///
+/// Keeping both ends explicit lets upgrades replace only our bytes while
+/// preserving user-authored text before and after the block exactly.
+const MANAGED_GUIDE_START: &str = "<!-- worksgood-managed-guide:v1:start -->";
+const MANAGED_GUIDE_END: &str = "<!-- worksgood-managed-guide:v1:end -->";
+const LEGACY_GUIDE_MARKERS: [&str; 3] = [
+    "<!-- WG-managed -->",
+    "<!-- wg-managed -->",
+    "<!-- workgraph-managed -->",
+];
 
-/// The WG directives block appended to agent guides.
-const CLAUDE_MD_DIRECTIVES: &str = r#"<!-- WG-managed -->
-# WG (project-specific guide)
+/// Known final lines from the unversioned guide templates shipped before v1.
+/// These are deliberately exact: an unfamiliar marked block is not safe to
+/// rewrite because we cannot know where its managed region ends.
+const LEGACY_GUIDE_ENDINGS: [&str; 4] = [
+    "a bug. Update both together.\n",
+    "a bug. Update both together.\r\n",
+    "Everything gets dispatched through `wg add` and `wg service start`.\n",
+    "Everything gets dispatched through `wg add` and `wg service start`.\r\n",
+];
+
+/// The WorksGood directives block appended to agent guides.
+const MANAGED_GUIDE_DIRECTIVES: &str = r#"<!-- worksgood-managed-guide:v1:start -->
+# WorksGood (`wg`) project guide
 
 This file is the **layer-2** project guide for agents working in this
-WG project. It is NOT the universal chat-agent / worker-agent
+WorksGood task graph. It is NOT the universal chat-agent / worker-agent
 contract — that is bundled inside the `wg` binary and emitted by:
 
 ```
@@ -49,11 +68,14 @@ This guide is written to both `CLAUDE.md` and `AGENTS.md` and kept in
 lock-step. The two files exist because Claude Code and Codex CLI look for
 different filenames, but they should never drift in content. Any divergence is
 a bug. Update both together.
-"#;
+<!-- worksgood-managed-guide:v1:end -->"#;
 
 /// CLI arguments for `wg setup` (non-interactive mode).
 #[derive(Debug, Clone, Default)]
 pub struct SetupArgs {
+    /// Repair/migrate project AGENTS.md + CLAUDE.md and ~/.claude/CLAUDE.md,
+    /// then exit without changing model configuration.
+    pub repair_guides: bool,
     /// One of the 5 named routes (preferred): openrouter, claude-cli,
     /// codex-cli, local, nex-custom.
     pub route: Option<String>,
@@ -398,21 +420,29 @@ pub fn format_summary(choices: &SetupChoices) -> String {
     lines.join("\n")
 }
 
-/// Check whether a CLAUDE.md file already contains WG directives.
-pub fn has_workgraph_directives(path: &Path) -> bool {
+/// Check whether an agent guide contains a current or recognized legacy block.
+pub fn has_managed_guide(path: &Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
-        content.contains(CLAUDE_MD_MARKER)
+        content.contains(MANAGED_GUIDE_START)
+            || LEGACY_GUIDE_MARKERS
+                .iter()
+                .any(|marker| content.contains(marker))
     } else {
         false
     }
+}
+
+fn has_current_managed_guide(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|content| content.contains(MANAGED_GUIDE_START))
 }
 
 /// Configure ~/.claude/CLAUDE.md with WG directives.
 ///
 /// - If ~/.claude/ doesn't exist, it is created.
 /// - If CLAUDE.md doesn't exist, it is created with the directives.
-/// - If CLAUDE.md exists but has no WG marker, directives are appended.
-/// - If CLAUDE.md already contains the marker, it is left unchanged (idempotent).
+/// - If CLAUDE.md exists but has no managed marker, directives are appended.
+/// - A current block is replaced in place (normally a byte-identical no-op).
+/// - A recognized legacy block is upgraded in place.
 ///
 /// Returns a status string for display and whether changes were made.
 pub fn configure_claude_md() -> Result<(String, bool)> {
@@ -443,10 +473,6 @@ pub fn configure_project_agent_guides(project_dir: &Path) -> Result<(String, boo
 
 /// Shared implementation for configuring a CLAUDE.md at a specific path.
 fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
-    if has_workgraph_directives(claude_md) {
-        return Ok((format!("{} already configured", claude_md.display()), false));
-    }
-
     // Ensure parent directory exists
     if let Some(parent) = claude_md.parent() {
         std::fs::create_dir_all(parent)
@@ -454,30 +480,100 @@ fn configure_claude_md_at(claude_md: &Path) -> Result<(String, bool)> {
     }
 
     if claude_md.exists() {
-        // Append to existing file
         let existing = std::fs::read_to_string(claude_md)
             .with_context(|| format!("Failed to read {}", claude_md.display()))?;
+        if let Some((start, end)) = managed_guide_region(&existing)? {
+            let mut new_content = String::with_capacity(
+                existing.len() + MANAGED_GUIDE_DIRECTIVES.len() - (end - start),
+            );
+            new_content.push_str(&existing[..start]);
+            new_content.push_str(MANAGED_GUIDE_DIRECTIVES);
+            new_content.push_str(&existing[end..]);
+            if new_content == existing {
+                return Ok((format!("{} already configured", claude_md.display()), false));
+            }
+            std::fs::write(claude_md, new_content)
+                .with_context(|| format!("Failed to write {}", claude_md.display()))?;
+            return Ok((
+                format!("Migrated WorksGood guide in {}", claude_md.display()),
+                true,
+            ));
+        }
+
+        // Unmarked content belongs to the user. Keep every existing byte and
+        // append a separately-delimited managed region.
         let separator = if existing.ends_with('\n') || existing.is_empty() {
             "\n"
         } else {
             "\n\n"
         };
-        let new_content = format!("{}{}{}", existing, separator, CLAUDE_MD_DIRECTIVES);
+        let new_content = format!("{}{}{}", existing, separator, MANAGED_GUIDE_DIRECTIVES);
         std::fs::write(claude_md, new_content)
             .with_context(|| format!("Failed to write {}", claude_md.display()))?;
         Ok((
-            format!("Updated {} with WG directives", claude_md.display()),
+            format!("Updated {} with WorksGood guide", claude_md.display()),
             true,
         ))
     } else {
         // Create new file
-        std::fs::write(claude_md, CLAUDE_MD_DIRECTIVES)
+        std::fs::write(claude_md, MANAGED_GUIDE_DIRECTIVES)
             .with_context(|| format!("Failed to create {}", claude_md.display()))?;
         Ok((
-            format!("Created {} with WG directives", claude_md.display()),
+            format!("Created {} with WorksGood guide", claude_md.display()),
             true,
         ))
     }
+}
+
+/// Return the byte range occupied by a current or recognized legacy block.
+fn managed_guide_region(content: &str) -> Result<Option<(usize, usize)>> {
+    if let Some(start) = content.find(MANAGED_GUIDE_START) {
+        let tail = &content[start..];
+        let relative_end = tail.find(MANAGED_GUIDE_END).ok_or_else(|| {
+            anyhow::anyhow!(
+                "found {MANAGED_GUIDE_START} without {MANAGED_GUIDE_END}; refusing to guess where user content begins"
+            )
+        })?;
+        return Ok(Some((
+            start,
+            start + relative_end + MANAGED_GUIDE_END.len(),
+        )));
+    }
+
+    for marker in LEGACY_GUIDE_MARKERS {
+        if let Some(start) = content.find(marker) {
+            let tail = &content[start..];
+            for ending in LEGACY_GUIDE_ENDINGS {
+                if let Some(relative_end) = tail.find(ending) {
+                    return Ok(Some((start, start + relative_end + ending.len())));
+                }
+            }
+            // Legacy generated files commonly ended exactly at the managed
+            // block. EOF is therefore safe only when there is no evidence of
+            // trailing user content after the final non-empty managed line.
+            if tail
+                .trim_end()
+                .ends_with("Everything gets dispatched through `wg add` and `wg service start`.")
+                || tail.trim_end().ends_with("a bug. Update both together.")
+            {
+                return Ok(Some((start, content.len())));
+            }
+            bail!(
+                "found legacy managed-guide marker {marker} but not a known block ending; refusing to overwrite possible user content"
+            );
+        }
+    }
+    Ok(None)
+}
+
+/// Explicit repair/migration surface for a project and the global Claude guide.
+pub fn repair_agent_guides() -> Result<bool> {
+    let project_dir = std::env::current_dir().context("could not determine current directory")?;
+    let (project_status, project_changed) = configure_project_agent_guides(&project_dir)?;
+    let (global_status, global_changed) = configure_claude_md()?;
+    println!("{project_status}");
+    println!("{global_status}");
+    Ok(project_changed || global_changed)
 }
 
 /// Result of an API key validation attempt.
@@ -1045,7 +1141,7 @@ fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
     None
 }
 
-fn setup_workgraph_dir() -> PathBuf {
+fn setup_graph_dir() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".wg")
@@ -1087,7 +1183,7 @@ fn maybe_complete_openrouter_login(
     api_key_file: Option<&str>,
     scope: SetupScope,
 ) -> Result<bool> {
-    let workgraph_dir = setup_workgraph_dir();
+    let graph_dir = setup_graph_dir();
     let login_scopes = setup_openrouter_login_scopes(scope);
 
     if let Some(path) = api_key_file
@@ -1096,7 +1192,7 @@ fn maybe_complete_openrouter_login(
         let mut report = None;
         for login_scope in login_scopes {
             report = Some(login::configure_openrouter_credential(
-                &workgraph_dir,
+                &graph_dir,
                 login_scope,
                 OpenRouterCredentialSource::SecretValue {
                     value: secret.clone(),
@@ -1123,7 +1219,7 @@ fn maybe_complete_openrouter_login(
         let mut report = None;
         for login_scope in login_scopes {
             report = Some(login::configure_openrouter_credential(
-                &workgraph_dir,
+                &graph_dir,
                 login_scope,
                 OpenRouterCredentialSource::EnvVar(var_name.to_string()),
                 true,
@@ -1263,6 +1359,10 @@ fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
 pub fn run_with_args(args: &SetupArgs) -> Result<()> {
+    if args.repair_guides {
+        repair_agent_guides()?;
+        return Ok(());
+    }
     let non_interactive = !std::io::stdin().is_terminal() || args.yes || args.dry_run;
     if non_interactive && args.route.is_none() && args.provider.is_none() {
         if let Some(model) = args.model.as_deref() {
@@ -2931,7 +3031,7 @@ fn guide_claude_md_install() -> Result<String> {
     let home = dirs::home_dir().context("could not determine home directory")?;
     let claude_md = home.join(".claude/CLAUDE.md");
 
-    if has_workgraph_directives(&claude_md) {
+    if has_current_managed_guide(&claude_md) {
         return Ok("already configured ✓".to_string());
     }
 
@@ -2940,8 +3040,10 @@ fn guide_claude_md_install() -> Result<String> {
         "Configuring ~/.claude/CLAUDE.md suppresses them so Claude uses `wg` commands instead."
     );
 
-    let action = if claude_md.exists() {
-        "Append WG directives to"
+    let action = if has_managed_guide(&claude_md) {
+        "Migrate the WorksGood-managed guide in"
+    } else if claude_md.exists() {
+        "Append a WorksGood guide to"
     } else {
         "Create"
     };
@@ -3520,7 +3622,9 @@ mod tests {
         assert!(status.contains("Created"));
 
         let content = std::fs::read_to_string(&claude_md).unwrap();
-        assert!(content.contains(CLAUDE_MD_MARKER));
+        assert!(content.contains(MANAGED_GUIDE_START));
+        assert!(content.contains(MANAGED_GUIDE_END));
+        assert!(!content.to_ascii_lowercase().contains("workgraph"));
         assert!(content.contains("wg agent-guide"));
         assert!(content.contains("layer-2"));
         assert!(content.contains("wg quickstart"));
@@ -3543,7 +3647,7 @@ mod tests {
         assert!(content.contains("# My Existing Config"));
         assert!(content.contains("Some custom rules here."));
         // WG directives appended
-        assert!(content.contains(CLAUDE_MD_MARKER));
+        assert!(content.contains(MANAGED_GUIDE_START));
         assert!(content.contains("wg agent-guide"));
     }
 
@@ -3586,7 +3690,7 @@ mod tests {
         let content_after_second = std::fs::read_to_string(&claude_md).unwrap();
         assert_eq!(content_after_first, content_after_second);
         assert_eq!(
-            content_after_second.matches(CLAUDE_MD_MARKER).count(),
+            content_after_second.matches(MANAGED_GUIDE_START).count(),
             1,
             "marker should appear exactly once"
         );
@@ -3603,26 +3707,26 @@ mod tests {
     }
 
     #[test]
-    fn test_has_workgraph_directives_false_for_missing_file() {
+    fn test_has_managed_guide_false_for_missing_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let claude_md = tmp.path().join("CLAUDE.md");
-        assert!(!has_workgraph_directives(&claude_md));
+        assert!(!has_managed_guide(&claude_md));
     }
 
     #[test]
-    fn test_has_workgraph_directives_false_for_plain_file() {
+    fn test_has_managed_guide_false_for_plain_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let claude_md = tmp.path().join("CLAUDE.md");
         std::fs::write(&claude_md, "# Just some markdown\n").unwrap();
-        assert!(!has_workgraph_directives(&claude_md));
+        assert!(!has_managed_guide(&claude_md));
     }
 
     #[test]
-    fn test_has_workgraph_directives_true_after_configure() {
+    fn test_has_managed_guide_true_after_configure() {
         let tmp = tempfile::TempDir::new().unwrap();
         let claude_md = tmp.path().join("CLAUDE.md");
         configure_claude_md_at(&claude_md).unwrap();
-        assert!(has_workgraph_directives(&claude_md));
+        assert!(has_managed_guide(&claude_md));
     }
 
     #[test]
@@ -3643,11 +3747,53 @@ mod tests {
     #[test]
     fn test_claude_md_directives_contain_critical_rules() {
         // The project guide delegates universal rules to the bundled agent guide.
-        assert!(CLAUDE_MD_DIRECTIVES.contains("wg agent-guide"));
-        assert!(CLAUDE_MD_DIRECTIVES.contains("layer-2"));
-        assert!(CLAUDE_MD_DIRECTIVES.contains("wg quickstart"));
-        assert!(CLAUDE_MD_DIRECTIVES.contains("wg service start"));
-        assert!(CLAUDE_MD_DIRECTIVES.contains("lock-step"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("WorksGood"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("wg agent-guide"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("layer-2"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("wg quickstart"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("wg service start"));
+        assert!(MANAGED_GUIDE_DIRECTIVES.contains("lock-step"));
+        assert!(
+            !MANAGED_GUIDE_DIRECTIVES
+                .to_ascii_lowercase()
+                .contains("workgraph")
+        );
+    }
+
+    #[test]
+    fn test_legacy_managed_guide_is_upgraded_in_place_and_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let guide = tmp.path().join("CLAUDE.md");
+        let before = "# User preface\n\n";
+        let legacy = "<!-- wg-managed -->\n# WorkGraph\n\nUse workgraph for task management.\n\nThis guide is written to both `CLAUDE.md` and `AGENTS.md` and kept in\nlock-step. The two files exist because Claude Code and Codex CLI look for\ndifferent filenames, but they should never drift in content. Any divergence is\na bug. Update both together.\n";
+        let after = "\n<!-- user appendix -->\nKeep this byte-for-byte.\n";
+        std::fs::write(&guide, format!("{before}{legacy}{after}")).unwrap();
+
+        let (status, changed) = configure_claude_md_at(&guide).unwrap();
+        assert!(changed);
+        assert!(status.contains("Migrated"));
+        let migrated = std::fs::read_to_string(&guide).unwrap();
+        assert!(migrated.starts_with(before));
+        assert!(migrated.ends_with(after));
+        assert_eq!(migrated.matches(MANAGED_GUIDE_START).count(), 1);
+        assert_eq!(migrated.matches(MANAGED_GUIDE_END).count(), 1);
+        assert!(!migrated.to_ascii_lowercase().contains("workgraph"));
+
+        let (_, changed_again) = configure_claude_md_at(&guide).unwrap();
+        assert!(!changed_again);
+        assert_eq!(std::fs::read_to_string(&guide).unwrap(), migrated);
+    }
+
+    #[test]
+    fn test_unknown_legacy_block_is_not_overwritten() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let guide = tmp.path().join("CLAUDE.md");
+        let original = "before\n<!-- WG-managed -->\nunknown managed shape\nafter\n";
+        std::fs::write(&guide, original).unwrap();
+
+        let error = configure_claude_md_at(&guide).unwrap_err().to_string();
+        assert!(error.contains("refusing to overwrite"));
+        assert_eq!(std::fs::read_to_string(&guide).unwrap(), original);
     }
 
     // ── parse_model_ids_from_response ─────────────────────────────────

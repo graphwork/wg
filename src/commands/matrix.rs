@@ -189,7 +189,7 @@ pub fn run_login(dir: &Path) -> Result<()> {
 
     if matrix_config.homeserver_url.is_none() || matrix_config.username.is_none() {
         anyhow::bail!(
-            "Matrix not configured. Set homeserver and username in ~/.config/workgraph/matrix.toml:\n\n\
+            "Matrix not configured. Set homeserver and username in ~/.config/worksgood/matrix.toml:\n\n\
              homeserver_url = \"https://matrix.org\"\n\
              username = \"@user:matrix.org\"\n\
              password = \"your_password\""
@@ -199,7 +199,7 @@ pub fn run_login(dir: &Path) -> Result<()> {
     if matrix_config.password.is_none() {
         anyhow::bail!(
             "No password configured. The 'login' command requires a password.\n\n\
-             Add to ~/.config/workgraph/matrix.toml:\n\
+             Add to ~/.config/worksgood/matrix.toml:\n\
              password = \"your_password\"\n\n\
              (You can remove access_token after adding password)"
         );

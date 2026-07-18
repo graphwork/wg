@@ -3535,6 +3535,7 @@ fn main() -> Result<()> {
             ServerCommands::Connect { user } => commands::server::connect(user.as_deref()),
         },
         Commands::Setup {
+            repair_guides,
             route,
             provider,
             scope,
@@ -3549,6 +3550,7 @@ fn main() -> Result<()> {
             backend,
         } => {
             let args = commands::setup::SetupArgs {
+                repair_guides,
                 route,
                 provider,
                 scope,

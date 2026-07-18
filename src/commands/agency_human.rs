@@ -46,7 +46,7 @@ fn slugify(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// Derive a project label from the workgraph dir (its parent directory name).
+/// Derive a project label from the graph directory (its parent directory name).
 fn project_label(workgraph_dir: &Path) -> String {
     workgraph_dir
         .parent()
@@ -215,7 +215,7 @@ fn run_add_with_sender(
         .map(str::to_string)
         .unwrap_or_else(|| project_label(workgraph_dir));
     let handshake_msg = format!(
-        "You've been added to the '{}' workgraph as {}. Reply YES to join.",
+        "You've been added to the '{}' task graph as {}. Reply YES to join.",
         project, name
     );
 

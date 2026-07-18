@@ -645,7 +645,7 @@ pub(crate) fn classify_model_tier(model: &str) -> KnowledgeTier {
 /// Check if Telegram escalation is configured and available.
 ///
 /// Looks for a valid Telegram configuration in either the project-local
-/// `.wg/notify.toml` or global `~/.config/workgraph/notify.toml`.
+/// `.wg/notify.toml` or global `~/.config/worksgood/notify.toml`.
 /// Returns true if Telegram bot token and chat ID are configured.
 fn is_telegram_configured(workgraph_dir: &Path) -> bool {
     // Try project-local config first
@@ -656,14 +656,11 @@ fn is_telegram_configured(workgraph_dir: &Path) -> bool {
         return true;
     }
 
-    // Try global config
-    if let Some(global_config_path) = dirs::config_dir() {
-        let global_config_path = global_config_path.join("workgraph").join("notify.toml");
-        if let Ok(config) = NotifyConfig::load_from(&global_config_path)
-            && TelegramConfig::from_notify_config(&config).is_ok()
-        {
-            return true;
-        }
+    // Try the canonical global config, including the diagnostic legacy fallback.
+    if let Ok(Some(config)) = NotifyConfig::load_default()
+        && TelegramConfig::from_notify_config(&config).is_ok()
+    {
+        return true;
     }
 
     false
@@ -1516,6 +1513,19 @@ mod tests {
             title: title.to_string(),
             ..Task::default()
         }
+    }
+
+    #[test]
+    fn essential_worker_prompt_has_current_works_good_terminology() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let graph_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&graph_dir).unwrap();
+        let prompt = build_essential_guide(&graph_dir);
+        assert!(prompt.contains("task graph") || prompt.contains("Graph"));
+        assert!(
+            !prompt.to_ascii_lowercase().contains("workgraph"),
+            "essential worker prompt leaked stale product branding"
+        );
     }
 
     #[test]

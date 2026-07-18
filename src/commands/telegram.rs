@@ -26,7 +26,7 @@ use worksgood::notify::telegram::{TelegramChannel, TelegramConfig};
 pub fn run_listen(dir: &Path, chat_id: Option<&str>) -> Result<()> {
     let notify = NotifyConfig::load(Some(Path::new(".")))
         .context("Failed to load notification config")?
-        .context("No notify.toml found. Create one at ~/.config/workgraph/notify.toml")?;
+        .context("No notify.toml found. Create one at ~/.config/worksgood/notify.toml")?;
     let channels = TelegramChannel::all_from_notify_config(&notify)
         .context("Failed to build Telegram channels")?;
     if channels.is_empty() {
@@ -313,8 +313,8 @@ pub fn run_send(chat_id: Option<&str>, message: &str) -> Result<()> {
 /// bot.
 pub fn run_list_bots(json: bool) -> Result<()> {
     // Match the project-local-then-global lookup the other telegram subcommands
-    // use (see `load_telegram_config`): try `.workgraph/notify.toml` from CWD
-    // first, then fall back to `~/.config/workgraph/notify.toml`.
+    // use (see `load_telegram_config`): try `.wg/notify.toml` from CWD
+    // first, then fall back to `~/.config/worksgood/notify.toml`.
     let notify = match NotifyConfig::load(Some(Path::new(".")))? {
         Some(c) => c,
         None => {
@@ -351,9 +351,7 @@ pub fn run_list_bots(json: bool) -> Result<()> {
         );
     } else if channels.is_empty() {
         println!("Telegram: no bots configured");
-        println!(
-            "\nAdd a [telegram] block to ~/.config/workgraph/notify.toml or .workgraph/notify.toml."
-        );
+        println!("\nAdd a [telegram] block to ~/.config/worksgood/notify.toml or .wg/notify.toml.");
         println!(
             "Single-bot (legacy):\n  [telegram]\n  bot_token = \"...\"\n  chat_id = \"...\"\n"
         );
@@ -402,7 +400,7 @@ pub fn run_status(json: bool) -> Result<()> {
             } else {
                 println!("Telegram: not configured");
                 println!("\nAdd a [telegram] section to your notify.toml:");
-                println!("  ~/.config/workgraph/notify.toml");
+                println!("  ~/.config/worksgood/notify.toml");
                 println!("  or .wg/notify.toml");
                 println!();
                 println!("  [telegram]");
@@ -644,7 +642,7 @@ fn get_state_file_path() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
     Ok(home
         .join(".config")
-        .join("workgraph")
+        .join("worksgood")
         .join("telegram_update_id"))
 }
 
@@ -683,7 +681,7 @@ fn bot_banner(config: &TelegramConfig) -> String {
 fn load_telegram_config() -> Result<TelegramConfig> {
     let notify_config = NotifyConfig::load(Some(Path::new(".")))
         .context("Failed to load notification config")?
-        .context("No notify.toml found. Create one at ~/.config/workgraph/notify.toml")?;
+        .context("No notify.toml found. Create one at ~/.config/worksgood/notify.toml")?;
     TelegramConfig::from_notify_config(&notify_config)
 }
 

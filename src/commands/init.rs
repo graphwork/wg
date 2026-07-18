@@ -11,7 +11,7 @@ agents/
 # Service files
 service/
 
-# Never commit credentials (Matrix config should be in ~/.config/workgraph/)
+# Never commit credentials (Matrix config should be in ~/.config/worksgood/)
 matrix.toml
 *.secret
 *.credentials

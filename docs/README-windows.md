@@ -1,8 +1,8 @@
-# Running workgraph on Windows
+# Running WorksGood on Windows
 
-Workgraph runs natively on Windows (tested on Windows 11 ARM64; x86_64 via
+WorksGood runs natively on Windows (tested on Windows 11 ARM64; x86_64 via
 emulation works too). This page is the "what's different" guide — if you've
-already run workgraph on Linux or macOS, read it top-to-bottom once, then keep
+already run `wg` on Linux or macOS, read it top-to-bottom once, then keep
 it as a reference for gotchas.
 
 ## TL;DR
@@ -17,7 +17,7 @@ it as a reference for gotchas.
    - `claude login` — writes `~/.claude/credentials.json`; the daemon picks
      it up automatically.
    - Headless: put your `sk-ant-oat01-…` token in a file and reference it
-     from `.workgraph/config.toml` under `[auth]`. See
+     from `.wg/config.toml` under `[auth]`. See
      [Auth](#authentication) below.
 4. `wg init` in your project, then `wg service start` — daemon runs, agents
    dispatch, graph progresses.
@@ -46,7 +46,7 @@ it as a reference for gotchas.
 ## Shell requirements
 
 **Git for Windows bash is required.** The daemon shells out to `bash` to run
-spawned task-agent wrapper scripts (`.workgraph/agents/<id>/run.sh`). The
+spawned task-agent wrapper scripts (`.wg/agents/<id>/run.sh`). The
 bash binary is typically at `C:\Program Files\Git\usr\bin\bash.exe`; make
 sure it's on your `PATH`. WSL bash won't work — it runs inside the WSL VFS
 and can't see your Windows working tree the way Git for Windows' mingw
@@ -68,32 +68,32 @@ options, in order of preference:
 ### Option A: `claude login` (recommended)
 
 Run `claude login` once on the machine. It writes `~/.claude/credentials.json`
-with a refreshable token. The CLI reads that file automatically — workgraph
+with a refreshable token. The CLI reads that file automatically — WorksGood
 doesn't need to know about your token at all. This is the normal path when
 you're a Claude Code subscriber.
 
 ### Option B: headless OAuth token via `[auth]` in config.toml
 
 If you can't run `claude login` (e.g., the daemon starts at boot before any
-user is logged in), store a bare `sk-ant-oat01-…` token somewhere workgraph
-can read and point `.workgraph/config.toml` at it:
+user is logged in), store a bare `sk-ant-oat01-…` token somewhere `wg`
+can read and point `.wg/config.toml` at it:
 
 ```toml
 [auth]
-claude_code_oauth_token_file = "~/.config/workgraph/oauth-token"
+claude_code_oauth_token_file = "~/.config/worksgood/oauth-token"
 ```
 
 The file should contain the token on a single line, with nothing else. Lock
 it down:
 
 ```
-icacls "%USERPROFILE%\.config\workgraph\oauth-token" /inheritance:r /grant "%USERNAME%:R"
+icacls "%USERPROFILE%\.config\worksgood\oauth-token" /inheritance:r /grant "%USERNAME%:R"
 ```
 
-(On Unix: `chmod 600 ~/.config/workgraph/oauth-token`.)
+(On Unix: `chmod 600 ~/.config/worksgood/oauth-token`.)
 
 Inline form (`claude_code_oauth_token = "..."`) also works, but means the
-token lives in `.workgraph/config.toml` — keep that file out of version
+token lives in `.wg/config.toml` — keep that file out of version
 control if you use this form.
 
 ### Option C: env var (ad-hoc)
@@ -155,7 +155,7 @@ that build is clean.
 - `git worktree add` bails trying to create leading directories because
   it renders the prefix as forward slashes (`//?/C:/…`).
 
-Workgraph strips the `\\?\` prefix before handing paths to either. If you
+WorksGood strips the `\\?\` prefix before handing paths to either. If you
 see it in a log line, that's fine for diagnostic context; if you see it
 on the *left* of a command failing with "No such file or directory",
 file a bug — something missed the sanitizer.
@@ -192,7 +192,7 @@ token in `ANTHROPIC_API_KEY`.
 
 **Coordinator stuck repeating a phrase every heartbeat**
 Its conversation context has gotten into a local attractor. Stop the
-service, archive `.workgraph/chat/0/chat.log` and `outbox.jsonl`, rewrite
+service, archive `.wg/chat/0/chat.log` and `outbox.jsonl`, rewrite
 `context-summary.md` with fresh accurate state (avoid quoting whatever
 phrase it's stuck on — the model pattern-completes on salient strings in
 its context), restart.

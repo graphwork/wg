@@ -205,7 +205,7 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
         });
 
         if let Ok(wg_dir) = resolved.as_ref() {
-            obj["workgraph_dir"] = serde_json::json!(wg_dir.display().to_string());
+            obj["graph_dir"] = serde_json::json!(wg_dir.display().to_string());
             obj["accessible"] = serde_json::json!(true);
         } else {
             obj["accessible"] = serde_json::json!(false);

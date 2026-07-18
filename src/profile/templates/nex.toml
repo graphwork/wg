@@ -1,4 +1,4 @@
-description = "wg nex: in-process LLM handler at a localhost endpoint (edit URL per machine)"
+description = "WorksGood profile — wg nex: in-process LLM handler at a localhost endpoint (edit URL per machine)"
 
 [agent]
 model = "nex:qwen3-coder-30b"

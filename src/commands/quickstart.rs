@@ -1116,7 +1116,7 @@ fn json_output() -> serde_json::Value {
             "purge_with_dirs": "wg dead-agents --purge --delete-dirs",
             "threshold": "wg dead-agents --threshold <minutes>"
         },
-        "peer_workgraphs": {
+        "peer_graphs": {
             "add": "wg peer add <name> <path>",
             "add_key_based": "wg peer add <name> --wgid <W> --endpoint <U>",
             "list": "wg peer list",
@@ -1473,7 +1473,7 @@ mod tests {
         assert!(output.get("trace_runs_replay").is_some());
         assert!(output.get("analysis").is_some());
         assert!(output.get("dead_agents").is_some());
-        assert!(output.get("peer_workgraphs").is_some());
+        assert!(output.get("peer_graphs").is_some());
     }
 
     #[test]

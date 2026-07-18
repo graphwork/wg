@@ -1011,7 +1011,7 @@ mod tests {
                 verify: None,
                 tags: vec![],
             },
-            output_format: "workgraph-yaml".to_string(),
+            output_format: "task-graph-yaml".to_string(),
             static_fallback: true,
             validate_plan: true,
         });

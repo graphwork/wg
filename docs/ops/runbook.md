@@ -18,7 +18,7 @@ bytes; it can neither forge nor read sealed content.
 
 ```sh
 wg fed-node serve --addr 0.0.0.0:8443 --store /var/lib/wg/fed-node
-# --store omitted → <workgraph_dir>/fed-node
+# --store omitted → <graph_dir>/fed-node
 wg fed-node store-path        # print the default store dir (scriptable)
 ```
 
@@ -88,10 +88,10 @@ so a hot copy (or filesystem snapshot) is consistent. Back up:
 - **Keystore** — `wg secret` backend (OS keyring / `~/.wg/keystore`, mode `0600`). **This is
   the crown jewel** — root seeds live here. Losing it without a recovery key/guardian set
   means the identity cannot be continued (only forked). Back it up encrypted, off-host.
-- **Exec lease ledger** `<workgraph_dir>/exec/leases.json` — the epoch fence's integrity
+- **Exec lease ledger** `<graph_dir>/exec/leases.json` — the epoch fence's integrity
   backstop. A corrupt/partial ledger is **refused, never silently reset** (B3), so restore
   from backup rather than deleting it.
-- **Verdict chain** `<workgraph_dir>/review/verdicts.jsonl` — the hash-linked audit/revoke
+- **Verdict chain** `<graph_dir>/review/verdicts.jsonl` — the hash-linked audit/revoke
   log (append is lock-serialized, M23). Append-only; never edit by hand.
 
 Restore = put the files back and restart. Self-verification re-validates everything on read.

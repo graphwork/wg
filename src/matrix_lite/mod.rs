@@ -103,7 +103,7 @@ impl MatrixClient {
             token
         } else {
             anyhow::bail!(
-                "No access_token or password configured. Set one in ~/.config/workgraph/matrix.toml"
+                "No access_token or password configured. Set one in ~/.config/worksgood/matrix.toml"
             );
         };
 
@@ -565,7 +565,7 @@ pub async fn send_notification(workgraph_dir: &Path, message: &str) -> Result<()
 
     if !config.is_complete() {
         anyhow::bail!(
-            "Matrix not configured. Set homeserver, username, token, and room in ~/.config/workgraph/matrix.toml"
+            "Matrix not configured. Set homeserver, username, token, and room in ~/.config/worksgood/matrix.toml"
         );
     }
 
@@ -589,7 +589,7 @@ pub async fn send_notification_to_room(
 
     if !config.has_credentials() {
         anyhow::bail!(
-            "Matrix not configured. Set homeserver, username, and token in ~/.config/workgraph/matrix.toml"
+            "Matrix not configured. Set homeserver, username, and token in ~/.config/worksgood/matrix.toml"
         );
     }
 

@@ -4,7 +4,7 @@
 //! agent behavior, executor settings, and project defaults.
 //!
 //! Sensitive credentials (like Matrix login) are stored separately in
-//! `~/.config/workgraph/matrix.toml` to avoid accidentally committing secrets.
+//! `~/.config/worksgood/matrix.toml` to avoid accidentally committing secrets.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -592,9 +592,9 @@ impl Default for OpenRouterConfig {
 /// ```toml
 /// [auth]
 /// # Preferred: point at a file, leave the token out of git.
-/// claude_code_oauth_token_file = "~/.config/workgraph/oauth-token"
+/// claude_code_oauth_token_file = "~/.config/worksgood/oauth-token"
 ///
-/// # Or inline (discouraged — keep `.workgraph/config.toml` out of VCS
+/// # Or inline (discouraged — keep `.wg/config.toml` out of VCS
 /// # if you use this form):
 /// # claude_code_oauth_token = "sk-ant-oat01-…"
 /// ```
@@ -608,7 +608,7 @@ impl Default for OpenRouterConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Inline OAuth token (`sk-ant-oat01-…`). Discouraged because the file
-    /// ends up on disk in `.workgraph/config.toml`; prefer `_file` below.
+    /// ends up on disk in `.wg/config.toml`; prefer `_file` below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_code_oauth_token: Option<String>,
 
@@ -4510,7 +4510,7 @@ impl Default for AgentConfig {
 }
 
 /// Matrix configuration for notifications and collaboration
-/// Stored in ~/.config/workgraph/matrix.toml (user's global config, not in repo)
+/// Stored in ~/.config/worksgood/matrix.toml (user's global config, not in repo)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MatrixConfig {
     /// Matrix homeserver URL (e.g., "https://matrix.org")
@@ -4539,17 +4539,34 @@ impl MatrixConfig {
     pub fn config_path() -> anyhow::Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine config directory. Expected ~/.config on Linux, ~/Library/Application Support on macOS, or %APPDATA% on Windows."))?;
+        Ok(config_dir.join("worksgood").join("matrix.toml"))
+    }
+
+    /// Return the pre-WorksGood path accepted for read compatibility only.
+    fn legacy_config_path() -> anyhow::Result<PathBuf> {
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            anyhow::anyhow!("Could not determine the platform configuration directory")
+        })?;
         Ok(config_dir.join("workgraph").join("matrix.toml"))
     }
 
-    /// Load Matrix configuration from ~/.config/workgraph/matrix.toml
+    /// Load Matrix configuration from ~/.config/worksgood/matrix.toml.
     /// Returns default (empty) config if file doesn't exist
     pub fn load() -> anyhow::Result<Self> {
-        let config_path = Self::config_path()?;
-
-        if !config_path.exists() {
+        let canonical = Self::config_path()?;
+        let legacy = Self::legacy_config_path()?;
+        let config_path = if canonical.exists() {
+            canonical
+        } else if legacy.exists() {
+            eprintln!(
+                "warning: using legacy Matrix config at {}; move it to {} (create the parent directory first)",
+                legacy.display(),
+                canonical.display()
+            );
+            legacy
+        } else {
             return Ok(Self::default());
-        }
+        };
 
         let content = fs::read_to_string(&config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read Matrix config: {}", e))?;
@@ -4560,7 +4577,7 @@ impl MatrixConfig {
         Ok(config)
     }
 
-    /// Save Matrix configuration to ~/.config/workgraph/matrix.toml
+    /// Save Matrix configuration to ~/.config/worksgood/matrix.toml
     pub fn save(&self) -> anyhow::Result<()> {
         let config_path = Self::config_path()?;
 
@@ -4872,7 +4889,7 @@ fn record_sources(
 impl Config {
     /// Return the global WG directory.
     ///
-    /// Resolution order matches `main.rs::resolve_workgraph_dir`:
+    /// Resolution order for canonical machine-global state:
     /// 0. `$WG_GLOBAL_DIR` if set — an explicit override used to point WG's
     ///    global config + active-profile lookup at a specific directory.
     ///    This is the single chokepoint both `global_config_path()` and
@@ -4881,13 +4898,11 @@ impl Config {
     ///    profiles/) in one shot. Tests use it to stay independent of the
     ///    developer machine's `~/.wg` (e.g. an active `opencode` profile),
     ///    without perturbing `HOME` for sibling tests that shell out to git.
-    /// 1. `~/.wg` if it exists (modern, written by `wg init`).
-    /// 2. `~/.workgraph` if it exists (legacy).
-    /// 3. `~/.wg` (default — new installs get the modern name).
+    /// 1. `~/.wg` (canonical for every new write).
     ///
-    /// Without this mirroring, `wg init --global` writes to `~/.wg/config.toml`
-    /// but `Config::load_global()` reads `~/.workgraph/config.toml`, silently
-    /// dropping every global key.
+    /// The old global config is handled separately by
+    /// [`Config::global_config_read_path`], so a compatibility read can never
+    /// silently turn into another write at the retired location.
     pub fn global_dir() -> anyhow::Result<PathBuf> {
         if let Some(dir) = std::env::var_os("WG_GLOBAL_DIR") {
             let dir = PathBuf::from(dir);
@@ -4897,15 +4912,32 @@ impl Config {
         }
         let home = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-        let modern = home.join(".wg");
-        if modern.is_dir() {
-            return Ok(modern);
+        Ok(home.join(".wg"))
+    }
+
+    fn global_config_read_path() -> anyhow::Result<PathBuf> {
+        let canonical = Self::global_config_path()?;
+        // An explicit test/operator override is authoritative. Never escape it
+        // to a legacy file under the ambient HOME.
+        if canonical.exists() || std::env::var_os("WG_GLOBAL_DIR").is_some() {
+            return Ok(canonical);
         }
-        let legacy = home.join(".workgraph");
-        if legacy.is_dir() {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let legacy = home.join(".workgraph").join("config.toml");
+        if legacy.exists() {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "warning: reading legacy WorksGood global config at {}; migrate it to {} (for example, stop wg services and move the file)",
+                    legacy.display(),
+                    canonical.display()
+                );
+            }
             return Ok(legacy);
         }
-        Ok(modern)
+        Ok(canonical)
     }
 
     /// Return the global config file path.
@@ -4916,7 +4948,7 @@ impl Config {
     /// Load global configuration from ~/.wg/config.toml.
     /// Returns None if the file doesn't exist, Err on parse failure.
     pub fn load_global() -> anyhow::Result<Option<Self>> {
-        let global_path = Self::global_config_path()?;
+        let global_path = Self::global_config_read_path()?;
         if !global_path.exists() {
             return Ok(None);
         }
@@ -4970,7 +5002,7 @@ impl Config {
     /// their canonical form before merging, so callers always see the canonical
     /// keys regardless of which file used the legacy name.
     pub fn load_merged_toml_value(workgraph_dir: &Path) -> anyhow::Result<toml::Value> {
-        let global_path = Self::global_config_path()?;
+        let global_path = Self::global_config_read_path()?;
         let local_path = workgraph_dir.join("config.toml");
         let mut global_val = Self::load_toml_value(&global_path)?;
         let mut local_val = Self::load_toml_value(&local_path)?;
@@ -4994,7 +5026,7 @@ impl Config {
     /// Load merged configuration: global config deep-merged with local config.
     /// Local keys override global keys. Missing files are treated as empty.
     pub fn load_merged(workgraph_dir: &Path) -> anyhow::Result<Self> {
-        let global_path = Self::global_config_path()?;
+        let global_path = Self::global_config_read_path()?;
         let local_path = workgraph_dir.join("config.toml");
 
         let mut global_val = Self::load_toml_value(&global_path)?;
@@ -5613,7 +5645,7 @@ impl Config {
     pub fn load_with_sources(
         workgraph_dir: &Path,
     ) -> anyhow::Result<(Self, BTreeMap<String, ConfigSource>)> {
-        let global_path = Self::global_config_path()?;
+        let global_path = Self::global_config_read_path()?;
         let local_path = workgraph_dir.join("config.toml");
 
         let mut global_val = Self::load_toml_value(&global_path)?;
@@ -6785,9 +6817,16 @@ model = "claude:haiku"
         let path = Config::global_config_path().unwrap();
         let s = path.to_string_lossy();
         assert!(
-            s.ends_with(".wg/config.toml") || s.ends_with(".workgraph/config.toml"),
-            "expected canonical .wg/config.toml or legacy fallback, got {s}"
+            s.ends_with(".wg/config.toml"),
+            "expected canonical .wg/config.toml, got {s}"
         );
+    }
+
+    #[test]
+    fn matrix_config_path_uses_worksgood_namespace() {
+        let path = MatrixConfig::config_path().expect("platform config directory");
+        assert!(path.ends_with(Path::new("worksgood").join("matrix.toml")));
+        assert!(!path.to_string_lossy().contains("workgraph"));
     }
 
     #[test]
@@ -7785,7 +7824,7 @@ model = "claude:haiku"
             url: None,
             model: None,
             api_key: None,
-            api_key_file: Some("~/.config/workgraph/openai.key".to_string()),
+            api_key_file: Some("~/.config/worksgood/openai.key".to_string()),
             api_key_env: None,
             api_key_ref: None,
             is_default: false,

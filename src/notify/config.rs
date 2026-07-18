@@ -96,13 +96,23 @@ impl NotifyConfig {
         Ok(config)
     }
 
-    /// Load from the default location (`~/.config/workgraph/notify.toml`).
+    /// Load from the default location (`~/.config/worksgood/notify.toml`).
     /// Returns `Ok(None)` if the file does not exist.
     pub fn load_default() -> Result<Option<Self>> {
-        if let Some(path) = default_config_path()
-            && path.exists()
-        {
-            return Ok(Some(Self::load_from(&path)?));
+        if let Some(canonical) = default_config_path() {
+            if canonical.exists() {
+                return Ok(Some(Self::load_from(&canonical)?));
+            }
+            if let Some(legacy) = legacy_config_path()
+                && legacy.exists()
+            {
+                eprintln!(
+                    "warning: using legacy notification config at {}; move it to {} (create the parent directory first)",
+                    legacy.display(),
+                    canonical.display()
+                );
+                return Ok(Some(Self::load_from(&legacy)?));
+            }
         }
         Ok(None)
     }
@@ -218,6 +228,11 @@ impl NotifyConfig {
 
 /// Return the default global config path.
 pub fn default_config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("worksgood").join("notify.toml"))
+}
+
+/// Pre-WorksGood location accepted for read compatibility only.
+pub fn legacy_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("workgraph").join("notify.toml"))
 }
 
@@ -228,6 +243,13 @@ pub fn default_config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_path_uses_worksgood_namespace() {
+        let path = default_config_path().expect("platform config directory");
+        assert!(path.ends_with(Path::new("worksgood").join("notify.toml")));
+        assert!(!path.to_string_lossy().contains("workgraph"));
+    }
 
     #[test]
     fn parse_minimal_config() {

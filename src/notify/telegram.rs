@@ -28,7 +28,7 @@
 //! [telegram.bots.nora]
 //! bot_token = "123456:ABC..."
 //! chat_id   = "78901234"
-//! agent_id  = "nora"        # workgraph agent this bot fronts (optional)
+//! agent_id  = "nora"        # WorksGood agent this bot fronts (optional)
 //!
 //! [telegram.bots.bruno]
 //! bot_token = "654321:XYZ..."
@@ -63,7 +63,7 @@ use super::{Action, ActionStyle, IncomingMessage, MessageId, NotificationChannel
 pub struct TelegramBotConfig {
     pub bot_token: String,
     pub chat_id: String,
-    /// Workgraph agent id this bot fronts (e.g. `"nora"`). When `None`, the
+    /// WorksGood agent id this bot fronts (e.g. `"nora"`). When `None`, the
     /// bot is a shared/group bot — outbound routing falls back to it when
     /// no agent-specific bot matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,7 +218,7 @@ impl TelegramChannel {
         &self.bot_id
     }
 
-    /// The workgraph agent id this bot fronts, when bound. `None` for the
+    /// The WorksGood agent id this bot fronts, when bound. `None` for the
     /// legacy default bot (and for any named bot configured without an
     /// `agent_id` field).
     pub fn agent_id(&self) -> Option<&str> {

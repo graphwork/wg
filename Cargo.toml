@@ -2,7 +2,7 @@
 name = "worksgood"
 version = "0.1.0"
 edition = "2024"
-description = "A lightweight wg coordination graph for humans and AI agents"
+description = "WorksGood: graph work for humans and AI agents"
 license = "MIT"
 repository = "https://github.com/graphwork/wg"
 homepage = "https://github.com/graphwork/wg"

@@ -970,7 +970,7 @@ pub fn run_generative(
         s
     };
     let planning_description = format!(
-        "Analyze the inputs and produce a task graph in workgraph-yaml format.\n\n\
+        "Analyze the inputs and produce a task graph in the requested YAML format.\n\n\
          This function was extracted from {} similar traces with {} to {} tasks each.\n\n\
          Common skills observed: {}\n\
          All skills observed: {}\n\n\
@@ -1087,7 +1087,7 @@ pub fn run_generative(
         outputs,
         planning: Some(PlanningConfig {
             planner_template,
-            output_format: "workgraph-yaml".to_string(),
+            output_format: "task-graph-yaml".to_string(),
             static_fallback: true,
             validate_plan: true,
         }),

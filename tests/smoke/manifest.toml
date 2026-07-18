@@ -956,8 +956,9 @@ name = "wg_init_writes_lockstep_agent_guides"
 script = "scenarios/wg_init_writes_lockstep_agent_guides.sh"
 owners = [
     "fix-wg-init-2",
+    "remove-workgraph-branding",
 ]
-description = "Pins fix-wg-init-2: every fresh `wg init` route must write both CLAUDE.md and AGENTS.md to the project root from the same layer-2 template, so Claude Code / Claude CLI and Codex sessions receive byte-identical project-specific context that delegates the universal role contract to `wg agent-guide`. No LLM endpoint needed."
+description = "Pins fix-wg-init-2 and remove-workgraph-branding: every fresh `wg init` route writes byte-identical, version-delimited WorksGood project guides with no stale branding; `wg setup --repair-guides` upgrades legacy managed regions in project and global guides without changing surrounding user bytes and is byte-idempotent. No LLM endpoint needed."
 timeout_seconds = 30
 
 [[scenario]]

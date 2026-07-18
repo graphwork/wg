@@ -1,4 +1,4 @@
-description = "Claude CLI: opus standard/default worker, haiku for agency meta-tasks"
+description = "WorksGood profile — Claude CLI: opus standard/default worker, haiku for agency meta-tasks"
 
 [agent]
 model = "claude:opus"

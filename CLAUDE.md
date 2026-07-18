@@ -1,8 +1,8 @@
-<!-- wg-managed -->
-# WG (project-specific guide)
+<!-- worksgood-managed-guide:v1:start -->
+# WorksGood (`wg`) project-specific guide
 
 This file is the **layer-2** project guide for agents working *on the
-WG codebase itself*. It is NOT the universal chat-agent / worker-agent
+WorksGood codebase itself*. It is NOT the universal chat-agent / worker-agent
 contract — that is bundled inside the `wg` binary and emitted by:
 
 ```
@@ -28,6 +28,7 @@ This guide is written to both `CLAUDE.md` and `AGENTS.md` and kept in
 lock-step. The two files exist because Claude Code and Codex CLI look for
 different filenames, but they should never drift in content. Any divergence is
 a bug. Update both together.
+<!-- worksgood-managed-guide:v1:end -->
 
 ---
 

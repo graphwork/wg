@@ -1,6 +1,6 @@
 //! `wg doctor` — environment diagnostic.
 //!
-//! A single command that walks the list of things workgraph needs to run
+//! A single command that walks the list of things WorksGood needs to run
 //! and reports each check's status. Aimed at the "I installed wg, something
 //! doesn't work, why" case: surfacing the actual missing piece instead of
 //! leaving users to diff obscure error messages against the docs.
@@ -13,7 +13,7 @@
 //! Exit codes:
 //!   0 — all green
 //!   1 — one or more warnings but no hard errors
-//!   2 — one or more errors; workgraph probably won't function correctly
+//!   2 — one or more errors; WorksGood probably won't function correctly
 
 use anyhow::Result;
 use serde::Serialize;
@@ -95,7 +95,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     checks.extend(check_host_tools());
     checks.extend(check_auth(dir));
-    checks.extend(check_workgraph_dir(dir));
+    checks.extend(check_graph_dir(dir));
     checks.extend(check_daemon(dir));
     #[cfg(windows)]
     checks.extend(check_windows_specific());
@@ -212,7 +212,7 @@ fn check_host_tools() -> Vec<Check> {
                 out.push(Check::warn(
                     "bash",
                     format!("found but not Git-for-Windows: {}", first),
-                    "Install Git for Windows — workgraph spawns wrapper scripts via its bash. \
+                    "Install Git for Windows — WorksGood spawns wrapper scripts via its bash. \
                      WSL's bash can't see Windows paths the same way.",
                 ));
             }
@@ -223,7 +223,7 @@ fn check_host_tools() -> Vec<Check> {
             out.push(Check::err(
                 "bash",
                 "not found on PATH",
-                "Install Git for Windows (on Windows) — workgraph wrappers require bash.",
+                "Install Git for Windows (on Windows) — WorksGood wrappers require bash.",
             ));
         }
     }
@@ -234,7 +234,7 @@ fn check_host_tools() -> Vec<Check> {
         _ => out.push(Check::err(
             "git",
             "not found on PATH",
-            "Install Git — workgraph uses `git worktree` for agent isolation.",
+            "Install Git — WorksGood uses `git worktree` for agent isolation.",
         )),
     }
 
@@ -245,7 +245,7 @@ fn check_host_tools() -> Vec<Check> {
     // GNU timeout vs Windows TIMEOUT.EXE.
     // On Windows, the one on PATH may be either. The Windows one is an
     // interactive pause utility; the GNU one is a command wrapper.
-    // Workgraph's wrapper scripts rely on the GNU behavior.
+    // WorksGood's wrapper scripts rely on the GNU behavior.
     #[cfg(windows)]
     {
         // Modern wg uses `platform_timeout::spawn_with_timeout` internally
@@ -481,7 +481,7 @@ fn check_auth(dir: &Path) -> Vec<Check> {
             "This env var tells `claude` to prefer the host bridge (Claude Code's auth IPC) over \
              any token you configure. Fine if you're running interactively inside Claude Code, \
              bad if a detached daemon inherits it — the daemon will silently 401 on every call. \
-             Start the daemon from a shell where this isn't set, or upgrade to a workgraph build \
+             Start the daemon from a shell where this isn't set, or upgrade to a WorksGood build \
              that strips it from spawned children (#30).",
         ));
     }
@@ -500,7 +500,7 @@ fn check_auth(dir: &Path) -> Vec<Check> {
                 "claude login",
                 "no `credentials.json` and no `CLAUDE_CODE_OAUTH_TOKEN` in env",
                 "Run `claude login` for a refreshable credential, or set `CLAUDE_CODE_OAUTH_TOKEN`, \
-                 or configure `[auth]` in `.workgraph/config.toml`.",
+                 or configure `[auth]` in `.wg/config.toml`.",
             ));
         }
     }
@@ -513,14 +513,14 @@ fn check_auth(dir: &Path) -> Vec<Check> {
         if content.contains("claude_code_oauth_token_file") {
             out.push(Check::ok(
                 "[auth] config",
-                "token-file reference in .workgraph/config.toml",
+                "token-file reference in .wg/config.toml",
             ));
         } else if content.contains("claude_code_oauth_token") {
             out.push(Check::warn(
                 "[auth] config",
-                "inline token in .workgraph/config.toml",
+                "inline token in .wg/config.toml",
                 "Prefer `claude_code_oauth_token_file` so the token doesn't live in a file that \
-                 might be committed. Make sure `.workgraph/config.toml` is gitignored if you keep \
+                 might be committed. Make sure `.wg/config.toml` is gitignored if you keep \
                  it inline.",
             ));
         }
@@ -529,14 +529,14 @@ fn check_auth(dir: &Path) -> Vec<Check> {
     out
 }
 
-// ── workgraph dir ─────────────────────────────────────────────────────
+// ── graph directory ───────────────────────────────────────────────────
 
-fn check_workgraph_dir(dir: &Path) -> Vec<Check> {
+fn check_graph_dir(dir: &Path) -> Vec<Check> {
     let mut out = Vec::new();
 
     if !dir.exists() {
         out.push(Check::err(
-            ".workgraph dir",
+            ".wg directory",
             format!("{} does not exist", dir.display()),
             "Run `wg init` in your project root.",
         ));
@@ -598,7 +598,7 @@ fn check_daemon(dir: &Path) -> Vec<Check> {
                             "state.json claims PID {} but that process is gone (stale state)",
                             pid
                         ),
-                        "Remove `.workgraph/service/state.json` and start fresh with \
+                        "Remove `.wg/service/state.json` and start fresh with \
                          `wg service start`.",
                     ));
                 }
@@ -614,7 +614,7 @@ fn check_daemon(dir: &Path) -> Vec<Check> {
             out.push(Check::warn(
                 "service daemon",
                 "state.json unreadable or malformed",
-                "Remove `.workgraph/service/state.json` and restart with `wg service start`.",
+                "Remove `.wg/service/state.json` and restart with `wg service start`.",
             ));
         }
     }

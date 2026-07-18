@@ -61,6 +61,13 @@ fn assert_lockstep_agent_guides(project_dir: &Path) {
     assert!(body.contains("wg agent-guide"));
     assert!(body.contains("layer-2"));
     assert!(body.contains("wg quickstart"));
+    assert!(body.contains("WorksGood"));
+    assert!(body.contains("<!-- worksgood-managed-guide:v1:start -->"));
+    assert!(body.contains("<!-- worksgood-managed-guide:v1:end -->"));
+    assert!(
+        !body.to_ascii_lowercase().contains("workgraph"),
+        "fresh guides must not contain retired branding: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

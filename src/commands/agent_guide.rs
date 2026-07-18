@@ -26,6 +26,11 @@ mod tests {
     }
 
     #[test]
+    fn guide_text_does_not_use_retired_product_branding() {
+        assert!(!AGENT_GUIDE_TEXT.to_ascii_lowercase().contains("workgraph"));
+    }
+
+    #[test]
     fn guide_text_covers_three_roles() {
         assert!(AGENT_GUIDE_TEXT.contains("dispatcher"));
         assert!(AGENT_GUIDE_TEXT.contains("chat agent"));

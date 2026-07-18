@@ -1,4 +1,4 @@
-description = "Pi Coding Agent: GLM 5.2 workers/chat via OpenRouter, DeepSeek Chat for agency/meta checks"
+description = "WorksGood profile — Pi Coding Agent: GLM 5.2 workers/chat via OpenRouter, DeepSeek Chat for agency/meta checks"
 
 # Pi routes for worker/chat roles. The default and task-agent route use GLM 5.2
 # through Pi's OpenRouter provider:

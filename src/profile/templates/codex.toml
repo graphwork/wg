@@ -1,4 +1,4 @@
-description = "Direct OpenAI Codex CLI: GPT-5.6 Sol strong/default, GPT-5.6 Luna weak agency"
+description = "WorksGood profile — direct OpenAI Codex CLI: GPT-5.6 Sol strong/default, GPT-5.6 Luna weak agency"
 
 # Activate from a fresh installation with one command:
 #   wg profile use codex

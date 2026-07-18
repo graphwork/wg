@@ -268,7 +268,7 @@ fn sample_v2_generative() -> TraceFunction {
                 verify: None,
                 tags: vec![],
             },
-            output_format: "workgraph-yaml".to_string(),
+            output_format: "task-graph-yaml".to_string(),
             static_fallback: true,
             validate_plan: true,
         }),
@@ -458,7 +458,7 @@ fn layer2_v2_yaml_round_trip() {
 
     let planning = loaded.planning.unwrap();
     assert_eq!(planning.planner_template.template_id, "plan-api");
-    assert_eq!(planning.output_format, "workgraph-yaml");
+    assert_eq!(planning.output_format, "task-graph-yaml");
     assert!(planning.static_fallback);
     assert!(planning.validate_plan);
 
@@ -690,7 +690,7 @@ planner_template:
   description: "Plan it"
 "#;
     let config: PlanningConfig = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(config.output_format, "workgraph-yaml");
+    assert_eq!(config.output_format, "task-graph-yaml");
     assert!(!config.static_fallback);
     assert!(config.validate_plan);
 }
