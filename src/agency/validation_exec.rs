@@ -37,12 +37,15 @@
 //!   escape, and newlines. Because we spawn the parsed `argv` *directly* (never
 //!   through `sh -c`), there is no shell re-parse that could resurrect a
 //!   rejected operator — closing the "`test -f x & <cmd>`" background escape.
-//! * **Per-command option validation.** Each command's head AND its options are
-//!   checked ([`validate_argv`]): `git ls-remote`'s `--upload-pack=<program>` /
-//!   `-u` (which make git *execute* a program) and other protocol-escape
-//!   options are refused, and only a small read-only option set is accepted.
-//!   Head allowlisting alone is not enough — `git ls-remote` is not intrinsically
-//!   read-only.
+//! * **Per-command option validation (default-deny).** Each command's head AND
+//!   its options are checked ([`validate_argv`]) against a per-command read-only
+//!   allowlist: `git ls-remote`'s `--upload-pack=<program>` / `-u` (which make
+//!   git *execute* a program) and other protocol-escape options are refused, and
+//!   `gh pr view` / `gh pr list` accept ONLY their enumerated read-only flags —
+//!   so `--web` / `-w` (which launch `GH_BROWSER`/`BROWSER`, a process that can
+//!   detach and outlive the timeout process-group) and any unknown/future flag
+//!   are refused. Head allowlisting alone is not enough — neither `git ls-remote`
+//!   nor `gh pr view --web` is intrinsically read-only.
 //! * **Direct spawning + process-group timeout.** Every command is spawned in
 //!   its OWN process group (Unix `setsid`); a per-line deadline kills and reaps
 //!   the WHOLE group — leader plus any pipeline members / descendants — so a
@@ -529,7 +532,7 @@ fn validate_argv(argv: &[String]) -> Result<(), String> {
                 return Err("only `gh pr view` / `gh pr list` are allowlisted".to_string());
             }
             match argv.get(2).map(|s| s.as_str()) {
-                Some("view") | Some("list") => validate_gh_pr(&argv[3..]),
+                Some(sub @ ("view" | "list")) => validate_gh_pr(sub, &argv[3..]),
                 other => Err(format!(
                     "gh pr subcommand not allowlisted: `{}`",
                     other.unwrap_or_default()
@@ -618,20 +621,90 @@ fn validate_git_ls_remote(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `gh pr view` / `gh pr list` option policy. These read-only subcommands take
-/// no program-executing options; we still hard-deny any `--upload-pack`-style
-/// exec flag defensively and otherwise accept the subcommand's own flags.
-fn validate_gh_pr(rest: &[String]) -> Result<(), String> {
-    for arg in rest {
+/// `gh pr view` / `gh pr list` option policy — an EXPLICIT, PER-SUBCOMMAND
+/// READ-ONLY OPTION ALLOWLIST (default-deny). Only the known read-only flags for
+/// the given subcommand (and their values) are accepted; EVERY other token —
+/// including `--web` / `-w` (which launch `GH_BROWSER`/`BROWSER`, a process that
+/// can detach and outlive the validation timeout process-group) and any unknown
+/// or future `gh` flag — is REFUSED.
+///
+/// This replaces the earlier deny-three policy, which forwarded every flag
+/// except three git-style names and therefore silently admitted `--web` and
+/// would silently admit any future side-effecting `gh` flag. Default-deny closes
+/// both: the browser-launch escape Erik reproduced, and the unknown-flag class.
+fn validate_gh_pr(sub: &str, rest: &[String]) -> Result<(), String> {
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = &rest[i];
+        if arg == "--" {
+            // Explicit end-of-options: everything after is a positional
+            // (read-only data — a PR number/URL/branch), never a flag.
+            break;
+        }
         if !arg.starts_with('-') {
+            // Positional (e.g. the PR number/URL/branch for `gh pr view`). These
+            // are read-only data handed to gh; gh cannot execute them.
+            i += 1;
             continue;
         }
-        let flag = arg.split('=').next().unwrap_or(arg.as_str());
-        if matches!(flag, "--upload-pack" | "--exec" | "--receive-pack") {
-            return Err(format!("gh option `{}` is not permitted", flag));
+        // Normalize `--flag=value` to `--flag`; an inline value is self-contained.
+        let (flag, has_inline_value) = match arg.split_once('=') {
+            Some((f, _)) => (f, true),
+            None => (arg.as_str(), false),
+        };
+        match gh_pr_read_only_flag(sub, flag) {
+            Some(takes_value) => {
+                // A value-taking flag in the `--flag value` form consumes the
+                // NEXT token as its value, so that value is not itself validated
+                // as a flag (matching gh/pflag's own argument consumption). This
+                // also means `--repo --web` binds `--web` as the repo VALUE (gh
+                // never activates the browser), rather than leaving `--web` loose.
+                if takes_value && !has_inline_value {
+                    i += 1;
+                }
+            }
+            None => {
+                return Err(format!(
+                    "gh pr {} option `{}` is not on the read-only allowlist \
+                     (only known read-only flags like --repo/--json/--jq/--state/\
+                     --author/--limit are accepted; --web/-w and unknown flags are refused)",
+                    sub, flag
+                ));
+            }
         }
+        i += 1;
     }
     Ok(())
+}
+
+/// Per-subcommand read-only flag table for `gh pr view` / `gh pr list`. Returns
+/// `Some(takes_value)` when `flag` is an allowed read-only option for `sub`
+/// (`true` if it consumes a following value, e.g. `--repo <owner/name>`), and
+/// `None` when the flag is NOT on the allowlist (so it is refused). `--web`/`-w`
+/// are deliberately absent — they launch an external browser — as is every flag
+/// not enumerated here.
+fn gh_pr_read_only_flag(sub: &str, flag: &str) -> Option<bool> {
+    // Read-only flags accepted for BOTH subcommands.
+    match flag {
+        "-R" | "--repo" | "--json" | "-q" | "--jq" | "-t" | "--template" => return Some(true),
+        _ => {}
+    }
+    match sub {
+        "view" => match flag {
+            "-c" | "--comments" => Some(false),
+            _ => None,
+        },
+        "list" => match flag {
+            // Value-taking read-only filters.
+            "--app" | "-a" | "--assignee" | "-A" | "--author" | "-B" | "--base" | "-H"
+            | "--head" | "-l" | "--label" | "-L" | "--limit" | "-S" | "--search" | "-s"
+            | "--state" => Some(true),
+            // Boolean read-only filters.
+            "-d" | "--draft" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// `test` needs a `-f`/`-e`/… file-test flag or a `=` / `!=` comparison; bare
@@ -1231,6 +1304,47 @@ mod tests {
         assert!(is_executable("test -f a && grep -q \"z\" a").is_ok());
         assert!(is_executable("gh pr view 42 --repo o/r --json state").is_ok());
         assert!(is_executable("test -f a || test -f b").is_ok());
+        // BLOCKER (round 4): `gh pr view|list --web`/`-w` launches an external
+        // browser and is REFUSED by the per-subcommand read-only allowlist.
+        assert!(is_executable("gh pr view 57 --repo o/r --web").is_err());
+        assert!(is_executable("gh pr view 57 --repo o/r -w").is_err());
+        assert!(is_executable("gh pr list --repo o/r --web").is_err());
+        assert!(is_executable("gh pr view 57 --web --repo o/r").is_err());
+        assert!(is_executable("gh pr view --web=true 57").is_err());
+        // Any unknown/future gh flag is refused (default-deny).
+        assert!(is_executable("gh pr view 57 --frobnicate").is_err());
+        assert!(is_executable("gh pr list --merge").is_err());
+        // A `list`-only filter is not accepted under `view` and vice-versa.
+        assert!(is_executable("gh pr view 57 --state open").is_err());
+        assert!(is_executable("gh pr list --comments").is_err());
+    }
+
+    /// The `gh` policy is an explicit per-subcommand read-only allowlist:
+    /// enumerated read-only flags (and their values) are accepted; `--web`/`-w`
+    /// and every unknown flag are refused; a value-taking flag consumes its
+    /// following token so it cannot be re-read as a flag.
+    #[test]
+    fn test_gh_pr_read_only_allowlist_policy() {
+        // Accepted read-only reads.
+        assert!(is_executable("gh pr view 57 --repo o/r --json headRefOid").is_ok());
+        assert!(is_executable("gh pr view 57 -R o/r -q .state --jq .foo").is_ok());
+        assert!(is_executable("gh pr view 57 --comments").is_ok());
+        assert!(
+            is_executable("gh pr list --repo o/r --state open --author me --limit 5 --json number")
+                .is_ok()
+        );
+        assert!(is_executable("gh pr list --draft --base main --json number").is_ok());
+        // `--` ends options; the trailing token is a positional, not a flag.
+        assert!(is_executable("gh pr view --repo o/r -- 57").is_ok());
+        // `--web`/`-w` refused in every spelling and position.
+        assert!(is_executable("gh pr view 57 --web").is_err());
+        assert!(is_executable("gh pr view -w 57").is_err());
+        assert!(is_executable("gh pr list --state open --web").is_err());
+        // A bundled short form (`-cw`) is not the exact allowed token → refused.
+        assert!(is_executable("gh pr view 57 -cw").is_err());
+        // `--repo --web`: `--web` is consumed as the repo VALUE (gh never
+        // activates the browser), so the line is accepted as a bounded read.
+        assert!(is_executable("gh pr view 57 --repo --web").is_ok());
     }
 
     #[test]
@@ -1450,6 +1564,68 @@ mod tests {
         assert!(
             !proof.exists(),
             "SIDE EFFECT: the ext:: transport executed the payload — the escape is NOT closed"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// BLOCKER (round 4), no side effect: `gh pr view … --web` launches the
+    /// configured `GH_BROWSER`/`BROWSER` — a process that can detach and outlive
+    /// the validation timeout process-group — so it must be REFUSED by the
+    /// per-subcommand read-only allowlist and its browser must NEVER run. This is
+    /// Erik's exact reproduction (`PROOF=… GH_BROWSER=/tmp/proof-browser gh pr
+    /// view 57 --repo … --web`) driven through the public path, asserting the
+    /// proof file is never created.
+    #[cfg(unix)]
+    #[test]
+    fn test_gh_web_escape_refused_no_side_effect() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("wg_eval_ghweb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proof = dir.join("web_proof");
+        let _ = std::fs::remove_file(&proof);
+
+        // A stand-in browser that, IF gh ever executed it, would create the proof.
+        let browser = dir.join("proof-browser");
+        std::fs::write(
+            &browser,
+            format!("#!/bin/sh\ntouch \"{}\"\n", proof.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Point GH_BROWSER at the proof browser, exactly as Erik's repro does.
+        let prev = std::env::var_os("GH_BROWSER");
+        unsafe { std::env::set_var("GH_BROWSER", &browser) };
+
+        let desc = "## Validation\n- [ ] gh pr view 57 --repo graphwork/wg --web\n";
+        let outcome = execute_validation_commands(desc, &dir);
+
+        // Restore the environment before asserting so a failure never leaks it.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GH_BROWSER", v) },
+            None => unsafe { std::env::remove_var("GH_BROWSER") },
+        }
+
+        assert_eq!(outcome.results.len(), 1, "line should be considered once");
+        assert!(
+            outcome.results.iter().all(|r| !r.ran),
+            "the --web browser-launch escape must be refused, never run: {:?}",
+            outcome.results
+        );
+        assert!(
+            outcome.results[0]
+                .skip_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("read-only allowlist")),
+            "the refusal reason must name the read-only allowlist: {:?}",
+            outcome.results[0].skip_reason
+        );
+        assert!(!outcome.has_failure(), "a refused line never fails a task");
+        assert!(
+            !proof.exists(),
+            "SIDE EFFECT: gh pr view --web launched the browser — the escape is NOT closed"
         );
 
         std::fs::remove_dir_all(&dir).ok();
