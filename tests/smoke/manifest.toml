@@ -862,6 +862,15 @@ description = "Evaluator one-shot roles configured with Claude registry/OpenRout
 timeout_seconds = 60
 
 [[scenario]]
+name = "evaluator_artifact_diff_prompt"
+script = "scenarios/evaluator_artifact_diff_prompt.sh"
+owners = [
+    "review-and-land",
+]
+description = "Production-path regression for the Codex evaluator artifact-diff timeout incident. Drives a real git-backed task through `wg evaluate run --dry-run --evaluator-model codex:gpt-5.6-luna` and asserts the exact route identity plus bounded (30KB), relevant artifact-diff evidence in an explicitly untrusted, collision-free prompt boundary. The payload contains the first candidate closing delimiter and an instruction-like line, proving it cannot escape the evidence boundary. Credential-free: dry-run builds the real evaluator prompt without invoking an LLM."
+timeout_seconds = 30
+
+[[scenario]]
 name = "model_fable_routes_to_claude_cli"
 script = "scenarios/model_fable_routes_to_claude_cli.sh"
 owners = [
