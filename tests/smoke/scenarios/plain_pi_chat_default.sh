@@ -9,6 +9,16 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 wgd="$scratch/.wg"
+# `wg chat create --exec pi` is a request for an interactive vendor console,
+# so creation transactionally preflights the Pi executable. This metadata
+# scenario uses a credential-free fake; no model process is launched.
+mkdir -p "$scratch/fakebin"
+cat >"$scratch/fakebin/pi" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$scratch/fakebin/pi"
+export PATH="$scratch/fakebin:$PATH"
 run_wg() {
     env -u WG_DIR -u WG_MODEL -u WG_EXECUTOR_TYPE wg --dir "$wgd" "$@"
 }

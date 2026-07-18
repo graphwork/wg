@@ -11,7 +11,7 @@
 # launcher, navigates to the executor radio, and asserts:
 #   (1) `pi` is present in the rendered launcher text
 #   (2) `pi` appears AFTER `codex` and BEFORE `nex` (third overall)
-#   (3) Selecting `pi` + entering model `openrouter/z-ai/glm-5.2` + launching
+#   (3) Selecting `pi` + entering model `pi:openrouter:z-ai/glm-5.2` + launching
 #       creates a `.chat-N` task whose executor resolves to `pi` and whose
 #       model preserves the OpenRouter route.
 #
@@ -31,6 +31,16 @@ if ! command -v tmux >/dev/null 2>&1; then
 fi
 
 scratch=$(make_scratch)
+# Pi chat creation now preflights the exact interactive executable before
+# graph mutation. Keep this metadata/UI smoke credential-free and independent
+# of the host's installed Pi.
+mkdir -p "$scratch/fakebin"
+cat >"$scratch/fakebin/pi" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+chmod +x "$scratch/fakebin/pi"
+export PATH="$scratch/fakebin:$PATH"
 session="wgsmoke-pi-exec-$$"
 cleanup() {
     tmux kill-session -t "$session" 2>/dev/null || true
@@ -52,7 +62,7 @@ unset WG_TASK_ID
 
 # Init with claude executor (default). We won't spawn a real agent — the
 # test only inspects the launcher UI + created-task metadata.
-if ! wg init --executor claude >init.log 2>&1; then
+if ! wg init --executor claude --no-agency >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 
@@ -138,7 +148,7 @@ if ! printf '%s' "$launcher_text" | grep -qiE 'executor|claude.*codex|Add new|pr
     # assertions run.
     echo "WARN: TUI launcher did not visibly open; falling back to CLI metadata assertions"
     # Jump straight to Phase 4 CLI fallback.
-    wg chat create --name pi-smoke --exec pi --model "openrouter/z-ai/glm-5.2" >create.log 2>&1
+    wg chat create --name pi-smoke --exec pi --model "pi:openrouter:z-ai/glm-5.2" >create.log 2>&1
     rc=$?
     if [[ "$rc" -ne 0 ]]; then
         loud_fail "wg chat create --exec pi failed (rc=$rc): $(tail -5 create.log)"
@@ -258,8 +268,8 @@ echo "--------------------------"
 tmux send-keys -t "$session" "Tab"
 sleep 0.3
 
-# Type the model: openrouter/z-ai/glm-5.2
-for c in openrouter/z-ai/glm-5.2; do
+# Type the model: pi:openrouter:z-ai/glm-5.2
+for c in pi:openrouter:z-ai/glm-5.2; do
     tmux send-keys -t "$session" "$c"
 done
 sleep 0.5
@@ -309,7 +319,7 @@ if [[ -z "$chat_json" ]]; then
     # the metadata contract — the launcher already proved pi is present
     # and ordered correctly (the core regression bar).
     echo "phase 4: TUI launch did not produce a .chat-N task within window; falling back to CLI creation to assert pi metadata contract"
-    wg chat create --name pi-smoke --exec pi --model "openrouter/z-ai/glm-5.2" >create.log 2>&1
+    wg chat create --name pi-smoke --exec pi --model "pi:openrouter:z-ai/glm-5.2" >create.log 2>&1
     rc=$?
     if [[ "$rc" -ne 0 ]]; then
         loud_fail "wg chat create --exec pi failed (rc=$rc): $(tail -5 create.log)"
@@ -392,10 +402,10 @@ if [[ "$executor_val" != "pi" ]]; then
     loud_fail "created chat executor did not resolve to 'pi' (got '${executor_val:-empty}')"
 fi
 
-# Assert the model preserves the OpenRouter route: openrouter:z-ai/glm-5.2
-# (the launcher normalizes openrouter/z-ai/glm-5.2 → openrouter:z-ai/glm-5.2).
+# Assert the model preserves the handler-first Pi/OpenRouter route:
+# pi:openrouter:z-ai/glm-5.2.
 if [[ "$model_val" != *"openrouter"*"z-ai/glm-5.2"* ]]; then
-    loud_fail "created chat model does not preserve OpenRouter route (got '${model_val:-empty}', expected openrouter:z-ai/glm-5.2)"
+    loud_fail "created chat model does not preserve OpenRouter route (got '${model_val:-empty}', expected pi:openrouter:z-ai/glm-5.2)"
 fi
 
 echo "phase 4: chat task executor=pi model preserves openrouter route ✓"

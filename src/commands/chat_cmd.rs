@@ -241,6 +241,30 @@ fn migrate_existing_chat_tasks(dir: &Path) -> Result<()> {
 // Subcommand: create
 // ============================================================================
 
+fn validate_interactive_executor_binary(
+    executor: Option<&str>,
+    binary_path: Option<&Path>,
+) -> Result<()> {
+    if executor == Some("pi") && binary_path.is_none() {
+        anyhow::bail!(
+            "interactive Pi executable `pi` was not found on PATH; no chat was created and no fallback executor was attempted"
+        );
+    }
+    Ok(())
+}
+
+fn require_interactive_executor_binary(executor: Option<&str>) -> Result<()> {
+    let binary_path = if executor == Some("pi") {
+        worksgood::executor_discovery::discover()
+            .into_iter()
+            .find(|info| info.name == "pi" && info.available)
+            .and_then(|info| info.binary_path)
+    } else {
+        None
+    };
+    validate_interactive_executor_binary(executor, binary_path.as_deref())
+}
+
 /// `wg chat create` — create a new chat agent entity in the graph.
 ///
 /// When the service is running, talks to it via IPC (so the supervisor
@@ -258,7 +282,21 @@ pub fn run_create(
 ) -> Result<()> {
     // A chat is an LLM-backed entity. Refuse before IPC or direct graph
     // mutation unless its invocation or config explicitly selects a route.
-    worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
+    let selection =
+        worksgood::execution_selection::require(dir, model.map(|m| (m, false)), "wg chat create")?;
+    // Plain interactive Pi is a terminal-hosted vendor console, not the
+    // hermetic wg pi-handler/plugin transport. Validate that exact executable
+    // before IPC or graph/session mutation so a missing Pi is visible and
+    // transactional. An explicit --exec wins over the model/profile handler.
+    let selected_executor = executor.or_else(|| {
+        selection
+            .system
+            .as_ref()
+            .map(|system| system.handler.as_str())
+    });
+    if command.is_none() {
+        require_interactive_executor_binary(selected_executor)?;
+    }
     if service_is_running(dir) {
         run_create_via_ipc(dir, name, model, executor, endpoint, command, json)
     } else {
@@ -1105,6 +1143,19 @@ mod tests {
         )
         .unwrap();
         td
+    }
+
+    #[test]
+    fn missing_pi_preflight_names_actual_executable_and_is_executor_scoped() {
+        let error = validate_interactive_executor_binary(Some("pi"), None).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("`pi`"), "{message}");
+        assert!(message.contains("no chat was created"), "{message}");
+        assert!(message.contains("no fallback executor"), "{message}");
+
+        validate_interactive_executor_binary(Some("pi"), Some(Path::new("/tmp/pi"))).unwrap();
+        validate_interactive_executor_binary(Some("claude"), None).unwrap();
+        validate_interactive_executor_binary(None, None).unwrap();
     }
 
     #[test]

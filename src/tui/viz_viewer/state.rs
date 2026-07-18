@@ -14340,10 +14340,28 @@ impl VizApp {
                 .parent()
                 .unwrap_or(&workgraph_dir)
                 .to_path_buf();
-            // Re-exec the running binary, not an unrelated/stale `wg` from
-            // PATH. This also keeps the TUI and its background commands on the
-            // same wire/storage version after an upgrade.
-            let wg_binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wg"));
+            // Re-exec the exact running image, not an unrelated/stale `wg`
+            // from PATH and not current_exe()'s display pathname. On Linux an
+            // atomic cargo-install/package upgrade leaves a live TUI whose
+            // current_exe is `<installed path> (deleted)`; `/proc/self/exe`
+            // remains the authoritative executable handle to those exact
+            // bytes. This keeps the TUI and background command on one
+            // wire/storage version even while the installed name changes.
+            let wg_binary = match worksgood::self_exe::direct_reexec_path() {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = tx.send(CommandResult {
+                        success: false,
+                        output: format!(
+                            "Could not resolve the running WG executable ({}): {error}",
+                            worksgood::self_exe::display_identity()
+                        ),
+                        effect,
+                    });
+                    return;
+                }
+            };
+            let wg_identity = worksgood::self_exe::display_identity();
             std::thread::spawn(move || {
                 let result = isolated_wg_subprocess(&wg_binary, &workgraph_dir, &args)
                     .current_dir(&project_root)
@@ -14359,7 +14377,15 @@ impl VizApp {
                         };
                         (o.status.success(), combined)
                     }
-                    Err(e) => (false, format!("Failed to run wg: {}", e)),
+                    Err(error) => (
+                        false,
+                        format!(
+                            "Failed to execute current WG image via {} (running identity {}): {}",
+                            wg_binary.display(),
+                            wg_identity,
+                            error
+                        ),
+                    ),
                 };
                 let _ = tx.send(CommandResult {
                     success,
@@ -17544,10 +17570,18 @@ impl VizApp {
         }
         self.task_panes.remove(&task_id);
 
-        let self_exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "wg".to_string());
+        // This string may be handed through tmux before it is executed, so a
+        // Linux `/proc/self/exe` path would incorrectly mean tmux at that
+        // point. Pin this TUI PID's kernel-owned executable link instead.
+        let self_exe = match worksgood::self_exe::handoff_reexec_path() {
+            Ok(path) => path.display().to_string(),
+            Err(error) => {
+                self.chat_startup_state = ChatStartupState::Error(format!(
+                    "could not resolve the running WG executable for chat startup: {error}; no PATH fallback was attempted"
+                ));
+                return;
+            }
+        };
 
         // Resolve (binary, args, observer_mode) per executor. Observer
         // mode (lock-tailing) only applies to native today because the
@@ -17863,7 +17897,23 @@ impl VizApp {
                         "--session-dir".to_string(),
                         session_dir.display().to_string(),
                     ]);
-                    ("pi".to_string(), args, Some(project_root))
+                    // `wg chat create` preflights the interactive Pi binary
+                    // transactionally. Resolve it again to an absolute path at
+                    // the actual PTY edge so tmux/non-login PATH drift cannot
+                    // turn a genuine missing Pi into an anonymous ENOENT.
+                    let pi_binary = worksgood::executor_discovery::discover()
+                        .into_iter()
+                        .find(|info| info.name == "pi" && info.available)
+                        .and_then(|info| info.binary_path);
+                    let Some(pi_binary) = pi_binary else {
+                        worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                        self.chat_startup_state = ChatStartupState::Error(
+                            "interactive Pi executable `pi` is no longer available on PATH; no fallback executor was attempted; install Pi and press r to retry"
+                                .to_string(),
+                        );
+                        return;
+                    };
+                    (pi_binary.display().to_string(), args, Some(project_root))
                 }
                 "octomind" => {
                     // alt-screen, verified), so tmux scrollback works without
@@ -21325,7 +21375,15 @@ impl VizApp {
             SettingsEntryKind::Profile { name, .. } => name.clone(),
             _ => return,
         };
-        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
+        let exe = match worksgood::self_exe::direct_reexec_path() {
+            Ok(path) => path,
+            Err(error) => {
+                self.settings_panel.last_error = Some(format!(
+                    "Could not resolve the running WG executable: {error}"
+                ));
+                return;
+            }
+        };
         let result = std::process::Command::new(&exe)
             .arg("profile")
             .arg("use")
@@ -21343,8 +21401,11 @@ impl VizApp {
                     Some(format!("profile use {} failed: {}", name, stderr.trim()));
             }
             Err(e) => {
-                self.settings_panel.last_error =
-                    Some(format!("Failed to run wg profile use: {}", e));
+                self.settings_panel.last_error = Some(format!(
+                    "Failed to execute WG profile command via {}: {}",
+                    exe.display(),
+                    e
+                ));
             }
         }
     }
@@ -21366,7 +21427,15 @@ impl VizApp {
     /// Shells out via `std::process::Command` — the canonical CLI is the
     /// single source of truth for what "lint" means (design doc §7.2).
     pub fn run_settings_lint(&mut self) {
-        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
+        let exe = match worksgood::self_exe::direct_reexec_path() {
+            Ok(path) => path,
+            Err(error) => {
+                self.settings_panel.last_error = Some(format!(
+                    "Could not resolve the running WG executable: {error}"
+                ));
+                return;
+            }
+        };
         let result = std::process::Command::new(&exe)
             .args(["config", "lint", "--merged"])
             .current_dir(&self.workgraph_dir)

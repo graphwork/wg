@@ -81,6 +81,7 @@ pub mod review;
 pub mod runs;
 pub mod scope_guard;
 pub mod secret;
+pub mod self_exe;
 pub mod service;
 pub mod session_lock;
 pub mod smoke;
