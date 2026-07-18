@@ -9917,6 +9917,7 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("Tab", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-↑/↓", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-←/→", "Cycle inspector views (with slide animation)"),
+        binding("p", "Open four-sided Panel/Layout controls"),
         binding("\\", "Toggle right panel visible"),
         binding("i", "Grow viz pane (10% per press, wraps)"),
         binding("v", "Shrink viz pane (10% per press, wraps)"),

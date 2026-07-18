@@ -2487,11 +2487,13 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
     // Command-mode `p` opens the keyboard-authoritative Panel/Layout modal.
-    // Ctrl+O always lands on graph focus, so this does not collide with the
-    // Settings panel's established `p = activate profile` binding.
+    // The only audited collision is Settings-panel `p = activate profile`,
+    // retained when that panel owns focus. Ctrl+O lands on graph focus, so the
+    // layout path remains reachable there as well as from a full inspector.
     if matches!(code, KeyCode::Char('p'))
         && modifiers.is_empty()
-        && app.focused_panel == FocusedPanel::Graph
+        && (app.focused_panel == FocusedPanel::Graph
+            || app.right_panel_tab != RightPanelTab::Settings)
     {
         app.open_layout_overlay();
         return;
@@ -2729,10 +2731,6 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 app.touch_echoes.clear();
             }
         }
-
-        // Visible keyboard-authoritative layout editor. Uppercase avoids the
-        // established vim-style `l` navigation binding.
-        KeyCode::Char('L') if modifiers.is_empty() => app.open_layout_overlay(),
 
         // Backslash: toggle right panel visibility
         KeyCode::Char('\\') => {
@@ -3313,8 +3311,6 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('[') if app.responsive_breakpoint == ResponsiveBreakpoint::Compact => {
             app.prev_single_panel_view();
         }
-
-        KeyCode::Char('L') if modifiers.is_empty() => app.open_layout_overlay(),
 
         // Backslash: toggle right panel
         KeyCode::Char('\\') => {
@@ -11392,12 +11388,20 @@ mod chat_tab_navigation_tests {
         ) else {
             return;
         };
-        app.task_panes.insert(task_id, pane);
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
 
         // The printable belongs to the child while PTY focus is active.
         super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(app.layout_overlay.is_none());
         assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert!(
+            app.task_panes
+                .get(&task_id)
+                .unwrap()
+                .child_input_bytes_written()
+                > bytes_before
+        );
 
         super::handle_key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
@@ -11419,6 +11423,13 @@ mod chat_tab_navigation_tests {
         assert_eq!(app.layout_preference, original);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
         assert_eq!(app.input_mode, InputMode::Normal);
+
+        // Audited collision: Settings keeps its established profile action.
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Settings;
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(app.layout_overlay.is_none());
+        assert_ne!(app.input_mode, InputMode::Layout);
     }
 
     #[test]
