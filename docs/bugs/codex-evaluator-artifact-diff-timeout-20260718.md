@@ -1,113 +1,171 @@
-# Codex evaluator omits artifact diff and times out in repository inspection
+# Codex evaluator omitted artifact-diff evidence and exhausted its deadline
 
 Date: 2026-07-18
 
 ## Summary
 
-`wg evaluate run` computes a bounded artifact diff and passes it through
-`EvaluatorInput.artifact_diff`, but `render_evaluator_prompt` did not render
-that field. A Codex-backed evaluator therefore received artifact paths without
-the corresponding code evidence. It attempted repository inspection and test
-execution through nested tools, repeatedly reached the evaluator's 300-second
-hard timeout, and left the source task in `pending-eval`.
+`wg evaluate run` computed artifact-scoped Git evidence and assigned it to
+`EvaluatorInput.artifact_diff`, but `render_evaluator_prompt` did not render that
+field. The evaluator therefore received artifact paths without the corresponding
+code evidence. On the reported Frontier run, a Codex-backed evaluator attempted
+repository inspection and verification work and repeatedly exhausted the
+one-shot evaluator deadline.
 
-This was reproduced on Frontier while evaluating Emender task
-`integrate-resilient-pool-v1` at commit
-`ae2e6f26046fb7a6b348e845fb4615092a7c37e0` with route
-`codex:gpt-5.6-luna`.
+The code-level evidence omission is reproduced locally by the permanent
+`evaluator_artifact_diff_prompt` smoke scenario. The Frontier process/output
+logs were not included in the submitted branch, so the incident counts and
+remote command excerpts below remain explicitly reporter-supplied rather than
+independently reproduced facts.
 
-## Impact
+## Reported incident
 
-- The implementation had already completed, merged, and pushed.
-- FLIP completed with score 0.82.
-- The exact-tree validation suite passed 120 tests in 98.59 seconds.
-- The ordinary evaluator timed out 26 times and kept the parent task in
-  `pending-eval`.
-- The one-minute park/retry policy turned a deterministic evaluator failure
-  into an unbounded retry loop.
+The original report identified Emender task `integrate-resilient-pool-v1`, tree
+commit `ae2e6f26046fb7a6b348e845fb4615092a7c37e0`, and evaluator route
+`codex:gpt-5.6-luna`. It also reported that:
 
-No training or Slurm job failed in this incident. The blockage was entirely in
-WG's semantic evaluation path.
+- the implementation had completed, merged, and pushed;
+- FLIP scored the work at 0.82;
+- an exact-tree suite passed 120 tests in 98.59 seconds;
+- 26 ordinary-evaluator attempts timed out while the source task remained
+  `pending-eval`;
+- no training or Slurm job failed.
 
-## Evidence
+Those operational values are useful incident context, but no matching logs are
+present in this repository or the submitted commit. They should not be read as
+claims verified during this review.
 
-The evaluator process tree contained a literal timeout wrapper:
+The reporter supplied this process shape for the Linux host:
 
 ```text
 wg evaluate run integrate-resilient-pool-v1
   /usr/bin/timeout 300s codex exec --json ... --model gpt-5.6-luna
 ```
 
-Attempts either exhausted that deadline with exit code 124 or reported nested
-tool failures such as:
+That shape is consistent with the reviewed source: `call_codex_cli` delegates to
+`platform_timeout::spawn_with_timeout`, which uses GNU `timeout` when available
+on Unix and otherwise uses the watchdog implementation. The exact `/usr/bin`
+path and observed exit 124 are not reproduced here. The reporter also supplied
+nested-tool errors including:
 
 ```text
 Failed to create unified exec process: No such file or directory (os error 2)
 write_stdin failed: Unknown process id
 ```
 
-One attempt spent most of its budget rerunning the already-recorded 120-test
-pytest command. The evaluator output log never advanced beyond the initial
-evaluation message before the wrapper terminated it.
+## Confirmed root cause
 
-## Root cause
+At base commit `604076593e9d6fb8e2dfd0529ac2f83806063c9f`:
 
-`src/commands/evaluate.rs` correctly calls `compute_artifact_diff`, caps the
-result at `MAX_DIFF_BYTES`, and assigns it to `EvaluatorInput.artifact_diff`.
-Before this fix, `src/agency/prompt.rs::render_evaluator_prompt` rendered the
-artifact path list and then advanced directly to the task log. The diff was
-never included.
+1. `src/commands/evaluate.rs::compute_artifact_diff` ran `git diff` over the
+   task's recorded artifact paths and bounded the result.
+2. `commands::evaluate::run` assigned that value to
+   `EvaluatorInput.artifact_diff`.
+3. `src/agency/prompt.rs::render_evaluator_prompt` rendered the artifact path
+   list and then advanced directly to `## Task Log`; it never read
+   `artifact_diff`.
 
-The lightweight LLM call launches Codex with normal tool access. With no code
-content in the prompt, repository inspection is a reasonable model response,
-but it defeats the intended bounded one-shot evaluator behavior.
+The production-path regression creates a real Git-backed task, records an
+artifact, and runs:
 
-## Contributing behavior
+```bash
+wg evaluate run eval-diff \
+  --evaluator-model codex:gpt-5.6-luna \
+  --dry-run
+```
 
-The evaluated task was pinned to named profile `codex`. Its effective profile
-configuration did not carry the project's `agency.triage_timeout = 900`, so the
-evaluation used the code's 300-second minimum. Increasing that timeout would
-only hide the missing-evidence bug and permit more duplicate test work.
+It fails on the base commit because the actual dry-run evaluator prompt has no
+artifact-diff section. This proves the evidence plumbing defect without
+requiring Frontier or Codex credentials; it does **not** claim to reproduce the
+remote 300-second timing behavior.
 
-After exit 124, WG classified the failure as an execution-route failure, parked
-the evaluator for one minute, and dispatched the same request again. A
-deterministic wrapper timeout should receive a bounded retry budget or require a
-changed route/payload before retrying.
+## Timeout and retry behavior
 
-## Fix in this branch
+`commands::evaluate::run` computes the evaluator deadline as
+`max(agency.triage_timeout.unwrap_or(60), 300)`. The submitted report attributed
+the observed 300 seconds to a named-profile merge dropping a project value of
+900 seconds. That configuration assertion could not be checked without the
+incident's effective config and has been removed as a confirmed cause.
 
-1. Render `artifact_diff`, when present, in a fenced `## Artifact Diff` section.
-2. State that the evaluator prompt is self-contained and must not invoke tools,
-   inspect the repository, or rerun verification commands.
-3. Extend the evaluator prompt regression test to require both the diff and the
-   no-tools instruction.
+A lightweight-call failure is returned immediately by `evaluate::run`; its
+three-attempt loop retries JSON extraction failures, not a failed Codex process.
+The agency satellite wrapper separately treats an execution-route failure as
+retryable and parks it for one minute. The reviewed wrapper does not attach an
+identical-payload timeout budget at that point, so repeated re-dispatch is a
+credible follow-up risk. It is not changed in this narrowly scoped fix.
 
-The existing 30,000-byte cap remains the prompt-size bound.
+## Reviewed fix
+
+The reviewed implementation:
+
+1. renders the artifact diff in the production evaluator prompt;
+2. enforces the 30,000-byte evidence budget both when Git output is collected
+   and defensively in the renderer, with the truncation notice inside that
+   budget;
+3. wraps the diff in a collision-free, explicitly untrusted-data boundary
+   rather than an escapable fixed Markdown fence;
+4. tells the one-shot evaluator to use only supplied evidence and not invoke
+   tools, inspect the repository, or rerun verification commands;
+5. covers the renderer with unit/snapshot tests and the full CLI prompt path
+   with a credential-free smoke scenario.
+
+The cap applies to the artifact-diff evidence, not to every other evaluator
+field (task description, identity, and log). No broader whole-prompt-size claim
+is made.
+
+The change is provider-agnostic: Codex, Pi, Claude, and native/Nex evaluators use
+the same prompt renderer and receive the same bounded evidence. It does not
+alter route resolution, model identity, timeouts, execution-system policy, or
+fallback configuration. In particular, this change does not add an implicit
+fallback.
+
+## Tool-access boundary
+
+The no-tools rule is currently a prompt contract for Codex and Claude CLI
+one-shots. The Codex invocation still uses
+`--dangerously-bypass-approvals-and-sandbox`; this patch does not claim to
+remove Codex tool capability at the process layer. Pi one-shots already pass
+`--no-tools`, while native API calls send an empty tool list. Enforcing a
+Codex-specific no-tool execution mode, if the CLI exposes a stable mechanism,
+should be a separate reviewed change rather than a provider-specific branch in
+the evaluator prompt.
+
+Current main also executes allowlisted, read-only `## Validation` commands in
+WG itself *after* the LLM returns (`agency::validation_exec`). Telling the LLM
+not to launch nested tools does not disable or weaken that deterministic host
+validation path; the rebased integration retains it unchanged.
+
+## Candidate provenance and review
+
+The named remote branch was fetched at exactly
+`07bdec727dce5bdcb23a12906d7aaaa5ac800cc1` (tree
+`d55d407eb718bdad532ab17dd221b0f5e0653a23`, parent
+`604076593e9d6fb8e2dfd0529ac2f83806063c9f`). The author and committer are Erik
+Garrison `<erik.garrison@gmail.com>`; the commit is unsigned. `FETCH_HEAD` and
+`origin/fix/codex-evaluator-artifact-diff-timeout` both matched the requested
+commit, so no branch movement was used.
+
+The submitted commit changed only `src/agency/prompt.rs` and this report. Review
+found two issues before landing: the existing evaluator snapshot was not
+updated, and the fixed triple-backtick diff fence could be closed by untrusted
+artifact content. Both were corrected in the reviewed integration.
 
 ## Validation
 
-- `cargo fmt --check`: passed.
-- Focused test was added to `test_render_evaluator_prompt_full`.
-- On Frontier, the initial focused test build was blocked by the active Cray
-  compiler wrapper injecting unsupported LTO plugin flags into `rust-lld`.
-- Retrying with `/usr/bin/gcc` progressed through compilation. Adding
-  `LIBCLANG_PATH=/opt/cray/pe/cce/18.0.1/cce-clang/x86_64/lib` advanced
-  `boring-sys2`/bindgen further, but that Cray libclang could not find the host
-  `stddef.h`. The focused test therefore did not reach its test body on this
-  Frontier login environment.
+Validated in an isolated worktree and isolated `CARGO_TARGET_DIR`:
 
-Recommended validation command on a normal host or CI runner:
-
-```bash
-cargo fmt --check
-cargo test test_render_evaluator_prompt --lib
-cargo clippy
-```
+- base-commit production regression: fails with missing artifact-diff section;
+- focused evaluator prompt unit tests;
+- evaluator prompt snapshots;
+- production `evaluator_artifact_diff_prompt` smoke, including route identity,
+  a 30KB cap, UTF-8-safe truncation, and delimiter-collision payload;
+- evaluator/agency route tests confirming explicit handler identity and no
+  hard-coded fallback;
+- `cargo fmt --check`, `cargo clippy`, `cargo build`, and clean-environment full
+  `cargo test` (see task log for exact commands and final results).
 
 ## Follow-up recommendations
 
-- Add a bounded retry budget for identical evaluator exit-124 failures.
-- Decide whether operational timeouts should be inherited from project config
-  when a named profile supplies routing.
-- Consider enforcing no-tool execution at the Codex invocation layer, rather
-  than relying solely on the prompt, for all lightweight agency calls.
+- Add a bounded retry policy keyed by an unchanged evaluator payload/route after
+  repeated deadline failures.
+- Surface the effective evaluator timeout and config source in dry-run output.
+- Investigate stable process-level no-tool enforcement for Codex one-shots.
