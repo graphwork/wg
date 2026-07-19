@@ -2188,8 +2188,9 @@ owners = [
     "restore-immediate-chat",
     "fix-immediate-chat",
     "reproduce-and-fix",
+    "validate-four-sided",
 ]
-description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, a real project-local FIFO storage stall, and a subsequent 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s while storage is blocked, its active identity/header/atomic route must agree, its PID/session must remain singular with the daemon off and on, and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labeled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
+description = "Permanent real tmux/PTY human-flow gate for prioritized asynchronous chat startup: with an existing live tmux chat process, a 10k-task graph, 100MiB history/log artifacts, continuous graph publication, a real project-local FIFO storage stall, and a subsequent 5s unrelated full-bootstrap delay, launch real wg tui and type immediately. The exact existing pane must receive/echo the key in under 3s while storage is blocked; the one contextual row's identity/connection/route must agree; its PID/session must remain singular with the daemon off and on; and ordered first-frame/metadata/pane/key milestones plus the PTY n → Ctrl+O → command-mode n flow must be reported. Full labelled New-chat pointer boundaries are pinned by event/render tests. Credential-free."
 timeout_seconds = 30
 
 [[scenario]]
@@ -2199,8 +2200,9 @@ owners = [
     "validate-and-land",
     "fix-tui-screen",
     "reproduce-and-fix",
+    "validate-four-sided",
 ]
-description = "Installed-binary real tmux/PTY flow for the repaired chat navigation and Close lifecycle: selecting abandoned .chat-36 opens its exact canonical Detail with no spawn/reattach or composer, returning to a live chat exposes the identity/state/atomic-route Close… modal, Cancel and Hide remain non-destructive, Stop uses canonical daemon termination and tears down the identity-matching TUI PTY while preserving an Open/resumable task, and Archive produces explicit Done+archived state while exercising the present-session CLI kill followed by the already-gone idempotent completion cleanup. After each Archive, the physical outer pane must contain every sentinel graph row and active identity exactly once, no stale archived identity or subprocess text, and one coherent border pair. Unit/render tests pin pointer hitbox boundaries, narrow layout, stale async results, no-local-pane cleanup, and wrong-chat confirmation protection. Credential-free."
+description = "Installed-binary real tmux/PTY flow for contextual terminal-chat routing and the command-mode Close lifecycle: selecting abandoned .chat-36 opens its exact Task/Detail context with no spawn/reattach, composer, or Chat action; returning to a live chat restores exactly one Chat row with fixed New chat and no legacy always-visible Close; Ctrl+O → w still reaches the identity/state/atomic-route modal; Cancel and Hide remain non-destructive; Stop tears down the identity-matching TUI PTY while preserving an Open/resumable task; and Archive produces Done+archived state with idempotent already-gone cleanup. The settled outer pane must contain every sentinel graph row and active identity exactly once, no stale subprocess text, global chrome, or outer-frame pair. Credential-free."
 timeout_seconds = 60
 
 [[scenario]]

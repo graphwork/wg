@@ -12,6 +12,13 @@ command -v tmux >/dev/null 2>&1 \
 command -v python3 >/dev/null 2>&1 \
     || loud_skip "MISSING PYTHON3" "python3 is required for graph assertions"
 
+# The smoke gate is invoked by `wg done` from a worker. The fixture itself is
+# a user-level TUI flow and must not inherit the parent's graph or worker-only
+# service-control prohibition.
+unset WG_AGENT_ID WG_TASK_ID WG_EXECUTOR_TYPE WG_MODEL WG_TIER WG_BRANCH WG_DIR \
+    WG_PROJECT_ROOT WG_REASONING WG_SPAWN_EPOCH WG_SPAWN_RUN_ID \
+    WG_TASK_TIMEOUT_SECS WG_WORKTREE_ACTIVE WG_WORKTREE_PATH
+
 scratch=$(make_scratch)
 cd "$scratch"
 env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
@@ -102,16 +109,14 @@ screen = open(screen_path, encoding="utf-8").read()
 lines = screen.splitlines()
 assert "can't find session" not in screen, screen
 assert archived not in screen, (archived, screen)
-header = "Chat: cancel (.chat-0)"
-assert screen.count(header) == 1, (header, screen.count(header), screen)
+assert screen.count("Chat ▾") == 1, screen
+assert screen.count("[ New chat ]") == 1, screen
+assert ".chat-0" in screen, screen
+for stale in ("Graph | NAV", "Commands •", "Close…", "Prev", "Next", "Choose", "┌", "┐", "└", "┘"):
+    assert stale not in screen, (stale, screen)
 for sentinel in sentinels:
     count = sum(line.startswith(sentinel + " ") for line in lines)
     assert count == 1, (sentinel, count, screen)
-tops = [line for line in lines if "┌" in line and line.endswith("┐")]
-bottoms = [line for line in lines if "└" in line and line.endswith("┘")]
-assert len(tops) == 1 and len(bottoms) == 1, (tops, bottoms, screen)
-assert tops[0].index("┌") == bottoms[0].index("└"), (tops, bottoms, screen)
-assert len(tops[0]) == len(bottoms[0]), (len(tops[0]), len(bottoms[0]), screen)
 PY
     then
         loud_fail "Archive frame was physically incoherent: $(capture | tr '\n' '|')"
@@ -124,7 +129,10 @@ tmux new-session -d -s "$outer" -x 120 -y 36 \
 # client whose `window-size latest` policy overrides new-session -x/-y.
 tmux resize-window -t "$outer" -x 120 -y 36
 wait_screen '.chat-0' 'live .chat-0 identity did not render'
-wait_screen 'Close…' 'full Close… action did not render'
+wait_screen '[ New chat ]' 'minimal Chat context did not render'
+initial_screen=$(capture)
+printf '%s\n' "$initial_screen" | grep -Fq 'Close…' \
+    && loud_fail "legacy always-visible Close… action remained in Chat context"
 
 # Exact terminal selection: chooser starts on live id 0; .chat-36 is fourth.
 project_sessions_before=$(tmux list-sessions -F '#{session_name}' | grep -E "^wg-chat-${project_tag}-" || true)
@@ -145,8 +153,10 @@ tmux send-keys -t "$outer" Enter
 wait_screen '.chat-36' 'abandoned .chat-36 did not render in Detail'
 wait_screen 'abandoned' 'abandoned state did not render in Detail'
 screen=$(capture)
-printf '%s\n' "$screen" | grep -Fq 'Detail' \
-    || loud_fail "abandoned .chat-36 did not open canonical Detail"
+printf '%s\n' "$screen" | grep -Fq 'Task ▾' \
+    || loud_fail "abandoned .chat-36 did not open the contextual Task/Detail inspector"
+printf '%s\n' "$screen" | grep -Fq '[ New chat ]' \
+    && loud_fail "terminal Task/Detail context leaked the Chat action"
 printf '%s\n' "$screen" | grep -Fq "Press 'c' or ':' to start typing" \
     && loud_fail "obsolete disconnected-composer hint rendered for abandoned chat"
 printf '%s\n' "$screen" | grep -Fq 'Active: Past Chat 36' \
@@ -161,7 +171,7 @@ sessions_after=$(printf '%s\n' "$project_sessions_after" | grep -c . || true)
 # identity remains pinned to 0 (terminal Detail never changed it).
 tmux send-keys -t "$outer" 0
 wait_screen '.chat-0' 'could not return to live .chat-0'
-wait_screen 'Close…' 'Close… missing after terminal Detail return'
+wait_screen '[ New chat ]' 'minimal Chat context missing after terminal Detail return'
 chat0_session=$(session_for 0)
 for _ in $(seq 1 200); do tmux has-session -t "$chat0_session" 2>/dev/null && break; sleep 0.02; done
 tmux has-session -t "$chat0_session" 2>/dev/null \
@@ -187,7 +197,7 @@ tmux send-keys -t "$outer" w
 wait_screen 'Close Chat' 'Hide did not reopen Close… modal'
 tmux send-keys -t "$outer" h
 wait_not_screen 'Close Chat' 'Hide did not close the modal'
-wait_not_screen 'Chat: cancel (.chat-0)' 'Hide left the detached chat active'
+wait_not_screen 'Chat ▾  .chat-0' 'Hide left the detached chat active'
 tmux has-session -t "$chat0_session" 2>/dev/null \
     || loud_fail "Hide/detach killed the agent"
 [[ "$(tmux display-message -p -t "$chat0_session" '#{pane_pid}')" == "$chat0_pid" ]] \
@@ -203,7 +213,7 @@ wait_screen 'Choose Chat' 'chooser did not open after Hide'
 # on that identity. Enter selects it; Down would race the stale header and
 # silently select chat-2 instead.
 tmux send-keys -t "$outer" Enter
-wait_screen 'Chat: stop (.chat-1)' 'live chat-1 did not open from chooser'
+wait_screen 'Chat ▾  .chat-1' 'live chat-1 did not open from chooser'
 
 # Start the real daemon for canonical `wg chat stop`; TUI sentinel ownership
 # makes the selected PTY the process that the successful effect must terminate.
@@ -246,7 +256,7 @@ done
 assert_graph .chat-1 open no
 # Closing the stopped identity advances directly to the next live chat rather
 # than leaving a disconnected composer. Pin that coherent handoff to chat-2.
-wait_screen 'Chat: archive (.chat-2)' 'Stop did not advance to live chat-2'
+wait_screen 'Chat ▾  .chat-2' 'Stop did not advance to live chat-2'
 
 # Archive has explicit Done+archived semantics and tears down its process.
 chat2_session=$(session_for 2)
@@ -271,11 +281,11 @@ assert_graph .chat-2 done yes
 ! tmux has-session -t "$chat2_session" 2>/dev/null \
     || loud_fail "Archive left the chat-2 agent session running"
 wait_not_screen '.chat-2  (' 'Archive graph row did not leave the physical frame'
-wait_screen 'Chat: cancel (.chat-0)' 'Archive did not settle on one live identity'
+wait_screen 'Chat ▾  .chat-0' 'Archive did not settle on one live identity'
 # Lifecycle toasts intentionally overlay graph cells; wait for them to expire
 # before asserting the settled physical/differential frame.
 wait_not_screen 'Archived coordinator 2' 'Archive toast did not expire'
 wait_not_screen 'Stopped chat agent 1' 'Stop toast did not expire'
 assert_coherent_archive_frame .chat-2 .chat-0 .chat-1 .chat-36
 
-echo 'PASS: exact Detail + Close… Cancel/Hide/Stop + Archive present→already-gone cleanup leave one coherent installed-TUI frame'
+echo 'PASS: exact Detail + command-mode Close Cancel/Hide/Stop + Archive settle on one borderless contextual frame'

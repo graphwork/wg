@@ -18,6 +18,12 @@ command -v tmux >/dev/null 2>&1 \
 command -v python3 >/dev/null 2>&1 \
     || loud_skip "MISSING PYTHON3" "python3 is required to inspect startup milestones"
 
+# This user-level TUI/daemon fixture may be launched by the agent smoke gate;
+# isolate it from the parent's graph and worker-only service-control policy.
+unset WG_AGENT_ID WG_TASK_ID WG_EXECUTOR_TYPE WG_MODEL WG_TIER WG_BRANCH WG_DIR \
+    WG_PROJECT_ROOT WG_REASONING WG_SPAWN_EPOCH WG_SPAWN_RUN_ID \
+    WG_TASK_TIMEOUT_SECS WG_WORKTREE_ACTIVE WG_WORKTREE_PATH
+
 scratch=$(make_scratch)
 cd "$scratch"
 env -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
@@ -118,7 +124,7 @@ tmux resize-window -t "$outer" -x 140 -y 42
 first=0
 for _ in $(seq 1 100); do
     screen=$(tmux capture-pane -p -t "$outer" 2>/dev/null || true)
-    if printf '%s\n' "$screen" | grep -Eq '0 tasks|Connecting active chat'; then
+    if printf '%s\n' "$screen" | grep -Eq 'Chat ▾|Task ▾|\[ New chat \]'; then
         first=1
         break
     fi
@@ -146,14 +152,13 @@ grep -q 'pane_attached' "$trace" 2>/dev/null \
 # The visible identity must be coherent with the pane we are about to type
 # into. In particular, a delayed full snapshot may not leave a generic Chat
 # heading or paint another tab's route over this reattached terminal. Wide
-# panels prefix the identity with "Active:"; compact panels omit that redundant
-# prefix. Shallow startup splits replace the tab strip with this identity row
-# so one PTY row and the input remain available. Assert the semantic header,
-# not one width-specific decoration.
+# The one contextual row owns identity, connection, and route; no separate tab,
+# status, or PTY-mode row remains. Assert that semantic row rather than legacy
+# "Active:"/"route" decorations.
 identity_ready=0
 for _ in $(seq 1 100); do
     screen=$(capture)
-    if printf '%s\n' "$screen" | grep -Eq '(Active: )?.*[.]chat-0.*connected.*route command'; then
+    if printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected.*command:default'; then
         identity_ready=1
         break
     fi
@@ -242,17 +247,15 @@ mutator=$!
 # Daemon startup may publish a fresh graph between command-mode and PTY focus
 # events; reassert the visible capture state before testing conversation bytes.
 screen=$(capture)
-if ! printf '%s\n' "$screen" | grep -q '\[PTY\]'; then
-    tmux send-keys -t "$outer" Escape
-    sleep 0.05
+if printf '%s\n' "$screen" | grep -q '^ Commands'; then
     tmux send-keys -t "$outer" C-o
 fi
 for _ in $(seq 1 100); do
     screen=$(capture)
-    printf '%s\n' "$screen" | grep -q '\[PTY\]' && break
+    printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected' && break
     sleep 0.01
 done
-printf '%s\n' "$screen" | grep -q '\[PTY\]' \
+printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected' \
     || loud_fail "daemon-on phase could not focus the existing chat PTY: $(capture | tail -12 | tr '\n' ' ')"
 second="Y"
 tmux send-keys -t "$outer" Y Enter

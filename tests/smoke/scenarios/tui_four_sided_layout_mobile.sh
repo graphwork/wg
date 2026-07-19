@@ -75,13 +75,17 @@ assert_one_context_row "Chat ▾"
 capture >"$scratch/wide-chat-side.txt"
 tmux send-keys -t "$session" 1
 wait_screen "Task ▾"
+# Inspect the real graph row rather than accepting a generic "no task" shell.
+tmux send-keys -t "$session" Down Enter
+wait_screen "Task ▾  layout-fixture-exact  ● open"
 assert_one_context_row "Task ▾"
-capture >"$scratch/wide-task-side.txt"
+capture >"$scratch/wide-task-stacked-initial.txt"
 open_layout; tmux send-keys -t "$session" l Enter
 wait_layout dock right
 wait_layout mode split
-wait_screen "Task ▾"
+wait_screen "Task ▾  layout-fixture-exact  ● open"
 assert_one_context_row "Task ▾"
+capture >"$scratch/wide-task-side.txt"
 
 # Stacked split: the Task context is embedded into the one horizontal seam.
 open_layout; tmux send-keys -t "$session" j Enter
@@ -110,6 +114,9 @@ capture >"$scratch/wide-chat-full.txt"
 # collapse rather than creating a second row.
 for spec in "76 30 medium" "40 22 termux"; do
   set -- $spec
+  # Exercise a resize burst before settling at each measured viewport.
+  tmux resize-window -t "$session" -x 58 -y 24
+  tmux resize-window -t "$session" -x 104 -y 32
   tmux resize-window -t "$session" -x "$1" -y "$2"
   sleep 0.25
   wait_screen "[ New chat ]"
@@ -139,4 +146,4 @@ wait_screen "Chat"
 [[ $(sha256sum "$G/config.toml" | cut -d' ' -f1) == "$config_before" ]] \
   || loud_fail "TUI layout mutated config"
 
-echo "PASS: one contextual row, fixed New chat, side/stacked/full seam rules, keyboard layout mode, and responsive restoration"
+echo "PASS: one contextual row, exact Task context, fixed New chat, side/stacked/full seam rules, resize bursts, keyboard layout mode, and responsive restoration"
