@@ -2293,3 +2293,12 @@ owners = [
 ]
 description = "Candidate-binary real tmux/PTY flow for the one-row borderless inspector at desktop, medium, and Termux sizes: contextual Chat/Task rows, fixed labelled New chat, one side/stacked seam, frameless full mode, mouse-disabled p layout controls, rollback/commit, narrow-to-wide preference restoration, and non-mutating startup/persistence. Credential-free."
 timeout_seconds = 180
+
+[[scenario]]
+name = "pending_eval_lifecycle_route_recovery"
+script = "scenarios/pending_eval_lifecycle_route_recovery.sh"
+owners = [
+    "salvage-and-finish",
+]
+description = "Credential-free real CLI/dispatcher regression for the FailedPendingEval lifecycle repair: Codex scaffolding persists a handler-first two-stage plan, the owning FLIP completes over FailedPendingEval while ordinary work stays gated, why-blocked agrees with dispatcher readiness without inventing an SCC cycle, a terminal evaluator without durable evidence cannot scorelessly promote its source, and a historical bare-Codex pre-claim breaker row normalizes/rearms exactly once with spawning disabled. Handler matrices and concurrent-tick reservation are pinned by companion Rust tests."
+timeout_seconds = 60

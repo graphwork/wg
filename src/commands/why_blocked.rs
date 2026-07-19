@@ -10,6 +10,8 @@ struct BlockingNode {
     id: String,
     status: Status,
     is_phantom: bool,
+    failure_reason: Option<String>,
+    eval_bypasses: Vec<(String, Status)>,
     children: Vec<BlockingNode>,
 }
 
@@ -93,6 +95,8 @@ fn build_blocking_tree(
         id: task_id.to_string(),
         status,
         is_phantom,
+        failure_reason: task.and_then(|task| task.failure_reason.clone()),
+        eval_bypasses: vec![],
         children: vec![],
     };
 
@@ -122,15 +126,29 @@ fn build_blocking_tree(
                         id: blocker_id.clone(),
                         status: remote.status,
                         is_phantom: false,
+                        failure_reason: None,
+                        eval_bypasses: vec![],
                         children: vec![], // Don't recurse into remote graphs
                     };
                     node.children.push(child);
                 }
-            } else if let Some(blocker) = graph.get_task(blocker_id) {
-                // Local dependency — only include if still actively blocking
-                if !blocker.status.is_terminal() {
-                    let child = build_blocking_tree(graph, blocker_id, visited, dir);
-                    node.children.push(child);
+            } else if graph.get_task(blocker_id).is_some() {
+                match worksgood::query::dependency_disposition(
+                    blocker_id,
+                    &task.id,
+                    graph,
+                    Some(dir),
+                ) {
+                    worksgood::query::DependencyDisposition::Satisfied => {}
+                    worksgood::query::DependencyDisposition::EvalSystemBypass {
+                        blocker_status,
+                    } => node
+                        .eval_bypasses
+                        .push((blocker_id.clone(), blocker_status)),
+                    worksgood::query::DependencyDisposition::Blocked { .. } => {
+                        let child = build_blocking_tree(graph, blocker_id, visited, dir);
+                        node.children.push(child);
+                    }
                 }
             } else {
                 // Phantom dependency — task doesn't exist in the graph
@@ -138,6 +156,8 @@ fn build_blocking_tree(
                     id: blocker_id.clone(),
                     status: Status::Open,
                     is_phantom: true,
+                    failure_reason: None,
+                    eval_bypasses: vec![],
                     children: vec![],
                 };
                 node.children.push(child);
@@ -170,9 +190,10 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     if task.status != Status::Open {
         return false;
     }
-    task.after
-        .iter()
-        .all(|blocker_id| worksgood::query::is_blocker_satisfied(blocker_id, graph, Some(dir)))
+    task.after.iter().all(|blocker_id| {
+        worksgood::query::dependency_disposition(blocker_id, &task.id, graph, Some(dir))
+            .is_satisfied()
+    })
 }
 
 fn count_blockers(node: &BlockingNode) -> usize {
@@ -204,7 +225,23 @@ fn print_human(
     if tree.children.is_empty() {
         println!("Status: {:?}", task.status);
         println!();
-        println!("{} has no blockers.", task.id);
+        if tree.eval_bypasses.is_empty() {
+            println!("{} has no blockers.", task.id);
+        } else {
+            println!(
+                "{} is dispatcher-ready via evaluation-system bypass.",
+                task.id
+            );
+            for (blocker, status) in &tree.eval_bypasses {
+                println!(
+                    "  {}: {} — evaluation-system bypass (this satellite is part of {}'s gate)",
+                    blocker, status, blocker
+                );
+            }
+            if let Some(reason) = task.failure_reason.as_deref() {
+                println!("Lifecycle health: {}", reason);
+            }
+        }
         return;
     }
 
@@ -288,6 +325,9 @@ fn print_tree(node: &BlockingNode, prefix: &str, depth: usize) {
             "{} \\-- blocked by: {} {}{}",
             prefix, node.id, status_str, root_marker
         );
+        if let Some(reason) = node.failure_reason.as_deref() {
+            println!("{}     lifecycle health: {}", prefix, reason);
+        }
     }
 
     // Calculate the prefix for children
@@ -334,6 +374,7 @@ fn print_json(
             "title": task.title,
             "status": task.status,
         },
+        "dispatcher_ready_via_evaluation_system_bypass": tree.children.is_empty() && !tree.eval_bypasses.is_empty(),
         "is_blocked": !tree.children.is_empty(),
         "blocking_chain": tree_to_json(tree),
         "root_blockers": all_root_blockers,
@@ -352,6 +393,15 @@ fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
     if node.is_phantom {
         obj["phantom"] = serde_json::Value::Bool(true);
     }
+    if let Some(reason) = node.failure_reason.as_deref() {
+        obj["failure_reason"] = serde_json::Value::String(reason.to_string());
+    }
+    obj["evaluation_system_bypasses"] = serde_json::Value::Array(
+        node.eval_bypasses
+            .iter()
+            .map(|(id, status)| serde_json::json!({"id": id, "status": status}))
+            .collect(),
+    );
     obj
 }
 
@@ -546,6 +596,39 @@ mod tests {
         graph2.add_node(Node::Task(blocked2.clone()));
 
         assert!(!is_task_ready(&graph2, &blocked2, dir));
+    }
+
+    #[test]
+    fn test_eval_satellite_reports_dispatcher_bypass_not_root_blocker() {
+        for status in [Status::PendingEval, Status::FailedPendingEval] {
+            let mut graph = WorkGraph::new();
+            let mut source = make_task("source", "Source");
+            source.status = status;
+            let mut flip = make_task(".flip-source", "FLIP");
+            flip.after = vec!["source".to_string()];
+            graph.add_node(Node::Task(source));
+            graph.add_node(Node::Task(flip.clone()));
+
+            let mut visited = HashSet::new();
+            let tree = build_blocking_tree(&graph, ".flip-source", &mut visited, Path::new("/tmp"));
+            assert!(tree.children.is_empty());
+            assert_eq!(tree.eval_bypasses, vec![("source".to_string(), status)]);
+            assert!(is_task_ready(&graph, &flip, Path::new("/tmp")));
+        }
+    }
+
+    #[test]
+    fn test_unrelated_system_rows_do_not_inherit_eval_bypass() {
+        for id in [".assign-source", ".verify-source", ".other"] {
+            let mut graph = WorkGraph::new();
+            let mut source = make_task("source", "Source");
+            source.status = Status::FailedPendingEval;
+            let mut dependent = make_task(id, id);
+            dependent.after = vec!["source".to_string()];
+            graph.add_node(Node::Task(source));
+            graph.add_node(Node::Task(dependent.clone()));
+            assert!(!is_task_ready(&graph, &dependent, Path::new("/tmp")));
+        }
     }
 
     #[test]

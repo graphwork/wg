@@ -330,48 +330,77 @@ pub fn ready_tasks(graph: &WorkGraph) -> Vec<&Task> {
             // to also be terminal — agency eval gates dependent unblocking.
             // System tasks (dot-prefixed) are exempt from this gate.
             task.after.iter().all(|blocker_id| {
-                blocker_satisfied_for_dependent(blocker_id, graph, task.id.starts_with('.'))
+                dependency_disposition(blocker_id, &task.id, graph, None).is_satisfied()
             })
         })
         .collect()
 }
 
-/// Predicate: is `blocker_id` satisfied for a dependent task?
-///
-/// Handles the new `PendingEval` soft-done state:
-/// - System dependents (e.g. `.flip-X`, `.evaluate-X`) treat `PendingEval` and
-///   `FailedPendingEval` as "the agent finished, output is captured" and proceed.
-///   Without this, the eval pipeline would deadlock because `.evaluate-X` cannot
-///   run until `X` is `Done` — but `X` cannot reach `Done` until `.evaluate-X`
-///   finishes.
-/// - Non-system dependents (regular work) treat `PendingEval`/`FailedPendingEval`
-///   as still in flight and block until the dispatcher promotes to `Done`.
-fn blocker_satisfied_for_dependent(
-    blocker_id: &str,
-    graph: &WorkGraph,
-    dependent_is_system: bool,
-) -> bool {
-    let blocker = graph.get_task(blocker_id);
-    let blocker_dep_satisfied = blocker
-        .map(|t| t.status.is_dep_satisfied())
-        .unwrap_or(false);
-    let blocker_pending_eval = blocker
-        .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
-        .unwrap_or(false);
+/// One authoritative explanation for an `after` edge. Readiness, completion
+/// gates and diagnostics use this instead of independently guessing that every
+/// dot-prefixed task is trusted evaluation infrastructure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyDisposition {
+    Satisfied,
+    EvalSystemBypass { blocker_status: Status },
+    Blocked { reason: String },
+}
 
-    if !blocker_dep_satisfied {
-        // The PendingEval/FailedPendingEval bypass only fires for system dependents.
-        // Regular tasks must wait for the dispatcher to promote the source to Done.
-        if !(dependent_is_system && blocker_pending_eval) {
-            return false;
-        }
+impl DependencyDisposition {
+    pub fn is_satisfied(&self) -> bool {
+        matches!(self, Self::Satisfied | Self::EvalSystemBypass { .. })
     }
-    // Either the blocker satisfies the dep, or the PendingEval bypass let us through.
-    if dependent_is_system {
-        // System tasks skip the eval gate too — they ARE the eval gate.
-        return true;
+}
+
+/// Only the owning `.flip-X` or direct `.evaluate-X` satellite may cross X's
+/// soft evaluation state. `.assign-*`, `.verify-*`, unrelated dot tasks,
+/// remote references and ordinary dependents remain blocked.
+pub fn is_owning_evaluation_satellite(dependent_id: &str, blocker_id: &str) -> bool {
+    dependent_id == format!(".flip-{blocker_id}")
+        || dependent_id == format!(".evaluate-{blocker_id}")
+}
+
+pub fn dependency_disposition(
+    blocker_id: &str,
+    dependent_id: &str,
+    graph: &WorkGraph,
+    workgraph_dir: Option<&Path>,
+) -> DependencyDisposition {
+    if crate::federation::parse_remote_ref(blocker_id).is_some() {
+        return if is_blocker_satisfied(blocker_id, graph, workgraph_dir) {
+            DependencyDisposition::Satisfied
+        } else {
+            DependencyDisposition::Blocked {
+                reason: "remote dependency unresolved".to_string(),
+            }
+        };
     }
-    !is_eval_gate_pending(blocker_id, graph)
+
+    let Some(blocker) = graph.get_task(blocker_id) else {
+        return DependencyDisposition::Blocked {
+            reason: "dependency does not exist".to_string(),
+        };
+    };
+    if matches!(
+        blocker.status,
+        Status::PendingEval | Status::FailedPendingEval
+    ) && is_owning_evaluation_satellite(dependent_id, blocker_id)
+    {
+        return DependencyDisposition::EvalSystemBypass {
+            blocker_status: blocker.status,
+        };
+    }
+    if !blocker.status.is_dep_satisfied() {
+        return DependencyDisposition::Blocked {
+            reason: format!("dependency status is {}", blocker.status),
+        };
+    }
+    if !dependent_id.starts_with('.') && is_eval_gate_pending(blocker_id, graph) {
+        return DependencyDisposition::Blocked {
+            reason: "evaluation gate is still pending".to_string(),
+        };
+    }
+    DependencyDisposition::Satisfied
 }
 
 /// Check whether a single after dependency is satisfied.
@@ -424,25 +453,9 @@ pub fn is_blocker_satisfied_with_eval_gate(
     blocker_id: &str,
     graph: &WorkGraph,
     workgraph_dir: Option<&Path>,
-    dependent_is_system: bool,
+    dependent_id: &str,
 ) -> bool {
-    let satisfied = is_blocker_satisfied(blocker_id, graph, workgraph_dir);
-    if !satisfied {
-        // Allow system dependents to advance over a PendingEval/FailedPendingEval source
-        // — the agent is done (or exited), only the eval has not scored yet.
-        if !(dependent_is_system
-            && graph
-                .get_task(blocker_id)
-                .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
-                .unwrap_or(false))
-        {
-            return false;
-        }
-    }
-    if dependent_is_system {
-        return true;
-    }
-    !is_eval_gate_pending(blocker_id, graph)
+    dependency_disposition(blocker_id, dependent_id, graph, workgraph_dir).is_satisfied()
 }
 
 /// Find all tasks that are ready to work on, resolving cross-repo dependencies.
@@ -463,13 +476,12 @@ pub fn ready_tasks_with_peers<'a>(graph: &'a WorkGraph, workgraph_dir: &Path) ->
             if !is_time_ready(task) {
                 return false;
             }
-            let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
                 is_blocker_satisfied_with_eval_gate(
                     blocker_id,
                     graph,
                     Some(workgraph_dir),
-                    dependent_is_system,
+                    &task.id,
                 )
             })
         })
@@ -498,42 +510,15 @@ pub fn ready_tasks_cycle_aware<'a>(
             if !is_time_ready(task) {
                 return false;
             }
-            let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
-                let blocker = graph.get_task(blocker_id);
-                let blocker_dep_satisfied = blocker
-                    .map(|t| t.status.is_dep_satisfied())
-                    .unwrap_or(false);
-                let blocker_pending_eval = blocker
-                    .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
-                    .unwrap_or(false);
-                if blocker_dep_satisfied {
-                    // Eval gate: even when blocker satisfies the dep, wait for
-                    // `.evaluate-X` to also be terminal. System dependents
-                    // (dot-prefixed) skip the gate.
-                    if dependent_is_system {
-                        return true;
-                    }
-                    return !is_eval_gate_pending(blocker_id, graph);
-                }
-                // PendingEval/FailedPendingEval bypass for system dependents:
-                // `.flip-X` and `.evaluate-X` need to run on a soft-done/soft-failed
-                // source — without this the eval pipeline deadlocks itself.
-                if dependent_is_system && blocker_pending_eval {
+                if dependency_disposition(blocker_id, &task.id, graph, None).is_satisfied() {
                     return true;
                 }
-                // Back-edge exemption: if this dependency edge is a structural
-                // back-edge in the cycle analysis, skip it. Only forward
-                // dependencies block readiness. This single check handles
-                // self-loops, 2-task cycles, N-task cycles, and all iterations
-                // uniformly — no special cases needed.
-                if cycle_analysis
+                // Back-edge exemption is structural cycle behavior and remains
+                // independent of the evaluation-system bypass.
+                cycle_analysis
                     .back_edges
                     .contains(&(blocker_id.clone(), task.id.clone()))
-                {
-                    return true;
-                }
-                false
             })
         })
         .collect();
@@ -706,40 +691,17 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
             if !is_time_ready(task) {
                 return false;
             }
-            let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
-                if is_blocker_satisfied(blocker_id, graph, Some(workgraph_dir)) {
-                    // Eval gate: even when blocker is terminal, wait for
-                    // `.evaluate-X` to also be terminal. System dependents
-                    // (dot-prefixed) skip the gate.
-                    if dependent_is_system {
-                        return true;
-                    }
-                    return !is_eval_gate_pending(blocker_id, graph);
-                }
-                // PendingEval bypass for system dependents: the agent finished
-                // (output captured) but the evaluator hasn't scored yet —
-                // `.flip-X` / `.evaluate-X` must run from this state.
-                if dependent_is_system
-                    && graph
-                        .get_task(blocker_id)
-                        .map(|t| {
-                            matches!(t.status, Status::PendingEval | Status::FailedPendingEval)
-                        })
-                        .unwrap_or(false)
+                if dependency_disposition(blocker_id, &task.id, graph, Some(workgraph_dir))
+                    .is_satisfied()
                 {
                     return true;
                 }
-                // Back-edge exemption: if this dependency edge is a structural
-                // back-edge in the cycle analysis, skip it. Only forward
-                // dependencies block readiness.
-                if cycle_analysis
+                // Back-edge exemption is structural cycle behavior and remains
+                // independent of the evaluation-system bypass.
+                cycle_analysis
                     .back_edges
                     .contains(&(blocker_id.clone(), task.id.clone()))
-                {
-                    return true;
-                }
-                false
             })
         })
         .collect()

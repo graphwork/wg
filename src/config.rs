@@ -1810,7 +1810,14 @@ pub fn execution_system_key(raw_route: &str) -> anyhow::Result<ExecutionSystemKe
             }
             "anthropic-cli".to_string()
         }
-        crate::dispatch::ExecutorKind::Codex => "openai-codex-cli".to_string(),
+        crate::dispatch::ExecutorKind::Codex => {
+            if !route.to_ascii_lowercase().starts_with("codex:") {
+                anyhow::bail!(
+                    "route {route:?} does not explicitly identify the codex execution system"
+                );
+            }
+            "openai-codex-cli".to_string()
+        }
         crate::dispatch::ExecutorKind::Pi => {
             let inner = route
                 .strip_prefix("pi:")
@@ -1826,6 +1833,12 @@ pub fn execution_system_key(raw_route: &str) -> anyhow::Result<ExecutionSystemKe
             provider.to_ascii_lowercase()
         }
         crate::dispatch::ExecutorKind::Native => {
+            let lower = route.to_ascii_lowercase();
+            if !lower.starts_with("nex:") && !lower.starts_with("native:") {
+                anyhow::bail!(
+                    "route {route:?} does not explicitly identify the nex execution system"
+                );
+            }
             let inner = strip_native_handler_prefix(route);
             parse_model_spec(inner)
                 .provider
@@ -10761,6 +10774,12 @@ model = "codex:gpt-5.5"
             let key = execution_system_key(route).unwrap();
             assert_eq!(key.handler, handler, "route={route}");
             assert_eq!(key.provider, provider, "route={route}");
+        }
+        for ambiguous in ["gpt-5.5", "openrouter:z-ai/glm-5.2", "z-ai/glm-5.2"] {
+            assert!(
+                execution_system_key(ambiguous).is_err(),
+                "ambiguous route unexpectedly selected a system: {ambiguous}"
+            );
         }
     }
 

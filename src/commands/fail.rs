@@ -133,6 +133,7 @@ fn run_inner(
             task.status = Status::FailedPendingEval;
             task.failure_class = class;
             task.failure_reason = reason_owned.clone();
+            worksgood::eval_lifecycle::refresh_source_lifecycle(task);
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),

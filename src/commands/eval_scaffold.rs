@@ -71,6 +71,30 @@ fn should_run_flip(graph: &WorkGraph, task_id: &str, config: &Config) -> bool {
     config.agency.flip_enabled
 }
 
+fn plan_satellite(
+    graph: &WorkGraph,
+    source_task_id: &str,
+    satellite_task_id: &str,
+    config: &Config,
+) -> Option<worksgood::eval_lifecycle::AgencyDispatchPlan> {
+    let source = graph.get_task(source_task_id)?;
+    match worksgood::eval_lifecycle::build_plan(
+        config,
+        source,
+        satellite_task_id,
+        worksgood::eval_lifecycle::DispatchSelectionSource::ScaffoldConfig,
+    ) {
+        Ok(plan) => Some(plan),
+        Err(error) => {
+            eprintln!(
+                "[eval-scaffold] Cannot create '{}': no canonical agency route plan: {:#}",
+                satellite_task_id, error
+            );
+            None
+        }
+    }
+}
+
 /// Create a `.flip-<task_id>` task in `graph`, blocked by `task_id`.
 ///
 /// Returns `true` if the graph was modified (i.e. the flip task was created).
@@ -88,7 +112,10 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
         return false;
     }
 
-    let flip_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+    let Some(flip_plan) = plan_satellite(graph, task_id, &flip_task_id, config) else {
+        return false;
+    };
+    let primary = &flip_plan.calls[0];
 
     // Calculate auto-priority for flip task
     let priority = calculate_auto_priority(graph, task_id, "flip");
@@ -105,8 +132,11 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
         after: vec![task_id.to_string()],
         tags: vec!["flip".to_string(), "agency".to_string()],
         exec: Some(format!("wg evaluate run {} --flip", task_id)),
-        model: Some(flip_resolved.model),
-        provider: flip_resolved.provider,
+        model: Some(primary.route.clone()),
+        provider: Some(primary.system.handler.clone()),
+        endpoint: primary.endpoint.clone(),
+        reasoning: primary.reasoning,
+        agency_dispatch: Some(flip_plan),
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),
         created_at: Some(Utc::now().to_rfc3339()),
@@ -199,8 +229,10 @@ pub fn scaffold_full_pipeline(
     // 3. Create .flip-* task (depends on main task)
     let run_flip = should_run_flip(graph, task_id, config);
     if run_flip && graph.get_task(&flip_task_id).is_none() {
-        let flip_resolved =
-            config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+        let Some(flip_plan) = plan_satellite(graph, task_id, &flip_task_id, config) else {
+            return any_created;
+        };
+        let primary = &flip_plan.calls[0];
         let flip_task = Task {
             id: flip_task_id.clone(),
             title: format!("FLIP: {}", task_id),
@@ -212,8 +244,11 @@ pub fn scaffold_full_pipeline(
             after: vec![task_id.to_string()],
             tags: vec!["flip".to_string(), "agency".to_string()],
             exec: Some(format!("wg evaluate run {} --flip", task_id)),
-            model: Some(flip_resolved.model),
-            provider: flip_resolved.provider,
+            model: Some(primary.route.clone()),
+            provider: Some(primary.system.handler.clone()),
+            endpoint: primary.endpoint.clone(),
+            reasoning: primary.reasoning,
+            agency_dispatch: Some(flip_plan),
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
             created_at: Some(Utc::now().to_rfc3339()),
@@ -249,8 +284,10 @@ pub fn scaffold_full_pipeline(
             task_id, task_id, task_id, task_id,
         ));
 
-        let eval_resolved =
-            config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+        let Some(eval_plan) = plan_satellite(graph, task_id, &eval_task_id, config) else {
+            return any_created;
+        };
+        let primary = &eval_plan.calls[0];
         let eval_task = Task {
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),
@@ -259,8 +296,11 @@ pub fn scaffold_full_pipeline(
             after: eval_after,
             tags: vec!["evaluation".to_string(), "agency".to_string()],
             exec: Some(format!("wg evaluate run {}", task_id)),
-            model: Some(eval_resolved.model),
-            provider: eval_resolved.provider,
+            model: Some(primary.route.clone()),
+            provider: Some(primary.system.handler.clone()),
+            endpoint: primary.endpoint.clone(),
+            reasoning: primary.reasoning,
+            agency_dispatch: Some(eval_plan),
             agent: config.agency.evaluator_agent.clone(),
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
@@ -428,7 +468,10 @@ pub fn scaffold_eval_task(
         task_id, task_id, task_id, task_id,
     ));
 
-    let eval_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+    let Some(eval_plan) = plan_satellite(graph, task_id, &eval_task_id, config) else {
+        return false;
+    };
+    let primary = &eval_plan.calls[0];
 
     // Calculate auto-priority for eval task
     let priority = calculate_auto_priority(graph, task_id, "evaluate");
@@ -442,8 +485,11 @@ pub fn scaffold_eval_task(
         after: eval_after,
         tags: vec!["evaluation".to_string(), "agency".to_string()],
         exec: Some(format!("wg evaluate run {}", task_id)),
-        model: Some(eval_resolved.model),
-        provider: eval_resolved.provider,
+        model: Some(primary.route.clone()),
+        provider: Some(primary.system.handler.clone()),
+        endpoint: primary.endpoint.clone(),
+        reasoning: primary.reasoning,
+        agency_dispatch: Some(eval_plan),
         agent: config.agency.evaluator_agent.clone(),
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),

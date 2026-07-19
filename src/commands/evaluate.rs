@@ -15,6 +15,75 @@ use worksgood::graph::{LogEntry, Status, TokenUsage};
 use worksgood::parser::load_graph;
 use worksgood::provenance;
 
+fn persisted_invocation_plan(
+    dir: &Path,
+    source_task_id: &str,
+    flip: bool,
+) -> Result<Option<worksgood::eval_lifecycle::AgencyDispatchPlan>> {
+    let agency_task_id = std::env::var("WG_AGENCY_TASK_ID").ok();
+    let expected_hash = std::env::var("WG_AGENCY_PLAN_HASH").ok();
+    match (agency_task_id, expected_hash) {
+        (None, None) => return Ok(None), // explicit manual invocation
+        (Some(_), None) | (None, Some(_)) => {
+            bail!("incomplete persisted agency invocation identity")
+        }
+        (Some(agency_task_id), Some(expected_hash)) => {
+            let expected_task_id = if flip {
+                format!(".flip-{source_task_id}")
+            } else {
+                format!(".evaluate-{source_task_id}")
+            };
+            if agency_task_id != expected_task_id {
+                bail!(
+                    "agency invocation task mismatch: expected {}, received {}",
+                    expected_task_id,
+                    agency_task_id
+                );
+            }
+            let graph = load_graph(&super::graph_path(dir))?;
+            let task = graph.get_task(&agency_task_id).ok_or_else(|| {
+                anyhow::anyhow!("agency invocation task {} no longer exists", agency_task_id)
+            })?;
+            let plan = task.agency_dispatch.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "agency invocation task {} has no persisted plan",
+                    agency_task_id
+                )
+            })?;
+            worksgood::eval_lifecycle::validate_plan(&plan)?;
+            if plan.plan_hash != expected_hash || plan.source_task != source_task_id {
+                bail!("persisted agency plan identity changed before invocation");
+            }
+            Ok(Some(plan))
+        }
+    }
+}
+
+fn persist_pipeline_verdict(
+    dir: &Path,
+    source_task_id: &str,
+    flip: bool,
+    evaluation: &Evaluation,
+) -> Result<()> {
+    let Some(plan) = persisted_invocation_plan(dir, source_task_id, flip)? else {
+        return Ok(());
+    };
+    let graph = load_graph(&super::graph_path(dir))?;
+    let source = graph.get_task_or_err(source_task_id)?;
+    let satellite = graph.get_task_or_err(&plan.task_id)?;
+    let stage = if flip {
+        // FLIP's durable verdict represents the completed two-call stage.
+        worksgood::eval_lifecycle::AgencyStage::FlipComparison
+    } else {
+        worksgood::eval_lifecycle::AgencyStage::Evaluate
+    };
+    let path = worksgood::eval_lifecycle::write_durable_verdict(
+        dir, source, satellite, stage, evaluation,
+    )?;
+    eprintln!("[eval-lifecycle] durable verdict: {}", path.display());
+    Ok(())
+}
+
 /// Extract the model from a task's spawn log entry.
 ///
 /// Spawn log entries have the format:
@@ -408,13 +477,25 @@ pub fn run(
 
     let prompt = render_evaluator_prompt(&evaluator_input);
 
-    // Determine the model to use via model routing
-    let model = evaluator_model
-        .map(std::string::ToString::to_string)
+    // Inline lifecycle invocation is pinned to the scaffolded plan. Manual
+    // `--evaluator-model` remains a separate invocation-scoped path.
+    let invocation_plan = persisted_invocation_plan(dir, task_id, false)?;
+    if invocation_plan.is_some() && evaluator_model.is_some() {
+        bail!("a scaffolded agency invocation cannot override its persisted route");
+    }
+    let planned_call = invocation_plan
+        .as_ref()
+        .map(|plan| {
+            worksgood::eval_lifecycle::call(plan, worksgood::eval_lifecycle::AgencyStage::Evaluate)
+        })
+        .transpose()?;
+    let model = planned_call
+        .map(|call| call.route.clone())
+        .or_else(|| evaluator_model.map(std::string::ToString::to_string))
         .unwrap_or_else(|| {
             config
                 .resolve_model_for_role(worksgood::config::DispatchRole::Evaluator)
-                .model
+                .spawn_model_spec()
         });
 
     // Resolve the task execution model early so dry-run can show it
@@ -457,7 +538,15 @@ pub fn run(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let eval_result = if let Some(route) = evaluator_model {
+            let eval_result = if let Some(call) = planned_call {
+                worksgood::service::llm::run_lightweight_llm_call_for_plan(
+                    &config,
+                    worksgood::config::DispatchRole::Evaluator,
+                    call,
+                    &prompt,
+                    timeout_secs,
+                )
+            } else if let Some(route) = evaluator_model {
                 worksgood::service::llm::run_lightweight_llm_call_for_route(
                     &config,
                     worksgood::config::DispatchRole::Evaluator,
@@ -698,6 +787,11 @@ pub fn run(
             );
         }
     }
+
+    // Semantic evidence is durable before the satellite's wrapper can call
+    // `wg done`. A crash from here onward is reconciled without another model
+    // call.
+    persist_pipeline_verdict(dir, task_id, false, &evaluation)?;
 
     // Step 8.5: Persist token usage to the .evaluate-* task
     if let Some(ref usage) = eval_token_usage {
@@ -973,19 +1067,50 @@ pub fn run_flip(
         (config.resolve_model_for_role(role).model, "config")
     }
 
-    let (inference_model, inference_source) = resolve_flip_model(
-        &config,
-        worksgood::config::DispatchRole::FlipInference,
-        evaluator_model,
-        &task_model,
-    );
+    let invocation_plan = persisted_invocation_plan(dir, task_id, true)?;
+    if invocation_plan.is_some() && evaluator_model.is_some() {
+        bail!("a scaffolded FLIP invocation cannot override its persisted routes");
+    }
+    let planned_inference = invocation_plan
+        .as_ref()
+        .map(|plan| {
+            worksgood::eval_lifecycle::call(
+                plan,
+                worksgood::eval_lifecycle::AgencyStage::FlipInference,
+            )
+        })
+        .transpose()?;
+    let planned_comparison = invocation_plan
+        .as_ref()
+        .map(|plan| {
+            worksgood::eval_lifecycle::call(
+                plan,
+                worksgood::eval_lifecycle::AgencyStage::FlipComparison,
+            )
+        })
+        .transpose()?;
 
-    let (comparison_model, comparison_source) = resolve_flip_model(
-        &config,
-        worksgood::config::DispatchRole::FlipComparison,
-        evaluator_model,
-        &task_model,
-    );
+    let (inference_model, inference_source) = if let Some(call) = planned_inference {
+        (call.route.clone(), "persisted-plan")
+    } else {
+        resolve_flip_model(
+            &config,
+            worksgood::config::DispatchRole::FlipInference,
+            evaluator_model,
+            &task_model,
+        )
+    };
+
+    let (comparison_model, comparison_source) = if let Some(call) = planned_comparison {
+        (call.route.clone(), "persisted-plan")
+    } else {
+        resolve_flip_model(
+            &config,
+            worksgood::config::DispatchRole::FlipComparison,
+            evaluator_model,
+            &task_model,
+        )
+    };
 
     eprintln!(
         "FLIP models: inference='{}' ({}), comparison='{}' ({})",
@@ -1034,7 +1159,15 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let inference_result = if let Some(route) = evaluator_model {
+            let inference_result = if let Some(call) = planned_inference {
+                worksgood::service::llm::run_lightweight_llm_call_for_plan(
+                    &config,
+                    worksgood::config::DispatchRole::FlipInference,
+                    call,
+                    &inference_prompt,
+                    flip_timeout,
+                )
+            } else if let Some(route) = evaluator_model {
                 worksgood::service::llm::run_lightweight_llm_call_for_route(
                     &config,
                     worksgood::config::DispatchRole::FlipInference,
@@ -1103,7 +1236,15 @@ pub fn run_flip(
         let mut extracted = None;
         let mut token_usage = None;
         for attempt in 1..=3 {
-            let comparison_result = if let Some(route) = evaluator_model {
+            let comparison_result = if let Some(call) = planned_comparison {
+                worksgood::service::llm::run_lightweight_llm_call_for_plan(
+                    &config,
+                    worksgood::config::DispatchRole::FlipComparison,
+                    call,
+                    &comparison_prompt,
+                    flip_timeout,
+                )
+            } else if let Some(route) = evaluator_model {
                 worksgood::service::llm::run_lightweight_llm_call_for_route(
                     &config,
                     worksgood::config::DispatchRole::FlipComparison,
@@ -1266,6 +1407,10 @@ pub fn run_flip(
             );
         }
     }
+
+    // Persist the completed two-call FLIP verdict before the wrapper can
+    // transition the satellite. A post-verdict crash is reconciliation-only.
+    persist_pipeline_verdict(dir, task_id, true, &evaluation)?;
 
     // Persist combined token usage from both FLIP phases to the .flip-* task
     let combined_usage = combine_token_usage(&[inference_token_usage, comparison_token_usage]);
@@ -1874,6 +2019,17 @@ fn check_eval_gate(
 
     // Skip system evaluations (infrastructure failures) - these should not trigger task failure
     if evaluation.source == "system" {
+        return Ok(false);
+    }
+
+    // Soft evaluation states are consumed centrally by the dispatcher after
+    // the durable verdict exists. Mutating the source here would race the
+    // satellite's own `wg done` and lose the exact consumed-verdict fence.
+    let source_is_soft_eval = worksgood::parser::load_graph(&super::graph_path(dir))
+        .ok()
+        .and_then(|graph| graph.get_task(task_id).map(|task| task.status))
+        .is_some_and(|status| matches!(status, Status::PendingEval | Status::FailedPendingEval));
+    if source_is_soft_eval {
         return Ok(false);
     }
 

@@ -17,8 +17,8 @@ use worksgood::agency::{
 use worksgood::chat;
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{
-    FailureClass, LogEntry, Node, PRIORITY_DEFAULT, PRIORITY_IDLE, PRIORITY_NORMAL, Priority,
-    Status, Task, WaitCondition, WaitSpec, boost_priority, evaluate_all_cycle_failure_restarts,
+    LogEntry, Node, PRIORITY_DEFAULT, PRIORITY_IDLE, PRIORITY_NORMAL, Priority, Status, Task,
+    WaitCondition, WaitSpec, boost_priority, evaluate_all_cycle_failure_restarts,
     evaluate_all_cycle_iterations,
 };
 use worksgood::messages;
@@ -884,280 +884,9 @@ fn migrate_pending_validation_tasks(graph: &mut worksgood::graph::WorkGraph) -> 
     !migrated.is_empty()
 }
 
-/// Resolve `PendingEval` tasks whose `.evaluate-X` scaffolding has finished.
-///
-/// The lifecycle is:
-/// ```text
-/// open → in-progress → pending-eval ─┬─ eval pass → done
-///                                    └─ eval fail → failed (auto-rescue may spawn replacement)
-/// ```
-///
-/// When a `PendingEval` task's matching `.evaluate-X` is terminal AND the
-/// task itself wasn't already flipped to Failed by `check_eval_gate`, this
-/// phase promotes it to Done so dependents unblock.
-///
-/// If the evaluator never scored above threshold, `check_eval_gate` is
-/// responsible for `run_eval_reject` (PendingEval → Failed) and creating a
-/// rescue. This phase only handles the success case.
-///
-/// Returns true if any task was promoted.
-fn resolve_pending_eval_tasks(graph: &mut worksgood::graph::WorkGraph) -> bool {
-    let promotable: Vec<String> = graph
-        .tasks()
-        .filter(|t| t.status == Status::PendingEval)
-        .filter_map(|t| {
-            let eval_id = format!(".evaluate-{}", t.id);
-            let eval_status = graph.get_task(&eval_id).map(|et| et.status);
-            match eval_status {
-                // `.evaluate-X` exists and is terminal → eval ran. If it
-                // would have rejected, the source would already be Failed
-                // (handled by check_eval_gate). Since we still see it in
-                // PendingEval, the eval passed → promote to Done.
-                Some(s) if s.is_terminal() => Some(t.id.clone()),
-                // `.evaluate-X` missing entirely → eval never got scheduled
-                // (auto_evaluate disabled, paused, etc.). Promote so the task
-                // doesn't sit stuck forever.
-                None => Some(t.id.clone()),
-                // Eval is still in flight (Open / InProgress / Waiting / etc.)
-                // → keep waiting.
-                _ => None,
-            }
-        })
-        .collect();
-
-    if promotable.is_empty() {
-        return false;
-    }
-
-    for id in &promotable {
-        if let Some(task) = graph.get_task_mut(id) {
-            task.status = Status::Done;
-            if task.completed_at.is_none() {
-                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-            }
-            task.log.push(worksgood::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: None,
-                user: Some(worksgood::current_user()),
-                message: "PendingEval → Done (evaluator passed; downstream unblocks)".to_string(),
-            });
-            eprintln!(
-                "[dispatcher] PendingEval resolved: '{}' → Done (eval passed)",
-                id
-            );
-        }
-    }
-    true
-}
-
-/// Resolve `FailedPendingEval` tasks: agent exited without `wg done`,
-/// dispatcher invokes `.evaluate-X` to assess the output, and this function
-/// promotes to `Done` (rescued) or demotes to `Failed` (terminal) based on the score.
-///
-/// Lifecycle:
-/// ```text
-/// in-progress (agent-exit-nonzero) → failed-pending-eval
-///   ├─ eval score ≥ threshold → done (rescued=true)
-///   └─ eval score < threshold OR no usable score after 2 attempts → failed (terminal)
-/// ```
-///
-/// Fork 6: if `.evaluate-X` terminates without a usable score, retry once
-/// (meta_eval_attempts < 2). On second failure, source → Failed (fail-closed).
-///
-/// Returns true if any task was modified.
-fn resolve_failed_pending_eval_tasks(
-    dir: &Path,
-    graph: &mut worksgood::graph::WorkGraph,
-    config: &Config,
-) -> bool {
-    let threshold = config.agency.eval_gate_threshold.unwrap_or(0.7);
-    let max_meta_attempts = config.agency.gate_max_attempts; // default 2
-
-    let evals_dir = dir.join("agency").join("evaluations");
-
-    // Collect decisions first (immutable reads), then apply mutations separately
-    // to avoid dual mutable borrow of graph.
-    struct Decision {
-        source_id: String,
-        eval_id: String,
-        action: EvalAction,
-    }
-    enum EvalAction {
-        Rescue(f64),
-        Reject(f64),
-        RetryEval(u32),       // new meta_eval_attempts value
-        TerminalNoScore(u32), // meta_eval_attempts value that triggered exhaustion
-    }
-
-    let candidates: Vec<Decision> = graph
-        .tasks()
-        .filter(|t| t.status == Status::FailedPendingEval)
-        .filter_map(|t| {
-            let source_id = t.id.clone();
-            let eval_id = format!(".evaluate-{}", source_id);
-            let eval_status = graph.get_task(&eval_id).map(|et| et.status);
-
-            match eval_status {
-                // Eval still in flight → keep waiting
-                None
-                | Some(
-                    Status::Open
-                    | Status::InProgress
-                    | Status::Waiting
-                    | Status::PendingEval
-                    | Status::FailedPendingEval
-                    | Status::PendingValidation,
-                ) => return None,
-                Some(s) if !s.is_terminal() => return None,
-                _ => {}
-            }
-
-            // Eval is terminal — determine action
-            let evals = worksgood::agency::load_all_evaluations_or_warn(&evals_dir);
-            let usable_score = evals
-                .iter()
-                .filter(|e| {
-                    e.task_id == source_id
-                        && e.source != worksgood::agency::eval_source::FLIP
-                        && e.source != "system"
-                })
-                .max_by(|a, b| a.timestamp.cmp(&b.timestamp))
-                .map(|e| e.score);
-
-            let action = match usable_score {
-                Some(score) if score >= threshold => EvalAction::Rescue(score),
-                Some(score) => EvalAction::Reject(score),
-                None => {
-                    let new_attempts = t.meta_eval_attempts + 1;
-                    if new_attempts >= max_meta_attempts {
-                        EvalAction::TerminalNoScore(new_attempts)
-                    } else {
-                        EvalAction::RetryEval(new_attempts)
-                    }
-                }
-            };
-
-            Some(Decision {
-                source_id,
-                eval_id,
-                action,
-            })
-        })
-        .collect();
-
-    if candidates.is_empty() {
-        return false;
-    }
-
-    // Apply mutations (may need two separate mutable borrows per iteration,
-    // but they target different task IDs so we do them sequentially).
-    let mut modified = false;
-
-    for decision in &candidates {
-        let source_id = &decision.source_id;
-        let eval_id = &decision.eval_id;
-        let now = Utc::now().to_rfc3339();
-
-        match &decision.action {
-            EvalAction::Rescue(score) => {
-                if let Some(task) = graph.get_task_mut(source_id) {
-                    task.status = Status::Done;
-                    task.rescued = true;
-                    task.completed_at = Some(now.clone());
-                    task.log.push(LogEntry {
-                        timestamp: now,
-                        actor: None,
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "FailedPendingEval → Done (rescued by eval: score={:.2} ≥ threshold={:.2})",
-                            score, threshold
-                        ),
-                    });
-                    eprintln!(
-                        "[dispatcher] Rescued task '{}': eval score {:.2} ≥ {:.2} → Done",
-                        source_id, score, threshold
-                    );
-                    modified = true;
-                }
-            }
-            EvalAction::Reject(score) => {
-                if let Some(task) = graph.get_task_mut(source_id) {
-                    task.status = Status::Failed;
-                    task.failure_reason = Some(format!(
-                        "eval rescue rejected: score={:.2} < threshold={:.2}",
-                        score, threshold
-                    ));
-                    task.failure_class = Some(FailureClass::AgentExitNonzero);
-                    task.log.push(LogEntry {
-                        timestamp: now,
-                        actor: None,
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "FailedPendingEval → Failed (eval rejected: score={:.2} < threshold={:.2})",
-                            score, threshold
-                        ),
-                    });
-                    eprintln!(
-                        "[dispatcher] Task '{}' eval-rejected: score {:.2} < {:.2} → Failed",
-                        source_id, score, threshold
-                    );
-                    modified = true;
-                }
-            }
-            EvalAction::TerminalNoScore(attempts) => {
-                if let Some(task) = graph.get_task_mut(source_id) {
-                    task.meta_eval_attempts = *attempts;
-                    task.status = Status::Failed;
-                    task.failure_reason = Some(format!(
-                        "rescue eval unavailable after {} attempts; falling back to terminal failure",
-                        max_meta_attempts
-                    ));
-                    task.log.push(LogEntry {
-                        timestamp: now,
-                        actor: None,
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "FailedPendingEval → Failed (rescue eval unavailable after {} attempts)",
-                            max_meta_attempts
-                        ),
-                    });
-                    eprintln!(
-                        "[dispatcher] Task '{}' rescue eval exhausted ({} attempts) → Failed",
-                        source_id, max_meta_attempts
-                    );
-                    modified = true;
-                }
-            }
-            EvalAction::RetryEval(attempts) => {
-                // Update source task's meta_eval_attempts first
-                if let Some(task) = graph.get_task_mut(source_id) {
-                    task.meta_eval_attempts = *attempts;
-                }
-                // Re-open .evaluate-X for another attempt (separate mutable borrow)
-                if let Some(eval_task) = graph.get_task_mut(eval_id) {
-                    eval_task.status = Status::Open;
-                    eval_task.assigned = None;
-                    eval_task.log.push(LogEntry {
-                        timestamp: now,
-                        actor: None,
-                        user: Some(worksgood::current_user()),
-                        message: format!(
-                            "Rescue eval retry attempt {} (no usable score from previous run)",
-                            attempts
-                        ),
-                    });
-                    eprintln!(
-                        "[dispatcher] Rescue eval retry {} for task '{}'",
-                        attempts, source_id
-                    );
-                }
-                modified = true;
-            }
-        }
-    }
-
-    modified
-}
+// PendingEval and FailedPendingEval resolution is verdict-required and lives in
+// `eval_lifecycle::reconcile_durable_verdicts`; terminal/missing satellites are
+// never interpreted as semantic success.
 
 fn unblock_stuck_tasks(graph: &mut worksgood::graph::WorkGraph, _dir: &Path) -> bool {
     let mut modified = false;
@@ -1991,6 +1720,8 @@ fn build_auto_assign_tasks(
                     rescue_count: 0,
                     rescued: false,
                     meta_eval_attempts: 0,
+                    agency_dispatch: None,
+                    evaluation_lifecycle: None,
                     spawn_failures: 0,
                     dispatch_count: 0,
                     tier: None,
@@ -2386,6 +2117,8 @@ fn build_flip_verification_tasks(
             rescue_count: 0,
             rescued: false,
             meta_eval_attempts: 0,
+            agency_dispatch: None,
+            evaluation_lifecycle: None,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2662,6 +2395,8 @@ fn build_separate_verify_tasks(
             rescue_count: 0,
             rescued: false,
             meta_eval_attempts: 0,
+            agency_dispatch: None,
+            evaluation_lifecycle: None,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,
@@ -2870,6 +2605,8 @@ fn build_auto_evolve_task(
         rescue_count: 0,
         rescued: false,
         meta_eval_attempts: 0,
+        agency_dispatch: None,
+        evaluation_lifecycle: None,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -3081,6 +2818,8 @@ fn build_auto_create_task(
         rescue_count: 0,
         rescued: false,
         meta_eval_attempts: 0,
+        agency_dispatch: None,
+        evaluation_lifecycle: None,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -3248,36 +2987,90 @@ exit $EXIT_CODE"#,
     }
 }
 
+fn persisted_agency_plan(
+    dir: &Path,
+    eval_task_id: &str,
+) -> Result<worksgood::eval_lifecycle::AgencyDispatchPlan> {
+    let graph_path = graph_path(dir);
+    let graph = worksgood::parser::load_graph(&graph_path)?;
+    let satellite = graph
+        .get_task(eval_task_id)
+        .ok_or_else(|| anyhow::anyhow!("Eval task '{}' not found", eval_task_id))?;
+    if let Some(plan) = satellite.agency_dispatch.as_ref() {
+        worksgood::eval_lifecycle::validate_plan(plan)?;
+        return Ok(plan.clone());
+    }
+    let source_id = eval_task_id
+        .strip_prefix(".flip-")
+        .or_else(|| eval_task_id.strip_prefix(".evaluate-"))
+        .ok_or_else(|| anyhow::anyhow!("invalid evaluation satellite id {eval_task_id:?}"))?;
+    let source = graph
+        .get_task(source_id)
+        .ok_or_else(|| anyhow::anyhow!("evaluation source {source_id:?} not found"))?;
+    let migrated = worksgood::eval_lifecycle::migrate_legacy_plan(source, satellite)?;
+    let expected_model = satellite.model.clone();
+    let expected_provider = satellite.provider.clone();
+    let migrated_clone = migrated.clone();
+    let mut installed = false;
+    modify_graph(&graph_path, |fresh| {
+        let Some(task) = fresh.get_task_mut(eval_task_id) else {
+            return false;
+        };
+        if task.agency_dispatch.is_some()
+            || task.model != expected_model
+            || task.provider != expected_provider
+        {
+            return false;
+        }
+        task.model = Some(migrated_clone.calls[0].route.clone());
+        task.provider = Some(migrated_clone.calls[0].system.handler.clone());
+        task.agency_dispatch = Some(migrated_clone.clone());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("eval-lifecycle-repair".to_string()),
+            user: None,
+            message: format!(
+                "Installed lossless historical agency plan {} (route={})",
+                migrated_clone.plan_hash, migrated_clone.calls[0].route
+            ),
+        });
+        installed = true;
+        true
+    })?;
+    if !installed {
+        let fresh = worksgood::parser::load_graph(&graph_path)?;
+        let plan = fresh
+            .get_task(eval_task_id)
+            .and_then(|task| task.agency_dispatch.clone())
+            .ok_or_else(|| anyhow::anyhow!("agency plan changed concurrently; retry"))?;
+        worksgood::eval_lifecycle::validate_plan(&plan)?;
+        return Ok(plan);
+    }
+    Ok(migrated)
+}
+
 fn spawn_eval_inline(
     dir: &Path,
     eval_task_id: &str,
-    evaluator_model: Option<&str>,
+    _compatibility_model: Option<&str>,
 ) -> Result<(String, u32)> {
     use std::process::{Command, Stdio};
 
-    // Resolve the invocation/role route before creating artifacts or claiming
-    // the agency task. An unavailable execution route is retryable scheduling
-    // state, not a spawn failure or semantic evaluator verdict.
+    // Persisted stage-aware plans are invocation authority across scaffold,
+    // restart and retry. Only lossless historical rows are migrated.
     let config = Config::load_or_default(dir);
-    let eval_role = if eval_task_id.starts_with(".flip-") {
-        DispatchRole::FlipInference
-    } else {
-        DispatchRole::Evaluator
-    };
-    let (eval_executor, eval_recorded_model) = if let Some(route) = evaluator_model {
-        worksgood::config::execution_system_key(route)
-            .with_context(|| format!("invalid invocation-scoped evaluator route {route:?}"))?;
-        (
-            worksgood::dispatch::handler_for_model(route)
-                .as_str()
-                .to_string(),
-            route.to_string(),
-        )
-    } else {
-        let dispatch = worksgood::service::llm::resolve_agency_dispatch(&config, eval_role)
-            .context("agency evaluator execution route is not selected")?;
-        (dispatch.handler.as_str().to_string(), dispatch.raw_spec)
-    };
+    let plan = persisted_agency_plan(dir, eval_task_id)?;
+    let primary = plan
+        .calls
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("agency plan contains no calls"))?;
+    let eval_executor = primary.system.handler.clone();
+    let eval_recorded_model = plan
+        .calls
+        .iter()
+        .map(|call| call.route.as_str())
+        .collect::<Vec<_>>()
+        .join(" + ");
 
     let graph_path = graph_path(dir);
 
@@ -3304,9 +3097,7 @@ fn spawn_eval_inline(
     let mut eval_task_agent: Option<String> = None;
     let mut claim_error: Option<String> = None;
     let agent_id_clone = agent_id.clone();
-    let eval_model_msg = evaluator_model
-        .map(|m| format!(" --model {}", m))
-        .unwrap_or_default();
+    let eval_model_msg = format!(" --agency-plan {}", plan.plan_hash);
 
     modify_graph(&graph_path, |graph| {
         let task = match graph.get_task_mut(eval_task_id) {
@@ -3327,7 +3118,58 @@ fn spawn_eval_inline(
 
         eval_task_exec = task.exec.clone();
         eval_task_agent = task.agent.clone();
+        if task
+            .agency_dispatch
+            .as_ref()
+            .map(|current| current.plan_hash.as_str())
+            != Some(plan.plan_hash.as_str())
+        {
+            claim_error = Some(format!(
+                "Eval task '{}' plan changed before claim",
+                eval_task_id
+            ));
+            return false;
+        }
 
+        let lifecycle = task.evaluation_lifecycle.get_or_insert_with(|| {
+            worksgood::eval_lifecycle::EvaluationLifecycle {
+                schema: worksgood::eval_lifecycle::EVAL_LIFECYCLE_SCHEMA,
+                pipeline_id: plan.pipeline_id.clone(),
+                source_attempt: plan.source_attempt,
+                route_generation: 0,
+                schedule_attempts: 0,
+                transport_attempts: 0,
+                semantic_attempts: 0,
+                execution_state: worksgood::eval_lifecycle::EvaluationExecutionState::Ready,
+                linked_flip_verdict: None,
+                linked_eval_verdict: None,
+                consumed_verdict: None,
+                repair_version: 0,
+            }
+        });
+        if lifecycle.pipeline_id != plan.pipeline_id {
+            lifecycle.execution_state =
+                worksgood::eval_lifecycle::EvaluationExecutionState::Blocked;
+            task.status = Status::Blocked;
+            task.failure_reason = Some(format!(
+                "evaluation pipeline changed: task={} plan={}",
+                lifecycle.pipeline_id, plan.pipeline_id
+            ));
+            claim_error = Some(format!(
+                "error[WG-EXEC-AGENCY-PLAN-MISMATCH]: '{}' lifecycle does not match its plan",
+                eval_task_id
+            ));
+            return true;
+        }
+        if let Err(error) = lifecycle.reserve_transport_attempt() {
+            task.status = Status::Blocked;
+            task.failure_reason = Some(format!(
+                "evaluation execution retry exhausted for plan {} after {} claimed attempt(s)",
+                plan.plan_hash, lifecycle.transport_attempts
+            ));
+            claim_error = Some(format!("{error:#}: task={eval_task_id}"));
+            return true;
+        }
         task.status = Status::InProgress;
         task.started_at = Some(Utc::now().to_rfc3339());
         task.assigned = Some(agent_id_clone.clone());
@@ -3351,9 +3193,10 @@ fn spawn_eval_inline(
     // Fall back to reconstructing from task ID for backward compatibility.
     let source_task_id = eval_task_id
         .strip_prefix(".evaluate-")
+        .or_else(|| eval_task_id.strip_prefix(".flip-"))
         .or_else(|| eval_task_id.strip_prefix("evaluate-"))
         .unwrap_or(eval_task_id);
-    let eval_cmd = if let Some(ref exec) = eval_task_exec
+    let base_eval_cmd = if let Some(ref exec) = eval_task_exec
         && exec.starts_with("wg evaluate")
     {
         exec.to_string()
@@ -3363,6 +3206,10 @@ fn spawn_eval_inline(
             source_task_id.replace('\'', "'\\''")
         )
     };
+    let escaped_plan_hash = plan.plan_hash.replace('\'', "'\\''");
+    let eval_cmd = format!(
+        "WG_AGENCY_TASK_ID='{escaped_eval_id}' WG_AGENCY_PLAN_HASH='{escaped_plan_hash}' {base_eval_cmd}"
+    );
 
     // Resolve the special agent (evaluator) hash for performance recording.
     // After the inline eval completes, we record an Evaluation against this
@@ -3473,7 +3320,7 @@ fn spawn_eval_inline(
         eval_task_id,
         &eval_executor,
         &output_file_str,
-        Some(evaluator_model.unwrap_or(&eval_recorded_model)),
+        Some(&eval_recorded_model),
     );
     locked_registry
         .save()
@@ -4110,15 +3957,15 @@ fn record_spawn_failure(
 }
 
 /// Keep an agency satellite retryable when execution selection/readiness fails
-/// before claim. This is deliberately separate from the spawn circuit breaker:
-/// no semantic attempt happened, so no spawn/failure budget is consumed.
+/// before claim. The Open->Waiting/Blocked mutation is the scheduling
+/// reservation: concurrent ticks holding the same stale ready snapshot cannot
+/// both increment the generation counter. No semantic budget is consumed.
 fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow::Error) -> bool {
     let diagnostic = format!("{error:#}");
     if !diagnostic.contains("error[WG-EXEC-") {
         return false;
     }
 
-    let resume_after = (Utc::now() + chrono::Duration::minutes(1)).to_rfc3339();
     let task_id = task_id.to_string();
     let _ = modify_graph(graph_path, |graph| {
         let Some(task) = graph.get_task_mut(&task_id) else {
@@ -4127,17 +3974,58 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
         if task.status != Status::Open {
             return false;
         }
-        task.status = Status::Waiting;
+        let Some(plan) = task.agency_dispatch.clone() else {
+            // An ambiguous legacy row has no safe generation to retry.
+            task.status = Status::Blocked;
+            task.failure_reason = Some(diagnostic.clone());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("agency-execution".to_string()),
+                user: None,
+                message: format!("Lifecycle route repair required: {diagnostic}"),
+            });
+            return true;
+        };
+        let lifecycle = task.evaluation_lifecycle.get_or_insert_with(|| {
+            worksgood::eval_lifecycle::EvaluationLifecycle {
+                schema: worksgood::eval_lifecycle::EVAL_LIFECYCLE_SCHEMA,
+                pipeline_id: plan.pipeline_id.clone(),
+                source_attempt: plan.source_attempt,
+                route_generation: 0,
+                schedule_attempts: 0,
+                transport_attempts: 0,
+                semantic_attempts: 0,
+                execution_state: worksgood::eval_lifecycle::EvaluationExecutionState::Ready,
+                linked_flip_verdict: None,
+                linked_eval_verdict: None,
+                consumed_verdict: None,
+                repair_version: 0,
+            }
+        });
+        lifecycle.schedule_attempts = lifecycle.schedule_attempts.saturating_add(1);
+        let attempts = lifecycle.schedule_attempts;
+        let limit = worksgood::eval_lifecycle::MAX_EXECUTION_ATTEMPTS_PER_ROUTE_GENERATION;
         task.assigned = None;
-        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Timer {
-            resume_after: resume_after.clone(),
-        }]));
+        task.failure_reason = Some(diagnostic.clone());
+        if attempts >= limit {
+            task.status = Status::Blocked;
+            task.wait_condition = None;
+            lifecycle.execution_state =
+                worksgood::eval_lifecycle::EvaluationExecutionState::Blocked;
+        } else {
+            let delay_minutes = i64::from(1u32 << attempts.saturating_sub(1).min(5));
+            let resume_after = (Utc::now() + chrono::Duration::minutes(delay_minutes)).to_rfc3339();
+            task.status = Status::Waiting;
+            task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Timer { resume_after }]));
+            lifecycle.execution_state =
+                worksgood::eval_lifecycle::EvaluationExecutionState::Waiting;
+        }
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some("agency-execution".to_string()),
             user: None,
             message: format!(
-                "Execution route unavailable; retrying without a semantic verdict: {diagnostic}"
+                "Execution route unavailable; scheduling attempt {attempts}/{limit}; no semantic verdict: {diagnostic}"
             ),
         });
         true
@@ -4148,7 +4036,7 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
 fn spawn_agents_for_ready_tasks(
     dir: &Path,
     graph: &worksgood::graph::WorkGraph,
-    executor: &str,
+    _executor: &str,
     config: &Config,
     default_model: Option<&str>,
     slots_available: usize,
@@ -4715,6 +4603,33 @@ pub fn coordinator_tick(
 
     let slots_available = max_agents.saturating_sub(alive_count);
 
+    // Verdict files are immutable evidence. Read them before taking the graph
+    // writer lock, then link/consume them in the one atomic graph transaction.
+    let legacy_migration = worksgood::eval_lifecycle::migrate_unambiguous_legacy_verdicts(dir);
+    if let Ok(count) = legacy_migration.as_ref()
+        && *count > 0
+    {
+        eprintln!(
+            "[dispatcher] linked {} unambiguous historical evaluation verdict(s)",
+            count
+        );
+    }
+    let (durable_eval_verdicts, eval_evidence_usable) = match legacy_migration {
+        Err(error) => {
+            eprintln!("[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}");
+            (Vec::new(), false)
+        }
+        Ok(_) => match worksgood::eval_lifecycle::load_durable_verdicts(dir) {
+            Ok(verdicts) => (verdicts, true),
+            Err(error) => {
+                eprintln!(
+                    "[dispatcher] eval lifecycle evidence unavailable (fail-closed): {error:#}"
+                );
+                (Vec::new(), false)
+            }
+        },
+    };
+
     // Phases 2.5–2.9: Graph maintenance (atomic load-modify-save).
     //
     // Each phase group uses `modify_graph` to hold the file lock across the
@@ -4732,19 +4647,28 @@ pub fn coordinator_tick(
         // they would have run `wg reject` already."
         modified |= migrate_pending_validation_tasks(graph);
 
-        // Phase 2.46: PendingEval resolution.
-        // Tasks the agent reported done land in PendingEval until `.evaluate-X`
-        // scores them. When the evaluator finished and DIDN'T reject the task
-        // (check_eval_gate would have already flipped it to Failed and spawned
-        // a rescue), promote PendingEval → Done so downstream dependents
-        // unblock. See docs in src/commands/done.rs::pick_done_target_status.
-        modified |= resolve_pending_eval_tasks(graph);
-
-        // Phase 2.47: FailedPendingEval resolution.
-        // Tasks that exited without calling `wg done` enter FailedPendingEval;
-        // the dispatcher runs `.evaluate-X` to assess whether the output is
-        // acceptable. Score ≥ threshold → rescued to Done; otherwise → Failed.
-        modified |= resolve_failed_pending_eval_tasks(dir, graph, &config);
+        // Phases 2.46–2.47: route-stable evaluation lifecycle repair and
+        // verdict-required parent resolution. A terminal/missing evaluator is
+        // never treated as a score. Historical pre-claim Codex rows are
+        // normalized once; ambiguous provider-only rows park for an operator.
+        if eval_evidence_usable {
+            modified |= worksgood::eval_lifecycle::repair_historical_rows(graph);
+            modified |= worksgood::eval_lifecycle::reconcile_durable_verdicts(
+                graph,
+                &durable_eval_verdicts,
+                config.agency.eval_gate_threshold.unwrap_or(0.7),
+                config.agency.auto_rescue_on_eval_fail,
+                config.coordinator.max_verify_failures,
+                |task| {
+                    config.agency.eval_gate_all
+                        || task
+                            .description
+                            .as_deref()
+                            .map(crate::commands::deliverables::parse_deliverables)
+                            .is_some_and(|deliverables| !deliverables.is_empty())
+                },
+            );
+        }
 
         // Phase 2.5: Cycle iteration — reactivate cycles where all members are Done.
         {
@@ -7535,6 +7459,75 @@ mod tests {
             !is_daemon_managed(&regular),
             "regular tasks must remain spawnable by the dispatcher"
         );
+    }
+
+    #[test]
+    fn concurrent_preclaim_route_parking_reserves_once() {
+        let dir = tempdir().unwrap();
+        let path = graph_path(dir.path());
+        let source = Task {
+            id: "source".to_string(),
+            title: "source".to_string(),
+            status: Status::FailedPendingEval,
+            ..Task::default()
+        };
+        let mut config = Config::default();
+        config.models.evaluator = Some(worksgood::config::RoleModelConfig {
+            provider: None,
+            model: Some("codex:gpt-5.5".to_string()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        let plan = worksgood::eval_lifecycle::build_plan(
+            &config,
+            &source,
+            ".evaluate-source",
+            worksgood::eval_lifecycle::DispatchSelectionSource::ScaffoldConfig,
+        )
+        .unwrap();
+        let satellite = Task {
+            id: ".evaluate-source".to_string(),
+            title: "eval".to_string(),
+            status: Status::Open,
+            agency_dispatch: Some(plan),
+            ..Task::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(satellite));
+        save_graph(&graph, &path).unwrap();
+
+        let first_path = path.clone();
+        let second_path = path.clone();
+        let first = std::thread::spawn(move || {
+            park_agency_execution_error(
+                &first_path,
+                ".evaluate-source",
+                &anyhow::anyhow!("error[WG-EXEC-TEST]: unavailable"),
+            )
+        });
+        let second = std::thread::spawn(move || {
+            park_agency_execution_error(
+                &second_path,
+                ".evaluate-source",
+                &anyhow::anyhow!("error[WG-EXEC-TEST]: unavailable"),
+            )
+        });
+        let _ = (first.join().unwrap(), second.join().unwrap());
+
+        let graph = worksgood::parser::load_graph(&path).unwrap();
+        let task = graph.get_task(".evaluate-source").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(
+            task.evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .schedule_attempts,
+            1,
+            "the Open→Waiting CAS must make a stale second tick a no-op"
+        );
+        assert_eq!(task.spawn_failures, 0);
     }
 
     #[test]

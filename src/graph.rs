@@ -651,6 +651,16 @@ pub struct Task {
     /// after 2 failures, the source lands in terminal Failed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub meta_eval_attempts: u32,
+    /// Exact stage-aware agency route selected when an evaluation satellite
+    /// was scaffolded. `model` and `provider` are compatibility mirrors only;
+    /// inline invocation is authoritative from this plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agency_dispatch: Option<crate::eval_lifecycle::AgencyDispatchPlan>,
+    /// Durable source-attempt identity and verdict linkage. The consumed
+    /// verdict id is written in the same graph transaction as the source
+    /// terminal outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_lifecycle: Option<crate::eval_lifecycle::EvaluationLifecycle>,
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
@@ -785,6 +795,8 @@ impl Default for Task {
             rescue_count: 0,
             rescued: false,
             meta_eval_attempts: 0,
+            agency_dispatch: None,
+            evaluation_lifecycle: None,
             spawn_failures: 0,
             tier: None,
             no_tier_escalation: false,
@@ -1789,6 +1801,10 @@ struct TaskHelper {
     #[serde(default)]
     meta_eval_attempts: u32,
     #[serde(default)]
+    agency_dispatch: Option<crate::eval_lifecycle::AgencyDispatchPlan>,
+    #[serde(default)]
+    evaluation_lifecycle: Option<crate::eval_lifecycle::EvaluationLifecycle>,
+    #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
     tier: Option<String>,
@@ -1915,6 +1931,8 @@ impl<'de> Deserialize<'de> for Task {
             rescue_count: helper.rescue_count,
             rescued: helper.rescued,
             meta_eval_attempts: helper.meta_eval_attempts,
+            agency_dispatch: helper.agency_dispatch,
+            evaluation_lifecycle: helper.evaluation_lifecycle,
             spawn_failures: helper.spawn_failures,
             tier: helper.tier,
             no_tier_escalation: helper.no_tier_escalation,

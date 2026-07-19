@@ -203,6 +203,24 @@ pub fn run(
         );
         downstream_cleared = report.cleared;
 
+        // A terminal evaluation verdict belongs to the completed source
+        // attempt. An explicit retry reuses the exact persisted routes but
+        // mints a new pipeline identity and reopens the existing satellites;
+        // otherwise their old Done state would scorelessly bypass evaluation.
+        let source_for_eval_retry = graph
+            .get_task(id)
+            .filter(|source| {
+                source
+                    .evaluation_lifecycle
+                    .as_ref()
+                    .and_then(|lifecycle| lifecycle.consumed_verdict.as_ref())
+                    .is_some()
+            })
+            .cloned();
+        if let Some(source) = source_for_eval_retry {
+            worksgood::eval_lifecycle::rearm_satellites_for_source(graph, &source);
+        }
+
         true
     })
     .context("Failed to modify graph")?;

@@ -1459,7 +1459,6 @@ fn run_inner(
     let blockers = query::after(&graph, id);
     if !blockers.is_empty() {
         let cycle_analysis = graph.compute_cycle_analysis();
-        let dependent_is_system = id.starts_with('.');
         let effective_blockers: Vec<_> = blockers
             .into_iter()
             .filter(|b| {
@@ -1471,29 +1470,14 @@ fn run_inner(
                 if in_same_cycle {
                     return false;
                 }
-                // PendingEval / FailedPendingEval bypass for system dependents:
-                // `.flip-X` / `.evaluate-X` ARE the rescue/eval pipeline — they
-                // must run on a soft-done (PendingEval) OR soft-failed
-                // (FailedPendingEval) source. See pick_done_target_status and
-                // query.rs (readiness treats both states identically for system
-                // dependents).
-                //
-                // General theorem: NO blocked-on edge may point from a rescue
-                // path back into the thing being rescued. `.flip-X` and
-                // `.evaluate-X` depend on `X`, but they ARE the mechanism that
-                // resolves a FailedPendingEval `X`. Gating their `wg done` on
-                // `X` being resolved is a circular wait — the exact deadlock
-                // this bypass exists to prevent. Omitting FailedPendingEval here
-                // (while query.rs exempts it) deadlocks a crashed run three
-                // ways: `.flip-X` can't done (blocked by X), `.evaluate-X` can't
-                // done (blocked by `.flip-X`), X can't resolve (waiting on
-                // `.evaluate-X`).
-                if dependent_is_system
-                    && matches!(
-                        b.status,
-                        Status::PendingEval | Status::FailedPendingEval
-                    )
-                {
+                // Luca's FailedPendingEval rescue exemption is relation-aware:
+                // only the owning `.flip-X` / direct `.evaluate-X` edge is the
+                // mechanism that resolves X. Other dot-prefixed work must not
+                // inherit this trust-bearing bypass.
+                if matches!(
+                    query::dependency_disposition(&b.id, id, &graph, Some(dir)),
+                    query::DependencyDisposition::EvalSystemBypass { .. }
+                ) {
                     return false;
                 }
                 // Terminal blockers (Failed / Abandoned) don't gate manual
@@ -2473,6 +2457,7 @@ fn run_inner(
         task.completed_at = Some(Utc::now().to_rfc3339());
         if target_status == Status::PendingEval {
             transitioned_to_pending_eval = true;
+            worksgood::eval_lifecycle::refresh_source_lifecycle(task);
         }
 
         // Clear any prior deliverable-preflight / no-operational-output

@@ -306,6 +306,8 @@ pub fn run(
                 rescue_count: 0,
                 rescued: false,
                 meta_eval_attempts: 0,
+                agency_dispatch: None,
+                evaluation_lifecycle: None,
                 spawn_failures: 0,
                 dispatch_count: 0,
                 tier: None,

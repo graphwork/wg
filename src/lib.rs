@@ -33,6 +33,7 @@ pub mod context_scope;
 pub mod cron;
 pub mod cycle;
 pub mod dispatch;
+pub mod eval_lifecycle;
 pub mod execution_selection;
 pub mod executor;
 pub mod executor_discovery;
