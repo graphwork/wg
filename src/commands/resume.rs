@@ -1042,10 +1042,11 @@ mod tests {
         task.paused = true;
         setup_workgraph(dir.path(), vec![task]);
 
-        // Enable auto_place in config (dir.path() IS the .wg dir)
+        // Enable auto_place and explicitly select the agency execution route
+        // (dir.path() IS the .wg dir).
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n",
+            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
         )
         .unwrap();
 
@@ -1074,7 +1075,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n",
+            "[agency]\nauto_place = true\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
         )
         .unwrap();
 
@@ -1101,7 +1102,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_assign = true\nauto_evaluate = true\n",
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
         )
         .unwrap();
 
@@ -1128,7 +1129,7 @@ mod tests {
 
         fs::write(
             dir.path().join("config.toml"),
-            "[agency]\nauto_assign = true\nauto_evaluate = true\n",
+            "[agency]\nauto_assign = true\nauto_evaluate = true\n\n[tiers]\nfast = \"claude:haiku\"\n",
         )
         .unwrap();
 

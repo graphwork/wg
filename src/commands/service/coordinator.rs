@@ -5173,12 +5173,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let graph_path = dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
+        let source = Task {
+            id: "source".into(),
+            title: "Source".into(),
+            status: Status::PendingEval,
+            ..Task::default()
+        };
+        let mut config = Config::default();
+        config.tiers.fast = Some("pi:openrouter:test/evaluator".to_string());
+        let plan = worksgood::eval_lifecycle::build_plan(
+            &config,
+            &source,
+            ".evaluate-source",
+            worksgood::eval_lifecycle::DispatchSelectionSource::ScaffoldConfig,
+        )
+        .unwrap();
         let task = Task {
             id: ".evaluate-source".into(),
             title: "Evaluate source".into(),
             status: Status::Open,
+            agency_dispatch: Some(plan),
             ..Task::default()
         };
+        graph.add_node(Node::Task(source));
         graph.add_node(Node::Task(task));
         save_graph(&graph, &graph_path).unwrap();
 
@@ -6625,6 +6642,7 @@ mod tests {
 
         // Config with FLIP verification threshold + agency pipeline enabled
         let mut config = Config::default();
+        config.tiers.fast = Some("claude:haiku".to_string());
         config.agency.flip_verification_threshold = Some(0.6);
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;

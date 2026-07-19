@@ -2073,14 +2073,13 @@ fn check_eval_gate(
         }
     }
 
-    // Auto-rescue: evaluation-drives-remediation. Per the in-place-eval
-    // design (2026-04-27): when the eval gate fails, we DON'T spawn a
-    // fresh rescue task with a new agent identity. Instead we transition
-    // the SAME task back from PendingEval → Open, keeping `task.agent`
-    // (the persona hash) and the on-disk worktree intact, and let the
-    // dispatcher re-pick the same task on the next tick. The next agent
-    // sees the evaluator's notes via `previous_attempt_context` (gated
-    // by `task.rescue_count > 0` in spawn/execution.rs).
+    // Legacy direct-gate auto-rescue. Durable PendingEval/FailedPendingEval
+    // sources returned above and are consumed centrally by the dispatcher
+    // after verdict persistence. For a non-soft completed source evaluated
+    // through this older path, do not spawn a fresh task with a new identity:
+    // reopen the SAME task, retain `task.agent` and its on-disk worktree, and
+    // let the dispatcher re-pick it. The next agent sees evaluator notes via
+    // `previous_attempt_context` (gated by `task.rescue_count > 0`).
     //
     // Cascade-failure cap: each iteration increments `rescue_count`.
     // When the count reaches `coordinator.max_verify_failures` (alias
@@ -2129,11 +2128,10 @@ fn check_eval_gate(
             return Ok(true);
         }
 
-        // In-place iteration: PendingEval → Open, preserving `task.agent`
-        // identity hash and (transitively) the agent's worktree on disk
-        // (`is_safe_to_reap` requires Status::Done, so a non-terminal
-        // task keeps its worktree). Clear `task.assigned` so the
-        // dispatcher will re-pick this task on the next tick.
+        // In-place iteration: completed source → Open, preserving `task.agent`
+        // identity hash and (transitively) the agent's worktree on disk.
+        // Clear `task.assigned` so the dispatcher will re-pick this task on
+        // the next tick.
         let next_count = prior_rescue_count.saturating_add(1);
         let log_msg = format!(
             "Eval rescue {}/{}: score {:.2} below threshold {:.2}. \
@@ -2699,7 +2697,10 @@ mod tests {
         graph.add_node(Node::Task(Task {
             id: "t1".to_string(),
             title: "Test eval-gated task".to_string(),
-            status: Status::PendingEval,
+            // The durable PendingEval path is consumed centrally by the
+            // dispatcher. These tests exercise the legacy direct-gate path on
+            // a completed source so it cannot race verdict consumption.
+            status: Status::Done,
             agent: Some(agent_hash.to_string()),
             assigned: Some("agent-1".to_string()),
             tags: vec!["eval-gate".to_string()],
@@ -2740,10 +2741,39 @@ mod tests {
     }
 
     #[test]
+    fn test_pending_eval_direct_gate_defers_to_dispatcher() {
+        let dir = tempdir().unwrap();
+        setup_eval_gate_fixture(dir.path(), "agent-hash", 0);
+        let path = super::super::graph_path(dir.path());
+        worksgood::parser::modify_graph(&path, |graph| {
+            graph.get_task_mut("t1").unwrap().status = Status::PendingEval;
+            true
+        })
+        .unwrap();
+
+        let rejected = check_eval_gate(
+            dir.path(),
+            "t1",
+            &["eval-gate".to_string()],
+            gate_deliverables_desc(),
+            &mk_failing_eval(0.2, "durable verdict must be consumed centrally"),
+            &cfg_with_eval_gate(0.7, 3),
+            true,
+        )
+        .unwrap();
+
+        assert!(!rejected);
+        let graph = load_graph(&path).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        assert_eq!(source.status, Status::PendingEval);
+        assert_eq!(source.rescue_count, 0);
+    }
+
+    #[test]
     fn test_eval_fail_retries_in_place_with_same_agent() {
-        // Eval scores below threshold, rescue_count < max:
-        // task should transition PendingEval → Open with the SAME task.agent
-        // identity hash, rescue_count incremented, and NO new task created.
+        // Eval scores below threshold, rescue_count < max: the legacy direct
+        // gate should reopen the completed task with the SAME task.agent
+        // identity hash, increment rescue_count, and create NO new task.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
         let agent_hash = "0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd0123abcd";
@@ -2771,7 +2801,7 @@ mod tests {
         assert_eq!(
             task.status,
             Status::Open,
-            "in-place rescue: PendingEval → Open"
+            "in-place rescue: completed source → Open"
         );
         assert_eq!(
             task.agent.as_deref(),
@@ -2838,7 +2868,7 @@ mod tests {
         // evaluator's notes into the next agent's previous_attempt_context.
         // We exercise this end-to-end by:
         //   1. Writing an evaluation JSON to .wg/agency/evaluations/
-        //   2. Running check_eval_gate (which transitions task to Open and
+        //   2. Running check_eval_gate (which reopens the completed task and
         //      bumps rescue_count).
         //   3. Calling build_previous_attempt_context() and asserting the
         //      eval notes appear in the returned string.
@@ -2926,7 +2956,7 @@ mod tests {
             dir_path,
             "t1",
             &["eval-gate".to_string()],
-            None,
+            gate_deliverables_desc(),
             &eval,
             &config,
             true,

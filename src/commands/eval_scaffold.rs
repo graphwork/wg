@@ -573,10 +573,16 @@ mod tests {
         }
     }
 
+    fn agency_config() -> Config {
+        let mut config = Config::default();
+        config.tiers.fast = Some("claude:haiku".to_string());
+        config
+    }
+
     #[test]
     fn test_scaffold_creates_eval_task() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = false;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
@@ -596,7 +602,7 @@ mod tests {
     #[test]
     fn test_scaffold_idempotent() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
@@ -620,7 +626,7 @@ mod tests {
     #[test]
     fn test_scaffold_evaluation_label_is_inert() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         let mut task = make_task("eval-infra", "Eval Infra");
         task.tags = vec!["evaluation".to_string()];
@@ -639,7 +645,7 @@ mod tests {
     #[test]
     fn test_eval_scheduled_label_is_inert() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         let mut task = make_task("old-task", "Old Task");
         task.tags = vec!["eval-scheduled".to_string()];
@@ -658,7 +664,7 @@ mod tests {
     #[test]
     fn test_scaffold_does_not_tag_source_task() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
@@ -671,7 +677,7 @@ mod tests {
     #[test]
     fn test_scaffold_batch() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("a", "Task A")));
         graph.add_node(Node::Task(make_task("b", "Task B")));
@@ -695,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_scaffold_flip_creates_flip_task() {
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
@@ -718,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_scaffold_flip_idempotent() {
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
@@ -731,7 +737,7 @@ mod tests {
     #[test]
     fn test_scaffold_eval_depends_on_flip_when_enabled() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
@@ -750,7 +756,7 @@ mod tests {
     #[test]
     fn test_scaffold_eval_depends_on_source_when_flip_disabled() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = false;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
@@ -768,7 +774,7 @@ mod tests {
     #[test]
     fn test_flip_eval_label_does_not_enable_flip() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = false; // flip_enabled = false globally
         let mut graph = WorkGraph::new();
         let mut task = make_task("my-task", "My Task");
@@ -786,7 +792,7 @@ mod tests {
     #[test]
     fn test_flip_label_is_inert() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         let mut task = make_task("flip-infra", "Flip Infra");
         task.tags = vec!["flip".to_string()];
@@ -805,7 +811,7 @@ mod tests {
     #[test]
     fn test_scaffold_does_not_skip_label_tagged_tasks() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         let mut task = make_task("labelled-work", "Normal implementation work");
         task.tags = vec![
@@ -929,7 +935,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_creates_all_tasks() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_place = true;
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
@@ -949,7 +955,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_wires_all_edges() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_place = true;
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
@@ -981,7 +987,7 @@ mod tests {
     fn test_scaffold_full_pipeline_assign_has_no_deps() {
         // .assign-* tasks never have deps (placement is merged, not a separate step)
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -997,7 +1003,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_idempotent() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_place = true;
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
@@ -1025,7 +1031,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_does_not_tag_source_as_eval_scheduled() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         let mut graph = WorkGraph::new();
@@ -1040,7 +1046,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_skips_system_tasks() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task(".evaluate-foo", "Eval Foo")));
 
@@ -1052,7 +1058,7 @@ mod tests {
     #[test]
     fn test_scaffold_full_pipeline_ignores_label_tags() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         let mut graph = WorkGraph::new();
@@ -1071,7 +1077,7 @@ mod tests {
     fn test_scaffold_full_pipeline_no_place_task_created() {
         // Placement is handled by the assignment step — no separate .place-* tasks
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_place = true;
         config.agency.auto_assign = true;
         let mut graph = WorkGraph::new();
@@ -1094,7 +1100,7 @@ mod tests {
         // Regression: if scaffold_eval_task ran first (coordinator path),
         // scaffold_full_pipeline must still create .assign-* tasks.
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_place = true;
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
@@ -1128,7 +1134,7 @@ mod tests {
         // .verify-* tasks are pipeline-eligible system tasks — they should get
         // .assign-*, .flip-*, and .evaluate-* scaffolded just like regular tasks.
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1176,7 +1182,7 @@ mod tests {
     fn test_non_verify_system_tasks_still_skip_pipeline() {
         // System tasks like .evaluate-*, .flip-*, .assign-* should NOT get the pipeline.
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1204,7 +1210,7 @@ mod tests {
     fn test_verify_assign_task_idempotent() {
         // If .assign-.verify-* already exists, scaffold_full_pipeline should not duplicate it.
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
 
@@ -1241,7 +1247,7 @@ mod tests {
     #[test]
     fn test_scaffold_eval_skips_system_tasks() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
 
         // .coordinator-* tasks should NOT get eval scaffolding
@@ -1295,7 +1301,7 @@ mod tests {
 
     #[test]
     fn test_scaffold_flip_skips_system_tasks() {
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
 
@@ -1323,7 +1329,7 @@ mod tests {
     #[test]
     fn test_scaffold_eval_batch_skips_system_tasks() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("a", "Task A")));
         graph.add_node(Node::Task(make_task(
@@ -1351,7 +1357,7 @@ mod tests {
     fn test_verify_tasks_still_get_eval_scaffolding() {
         // .verify-* tasks are pipeline-eligible and SHOULD get eval scaffolding
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task(".verify-my-task", "Verify: my-task")));
 
@@ -1370,7 +1376,7 @@ mod tests {
         // Integration-style: system tasks (.coordinator-*, .archive-*, .compact-*) get
         // no FLIP, no evaluate, and no assign scaffolding via any entry point.
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1452,7 +1458,7 @@ mod tests {
     #[test]
     fn test_shell_task_skips_full_pipeline() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1487,7 +1493,7 @@ mod tests {
     fn test_checker_downstream_of_shell_gets_pipeline() {
         // A non-shell task depending on a shell task should still get full pipeline
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1526,7 +1532,7 @@ mod tests {
 
     #[test]
     fn test_skip_eval_label_does_not_prevent_flip_creation() {
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.flip_enabled = true;
         let mut graph = WorkGraph::new();
         let mut task = make_task("pulse-task", "Pulse Task");
@@ -1544,7 +1550,7 @@ mod tests {
     #[test]
     fn test_skip_eval_label_does_not_prevent_eval_creation() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         let mut task = make_task("pulse-task", "Pulse Task");
         task.tags = vec!["skip-eval".to_string()];
@@ -1563,7 +1569,7 @@ mod tests {
     #[test]
     fn test_skip_eval_label_does_not_change_full_pipeline() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1593,7 +1599,7 @@ mod tests {
     #[test]
     fn test_skip_eval_label_in_batch_is_inert() {
         let dir = tempdir().unwrap();
-        let config = Config::default();
+        let config = agency_config();
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("normal", "Normal Task")));
         let mut skip_task = make_task("mechanical", "Mechanical Task");
@@ -1627,7 +1633,7 @@ mod tests {
     #[test]
     fn test_assign_tasks_in_full_pipeline_do_not_need_control_tags() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = agency_config();
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         let mut graph = WorkGraph::new();
