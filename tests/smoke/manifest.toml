@@ -2291,5 +2291,5 @@ script = "scenarios/tui_four_sided_layout_mobile.sh"
 owners = [
     "implement-four-sided",
 ]
-description = "Candidate-binary real tmux/PTY human flow for the four-sided inspector: mouse-disabled ordinary-key p modal through simulated Termux+mosh, h/j/k/l/a docking, presets/grow/shrink/full/hide/apply/cancel with live preview, compact phone rotation and sticky wide restoration, all four fullscreen SGR edge drags, and SIGWINCH cancellation between pointer-down and stale motion. It also proves atomic tui-state-only persistence leaves graph/chats/provider config byte-identical. Credential-free."
+description = "Candidate-binary real tmux/PTY flow for the one-row borderless inspector at desktop, medium, and Termux sizes: contextual Chat/Task rows, fixed labelled New chat, one side/stacked seam, frameless full mode, mouse-disabled p layout controls, rollback/commit, narrow-to-wide preference restoration, and non-mutating startup/persistence. Credential-free."
 timeout_seconds = 180
