@@ -1023,15 +1023,6 @@ impl LayoutPreference {
     }
 }
 
-/// Fullscreen viewport edge used to initiate a dock drag.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FullscreenEdge {
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
-
 /// Snapshot captured at pointer-down. A resize invalidates the snapshot and
 /// cancels the adjustment rather than interpreting stale coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

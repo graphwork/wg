@@ -18,18 +18,6 @@ use super::render;
 const MIN_DRAG_PERCENT: i32 = 10;
 const MAX_DRAG_PERCENT: i32 = 90;
 
-pub(super) fn fullscreen_edge_to_dock(
-    edge: super::state::FullscreenEdge,
-) -> super::state::InspectorDock {
-    use super::state::{FullscreenEdge, InspectorDock};
-    match edge {
-        FullscreenEdge::Left => InspectorDock::Right,
-        FullscreenEdge::Right => InspectorDock::Left,
-        FullscreenEdge::Top => InspectorDock::Bottom,
-        FullscreenEdge::Bottom => InspectorDock::Top,
-    }
-}
-
 /// Derive inspector percentage from the immutable drag-start geometry.
 /// `extent` is width for Left/Right and height for Top/Bottom.
 pub(super) fn divider_ratio_from_drag(
@@ -100,9 +88,9 @@ fn is_ctrl_chord(code: KeyCode, modifiers: KeyModifiers, key: char) -> bool {
 
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
-    ControlPanelFocus, FocusedPanel, FullscreenEdge, InputMode, InspectorDock, InspectorMode,
-    InspectorSubFocus, LayoutDragSnapshot, NavEntry, ResponsiveBreakpoint, RightPanelTab,
-    TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
+    ControlPanelFocus, FocusedPanel, InputMode, InspectorDock, InspectorMode, InspectorSubFocus,
+    LayoutDragSnapshot, NavEntry, ResponsiveBreakpoint, RightPanelTab, TabBarEntryKind,
+    TaskFormField, TextPromptAction, VizApp,
 };
 
 /// Switch to a chat tab by zero-based positional index in `active_tabs`.
@@ -4256,17 +4244,9 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
     if app.layout_viewport.width > 0 && app.layout_viewport.height > 0 {
         return app.layout_viewport;
     }
-    // Test/synthetic callers may not have a renderer-owned viewport yet.
-    // Union every non-empty current layout rectangle, including fullscreen
-    // edge strips, rather than letting Rect::default() pull the origin to 0.
-    let rects = [
-        app.last_graph_area,
-        app.last_right_panel_area,
-        app.last_fullscreen_restore_area,
-        app.last_fullscreen_right_border_area,
-        app.last_fullscreen_top_border_area,
-        app.last_fullscreen_bottom_border_area,
-    ];
+    // Synthetic callers may not have a renderer-owned viewport yet. The
+    // visible panes and their shared divider are the only layout geometry.
+    let rects = [app.last_graph_area, app.last_right_panel_area];
     let mut nonempty = rects
         .into_iter()
         .filter(|rect| rect.width > 0 && rect.height > 0);
@@ -4282,52 +4262,6 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
         bottom = bottom.max(rect.bottom());
     }
     ratatui::layout::Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
-}
-
-fn start_fullscreen_edge_drag(app: &mut VizApp, edge: FullscreenEdge, row: u16, column: u16) {
-    use super::state::ScrollbarDragTarget;
-    let dock = fullscreen_edge_to_dock(edge);
-    let viewport = current_layout_viewport(app);
-    if viewport.width == 0 || viewport.height == 0 {
-        return;
-    }
-    let original = app.layout_preference;
-    app.layout_drag = Some(LayoutDragSnapshot {
-        dock,
-        viewport,
-        start_column: column,
-        start_row: row,
-        // Fullscreen begins at 100%; the first inward motion peels graph space
-        // off the dragged edge. The visible split remains bounded at 90%.
-        start_percent: 100,
-        original,
-        moved: false,
-    });
-    // Preserve the legacy no-jump observable on pointer-down without changing
-    // desired state: one border cell leaves a 99%-ish effective panel. The
-    // renderer remains Full until actual inward motion arrives.
-    let extent = if dock.is_horizontal() {
-        viewport.width
-    } else {
-        viewport.height
-    };
-    app.right_panel_percent = if extent > 1 {
-        ((extent.saturating_sub(1) as u32 * 100) / extent as u32) as u16
-    } else {
-        100
-    };
-    app.divider_drag_start_pct = 100;
-    app.divider_drag_start_col = column;
-    app.divider_drag_start_row = row;
-    app.divider_drag_offset = match edge {
-        FullscreenEdge::Left | FullscreenEdge::Top => -1,
-        FullscreenEdge::Right | FullscreenEdge::Bottom => 1,
-    };
-    app.scrollbar_drag = Some(if dock.is_horizontal() {
-        ScrollbarDragTarget::Divider
-    } else {
-        ScrollbarDragTarget::HorizontalDivider
-    });
 }
 
 fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
@@ -4421,27 +4355,17 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     let in_divider = app.last_divider_area.width > 0 && app.last_divider_area.contains(pos);
     let in_horizontal_divider = app.last_horizontal_divider_area.height > 0
         && app.last_horizontal_divider_area.contains(pos);
-    let in_minimized_strip =
-        app.last_minimized_strip_area.width > 0 && app.last_minimized_strip_area.contains(pos);
-    let in_fullscreen_restore = app.last_fullscreen_restore_area.width > 0
-        && app.last_fullscreen_restore_area.contains(pos);
-    let in_fullscreen_right = app.last_fullscreen_right_border_area.width > 0
-        && app.last_fullscreen_right_border_area.contains(pos);
-    let in_fullscreen_top = app.last_fullscreen_top_border_area.height > 0
-        && app.last_fullscreen_top_border_area.contains(pos);
-    let in_fullscreen_bottom = app.last_fullscreen_bottom_border_area.height > 0
-        && app.last_fullscreen_bottom_border_area.contains(pos);
 
     // Track hover state for the dividers (visual indicator).
     app.divider_hover = in_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::Divider);
     app.horizontal_divider_hover =
         in_horizontal_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
     // Track hover state for tri-state strips.
-    app.minimized_strip_hover = in_minimized_strip;
-    app.fullscreen_restore_hover = in_fullscreen_restore;
-    app.fullscreen_right_hover = in_fullscreen_right;
-    app.fullscreen_top_hover = in_fullscreen_top;
-    app.fullscreen_bottom_hover = in_fullscreen_bottom;
+    app.minimized_strip_hover = false;
+    app.fullscreen_restore_hover = false;
+    app.fullscreen_right_hover = false;
+    app.fullscreen_top_hover = false;
+    app.fullscreen_bottom_hover = false;
 
     // Launcher modal: redesigned dialog has no scrollable picker
     // (Default mode is a 3-row radio, Add-new mode is a fixed-height
@@ -4675,18 +4599,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 }
                 return;
             }
-            if in_minimized_strip {
-                // Click on minimized strip: restore to last normal split mode.
-                app.restore_from_extreme();
-            } else if in_fullscreen_restore {
-                start_fullscreen_edge_drag(app, FullscreenEdge::Left, row, column);
-            } else if in_fullscreen_right {
-                start_fullscreen_edge_drag(app, FullscreenEdge::Right, row, column);
-            } else if in_fullscreen_top {
-                start_fullscreen_edge_drag(app, FullscreenEdge::Top, row, column);
-            } else if in_fullscreen_bottom {
-                start_fullscreen_edge_drag(app, FullscreenEdge::Bottom, row, column);
-            } else if in_graph_vscrollbar {
+            if in_graph_vscrollbar {
                 // Click on graph vertical scrollbar: start drag and jump.
                 // Checked before in_divider because the scrollbar column overlaps
                 // the wide (3-col) divider grab zone.
@@ -7658,10 +7571,9 @@ mod scrollbar_tests {
     }
 
     #[test]
-    fn fullscreen_restore_click_does_not_shrink_panel() {
-        // Regression: clicking the restore strip in FullInspector mode used to
-        // compute panel_width from the click column and clamp pct to 99, causing
-        // a ~2 column shrink before the user even moved the mouse.
+    fn fullscreen_edges_have_no_mouse_gesture() {
+        // Borderless fullscreen exposes no edge target. Keyboard Panel/Layout
+        // mode is authoritative; only a visible split's shared seam may drag.
         let (mut app, _tmp) = build_test_app();
 
         // Simulate FullInspector layout with a 200-column main area.
@@ -7705,57 +7617,11 @@ mod scrollbar_tests {
         // Click on the restore strip (column 0).
         handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 0);
 
-        // Drag should be initiated.
+        assert_eq!(app.scrollbar_drag, None);
+        assert_eq!(app.layout_drag, None);
         assert_eq!(
-            app.scrollbar_drag,
-            Some(ScrollbarDragTarget::Divider),
-            "Clicking restore strip should start divider drag"
-        );
-
-        // The panel percent should preserve the panel width (not shrink it).
-        // total_width = 198 + 1 + 1 = 200. border_col = 1.
-        // panel_width = 200 - 1 = 199. pct = 199*100/200 = 99.
-        // right_width = 200*99/100 = 198. Panel width preserved!
-        let right_width = (main_width as u32 * app.right_panel_percent as u32 / 100) as u16;
-        assert_eq!(
-            right_width, panel_content_width,
-            "Panel width ({right_width}) should match original FullInspector width ({panel_content_width})"
-        );
-
-        // The drag offset should be non-zero: click at col 0, divider at col 2.
-        assert_ne!(
-            app.divider_drag_offset, 0,
-            "Drag offset should compensate for click-to-border distance"
-        );
-
-        // Verify: first drag event to the same column should not change pct.
-        let pct_before_drag = app.right_panel_percent;
-        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 0);
-        assert_eq!(
-            app.right_panel_percent, pct_before_drag,
-            "First drag at same position should not change panel percent"
-        );
-    }
-
-    #[test]
-    fn fullscreen_edges_map_to_opposite_inspector_docks() {
-        use super::super::state::{FullscreenEdge, InspectorDock};
-
-        assert_eq!(
-            super::fullscreen_edge_to_dock(FullscreenEdge::Left),
-            InspectorDock::Right
-        );
-        assert_eq!(
-            super::fullscreen_edge_to_dock(FullscreenEdge::Right),
-            InspectorDock::Left
-        );
-        assert_eq!(
-            super::fullscreen_edge_to_dock(FullscreenEdge::Top),
-            InspectorDock::Bottom
-        );
-        assert_eq!(
-            super::fullscreen_edge_to_dock(FullscreenEdge::Bottom),
-            InspectorDock::Top
+            app.layout_mode,
+            super::super::state::LayoutMode::FullInspector
         );
     }
 
