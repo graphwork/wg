@@ -2159,8 +2159,9 @@ name = "explicit_execution_selection"
 script = "scenarios/explicit_execution_selection.sh"
 owners = [
     "require-explicit-execution",
+    "fix-explicit-execution",
 ]
-description = "Live terminal contract for explicit execution selection: isolated fresh HOME runs graph-only init/CRUD, real service start fails with WG-EXEC-UNSELECTED before daemon state, non-interactive setup without --route fails, explicit Codex setup writes only handler-first Codex routing, lint reports its source, and the real selected daemon lifecycle starts with Codex. Credential-free."
+description = "Live terminal contract for explicit execution selection: isolated fresh HOME runs graph-only init/CRUD, real service start fails with WG-EXEC-UNSELECTED before daemon state, the real interactive PTY accepts the recommended Pi default only as a recommendation and can explicitly remain graph-only, non-interactive setup without --route fails, explicit Codex setup writes only handler-first Codex routing, lint reports its source, and the real selected daemon lifecycle starts with Codex. Credential-free."
 timeout_seconds = 60
 
 [[scenario]]

@@ -45,10 +45,12 @@ grep -q 'WG-EXEC-UNSELECTED' "$scratch/chat-unselected.out"
 ! run_wg list | grep -q 'unselected-chat'
 
 # Drive the real interactive terminal wizard. Enter accepts the scope prompt;
-# the fresh route picker must default to graph-only rather than detected Claude.
-printf '\n\n' | script -qec \
+# setup intentionally recommends Pi on a fresh graph, so Up moves to the
+# adjacent graph-only choice and Enter explicitly declines execution.
+printf '\n\033[A\n' | script -qec \
   "cd '$scratch/project' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/global' wg --dir '$scratch/project/.wg' setup" \
   "$scratch/setup-interactive.typescript" >/dev/null
+grep -q 'pi.*Pi (recommended)' "$scratch/setup-interactive.typescript"
 grep -q 'Not now.*keep this WG graph-only' "$scratch/setup-interactive.typescript"
 grep -q 'WG remains graph-only' "$scratch/setup-interactive.typescript"
 [[ ! -f "$scratch/project/.wg/config.toml" ]]
