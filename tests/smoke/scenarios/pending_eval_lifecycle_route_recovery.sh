@@ -171,4 +171,69 @@ PY
 [[ "$before" == "$final_repairs" ]] || loud_fail \
   "restart ticks repeated historical CAS: $before -> $final_repairs"
 
-echo 'PASS: Codex/Pi/Claude plans, relation-aware rescue, verdict gate, diagnostics, bounded slow/restart repair'
+# Pre-schema parents could already be PendingEval with a claimed evaluator that
+# finished and persisted exactly one post-start Evaluation, but neither row had
+# plan/lifecycle metadata. A restart must losslessly link that evidence once;
+# it must not rearm the claimed row, spawn a replacement, or require approval.
+wg add 'legacy completed source' --id legacy-completed --no-place >/dev/null
+wg add 'legacy completed evaluator' --id .evaluate-legacy-completed --no-place >/dev/null
+python3 - <<'PY'
+import datetime,json,os,tempfile
+now=datetime.datetime.now(datetime.timezone.utc)
+p='.wg/graph.jsonl'; rows=[]
+for line in open(p):
+    r=json.loads(line)
+    if r.get('kind') == 'task' and r.get('id') == 'legacy-completed':
+        r['status']='pending-eval'; r['assigned']='agent-legacy-worker'
+        r['started_at']=(now-datetime.timedelta(seconds=30)).isoformat()
+        r['completed_at']=(now-datetime.timedelta(seconds=20)).isoformat()
+        r.pop('agency_dispatch',None); r.pop('evaluation_lifecycle',None)
+    if r.get('kind') == 'task' and r.get('id') == '.evaluate-legacy-completed':
+        r['status']='done'; r['model']='pi:openai-codex:gpt-5.6-terra'
+        r['assigned']='agent-legacy-evaluator'
+        r['started_at']=(now-datetime.timedelta(seconds=10)).isoformat()
+        r['completed_at']=(now-datetime.timedelta(seconds=5)).isoformat()
+        r.pop('agency_dispatch',None); r.pop('evaluation_lifecycle',None)
+    rows.append(r)
+fd,tmp=tempfile.mkstemp(dir='.wg',prefix='graph-legacy-completed-',text=True)
+with os.fdopen(fd,'w') as f:
+    for r in rows: f.write(json.dumps(r,separators=(',',':'))+'\n')
+os.replace(tmp,p)
+PY
+wg evaluate record --task legacy-completed --score 0.91 --source llm \
+  --notes 'one completed claimed legacy evaluator result' >/dev/null
+legacy_evals_before=$(python3 - <<'PY'
+import glob,json
+print(sum(json.load(open(p)).get('task_id') == 'legacy-completed'
+          for p in glob.glob('.wg/agency/evaluations/*.json')))
+PY
+)
+[[ "$legacy_evals_before" == 1 ]] || loud_fail "legacy fixture has $legacy_evals_before evaluations, expected one"
+wg service tick --max-agents 1 >/dev/null
+python3 - <<'PY'
+import glob,json
+rows=[json.loads(x) for x in open('.wg/graph.jsonl') if x.strip()]
+tasks={r['id']:r for r in rows if r.get('kind') == 'task'}
+source=tasks['legacy-completed']; evaluator=tasks['.evaluate-legacy-completed']
+assert source['status']=='done',source
+assert source['evaluation_lifecycle']['consumed_verdict'],source
+assert evaluator['status']=='done',evaluator
+assert evaluator['agency_dispatch']['calls'][0]['route']=='pi:openai-codex:gpt-5.6-terra',evaluator
+assert evaluator['evaluation_lifecycle']['linked_eval_verdict'],evaluator
+verdicts=[]
+for p in glob.glob('.wg/agency/eval-lifecycle/verdicts/*.json'):
+    v=json.load(open(p))
+    if v.get('source_task') == 'legacy-completed': verdicts.append(v)
+assert len(verdicts)==1,verdicts
+PY
+for _ in 1 2 3; do wg service tick --max-agents 1 >/dev/null; done
+legacy_evals_after=$(python3 - <<'PY'
+import glob,json
+print(sum(json.load(open(p)).get('task_id') == 'legacy-completed'
+          for p in glob.glob('.wg/agency/evaluations/*.json')))
+PY
+)
+[[ "$legacy_evals_after" == 1 ]] || loud_fail \
+  "legacy completed evaluator reran after restart: $legacy_evals_before -> $legacy_evals_after"
+
+echo 'PASS: Codex/Pi/Claude plans, relation-aware rescue, verdict gate, legacy completed-evaluator recovery, diagnostics, bounded slow/restart repair'

@@ -430,12 +430,19 @@ pub fn write_durable_verdict(
             let existing = fs::read(&path)?;
             let parsed: DurableEvalVerdict = serde_json::from_slice(&existing)?;
             // `created_at` and the current wrapper assignment are observational;
-            // semantic identity is the pipeline/stage/evaluation digest. A crash
-            // replaying the same completed model result is therefore a no-op,
-            // while a different result at the same key is quarantined.
+            // semantic identity is the pipeline/stage/evaluation digest. Verify
+            // the immutable record we already have, then compare only canonical
+            // semantic content. A crash replaying the same completed model result
+            // is therefore a no-op even when time/run identity changed, while a
+            // different result at the same key is quarantined.
+            if parsed.verdict_digest != compute_verdict_digest(&parsed)? {
+                anyhow::bail!(
+                    "error[WG-EVAL-VERDICT-INTEGRITY]: verdict digest mismatch at {}",
+                    path.display()
+                );
+            }
             if parsed.schema != verdict.schema
                 || parsed.verdict_id != verdict.verdict_id
-                || parsed.verdict_digest != verdict.verdict_digest
                 || parsed.evaluation_id != verdict.evaluation_id
                 || parsed.pipeline_id != verdict.pipeline_id
                 || parsed.source_task != verdict.source_task
@@ -566,10 +573,25 @@ pub fn migrate_unambiguous_legacy_verdicts(dir: &Path) -> Result<usize> {
             let Some(satellite) = graph.get_task(&task_id) else {
                 continue;
             };
-            let Some(plan) = satellite.agency_dispatch.as_ref() else {
-                continue;
+            let plan = if let Some(plan) = satellite.agency_dispatch.clone() {
+                validate_plan(&plan)?;
+                plan
+            } else {
+                // A completed, claimed pre-schema evaluator is execution evidence,
+                // not a route-retry candidate. We may backfill its plan only when
+                // its display route is losslessly handler-qualified; this never
+                // reopens or invokes the historical row.
+                if satellite.status != Status::Done
+                    || satellite.assigned.is_none()
+                    || satellite.started_at.is_none()
+                {
+                    continue;
+                }
+                let Ok(plan) = migrate_legacy_plan(source, satellite) else {
+                    continue;
+                };
+                plan
             };
-            validate_plan(plan)?;
             if existing.iter().any(|verdict| {
                 verdict.pipeline_id == plan.pipeline_id
                     && verdict.source_attempt == plan.source_attempt
@@ -577,6 +599,13 @@ pub fn migrate_unambiguous_legacy_verdicts(dir: &Path) -> Result<usize> {
             }) {
                 continue;
             }
+            let evidence_started_at = satellite
+                .started_at
+                .as_deref()
+                .and_then(|value| value.parse::<chrono::DateTime<Utc>>().ok())
+                .map_or(started_at, |satellite_start| {
+                    started_at.max(satellite_start)
+                });
             let candidates: Vec<_> = evaluations
                 .iter()
                 .filter(|evaluation| evaluation.task_id == source.id)
@@ -585,7 +614,7 @@ pub fn migrate_unambiguous_legacy_verdicts(dir: &Path) -> Result<usize> {
                     evaluation
                         .timestamp
                         .parse::<chrono::DateTime<Utc>>()
-                        .is_ok_and(|timestamp| timestamp >= started_at)
+                        .is_ok_and(|timestamp| timestamp >= evidence_started_at)
                 })
                 .filter(|evaluation| {
                     if is_candidate {
@@ -599,7 +628,9 @@ pub fn migrate_unambiguous_legacy_verdicts(dir: &Path) -> Result<usize> {
             if candidates.len() != 1 {
                 continue;
             }
-            write_durable_verdict(dir, source, satellite, stage, candidates[0])?;
+            let mut planned_satellite = satellite.clone();
+            planned_satellite.agency_dispatch = Some(plan);
+            write_durable_verdict(dir, source, &planned_satellite, stage, candidates[0])?;
             migrated += 1;
         }
     }
@@ -723,6 +754,60 @@ pub fn repair_historical_rows(graph: &mut WorkGraph) -> bool {
         }
     }
     modified
+}
+
+/// Backfill a plan on a completed, claimed pre-schema satellite only after a
+/// verified durable verdict proves that its semantic call already completed.
+/// This is deliberately separate from `repair_historical_rows`: it never
+/// rearms claimed work and cannot cause another model invocation.
+fn install_completed_legacy_plan(
+    graph: &mut WorkGraph,
+    task_id: &str,
+    verdict: &DurableEvalVerdict,
+) -> bool {
+    let Some(satellite_snapshot) = graph.get_task(task_id).cloned() else {
+        return false;
+    };
+    if satellite_snapshot.agency_dispatch.is_some()
+        || satellite_snapshot.status != Status::Done
+        || satellite_snapshot.assigned.is_none()
+        || satellite_snapshot.started_at.is_none()
+    {
+        return false;
+    }
+    let Some(source) = graph.get_task(&verdict.source_task).cloned() else {
+        return false;
+    };
+    let Ok(plan) = migrate_legacy_plan(&source, &satellite_snapshot) else {
+        return false;
+    };
+    if plan.pipeline_id != verdict.pipeline_id
+        || plan.source_attempt != verdict.source_attempt
+        || plan.source_task != verdict.source_task
+        || !plan.calls.iter().any(|call| call.stage == verdict.stage)
+    {
+        return false;
+    }
+
+    let satellite = graph
+        .get_task_mut(task_id)
+        .expect("legacy satellite snapshot came from graph");
+    satellite.model = Some(plan.calls[0].route.clone());
+    satellite.provider = Some(plan.calls[0].system.handler.clone());
+    satellite.endpoint = plan.calls[0].endpoint.clone();
+    satellite.reasoning = plan.calls[0].reasoning;
+    satellite.agency_dispatch = Some(plan.clone());
+    satellite.evaluation_lifecycle = Some(lifecycle_for_plan(&plan));
+    satellite.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: Some("eval-lifecycle-reconcile".to_string()),
+        user: None,
+        message: format!(
+            "Backfilled completed historical plan {} from verified verdict {}; no semantic rerun",
+            plan.plan_hash, verdict.verdict_id
+        ),
+    });
+    true
 }
 
 fn mark_satellite_verdict(
@@ -962,7 +1047,9 @@ where
         }
 
         if let Some(flip) = flips.first() {
-            modified |= mark_satellite_verdict(graph, &format!(".flip-{source_id}"), flip);
+            let task_id = format!(".flip-{source_id}");
+            modified |= install_completed_legacy_plan(graph, &task_id, flip);
+            modified |= mark_satellite_verdict(graph, &task_id, flip);
         }
         let Some(eval) = evals.first() else {
             if matches!(
@@ -989,7 +1076,9 @@ where
         if !flip_linked {
             continue;
         }
-        modified |= mark_satellite_verdict(graph, &format!(".evaluate-{source_id}"), eval);
+        let eval_task_id = format!(".evaluate-{source_id}");
+        modified |= install_completed_legacy_plan(graph, &eval_task_id, eval);
+        modified |= mark_satellite_verdict(graph, &eval_task_id, eval);
 
         let source = graph.get_task_mut(&source_id).expect("collected source");
         source
@@ -1460,6 +1549,147 @@ mod tests {
         assert_eq!(migrate_unambiguous_legacy_verdicts(dir.path()).unwrap(), 1);
         assert_eq!(migrate_unambiguous_legacy_verdicts(dir.path()).unwrap(), 0);
         assert_eq!(load_durable_verdicts(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn durable_verdict_replay_ignores_observational_time_and_run_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = source();
+        let mut satellite = planned_satellite(".evaluate-source", &source);
+        satellite.assigned = Some("agent-original".into());
+        let evaluation = Evaluation {
+            id: "eval-source-replay".into(),
+            task_id: source.id.clone(),
+            agent_id: "agent-original".into(),
+            role_id: "role".into(),
+            tradeoff_id: "tradeoff".into(),
+            score: 0.9,
+            dimensions: std::collections::HashMap::new(),
+            notes: "same semantic evidence".into(),
+            evaluator: "codex:gpt-5.5".into(),
+            timestamp: Utc::now().to_rfc3339(),
+            model: Some("codex:gpt-5.5".into()),
+            source: "llm".into(),
+            loop_iteration: 0,
+        };
+        crate::agency::save_evaluation(&evaluation, &dir.path().join("agency/evaluations"))
+            .unwrap();
+        let first = write_durable_verdict(
+            dir.path(),
+            &source,
+            &satellite,
+            AgencyStage::Evaluate,
+            &evaluation,
+        )
+        .unwrap();
+        let first_bytes = fs::read(&first).unwrap();
+
+        satellite.assigned = Some("agent-restarted-wrapper".into());
+        let replay = write_durable_verdict(
+            dir.path(),
+            &source,
+            &satellite,
+            AgencyStage::Evaluate,
+            &evaluation,
+        )
+        .unwrap();
+        assert_eq!(replay, first);
+        assert_eq!(fs::read(&replay).unwrap(), first_bytes);
+        assert_eq!(load_durable_verdicts(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn completed_claimed_legacy_evaluator_migrates_once_without_semantic_rerun() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let mut source = source();
+        source.status = Status::PendingEval;
+        source.started_at = Some((now - chrono::Duration::seconds(30)).to_rfc3339());
+        let satellite = Task {
+            id: ".evaluate-source".into(),
+            title: "legacy completed evaluator".into(),
+            status: Status::Done,
+            model: Some("pi:openai-codex:gpt-5.6-terra".into()),
+            assigned: Some("agent-legacy".into()),
+            started_at: Some((now - chrono::Duration::seconds(20)).to_rfc3339()),
+            completed_at: Some((now - chrono::Duration::seconds(5)).to_rfc3339()),
+            ..Task::default()
+        };
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source.clone()));
+        graph.add_node(crate::graph::Node::Task(satellite));
+        crate::parser::save_graph(&graph, &dir.path().join("graph.jsonl")).unwrap();
+        let evaluation = Evaluation {
+            id: "legacy-completed-eval".into(),
+            task_id: source.id.clone(),
+            agent_id: "agent-legacy".into(),
+            role_id: "role".into(),
+            tradeoff_id: "tradeoff".into(),
+            score: 0.91,
+            dimensions: std::collections::HashMap::new(),
+            notes: "one post-start evaluation".into(),
+            evaluator: "pi:openai-codex:gpt-5.6-terra".into(),
+            timestamp: (now - chrono::Duration::seconds(4)).to_rfc3339(),
+            model: Some("pi:openai-codex:gpt-5.6-terra".into()),
+            source: "llm".into(),
+            loop_iteration: 0,
+        };
+        crate::agency::save_evaluation(&evaluation, &dir.path().join("agency/evaluations"))
+            .unwrap();
+
+        assert_eq!(migrate_unambiguous_legacy_verdicts(dir.path()).unwrap(), 1);
+        let verdicts = load_durable_verdicts(dir.path()).unwrap();
+        assert_eq!(verdicts.len(), 1);
+
+        // Simulate a daemon restart after durable migration but before the graph
+        // transaction. Claimed-row preflight repair remains correctly disabled;
+        // verified evidence performs metadata backfill and consumption instead.
+        let mut restarted = crate::parser::load_graph(&dir.path().join("graph.jsonl")).unwrap();
+        assert!(!repair_historical_rows(&mut restarted));
+        assert!(reconcile_durable_verdicts(
+            &mut restarted,
+            &verdicts,
+            0.7,
+            true,
+            3,
+            |_| false,
+        ));
+        let source = restarted.get_task("source").unwrap();
+        assert_eq!(source.status, Status::Done);
+        assert_eq!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.consumed_verdict.as_deref()),
+            Some(verdicts[0].verdict_id.as_str())
+        );
+        let evaluator = restarted.get_task(".evaluate-source").unwrap();
+        assert!(evaluator.agency_dispatch.is_some());
+        assert_eq!(
+            evaluator
+                .evaluation_lifecycle
+                .as_ref()
+                .and_then(|lifecycle| lifecycle.linked_eval_verdict.as_deref()),
+            Some(verdicts[0].verdict_id.as_str())
+        );
+
+        crate::parser::save_graph(&restarted, &dir.path().join("graph.jsonl")).unwrap();
+        assert_eq!(migrate_unambiguous_legacy_verdicts(dir.path()).unwrap(), 0);
+        let mut second_restart =
+            crate::parser::load_graph(&dir.path().join("graph.jsonl")).unwrap();
+        assert!(!reconcile_durable_verdicts(
+            &mut second_restart,
+            &load_durable_verdicts(dir.path()).unwrap(),
+            0.7,
+            true,
+            3,
+            |_| false,
+        ));
+        assert_eq!(
+            crate::agency::load_all_evaluations_or_warn(&dir.path().join("agency/evaluations"))
+                .len(),
+            1
+        );
     }
 
     #[test]
