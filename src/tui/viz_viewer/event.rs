@@ -519,12 +519,12 @@ fn update_shared_screen(
     );
 }
 
-/// Normalize keys at the outer-terminal boundary according to the negotiated
+/// Normalize keys at the outer-terminal boundary according to the requested
 /// capability. This happens once, before native-composer/startup-buffer/vendor
 /// PTY routing, so every Chat path sees the same semantics.
 ///
-/// Without a successfully negotiated reliable enhanced-keyboard transport,
-/// Shift on Enter is not trustworthy: legacy Enter has no modifier distinction
+/// Without a reliable transport on which enhancement was requested, Shift on
+/// Enter is not trustworthy: legacy Enter has no modifier distinction
 /// and mosh can intermittently surface a physical plain Enter as CSI-u
 /// Shift+Enter. Remove only that untrusted bit. Ctrl/Alt and the key event's
 /// kind/state are preserved; Ctrl+J remains the multiline fallback.

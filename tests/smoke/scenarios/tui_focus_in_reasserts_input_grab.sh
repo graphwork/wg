@@ -118,8 +118,8 @@ def teardown(rc, msg=""):
     sys.exit(rc)
 
 
-# Phase 1 — startup. Generous window: supports_keyboard_enhancement() blocks
-# ~2s on a PTY with no responder, and an initial render animation follows.
+# Phase 1 — startup. Keep a generous CI window for process startup and the
+# initial render; keyboard enhancement negotiation itself must not block.
 drain(8.0)
 startup = bytes(buf)
 

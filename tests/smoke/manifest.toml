@@ -171,8 +171,9 @@ script = "scenarios/tui_chat_composer_newlines_pty.sh"
 owners = [
     "bug-wg-tui",
     "fix-periodic-plain",
+    "fix-tui-first",
 ]
-description = "Pins bug-wg-tui and fix-periodic-plain's non-mosh half: drives the real wg tui native chat composer through a PTY that positively answers the Kitty keyboard-enhancement query, sends CSI-u Shift+Enter plus Ctrl+J, asserts neither chord submits early, then presses plain Enter and verifies exactly one persisted chat message contains the embedded newlines. Credential-free cat chat; no live LLM endpoint required."
+description = "Pins bug-wg-tui, fix-periodic-plain, and fix-tui-first's non-mosh half: drives the real wg tui native chat composer through a PTY that observes the nonblocking direct Kitty keyboard-enhancement request, sends CSI-u Shift+Enter plus Ctrl+J, asserts neither chord submits early, then presses plain Enter and verifies exactly one persisted chat message contains the embedded newlines. Credential-free cat chat; no live LLM endpoint required."
 timeout_seconds = 45
 
 [[scenario]]
@@ -1500,6 +1501,7 @@ name = "tui_first_frame_slow_storage"
 script = "scenarios/tui_first_frame_slow_storage.sh"
 owners = [
     "implement-nonblocking-tui",
+    "fix-tui-first",
 ]
 description = "Real tmux/PTY human-flow gate: with the bootstrap storage worker delayed by 1, 3, and 5 seconds, the neutral TUI shell paints before storage completes, the help key is acknowledged during the read, one thresholded phase-aware slow-storage slot appears and clears, the graph snapshot eventually lands, and quit remains bounded."
 timeout_seconds = 90
@@ -1519,6 +1521,7 @@ script = "scenarios/tui_large_graph_continuous_mutation.sh"
 owners = [
     "move-large-graph",
     "validate-fully-async",
+    "fix-tui-first",
 ]
 description = "Real tmux/PTY large-graph gate: load a 10k-task/50k-edge graph, atomically replace it at 20Hz while driving help/search keys, assert bounded key acknowledgement and RSS, preserve the live search draft, and prove the newest generation converges without stale rollback."
 timeout_seconds = 90

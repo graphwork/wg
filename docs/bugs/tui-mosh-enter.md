@@ -64,15 +64,18 @@ WG now decides one centralized outer-keyboard policy at TUI startup:
 - `MOSH_SERVER_PID` or `MOSH_IP`: do not query, push, reassert, or pop Kitty
   keyboard enhancement.
 - recording/asciinema: keep the existing no-query policy.
-- non-mosh terminals, including ordinary tmux: probe and negotiate as before.
+- non-mosh terminals, including ordinary tmux: directly request keyboard
+  enhancement without a synchronous capability query. Supporting terminals
+  enable it and other ANSI terminals ignore the sequence; this avoids blocking
+  the first frame and input for up to two seconds when no query reply arrives.
 
 At the single outer event boundary, WG removes `SHIFT` from Enter unless
-keyboard enhancement was successfully negotiated over a reliable transport.
+keyboard enhancement was requested over a reliable transport.
 This normalization happens before all three Chat routes, not in the composer.
 Other modifier bits and key event metadata are preserved. Under mosh,
 Shift+Enter is therefore deliberately not claimed as distinguishable; Ctrl+J
 (and Alt+Enter) remain multiline chords, and the action bar omits the
-Shift+Enter hint. Outside mosh, negotiated Shift+Enter remains a newline.
+Shift+Enter hint. Outside mosh, enhanced Shift+Enter remains a newline.
 
 Teardown now pops Kitty flags only when WG successfully pushed them, avoiding a
 side effect on an ancestor terminal/tmux stack when policy skipped negotiation.
@@ -82,8 +85,8 @@ access, runtime chat metadata, or relaunch is introduced on input/render.
 ## Regression coverage
 
 - Pure policy tests cover `MOSH_SERVER_PID`, `MOSH_IP`, ordinary tmux,
-  tmux-over-mosh, recording, and non-mosh probe behavior, including proof that
-  the mosh/recording branches never invoke the probe closure.
+  tmux-over-mosh, recording, and reliable non-mosh enablement. The
+  mosh/recording branches never request keyboard enhancement.
 - Event tests cover native-composer normalization, startup-buffer
   normalization, and a credential-free Pi/vendor `PtyPane` stand-in that
   receives exactly one byte for Enter with no queued late duplicate.
@@ -91,5 +94,6 @@ access, runtime chat metadata, or relaunch is introduced on input/render.
   twelve repeated misclassified Enter events and proves every message is
   exactly-once and in order, with no newline or late duplicate; it also proves
   Ctrl+J multiline input.
-- `tui_chat_composer_newlines_pty` positively negotiates Kitty outside mosh and
-  proves Shift+Enter and Ctrl+J insert newlines while plain Enter submits once.
+- `tui_chat_composer_newlines_pty` observes the direct Kitty request outside
+  mosh and proves Shift+Enter and Ctrl+J insert newlines while plain Enter
+  submits once.

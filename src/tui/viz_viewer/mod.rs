@@ -34,10 +34,7 @@ use crossterm::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        supports_keyboard_enhancement,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -50,7 +47,7 @@ fn detect_asciinema() -> bool {
     std::env::var_os("ASCIINEMA_REC").is_some()
 }
 
-/// Policy for negotiating enhanced keyboard input with the *outer* terminal.
+/// Policy for requesting enhanced keyboard input from the *outer* terminal.
 ///
 /// Mosh transports screen state rather than a byte-transparent terminal
 /// stream. Its Kitty/CSI-u handling is not reliable enough to distinguish a
@@ -59,7 +56,7 @@ fn detect_asciinema() -> bool {
 /// and never infer the transport from mutable chat/runtime metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OuterKeyboardEnhancementPolicy {
-    Probe,
+    EnabledForReliableTransport,
     DisabledForRecording,
     DisabledForMosh,
 }
@@ -76,18 +73,15 @@ impl OuterKeyboardEnhancementPolicy {
         if env_var("MOSH_SERVER_PID").is_some() || env_var("MOSH_IP").is_some() {
             return Self::DisabledForMosh;
         }
-        Self::Probe
+        Self::EnabledForReliableTransport
     }
 
     fn detect(recording: bool) -> Self {
         Self::detect_with(recording, |name| std::env::var_os(name))
     }
 
-    /// Run the terminal query only when the transport can carry the protocol.
-    /// Keeping the probe behind this pure startup policy makes the mosh path
-    /// deterministic and guarantees it performs no query/response I/O.
-    fn resolve(self, probe: impl FnOnce() -> bool) -> bool {
-        matches!(self, Self::Probe) && probe()
+    fn should_enable(self) -> bool {
+        matches!(self, Self::EnabledForReliableTransport)
     }
 }
 
@@ -147,13 +141,15 @@ pub fn run(
     )?;
 
     // Enable Kitty keyboard disambiguation only across a byte-reliable outer
-    // transport. In particular, do not even query through mosh: a positive
-    // reply from the terminal beyond mosh does not make mosh a reliable CSI-u
-    // carrier. Shift+Enter is therefore unavailable there and Ctrl+J remains
-    // the reliable multiline fallback.
-    let terminal_supports_keyboard_enhancement =
-        outer_keyboard_policy.resolve(|| supports_keyboard_enhancement().unwrap_or(false));
-    let has_keyboard_enhancement = terminal_supports_keyboard_enhancement
+    // transport. Do not synchronously query support here: crossterm's query
+    // waits up to two seconds when a terminal (notably a detached tmux pane)
+    // does not answer, which prevents both the neutral first frame and input
+    // handling from starting. The protocol's push sequence is itself a safe
+    // capability request — supporting terminals enable it and other ANSI
+    // terminals ignore it. In particular, emit nothing through mosh: support
+    // beyond mosh does not make mosh a reliable CSI-u carrier. Shift+Enter is
+    // therefore unavailable there and Ctrl+J remains the reliable fallback.
+    let has_keyboard_enhancement = outer_keyboard_policy.should_enable()
         && execute!(
             io::stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -250,7 +246,6 @@ fn restore_terminal(keyboard_enhancement_pushed: bool) -> Result<()> {
 #[cfg(test)]
 mod outer_keyboard_policy_tests {
     use super::*;
-    use std::cell::Cell;
     use std::collections::HashMap;
 
     fn detect(recording: bool, vars: &[(&str, &str)]) -> OuterKeyboardEnhancementPolicy {
@@ -261,26 +256,21 @@ mod outer_keyboard_policy_tests {
     }
 
     #[test]
-    fn mosh_markers_disable_keyboard_enhancement_without_probing() {
+    fn mosh_markers_disable_keyboard_enhancement() {
         for marker in ["MOSH_SERVER_PID", "MOSH_IP"] {
             let policy = detect(false, &[(marker, "present")]);
             assert_eq!(policy, OuterKeyboardEnhancementPolicy::DisabledForMosh);
 
-            let probed = Cell::new(false);
-            assert!(!policy.resolve(|| {
-                probed.set(true);
-                true
-            }));
-            assert!(!probed.get(), "mosh policy must not touch terminal I/O");
+            assert!(!policy.should_enable());
         }
     }
 
     #[test]
-    fn tmux_alone_preserves_probe_but_tmux_over_mosh_disables_it() {
+    fn tmux_alone_enables_but_tmux_over_mosh_disables_it() {
         assert_eq!(
             detect(false, &[("TMUX", "/tmp/tmux-1000/default,1,0")]),
-            OuterKeyboardEnhancementPolicy::Probe,
-            "tmux is capable of forwarding negotiated extended keys"
+            OuterKeyboardEnhancementPolicy::EnabledForReliableTransport,
+            "tmux is capable of forwarding extended keys"
         );
         assert_eq!(
             detect(
@@ -296,21 +286,33 @@ mod outer_keyboard_policy_tests {
     }
 
     #[test]
-    fn non_mosh_terminal_probes_and_recording_never_does() {
+    fn non_mosh_terminal_enables_and_recording_never_does() {
         let policy = detect(false, &[("TERM", "xterm-kitty")]);
-        assert_eq!(policy, OuterKeyboardEnhancementPolicy::Probe);
-        assert!(policy.resolve(|| true));
+        assert_eq!(
+            policy,
+            OuterKeyboardEnhancementPolicy::EnabledForReliableTransport
+        );
+        assert!(policy.should_enable());
 
-        let probed = Cell::new(false);
         let recording = detect(true, &[("TERM", "xterm-kitty")]);
         assert_eq!(
             recording,
             OuterKeyboardEnhancementPolicy::DisabledForRecording
         );
-        assert!(!recording.resolve(|| {
-            probed.set(true);
-            true
-        }));
-        assert!(!probed.get());
+        assert!(!recording.should_enable());
+    }
+
+    #[test]
+    fn storage_independent_app_starts_with_a_neutral_visible_shell() {
+        let app = VizApp::new(
+            PathBuf::from("storage-must-not-be-read"),
+            VizOptions::default(),
+            Some(false),
+            None,
+            true,
+        );
+        assert_eq!(app.lines, ["0 tasks"]);
+        assert_eq!(app.task_counts.total, 0);
+        assert!(!app.bootstrap_complete);
     }
 }

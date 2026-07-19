@@ -2141,6 +2141,29 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: boo
         left.push_str("  ‹  ›  ⋯");
     }
 
+    // The minimal TUI deliberately has one contextual row rather than a
+    // separate global status bar. Search text is UI-owned and must echo here
+    // immediately while a large latest-wins graph snapshot is still being
+    // derived; otherwise the draft appears lost until the CPU worker catches
+    // up. Slow-bootstrap feedback uses the same compact row and clears as soon
+    // as its coherent storage snapshot lands.
+    if app.search_active {
+        let slot = format!("  | {}", app.search_status());
+        if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
+            <= left_width
+        {
+            left.push_str(&slot);
+        }
+    }
+    if let Some(feedback) = app.bootstrap_feedback() {
+        let slot = format!("  | {feedback}");
+        if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
+            <= left_width
+        {
+            left.push_str(&slot);
+        }
+    }
+
     frame.render_widget(
         Paragraph::new(left).style(
             Style::default()

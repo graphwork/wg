@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Scenario: tui_chat_composer_newlines_pty
 #
-# Drives the real `wg tui` chat composer through a PTY that answers the Kitty
-# keyboard-enhancement query. Shift+Enter must insert a newline, not submit;
-# Ctrl+J must remain a fallback newline chord; plain Enter must submit exactly
-# one multi-line message.
+# Drives the real `wg tui` chat composer through a PTY that observes the direct
+# Kitty keyboard-enhancement request. Shift+Enter must insert a newline, not
+# submit; Ctrl+J must remain a fallback newline chord; plain Enter must submit
+# exactly one multi-line message.
 
 set -u
 
@@ -50,8 +50,6 @@ trace_path = Path(sys.argv[2])
 wg_bin = "wg"
 
 ALT_SCREEN = b"\x1b[?1049h"
-KITTY_QUERY = b"\x1b[?u\x1b[c"
-KITTY_REPLY = b"\x1b[?1u\x1b[?64;1;2c"
 KITTY_PUSH = b"\x1b[>1u"
 SHIFT_ENTER = b"\x1b[13;2u"
 CTRL_O = b"\x0f"
@@ -83,7 +81,6 @@ if pid == 0:
 
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 42, 140, 0, 0))
 buf = bytearray()
-replied = False
 
 
 def fail(msg):
@@ -110,7 +107,6 @@ def teardown(code):
 
 
 def drain(seconds):
-    global replied
     end = time.time() + seconds
     while time.time() < end:
         r, _, _ = select.select([fd], [], [], 0.05)
@@ -123,9 +119,6 @@ def drain(seconds):
         if not data:
             return
         buf.extend(data)
-        if not replied and KITTY_QUERY in bytes(buf):
-            os.write(fd, KITTY_REPLY)
-            replied = True
 
 
 def dump():
@@ -190,10 +183,8 @@ drain(8.0)
 startup = bytes(buf)
 if ALT_SCREEN not in startup:
     fail(f"wg tui never entered alternate screen; captured {len(startup)} bytes")
-if not replied:
-    fail("wg tui did not issue the Kitty keyboard-enhancement query")
 if KITTY_PUSH not in startup and KITTY_PUSH not in bytes(buf):
-    fail("wg tui did not push Kitty keyboard disambiguation after the positive query reply")
+    fail("wg tui did not directly request Kitty keyboard disambiguation")
 
 # The cat chat owns the PTY on startup. Ctrl+O is the canonical host escape;
 # then `c` enters the native chat composer from graph context.
@@ -228,10 +219,10 @@ if expected not in values:
     fail(f"plain Enter did not submit exactly one multi-line message; got {values!r}")
 
 if not trace_path.exists() or "Shift" not in trace_path.read_text(errors="ignore"):
-    fail("trace did not record a Shift-modified key event from the negotiated PTY")
+    fail("trace did not record a Shift-modified key event from the enhanced PTY")
 
 sys.stderr.write(
-    "PASS: negotiated Shift+Enter and Ctrl+J inserted newlines; plain Enter submitted one message\n"
+    "PASS: enhanced Shift+Enter and Ctrl+J inserted newlines; plain Enter submitted one message\n"
 )
 teardown(0)
 PY

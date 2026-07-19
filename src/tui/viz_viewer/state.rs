@@ -8821,6 +8821,17 @@ impl VizApp {
             bootstrap_complete: load_storage,
         };
         if !load_storage {
+            // The storage-independent shell must publish an explicit neutral
+            // graph state on its very first frame. An empty line buffer makes
+            // the graph pane visually blank, so a real tmux/PTY observer has
+            // no proof that rendering happened before bootstrap storage
+            // returns. This placeholder is replaced atomically by the first
+            // BootstrapApply and never participates in task indexes.
+            app.lines = vec!["0 tasks".to_string()];
+            app.plain_lines = app.lines.clone();
+            app.search_lines = app.lines.clone();
+            app.max_line_width = app.lines[0].len();
+            app.scroll.content_height = 1;
             return app;
         }
         // Load graph once for both viz and stats on startup. This is the
