@@ -1,9 +1,13 @@
 # FailedPendingEval lifecycle salvage audit
 
-Date: 2026-07-19  
-Task: `salvage-and-finish`  
-Current-main base: `0460ac31`  
-Preserved snapshot: `0fc1a79b` (parent `c2499f3e`)  
+Date: 2026-07-19
+
+Task: `salvage-and-finish`
+
+Current-main base: `0460ac31`
+
+Preserved snapshot: `0fc1a79b` (parent `c2499f3e`)
+
 Normative design: `docs/reports/pending-eval-flip-inline-route-resolution.md`
 
 ## Provenance and staged recovery
