@@ -911,6 +911,15 @@ description = "Pins wg-done-silent: when an agent's worktree branch has 0 commit
 timeout_seconds = 30
 
 [[scenario]]
+name = "wg_done_preserves_squash_attribution"
+script = "scenarios/wg_done_preserves_squash_attribution.sh"
+owners = [
+    "repair-luca-core",
+]
+description = "Pins the non-destructive Luca attribution repair through the real `wg done` worktree flow: a two-commit branch with Luca as the oldest author, Erik as the integration author, and blank-line-separated source co-author lines must squash with Luca as author plus exactly one Erik and Claude Co-authored-by trailer. Both files must land; the primary author must not be duplicated as a trailer. Credential-free, pure git + graph flow."
+timeout_seconds = 30
+
+[[scenario]]
 name = "worktree_gc_preserves_dirty"
 script = "scenarios/worktree_gc_preserves_dirty.sh"
 owners = [

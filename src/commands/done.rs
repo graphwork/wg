@@ -361,6 +361,129 @@ fn detect_worktree(wg_dir: &Path) -> Option<WorktreeInfo> {
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GitIdentity {
+    name: String,
+    email: String,
+}
+
+impl GitIdentity {
+    fn from_author_fields(name: &str, email: &str) -> Option<Self> {
+        let name = name.trim();
+        let email = email.trim();
+        if name.is_empty()
+            || email.is_empty()
+            || name.chars().any(char::is_control)
+            || email.chars().any(char::is_control)
+        {
+            return None;
+        }
+        Some(Self {
+            name: name.to_string(),
+            email: email.to_string(),
+        })
+    }
+
+    fn from_trailer_value(value: &str) -> Option<Self> {
+        let value = value.trim();
+        let open = value.rfind('<')?;
+        if !value.ends_with('>') {
+            return None;
+        }
+        Self::from_author_fields(&value[..open], &value[open + 1..value.len() - 1])
+    }
+
+    fn render(&self) -> String {
+        format!("{} <{}>", self.name, self.email)
+    }
+
+    fn dedup_key(&self) -> String {
+        self.email.to_lowercase()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SquashAttribution {
+    /// The oldest source commit's author remains the squash commit author.
+    author: GitIdentity,
+    /// Every other source author and every valid source Co-authored-by trailer.
+    coauthors: Vec<GitIdentity>,
+}
+
+/// Read attribution from every source commit that is not already reachable
+/// from the target `HEAD`. A squash discards those commit objects from main's
+/// ancestry, so the resulting commit must carry their identities explicitly.
+///
+/// NUL separators keep fields unambiguous because Git commit objects cannot
+/// contain NUL bytes. We recognize only a complete
+/// `Co-authored-by: Name <email>` line (case-insensitive key). Reading the body
+/// rather than only Git's final trailer block is intentional: older WG
+/// integration commits separated multiple co-author lines with blank lines, so
+/// `%(trailers:...)` returned only the final identity and caused the loss this
+/// path is responsible for repairing.
+fn collect_squash_attribution(
+    project_root: &str,
+    branch: &str,
+) -> Result<Option<SquashAttribution>> {
+    use std::collections::HashSet;
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(["log", "--reverse", "-z", "--format=%an%x00%ae%x00%B"])
+        .arg(format!("HEAD..{branch}"))
+        .current_dir(project_root)
+        .output()
+        .context("Failed to read source attribution for squash merge")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "git log failed while reading squash attribution: {}",
+            one_line_error(&output.stderr)
+        );
+    }
+
+    let fields = output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .collect::<Vec<_>>();
+    let mut commits = Vec::new();
+    for fields in fields.chunks_exact(3) {
+        let name = String::from_utf8_lossy(fields[0]);
+        let email = String::from_utf8_lossy(fields[1]);
+        let body = String::from_utf8_lossy(fields[2]);
+        let author = GitIdentity::from_author_fields(&name, &email).ok_or_else(|| {
+            anyhow::anyhow!("source commit has an invalid author identity: {name:?} <{email:?}>")
+        })?;
+        let coauthors = body
+            .lines()
+            .filter_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim()
+                    .eq_ignore_ascii_case("co-authored-by")
+                    .then(|| GitIdentity::from_trailer_value(value))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        commits.push((author, coauthors));
+    }
+
+    let Some((author, _)) = commits.first() else {
+        return Ok(None);
+    };
+    let author = author.clone();
+    let mut seen = HashSet::from([author.dedup_key()]);
+    let mut coauthors = Vec::new();
+    for (commit_author, commit_coauthors) in commits {
+        for identity in std::iter::once(commit_author).chain(commit_coauthors) {
+            if seen.insert(identity.dedup_key()) {
+                coauthors.push(identity);
+            }
+        }
+    }
+
+    Ok(Some(SquashAttribution { author, coauthors }))
+}
+
 fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMergeResult> {
     use std::process::Command;
 
@@ -373,19 +496,20 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         return Ok(WorktreeMergeResult::NotInWorktree);
     }
 
-    let commits_output = Command::new("git")
-        .args(["log", "--oneline"])
-        .arg(format!("HEAD..{}", wt.branch))
-        .current_dir(&wt.project_root)
-        .output()
-        .context("Failed to check commits on worktree branch")?;
+    // Serialize the source-range read together with the squash and commit.
+    // Otherwise another landing could advance main after attribution was read,
+    // making us credit commits that the actual squash no longer contains.
+    let merge_lock_path = Path::new(&wt.project_root)
+        .join(".wg-worktrees")
+        .join(".merge-lock");
+    if let Some(parent) = merge_lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _merge_lock = MergeLockGuard::acquire(&merge_lock_path)?;
 
-    let commit_count = String::from_utf8_lossy(&commits_output.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .count();
+    let attribution = collect_squash_attribution(&wt.project_root, &wt.branch)?;
 
-    if commit_count == 0 {
+    if attribution.is_none() {
         // Before declaring NoCommits, make sure the agent didn't stage work and
         // forget to commit. `git status --porcelain` runs in the worktree
         // directory because the staging area is per-working-tree. Any entry
@@ -416,15 +540,6 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
 
         return Ok(WorktreeMergeResult::NoCommits);
     }
-
-    let merge_lock_path = Path::new(&wt.project_root)
-        .join(".wg-worktrees")
-        .join(".merge-lock");
-    if let Some(parent) = merge_lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let _merge_lock = MergeLockGuard::acquire(&merge_lock_path)?;
 
     let merge_result = Command::new("git")
         .args(["merge", "--squash", &wt.branch])
@@ -465,13 +580,25 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
 
         WorktreeMergeResult::Conflict { conflicting_files }
     } else {
+        let attribution = attribution.expect("source commits were checked before squash merge");
         let agent_label = wt.agent_id.as_deref().unwrap_or("unknown");
-        let commit_msg = format!(
+        let mut commit_msg = format!(
             "feat: {} ({})\n\nSquash-merged from worktree branch {}",
             task_id, agent_label, wt.branch
         );
+        if !attribution.coauthors.is_empty() {
+            commit_msg.push_str("\n\n");
+        }
+        for (index, coauthor) in attribution.coauthors.iter().enumerate() {
+            if index > 0 {
+                commit_msg.push('\n');
+            }
+            commit_msg.push_str("Co-authored-by: ");
+            commit_msg.push_str(&coauthor.render());
+        }
+        let author = attribution.author.render();
         let commit_output = Command::new("git")
-            .args(["commit", "-m", &commit_msg])
+            .args(["commit", "--author", &author, "-m", &commit_msg])
             .current_dir(&wt.project_root)
             .output()
             .context("Failed to commit squash merge")?;
@@ -4396,6 +4523,144 @@ mod tests {
             project_root: project_path.to_str().unwrap().to_string(),
             agent_id: Some("agent-test".to_string()),
         }
+    }
+
+    fn make_attribution_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let project = tempdir().unwrap();
+        let project_path = project.path().to_path_buf();
+        git(&project_path, &["init", "-b", "main"]);
+        git(
+            &project_path,
+            &["config", "user.email", "merge@example.com"],
+        );
+        git(&project_path, &["config", "user.name", "Merge User"]);
+        git(&project_path, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(project_path.join("README.md"), "initial\n").unwrap();
+        git(&project_path, &["add", "README.md"]);
+        git(&project_path, &["commit", "-m", "initial"]);
+        let branch = "wg/agent-test/attribution".to_string();
+        git(&project_path, &["checkout", "-b", &branch]);
+        (project, project_path, branch)
+    }
+
+    #[test]
+    fn test_squash_merge_preserves_source_authors_and_coauthor_trailers() {
+        let (_project, project_path, branch) = make_attribution_repo();
+
+        std::fs::write(project_path.join("luca.txt"), "baseline\n").unwrap();
+        git(&project_path, &["add", "luca.txt"]);
+        git(
+            &project_path,
+            &[
+                "commit",
+                "--author",
+                "Luca Pinello <lucapinello@gmail.com>",
+                "-m",
+                "source baseline\n\nMetadata containing record controls: \u{1e}\u{1f}\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+            ],
+        );
+
+        std::fs::write(project_path.join("integration.txt"), "integration\n").unwrap();
+        git(&project_path, &["add", "integration.txt"]);
+        git(
+            &project_path,
+            &[
+                "commit",
+                "--author",
+                "Erik Integrator <erik@example.com>",
+                "-m",
+                "integrate baseline\n\nCo-authored-by: Luca Pinello <lucapinello@gmail.com>",
+            ],
+        );
+        git(&project_path, &["checkout", "main"]);
+
+        let result = attempt_worktree_merge(&make_wt(&project_path, &branch), "attribution")
+            .expect("squash merge should succeed");
+        assert!(matches!(result, WorktreeMergeResult::Merged { .. }));
+
+        let (ok, commit) = git_capture(
+            &project_path,
+            &["show", "-s", "--format=%an <%ae>%n%B", "HEAD"],
+        );
+        assert!(ok);
+        assert!(
+            commit.starts_with("Luca Pinello <lucapinello@gmail.com>\n"),
+            "oldest source author must remain the squash author: {commit}"
+        );
+        assert_eq!(
+            commit
+                .matches("Co-authored-by: Erik Integrator <erik@example.com>")
+                .count(),
+            1,
+            "additional source authors must become one trailer: {commit}"
+        );
+        assert_eq!(
+            commit
+                .matches("Co-authored-by: Claude Opus 4.8 <noreply@anthropic.com>")
+                .count(),
+            1,
+            "existing source trailers must survive once: {commit}"
+        );
+        assert!(
+            !commit.contains("Co-authored-by: Luca Pinello"),
+            "the primary author must not be duplicated as a coauthor: {commit}"
+        );
+        let (ok, parsed_trailers) = git_capture(
+            &project_path,
+            &[
+                "show",
+                "-s",
+                "--format=%(trailers:key=Co-authored-by,valueonly)",
+                "HEAD",
+            ],
+        );
+        assert!(ok);
+        assert!(parsed_trailers.contains("Erik Integrator <erik@example.com>"));
+        assert!(parsed_trailers.contains("Claude Opus 4.8 <noreply@anthropic.com>"));
+    }
+
+    #[test]
+    fn test_squash_merge_preserves_coauthors_from_single_source_commit() {
+        let (_project, project_path, branch) = make_attribution_repo();
+
+        std::fs::write(project_path.join("provider.txt"), "provider\n").unwrap();
+        git(&project_path, &["add", "provider.txt"]);
+        git(
+            &project_path,
+            &[
+                "commit",
+                "--author",
+                "Erik Integrator <erik@example.com>",
+                "-m",
+                "provider fix\n\nCo-authored-by: Luca Pinello <lucapinello@gmail.com>\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+            ],
+        );
+        git(&project_path, &["checkout", "main"]);
+
+        let result = attempt_worktree_merge(&make_wt(&project_path, &branch), "provider")
+            .expect("squash merge should succeed");
+        assert!(matches!(result, WorktreeMergeResult::Merged { .. }));
+
+        let (ok, commit) = git_capture(
+            &project_path,
+            &["show", "-s", "--format=%an <%ae>%n%B", "HEAD"],
+        );
+        assert!(ok);
+        assert!(commit.starts_with("Erik Integrator <erik@example.com>\n"));
+        assert_eq!(
+            commit
+                .matches("Co-authored-by: Luca Pinello <lucapinello@gmail.com>")
+                .count(),
+            1,
+            "source coauthor must survive the squash: {commit}"
+        );
+        assert_eq!(
+            commit
+                .matches("Co-authored-by: Claude Opus 4.8 <noreply@anthropic.com>")
+                .count(),
+            1,
+            "all source coauthors must survive the squash: {commit}"
+        );
     }
 
     #[test]
