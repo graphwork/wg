@@ -1878,13 +1878,13 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_deepseek_with_key() {
-        // The two-tier setter wrote `--weak openrouter:deepseek/deepseek-chat`
-        // into tiers.fast. With an OpenRouter key present, agency one-shots
-        // route to that DeepSeek model via the native HTTP handler — NOT the
-        // old hardcoded claude:haiku. (Covers validation item 1.)
+        // The two-tier setter wrote the handler-first OpenRouter route into
+        // tiers.fast. With an OpenRouter key present, agency one-shots route to
+        // that DeepSeek model via the native HTTP handler — NOT the old
+        // hardcoded claude:haiku. (Covers validation item 1.)
         let _key = EnvGuard::set("OPENROUTER_API_KEY", Some("sk-or-test-deepseek"));
         let mut config = Config::default();
-        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast = Some("nex:openrouter:deepseek/deepseek-chat".to_string());
 
         for role in ALL_AGENCY_ROLES {
             let dispatch = resolve_agency_dispatch(&config, role).unwrap();
@@ -1893,8 +1893,8 @@ mod tests {
                 ExecutorKind::Native,
                 "role {role:?} weak-tier deepseek must dispatch via the native HTTP handler",
             );
-            assert_eq!(dispatch.raw_spec, "openrouter:deepseek/deepseek-chat");
-            assert_eq!(dispatch.model_id, "deepseek/deepseek-chat");
+            assert_eq!(dispatch.raw_spec, "nex:openrouter:deepseek/deepseek-chat");
+            assert_eq!(dispatch.model_id, "openrouter:deepseek/deepseek-chat");
         }
     }
 
@@ -1906,7 +1906,7 @@ mod tests {
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
         let mut config = Config::default();
-        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast = Some("nex:openrouter:deepseek/deepseek-chat".to_string());
         config
             .llm_endpoints
             .endpoints
@@ -1925,8 +1925,8 @@ mod tests {
 
         let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator).unwrap();
         assert_eq!(dispatch.handler, ExecutorKind::Native);
-        assert_eq!(dispatch.raw_spec, "openrouter:deepseek/deepseek-chat");
-        assert_eq!(dispatch.model_id, "deepseek/deepseek-chat");
+        assert_eq!(dispatch.raw_spec, "nex:openrouter:deepseek/deepseek-chat");
+        assert_eq!(dispatch.model_id, "openrouter:deepseek/deepseek-chat");
     }
 
     #[test]
@@ -1935,12 +1935,12 @@ mod tests {
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
         let mut config = Config::default();
-        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast = Some("nex:openrouter:deepseek/deepseek-chat".to_string());
 
         for role in ALL_AGENCY_ROLES {
             let dispatch = resolve_agency_dispatch(&config, role).unwrap();
             assert_eq!(dispatch.handler, ExecutorKind::Native, "role={role}");
-            assert_eq!(dispatch.raw_spec, "openrouter:deepseek/deepseek-chat");
+            assert_eq!(dispatch.raw_spec, "nex:openrouter:deepseek/deepseek-chat");
         }
     }
 
@@ -1952,7 +1952,7 @@ mod tests {
         // tier default. (Covers validation item 2.)
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let mut config = Config::default();
-        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast = Some("nex:openrouter:deepseek/deepseek-chat".to_string());
         config
             .models
             .set_model(DispatchRole::Evaluator, "claude:sonnet");
@@ -1970,7 +1970,7 @@ mod tests {
         let assigner = resolve_agency_dispatch(&config, DispatchRole::Assigner).unwrap();
         assert_ne!(assigner.raw_spec, "claude:sonnet");
         assert_eq!(assigner.handler, ExecutorKind::Native);
-        assert_eq!(assigner.raw_spec, "openrouter:deepseek/deepseek-chat");
+        assert_eq!(assigner.raw_spec, "nex:openrouter:deepseek/deepseek-chat");
     }
 
     #[test]
@@ -1980,7 +1980,7 @@ mod tests {
         // codex self-authenticates, so it is not subject to the credential net.
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let mut config = Config::default();
-        config.tiers.fast = Some("openrouter:deepseek/deepseek-chat".to_string());
+        config.tiers.fast = Some("nex:openrouter:deepseek/deepseek-chat".to_string());
         config
             .models
             .set_model(DispatchRole::Assigner, "codex:gpt-5.4-mini");
