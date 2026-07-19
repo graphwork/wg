@@ -922,6 +922,7 @@ fn publish_creates_full_pipeline_all_tasks() {
     wg_ok(&wg_dir, &["config", "--auto-assign", "true"]);
     wg_ok(&wg_dir, &["config", "--auto-evaluate", "true"]);
     wg_ok(&wg_dir, &["config", "--flip-enabled", "true"]);
+    wg_ok(&wg_dir, &["config", "--tier", "fast=claude:haiku"]);
 
     // Create a draft task (will be paused)
     wg_ok(&wg_dir, &["add", "My Feature"]);
@@ -971,6 +972,7 @@ fn publish_creates_all_pipeline_edges_correctly() {
     wg_ok(&wg_dir, &["config", "--auto-assign", "true"]);
     wg_ok(&wg_dir, &["config", "--auto-evaluate", "true"]);
     wg_ok(&wg_dir, &["config", "--flip-enabled", "true"]);
+    wg_ok(&wg_dir, &["config", "--tier", "fast=claude:haiku"]);
 
     wg_ok(&wg_dir, &["add", "My Feature"]);
     wg_ok(&wg_dir, &["publish", "my-feature"]);
