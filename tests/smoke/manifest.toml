@@ -2257,8 +2257,9 @@ name = "provider_completion_refusal_breaker"
 script = "scenarios/provider_completion_refusal_breaker.sh"
 owners = [
     "integrate-luca-provider",
+    "fix-sigkilled-wrapper",
 ]
-description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route."
+description = "Live credential-free daemon/spawn-breaker regression for Luca 02204b19's diagnosis: three fake Codex workers reach a real wg done blocked-graph refusal whose graph prose contains HTTP 401/quota, persist validated completion-refused provenance, and leave provider counters/service pause untouched; three genuine fake HTTP 401 wrapper crashes then reach threshold for exactly the canonical Codex handler+wire+endpoint health route. All six real generated run.sh wrappers are SIGKILLed after observing their heartbeat-watch descendant/process group; each watcher must exit promptly and the final scratch ownership scan must find no stale wrapper/shell/sleep/heartbeat process."
 timeout_seconds = 90
 
 [[scenario]]

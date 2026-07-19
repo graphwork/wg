@@ -2323,6 +2323,10 @@ fn main() -> Result<()> {
                 commands::heartbeat::run_check_agents(&workgraph_dir, threshold, cli.json)
             }
         }
+        Commands::HeartbeatWatch {
+            agent,
+            interval_seconds,
+        } => commands::heartbeat::run_watch(&workgraph_dir, &agent, interval_seconds),
         Commands::Checkpoint {
             task,
             summary,

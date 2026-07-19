@@ -1548,6 +1548,18 @@ pub enum Commands {
         threshold: u64,
     },
 
+    /// [Internal] Keep an agent heartbeat fresh while the generated wrapper
+    /// keeps this process's stdin guard pipe open.
+    #[command(name = "heartbeat-watch", hide = true)]
+    HeartbeatWatch {
+        /// Agent ID whose registry heartbeat is refreshed.
+        agent: String,
+
+        /// Seconds between registry heartbeat writes.
+        #[arg(long, default_value = "120")]
+        interval_seconds: u64,
+    },
+
     /// Manage task artifacts (produced outputs)
     Artifact {
         /// Task ID
@@ -6531,6 +6543,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Assign { .. } => "assign",
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
+        Commands::HeartbeatWatch { .. } => "heartbeat-watch",
         Commands::Checkpoint { .. } => "checkpoint",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",

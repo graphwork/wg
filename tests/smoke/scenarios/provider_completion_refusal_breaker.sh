@@ -6,7 +6,10 @@
 # a dependency is inserted post-spawn. Its blocker title contains HTTP 401/quota.
 # Three such dead wrapper runs must leave provider health untouched. Then three
 # genuine fake provider-auth crashes must still trip exactly the spawned Codex
-# route's breaker. No provider credential is required.
+# route's breaker. Every SIGKILL also records the real generated wrapper's
+# heartbeat descendant/process group and proves that descendant exits promptly;
+# the final sweep asserts no scratch-owned process survives. No provider
+# credential is required.
 
 set -u
 
@@ -36,12 +39,43 @@ set -u
 # `wg fail` rewrite the registry status. This exercises the dead-agent triage
 # and breaker path rather than only the pure classifier.
 kill_wrapper() {
-    local pid="$PPID" args parent
+    local pid="$PPID" args parent heartbeat_row heartbeat_pid heartbeat_ppid
+    local heartbeat_pgid wrapper_pgid witness heartbeat_attempt
     for _ in 1 2 3 4 5 6; do
         args=$(ps -o args= -p "$pid" 2>/dev/null || true)
         if [[ "$args" == *"/run.sh"* ]]; then
+            # Observe the heartbeat watcher as a real direct descendant in the
+            # wrapper's setsid-created process group before delivering SIGKILL.
+            # This is the exact installed/generated run.sh topology that leaked
+            # its old shell + `sleep 120` loop to PID 1.
+            heartbeat_row=""
+            for heartbeat_attempt in {1..100}; do
+                heartbeat_row=$(ps -eo pid=,ppid=,pgid=,args= 2>/dev/null \
+                    | awk -v wrapper="$pid" '$2 == wrapper && $0 ~ /heartbeat-watch/ { print $1, $2, $3; exit }')
+                [[ -n "$heartbeat_row" ]] && break
+                sleep 0.02
+            done
+            if [[ -z "$heartbeat_row" ]]; then
+                echo "generated run.sh $pid has no heartbeat-watch descendant" >&2
+                return 1
+            fi
+            read -r heartbeat_pid heartbeat_ppid heartbeat_pgid <<<"$heartbeat_row"
+            wrapper_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+            witness="$WG_FAKE_SYNC_DIR/heartbeat-${WG_TASK_ID}.txt"
+            printf 'wrapper_pid=%s wrapper_pgid=%s heartbeat_pid=%s heartbeat_ppid=%s heartbeat_pgid=%s\n' \
+                "$pid" "$wrapper_pgid" "$heartbeat_pid" "$heartbeat_ppid" "$heartbeat_pgid" >"$witness"
+
             kill -9 "$pid" 2>/dev/null || true
-            return 0
+
+            # The executor does not inherit the anonymous guard writer, so
+            # wrapper death must deliver EOF and reap the watcher immediately —
+            # never after the historical 120-second sleep.
+            for _ in $(seq 1 100); do
+                [[ ! -e "/proc/$heartbeat_pid" ]] && return 0
+                sleep 0.02
+            done
+            echo "heartbeat watcher $heartbeat_pid survived SIGKILL of wrapper $pid" >&2
+            return 1
         fi
         parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
         [[ -n "$parent" && "$parent" != "0" && "$parent" != "$pid" ]] || break
@@ -62,12 +96,12 @@ case "${WG_TASK_ID:-}" in
         # the embedded blocker title contains provider-looking words.
         wg done "$WG_TASK_ID" >/dev/null 2>&1 || true
         wg pause "$WG_TASK_ID" >/dev/null 2>&1 || true
-        kill_wrapper
+        kill_wrapper || exit 91
         exit 0
         ;;
     auth-*)
         echo "authentication failed (HTTP 401): quota exhausted" >&2
-        kill_wrapper
+        kill_wrapper || exit 91
         exit 1
         ;;
     *)
@@ -173,7 +207,7 @@ if ! $refusal_ok; then
     loud_fail "three live wg-done refusals did not remain breaker-neutral. health:\n$(cat "$health_file" 2>/dev/null || echo '<missing>')\ndaemon tail:\n$(tail -80 "$graph_dir/service/daemon.log" 2>/dev/null || true)"
 fi
 
-echo "PASS (1/2): three typed graph-policy refusals left provider counters at zero"
+echo "PASS (1/3): three typed graph-policy refusals left provider counters at zero"
 run_wg service stop --force >/dev/null 2>&1 || true
 
 for n in 1 2 3; do
@@ -214,6 +248,68 @@ if ! $auth_ok; then
     loud_fail "real provider 401 crashes did not trip exactly one route breaker. health:\n$(cat "$health_file" 2>/dev/null || echo '<missing>')\ndaemon tail:\n$(tail -100 "$graph_dir/service/daemon.log" 2>/dev/null || true)"
 fi
 
-echo "PASS (2/2): real HTTP 401 failures still reached threshold for exactly the Codex route"
-echo "PASS: completion-refusal provenance protects the live provider breaker"
+echo "PASS (2/3): real HTTP 401 failures still reached threshold for exactly the Codex route"
+
+# Stop the paused daemon before the scratch ownership scan, then validate all
+# six real wrapper/watcher observations and prove no wrapper, watcher, shell,
+# sleep, fake executor, or other scratch-owned process remains.
+run_wg service stop --force >/dev/null 2>&1 || true
+cd /
+cleanup_ok=false
+cleanup_diag=""
+for _ in $(seq 1 100); do
+    cleanup_diag=$(python3 - "$scratch" "$WG_FAKE_SYNC_DIR" <<'PY'
+import glob, os, pathlib, sys
+root = os.path.realpath(sys.argv[1])
+sync = pathlib.Path(sys.argv[2])
+expected = {f"refusal-{n}" for n in range(1, 4)} | {f"auth-{n}" for n in range(1, 4)}
+seen = set()
+problems = []
+for path in sync.glob("heartbeat-*.txt"):
+    task = path.stem.removeprefix("heartbeat-")
+    fields = dict(part.split("=", 1) for part in path.read_text().split())
+    seen.add(task)
+    if fields.get("heartbeat_ppid") != fields.get("wrapper_pid"):
+        problems.append(f"{task}: watcher was not a direct wrapper descendant: {fields}")
+    if fields.get("heartbeat_pgid") != fields.get("wrapper_pgid"):
+        problems.append(f"{task}: watcher escaped wrapper process group: {fields}")
+    for field in ("wrapper_pid", "heartbeat_pid"):
+        pid = fields.get(field, "")
+        if pid and os.path.exists(f"/proc/{pid}"):
+            problems.append(f"{task}: stale {field}={pid} still exists")
+if seen != expected:
+    problems.append(f"heartbeat witnesses mismatch: expected={sorted(expected)} seen={sorted(seen)}")
+
+# A PID can disappear before this final check, so also scan process cwd and
+# argv for scratch ownership. The scenario shell moved to / first and is not a
+# false positive. This catches any unrecorded shell/sleep/heartbeat descendant.
+for proc in glob.glob("/proc/[0-9]*"):
+    pid = proc.rsplit("/", 1)[-1]
+    if pid == str(os.getpid()):
+        continue
+    try:
+        cwd = os.path.realpath(os.readlink(f"{proc}/cwd"))
+    except OSError:
+        cwd = ""
+    try:
+        argv = pathlib.Path(f"{proc}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        argv = ""
+    if cwd == root or cwd.startswith(root + os.sep) or root in argv:
+        problems.append(f"scratch-owned pid={pid} cwd={cwd!r} argv={argv!r}")
+print("\n".join(problems))
+PY
+)
+    if [[ -z "$cleanup_diag" ]]; then
+        cleanup_ok=true
+        break
+    fi
+    sleep 0.05
+done
+if ! $cleanup_ok; then
+    loud_fail "SIGKILLed generated wrappers left heartbeat/scratch processes:\n$cleanup_diag"
+fi
+
+echo "PASS (3/3): six real SIGKILLed run.sh wrappers reaped their heartbeat descendants with no scratch-owned process"
+echo "PASS: completion-refusal provenance protects the live provider breaker and wrapper heartbeat containment"
 exit 0
