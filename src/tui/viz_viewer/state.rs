@@ -946,6 +946,111 @@ impl LayoutMode {
     }
 }
 
+/// Desired inspector dock. `Auto` is the only variant responsive policy may
+/// resolve differently as the viewport changes; explicit choices are sticky.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InspectorDock {
+    #[default]
+    Auto,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl InspectorDock {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Top => "Top",
+            Self::Bottom => "Bottom",
+        }
+    }
+
+    pub fn is_horizontal(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+}
+
+/// Desired inspector visibility mode, independent of responsive fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InspectorMode {
+    #[default]
+    Split,
+    Full,
+    Hidden,
+}
+
+/// Persisted desired layout. No viewport coordinates are stored: the current
+/// rectangle is always derived from this state and the current terminal size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LayoutPreference {
+    #[serde(default)]
+    pub dock: InspectorDock,
+    #[serde(default = "default_inspector_ratio")]
+    pub size_percent: u16,
+    #[serde(default)]
+    pub mode: InspectorMode,
+}
+
+const fn default_inspector_ratio() -> u16 {
+    67
+}
+
+impl Default for LayoutPreference {
+    fn default() -> Self {
+        Self {
+            dock: InspectorDock::Auto,
+            size_percent: default_inspector_ratio(),
+            mode: InspectorMode::Split,
+        }
+    }
+}
+
+impl LayoutPreference {
+    pub const MIN_PERCENT: u16 = 10;
+    pub const MAX_PERCENT: u16 = 90;
+
+    pub fn bounded(mut self) -> Self {
+        self.size_percent = self
+            .size_percent
+            .clamp(Self::MIN_PERCENT, Self::MAX_PERCENT);
+        self
+    }
+}
+
+/// Snapshot captured at pointer-down. A resize invalidates the snapshot and
+/// cancels the adjustment rather than interpreting stale coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutDragSnapshot {
+    pub dock: InspectorDock,
+    pub viewport: Rect,
+    pub start_column: u16,
+    pub start_row: u16,
+    pub start_percent: u16,
+    /// Complete desired-state snapshot used when SIGWINCH cancels a drag.
+    pub original: LayoutPreference,
+    /// Pointer-down alone is not a layout edit. This becomes true only after
+    /// movement on the dock's active axis.
+    pub moved: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutOverlayState {
+    /// Complete pre-modal desired state. Escape restores this verbatim.
+    pub original: LayoutPreference,
+    /// State currently rendered behind the overlay (live preview).
+    pub draft: LayoutPreference,
+    /// Focus is presentation state rather than a persisted preference, but is
+    /// still part of the user's pre-modal snapshot for reliable cancellation.
+    pub original_focus: FocusedPanel,
+    pub original_single_panel_view: SinglePanelView,
+}
+
 /// Responsive layout breakpoint determined by terminal width.
 ///
 /// Detected dynamically on each frame from `frame.area().width`:
@@ -1052,6 +1157,10 @@ pub enum InputMode {
     /// Scroll mode on the active chat PTY pane (Ctrl+] toggle).
     /// Inner PTY receives no input; arrow keys/PgUp/PgDn navigate scrollback.
     ScrollMode { task_id: String },
+    /// Visible keyboard-authoritative inspector layout editor. Reachable from
+    /// command mode only; while a PTY owns focus its printable keys continue
+    /// to go to the child.
+    Layout,
     /// Chat-exit confirmation: ask the user whether to leave chat tmux
     /// sessions running (resume next launch) or close them (kill the
     /// chat process, no resume). Triggered when the user requests quit
@@ -3939,6 +4048,9 @@ fn load_persisted_chat_history(
 /// Persisted TUI state for focus restoration across restarts.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct PersistedTuiState {
+    /// Desired inspector layout. Coordinates are intentionally never persisted.
+    #[serde(default)]
+    layout: LayoutPreference,
     /// Which coordinator was focused when the TUI was last closed.
     #[serde(default)]
     active_coordinator_id: u32,
@@ -3963,8 +4075,23 @@ fn save_tui_state(
     tab: &RightPanelTab,
     open_tabs: &[String],
 ) {
+    // Tab-only callers must preserve an already-persisted layout preference.
+    let layout = load_tui_state(workgraph_dir)
+        .map(|state| state.layout)
+        .unwrap_or_default();
+    save_tui_state_with_layout(workgraph_dir, coordinator_id, tab, open_tabs, layout);
+}
+
+fn save_tui_state_with_layout(
+    workgraph_dir: &std::path::Path,
+    coordinator_id: u32,
+    tab: &RightPanelTab,
+    open_tabs: &[String],
+    layout: LayoutPreference,
+) {
     let active = worksgood::chat_id::format_chat_task_id(coordinator_id);
     let state = PersistedTuiState {
+        layout: layout.bounded(),
         active_coordinator_id: coordinator_id,
         right_panel_tab: format!("{:?}", tab),
         open_tabs: open_tabs.to_vec(),
@@ -7458,9 +7585,14 @@ pub struct VizApp {
     pub right_panel_percent: u16,
     /// HUD panel size preset (Normal = ~1/3, Expanded = ~2/3).
     pub hud_size: HudSize,
-    /// Layout mode for five-state cycle (1/3 → 1/2 → 2/3 → full → off).
+    /// Legacy presentation bracket retained for existing shortcuts/rendering.
+    /// `layout_preference` is the authoritative desired state.
     pub layout_mode: LayoutMode,
-    /// Current responsive breakpoint (recomputed each frame from terminal width).
+    /// Authoritative desired inspector state (dock, bounded ratio, mode).
+    pub layout_preference: LayoutPreference,
+    /// Visible command-mode layout editor, when open.
+    pub layout_overlay: Option<LayoutOverlayState>,
+    /// Current responsive breakpoint (updated with hysteresis from the viewport).
     pub responsive_breakpoint: ResponsiveBreakpoint,
     /// Hysteresis: whether inspector is currently laid out beside (right) rather than below.
     /// Used to prevent oscillation at the SIDE_MIN_WIDTH boundary.
@@ -7800,6 +7932,11 @@ pub struct VizApp {
     pub divider_drag_start_col: u16,
     /// The row where a horizontal divider drag started.
     pub divider_drag_start_row: u16,
+    /// Immutable geometry snapshot for a dock/divider adjustment.
+    pub layout_drag: Option<LayoutDragSnapshot>,
+    /// Current main viewport, refreshed by the renderer. Used to reject stale
+    /// pointer coordinates after SIGWINCH/phone rotation.
+    pub layout_viewport: Rect,
     /// Last mouse position during a graph-body drag-to-pan gesture (col, row).
     pub graph_pan_last: Option<(u16, u16)>,
 
@@ -8183,6 +8320,10 @@ impl VizApp {
             }
         };
         let requested = persisted.as_ref().map(|state| state.active_coordinator_id);
+        let saved_layout = persisted
+            .as_ref()
+            .map(|state| state.layout)
+            .unwrap_or_default();
 
         // graph.jsonl is atomically replaced, so this streaming read sees one
         // coherent file generation. Parse only chat candidates; with a saved
@@ -8366,6 +8507,7 @@ impl VizApp {
         let focused = loader.focused_panel;
         let identity = loader.active_chat_identity;
         Ok(Box::new(move |app| {
+            app.set_layout_preference(saved_layout);
             app.active_coordinator_id = active;
             app.active_tabs = tabs;
             app.cached_chat_tab_entries = entries;
@@ -8515,6 +8657,20 @@ impl VizApp {
                 .panel_percent(),
             hud_size: HudSize::Normal,
             layout_mode: LayoutMode::from_config_str(&config.tui.default_inspector_size),
+            layout_preference: LayoutPreference {
+                dock: InspectorDock::Auto,
+                size_percent: LayoutMode::from_config_str(&config.tui.default_inspector_size)
+                    .panel_percent()
+                    .clamp(LayoutPreference::MIN_PERCENT, LayoutPreference::MAX_PERCENT),
+                mode: if LayoutMode::from_config_str(&config.tui.default_inspector_size)
+                    == LayoutMode::FullInspector
+                {
+                    InspectorMode::Full
+                } else {
+                    InspectorMode::Split
+                },
+            },
+            layout_overlay: None,
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
@@ -8617,6 +8773,8 @@ impl VizApp {
             divider_drag_start_pct: 0,
             divider_drag_start_col: 0,
             divider_drag_start_row: 0,
+            layout_drag: None,
+            layout_viewport: Rect::default(),
             graph_pan_last: None,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
@@ -13897,6 +14055,12 @@ impl VizApp {
             right_panel_percent: 35,
             hud_size: HudSize::Normal,
             layout_mode: LayoutMode::ThirdInspector,
+            layout_preference: LayoutPreference {
+                dock: InspectorDock::Auto,
+                size_percent: 35,
+                mode: InspectorMode::Split,
+            },
+            layout_overlay: None,
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
@@ -13991,6 +14155,8 @@ impl VizApp {
             divider_drag_start_pct: 0,
             divider_drag_start_col: 0,
             divider_drag_start_row: 0,
+            layout_drag: None,
+            layout_viewport: Rect::default(),
             graph_pan_last: None,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
@@ -14055,6 +14221,134 @@ impl VizApp {
     }
 
     // ── Multi-panel methods ──
+
+    /// Apply desired state to the legacy presentation fields used by existing
+    /// panel code. The bounded split ratio is retained across Full/Hidden.
+    pub fn set_layout_preference(&mut self, preference: LayoutPreference) {
+        self.layout_preference = preference.bounded();
+        self.right_panel_percent = self.layout_preference.size_percent;
+        match self.layout_preference.mode {
+            InspectorMode::Split => {
+                self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
+                self.right_panel_visible = true;
+            }
+            InspectorMode::Full => {
+                self.layout_mode = LayoutMode::FullInspector;
+                self.right_panel_visible = true;
+                self.focused_panel = FocusedPanel::RightPanel;
+            }
+            InspectorMode::Hidden => {
+                self.layout_mode = LayoutMode::Off;
+                self.right_panel_visible = false;
+                self.focused_panel = FocusedPanel::Graph;
+            }
+        }
+    }
+
+    /// Cancel a coordinate-based adjustment and restore its pointer-down
+    /// desired state. Used by both the Resize event path and the renderer's
+    /// viewport guard so a queued stale Drag can never jump the divider.
+    pub fn cancel_layout_drag(&mut self) {
+        if let Some(snapshot) = self.layout_drag.take() {
+            self.set_layout_preference(snapshot.original);
+        }
+        if matches!(
+            self.scrollbar_drag,
+            Some(ScrollbarDragTarget::Divider) | Some(ScrollbarDragTarget::HorizontalDivider)
+        ) {
+            self.scrollbar_drag = None;
+        }
+    }
+
+    pub fn open_layout_overlay(&mut self) {
+        self.layout_overlay = Some(LayoutOverlayState {
+            original: self.layout_preference,
+            draft: self.layout_preference,
+            original_focus: self.focused_panel,
+            original_single_panel_view: self.single_panel_view,
+        });
+        self.input_mode = InputMode::Layout;
+    }
+
+    /// Update the visible modal draft and immediately derive the pane geometry
+    /// from it. Nothing is persisted until Enter, so Escape can still restore
+    /// the complete pre-modal snapshot after any number of live previews.
+    pub fn preview_layout_overlay(&mut self, draft: LayoutPreference) {
+        let draft = draft.bounded();
+        if let Some(overlay) = self.layout_overlay.as_mut() {
+            overlay.draft = draft;
+            self.set_layout_preference(draft);
+        }
+    }
+
+    pub fn cancel_layout_overlay(&mut self) {
+        if let Some(overlay) = self.layout_overlay.take() {
+            self.set_layout_preference(overlay.original);
+            self.focused_panel = overlay.original_focus;
+            self.single_panel_view = overlay.original_single_panel_view;
+        }
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn apply_layout_overlay(&mut self) {
+        if let Some(overlay) = self.layout_overlay.take() {
+            // The live preview already applied the draft. Re-apply it here so
+            // this method also remains correct for programmatic callers.
+            self.set_layout_preference(overlay.draft);
+            self.persist_tab_state();
+        }
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Responsive breakpoints have hysteresis at the compact boundary so a
+    /// one-cell resize cannot repeatedly flip split/single-panel layout.
+    pub fn update_responsive_breakpoint(&mut self, width: u16, height: u16) {
+        const COMPACT_ENTER_WIDTH: u16 = 50;
+        const COMPACT_LEAVE_WIDTH: u16 = 56;
+        const COMPACT_ENTER_HEIGHT: u16 = 12;
+        const COMPACT_LEAVE_HEIGHT: u16 = 14;
+
+        self.responsive_breakpoint = if self.responsive_breakpoint == ResponsiveBreakpoint::Compact
+        {
+            if width < COMPACT_LEAVE_WIDTH || height < COMPACT_LEAVE_HEIGHT {
+                ResponsiveBreakpoint::Compact
+            } else if width <= 80 {
+                ResponsiveBreakpoint::Narrow
+            } else {
+                ResponsiveBreakpoint::Full
+            }
+        } else if width < COMPACT_ENTER_WIDTH || height < COMPACT_ENTER_HEIGHT {
+            ResponsiveBreakpoint::Compact
+        } else if width <= 80 {
+            ResponsiveBreakpoint::Narrow
+        } else {
+            ResponsiveBreakpoint::Full
+        };
+    }
+
+    /// Resolve Auto with independent enter/leave widths. Explicit docks are
+    /// returned verbatim and never overwritten by responsive policy.
+    pub fn resolved_inspector_dock(&mut self, width: u16) -> InspectorDock {
+        match self.layout_preference.dock {
+            InspectorDock::Auto => {
+                let beside = if self.inspector_is_beside {
+                    width >= 100
+                } else {
+                    width >= 120
+                };
+                self.inspector_is_beside = beside;
+                if beside {
+                    InspectorDock::Right
+                } else {
+                    InspectorDock::Bottom
+                }
+            }
+            dock => {
+                self.inspector_is_beside = dock.is_horizontal();
+                dock
+            }
+        }
+    }
 
     /// Toggle focus between Graph and RightPanel.
     /// In compact mode, switches the single-panel view instead.
@@ -14124,14 +14418,16 @@ impl VizApp {
     /// Toggle right panel visibility.
     /// If in a non-split layout mode, resets to ThirdInspector mode first.
     pub fn toggle_right_panel(&mut self) {
-        if !self.layout_mode.has_graph() || !self.layout_mode.has_inspector() {
-            // Reset to default split mode, then apply the toggle.
-            self.layout_mode = LayoutMode::TwoThirdsInspector;
-        }
-        self.right_panel_visible = !self.right_panel_visible;
-        if !self.right_panel_visible {
-            self.focused_panel = FocusedPanel::Graph;
-        }
+        let mode = if self.layout_preference.mode == InspectorMode::Hidden {
+            InspectorMode::Split
+        } else {
+            InspectorMode::Hidden
+        };
+        self.set_layout_preference(LayoutPreference {
+            mode,
+            ..self.layout_preference
+        });
+        self.persist_tab_state();
     }
 
     /// Cycle HUD panel size between Normal (~1/3) and Expanded (~2/3).
@@ -14167,25 +14463,37 @@ impl VizApp {
             | LayoutMode::TwoThirdsInspector => {
                 self.right_panel_visible = true;
                 self.right_panel_percent = mode.panel_percent();
+                self.layout_preference.size_percent = self
+                    .right_panel_percent
+                    .clamp(LayoutPreference::MIN_PERCENT, LayoutPreference::MAX_PERCENT);
+                self.layout_preference.mode = InspectorMode::Split;
             }
             LayoutMode::FullInspector => {
                 self.right_panel_visible = true;
+                self.layout_preference.mode = InspectorMode::Full;
                 // Focus the right panel since it's the only visible content.
                 self.focused_panel = FocusedPanel::RightPanel;
             }
             LayoutMode::Off => {
                 self.right_panel_visible = false;
+                self.layout_preference.mode = InspectorMode::Hidden;
                 self.focused_panel = FocusedPanel::Graph;
             }
         }
+        self.persist_tab_state();
     }
 
     /// Restore the last normal split mode from FullInspector or Off.
     pub fn restore_from_extreme(&mut self) {
-        let mode = self.last_split_mode;
-        self.layout_mode = mode;
+        let percent = self
+            .last_split_percent
+            .clamp(LayoutPreference::MIN_PERCENT, LayoutPreference::MAX_PERCENT);
+        self.layout_preference.size_percent = percent;
+        self.layout_preference.mode = InspectorMode::Split;
+        self.layout_mode = Self::layout_mode_for_percent(percent);
         self.right_panel_visible = true;
-        self.right_panel_percent = self.last_split_percent;
+        self.right_panel_percent = percent;
+        self.persist_tab_state();
     }
 
     /// Cycle inspector view forward: closed → Chat → Detail → ... → CoordLog → closed.
@@ -14245,50 +14553,68 @@ impl VizApp {
         }
     }
 
-    /// Grow the viz (right) pane by 5% of panel_percent, transitioning to Off at max.
-    /// Steps: 5 → 10 → ... → 95 → 100 → Off (closes panel, full viz).
+    /// Grow the inspector by 5%. Split ratio remains bounded; Full and Hidden
+    /// are distinct desired modes rather than sentinel coordinates.
     pub fn grow_viz_pane(&mut self) {
-        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
-            // Open panel at minimum size first
-            self.right_panel_visible = true;
-            self.layout_mode = LayoutMode::ThirdInspector;
-            self.right_panel_percent = 5;
-            return;
-        }
-        if self.right_panel_percent >= 100 {
-            // At maximum → transition to Off (full viz)
-            self.apply_layout_mode(LayoutMode::Off);
-        } else {
-            let new_pct = (self.right_panel_percent + 5).min(100);
-            let new_mode = Self::layout_mode_for_percent(new_pct);
-            // Save split state before entering FullInspector.
-            if self.layout_mode.is_normal_split() && !new_mode.is_normal_split() {
-                self.last_split_mode = self.layout_mode;
-                self.last_split_percent = self.right_panel_percent;
+        let next = match self.layout_preference.mode {
+            InspectorMode::Hidden => LayoutPreference {
+                mode: InspectorMode::Split,
+                size_percent: LayoutPreference::MIN_PERCENT,
+                ..self.layout_preference
+            },
+            InspectorMode::Full => LayoutPreference {
+                mode: InspectorMode::Hidden,
+                ..self.layout_preference
+            },
+            InspectorMode::Split
+                if self.layout_preference.size_percent >= LayoutPreference::MAX_PERCENT =>
+            {
+                LayoutPreference {
+                    mode: InspectorMode::Full,
+                    ..self.layout_preference
+                }
             }
-            self.right_panel_percent = new_pct;
-            self.layout_mode = new_mode;
-        }
+            InspectorMode::Split => LayoutPreference {
+                size_percent: (self.layout_preference.size_percent + 5)
+                    .min(LayoutPreference::MAX_PERCENT),
+                ..self.layout_preference
+            },
+        };
+        self.set_layout_preference(next);
+        self.persist_tab_state();
     }
 
-    /// Shrink the viz (right) pane by 5%, transitioning to Off at min.
-    /// Steps: 100 → 95 → ... → 10 → 5 → Off (closes panel, full viz).
+    /// Shrink the inspector by 5%, with Hidden below the bounded minimum.
     pub fn shrink_viz_pane(&mut self) {
-        if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
-            // Open panel at max size first
-            self.right_panel_visible = true;
-            self.layout_mode = LayoutMode::FullInspector;
-            self.right_panel_percent = 100;
-            self.focused_panel = FocusedPanel::RightPanel;
-            return;
-        }
-        if self.right_panel_percent <= 5 {
-            // At minimum → transition to Off (full viz)
-            self.apply_layout_mode(LayoutMode::Off);
-        } else {
-            self.right_panel_percent = self.right_panel_percent.saturating_sub(5).max(5);
-            self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
-        }
+        let next = match self.layout_preference.mode {
+            InspectorMode::Hidden => LayoutPreference {
+                mode: InspectorMode::Full,
+                ..self.layout_preference
+            },
+            InspectorMode::Full => LayoutPreference {
+                mode: InspectorMode::Split,
+                size_percent: LayoutPreference::MAX_PERCENT,
+                ..self.layout_preference
+            },
+            InspectorMode::Split
+                if self.layout_preference.size_percent <= LayoutPreference::MIN_PERCENT =>
+            {
+                LayoutPreference {
+                    mode: InspectorMode::Hidden,
+                    ..self.layout_preference
+                }
+            }
+            InspectorMode::Split => LayoutPreference {
+                size_percent: self
+                    .layout_preference
+                    .size_percent
+                    .saturating_sub(5)
+                    .max(LayoutPreference::MIN_PERCENT),
+                ..self.layout_preference
+            },
+        };
+        self.set_layout_preference(next);
+        self.persist_tab_state();
     }
 
     /// Map a percentage to the nearest LayoutMode bracket.
@@ -16256,13 +16582,14 @@ impl VizApp {
                 );
             }
         }
-        // Save TUI focus state.
+        // Save TUI focus + layout desired state.
         let open_tabs = self.open_tab_labels_for_persistence();
-        save_tui_state(
+        save_tui_state_with_layout(
             &self.workgraph_dir,
             self.active_coordinator_id,
             &self.right_panel_tab,
             &open_tabs,
+            self.layout_preference,
         );
     }
 
@@ -16287,6 +16614,7 @@ impl VizApp {
             .map(|(id, state)| (*id, state.messages.clone(), state.skipped_history_count))
             .collect();
         let right_panel_tab = self.right_panel_tab;
+        let layout_preference = self.layout_preference;
         let open_tabs: Vec<String> = self
             .active_tabs
             .iter()
@@ -16313,11 +16641,12 @@ impl VizApp {
                 for (id, messages, skipped) in coordinator_histories {
                     save_chat_history_with_skip(&workgraph_dir, id, &messages, skipped);
                 }
-                save_tui_state(
+                save_tui_state_with_layout(
                     &workgraph_dir,
                     active_coordinator_id,
                     &right_panel_tab,
                     &open_tabs,
+                    layout_preference,
                 );
                 let _ = done_tx.try_send(());
             })
@@ -16336,11 +16665,12 @@ impl VizApp {
     /// call preserves the user's exact last selection.
     pub fn persist_tab_state(&mut self) {
         let open_tabs = self.open_tab_labels_for_persistence();
-        save_tui_state(
+        save_tui_state_with_layout(
             &self.workgraph_dir,
             self.active_coordinator_id,
             &self.right_panel_tab,
             &open_tabs,
+            self.layout_preference,
         );
     }
 
@@ -17382,6 +17712,7 @@ impl VizApp {
             Some(s) => s,
             None => return,
         };
+        self.set_layout_preference(state.layout);
         let known_ids = self.list_coordinator_ids();
         if known_ids.contains(&state.active_coordinator_id) {
             self.active_coordinator_id = state.active_coordinator_id;
@@ -25085,9 +25416,10 @@ mod remap_panel_tests {
     #[test]
     fn grow_viz_pane_increases_by_5_percent() {
         let mut app = build_test_app();
-        app.right_panel_visible = true;
-        app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 10;
+        app.set_layout_preference(LayoutPreference {
+            size_percent: 10,
+            ..LayoutPreference::default()
+        });
 
         app.grow_viz_pane();
         assert_eq!(app.right_panel_percent, 15);
@@ -25099,47 +25431,51 @@ mod remap_panel_tests {
     #[test]
     fn grow_viz_pane_reaches_full_screen() {
         let mut app = build_test_app();
-        app.right_panel_visible = true;
-        app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 95;
+        app.set_layout_preference(LayoutPreference {
+            size_percent: LayoutPreference::MAX_PERCENT,
+            ..LayoutPreference::default()
+        });
 
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 100);
+        assert_eq!(app.right_panel_percent, LayoutPreference::MAX_PERCENT);
         assert_eq!(app.layout_mode, LayoutMode::FullInspector);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Full);
     }
 
     #[test]
     fn grow_viz_pane_from_full_transitions_to_off() {
         let mut app = build_test_app();
-        app.right_panel_visible = true;
-        app.layout_mode = LayoutMode::FullInspector;
-        app.right_panel_percent = 100;
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..LayoutPreference::default()
+        });
 
-        // At 100% → transitions to Off (no wrap)
         app.grow_viz_pane();
         assert!(!app.right_panel_visible);
         assert_eq!(app.layout_mode, LayoutMode::Off);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Hidden);
     }
 
     #[test]
     fn grow_viz_pane_full_roundtrip() {
         let mut app = build_test_app();
-        app.right_panel_visible = false;
-        app.layout_mode = LayoutMode::Off;
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Hidden,
+            ..LayoutPreference::default()
+        });
 
-        // First press opens at 5%
+        // Hidden opens at the bounded minimum.
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 5);
+        assert_eq!(app.right_panel_percent, LayoutPreference::MIN_PERCENT);
         assert!(app.right_panel_visible);
 
-        // 19 more presses: 10, 15, 20, ..., 100
-        for expected in (10..=100).step_by(5) {
+        for expected in (15..=90).step_by(5) {
             app.grow_viz_pane();
             assert_eq!(app.right_panel_percent, expected);
         }
+        app.grow_viz_pane();
         assert_eq!(app.layout_mode, LayoutMode::FullInspector);
 
-        // One more transitions to Off (no wrap)
         app.grow_viz_pane();
         assert!(!app.right_panel_visible);
         assert_eq!(app.layout_mode, LayoutMode::Off);
@@ -25148,13 +25484,15 @@ mod remap_panel_tests {
     #[test]
     fn grow_viz_pane_opens_panel_when_closed() {
         let mut app = build_test_app();
-        app.right_panel_visible = false;
-        app.layout_mode = LayoutMode::Off;
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Hidden,
+            ..LayoutPreference::default()
+        });
 
         app.grow_viz_pane();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_percent, 5);
+        assert_eq!(app.right_panel_percent, LayoutPreference::MIN_PERCENT);
     }
 
     // ── Shrink viz pane ──
@@ -25162,9 +25500,10 @@ mod remap_panel_tests {
     #[test]
     fn shrink_viz_pane_decreases_by_5_percent() {
         let mut app = build_test_app();
-        app.right_panel_visible = true;
-        app.layout_mode = LayoutMode::TwoThirdsInspector;
-        app.right_panel_percent = 70;
+        app.set_layout_preference(LayoutPreference {
+            size_percent: 70,
+            ..LayoutPreference::default()
+        });
 
         app.shrink_viz_pane();
         assert_eq!(app.right_panel_percent, 65);
@@ -25176,26 +25515,30 @@ mod remap_panel_tests {
     #[test]
     fn shrink_viz_pane_from_min_transitions_to_off() {
         let mut app = build_test_app();
-        app.right_panel_visible = true;
-        app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 5;
+        app.set_layout_preference(LayoutPreference {
+            size_percent: LayoutPreference::MIN_PERCENT,
+            ..LayoutPreference::default()
+        });
 
-        // At min (5%) → transitions to Off (no wrap)
         app.shrink_viz_pane();
         assert!(!app.right_panel_visible);
         assert_eq!(app.layout_mode, LayoutMode::Off);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Hidden);
     }
 
     #[test]
     fn shrink_viz_pane_opens_panel_when_closed() {
         let mut app = build_test_app();
-        app.right_panel_visible = false;
-        app.layout_mode = LayoutMode::Off;
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Hidden,
+            ..LayoutPreference::default()
+        });
 
         app.shrink_viz_pane();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_percent, 100);
+        assert_eq!(app.layout_mode, LayoutMode::FullInspector);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Full);
     }
 
     // ── SlideAnimation ──

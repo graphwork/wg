@@ -9,9 +9,9 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
     ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
-    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint,
-    RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView, SortMode,
-    TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
+    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, InspectorDock, LayoutMode,
+    ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView,
+    SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
     VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
@@ -26,14 +26,78 @@ fn text_primary(is_light: bool) -> Color {
     if is_light { Color::Reset } else { Color::White }
 }
 
-/// Minimum terminal width for side-by-side right panel layout.
-/// When the inspector is currently on the right and terminal shrinks below this,
-/// the inspector moves to the bottom.
+// Auto-dock hysteresis thresholds are implemented in `VizApp`; retain the
+// names here because renderer regression tests pin the same public behavior.
+#[cfg(test)]
 const SIDE_MIN_WIDTH: u16 = 100;
 
-/// Width at which the inspector restores to side-by-side after being moved to the bottom.
-/// Higher than SIDE_MIN_WIDTH to prevent flapping at the boundary (hysteresis).
-const SIDE_RESTORE_WIDTH: u16 = 120;
+const MIN_GRAPH_COLS: u16 = 24;
+const MIN_PANEL_COLS: u16 = 20;
+const MIN_GRAPH_ROWS: u16 = 6;
+const MIN_PANEL_ROWS: u16 = 6;
+
+/// Derive graph/inspector rectangles from desired dock+ratio and the current
+/// viewport. No coordinates survive a frame or restart.
+fn split_areas(area: Rect, dock: InspectorDock, percent: u16) -> Option<(Rect, Rect)> {
+    let percent = percent.clamp(10, 90);
+    if dock.is_horizontal() {
+        if area.width < MIN_GRAPH_COLS + MIN_PANEL_COLS {
+            return None;
+        }
+        let panel_width = ((area.width as u32 * percent as u32 / 100) as u16)
+            .clamp(MIN_PANEL_COLS, area.width - MIN_GRAPH_COLS);
+        // Reserve exactly one column between panes. This is WG's only
+        // visible split chrome; neither pane draws an outer frame.
+        let content_width = area.width.saturating_sub(1);
+        let panel_width = panel_width.min(content_width.saturating_sub(MIN_GRAPH_COLS));
+        let graph_width = content_width.saturating_sub(panel_width);
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(if dock == InspectorDock::Left {
+                    panel_width
+                } else {
+                    graph_width
+                }),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        Some(if dock == InspectorDock::Left {
+            (split[2], split[0])
+        } else {
+            (split[0], split[2])
+        })
+    } else {
+        if area.height < MIN_GRAPH_ROWS + MIN_PANEL_ROWS {
+            return None;
+        }
+        let panel_height = ((area.height as u32 * percent as u32 / 100) as u16)
+            .clamp(MIN_PANEL_ROWS, area.height - MIN_GRAPH_ROWS);
+        // A stacked split's single seam row also carries the contextual
+        // controls, so it does not consume another inspector content row.
+        let content_height = area.height.saturating_sub(1);
+        let panel_height = panel_height.min(content_height.saturating_sub(MIN_GRAPH_ROWS));
+        let graph_height = content_height.saturating_sub(panel_height);
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(if dock == InspectorDock::Top {
+                    panel_height
+                } else {
+                    graph_height
+                }),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        Some(if dock == InspectorDock::Top {
+            (split[2], split[0])
+        } else {
+            (split[0], split[2])
+        })
+    }
+}
 
 /// Creates a [`Line`] with the lightning-wave animation and elapsed time.
 ///
@@ -101,21 +165,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
     let area = frame.area();
 
-    // Layout: top status bar + middle area + vitals bar + bottom action hints.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // top status bar
-            Constraint::Min(1),    // main content area
-            Constraint::Length(1), // vitals bar
-            Constraint::Length(1), // bottom action hints
-        ])
-        .split(area);
-
-    let status_area = chunks[0];
-    let main_area = chunks[1];
-    let vitals_area = chunks[2];
-    let hints_area = chunks[3];
+    // The inspector owns one contextual row. WG deliberately adds no global
+    // status/header/footer rows: a chat child PTY must receive every remaining
+    // cell and own its own composer/status.
+    let main_area = area;
 
     // Lazy project loaders are forbidden while the asynchronous bootstrap is
     // in flight.  The shell remains fully navigable and panel rendering below
@@ -161,9 +214,25 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         }
     }
 
-    // ── Responsive breakpoint detection ──
-    // Recomputed each frame from the terminal width. Drives layout decisions below.
-    app.responsive_breakpoint = ResponsiveBreakpoint::from_width(area.width);
+    // ── Responsive breakpoint + dock resolution ──
+    // Resize during a pointer adjustment invalidates the drag-start geometry.
+    if app
+        .layout_drag
+        .is_some_and(|drag| drag.viewport != main_area)
+    {
+        app.cancel_layout_drag();
+    }
+    app.layout_viewport = main_area;
+    app.update_responsive_breakpoint(area.width, main_area.height);
+    let resolved_dock = app.resolved_inspector_dock(area.width);
+    // Compact is a temporary presentation fallback, never a rewrite of the
+    // desired dock/ratio/mode. Extreme modes still choose their sole visible
+    // pane; Split remembers the user's compact pane across phone rotations.
+    let compact_view = match app.layout_preference.mode {
+        super::state::InspectorMode::Full => SinglePanelView::Detail,
+        super::state::InspectorMode::Hidden => SinglePanelView::Graph,
+        super::state::InspectorMode::Split => app.single_panel_view,
+    };
 
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
     match app.responsive_breakpoint {
@@ -175,7 +244,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.last_fullscreen_right_border_area = Rect::default();
             app.last_fullscreen_top_border_area = Rect::default();
             app.last_fullscreen_bottom_border_area = Rect::default();
-            match app.single_panel_view {
+            match compact_view {
                 SinglePanelView::Graph => {
                     app.last_graph_area = main_area;
                     app.last_right_panel_area = Rect::default();
@@ -266,24 +335,15 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_right_border_area = Rect::default();
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
-                    // Narrow mode is always below SIDE_MIN_WIDTH, so inspector
-                    // goes to the bottom (vertical split) to avoid oscillation.
-                    app.inspector_is_beside = false;
                     if app.right_panel_visible {
-                        let panel_height =
-                            (main_area.height as u32 * app.right_panel_percent as u32 / 100).max(5)
-                                as u16;
-                        let top_height = main_area.height.saturating_sub(panel_height);
-                        let split = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(top_height),
-                                Constraint::Length(panel_height),
-                            ])
-                            .split(main_area);
-                        app.last_graph_area = split[0];
-                        app.scroll.viewport_height = split[0].height as usize;
-                        app.scroll.viewport_width = split[0].width as usize;
+                        if let Some((graph_area, panel_area)) =
+                            split_areas(main_area, resolved_dock, app.right_panel_percent)
+                        {
+                            app.last_graph_area = graph_area;
+                            app.last_right_panel_area = panel_area;
+                            app.scroll.viewport_height = graph_area.height as usize;
+                            app.scroll.viewport_width = graph_area.width as usize;
+                        }
                     } else {
                         app.last_graph_area = main_area;
                         app.last_right_panel_area = Rect::default();
@@ -373,44 +433,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_fullscreen_top_border_area = Rect::default();
                     app.last_fullscreen_bottom_border_area = Rect::default();
                     if app.right_panel_visible {
-                        // Hysteresis: use different thresholds for switching directions
-                        // to prevent oscillation at the boundary.
-                        let use_side = if app.inspector_is_beside {
-                            area.width >= SIDE_MIN_WIDTH
-                        } else {
-                            area.width >= SIDE_RESTORE_WIDTH
-                        };
-                        app.inspector_is_beside = use_side;
-                        if use_side {
-                            let right_width = (main_area.width as u32
-                                * app.right_panel_percent as u32
-                                / 100) as u16;
-                            let left_width = main_area.width.saturating_sub(right_width);
-                            let split = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([
-                                    Constraint::Length(left_width),
-                                    Constraint::Length(right_width),
-                                ])
-                                .split(main_area);
-                            app.last_graph_area = split[0];
-                            app.scroll.viewport_height = split[0].height as usize;
-                            app.scroll.viewport_width = split[0].width as usize;
-                        } else {
-                            let panel_height =
-                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
-                                    .max(5) as u16;
-                            let top_height = main_area.height.saturating_sub(panel_height);
-                            let split = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Length(top_height),
-                                    Constraint::Length(panel_height),
-                                ])
-                                .split(main_area);
-                            app.last_graph_area = split[0];
-                            app.scroll.viewport_height = split[0].height as usize;
-                            app.scroll.viewport_width = split[0].width as usize;
+                        if let Some((graph_area, panel_area)) =
+                            split_areas(main_area, resolved_dock, app.right_panel_percent)
+                        {
+                            app.last_graph_area = graph_area;
+                            app.last_right_panel_area = panel_area;
+                            app.scroll.viewport_height = graph_area.height as usize;
+                            app.scroll.viewport_width = graph_area.width as usize;
                         }
                     } else {
                         app.last_graph_area = main_area;
@@ -426,6 +455,30 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         }
     }
 
+    // The minimal chrome has no restore strip or fullscreen edge hit targets.
+    // Hidden and full modes are genuinely edge-to-edge; layout preferences are
+    // restored through Ctrl+O → p instead of permanent border affordances.
+    let graph_only = app.layout_mode == LayoutMode::Off
+        || (app.responsive_breakpoint == ResponsiveBreakpoint::Compact
+            && compact_view == SinglePanelView::Graph);
+    if graph_only {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(main_area);
+        app.last_tab_bar_area = chunks[0];
+        app.last_graph_area = chunks[1];
+        app.last_minimized_strip_area = Rect::default();
+        app.scroll.viewport_height = chunks[1].height as usize;
+        app.scroll.viewport_width = chunks[1].width as usize;
+    }
+    if app.layout_mode == LayoutMode::FullInspector {
+        app.last_fullscreen_restore_area = Rect::default();
+        app.last_fullscreen_right_border_area = Rect::default();
+        app.last_fullscreen_top_border_area = Rect::default();
+        app.last_fullscreen_bottom_border_area = Rect::default();
+    }
+
     // Phase 2: Deferred centering/scrolling — viewport_height is now set, apply before drawing.
     if app.needs_center_on_selected {
         app.needs_center_on_selected = false;
@@ -439,18 +492,21 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Phase 3: Draw content using the (possibly updated) scroll offset.
     match app.responsive_breakpoint {
         ResponsiveBreakpoint::Compact => {
-            // Single-panel mode: draw only the active panel.
-            match app.single_panel_view {
+            // Single-panel mode: draw only the effective temporary pane.
+            match compact_view {
                 SinglePanelView::Graph => {
-                    draw_viz_content(frame, app, main_area);
+                    let context_area = app.last_tab_bar_area;
+                    let graph_area = app.last_graph_area;
+                    render_context_row(frame, app, context_area, false);
+                    draw_viz_content(frame, app, graph_area);
                     if app.scroll.content_height > app.scroll.viewport_height
                         && app.graph_scrollbar_visible()
                     {
-                        draw_scrollbar(frame, app, main_area);
+                        draw_scrollbar(frame, app, graph_area);
                     }
                     app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
                         frame,
-                        main_area,
+                        graph_area,
                         app.scroll.content_width,
                         app.scroll.viewport_width,
                         app.scroll.offset_x,
@@ -497,23 +553,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     );
                 }
                 _ => {
-                    // Narrow mode: inspector below (vertical split).
                     if app.right_panel_visible {
-                        let panel_height =
-                            (main_area.height as u32 * app.right_panel_percent as u32 / 100).max(5)
-                                as u16;
-                        let top_height = main_area.height.saturating_sub(panel_height);
-                        let split = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(top_height),
-                                Constraint::Length(panel_height),
-                            ])
-                            .split(main_area);
-
-                        let viz_area = split[0];
-                        let right_area = split[1];
-
+                        let viz_area = app.last_graph_area;
+                        let panel_area = app.last_right_panel_area;
                         draw_viz_content(frame, app, viz_area);
                         if app.scroll.content_height > app.scroll.viewport_height
                             && app.graph_scrollbar_visible()
@@ -528,7 +570,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                             app.scroll.offset_x,
                             app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
                         );
-                        draw_right_panel(frame, app, right_area);
+                        draw_right_panel(frame, app, panel_area);
                     } else {
                         draw_viz_content(frame, app, main_area);
                         if app.scroll.content_height > app.scroll.viewport_height
@@ -585,72 +627,23 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 | LayoutMode::HalfInspector
                 | LayoutMode::TwoThirdsInspector => {
                     if app.right_panel_visible {
-                        // Use the hysteresis state computed in Phase 1.
-                        if app.inspector_is_beside {
-                            let right_width = (main_area.width as u32
-                                * app.right_panel_percent as u32
-                                / 100) as u16;
-                            let left_width = main_area.width.saturating_sub(right_width);
-                            let split = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([
-                                    Constraint::Length(left_width),
-                                    Constraint::Length(right_width),
-                                ])
-                                .split(main_area);
-
-                            let viz_area = split[0];
-                            let right_area = split[1];
-
-                            draw_viz_content(frame, app, viz_area);
-                            if app.scroll.content_height > app.scroll.viewport_height
-                                && app.graph_scrollbar_visible()
-                            {
-                                draw_scrollbar(frame, app, viz_area);
-                            }
-                            app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
-                                frame,
-                                viz_area,
-                                app.scroll.content_width,
-                                app.scroll.viewport_width,
-                                app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow()
-                                    && app.graph_hscrollbar_visible(),
-                            );
-                            draw_right_panel(frame, app, right_area);
-                        } else {
-                            let panel_height =
-                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
-                                    .max(5) as u16;
-                            let top_height = main_area.height.saturating_sub(panel_height);
-                            let split = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Length(top_height),
-                                    Constraint::Length(panel_height),
-                                ])
-                                .split(main_area);
-
-                            let viz_area = split[0];
-                            let right_area = split[1];
-
-                            draw_viz_content(frame, app, viz_area);
-                            if app.scroll.content_height > app.scroll.viewport_height
-                                && app.graph_scrollbar_visible()
-                            {
-                                draw_scrollbar(frame, app, viz_area);
-                            }
-                            app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
-                                frame,
-                                viz_area,
-                                app.scroll.content_width,
-                                app.scroll.viewport_width,
-                                app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow()
-                                    && app.graph_hscrollbar_visible(),
-                            );
-                            draw_right_panel(frame, app, right_area);
+                        let viz_area = app.last_graph_area;
+                        let panel_area = app.last_right_panel_area;
+                        draw_viz_content(frame, app, viz_area);
+                        if app.scroll.content_height > app.scroll.viewport_height
+                            && app.graph_scrollbar_visible()
+                        {
+                            draw_scrollbar(frame, app, viz_area);
                         }
+                        app.last_graph_hscrollbar_area = draw_horizontal_scrollbar(
+                            frame,
+                            viz_area,
+                            app.scroll.content_width,
+                            app.scroll.viewport_width,
+                            app.scroll.offset_x,
+                            app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                        );
+                        draw_right_panel(frame, app, panel_area);
                     } else {
                         draw_viz_content(frame, app, main_area);
                         if app.scroll.content_height > app.scroll.viewport_height
@@ -672,26 +665,23 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         }
     }
 
-    // Top status bar
-    draw_status_bar(frame, app, status_area);
-
-    // Service health badge — right-aligned pill on the status bar.
-    draw_service_health_badge(frame, app, status_area);
-
-    // Vitals bar
-    draw_vitals_bar(frame, app, vitals_area);
-
-    // Bottom action hints
-    draw_action_hints(frame, app, hints_area);
+    if graph_only {
+        let context_area = app.last_tab_bar_area;
+        render_context_row(frame, app, context_area, false);
+    }
 
     // ── Overlay widgets (on top of everything) ──
 
     if app.show_help {
         draw_help_overlay(frame, app.is_light_theme);
     }
+    // Layout mode replaces the contextual row; it never allocates or draws a
+    // second persistent/modal chrome surface.
 
     // Confirmation dialog overlay
-    if let InputMode::Confirm(ref action) = app.input_mode {
+    if matches!(app.input_mode, InputMode::Layout) {
+        // Layout overlay assigned its hit area above.
+    } else if let InputMode::Confirm(ref action) = app.input_mode {
         app.last_dialog_area = draw_confirm_dialog(frame, action);
     } else if let InputMode::ChoiceDialog(ref state) = app.input_mode {
         app.last_dialog_area = draw_choice_dialog(frame, state);
@@ -2070,124 +2060,13 @@ fn draw_horizontal_scrollbar(
 // Fullscreen inspector borders
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Compute the content area for fullscreen inspector, inset by all four
-/// reserved border areas (left, right, top, bottom).
-fn fullscreen_panel_area(main_area: Rect, app: &super::state::VizApp) -> Rect {
-    let left = if app.last_fullscreen_restore_area.width > 0 {
-        1u16
-    } else {
-        0
-    };
-    let right = if app.last_fullscreen_right_border_area.width > 0 {
-        1u16
-    } else {
-        0
-    };
-    let top = if app.last_fullscreen_top_border_area.height > 0 {
-        1u16
-    } else {
-        0
-    };
-    let bottom = if app.last_fullscreen_bottom_border_area.height > 0 {
-        1u16
-    } else {
-        0
-    };
-    Rect::new(
-        main_area.x + left,
-        main_area.y + top,
-        main_area.width.saturating_sub(left + right),
-        main_area.height.saturating_sub(top + bottom),
-    )
+fn fullscreen_panel_area(main_area: Rect, _app: &super::state::VizApp) -> Rect {
+    main_area
 }
 
-/// Draw all four fullscreen borders — only on hover (or always when mouse not
-/// supported, for the left restore strip which doubles as click target).
-fn draw_fullscreen_borders(frame: &mut Frame, app: &super::state::VizApp) {
-    let no_mouse = !app.any_motion_mouse;
-
-    // Left border (restore strip).
-    // Always render so the area is claimed — invisible when not hovered.
-    let left = app.last_fullscreen_restore_area;
-    if left.width > 0 {
-        if app.fullscreen_restore_hover {
-            draw_restore_strip(frame, left, true);
-        } else {
-            // Invisible: plain spaces with default terminal background.
-            frame.render_widget(Clear, left);
-        }
-    }
-
-    // Right border.
-    // Always render so the area is claimed — invisible when not hovered.
-    let right = app.last_fullscreen_right_border_area;
-    if right.width > 0 {
-        if app.fullscreen_right_hover {
-            draw_fullscreen_border_col(frame, right, '▐', true);
-        } else {
-            // Invisible: plain spaces with default terminal background.
-            frame.render_widget(Clear, right);
-        }
-    }
-
-    // Top border.
-    let top = app.last_fullscreen_top_border_area;
-    if top.height > 0 && (app.fullscreen_top_hover || no_mouse) {
-        draw_fullscreen_border_row(frame, top, '▀', app.fullscreen_top_hover);
-    }
-
-    // Bottom border.
-    let bottom = app.last_fullscreen_bottom_border_area;
-    if bottom.height > 0 && (app.fullscreen_bottom_hover || no_mouse) {
-        draw_fullscreen_border_row(frame, bottom, '▄', app.fullscreen_bottom_hover);
-    }
-}
-
-/// Draw a single-column vertical border strip (for right edge).
-fn draw_fullscreen_border_col(frame: &mut Frame, area: Rect, ch: char, hover: bool) {
-    let fg = if hover {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
-    let lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(Span::styled(ch.to_string(), Style::default().fg(fg))))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// Draw a single-row horizontal border strip (for top/bottom edge).
-fn draw_fullscreen_border_row(frame: &mut Frame, area: Rect, ch: char, hover: bool) {
-    let fg = if hover {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
-    let text: String = (0..area.width).map(|_| ch).collect();
-    let line = Line::from(Span::styled(text, Style::default().fg(fg)));
-    frame.render_widget(Paragraph::new(vec![line]), area);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Tri-state inspector strips
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// Draw the 1-col restore strip on the left edge in FullInspector mode.
-/// Clicking/dragging from this strip restores the normal split view.
-fn draw_restore_strip(frame: &mut Frame, area: Rect, hover: bool) {
-    let fg = if hover {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
-    let text: String = (0..area.height).map(|_| '▌').collect();
-    let lines: Vec<Line> = text
-        .chars()
-        .map(|c| Line::from(Span::styled(c.to_string(), Style::default().fg(fg))))
-        .collect();
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
-}
+/// Fullscreen deliberately has no visible border. Kept as a no-op call site
+/// while older event-state fields are migrated away.
+fn draw_fullscreen_borders(_frame: &mut Frame, _app: &super::state::VizApp) {}
 
 /// Draw the 1-col minimized strip on the right edge in Off mode.
 /// Clicking this strip restores the normal split view.
@@ -2210,93 +2089,173 @@ fn draw_minimized_strip(frame: &mut Frame, area: Rect, hover: bool) {
 // Right panel rendering
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Draw the right panel with tab bar and active tab content.
-fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    app.last_right_panel_area = area;
-
-    let is_full_panel = app.layout_mode == LayoutMode::FullInspector;
-
-    // Store divider hit areas for mouse-based resize.
-    // Vertical divider: only in side-by-side mode (inspector beside graph).
-    // Horizontal divider: only in stacked mode (inspector below graph).
-    if !is_full_panel && area.width > 0 && app.last_graph_area.width > 0 && app.inspector_is_beside
-    {
-        // Hit area: 3 columns centered on the left border for easier grabbing.
-        let div_x = area.x.saturating_sub(1);
-        let div_w = 3.min(area.x.saturating_sub(app.last_graph_area.x) + 1);
-        app.last_divider_area = Rect::new(div_x, area.y, div_w, area.height);
-        app.last_horizontal_divider_area = Rect::default();
-    } else if !is_full_panel
-        && area.height > 0
-        && app.last_graph_area.height > 0
-        && !app.inspector_is_beside
-    {
-        // Hit area: 3 rows centered on the top border for easier grabbing.
-        let div_y = area.y.saturating_sub(1);
-        let div_h = 3.min(area.y.saturating_sub(app.last_graph_area.y) + 1);
-        app.last_horizontal_divider_area = Rect::new(area.x, div_y, area.width, div_h);
-        app.last_divider_area = Rect::default();
-    } else {
-        app.last_divider_area = Rect::default();
-        app.last_horizontal_divider_area = Rect::default();
-    }
-
-    let divider_active = app.divider_hover
-        || app.horizontal_divider_hover
-        || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::Divider)
-        || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::HorizontalDivider);
-
-    // In full-panel mode: no borders (edge-to-edge content for clean copy-paste).
-    // In split mode: minimal single-line border, dim when unfocused.
-    let inner = if is_full_panel {
-        area
-    } else {
-        let is_focused = app.focused_panel == FocusedPanel::RightPanel;
-        let is_chat_tab = app.right_panel_tab == RightPanelTab::Chat;
-        let is_user_board_active = app.right_panel_tab == RightPanelTab::Messages
-            && app
-                .selected_task_idx
-                .and_then(|idx| app.task_order.get(idx))
-                .is_some_and(|id| worksgood::graph::is_user_board(id));
-        let border_color = if divider_active || is_user_board_active {
-            Color::Yellow
-        } else if is_chat_tab && app.chat.coordinator_active {
-            Color::Cyan
-        } else if is_focused {
-            Color::White
-        } else {
-            Color::DarkGray
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        inner
-    };
-
-    if inner.height < 2 || inner.width < 4 {
+fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: bool) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
+    let active = app.active_chat_view_identity();
+    let mut left = if matches!(app.input_mode, InputMode::Layout) {
+        " Layout  h/j/k/l dock  a auto  +/- size  = preset  f full  0 hide  Enter apply  Esc cancel"
+            .to_string()
+    } else if chat && app.chat_pty_mode && !app.chat_pty_forwards_stdin {
+        " Commands  n new  w close  ←/→ chats  p panel  Ctrl+O return".to_string()
+    } else if chat {
+        let identity = active
+            .as_ref()
+            .map(|value| value.task_id.as_str())
+            .unwrap_or("no chat");
+        let state = active
+            .as_ref()
+            .map(|value| app.active_chat_connection_label(&value.task_id))
+            .unwrap_or("idle");
+        format!(" Chat ▾  {identity}  ● {state}")
+    } else {
+        let identity = app.selected_task_id().unwrap_or("no task");
+        let state = app
+            .hud_detail
+            .as_ref()
+            .filter(|detail| detail.task_id == identity)
+            .map(|detail| detail.task_status.to_string())
+            .unwrap_or_else(|| "loading".to_string());
+        format!(" Task ▾  {identity}  ● {state}")
+    };
 
-    // Split inner into tab bar (1 line) + content.
-    let panel_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(inner);
+    let button = chat.then_some(NEW_CHAT_BUTTON_LABEL);
+    let button_width = button.map_or(0, UnicodeWidthStr::width);
+    let left_width = area.width as usize - (button_width.min(area.width as usize));
 
-    let tab_area = panel_chunks[0];
-    let content_area = panel_chunks[1];
+    if chat && !matches!(app.input_mode, InputMode::Layout) {
+        if let Some(identity) = active.as_ref() {
+            let route = match (&identity.executor, &identity.model) {
+                (Some(executor), Some(model)) => format!("  {executor}:{model}"),
+                (Some(executor), None) => format!("  {executor}:default"),
+                _ => String::new(),
+            };
+            if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(route.as_str())
+                <= left_width
+            {
+                left.push_str(&route);
+            }
+        }
+    } else if !chat && UnicodeWidthStr::width(left.as_str()) + 8 <= area.width as usize {
+        left.push_str("  ‹  ›  ⋯");
+    }
 
-    app.last_tab_bar_area = tab_area;
+    frame.render_widget(
+        Paragraph::new(left).style(
+            Style::default()
+                .fg(if matches!(app.input_mode, InputMode::Layout) {
+                    Color::Yellow
+                } else {
+                    Color::Cyan
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x, area.y, left_width as u16, 1),
+    );
+
+    app.last_coordinator_bar_area = area;
+    app.coordinator_tab_hits.clear();
+    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+    app.last_chat_prev_area = Rect::default();
+    app.last_chat_next_area = Rect::default();
+    app.last_chat_picker_area = Rect::default();
+    app.last_chat_close_area = Rect::default();
+    if let Some(button) = button {
+        let x = area.x + area.width.saturating_sub(button_width as u16);
+        frame.render_widget(
+            Paragraph::new(button).style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(x, area.y, button_width as u16, 1),
+        );
+        app.coordinator_plus_hit = CoordinatorPlusHit {
+            start: x,
+            end: x.saturating_add(button_width as u16),
+        };
+    } else {
+        app.coordinator_plus_hit = CoordinatorPlusHit::default();
+    }
+}
+
+/// Draw one contextual row, one optional split seam, and borderless content.
+fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    app.last_right_panel_area = area;
+    let graph = app.last_graph_area;
+    let is_full_panel = app.layout_mode == LayoutMode::FullInspector || graph.width == 0;
+    let side_by_side = !is_full_panel
+        && area.width > 0
+        && graph.width > 0
+        && area.y == graph.y
+        && area.height == graph.height;
+    let stacked = !is_full_panel
+        && area.height > 0
+        && graph.height > 0
+        && area.x == graph.x
+        && area.width == graph.width;
+    let seam_style = Style::default().fg(if matches!(app.input_mode, InputMode::Layout) {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    });
+
+    let (context_area, content_area) = if stacked {
+        let y = if area.y < graph.y {
+            area.y + area.height
+        } else {
+            area.y.saturating_sub(1)
+        };
+        let seam = Rect::new(area.x, y, area.width, 1);
+        app.last_horizontal_divider_area = Rect::new(
+            seam.x,
+            seam.y.saturating_sub(1),
+            seam.width,
+            3.min(frame.area().height),
+        );
+        app.last_divider_area = Rect::default();
+        frame.render_widget(
+            Paragraph::new("─".repeat(seam.width as usize)).style(seam_style),
+            seam,
+        );
+        (seam, area)
+    } else {
+        if side_by_side {
+            let x = if area.x < graph.x {
+                area.x + area.width
+            } else {
+                area.x.saturating_sub(1)
+            };
+            let seam = Rect::new(x, area.y, 1, area.height);
+            app.last_divider_area = Rect::new(
+                seam.x.saturating_sub(1),
+                seam.y,
+                3.min(frame.area().width),
+                seam.height,
+            );
+            app.last_horizontal_divider_area = Rect::default();
+            let lines = (0..seam.height)
+                .map(|_| Line::styled("│", seam_style))
+                .collect::<Vec<_>>();
+            frame.render_widget(Paragraph::new(lines), seam);
+        } else {
+            app.last_divider_area = Rect::default();
+            app.last_horizontal_divider_area = Rect::default();
+        }
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        (chunks[0], chunks[1])
+    };
+
+    app.last_tab_bar_area = context_area;
     app.last_right_content_area = content_area;
-
-    // Tab bar — pass selected task's message status for the Msg tab indicator.
-    let msg_status = app
-        .selected_task_id()
-        .and_then(|id| app.task_message_statuses.get(id))
-        .cloned();
-    draw_tab_bar(frame, app, app.right_panel_tab, tab_area, msg_status);
+    let chat_context = app.right_panel_tab == RightPanelTab::Chat;
+    render_context_row(frame, app, context_area, chat_context);
 
     if !app.bootstrap_complete && app.right_panel_tab != RightPanelTab::Chat {
         frame.render_widget(
@@ -2381,6 +2340,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
 /// Draw the tab bar for the right panel.
 /// `msg_status` colors the Messages tab icon to reflect TUI read state.
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_tab_bar(
     frame: &mut Frame,
     app: &mut VizApp,
@@ -2473,6 +2433,7 @@ fn draw_tab_bar(
 }
 
 /// Check if a tab is task-relative (should show iteration navigator).
+#[cfg_attr(not(test), allow(dead_code))]
 fn is_task_relative_tab(tab: RightPanelTab) -> bool {
     matches!(
         tab,
@@ -2481,6 +2442,7 @@ fn is_task_relative_tab(tab: RightPanelTab) -> bool {
 }
 
 /// Format the iteration navigator text based on current state.
+#[cfg_attr(not(test), allow(dead_code))]
 fn format_iteration_navigator(app: &VizApp) -> String {
     let total = app.iteration_archives.len() + 1;
     let current_display = match app.viewing_iteration {
@@ -2508,6 +2470,7 @@ fn format_iteration_navigator(app: &VizApp) -> String {
 }
 
 /// Render the iteration navigator widget in the given area.
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_iteration_navigator(frame: &mut Frame, app: &VizApp, area: Rect) {
     let total = app.iteration_archives.len() + 1;
     let current_display = match app.viewing_iteration {
@@ -3084,15 +3047,7 @@ pub(super) fn compute_chat_bar_layout(
 }
 
 fn draw_chat_startup_state(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    let button_height = area.height.min(3).max(1);
-    let body_height = area.height.saturating_sub(button_height);
-    let body = Rect::new(area.x, area.y, area.width, body_height);
-    let button = Rect::new(
-        area.x,
-        area.y.saturating_add(body_height),
-        area.width,
-        button_height,
-    );
+    let body = area;
     let intended = app
         .active_chat_view_identity()
         .map(|identity| format!("{} ({})", identity.label, identity.task_id));
@@ -3128,29 +3083,7 @@ fn draw_chat_startup_state(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         body,
     );
 
-    // This is deliberately a full-width, 1–3 row pointer target, outside the
-    // PTY message hit region. Mobile users can tap anywhere on the labeled
-    // control; the mouse router checks it before any PTY forwarding.
-    frame.render_widget(
-        Paragraph::new("New chat")
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .block(Block::default().borders(Borders::ALL).title(" New chat ")),
-        button,
-    );
-    app.last_coordinator_bar_area = button;
-    app.coordinator_plus_hit = CoordinatorPlusHit {
-        start: button.x,
-        end: button.x.saturating_add(button.width),
-    };
-    app.coordinator_tab_hits.clear();
-    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
-    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+    // The sole contextual row already owns the fixed [ New chat ] target.
     app.last_chat_message_area = Rect::default();
     app.last_chat_input_area = Rect::default();
     app.last_chat_prev_area = Rect::default();
@@ -3261,7 +3194,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let is_editing = app.input_mode == InputMode::ChatInput;
     let chat_text = super::state::editor_text(&app.chat.editor);
     let has_input_text = !chat_text.is_empty();
-    let input_height: u16 = if is_editing || has_input_text {
+    let input_height: u16 = if app.chat_pty_mode {
+        0
+    } else if is_editing || has_input_text {
         let prompt_prefix = 2;
         let usable = (area.width as usize).saturating_sub(prompt_prefix).max(1);
         let visual_lines = count_visual_lines(&chat_text, usable);
@@ -3280,7 +3215,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Reserve 1 line for the search bar when searching or showing results.
     let chat_search_active =
         app.input_mode == InputMode::ChatSearch || !app.chat.search.query.is_empty();
-    let search_bar_height: u16 = if chat_search_active { 1 } else { 0 };
+    let search_bar_height: u16 = if app.chat_pty_mode {
+        0
+    } else if chat_search_active {
+        1
+    } else {
+        0
+    };
     let msg_area_height = area
         .height
         .saturating_sub(input_height)
@@ -3292,320 +3233,316 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Each redraw of the chat tab previously did this twice, which under
     // adaptive 50-200 ms polling produced 10-40 graph reloads/sec and
     // accounted for ~55 % of `wg tui` CPU (see fix-wg-tui).
-    let coordinator_entries = app.cached_chat_tab_entries.clone();
-    let user_board_entries = app.cached_user_board_entries.clone();
-    // When the split leaves at least four rows, identity gets its own row.
-    // In the common three-row PTY startup layout, it replaces the redundant
-    // tab strip instead: identity must never disappear exactly while the fast
-    // attach lane is publishing it, and we still preserve one terminal row
-    // plus the input row.
+    // Context identity and chat creation now live in the pane's sole WG row.
+    // Keep the old tab-window implementation compiled for state compatibility,
+    // but never render its permanent strip or separate identity/actions row.
+    let legacy_chat_chrome = app.last_tab_bar_area.height == 0;
     let identity_has_own_row = area.height >= 4;
-    let tab_bar_height: u16 = if identity_has_own_row { 2 } else { 1 };
-    // Capture once per frame. The same immutable task id is used by the
-    // identity header and the PTY lookup below.
+    let tab_bar_height: u16 = if legacy_chat_chrome {
+        if identity_has_own_row { 2 } else { 1 }
+    } else {
+        0
+    };
     let active_view = app.active_chat_view_identity();
 
-    {
-        let tab_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: 1,
-        };
-        app.last_coordinator_bar_area = tab_area;
-
-        // Per-tab state: blue=idle/resumable, yellow=responding,
-        // gray=supervisor down, red=error. Restores the prior "nice blue
-        // color" for the idle case (per task tui-chat-tab).
-        use super::chat_tab_state::{ActiveChatSnapshot, ChatTabState, infer as infer_tab_state};
-
-        let active_snapshot = ActiveChatSnapshot {
-            awaiting_response: app.chat.awaiting_response(),
-            error: false,
-        };
-        let service_alive = app.chat.coordinator_active;
-
-        let selected_user_board: Option<String> = app
-            .selected_task_idx
-            .and_then(|idx| app.task_order.get(idx))
-            .filter(|id| worksgood::graph::is_user_board(id))
-            .cloned();
-
-        // Build the unified entry list (coordinator tabs first, then user-board tabs)
-        // and pre-compute each entry's render width so we can compute scroll offset
-        // without rendering twice.
-        struct CoordEntryStyling {
-            cid: u32,
-            tab_state: ChatTabState,
-            effective_color: Color,
-        }
-        enum BarEntryKind2 {
-            Coord(CoordEntryStyling),
-            UserBoard(String),
-        }
-        struct BarEntry {
-            kind: BarEntryKind2,
-            label: String,
-            is_active: bool,
-            /// Cells consumed by this entry on the bar (incl. leading dot,
-            /// label padding, close button, and trailing space; excludes
-            /// the "│" separator between consecutive entries).
-            content_width: usize,
-            /// Global tab index (zero-based); used to render `[N]` hotkey hints.
-            global_idx: usize,
-        }
-
-        let mut entries: Vec<BarEntry> = Vec::new();
-        let mut active_idx: Option<usize> = None;
-
-        for (cid, label) in coordinator_entries.iter() {
-            let cid = *cid;
-            let is_active = cid == app.active_coordinator_id;
-            let snapshot_for_cid = if is_active {
-                Some(active_snapshot)
-            } else {
-                None
+    if legacy_chat_chrome {
+        let coordinator_entries = app.cached_chat_tab_entries.clone();
+        let user_board_entries = app.cached_user_board_entries.clone();
+        {
+            let tab_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: 1,
             };
-            let tab_state =
-                infer_tab_state(&app.workgraph_dir, cid, service_alive, snapshot_for_cid);
-            let state_color = tab_state.color();
-            let effective_color = chat_task_label_color(label, state_color);
-            let global_idx = entries.len();
-            let hotkey_n = global_idx + 1;
-            let hotkey_width: usize = if hotkey_n <= 9 { 4 } else { 0 }; // " [N]"
-            let label_width = label.chars().count();
-            // hotkey(0|4) + " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
-            let content_width = hotkey_width + 2 + 1 + label_width + 2 + 1;
-            if is_active {
-                active_idx = Some(global_idx);
+            app.last_coordinator_bar_area = tab_area;
+
+            // Per-tab state: blue=idle/resumable, yellow=responding,
+            // gray=supervisor down, red=error. Restores the prior "nice blue
+            // color" for the idle case (per task tui-chat-tab).
+            use super::chat_tab_state::{
+                ActiveChatSnapshot, ChatTabState, infer as infer_tab_state,
+            };
+
+            let active_snapshot = ActiveChatSnapshot {
+                awaiting_response: app.chat.awaiting_response(),
+                error: false,
+            };
+            let service_alive = app.chat.coordinator_active;
+
+            let selected_user_board: Option<String> = app
+                .selected_task_idx
+                .and_then(|idx| app.task_order.get(idx))
+                .filter(|id| worksgood::graph::is_user_board(id))
+                .cloned();
+
+            // Build the unified entry list (coordinator tabs first, then user-board tabs)
+            // and pre-compute each entry's render width so we can compute scroll offset
+            // without rendering twice.
+            struct CoordEntryStyling {
+                cid: u32,
+                tab_state: ChatTabState,
+                effective_color: Color,
             }
-            entries.push(BarEntry {
-                kind: BarEntryKind2::Coord(CoordEntryStyling {
-                    cid,
-                    tab_state,
-                    effective_color,
-                }),
-                label: label.clone(),
-                is_active,
-                content_width,
-                global_idx,
-            });
-        }
-
-        for (task_id, label) in user_board_entries.iter() {
-            let is_active = selected_user_board.as_deref() == Some(task_id.as_str());
-            let global_idx = entries.len();
-            let label_width = label.chars().count();
-            // No hotkey for user board tabs in the current scheme:
-            // " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
-            let content_width = 2 + 1 + label_width + 2 + 1;
-            if is_active {
-                active_idx = Some(global_idx);
+            enum BarEntryKind2 {
+                Coord(CoordEntryStyling),
+                UserBoard(String),
             }
-            entries.push(BarEntry {
-                kind: BarEntryKind2::UserBoard(task_id.clone()),
-                label: label.clone(),
-                is_active,
-                content_width,
-                global_idx,
-            });
-        }
+            struct BarEntry {
+                kind: BarEntryKind2,
+                label: String,
+                is_active: bool,
+                /// Cells consumed by this entry on the bar (incl. leading dot,
+                /// label padding, close button, and trailing space; excludes
+                /// the "│" separator between consecutive entries).
+                content_width: usize,
+                /// Global tab index (zero-based); used to render `[N]` hotkey hints.
+                global_idx: usize,
+            }
 
-        let bar_x = tab_area.x;
-        let max_width = tab_area.width as usize;
+            let mut entries: Vec<BarEntry> = Vec::new();
+            let mut active_idx: Option<usize> = None;
 
-        // Resolve the visible window: pick a scroll offset that keeps the
-        // active tab visible within `max_width`, using the user's stored
-        // `chat_tab_scroll_offset` as the starting point. The offset may
-        // need to grow if the active tab is to the right of the previous
-        // window, or shrink if active is to the left.
-        let widths: Vec<usize> = entries.iter().map(|e| e.content_width).collect();
-        let layout =
-            compute_chat_bar_layout(&widths, active_idx, max_width, app.chat_tab_scroll_offset);
-        // Persist any offset adjustments back to app state so that the next
-        // frame stays consistent and `wg`'s scroll handlers see the same value.
-        app.chat_tab_scroll_offset = layout.offset;
+            for (cid, label) in coordinator_entries.iter() {
+                let cid = *cid;
+                let is_active = cid == app.active_coordinator_id;
+                let snapshot_for_cid = if is_active {
+                    Some(active_snapshot)
+                } else {
+                    None
+                };
+                let tab_state =
+                    infer_tab_state(&app.workgraph_dir, cid, service_alive, snapshot_for_cid);
+                let state_color = tab_state.color();
+                let effective_color = chat_task_label_color(label, state_color);
+                let global_idx = entries.len();
+                let hotkey_n = global_idx + 1;
+                let hotkey_width: usize = if hotkey_n <= 9 { 4 } else { 0 }; // " [N]"
+                let label_width = label.chars().count();
+                // hotkey(0|4) + " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
+                let content_width = hotkey_width + 2 + 1 + label_width + 2 + 1;
+                if is_active {
+                    active_idx = Some(global_idx);
+                }
+                entries.push(BarEntry {
+                    kind: BarEntryKind2::Coord(CoordEntryStyling {
+                        cid,
+                        tab_state,
+                        effective_color,
+                    }),
+                    label: label.clone(),
+                    is_active,
+                    content_width,
+                    global_idx,
+                });
+            }
 
-        let mut spans = Vec::new();
-        let mut tab_hits = Vec::new();
-        let mut col: usize = 0;
+            for (task_id, label) in user_board_entries.iter() {
+                let is_active = selected_user_board.as_deref() == Some(task_id.as_str());
+                let global_idx = entries.len();
+                let label_width = label.chars().count();
+                // No hotkey for user board tabs in the current scheme:
+                // " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
+                let content_width = 2 + 1 + label_width + 2 + 1;
+                if is_active {
+                    active_idx = Some(global_idx);
+                }
+                entries.push(BarEntry {
+                    kind: BarEntryKind2::UserBoard(task_id.clone()),
+                    label: label.clone(),
+                    is_active,
+                    content_width,
+                    global_idx,
+                });
+            }
 
-        // Leading space
-        spans.push(Span::raw(" "));
-        col += 1;
+            let bar_x = tab_area.x;
+            let max_width = tab_area.width as usize;
 
-        // Left scroll arrow when there are tabs hidden to the left.
-        let left_arrow_hit = if layout.show_left_arrow {
-            let start = (bar_x as usize + col) as u16;
-            spans.push(Span::styled("◀", Style::default().fg(Color::Cyan)));
-            col += 1;
+            // Resolve the visible window: pick a scroll offset that keeps the
+            // active tab visible within `max_width`, using the user's stored
+            // `chat_tab_scroll_offset` as the starting point. The offset may
+            // need to grow if the active tab is to the right of the previous
+            // window, or shrink if active is to the left.
+            let widths: Vec<usize> = entries.iter().map(|e| e.content_width).collect();
+            let layout =
+                compute_chat_bar_layout(&widths, active_idx, max_width, app.chat_tab_scroll_offset);
+            // Persist any offset adjustments back to app state so that the next
+            // frame stays consistent and `wg`'s scroll handlers see the same value.
+            app.chat_tab_scroll_offset = layout.offset;
+
+            let mut spans = Vec::new();
+            let mut tab_hits = Vec::new();
+            let mut col: usize = 0;
+
+            // Leading space
             spans.push(Span::raw(" "));
             col += 1;
-            let end = (bar_x as usize + col) as u16;
-            CoordinatorArrowHit { start, end }
-        } else {
-            CoordinatorArrowHit::default()
-        };
 
-        // Render visible tabs from layout.offset .. layout.end (exclusive).
-        for vis_pos in 0..(layout.end.saturating_sub(layout.offset)) {
-            let entry_idx = layout.offset + vis_pos;
-            let entry = &entries[entry_idx];
-
-            if vis_pos > 0 {
-                spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            // Left scroll arrow when there are tabs hidden to the left.
+            let left_arrow_hit = if layout.show_left_arrow {
+                let start = (bar_x as usize + col) as u16;
+                spans.push(Span::styled("◀", Style::default().fg(Color::Cyan)));
                 col += 1;
-            }
+                spans.push(Span::raw(" "));
+                col += 1;
+                let end = (bar_x as usize + col) as u16;
+                CoordinatorArrowHit { start, end }
+            } else {
+                CoordinatorArrowHit::default()
+            };
 
-            let tab_start = (bar_x as usize + col) as u16;
-            let label_width = entry.label.chars().count();
+            // Render visible tabs from layout.offset .. layout.end (exclusive).
+            for vis_pos in 0..(layout.end.saturating_sub(layout.offset)) {
+                let entry_idx = layout.offset + vis_pos;
+                let entry = &entries[entry_idx];
 
-            match &entry.kind {
-                BarEntryKind2::Coord(styling) => {
-                    let hotkey_n = entry.global_idx + 1;
-                    if hotkey_n <= 9 {
-                        let hotkey_str = format!(" [{}]", hotkey_n);
-                        let hk_w = hotkey_str.len();
-                        spans.push(Span::styled(
-                            hotkey_str,
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                        col += hk_w;
-                    }
-                    let dot_glyph = if entry.is_active { " ◉" } else { " ●" };
-                    let dot_style = if entry.is_active {
-                        Style::default()
-                            .fg(styling.effective_color)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        let dim_color = match styling.tab_state {
-                            ChatTabState::SupervisorDown => Color::DarkGray,
-                            _ => styling.effective_color,
-                        };
-                        Style::default().fg(dim_color)
-                    };
-                    spans.push(Span::styled(dot_glyph, dot_style));
-                    col += 2;
-
-                    let label_style = if entry.is_active {
-                        Style::default()
-                            .fg(Color::White)
-                            .bg(styling.effective_color)
-                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                    } else {
-                        Style::default().fg(styling.effective_color)
-                    };
-                    spans.push(Span::styled(format!(" {}", entry.label), label_style));
-                    col += 1 + label_width;
-
-                    let close_start = (bar_x as usize + col) as u16;
-                    spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
-                    col += 2;
-                    let close_end = (bar_x as usize + col) as u16;
-
-                    spans.push(Span::raw(" "));
+                if vis_pos > 0 {
+                    spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
                     col += 1;
-
-                    let tab_end = (bar_x as usize + col) as u16;
-                    tab_hits.push(CoordinatorTabHit {
-                        kind: TabBarEntryKind::Coordinator(styling.cid),
-                        tab_start,
-                        tab_end,
-                        close_start,
-                        close_end,
-                    });
                 }
-                BarEntryKind2::UserBoard(task_id) => {
-                    if entry.is_active {
-                        spans.push(Span::styled(
-                            " ◉",
+
+                let tab_start = (bar_x as usize + col) as u16;
+                let label_width = entry.label.chars().count();
+
+                match &entry.kind {
+                    BarEntryKind2::Coord(styling) => {
+                        let hotkey_n = entry.global_idx + 1;
+                        if hotkey_n <= 9 {
+                            let hotkey_str = format!(" [{}]", hotkey_n);
+                            let hk_w = hotkey_str.len();
+                            spans.push(Span::styled(
+                                hotkey_str,
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                            col += hk_w;
+                        }
+                        let dot_glyph = if entry.is_active { " ◉" } else { " ●" };
+                        let dot_style = if entry.is_active {
                             Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ));
-                    } else {
-                        spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
+                                .fg(styling.effective_color)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            let dim_color = match styling.tab_state {
+                                ChatTabState::SupervisorDown => Color::DarkGray,
+                                _ => styling.effective_color,
+                            };
+                            Style::default().fg(dim_color)
+                        };
+                        spans.push(Span::styled(dot_glyph, dot_style));
+                        col += 2;
+
+                        let label_style = if entry.is_active {
+                            Style::default()
+                                .fg(Color::White)
+                                .bg(styling.effective_color)
+                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                        } else {
+                            Style::default().fg(styling.effective_color)
+                        };
+                        spans.push(Span::styled(format!(" {}", entry.label), label_style));
+                        col += 1 + label_width;
+
+                        let close_start = (bar_x as usize + col) as u16;
+                        spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                        col += 2;
+                        let close_end = (bar_x as usize + col) as u16;
+
+                        spans.push(Span::raw(" "));
+                        col += 1;
+
+                        let tab_end = (bar_x as usize + col) as u16;
+                        tab_hits.push(CoordinatorTabHit {
+                            kind: TabBarEntryKind::Coordinator(styling.cid),
+                            tab_start,
+                            tab_end,
+                            close_start,
+                            close_end,
+                        });
                     }
-                    col += 2;
+                    BarEntryKind2::UserBoard(task_id) => {
+                        if entry.is_active {
+                            spans.push(Span::styled(
+                                " ◉",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        } else {
+                            spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
+                        }
+                        col += 2;
 
-                    let label_style = if entry.is_active {
-                        Style::default()
-                            .fg(text_primary(app.is_light_theme))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    };
-                    spans.push(Span::styled(format!(" {}", entry.label), label_style));
-                    col += 1 + label_width;
+                        let label_style = if entry.is_active {
+                            Style::default()
+                                .fg(text_primary(app.is_light_theme))
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+                        spans.push(Span::styled(format!(" {}", entry.label), label_style));
+                        col += 1 + label_width;
 
-                    let close_start = (bar_x as usize + col) as u16;
-                    spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
-                    col += 2;
-                    let close_end = (bar_x as usize + col) as u16;
+                        let close_start = (bar_x as usize + col) as u16;
+                        spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                        col += 2;
+                        let close_end = (bar_x as usize + col) as u16;
 
-                    spans.push(Span::raw(" "));
-                    col += 1;
+                        spans.push(Span::raw(" "));
+                        col += 1;
 
-                    let tab_end = (bar_x as usize + col) as u16;
-                    tab_hits.push(CoordinatorTabHit {
-                        kind: TabBarEntryKind::UserBoard(task_id.clone()),
-                        tab_start,
-                        tab_end,
-                        close_start,
-                        close_end,
-                    });
+                        let tab_end = (bar_x as usize + col) as u16;
+                        tab_hits.push(CoordinatorTabHit {
+                            kind: TabBarEntryKind::UserBoard(task_id.clone()),
+                            tab_start,
+                            tab_end,
+                            close_start,
+                            close_end,
+                        });
+                    }
                 }
             }
+
+            // Right scroll arrow when there are tabs hidden to the right.
+            let right_arrow_hit = if layout.show_right_arrow {
+                let start = (bar_x as usize + col) as u16;
+                spans.push(Span::styled("▶", Style::default().fg(Color::Cyan)));
+                col += 1;
+                spans.push(Span::raw(" "));
+                col += 1;
+                let end = (bar_x as usize + col) as u16;
+                CoordinatorArrowHit { start, end }
+            } else {
+                CoordinatorArrowHit::default()
+            };
+
+            let plus_start = (bar_x as usize + col) as u16;
+            spans.push(Span::styled(
+                NEW_CHAT_BUTTON_LABEL,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            col += NEW_CHAT_BUTTON_WIDTH;
+            let plus_end = (bar_x as usize + col) as u16;
+
+            app.coordinator_tab_hits = tab_hits;
+            app.coordinator_plus_hit = CoordinatorPlusHit {
+                start: plus_start,
+                end: plus_end,
+            };
+            app.coordinator_left_arrow_hit = left_arrow_hit;
+            app.coordinator_right_arrow_hit = right_arrow_hit;
+
+            let tab_line = Line::from(spans);
+            frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
         }
 
-        // Right scroll arrow when there are tabs hidden to the right.
-        let right_arrow_hit = if layout.show_right_arrow {
-            let start = (bar_x as usize + col) as u16;
-            spans.push(Span::styled("▶", Style::default().fg(Color::Cyan)));
-            col += 1;
-            spans.push(Span::raw(" "));
-            col += 1;
-            let end = (bar_x as usize + col) as u16;
-            CoordinatorArrowHit { start, end }
-        } else {
-            CoordinatorArrowHit::default()
-        };
-
-        let plus_start = (bar_x as usize + col) as u16;
-        spans.push(Span::styled(
-            NEW_CHAT_BUTTON_LABEL,
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        col += NEW_CHAT_BUTTON_WIDTH;
-        let plus_end = (bar_x as usize + col) as u16;
-
-        app.coordinator_tab_hits = tab_hits;
-        app.coordinator_plus_hit = CoordinatorPlusHit {
-            start: plus_start,
-            end: plus_end,
-        };
-        app.coordinator_left_arrow_hit = left_arrow_hit;
-        app.coordinator_right_arrow_hit = right_arrow_hit;
-
-        let tab_line = Line::from(spans);
-        frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
-    }
-
-    if area.height > 0 {
-        let identity_y = area.y + u16::from(identity_has_own_row);
-        let identity_area = Rect::new(area.x, identity_y, area.width, 1);
-        draw_active_chat_identity_header(frame, app, identity_area, active_view.as_ref());
-        if !identity_has_own_row {
-            // The responsive identity row visually replaces the tab strip, so
-            // its hidden tab targets must not remain clickable underneath it.
-            app.last_coordinator_bar_area = Rect::default();
-            app.coordinator_tab_hits.clear();
-            app.coordinator_plus_hit = CoordinatorPlusHit::default();
-            app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
-            app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+        if area.height > 0 {
+            let identity_y = area.y + u16::from(identity_has_own_row);
+            let identity_area = Rect::new(area.x, identity_y, area.width, 1);
+            draw_active_chat_identity_header(frame, app, identity_area, active_view.as_ref());
         }
     }
 
@@ -7990,6 +7927,7 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState, is_light: bool) {
 /// focused pane's portion gets `focused_bg` while the unfocused portion gets
 /// `unfocused_bg`.  In other layout modes the bar is rendered uniformly with
 /// `focused_bg`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_focus_bar(
     frame: &mut Frame,
     app: &VizApp,
@@ -8044,6 +7982,7 @@ fn render_focus_bar(
 /// Format: ` context | MODE | key:hint  key:hint  key:hint`
 /// Mode badge colors: NAV=dim gray, EDIT=yellow, SEARCH=cyan
 /// Truncates hints with `…` if terminal is too narrow.
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
     let width = area.width as usize;
 
@@ -8154,8 +8093,20 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
 
 /// Returns (context_label, mode_badge, mode_color, hints) for the bottom action bar.
 /// `hints` is a list of (key, description) pairs ordered by importance.
+#[cfg_attr(not(test), allow(dead_code))]
 fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
     match &app.input_mode {
+        InputMode::Layout => (
+            "Layout",
+            "LAYOUT",
+            Color::Yellow,
+            vec![
+                ("h/j/k/l/a", "dock/auto"),
+                ("+/-/=", "size/preset"),
+                ("f/0", "full/hide"),
+                ("Enter/Esc", "apply/cancel"),
+            ],
+        ),
         InputMode::Search => (
             "Search",
             "SEARCH",
@@ -8519,6 +8470,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     if app.search_active {
         // Search input mode: show the search prompt with cursor.
@@ -8932,6 +8884,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 /// ```text
 /// | ● 2 agents | 8 open · 3 running · 45 done | last event 4s ago | coord ● 3s |
 /// ```
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_vitals_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     let v = &app.vitals;
 
@@ -9023,6 +8976,7 @@ fn draw_vitals_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 }
 
 /// Render the service health badge at the right end of the status bar.
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_service_health_badge(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let health = &app.service_health;
     let (dot_color, bg_color) = match health.level {
@@ -9818,6 +9772,7 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("Tab", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-↑/↓", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-←/→", "Cycle inspector views (with slide animation)"),
+        binding("p", "Open keyboard Panel/Layout controls"),
         binding("\\", "Toggle right panel visible"),
         binding("i", "Grow viz pane (10% per press, wraps)"),
         binding("v", "Shrink viz pane (10% per press, wraps)"),
@@ -9888,6 +9843,7 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
 }
 
 /// Render token breakdown spans: "→new_in ←out [+cached] (label) [$cost]"
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, label: &str) {
     let novel_in = usage.input_tokens + usage.cache_creation_input_tokens;
     let new_input = format_tokens(novel_in);
@@ -14504,20 +14460,13 @@ mod tests {
         );
 
         app.chat_startup_state = super::super::state::ChatStartupState::Empty;
-        let buf = render_chat_tab_to_buffer(&mut app);
-        let mut rendered = String::new();
-        for y in 0..buf.area().height {
-            for x in 0..buf.area().width {
-                rendered.push_str(buf.cell((x, y)).unwrap().symbol());
-            }
-            rendered.push('\n');
-        }
-        assert!(rendered.contains("New chat"), "{rendered}");
-        assert_eq!(app.last_coordinator_bar_area.height, 3);
+        let row = context_row_text(&mut app, 40);
+        assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "{row}");
+        assert_eq!(app.last_coordinator_bar_area.height, 1);
         assert_eq!(
             app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
-            app.last_coordinator_bar_area.width,
-            "every cell across the large empty-state button must be clickable"
+            NEW_CHAT_BUTTON_WIDTH as u16,
+            "the fixed fully-labelled context control remains clickable"
         );
     }
 
@@ -14659,8 +14608,11 @@ mod tests {
             "shallow identity consumed the command/input row: {}",
             shallow_row(2)
         );
-        assert_eq!(app.last_coordinator_bar_area, Rect::default());
-        assert!(app.coordinator_tab_hits.is_empty());
+        assert_eq!(app.last_coordinator_bar_area.height, 1);
+        assert_eq!(
+            app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
+            NEW_CHAT_BUTTON_WIDTH as u16
+        );
     }
 
     #[test]
@@ -14740,7 +14692,8 @@ mod tests {
             })
             .collect();
         assert!(rendered.contains("No chat selected"), "{rendered}");
-        assert!(rendered.contains("New chat"), "{rendered}");
+        let context = context_row_text(&mut app, 40);
+        assert!(context.contains(NEW_CHAT_BUTTON_LABEL), "{context}");
     }
 
     #[test]
@@ -15778,9 +15731,300 @@ mod tests {
         }
     }
 
+    fn context_row_text(app: &mut VizApp, width: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let chat_context = app.right_panel_tab == RightPanelTab::Chat;
+                render_context_row(frame, app, frame.area(), chat_context)
+            })
+            .unwrap();
+        (0..width)
+            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            .collect()
+    }
+
+    #[test]
+    fn one_row_chat_context_width_matrix_keeps_identity_and_new_chat() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 7,
+            task_id: ".chat-7".to_string(),
+            label: "Chat 7".to_string(),
+            executor: Some("pi".to_string()),
+            model: Some("m".to_string()),
+        });
+        for width in [40, 50, 60, 80, 120] {
+            let row = context_row_text(&mut app, width);
+            assert!(row.contains("Chat"), "width={width}: {row}");
+            assert!(row.contains(".chat-7"), "width={width}: {row}");
+            assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "width={width}: {row}");
+            assert!(
+                !row.contains("Task"),
+                "chat context leaked task controls: {row}"
+            );
+        }
+        let narrow = context_row_text(&mut app, 40);
+        let wide = context_row_text(&mut app, 120);
+        assert!(
+            !narrow.contains("pi:m"),
+            "optional route did not collapse: {narrow}"
+        );
+        assert!(
+            wide.contains("pi:m"),
+            "route should restore when width returns: {wide}"
+        );
+    }
+
+    #[test]
+    fn one_row_task_context_is_contextual_and_borderless() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.right_panel_tab = RightPanelTab::Detail;
+        let row = context_row_text(&mut app, 80);
+        assert!(row.contains("Task"), "{row}");
+        assert!(row.contains("a"), "exact task id missing: {row}");
+        assert!(
+            row.contains('‹') && row.contains('›'),
+            "navigation missing: {row}"
+        );
+        assert!(
+            !row.contains("New chat"),
+            "task context leaked chat action: {row}"
+        );
+        assert!(
+            !row.contains('┌') && !row.contains('┐') && !row.contains('│'),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_chat_consumes_one_chrome_row_and_has_no_outer_frame() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[3]);
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..LayoutPreference::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.last_right_panel_area, Rect::new(0, 0, 80, 24));
+        assert_eq!(app.last_tab_bar_area, Rect::new(0, 0, 80, 1));
+        assert_eq!(app.last_right_content_area, Rect::new(0, 1, 80, 23));
+        assert_eq!(app.last_fullscreen_restore_area, Rect::default());
+        assert_eq!(app.last_fullscreen_right_border_area, Rect::default());
+        let top: String = (0..80)
+            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert!(
+            top.contains("Chat") && top.contains("[ New chat ]"),
+            "{top}"
+        );
+        assert!(
+            !top.contains('┌') && !top.contains('┐') && !top.contains('│'),
+            "{top}"
+        );
+    }
+
+    #[test]
+    fn chat_pty_owns_every_row_below_context_without_wg_composer() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[3]);
+        app.chat.coordinator_active = true;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_last_spawn_info
+            .insert(3, ("pi".to_string(), "pi".to_string()));
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..LayoutPreference::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.last_chat_message_area, Rect::new(0, 1, 80, 23));
+        assert_eq!(app.last_chat_input_area.height, 0);
+        assert_eq!(app.last_right_content_area.height, 23);
+    }
+
+    #[test]
+    fn fullscreen_task_consumes_one_chrome_row_and_has_no_outer_frame() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..LayoutPreference::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.last_tab_bar_area, Rect::new(0, 0, 80, 1));
+        assert_eq!(app.last_right_content_area, Rect::new(0, 1, 80, 23));
+        let top: String = (0..80)
+            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert!(top.contains("Task") && top.contains("a"), "{top}");
+        assert!(
+            !top.contains("New chat") && !top.contains('┌') && !top.contains('┐'),
+            "{top}"
+        );
+    }
+
+    #[test]
+    fn split_modes_have_one_seam_and_stacked_embeds_context() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 40,
+            mode: InspectorMode::Split,
+        });
+        let mut side = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        side.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(
+            app.last_right_panel_area.x - (app.last_graph_area.x + app.last_graph_area.width),
+            1
+        );
+        let seam_x = app.last_right_panel_area.x - 1;
+        assert_eq!(app.last_divider_area.x + 1, seam_x);
+        for y in 0..30 {
+            assert_eq!(
+                side.backend().buffer().cell((seam_x, y)).unwrap().symbol(),
+                "│"
+            );
+        }
+
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Bottom,
+            size_percent: 40,
+            mode: InspectorMode::Split,
+        });
+        let mut stacked = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        stacked.draw(|frame| draw(frame, &mut app)).unwrap();
+        let seam_y = app.last_right_panel_area.y - 1;
+        assert_eq!(
+            app.last_right_panel_area.y - (app.last_graph_area.y + app.last_graph_area.height),
+            1
+        );
+        assert_eq!(app.last_tab_bar_area.y, seam_y);
+        assert_eq!(app.last_right_content_area, app.last_right_panel_area);
+        let seam: String = (0..120)
+            .map(|x| {
+                stacked
+                    .backend()
+                    .buffer()
+                    .cell((x, seam_y))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect();
+        assert!(
+            seam.contains("Task"),
+            "stacked seam must carry context: {seam}"
+        );
+        assert!(!seam.contains('┌') && !seam.contains('┐'), "{seam}");
+    }
+
+    #[test]
+    fn layout_command_mode_replaces_the_same_context_row() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        let normal = context_row_text(&mut app, 120);
+        app.input_mode = InputMode::Layout;
+        let layout = context_row_text(&mut app, 120);
+        assert!(normal.contains("Chat"), "{normal}");
+        assert!(layout.contains("h/j/k/l dock"), "{layout}");
+        assert!(
+            !layout.contains("Chat ▾"),
+            "mode added instead of replacing: {layout}"
+        );
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // Responsive breakpoint tests
     // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn one_seam_split_geometry_honors_dock_ratio_and_minimums() {
+        let area = Rect::new(5, 7, 100, 40);
+
+        let (graph, panel) = split_areas(area, InspectorDock::Left, 30).unwrap();
+        assert_eq!(panel, Rect::new(5, 7, 30, 40));
+        assert_eq!(graph, Rect::new(36, 7, 69, 40));
+        assert_eq!(graph.x - (panel.x + panel.width), 1);
+
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 30).unwrap();
+        assert_eq!(graph, Rect::new(5, 7, 69, 40));
+        assert_eq!(panel, Rect::new(75, 7, 30, 40));
+        assert_eq!(panel.x - (graph.x + graph.width), 1);
+
+        let (graph, panel) = split_areas(area, InspectorDock::Top, 30).unwrap();
+        assert_eq!(panel, Rect::new(5, 7, 100, 12));
+        assert_eq!(graph, Rect::new(5, 20, 100, 27));
+        assert_eq!(graph.y - (panel.y + panel.height), 1);
+
+        let (graph, panel) = split_areas(area, InspectorDock::Bottom, 30).unwrap();
+        assert_eq!(graph, Rect::new(5, 7, 100, 27));
+        assert_eq!(panel, Rect::new(5, 35, 100, 12));
+        assert_eq!(panel.y - (graph.y + graph.height), 1);
+
+        // Ratios yield to hard pane minima and the one-cell seam.
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 90).unwrap();
+        assert_eq!(graph.width, MIN_GRAPH_COLS);
+        assert_eq!(panel.width, area.width - MIN_GRAPH_COLS - 1);
+        let (graph, panel) = split_areas(area, InspectorDock::Right, 10).unwrap();
+        assert_eq!(panel.width, MIN_PANEL_COLS);
+        assert_eq!(graph.width, area.width - MIN_PANEL_COLS - 1);
+        assert!(split_areas(Rect::new(0, 0, 43, 40), InspectorDock::Left, 50).is_none());
+        assert!(split_areas(Rect::new(0, 0, 100, 11), InspectorDock::Top, 50).is_none());
+    }
+
+    #[test]
+    fn explicit_dock_and_ratio_survive_phone_rotation_compact_fallback() {
+        use crate::tui::viz_viewer::state::{
+            InspectorMode, LayoutPreference, ResponsiveBreakpoint,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let desired = LayoutPreference {
+            dock: InspectorDock::Left,
+            size_percent: 63,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(desired);
+
+        let mut wide = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        wide.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
+
+        let mut phone = Terminal::new(TestBackend::new(40, 24)).unwrap();
+        phone.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
+        assert_eq!(app.layout_preference, desired);
+
+        // Rotating back past compact hysteresis restores the exact explicit
+        // edge and ratio; Auto policy is never allowed to overwrite it.
+        let mut rotated = Terminal::new(TestBackend::new(70, 40)).unwrap();
+        rotated.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
+        assert_eq!(app.layout_preference, desired);
+        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
+        assert_eq!(app.last_right_panel_area.width, 44); // floor(70 * .63)
+    }
 
     #[test]
     fn test_responsive_breakpoint_from_width() {
@@ -15908,8 +16152,8 @@ mod tests {
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
         // Graph area should have width == 40 (full terminal width).
         assert_eq!(app.last_graph_area.width, 40);
-        // Graph area height should be main_area height (total - 3 for status/vitals/hints bars).
-        assert_eq!(app.last_graph_area.height, 22);
+        // Exactly one task context row replaces the three global chrome rows.
+        assert_eq!(app.last_graph_area.height, 24);
         // Right panel area should be empty (not shown).
         assert_eq!(app.last_right_panel_area, Rect::default());
     }
