@@ -125,6 +125,11 @@ struct StatusOutput {
     dangling_deps: Vec<DanglingDep>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     verify_failing: Vec<VerifyFailingTask>,
+    /// Cached periodic sentinel snapshot. `wg status` never walks the
+    /// filesystem; the daemon/doctor refreshes this bounded snapshot off the
+    /// input/render path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disk: Option<worksgood::disk_sentinel::DiskSnapshot>,
 }
 
 pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
@@ -218,6 +223,10 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
     // 8. Verify-failing tasks
     let verify_failing = gather_verify_failing(dir, show_all);
 
+    // 9. Disk state is a cached, bounded sentinel snapshot. Do not refresh or
+    // scan here: status/TUI latency must not scale with target size.
+    let disk = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
+
     Ok(StatusOutput {
         service,
         coordinator,
@@ -227,6 +236,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         recent,
         dangling_deps,
         verify_failing,
+        disk,
     })
 }
 
@@ -678,6 +688,25 @@ fn print_status(status: &StatusOutput) {
         if status.agents.active.is_empty() && status.agents.alive > 0 {
             println!("  ({} idle)", status.agents.alive);
         }
+    }
+
+    if let Some(disk) = status.disk.as_ref() {
+        println!();
+        let headroom_gib = disk.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        println!(
+            "Disk: {:?} — {:.1} GiB projected headroom, {} active target(s), {} stale",
+            disk.level,
+            headroom_gib,
+            disk.active_builds,
+            disk.targets.iter().filter(|target| target.stale).count()
+        );
+        println!(
+            "  worktrees={} MiB, .wg/agents={} MiB, .wg/log={} MiB — {}",
+            disk.worktrees.bytes / (1024 * 1024),
+            disk.agents.bytes / (1024 * 1024),
+            disk.log.bytes / (1024 * 1024),
+            disk.reason
+        );
     }
 
     // Line: Task summary

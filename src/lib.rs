@@ -32,6 +32,7 @@ pub mod config_migrate;
 pub mod context_scope;
 pub mod cron;
 pub mod cycle;
+pub mod disk_sentinel;
 pub mod dispatch;
 pub mod eval_lifecycle;
 pub mod execution_selection;

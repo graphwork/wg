@@ -2163,6 +2163,15 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: boo
             left.push_str(&slot);
         }
     }
+    if let Some(disk) = app.async_fs.cached_disk_snapshot() {
+        let headroom = disk.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        let slot = format!("  | disk {:?} {:.0}GiB", disk.level, headroom);
+        if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
+            <= left_width
+        {
+            left.push_str(&slot);
+        }
+    }
 
     frame.render_widget(
         Paragraph::new(left).style(
@@ -8673,7 +8682,6 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-
     // Token breakdown: input/output/cache with view/total toggle
     let visible_usage;
     let (usage, label) = if app.show_total_tokens {

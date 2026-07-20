@@ -11141,6 +11141,8 @@ impl VizApp {
         // cached-stat values reflect the worker's most recent results
         // without ever blocking on disk. (See `async_fs.rs`.)
         let async_changes = self.async_fs.drain_responses();
+        self.async_fs
+            .request_disk_snapshot(self.workgraph_dir.clone());
         if async_changes.graph
             && self.graph_reload_pending
             && let Some((graph, graph_mtime)) = self.async_fs.cached_graph()

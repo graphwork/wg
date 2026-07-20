@@ -4204,6 +4204,54 @@ pub struct ResourceManagementConfig {
     /// Set to 0 to disable automatic pruning. Default: 3600 (1 hour).
     #[serde(default = "default_recovery_prune_interval")]
     pub recovery_prune_interval: u64,
+
+    /// Enable periodic disk observation and build-class admission control.
+    #[serde(default = "default_disk_sentinel_enabled")]
+    pub disk_sentinel_enabled: bool,
+    /// Additional target/tmp paths whose backing mounts must have headroom.
+    #[serde(default)]
+    pub disk_paths: Vec<String>,
+    /// Optional root for isolated `wg-target-<agent>` Cargo targets. Absolute
+    /// paths are supported and explicitly registered for later cleanup.
+    #[serde(default)]
+    pub cargo_target_root: Option<String>,
+    /// Optional root for per-agent Cargo-install/tmp scratch directories.
+    #[serde(default)]
+    pub build_tmp_root: Option<String>,
+    #[serde(default = "default_disk_warning_bytes")]
+    pub disk_warning_bytes: u64,
+    #[serde(default = "default_disk_pause_build_bytes")]
+    pub disk_pause_build_bytes: u64,
+    #[serde(default = "default_disk_hard_refuse_bytes")]
+    pub disk_hard_refuse_bytes: u64,
+    #[serde(default = "default_disk_warning_percent")]
+    pub disk_warning_percent: f64,
+    #[serde(default = "default_disk_pause_build_percent")]
+    pub disk_pause_build_percent: f64,
+    #[serde(default = "default_disk_hard_refuse_percent")]
+    pub disk_hard_refuse_percent: f64,
+    #[serde(default = "default_disk_resume_hysteresis_bytes")]
+    pub disk_resume_hysteresis_bytes: u64,
+    #[serde(default = "default_disk_resume_hysteresis_percent")]
+    pub disk_resume_hysteresis_percent: f64,
+    /// Concurrent build-heavy tasks have a separate budget from ordinary
+    /// agents. One serial validator is the safe default.
+    #[serde(default = "default_max_build_agents")]
+    pub max_build_agents: usize,
+    #[serde(default = "default_estimated_build_bytes")]
+    pub estimated_build_bytes: u64,
+    #[serde(default = "default_disk_scan_interval_seconds")]
+    pub disk_scan_interval_seconds: u64,
+    #[serde(default = "default_disk_scan_max_entries")]
+    pub disk_scan_max_entries: usize,
+    #[serde(default = "default_owned_cache_lease_seconds")]
+    pub owned_cache_lease_seconds: u64,
+    #[serde(default = "default_disk_agent_heartbeat_seconds")]
+    pub disk_agent_heartbeat_seconds: u64,
+    #[serde(default = "default_compress_terminal_streams")]
+    pub compress_terminal_streams: bool,
+    #[serde(default = "default_stream_retention_days")]
+    pub stream_retention_days: u64,
 }
 
 fn default_max_incomplete_retries() -> u32 {
@@ -4399,6 +4447,58 @@ fn default_recovery_prune_interval() -> u64 {
     3600 // 1 hour in seconds
 }
 
+fn default_disk_sentinel_enabled() -> bool {
+    true
+}
+fn default_disk_warning_bytes() -> u64 {
+    64 * 1024 * 1024 * 1024
+}
+fn default_disk_pause_build_bytes() -> u64 {
+    32 * 1024 * 1024 * 1024
+}
+fn default_disk_hard_refuse_bytes() -> u64 {
+    16 * 1024 * 1024 * 1024
+}
+fn default_disk_warning_percent() -> f64 {
+    12.0
+}
+fn default_disk_pause_build_percent() -> f64 {
+    8.0
+}
+fn default_disk_hard_refuse_percent() -> f64 {
+    4.0
+}
+fn default_disk_resume_hysteresis_bytes() -> u64 {
+    5 * 1024 * 1024 * 1024
+}
+fn default_disk_resume_hysteresis_percent() -> f64 {
+    2.0
+}
+fn default_max_build_agents() -> usize {
+    1
+}
+fn default_estimated_build_bytes() -> u64 {
+    16 * 1024 * 1024 * 1024
+}
+fn default_disk_scan_interval_seconds() -> u64 {
+    30
+}
+fn default_disk_scan_max_entries() -> usize {
+    200_000
+}
+fn default_owned_cache_lease_seconds() -> u64 {
+    300
+}
+fn default_disk_agent_heartbeat_seconds() -> u64 {
+    300
+}
+fn default_compress_terminal_streams() -> bool {
+    true
+}
+fn default_stream_retention_days() -> u64 {
+    7
+}
+
 impl Default for ResourceManagementConfig {
     fn default() -> Self {
         Self {
@@ -4408,6 +4508,26 @@ impl Default for ResourceManagementConfig {
             cleanup_job_queue: default_cleanup_job_queue(),
             cleanup_queue_size: default_cleanup_queue_size(),
             recovery_prune_interval: default_recovery_prune_interval(),
+            disk_sentinel_enabled: default_disk_sentinel_enabled(),
+            disk_paths: Vec::new(),
+            cargo_target_root: None,
+            build_tmp_root: None,
+            disk_warning_bytes: default_disk_warning_bytes(),
+            disk_pause_build_bytes: default_disk_pause_build_bytes(),
+            disk_hard_refuse_bytes: default_disk_hard_refuse_bytes(),
+            disk_warning_percent: default_disk_warning_percent(),
+            disk_pause_build_percent: default_disk_pause_build_percent(),
+            disk_hard_refuse_percent: default_disk_hard_refuse_percent(),
+            disk_resume_hysteresis_bytes: default_disk_resume_hysteresis_bytes(),
+            disk_resume_hysteresis_percent: default_disk_resume_hysteresis_percent(),
+            max_build_agents: default_max_build_agents(),
+            estimated_build_bytes: default_estimated_build_bytes(),
+            disk_scan_interval_seconds: default_disk_scan_interval_seconds(),
+            disk_scan_max_entries: default_disk_scan_max_entries(),
+            owned_cache_lease_seconds: default_owned_cache_lease_seconds(),
+            disk_agent_heartbeat_seconds: default_disk_agent_heartbeat_seconds(),
+            compress_terminal_streams: default_compress_terminal_streams(),
+            stream_retention_days: default_stream_retention_days(),
         }
     }
 }

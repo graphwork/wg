@@ -47,6 +47,7 @@ pub mod dead_agents;
 pub mod deliverables;
 pub mod dev_check;
 pub mod discover;
+pub mod disk;
 pub mod doctor;
 pub mod done;
 pub mod edit;

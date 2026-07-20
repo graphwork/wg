@@ -1462,6 +1462,7 @@ fn main() -> Result<()> {
         Commands::Aging => commands::aging::run(&workgraph_dir, cli.json),
         Commands::Forecast => commands::forecast::run(&workgraph_dir, cli.json),
         Commands::Workload => commands::workload::run(&workgraph_dir, cli.json),
+        Commands::Disk(command) => commands::disk::run(&workgraph_dir, command, cli.json),
         Commands::Worktree(sub) => match sub {
             cli::WorktreeCommand::List => commands::worktree_cmd::list(&workgraph_dir),
             cli::WorktreeCommand::Archive { agent_id, remove } => {

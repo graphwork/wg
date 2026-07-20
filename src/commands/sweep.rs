@@ -143,10 +143,15 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
     let orphaned = find_orphaned_tasks(dir)?;
 
     let (targets_reaped, bytes_freed) = if reap_targets && !dry_run {
-        match crate::commands::service::worktree::reap_dead_target_dirs(dir) {
-            Ok(pair) => pair,
+        let config = worksgood::config::Config::load_or_default(dir);
+        match worksgood::disk_sentinel::cleanup_owned(
+            dir,
+            &config.coordinator.resource_management,
+            true,
+        ) {
+            Ok(report) => (report.reaped, report.bytes_freed),
             Err(e) => {
-                eprintln!("Warning: target-dir reap failed: {}", e);
+                eprintln!("Warning: owned target-dir reap failed: {}", e);
                 (0, 0)
             }
         }

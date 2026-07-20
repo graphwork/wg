@@ -44,6 +44,7 @@ pub struct SlowOp {
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum RequestKey {
     LoadGraph,
+    LoadDiskSnapshot,
     Stat(PathBuf),
     Streaming(u32),
 }
@@ -51,6 +52,7 @@ enum RequestKey {
 /// Request sent from main → worker.
 enum FsRequest {
     LoadGraph(PathBuf),
+    LoadDiskSnapshot(PathBuf),
     Stat(PathBuf),
     ReadStreaming {
         path: PathBuf,
@@ -68,6 +70,7 @@ enum FsRequest {
 /// "you can dispatch a fresh request for this key now."
 enum FsResponse {
     LoadGraphDone { duration: Duration, success: bool },
+    LoadDiskSnapshotDone { duration: Duration },
     StatDone { path: PathBuf, duration: Duration },
     StreamingDone { coord_id: u32, duration: Duration },
     BumpDone { duration: Duration },
@@ -80,6 +83,10 @@ struct AsyncFsInner {
     graph_cache: Mutex<Option<(Arc<WorkGraph>, Option<SystemTime>)>>,
     /// Bumped each time `graph_cache` is replaced with a fresh load.
     graph_version: AtomicU64,
+
+    /// Cached disk-sentinel snapshot. The expensive bounded scan is performed
+    /// by the daemon; this worker only reads the small JSON cache.
+    disk_snapshot_cache: Mutex<Option<worksgood::disk_sentinel::DiskSnapshot>>,
 
     /// Per-path mtime cache (None = stat'd but file absent / unreadable).
     stat_cache: Mutex<HashMap<PathBuf, Option<SystemTime>>>,
@@ -108,6 +115,8 @@ pub struct AsyncFs {
     last_seen_graph_version: u64,
     /// Last streaming_version we observed.
     last_seen_streaming_version: u64,
+    /// Throttle small snapshot reads independently of render cadence.
+    last_disk_request: Option<Instant>,
 }
 
 impl AsyncFs {
@@ -129,6 +138,7 @@ impl AsyncFs {
         let inner = Arc::new(AsyncFsInner {
             graph_cache: Mutex::new(None),
             graph_version: AtomicU64::new(0),
+            disk_snapshot_cache: Mutex::new(None),
             stat_cache: Mutex::new(HashMap::new()),
             streaming_cache: Mutex::new(HashMap::new()),
             streaming_version: AtomicU64::new(0),
@@ -145,6 +155,7 @@ impl AsyncFs {
             in_flight: HashSet::new(),
             last_seen_graph_version: 0,
             last_seen_streaming_version: 0,
+            last_disk_request: None,
         }
     }
 
@@ -179,6 +190,12 @@ impl AsyncFs {
                 FsResponse::LoadGraphDone { duration, .. } => {
                     self.in_flight.remove(&RequestKey::LoadGraph);
                     self.note_op("graph.jsonl", duration);
+                }
+                FsResponse::LoadDiskSnapshotDone { duration } => {
+                    self.in_flight.remove(&RequestKey::LoadDiskSnapshot);
+                    if duration >= SLOW_OP_THRESHOLD {
+                        self.note_op("disk-sentinel snapshot", duration);
+                    }
                 }
                 FsResponse::StatDone { path, duration } => {
                     self.in_flight.remove(&RequestKey::Stat(path.clone()));
@@ -232,6 +249,31 @@ impl AsyncFs {
         {
             self.in_flight.remove(&RequestKey::LoadGraph);
         }
+    }
+
+    /// Dispatch a throttled read of the daemon-produced sentinel cache.
+    pub fn request_disk_snapshot(&mut self, workgraph_dir: PathBuf) {
+        if self
+            .last_disk_request
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        if !self.in_flight.insert(RequestKey::LoadDiskSnapshot) {
+            return;
+        }
+        self.last_disk_request = Some(Instant::now());
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self
+            .interactive_tx
+            .try_send(FsRequest::LoadDiskSnapshot(workgraph_dir))
+        {
+            self.in_flight.remove(&RequestKey::LoadDiskSnapshot);
+        }
+    }
+
+    /// Read cached disk state without filesystem I/O.
+    pub fn cached_disk_snapshot(&self) -> Option<worksgood::disk_sentinel::DiskSnapshot> {
+        self.inner.disk_snapshot_cache.lock().unwrap().clone()
     }
 
     /// Read the cached graph (clones `Arc`, never blocks on disk).
@@ -415,6 +457,16 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: SyncSender<FsResponse>, inner: Arc<A
                 let _ = tx.send(FsResponse::LoadGraphDone {
                     duration: start.elapsed(),
                     success,
+                });
+            }
+            FsRequest::LoadDiskSnapshot(workgraph_dir) => {
+                let start = Instant::now();
+                let snapshot = worksgood::disk_sentinel::load_snapshot(&workgraph_dir)
+                    .ok()
+                    .flatten();
+                *inner.disk_snapshot_cache.lock().unwrap() = snapshot;
+                let _ = tx.send(FsResponse::LoadDiskSnapshotDone {
+                    duration: start.elapsed(),
                 });
             }
             FsRequest::Stat(path) => {

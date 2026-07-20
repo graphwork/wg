@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use worksgood::agency;
@@ -156,6 +156,25 @@ fn is_daemon_managed(task: &worksgood::graph::Task) -> bool {
     task.tags
         .iter()
         .any(|tag| DAEMON_MANAGED_TAGS.contains(&tag.as_str()))
+}
+
+fn build_admission_denial(
+    task: &Task,
+    builds_blocked: bool,
+    active_build_heavy: usize,
+    max_build_agents: usize,
+    disk_reason: &str,
+) -> Option<String> {
+    let class = worksgood::disk_sentinel::classify_task(task);
+    if class.is_build_capable() && builds_blocked {
+        return Some(format!("build admission paused: {disk_reason}"));
+    }
+    if class.is_heavy() && active_build_heavy >= max_build_agents {
+        return Some(format!(
+            "build-heavy budget full ({active_build_heavy}/{max_build_agents})"
+        ));
+    }
+    None
 }
 
 /// Check whether any tasks are ready. Returns `None` with an early `TickResult`
@@ -3544,9 +3563,58 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
     use std::process::{Command, Stdio};
 
     let graph_path = graph_path(dir);
+    let config = Config::load_or_default(dir);
+    let graph = load_graph(&graph_path).context("Failed to load graph for shell admission")?;
+    let task = graph
+        .get_task(task_id)
+        .ok_or_else(|| anyhow::anyhow!("Shell task '{}' not found", task_id))?;
+    let build_class = worksgood::disk_sentinel::classify_task(task);
+    if build_class.is_build_capable() {
+        let (level, reason, _) = worksgood::disk_sentinel::current_admission(
+            dir,
+            &config.coordinator.resource_management,
+        );
+        if level.blocks_builds() {
+            anyhow::bail!("build admission {:?}: {}", level, reason);
+        }
+    }
 
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
     let agent_id = format!("agent-{}", locked_registry.next_agent_id);
+    let target_path = if build_class.is_build_capable() {
+        Some(
+            config
+                .coordinator
+                .resource_management
+                .cargo_target_root
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| dir.join("service").join("disk").join("build-targets"))
+                .join(format!("wg-target-{agent_id}")),
+        )
+    } else {
+        None
+    };
+    if let Some(path) = target_path.as_ref() {
+        fs::create_dir_all(path)?;
+    }
+    let tmp_path = if build_class.is_build_capable() {
+        Some(
+            config
+                .coordinator
+                .resource_management
+                .build_tmp_root
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join(format!("wg-cargo-tmp-{agent_id}")),
+        )
+    } else {
+        None
+    };
+    if let Some(path) = tmp_path.as_ref() {
+        fs::create_dir_all(path)?;
+    }
 
     let output_dir = dir.join("agents").join(&agent_id);
     fs::create_dir_all(&output_dir)
@@ -3610,6 +3678,12 @@ exit $EXIT_CODE"#,
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
+    if let Some(path) = target_path.as_ref() {
+        cmd.env("CARGO_TARGET_DIR", path);
+    }
+    if let Some(path) = tmp_path.as_ref() {
+        cmd.env("TMPDIR", path);
+    }
 
     #[cfg(unix)]
     {
@@ -3650,6 +3724,34 @@ exit $EXIT_CODE"#,
     let pid = child.id();
 
     locked_registry.register_agent_with_model(pid, task_id, "shell", &output_file_str, None);
+    for (path, kind) in [
+        (
+            target_path.as_ref(),
+            worksgood::disk_sentinel::CacheKind::CargoTarget,
+        ),
+        (
+            tmp_path.as_ref(),
+            worksgood::disk_sentinel::CacheKind::CargoInstallScratch,
+        ),
+    ] {
+        let Some(path) = path else { continue };
+        let cache = worksgood::disk_sentinel::make_owned_cache(
+            path,
+            kind,
+            task_id,
+            &agent_id,
+            pid,
+            None,
+            config
+                .coordinator
+                .resource_management
+                .owned_cache_lease_seconds,
+        );
+        if let Err(error) = worksgood::disk_sentinel::register_owned_cache(dir, cache) {
+            let _ = kill_process_graceful(pid, 1);
+            anyhow::bail!("failed to persist shell build-cache ownership: {error:#}");
+        }
+    }
     locked_registry
         .save()
         .context("Failed to save agent registry after shell spawn")?;
@@ -4047,6 +4149,14 @@ fn spawn_agents_for_ready_tasks(
     let agents_dir = dir.join("agency").join("cache/agents");
     let gp = graph_path(dir);
     let mut spawned = 0;
+    let disk_snapshot = worksgood::disk_sentinel::load_snapshot(dir).ok().flatten();
+    let builds_blocked = disk_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.level.blocks_builds());
+    let mut active_build_heavy = disk_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.active_build_heavy)
+        .unwrap_or(0);
     // Memoize loaded WCC-profile configs by name for this tick so a component
     // of N profiled tasks loads each profile file at most once.
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
@@ -4098,6 +4208,27 @@ fn spawn_agents_for_ready_tasks(
             }
         }
 
+        // Resource admission is class-specific: low disk pauses only tasks
+        // that can create build caches. Agency evaluation/assignment and graph
+        // operations continue through the same ready queue.
+        let build_class = worksgood::disk_sentinel::classify_task(task);
+        if let Some(reason) = build_admission_denial(
+            task,
+            builds_blocked,
+            active_build_heavy,
+            config.coordinator.resource_management.max_build_agents,
+            disk_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.reason.as_str())
+                .unwrap_or("disk sentinel has no healthy snapshot"),
+        ) {
+            eprintln!(
+                "[dispatcher] Deferring '{}' while ordinary/evaluator tasks remain eligible: {}",
+                task.id, reason
+            );
+            continue;
+        }
+
         // Shell-mode tasks run inline: fork `wg exec --shell` directly instead
         // of going through the full agent spawn path. Must be checked before the
         // auto_assign gate because shell tasks are intentionally excluded from
@@ -4114,6 +4245,9 @@ fn spawn_agents_for_ready_tasks(
                 Ok((agent_id, pid)) => {
                     eprintln!("[dispatcher] Spawned shell {} (PID {})", agent_id, pid);
                     spawned += 1;
+                    if build_class.is_heavy() {
+                        active_build_heavy += 1;
+                    }
                 }
                 Err(e) => {
                     eprintln!("[dispatcher] Failed to spawn shell for {}: {}", task_id, e);
@@ -4304,6 +4438,9 @@ fn spawn_agents_for_ready_tasks(
                 eprintln!("[dispatcher] Spawned {} (PID {})", agent_id, pid);
                 record_dispatch(&gp, &task.id);
                 spawned += 1;
+                if build_class.is_heavy() {
+                    active_build_heavy += 1;
+                }
             }
             Err(e) => {
                 eprintln!("[dispatcher] Failed to spawn for {}: {}", task.id, e);
@@ -4537,44 +4674,67 @@ pub fn coordinator_tick(
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
 
+    // Periodic disk work is outside the TUI/render path and writes a bounded,
+    // cached snapshot consumed by status surfaces. Cleanup consults only the
+    // explicit ownership registry; unknown directories are never candidates.
+    let disk_was_due = worksgood::disk_sentinel::load_snapshot(dir)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| chrono::DateTime::parse_from_rfc3339(&snapshot.generated_at).ok())
+        .map(|generated| {
+            (Utc::now() - generated.with_timezone(&Utc)).num_seconds()
+                >= config
+                    .coordinator
+                    .resource_management
+                    .disk_scan_interval_seconds as i64
+        })
+        .unwrap_or(true);
+    match worksgood::disk_sentinel::refresh_if_due(dir, &config.coordinator.resource_management) {
+        Ok(Some(snapshot)) if snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy => {
+            eprintln!(
+                "[dispatcher] Disk sentinel {:?}: {}",
+                snapshot.level, snapshot.reason
+            );
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("[dispatcher] Disk sentinel warning: {error:#}"),
+    }
+    if disk_was_due {
+        match worksgood::disk_sentinel::cleanup_owned(
+            dir,
+            &config.coordinator.resource_management,
+            true,
+        ) {
+            Ok(report)
+                if report.reaped > 0
+                    || report.compressed_files > 0
+                    || report.deduplicated_files > 0 =>
+            {
+                eprintln!(
+                    "[dispatcher] Disk cleanup: reaped {} owned target(s), freed {} bytes; compressed {} stream(s), saved {} bytes; deduplicated {}, saved {} bytes",
+                    report.reaped,
+                    report.bytes_freed,
+                    report.compressed_files,
+                    report.compression_bytes_saved,
+                    report.deduplicated_files,
+                    report.deduplication_bytes_saved
+                )
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("[dispatcher] Disk cleanup warning: {error:#}"),
+        }
+    }
+
     // Phase 1: Clean up dead agents and count alive ones
     let alive_count = match cleanup_and_count_alive(dir, &graph_path, max_agents)? {
         Ok(count) => count,
         Err(early_result) => return Ok(early_result),
     };
 
-    // Phase 1.2: Atomic worktree sweep.
-    //
-    // Agent wrappers drop `.wg-cleanup-pending` markers at exit (after the
-    // merge-back section runs). Here we reap every marked worktree whose
-    // owning agent is not live AND whose task is terminal. This is the
-    // coordinator-side half of the two-phase atomic-cleanup protocol; it
-    // makes the removal idempotent and crash-safe (a coordinator restart
-    // mid-removal just re-runs on the next tick).
-    match super::worktree::sweep_cleanup_pending_worktrees(dir) {
-        Ok(0) => {}
-        Ok(n) => eprintln!(
-            "[dispatcher] Worktree sweep: removed {} cleanup-pending worktree(s)",
-            n
-        ),
-        Err(e) => eprintln!("[dispatcher] Worktree sweep warning: {}", e),
-    }
-
-    // Phase 1.2b: Target-dir reaper safety net.
-    //
-    // The agent wrapper reaps `target/` inline at exit, but kill -9, host OOM,
-    // or a failed wrapper invocation can leave ~16G of cargo build artifacts
-    // sitting in the worktree even though the agent is dead. This catches
-    // those cases. The retention policy still preserves the worktree itself
-    // for `wg retry`-in-place; we only delete the build cache.
-    match super::worktree::reap_dead_target_dirs(dir) {
-        Ok((0, _)) => {}
-        Ok((n, bytes)) => eprintln!(
-            "[dispatcher] Target-dir reap: cleared {} target/ dir(s), freed {} bytes",
-            n, bytes
-        ),
-        Err(e) => eprintln!("[dispatcher] Target-dir reap warning: {}", e),
-    }
+    // Worktrees are source-bearing recovery state and are never removed by
+    // the periodic sentinel. Cleanup-pending markers remain an explicit
+    // operator/worktree-GC surface. Build targets (including external paths)
+    // are handled only through the ownership registry above.
 
     // Phase 1.3: Zero-output agent detection — kill agents that have been alive
     // for 5+ minutes with zero bytes in stream files (API call never returned).
@@ -7546,6 +7706,44 @@ mod tests {
             "the Open→Waiting CAS must make a stale second tick a no-op"
         );
         assert_eq!(task.spawn_failures, 0);
+    }
+
+    #[test]
+    fn four_build_requests_serialize_while_pi_terra_evaluation_is_eligible() {
+        let builds: Vec<Task> = (0..4)
+            .map(|index| Task {
+                id: format!("build-{index}"),
+                title: "cargo test full suite".into(),
+                ..Default::default()
+            })
+            .collect();
+        let evaluator = Task {
+            id: ".evaluate-build-0".into(),
+            title: "Pi Terra evaluation".into(),
+            exec_mode: Some("full".into()),
+            ..Default::default()
+        };
+
+        let mut active_heavy = 0;
+        let mut admitted = Vec::new();
+        for task in builds.iter().chain(std::iter::once(&evaluator)) {
+            if build_admission_denial(task, false, active_heavy, 1, "healthy").is_none() {
+                admitted.push(task.id.clone());
+                if worksgood::disk_sentinel::classify_task(task).is_heavy() {
+                    active_heavy += 1;
+                }
+            }
+        }
+        assert_eq!(admitted, vec!["build-0", ".evaluate-build-0"]);
+
+        // Under pause all four Cargo requests defer, but the evaluator still
+        // clears the class-specific gate rather than being stranded.
+        assert!(
+            builds
+                .iter()
+                .all(|task| build_admission_denial(task, true, 0, 1, "low space").is_some())
+        );
+        assert!(build_admission_denial(&evaluator, true, 1, 1, "low space").is_none());
     }
 
     #[test]

@@ -1139,6 +1139,10 @@ pub enum Commands {
     /// Show resource utilization - committed vs available capacity
     Resources,
 
+    /// Inspect disk admission and conservatively clean explicitly-owned caches
+    #[command(subcommand, name = "disk")]
+    Disk(DiskCommand),
+
     /// Show the critical path (longest dependency chain)
     CriticalPath,
 
@@ -2115,7 +2119,7 @@ pub enum Commands {
 
     /// Detect and recover orphaned in-progress tasks with dead agents
     #[command(
-        after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the dispatcher can re-dispatch.\n\nWith --reap-targets, also removes cargo build artifacts from\nworktrees of agents that are no longer live (preserving source\nfiles and the worktree itself).\n\nThis is safe to run anytime — it is idempotent."
+        after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the dispatcher can re-dispatch.\n\nWith --reap-targets, also removes explicitly-owned Cargo target/tmp\npaths (including absolute /tmp paths) only after terminal owner/task,\nstale exact PID identity, lease, clean-worktree, artifact and open-file checks.\nUnknown directories and source worktrees are never removed.\n\nThis is safe to run anytime — it is idempotent."
     )]
     Sweep {
         /// Only report orphaned tasks, don't fix them
@@ -2827,6 +2831,22 @@ pub enum Commands {
 
         /// Source task ID (the task being placed)
         source_task_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DiskCommand {
+    /// Refresh and print the bounded disk-sentinel snapshot
+    Doctor {
+        /// Read the last daemon-produced snapshot without scanning
+        #[arg(long)]
+        cached: bool,
+    },
+    /// Reap stale explicitly-owned caches and compress retained terminal streams
+    Cleanup {
+        /// Apply cleanup; default is a non-mutating safety report
+        #[arg(long)]
+        execute: bool,
     },
 }
 
@@ -6519,6 +6539,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Workload => "workload",
         Commands::Worktree(_) => "worktree",
         Commands::Resources => "resources",
+        Commands::Disk(_) => "disk",
         Commands::CriticalPath => "critical-path",
         Commands::Analyze => "analyze",
         Commands::Archive { .. } => "archive",
@@ -6633,6 +6654,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Workload
             | Commands::Worktree(_)
             | Commands::Resources
+            | Commands::Disk(_)
             | Commands::CriticalPath
             | Commands::Analyze
             | Commands::Archive { .. }

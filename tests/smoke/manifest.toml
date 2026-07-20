@@ -2328,3 +2328,12 @@ owners = [
 ]
 description = "Exact live writer→satellite-completion→restart-reader regression for the 2026-07-19 PendingEval stall: a real persisted-plan `wg evaluate run` drives the explicit Pi/openai-codex/Terra one-shot path (credential-free remote-response stub, Claude sentinel), writes the seven-dimension score-0.88 Evaluation and schema-2 durable-byte verdict, pins both files before/after satellite completion, then a fresh service tick consumes once and repeated restart ticks remain byte/idempotent. Independent evaluation/verdict tamper branches fail closed loudly and keep the parent pending."
 timeout_seconds = 90
+
+[[scenario]]
+name = "disk_sentinel_admission_cleanup"
+script = "scenarios/disk_sentinel_admission_cleanup.sh"
+owners = [
+    "add-disk-sentinel",
+]
+description = "Real CLI + tmux/TUI regression for add-disk-sentinel: synthesizes warn/pause/hard-refuse/auto-resume thresholds relative to measured free bytes without filling disk; pins cached wg status and async TUI disk state; exercises scriptable doctor/cleanup; and proves an unknown /tmp/wg-target-* survives because filenames never confer ownership. Rust companion tests pin four-build serialization with Pi/Terra evaluation eligibility, external owned-target reaping, PID identity/restart, open-file/artifact/dirty-worktree preservation, and measured stream compression."
+timeout_seconds = 45

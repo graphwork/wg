@@ -1121,7 +1121,7 @@ args = ["-lc", "true"]
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
         // Sacred invariant: the wrapper must NOT force-remove worktrees inline.
-        // Atomic cleanup now happens via a marker + coordinator sweep, not
+        // Cleanup eligibility is marked for the explicit operator surface, not
         // inline `git worktree remove --force`. This keeps the wrapper crash-safe:
         // a killed wrapper leaves the worktree intact for orphan recovery.
         assert!(
@@ -1140,8 +1140,8 @@ args = ["-lc", "true"]
 
     #[test]
     fn test_wrapper_writes_cleanup_pending_marker() {
-        // Two-phase atomic cleanup: the wrapper must drop a `.wg-cleanup-pending`
-        // marker inside the worktree so the coordinator's next tick can reap it.
+        // The wrapper drops a `.wg-cleanup-pending` eligibility marker, but the
+        // disk sentinel never deletes source-bearing worktrees automatically.
         let temp_dir = TempDir::new().unwrap();
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
@@ -1157,7 +1157,7 @@ args = ["-lc", "true"]
 
         assert!(
             script.contains(".wg-cleanup-pending"),
-            "Wrapper must write the cleanup-pending marker for coordinator sweep"
+            "Wrapper must write the cleanup-pending marker for explicit cleanup"
         );
         assert!(
             script.contains("touch \"$WG_WORKTREE_PATH/.wg-cleanup-pending\""),
@@ -1174,11 +1174,10 @@ args = ["-lc", "true"]
     }
 
     #[test]
-    fn test_wrapper_reaps_target_dir() {
-        // worktree-target-dirs: the wrapper must remove the worktree's
-        // `target/` build cache at agent exit so multi-gigabyte cargo
-        // artifacts do not accumulate when the worktree is preserved by
-        // retention policy (failed/abandoned/blocked-on-merge tasks).
+    fn test_wrapper_defers_target_reap_to_owned_cache_sentinel() {
+        // The wrapper must never rm a target based only on its conventional
+        // filename. Spawn records exact owned target/tmp leases; the sentinel
+        // applies terminal/PID/mount/worktree/artifact/open-file guards.
         let temp_dir = TempDir::new().unwrap();
         let unique_id = get_unique_id();
         let task_id = format!("t{}", unique_id);
@@ -1193,10 +1192,24 @@ args = ["-lc", "true"]
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
         assert!(
-            script.contains("rm -rf \"$WG_WORKTREE_PATH/target\""),
-            "Wrapper must reap target/ at exit so build artifacts don't \
-             accumulate in preserved worktrees"
+            !script.contains("rm -rf \"$WG_WORKTREE_PATH/target\""),
+            "wrapper must not bypass owned-cache safety guards"
         );
+        let ownership = worksgood::disk_sentinel::load_ownership(&workgraph_dir).unwrap();
+        assert_eq!(
+            ownership.caches.len(),
+            2,
+            "Cargo target and install/tmp scratch must both be owned"
+        );
+        for cache in ownership.caches {
+            assert_eq!(cache.task_id, task_id);
+            assert_eq!(cache.agent_id, "agent-1");
+            assert!(cache.pid > 0);
+            assert!(cache.pid_start_epoch.is_some());
+            assert_ne!(cache.mount_id, "unknown");
+            assert!(!cache.created_at.is_empty());
+            assert!(!cache.lease_expires_at.is_empty());
+        }
     }
 
     #[test]
