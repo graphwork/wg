@@ -23,8 +23,15 @@ export TMUX_TMPDIR="$scratch/tmux"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR" "$TMUX_TMPDIR" "$scratch/project"
 G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
+"$WG_BIN" --dir "$G" add "Archived chat" --id .chat-0 -t chat-loop -t archived --no-place >/dev/null
 "$WG_BIN" --dir "$G" add "layout-fixture-exact-id" -d "render both panes" --no-place >/dev/null
 : >"$G/config.toml"
+# Daemon-produced disk cache fixture: the TUI may only read this through its
+# asynchronous cache, never by doing filesystem work in render/input.
+mkdir -p "$G/service/disk"
+cat >"$G/service/disk/disk-sentinel.json" <<'JSON'
+{"schema":1,"generated_at":"2026-07-20T00:00:00Z","level":"healthy","reason":"smoke","mounts":[],"targets":[],"worktrees":{"path":"worktrees","bytes":0,"complete":true},"agents":{"path":"agents","bytes":0,"complete":true},"log":{"path":"log","bytes":0,"complete":true},"active_builds":0,"active_build_heavy":0,"projected_headroom_bytes":45097156608}
+JSON
 graph_before=$(sha256sum "$G/graph.jsonl" | cut -d' ' -f1)
 config_before=$(sha256sum "$G/config.toml" | cut -d' ' -f1)
 
@@ -66,24 +73,25 @@ assert_one_context_row() {
   ! grep -qF "Commands •" <<<"$screen" || loud_fail "legacy WG footer remains"
 }
 
-# Start in Chat without creating anything, then switch to the contextual Task
-# inspector for the split captures.
+# Start with every chat archived. Recovery must still expose the global action
+# without implicitly creating/resurrecting a chat, then switch to Task.
 tmux new-session -d -s "$session" -x 160 -y 44 \
   "cd '$scratch/project' && env TERMUX_VERSION=0.119 MOSH_CONNECTION='smoke 0 0' MOSH_SERVER_PID=4242 '$WG_BIN' --dir '$G' tui --no-mouse"
 wait_screen "[ New chat ]"
+wait_screen "Chat ▾"
 assert_one_context_row "Chat ▾"
 capture >"$scratch/wide-chat-side.txt"
 tmux send-keys -t "$session" 1
-wait_screen "Task ▾"
 # Inspect the real graph row rather than accepting a generic "no task" shell.
-tmux send-keys -t "$session" Down Enter
-wait_screen "Task ▾  layout-fixture-exact  ● open"
+# All chats are archived, so explicitly return focus to the graph first.
+tmux send-keys -t "$session" Tab Down Enter
+wait_screen "Task ▾  layout-fixture-exact"
 assert_one_context_row "Task ▾"
 capture >"$scratch/wide-task-stacked-initial.txt"
 open_layout; tmux send-keys -t "$session" l Enter
 wait_layout dock right
 wait_layout mode split
-wait_screen "Task ▾  layout-fixture-exact  ● open"
+wait_screen "Task ▾  layout-fixture-exact"
 assert_one_context_row "Task ▾"
 capture >"$scratch/wide-task-side.txt"
 
@@ -99,6 +107,12 @@ open_layout; tmux send-keys -t "$session" f Enter
 wait_layout mode full
 wait_screen "Task ▾"
 assert_one_context_row "Task ▾"
+task_full=$(capture)
+grep -qF "[ New chat ]" <<<"$task_full" || loud_fail "Task context lost global New chat"
+grep -Eq 'A[0-9]+/[0-9?]+.*R[0-9]+.*Q[0-9]+' <<<"$task_full" \
+  || loud_fail "Task context lost agents/running/ready pulse: $task_full"
+grep -Eq 'disk ok 42GiB|D42G' <<<"$task_full" \
+  || loud_fail "Task context lost cached projected disk headroom: $task_full"
 capture >"$scratch/wide-task-full.txt"
 
 # Chat exposes only contextual chat controls and a fully-labelled fixed action.
@@ -146,4 +160,4 @@ wait_screen "Chat"
 [[ $(sha256sum "$G/config.toml" | cut -d' ' -f1) == "$config_before" ]] \
   || loud_fail "TUI layout mutated config"
 
-echo "PASS: one contextual row, exact Task context, fixed New chat, side/stacked/full seam rules, resize bursts, keyboard layout mode, and responsive restoration"
+echo "PASS: all-archived recovery, global fixed New chat, cached A/R/Q/disk pulse, exact Task context, one seam, responsive layout, and non-mutating startup"

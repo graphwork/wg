@@ -934,9 +934,32 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         && modifiers.contains(KeyModifiers::CONTROL)
         && !matches!(app.input_mode, InputMode::Launcher)
     {
-        app.focused_panel = FocusedPanel::Graph;
-        app.right_panel_tab = RightPanelTab::Chat;
         app.open_launcher();
+        return;
+    }
+
+    // The fully-labelled global action has one command-mode equivalent in
+    // every context. A focused PTY consumed bare `n` above, and text-entry
+    // modes are excluded here, so conversation/editor input remains sacred.
+    if matches!(code, KeyCode::Char('n'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.fuzzy_matches.is_empty()
+        && (app.right_panel_tab != RightPanelTab::Chat || app.chat.search.matches.is_empty())
+    {
+        app.open_launcher();
+        return;
+    }
+
+    // Keyboard peer of clicking the cached pulse. Like the pointer action it
+    // changes only inspector context and never mutates graph/chat/provider
+    // state. PTY focus still owns bare `d` before this branch.
+    if matches!(code, KeyCode::Char('d'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+    {
+        app.right_panel_tab = RightPanelTab::Dashboard;
+        app.focused_panel = FocusedPanel::RightPanel;
         return;
     }
 
@@ -1567,6 +1590,65 @@ pub(crate) fn open_retire_chat_dialog(app: &mut VizApp) {
     open_retire_dialog_for_coordinator(app, app.active_coordinator_id);
 }
 
+/// Open the menu represented by the contextual ellipsis. The action captures
+/// the exact rendered identity before showing a modal, preventing a refresh or
+/// later selection change from retargeting it.
+fn open_context_action_menu(app: &mut VizApp) {
+    if app.right_panel_tab == RightPanelTab::Chat && app.active_chat_view_identity().is_some() {
+        open_retire_chat_dialog(app);
+        return;
+    }
+    if app.right_panel_tab != RightPanelTab::Dashboard
+        && let Some(task_id) = app.selected_task_id().map(str::to_owned)
+    {
+        app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+            action: ChoiceDialogAction::TaskContext(task_id),
+            selected: 0,
+            options: vec![
+                (
+                    'd',
+                    "Detail".into(),
+                    "Inspect task metadata and result".into(),
+                ),
+                (
+                    'a',
+                    "Agency".into(),
+                    "Inspect assignment/evaluation lifecycle".into(),
+                ),
+                ('l', "Log".into(), "Inspect task output and events".into()),
+                ('m', "Messages".into(), "Inspect task messages".into()),
+                ('c', "Cancel".into(), "Make no changes".into()),
+            ],
+        });
+        return;
+    }
+    app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+        action: ChoiceDialogAction::WorkspaceContext,
+        selected: 0,
+        options: vec![
+            (
+                'd',
+                "Dashboard".into(),
+                "Open the cached system overview".into(),
+            ),
+            ('c', "Config".into(), "Inspect merged configuration".into()),
+            ('l', "Service log".into(), "Inspect daemon activity".into()),
+            ('x', "Cancel".into(), "Make no changes".into()),
+        ],
+    });
+}
+
+fn open_task_context_picker(app: &mut VizApp) {
+    app.focused_panel = FocusedPanel::Graph;
+    app.search_active = true;
+    app.input_mode = InputMode::Search;
+    app.search_input.clear();
+    app.fuzzy_matches.clear();
+    app.current_match = None;
+    app.filtered_indices = None;
+    app.update_scroll_bounds();
+}
+
 fn execute_choice_dialog_option(
     app: &mut VizApp,
     action: &ChoiceDialogAction,
@@ -1582,6 +1664,30 @@ fn execute_choice_dialog_option(
             2 => InputMode::Confirm(ConfirmAction::ArchiveChat(context.clone())),
             _ => InputMode::Normal,
         },
+        ChoiceDialogAction::TaskContext(task_id) => {
+            // The immutable id is also a fail-closed guard against a refresh
+            // retargeting this action menu while it is open.
+            if app.selected_task_id() != Some(task_id.as_str()) {
+                return InputMode::Normal;
+            }
+            app.right_panel_tab = match idx {
+                0 => RightPanelTab::Detail,
+                1 => RightPanelTab::Agency,
+                2 => RightPanelTab::Log,
+                3 => RightPanelTab::Messages,
+                _ => return InputMode::Normal,
+            };
+            InputMode::Normal
+        }
+        ChoiceDialogAction::WorkspaceContext => {
+            app.right_panel_tab = match idx {
+                0 => RightPanelTab::Dashboard,
+                1 => RightPanelTab::Config,
+                2 => RightPanelTab::CoordLog,
+                _ => return InputMode::Normal,
+            };
+            InputMode::Normal
+        }
     }
 }
 
@@ -4457,6 +4563,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            // A new press invalidates any release candidate left behind by a
+            // transport-dropped mouse-up from an earlier gesture.
+            app.workspace_click_pending = false;
             // Touch echo: record click position for visual feedback overlay.
             app.add_touch_echo(column, row);
 
@@ -4498,8 +4607,42 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
 
-            // Active-chat header controls are global pointer escapes from PTY
-            // capture. Route them before any terminal/message-area handling.
+            // The one-row controls are global pointer escapes from PTY capture.
+            // Route them before terminal/message/content handling so every
+            // visible glyph remains live even when a child owns keyboard focus.
+            if app.last_context_picker_area.width > 0 && app.last_context_picker_area.contains(pos)
+            {
+                if app.right_panel_tab == RightPanelTab::Chat {
+                    app.open_coordinator_picker();
+                } else if app.selected_task_id().is_some()
+                    && app.right_panel_tab != RightPanelTab::Dashboard
+                {
+                    open_task_context_picker(app);
+                } else {
+                    open_context_action_menu(app);
+                }
+                return;
+            }
+            if app.last_context_prev_area.width > 0 && app.last_context_prev_area.contains(pos) {
+                app.select_prev_task();
+                return;
+            }
+            if app.last_context_next_area.width > 0 && app.last_context_next_area.contains(pos) {
+                app.select_next_task();
+                return;
+            }
+            if app.last_context_menu_area.width > 0 && app.last_context_menu_area.contains(pos) {
+                open_context_action_menu(app);
+                return;
+            }
+            if app.last_context_pulse_area.width > 0 && app.last_context_pulse_area.contains(pos) {
+                app.right_panel_tab = RightPanelTab::Dashboard;
+                app.focused_panel = FocusedPanel::RightPanel;
+                return;
+            }
+
+            // Legacy active-chat content-header controls are also global
+            // pointer escapes. They are reset by the one-row renderer.
             if app.right_panel_tab == RightPanelTab::Chat
                 && app.last_chat_prev_area.width > 0
                 && app.last_chat_prev_area.contains(pos)
@@ -4553,10 +4696,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     return;
                 }
 
-                // Check [+] button first
+                // Check the global fully-labelled New-chat button first.
                 let plus = &app.coordinator_plus_hit;
                 if column >= plus.start && column < plus.end {
-                    app.right_panel_tab = RightPanelTab::Chat;
                     app.open_launcher();
                     return;
                 }
@@ -4824,6 +4966,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             } else if in_graph {
                 // Click in graph: focus graph + select task at clicked line.
                 app.focused_panel = FocusedPanel::Graph;
+                // A release on untouched empty canvas selects Workspace. Any
+                // semantic node hit or movement below cancels this candidate.
+                app.workspace_click_pending = true;
                 // Start drag-to-pan tracking for touch/mouse pan gestures.
                 app.graph_pan_last = Some((column, row));
                 // Exit text entry mode if active (text persists, goes gray).
@@ -4857,6 +5002,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             .cloned();
 
                         if let Some(region) = clicked_annotation {
+                            app.workspace_click_pending = false;
                             // Select the parent task (keeps graph node highlighted).
                             // `select_task_at_line` clears any prior `hud_pin`; we
                             // re-set it below so the inspector keeps showing the
@@ -4914,6 +5060,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             .unwrap_or(false);
 
                             if on_text {
+                                app.workspace_click_pending = false;
                                 // Check if the click is on the mail indicator (✉) region.
                                 let clicked_mail = app
                                     .plain_lines
@@ -5015,6 +5162,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Natural scrolling: dragging down (row increases) scrolls content up.
                 let dx = prev_col as i32 - column as i32;
                 let dy = prev_row as i32 - row as i32;
+                if dx != 0 || dy != 0 {
+                    app.workspace_click_pending = false;
+                }
                 if dx > 0 {
                     app.record_graph_hscroll_activity();
                     app.scroll.scroll_right(dx as usize);
@@ -5033,6 +5183,18 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            if app.workspace_click_pending {
+                app.workspace_click_pending = false;
+                app.hud_pin = None;
+                app.selected_task_idx = None;
+                app.recompute_trace();
+                // Hidden means hidden: selecting Workspace must not forcibly
+                // reveal the inspector. A visible inspector shows its existing
+                // cached Dashboard/system overview in place.
+                if app.right_panel_visible {
+                    app.right_panel_tab = RightPanelTab::Dashboard;
+                }
+            }
             let finished_layout_drag = app.scrollbar_drag == Some(ScrollbarDragTarget::Divider)
                 || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
             if finished_layout_drag {
@@ -5070,6 +5232,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             if let Some((prev_col, prev_row)) = app.graph_pan_last {
                 let dx = prev_col as i32 - column as i32;
                 let dy = prev_row as i32 - row as i32;
+                if dx != 0 || dy != 0 {
+                    app.workspace_click_pending = false;
+                }
                 if dx > 0 {
                     app.record_graph_hscroll_activity();
                     app.scroll.scroll_right(dx as usize);
@@ -9309,7 +9474,9 @@ mod chat_tab_navigation_tests {
         let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
             panic!("Ctrl+W must open the Close… dialog");
         };
-        let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+        let ChoiceDialogAction::CloseChat(context) = &dialog.action else {
+            panic!("Ctrl+W opened the wrong contextual menu");
+        };
         assert_eq!(context.identity.coordinator_id, 4);
         assert_eq!(context.identity.task_id, ".chat-4");
         assert_eq!(dialog.selected, 0, "default is non-destructive detach");
@@ -9799,7 +9966,9 @@ mod chat_tab_navigation_tests {
         let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
             panic!("w must open Close…");
         };
-        let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+        let ChoiceDialogAction::CloseChat(context) = &dialog.action else {
+            panic!("w opened the wrong contextual menu");
+        };
         assert_eq!(context.identity.coordinator_id, 4);
         assert!(app.active_tabs.contains(&4), "opening is non-mutating");
         super::handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -11523,12 +11692,194 @@ mod chat_open_tests {
             let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
                 panic!("Close… boundary {column} must open modal");
             };
-            let ChoiceDialogAction::CloseChat(context) = &dialog.action;
+            let ChoiceDialogAction::CloseChat(context) = &dialog.action else {
+                panic!("Close… boundary {column} opened the wrong menu");
+            };
             assert_eq!(context.identity.task_id, ".chat-1");
             assert_eq!(context.identity.label, "Chat 1");
             assert_eq!(context.task_status, "in-progress");
             assert!(app.active_tabs.contains(&1));
         }
+    }
+
+    #[test]
+    fn rendered_one_row_controls_are_live_at_actual_coordinates() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.set_layout_preference(crate::tui::viz_viewer::state::LayoutPreference {
+            mode: crate::tui::viz_viewer::state::InspectorMode::Full,
+            ..Default::default()
+        });
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.selected_task_idx = Some(0);
+        app.vitals.agents_alive = 1;
+        app.vitals.running = 2;
+        app.vitals.daemon_running = true;
+        app.task_counts.ready = 3;
+        app.task_counts.inspectable_chats = 4;
+        app.service_health.agents_max = 4;
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+
+        let render = |terminal: &mut Terminal<TestBackend>, app: &mut VizApp| {
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+                .unwrap();
+        };
+        let click = |app: &mut VizApp, area: Rect| {
+            assert!(area.width > 0, "rendered control must own a hit region");
+            handle_mouse(
+                app,
+                MouseEventKind::Down(MouseButton::Left),
+                area.y,
+                area.x + area.width - 1,
+            );
+        };
+
+        render(&mut terminal, &mut app);
+        let picker = app.last_context_picker_area;
+        click(&mut app, picker);
+        assert_eq!(app.input_mode, InputMode::Search);
+        app.input_mode = InputMode::Normal;
+        app.search_active = false;
+
+        render(&mut terminal, &mut app);
+        let next = app.last_context_next_area;
+        click(&mut app, next);
+        assert_eq!(app.selected_task_idx, Some(1));
+
+        // Pin an ordinary task so the ellipsis captures that exact identity.
+        app.selected_task_idx = app.task_order.iter().position(|id| id == "regular-task");
+        app.right_panel_tab = RightPanelTab::Detail;
+        render(&mut terminal, &mut app);
+        let menu = app.last_context_menu_area;
+        click(&mut app, menu);
+        let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+            panic!("rendered ellipsis did not open its contextual menu");
+        };
+        assert_eq!(
+            dialog.action,
+            ChoiceDialogAction::TaskContext("regular-task".into())
+        );
+        app.input_mode = InputMode::Normal;
+
+        render(&mut terminal, &mut app);
+        let pulse = app.last_context_pulse_area;
+        click(&mut app, pulse);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+
+        render(&mut terminal, &mut app);
+        let new_chat = Rect::new(
+            app.coordinator_plus_hit.start,
+            app.last_coordinator_bar_area.y,
+            app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
+            1,
+        );
+        click(&mut app, new_chat);
+        assert!(app.launcher.is_some());
+        assert_eq!(
+            app.task_order
+                .iter()
+                .filter(|id| id.starts_with(".chat-"))
+                .count(),
+            4,
+            "opening the launcher must not create a chat"
+        );
+
+        app.close_launcher();
+        app.right_panel_tab = RightPanelTab::Chat;
+        render(&mut terminal, &mut app);
+        let chat_picker = app.last_context_picker_area;
+        click(&mut app, chat_picker);
+        assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+    }
+
+    #[test]
+    fn rendered_new_chat_and_keyboard_equivalent_are_global_and_non_mutating() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.set_layout_preference(crate::tui::viz_viewer::state::LayoutPreference {
+            mode: crate::tui::viz_viewer::state::InspectorMode::Full,
+            ..Default::default()
+        });
+        let initial_tasks = app.task_order.clone();
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        for tab in [
+            RightPanelTab::Chat,
+            RightPanelTab::Detail,
+            RightPanelTab::Agency,
+            RightPanelTab::Config,
+            RightPanelTab::Log,
+            RightPanelTab::CoordLog,
+            RightPanelTab::Dashboard,
+            RightPanelTab::Messages,
+            RightPanelTab::Settings,
+        ] {
+            app.right_panel_tab = tab;
+            app.input_mode = InputMode::Normal;
+            app.launcher = None;
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            let x = app.coordinator_plus_hit.start;
+            let y = app.last_coordinator_bar_area.y;
+            handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), y, x);
+            assert!(app.launcher.is_some(), "pointer failed in {tab:?}");
+            assert_eq!(app.task_order, initial_tasks, "pointer mutated {tab:?}");
+            app.close_launcher();
+            app.last_launcher_open = None;
+
+            app.right_panel_tab = tab;
+            app.input_mode = InputMode::Normal;
+            app.fuzzy_matches.clear();
+            app.chat.search.matches.clear();
+            if tab == RightPanelTab::Chat {
+                // Ctrl+O command mode is the authoritative keyboard escape
+                // when a child PTY owns printables.
+                app.chat_pty_forwards_stdin = false;
+                app.focused_panel = FocusedPanel::Graph;
+                app.chat_startup_state = crate::tui::viz_viewer::state::ChatStartupState::Ready;
+            }
+            super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+            assert!(app.launcher.is_some(), "keyboard failed in {tab:?}");
+            assert_eq!(app.task_order, initial_tasks, "keyboard mutated {tab:?}");
+            app.close_launcher();
+            app.last_launcher_open = None;
+        }
+    }
+
+    #[test]
+    fn empty_canvas_click_selects_workspace_but_drag_and_hidden_layout_do_not_reveal() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        setup_for_graph_click(&mut app);
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.selected_task_idx = Some(0);
+
+        // Far to the right of graph text is empty canvas.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 70);
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 10, 70);
+        assert_eq!(app.selected_task_idx, None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert!(app.right_panel_visible);
+
+        app.selected_task_idx = Some(0);
+        app.right_panel_tab = RightPanelTab::Detail;
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 70);
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 8, 60);
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 8, 60);
+        assert_eq!(app.selected_task_idx, Some(0));
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+
+        app.right_panel_visible = false;
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 70);
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 10, 70);
+        assert_eq!(app.selected_task_idx, None);
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
     }
 
     /// Clicking a .chat-N node in the graph viewer opens/focuses the chat tab.

@@ -276,6 +276,11 @@ impl AsyncFs {
         self.inner.disk_snapshot_cache.lock().unwrap().clone()
     }
 
+    #[cfg(test)]
+    pub fn seed_disk_snapshot(&self, snapshot: worksgood::disk_sentinel::DiskSnapshot) {
+        *self.inner.disk_snapshot_cache.lock().unwrap() = Some(snapshot);
+    }
+
     /// Read the cached graph (clones `Arc`, never blocks on disk).
     pub fn cached_graph(&self) -> Option<(Arc<WorkGraph>, Option<SystemTime>)> {
         self.inner.graph_cache.lock().unwrap().clone()

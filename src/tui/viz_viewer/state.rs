@@ -3013,6 +3013,10 @@ impl LauncherState {
 pub enum ChoiceDialogAction {
     /// Identity-pinned close/lifecycle choices for one live chat.
     CloseChat(ChatCloseContext),
+    /// Navigation/actions for the exact task named in the contextual row.
+    TaskContext(String),
+    /// Navigation/actions for the Workspace/system context.
+    WorkspaceContext,
 }
 
 /// Immutable identity shown in both stages of the live-chat Close flow.
@@ -7200,6 +7204,12 @@ pub struct TaskCounts {
     pub done: usize,
     pub open: usize,
     pub in_progress: usize,
+    /// Open tasks whose dependencies are currently satisfied.
+    pub ready: usize,
+    /// Evaluation states are surfaced separately because they require action.
+    pub pending_eval: usize,
+    /// Every canonical chat task, including archived/terminal identities.
+    pub inspectable_chats: usize,
     pub failed: usize,
     pub blocked: usize,
     pub archived: usize,
@@ -7452,6 +7462,13 @@ pub struct VizApp {
     pub fullscreen_bottom_hover: bool,
     /// The tab bar area inside the right panel from the last render frame.
     pub last_tab_bar_area: Rect,
+    /// Exact controls rendered in the single contextual row. These are routed
+    /// before PTY/content capture, so every visible glyph is a real control.
+    pub last_context_picker_area: Rect,
+    pub last_context_prev_area: Rect,
+    pub last_context_next_area: Rect,
+    pub last_context_menu_area: Rect,
+    pub last_context_pulse_area: Rect,
     /// The iteration navigator widget area within the tab bar for mouse click handling.
     pub last_iteration_nav_area: Rect,
     /// The content area inside the right panel (below tab bar) from the last render frame.
@@ -7939,6 +7956,9 @@ pub struct VizApp {
     pub layout_viewport: Rect,
     /// Last mouse position during a graph-body drag-to-pan gesture (col, row).
     pub graph_pan_last: Option<(u16, u16)>,
+    /// True only between pointer-down/up when the press landed on empty graph
+    /// canvas and has not moved. Release selects Workspace without a modal.
+    pub workspace_click_pending: bool,
 
     /// Vertical scrollbar area for the graph pane (set each frame by renderer).
     pub last_graph_scrollbar_area: Rect,
@@ -8601,6 +8621,11 @@ impl VizApp {
             fullscreen_top_hover: false,
             fullscreen_bottom_hover: false,
             last_tab_bar_area: Rect::default(),
+            last_context_picker_area: Rect::default(),
+            last_context_prev_area: Rect::default(),
+            last_context_next_area: Rect::default(),
+            last_context_menu_area: Rect::default(),
+            last_context_pulse_area: Rect::default(),
             last_iteration_nav_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
@@ -8776,6 +8801,7 @@ impl VizApp {
             layout_drag: None,
             layout_viewport: Rect::default(),
             graph_pan_last: None,
+            workspace_click_pending: false,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,
@@ -10790,6 +10816,16 @@ impl VizApp {
 
         for task in graph.tasks() {
             counts.total += 1;
+            if task
+                .tags
+                .iter()
+                .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+            {
+                counts.inspectable_chats += 1;
+            }
+            if matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
+                counts.pending_eval += 1;
+            }
             // Active states (InProgress, PendingValidation, PendingEval) are
             // counted as "in_progress" so the HUD's "X running" matches the
             // tasks viz highlights yellow. See `Status::is_active`.
@@ -11001,6 +11037,7 @@ impl VizApp {
             0
         };
 
+        counts.ready = worksgood::query::ready_tasks(graph).len();
         self.task_snapshots = Arc::new(new_snapshots);
         self.task_counts = counts;
         self.total_usage = total_usage;
@@ -14013,6 +14050,11 @@ impl VizApp {
             fullscreen_top_hover: false,
             fullscreen_bottom_hover: false,
             last_tab_bar_area: Rect::default(),
+            last_context_picker_area: Rect::default(),
+            last_context_prev_area: Rect::default(),
+            last_context_next_area: Rect::default(),
+            last_context_menu_area: Rect::default(),
+            last_context_pulse_area: Rect::default(),
             last_iteration_nav_area: Rect::default(),
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
@@ -14171,6 +14213,7 @@ impl VizApp {
             layout_drag: None,
             layout_viewport: Rect::default(),
             graph_pan_last: None,
+            workspace_click_pending: false,
             last_graph_scrollbar_area: Rect::default(),
             last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,

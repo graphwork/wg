@@ -2306,8 +2306,9 @@ name = "tui_four_sided_layout_mobile"
 script = "scenarios/tui_four_sided_layout_mobile.sh"
 owners = [
     "implement-four-sided",
+    "fix-one-row",
 ]
-description = "Candidate-binary real tmux/PTY flow for the one-row borderless inspector at desktop, medium, and Termux sizes: contextual Chat/Task rows, fixed labelled New chat, one side/stacked seam, frameless full mode, mouse-disabled p layout controls, rollback/commit, narrow-to-wide preference restoration, and non-mutating startup/persistence. Credential-free."
+description = "Candidate-binary real tmux/PTY flow for the one-row borderless inspector at desktop, medium, and Termux sizes: all-chat-archived recovery, contextual Chat/Task rows, globally fixed labelled New chat, cached agents/running/ready/disk pulse, one side/stacked seam, frameless full mode, mouse-disabled p layout controls, rollback/commit, narrow-to-wide preference restoration, and non-mutating startup/persistence. Credential-free."
 timeout_seconds = 180
 
 [[scenario]]

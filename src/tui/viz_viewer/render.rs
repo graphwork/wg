@@ -2093,60 +2093,164 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: boo
     if area.width == 0 || area.height == 0 {
         return;
     }
+
+    // Reserve the global primary action before considering any contextual or
+    // ambient content. The action never shrinks to an icon and exists in every
+    // context; rendering the TUI remains non-mutating until it is activated.
+    let button_width = NEW_CHAT_BUTTON_WIDTH.min(area.width as usize);
+    let button_x = area.x + area.width.saturating_sub(button_width as u16);
+    let left_width = area.width as usize - button_width;
+
+    app.last_coordinator_bar_area = area;
+    app.coordinator_tab_hits.clear();
+    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+    app.last_chat_prev_area = Rect::default();
+    app.last_chat_next_area = Rect::default();
+    app.last_chat_picker_area = Rect::default();
+    app.last_chat_close_area = Rect::default();
+    app.last_context_picker_area = Rect::default();
+    app.last_context_prev_area = Rect::default();
+    app.last_context_next_area = Rect::default();
+    app.last_context_menu_area = Rect::default();
+    app.last_context_pulse_area = Rect::default();
+
     let active = app.active_chat_view_identity();
+    let selected = app.selected_task_id().map(str::to_owned);
+    let workspace = app.right_panel_tab == RightPanelTab::Dashboard || selected.is_none();
+    let task_context = !chat
+        && !workspace
+        && matches!(
+            app.right_panel_tab,
+            RightPanelTab::Detail
+                | RightPanelTab::Agency
+                | RightPanelTab::Log
+                | RightPanelTab::Messages
+                | RightPanelTab::Output
+        );
+    let picker_available = if chat {
+        app.task_counts.inspectable_chats > 0
+    } else {
+        task_context
+            || workspace
+            || matches!(
+                app.right_panel_tab,
+                RightPanelTab::Config | RightPanelTab::CoordLog | RightPanelTab::Settings
+            )
+    };
+
     let mut left = if matches!(app.input_mode, InputMode::Layout) {
         " Layout  h/j/k/l dock  a auto  +/- size  = preset  f full  0 hide  Enter apply  Esc cancel"
             .to_string()
     } else if chat && app.chat_pty_mode && !app.chat_pty_forwards_stdin {
-        " Commands  n new  w close  ←/→ chats  p panel  Ctrl+O return".to_string()
-    } else if chat {
-        let identity = active
-            .as_ref()
-            .map(|value| value.task_id.as_str())
-            .unwrap_or("no chat");
-        let state = active
-            .as_ref()
-            .map(|value| app.active_chat_connection_label(&value.task_id))
-            .unwrap_or("idle");
-        format!(" Chat ▾  {identity}  ● {state}")
+        " Commands  n new  w close  ←/→ chats  d dashboard  Ctrl+O return".to_string()
     } else {
-        let identity = app.selected_task_id().unwrap_or("no task");
-        let state = app
-            .hud_detail
-            .as_ref()
-            .filter(|detail| detail.task_id == identity)
-            .map(|detail| detail.task_status.to_string())
-            .unwrap_or_else(|| "loading".to_string());
-        format!(" Task ▾  {identity}  ● {state}")
+        let label = if chat {
+            "Chat"
+        } else if workspace {
+            "Workspace"
+        } else if task_context {
+            "Task"
+        } else {
+            match app.right_panel_tab {
+                RightPanelTab::Config | RightPanelTab::Settings => "Config",
+                RightPanelTab::CoordLog => "Service",
+                RightPanelTab::Agency => "Agency",
+                RightPanelTab::Log => "Log",
+                _ => "Workspace",
+            }
+        };
+        let identity = if chat {
+            active.as_ref().map(|v| v.task_id.as_str())
+        } else if task_context {
+            selected.as_deref()
+        } else {
+            None
+        };
+        let base_without_picker = match identity {
+            Some(identity) => format!(" {label}  {identity}"),
+            None => format!(" {label}"),
+        };
+        let base_with_picker = match identity {
+            Some(identity) => format!(" {label} ▾  {identity}"),
+            None => format!(" {label} ▾"),
+        };
+        let use_picker =
+            picker_available && UnicodeWidthStr::width(base_with_picker.as_str()) <= left_width;
+        let base = if use_picker {
+            base_with_picker
+        } else {
+            base_without_picker
+        };
+        if use_picker {
+            app.last_context_picker_area = Rect::new(
+                area.x + 1,
+                area.y,
+                (UnicodeWidthStr::width(label) + 2) as u16,
+                1,
+            );
+        }
+        base
     };
 
-    let button = chat.then_some(NEW_CHAT_BUTTON_LABEL);
-    let button_width = button.map_or(0, UnicodeWidthStr::width);
-    let left_width = area.width as usize - (button_width.min(area.width as usize));
-
-    if chat && !matches!(app.input_mode, InputMode::Layout) {
-        if let Some(identity) = active.as_ref() {
-            let route = match (&identity.executor, &identity.model) {
-                (Some(executor), Some(model)) => format!("  {executor}:{model}"),
-                (Some(executor), None) => format!("  {executor}:default"),
-                _ => String::new(),
-            };
-            if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(route.as_str())
+    // Connection/task state is a secondary label: useful on ordinary and wide
+    // rows, but deliberately removed before identity, warnings, or New chat.
+    if !matches!(app.input_mode, InputMode::Layout) && area.width >= 100 {
+        let state = if chat {
+            active.as_ref().map(|identity| {
+                app.active_chat_connection_label(&identity.task_id)
+                    .to_string()
+            })
+        } else if task_context {
+            selected.as_ref().map(|identity| {
+                app.hud_detail
+                    .as_ref()
+                    .filter(|detail| detail.task_id == *identity)
+                    .map(|detail| detail.task_status.to_string().to_lowercase())
+                    .unwrap_or_else(|| "loading".to_string())
+            })
+        } else {
+            None
+        };
+        if let Some(state) = state {
+            let slot = format!("  ● {state}");
+            if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
                 <= left_width
             {
-                left.push_str(&route);
+                left.push_str(&slot);
             }
         }
-    } else if !chat && UnicodeWidthStr::width(left.as_str()) + 8 <= area.width as usize {
-        left.push_str("  ‹  ›  ⋯");
     }
 
-    // The minimal TUI deliberately has one contextual row rather than a
-    // separate global status bar. Search text is UI-owned and must echo here
-    // immediately while a large latest-wins graph snapshot is still being
-    // derived; otherwise the draft appears lost until the CPU worker catches
-    // up. Slow-bootstrap feedback uses the same compact row and clears as soon
-    // as its coherent storage snapshot lands.
+    let append_control = |left: &mut String, glyph: &str, target: &mut Rect| {
+        let slot = format!("  {glyph}");
+        if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
+            <= left_width
+        {
+            let start = area.x + UnicodeWidthStr::width(left.as_str()) as u16 + 2;
+            left.push_str(&slot);
+            *target = Rect::new(start, area.y, UnicodeWidthStr::width(glyph) as u16, 1);
+        }
+    };
+
+    if !matches!(app.input_mode, InputMode::Layout) && area.width >= 100 {
+        if task_context {
+            let idx = app.selected_task_idx.unwrap_or(0);
+            if idx > 0 {
+                append_control(&mut left, "‹", &mut app.last_context_prev_area);
+            }
+            if idx + 1 < app.task_order.len() {
+                append_control(&mut left, "›", &mut app.last_context_next_area);
+            }
+        }
+        let has_exact_menu = workspace || selected.is_some() || active.is_some();
+        if has_exact_menu {
+            append_control(&mut left, "⋯", &mut app.last_context_menu_area);
+        }
+    }
+
+    // Search/bootstrap feedback is immediate UI state and therefore outranks
+    // cached ambient detail, but never the identity or primary action.
     if app.search_active {
         let slot = format!("  | {}", app.search_status());
         if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
@@ -2163,13 +2267,125 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: boo
             left.push_str(&slot);
         }
     }
-    if let Some(disk) = app.async_fs.cached_disk_snapshot() {
-        let headroom = disk.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        let slot = format!("  | disk {:?} {:.0}GiB", disk.level, headroom);
-        if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(slot.as_str())
-            <= left_width
-        {
-            left.push_str(&slot);
+
+    // Build one coherent pulse from already-cached state. No graph, filesystem,
+    // process, or subprocess work belongs in this render path. Disk is never
+    // emitted by itself: healthy headroom travels with A/R/Q, while actionable
+    // daemon/evaluator/disk warnings may preempt optional route text.
+    if !matches!(app.input_mode, InputMode::Layout) {
+        let max = if app.service_health.agents_max == 0 {
+            "?".to_string()
+        } else {
+            app.service_health.agents_max.to_string()
+        };
+        let coord_age = app
+            .vitals
+            .coord_last_tick
+            .and_then(|tick| tick.elapsed().ok())
+            .map(|age| age.as_secs());
+        let daemon_long = if !app.vitals.daemon_running {
+            "daemon down".to_string()
+        } else if coord_age.is_some_and(|age| age >= 30) {
+            format!(
+                "daemon stale {}",
+                format_duration_compact(coord_age.unwrap_or(0))
+            )
+        } else {
+            "daemon ok".to_string()
+        };
+        let daemon_warning = (!app.vitals.daemon_running || coord_age.is_some_and(|age| age >= 30))
+            .then_some(daemon_long.clone());
+        let disk = app.async_fs.cached_disk_snapshot();
+        let disk_headroom = disk
+            .as_ref()
+            .map(|snapshot| snapshot.projected_headroom_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+        let disk_long = disk.as_ref().map(|snapshot| {
+            let level = match snapshot.level {
+                worksgood::disk_sentinel::DiskLevel::Healthy => "ok",
+                worksgood::disk_sentinel::DiskLevel::Warning => "warning",
+                worksgood::disk_sentinel::DiskLevel::PauseBuilds => "pause",
+                worksgood::disk_sentinel::DiskLevel::HardRefuse => "blocked",
+            };
+            format!("disk {level} {:.0}GiB", disk_headroom.unwrap_or_default())
+        });
+        let disk_warning = disk.as_ref().and_then(|snapshot| {
+            (snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy)
+                .then(|| disk_long.clone().unwrap_or_default())
+        });
+
+        let mut long = format!(
+            "A{}/{} · R{} · Q{}",
+            app.vitals.agents_alive, max, app.vitals.running, app.task_counts.ready
+        );
+        if app.task_counts.pending_eval > 0 {
+            long.push_str(&format!(" · E{}", app.task_counts.pending_eval));
+        }
+        long.push_str(&format!(" · {daemon_long}"));
+        if let Some(disk) = &disk_long {
+            long.push_str(&format!(" · {disk}"));
+        }
+
+        let mut compact = format!(
+            "A{}/{} R{} Q{}",
+            app.vitals.agents_alive, max, app.vitals.running, app.task_counts.ready
+        );
+        if app.task_counts.pending_eval > 0 {
+            compact.push_str(&format!(" E{}", app.task_counts.pending_eval));
+        }
+        if let Some(warning) = &daemon_warning {
+            compact.push_str(&format!(" {warning}"));
+        }
+        if let Some(snapshot) = disk.as_ref() {
+            let marker = if snapshot.level == worksgood::disk_sentinel::DiskLevel::Healthy {
+                "D"
+            } else {
+                "D!"
+            };
+            compact.push_str(&format!(
+                " {marker}{:.0}G",
+                disk_headroom.unwrap_or_default()
+            ));
+        }
+
+        let mut warning_parts = Vec::new();
+        if app.task_counts.pending_eval > 0 {
+            warning_parts.push(format!("E{}", app.task_counts.pending_eval));
+        }
+        if let Some(warning) = daemon_warning {
+            warning_parts.push(warning);
+        }
+        if let Some(warning) = disk_warning {
+            warning_parts.push(warning);
+        }
+        let warning = warning_parts.join(" ");
+        let candidates = [long.as_str(), compact.as_str(), warning.as_str()];
+        if let Some(pulse) = candidates.iter().find(|pulse| {
+            !pulse.is_empty()
+                && UnicodeWidthStr::width(left.as_str()) + 2 + UnicodeWidthStr::width(**pulse)
+                    <= left_width
+        }) {
+            let start = area.x + UnicodeWidthStr::width(left.as_str()) as u16 + 2;
+            left.push_str("  ");
+            left.push_str(pulse);
+            app.last_context_pulse_area =
+                Rect::new(start, area.y, UnicodeWidthStr::width(*pulse) as u16, 1);
+        }
+
+        // Route is deliberately last: warning and pulse information always
+        // wins the width contest.
+        if chat && left_width >= 72 {
+            if let Some(identity) = active.as_ref() {
+                let route = match (&identity.executor, &identity.model) {
+                    (Some(executor), Some(model)) => format!("  {executor}:{model}"),
+                    (Some(executor), None) => format!("  {executor}:default"),
+                    _ => String::new(),
+                };
+                if UnicodeWidthStr::width(left.as_str()) + UnicodeWidthStr::width(route.as_str())
+                    <= left_width
+                {
+                    left.push_str(&route);
+                }
+            }
         }
     }
 
@@ -2186,32 +2402,19 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: boo
         Rect::new(area.x, area.y, left_width as u16, 1),
     );
 
-    app.last_coordinator_bar_area = area;
-    app.coordinator_tab_hits.clear();
-    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
-    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
-    app.last_chat_prev_area = Rect::default();
-    app.last_chat_next_area = Rect::default();
-    app.last_chat_picker_area = Rect::default();
-    app.last_chat_close_area = Rect::default();
-    if let Some(button) = button {
-        let x = area.x + area.width.saturating_sub(button_width as u16);
-        frame.render_widget(
-            Paragraph::new(button).style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(x, area.y, button_width as u16, 1),
-        );
-        app.coordinator_plus_hit = CoordinatorPlusHit {
-            start: x,
-            end: x.saturating_add(button_width as u16),
-        };
-    } else {
-        app.coordinator_plus_hit = CoordinatorPlusHit::default();
-    }
+    frame.render_widget(
+        Paragraph::new(NEW_CHAT_BUTTON_LABEL).style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(button_x, area.y, button_width as u16, 1),
+    );
+    app.coordinator_plus_hit = CoordinatorPlusHit {
+        start: button_x,
+        end: button_x.saturating_add(button_width as u16),
+    };
 }
 
 /// Draw one contextual row, one optional split seam, and borderless content.
@@ -6694,11 +6897,14 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) -> Rect {
 fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     use super::state::ChoiceDialogAction;
 
-    let ChoiceDialogAction::CloseChat(context) = &state.action;
-    let title = format!(
-        " Close Chat {} ({}) ",
-        context.identity.label, context.identity.task_id
-    );
+    let title = match &state.action {
+        ChoiceDialogAction::CloseChat(context) => format!(
+            " Close Chat {} ({}) ",
+            context.identity.label, context.identity.task_id
+        ),
+        ChoiceDialogAction::TaskContext(task_id) => format!(" Task actions: {task_id} "),
+        ChoiceDialogAction::WorkspaceContext => " Workspace actions ".to_string(),
+    };
     let size = frame.area();
     let width = size.width.saturating_sub(2).clamp(1, 100);
     let height = (12 + state.options.len() as u16)
@@ -6720,18 +6926,30 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = vec![
-        Line::from(format!(
-            "Chat: {} ({})",
-            context.identity.label, context.identity.task_id
-        )),
-        Line::from(format!(
-            "State: {} • {}",
-            context.task_status, context.connection
-        )),
-        Line::from(format!("Route: {}", close_context_route(context))),
-        Line::from(""),
-    ];
+    let mut lines: Vec<Line> = match &state.action {
+        ChoiceDialogAction::CloseChat(context) => vec![
+            Line::from(format!(
+                "Chat: {} ({})",
+                context.identity.label, context.identity.task_id
+            )),
+            Line::from(format!(
+                "State: {} • {}",
+                context.task_status, context.connection
+            )),
+            Line::from(format!("Route: {}", close_context_route(context))),
+            Line::from(""),
+        ],
+        ChoiceDialogAction::TaskContext(task_id) => vec![
+            Line::from(format!("Exact identity: {task_id}")),
+            Line::from("Choose the contextual surface for this task."),
+            Line::from(""),
+        ],
+        ChoiceDialogAction::WorkspaceContext => vec![
+            Line::from("System context: Workspace"),
+            Line::from("Choose a cached system surface."),
+            Line::from(""),
+        ],
+    };
     for (i, (hotkey, label, desc)) in state.options.iter().enumerate() {
         let selected = i == state.selected;
         let style = if selected {
@@ -15798,10 +16016,15 @@ mod tests {
             );
         }
         let narrow = context_row_text(&mut app, 40);
+        let warning_width = context_row_text(&mut app, 50);
         let wide = context_row_text(&mut app, 120);
         assert!(
             !narrow.contains("pi:m"),
             "optional route did not collapse: {narrow}"
+        );
+        assert!(
+            warning_width.contains("daemon down") && !warning_width.contains("pi:m"),
+            "actionable daemon warning must preempt route: {warning_width}"
         );
         assert!(
             wide.contains("pi:m"),
@@ -15810,20 +16033,104 @@ mod tests {
     }
 
     #[test]
+    fn one_row_global_new_chat_survives_every_context_and_width() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        for tab in [
+            RightPanelTab::Chat,
+            RightPanelTab::Detail,
+            RightPanelTab::Agency,
+            RightPanelTab::Config,
+            RightPanelTab::Log,
+            RightPanelTab::CoordLog,
+            RightPanelTab::Dashboard,
+            RightPanelTab::Messages,
+            RightPanelTab::Settings,
+        ] {
+            app.right_panel_tab = tab;
+            for width in [40, 80, 140] {
+                let row = context_row_text(&mut app, width);
+                assert!(
+                    row.contains(NEW_CHAT_BUTTON_LABEL),
+                    "tab={tab:?} width={width}: {row}"
+                );
+            }
+        }
+        // Merely rendering all states is strictly non-mutating.
+        assert!(app.launcher.is_none());
+    }
+
+    #[test]
+    fn one_row_pulse_prioritizes_agents_running_ready_and_disk() {
+        use worksgood::disk_sentinel::{AreaUsage, DiskLevel, DiskSnapshot};
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.vitals.agents_alive = 2;
+        app.vitals.running = 3;
+        app.vitals.daemon_running = true;
+        app.vitals.coord_last_tick = Some(std::time::SystemTime::now());
+        app.service_health.agents_max = 8;
+        app.task_counts.ready = 4;
+        app.task_counts.pending_eval = 1;
+        app.async_fs.seed_disk_snapshot(DiskSnapshot {
+            schema: 1,
+            generated_at: "now".into(),
+            level: DiskLevel::Healthy,
+            reason: "ok".into(),
+            mounts: Vec::new(),
+            targets: Vec::new(),
+            worktrees: AreaUsage {
+                path: "w".into(),
+                bytes: 0,
+                complete: true,
+            },
+            agents: AreaUsage {
+                path: "a".into(),
+                bytes: 0,
+                complete: true,
+            },
+            log: AreaUsage {
+                path: "l".into(),
+                bytes: 0,
+                complete: true,
+            },
+            active_builds: 0,
+            active_build_heavy: 0,
+            projected_headroom_bytes: 42 * 1024 * 1024 * 1024,
+        });
+
+        for width in [80, 140] {
+            let row = context_row_text(&mut app, width);
+            assert!(row.contains("A2/8"), "width={width}: {row}");
+            assert!(row.contains("R3"), "width={width}: {row}");
+            assert!(row.contains("Q4"), "width={width}: {row}");
+            assert!(row.contains("E1"), "width={width}: {row}");
+            assert!(row.contains("42G"), "width={width}: {row}");
+            assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "width={width}: {row}");
+        }
+        let narrow = context_row_text(&mut app, 40);
+        assert!(narrow.contains("Task") && narrow.contains("a"), "{narrow}");
+        assert!(narrow.contains(NEW_CHAT_BUTTON_LABEL), "{narrow}");
+    }
+
+    #[test]
     fn one_row_task_context_is_contextual_and_borderless() {
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
         app.right_panel_tab = RightPanelTab::Detail;
-        let row = context_row_text(&mut app, 80);
+        let row = context_row_text(&mut app, 140);
         assert!(row.contains("Task"), "{row}");
         assert!(row.contains("a"), "exact task id missing: {row}");
+        assert!(row.contains('›'), "next navigation missing: {row}");
         assert!(
-            row.contains('‹') && row.contains('›'),
-            "navigation missing: {row}"
+            !row.contains('‹'),
+            "previous action must be omitted at the first task: {row}"
         );
         assert!(
-            !row.contains("New chat"),
-            "task context leaked chat action: {row}"
+            row.contains("New chat"),
+            "global primary action missing from task context: {row}"
         );
         assert!(
             !row.contains('┌') && !row.contains('┐') && !row.contains('│'),
@@ -15904,7 +16211,7 @@ mod tests {
             .collect();
         assert!(top.contains("Task") && top.contains("a"), "{top}");
         assert!(
-            !top.contains("New chat") && !top.contains('┌') && !top.contains('┐'),
+            top.contains("New chat") && !top.contains('┌') && !top.contains('┐'),
             "{top}"
         );
     }
