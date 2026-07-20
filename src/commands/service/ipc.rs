@@ -292,9 +292,24 @@ pub(crate) fn handle_connection(
     // on both directions so a partial writer or a client that never reads its
     // response cannot strand ticks and all subsequent IPC indefinitely.
     const IPC_IO_TIMEOUT: Duration = Duration::from_millis(500);
-    stream.set_nonblocking(false)?;
-    stream.set_recv_timeout(Some(IPC_IO_TIMEOUT))?;
-    stream.set_send_timeout(Some(IPC_IO_TIMEOUT))?;
+    // Configure the accepted stream for blocking, time-bounded request/response.
+    // If the peer has already closed or half-shut the socket, these calls fail
+    // with EINVAL/EPIPE — a benign "peer went away" disconnect, not a fault
+    // worth an ERROR line (this was the per-tick `os error 22` daemon.log spam).
+    if let Err(e) = stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_recv_timeout(Some(IPC_IO_TIMEOUT)))
+        .and_then(|()| stream.set_send_timeout(Some(IPC_IO_TIMEOUT)))
+    {
+        if is_benign_disconnect(&e) {
+            logger.debug(&format!(
+                "IPC peer disconnected before request (stream setup): {}",
+                e
+            ));
+            return Ok(());
+        }
+        return Err(e).context("configure accepted IPC stream");
+    }
 
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
@@ -310,8 +325,7 @@ pub(crate) fn handle_connection(
     let line = line.trim_end_matches(['\r', '\n']);
     if line.is_empty() {
         let response = IpcResponse::error("Invalid request: empty request");
-        write_response(&stream, &response)?;
-        return Ok(());
+        return write_final_response(&stream, &response, logger);
     }
 
     let request: IpcRequest = match serde_json::from_str(line) {
@@ -319,8 +333,7 @@ pub(crate) fn handle_connection(
         Err(e) => {
             logger.warn(&format!("Invalid IPC request: {}", e));
             let response = IpcResponse::error(&format!("Invalid request: {}", e));
-            write_response(&stream, &response)?;
-            return Ok(());
+            return write_final_response(&stream, &response, logger);
         }
     };
 
@@ -337,16 +350,87 @@ pub(crate) fn handle_connection(
         daemon_cfg,
         logger,
     );
-    write_response(&stream, &response)?;
+    write_final_response(&stream, &response, logger)
+}
+
+/// Write the response for a single IPC connection, downgrading a benign
+/// peer-gone disconnect (EINVAL/EPIPE/…) to a DEBUG breadcrumb instead of
+/// letting it bubble up as an `[ERROR] Error handling connection` line. Any
+/// other I/O error is a genuine fault and is propagated so it stays loud.
+fn write_final_response(
+    stream: &Stream,
+    response: &IpcResponse,
+    logger: &DaemonLogger,
+) -> Result<()> {
+    if let Err(e) = write_response(stream, response) {
+        if is_benign_disconnect(&e) {
+            logger.debug(&format!(
+                "IPC peer disconnected during response write: {}",
+                e
+            ));
+            return Ok(());
+        }
+        return Err(e).context("write IPC response");
+    }
     Ok(())
 }
 
-fn write_response(stream: &Stream, response: &IpcResponse) -> Result<()> {
-    let json = serde_json::to_string(response)?;
+fn write_response(stream: &Stream, response: &IpcResponse) -> std::io::Result<()> {
     let mut w = stream;
+    write_response_to(&mut w, response)
+}
+
+/// Serialize `response` as a single JSON line and write it to `w`. Split out
+/// from [`write_response`] so it can be exercised against a fake writer in the
+/// unit tests (see `test_write_response_einval_is_benign_enospc_is_loud`).
+/// Serialization of a well-formed [`IpcResponse`] does not fail in practice; if
+/// it ever did we surface it as an I/O error so callers have a single error
+/// type to classify.
+fn write_response_to<W: Write>(w: &mut W, response: &IpcResponse) -> std::io::Result<()> {
+    let json = serde_json::to_string(response).map_err(std::io::Error::other)?;
     writeln!(w, "{}", json)?;
     w.flush()?;
     Ok(())
+}
+
+/// Classify an I/O error on an accepted IPC connection as a benign
+/// "peer went away" disconnect rather than a genuine daemon fault.
+///
+/// The daemon accepts on a non-blocking listener and then flips the accepted
+/// stream back to blocking with recv/send timeouts for a simple
+/// request/response. If the client has already closed or half-shut the socket
+/// (a probe, a `Ctrl-C`'d CLI, a reader that closed its read half before we
+/// finished writing), those `set_*`/`write`/`flush` calls fail. On macOS these
+/// surface as EINVAL (os error 22) or EPIPE; on Linux typically
+/// EPIPE/ECONNRESET. All mean "the other end is gone" — nothing to fix and
+/// nothing to alarm about, so they belong at DEBUG, not ERROR.
+///
+/// Any other errno (ENOSPC, EIO, EACCES, …) is a real fault and returns
+/// `false` so the loud `[ERROR] Error handling connection` line is preserved.
+fn is_benign_disconnect(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if matches!(
+        err.kind(),
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::UnexpectedEof
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        if matches!(
+            err.raw_os_error(),
+            Some(libc::EINVAL)
+                | Some(libc::EPIPE)
+                | Some(libc::ECONNRESET)
+                | Some(libc::ENOTCONN)
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Handle an IPC request
@@ -2173,6 +2257,7 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{self, Write};
     use tempfile::TempDir;
 
     fn select_claude_route(dir: &Path) {
@@ -2181,6 +2266,108 @@ mod tests {
             "[dispatcher]\nmodel = \"claude:opus\"\n",
         )
         .unwrap();
+    }
+
+    /// A writer that fails every write with a caller-chosen errno, used to
+    /// prove `write_response_to` surfaces the underlying I/O error unchanged so
+    /// `is_benign_disconnect` can classify it (mirrors a dying IPC socket).
+    struct FailingWriter {
+        errno: i32,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from_raw_os_error(self.errno))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from_raw_os_error(self.errno))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_benign_disconnect_classifies_peer_gone_errnos() {
+        // EINVAL (os error 22) is exactly the daemon.log spam we are silencing;
+        // EPIPE/ECONNRESET/ENOTCONN are the other peer-gone shapes.
+        for errno in [libc::EINVAL, libc::EPIPE, libc::ECONNRESET, libc::ENOTCONN] {
+            let err = io::Error::from_raw_os_error(errno);
+            assert!(
+                is_benign_disconnect(&err),
+                "errno {} should classify as a benign disconnect",
+                errno
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_benign_disconnect_keeps_real_faults_loud() {
+        // Genuine faults must NOT be swallowed — they keep the loud ERROR line.
+        for errno in [libc::ENOSPC, libc::EIO, libc::EACCES] {
+            let err = io::Error::from_raw_os_error(errno);
+            assert!(
+                !is_benign_disconnect(&err),
+                "errno {} is a real fault and must stay loud",
+                errno
+            );
+        }
+    }
+
+    #[test]
+    fn test_benign_disconnect_matches_error_kinds() {
+        assert!(is_benign_disconnect(&io::Error::from(
+            io::ErrorKind::BrokenPipe
+        )));
+        assert!(is_benign_disconnect(&io::Error::from(
+            io::ErrorKind::ConnectionReset
+        )));
+        assert!(is_benign_disconnect(&io::Error::from(
+            io::ErrorKind::UnexpectedEof
+        )));
+        // A non-disconnect kind stays loud.
+        assert!(!is_benign_disconnect(&io::Error::from(
+            io::ErrorKind::OutOfMemory
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_response_einval_is_benign_enospc_is_loud() {
+        let response = IpcResponse::success(serde_json::json!({ "status": "ok" }));
+
+        // A writer dying with EINVAL (the daemon-log spam) → benign disconnect.
+        let mut einval = FailingWriter {
+            errno: libc::EINVAL,
+        };
+        let err = write_response_to(&mut einval, &response)
+            .expect_err("EINVAL writer must produce an error");
+        assert!(
+            is_benign_disconnect(&err),
+            "EINVAL from the response writer must be treated as a benign disconnect"
+        );
+
+        // A writer dying with ENOSPC (disk full) → real fault, stays loud.
+        let mut enospc = FailingWriter {
+            errno: libc::ENOSPC,
+        };
+        let err = write_response_to(&mut enospc, &response)
+            .expect_err("ENOSPC writer must produce an error");
+        assert!(
+            !is_benign_disconnect(&err),
+            "ENOSPC from the response writer is a real fault and must stay loud"
+        );
+    }
+
+    #[test]
+    fn test_write_response_to_emits_single_json_line() {
+        let response = IpcResponse::success(serde_json::json!({ "status": "ok" }));
+        let mut buf: Vec<u8> = Vec::new();
+        write_response_to(&mut buf, &response).expect("write to Vec must succeed");
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.ends_with('\n'), "response must be newline-terminated");
+        assert_eq!(text.matches('\n').count(), 1, "exactly one line");
+        let parsed: IpcResponse = serde_json::from_str(text.trim_end()).unwrap();
+        assert!(parsed.ok);
     }
 
     #[test]
