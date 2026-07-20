@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "verdict_id": "verdict-evalp-499fd5ddac13a90963448679-evaluate-97e39ad55786b39b",
+  "verdict_digest": "b3:351c0fea99e2e11c2104bf58667da321c14517694041b24487b2874acf9d27c9",
+  "evaluation_id": "eval-validate-integrated-luca-2-2026-07-19T12-38-21.330516412+00-00",
+  "pipeline_id": "evalp-499fd5ddac13a90963448679",
+  "source_task": "validate-integrated-luca-2",
+  "source_attempt": 1,
+  "stage": "evaluate",
+  "producer_run_id": "agent-563",
+  "score": 0.88,
+  "evaluation_digest": "b3:cabacc453b0a6b2bb3216e1fa1c3003014e122c1ef27cb306bbacbd342aec2dc",
+  "created_at": "2026-07-19T12:38:21.427670279+00:00"
+}

@@ -21,6 +21,10 @@ use std::path::{Path, PathBuf};
 
 pub const AGENCY_PLAN_SCHEMA: u16 = 1;
 pub const EVAL_LIFECYCLE_SCHEMA: u16 = 1;
+/// Schema 1 hashed an in-memory `Evaluation`. Its `HashMap` field order was
+/// process-random, so the durable JSON could deserialize to different bytes.
+/// Schema 2 pins the exact durable evaluation file instead.
+pub const EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA: u16 = 2;
 pub const MAX_EXECUTION_ATTEMPTS_PER_ROUTE_GENERATION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,8 +367,23 @@ pub struct DurableEvalVerdict {
     pub stage: AgencyStage,
     pub producer_run_id: String,
     pub score: f64,
+    /// Digest scheme for `evaluation_digest`. Missing means the historical
+    /// schema 1 compact-JSON digest; schema 2 hashes the durable file bytes.
+    #[serde(
+        default = "legacy_evaluation_digest_schema",
+        skip_serializing_if = "is_legacy_evaluation_digest_schema"
+    )]
+    pub evaluation_digest_schema: u16,
     pub evaluation_digest: String,
     pub created_at: String,
+}
+
+fn legacy_evaluation_digest_schema() -> u16 {
+    1
+}
+
+fn is_legacy_evaluation_digest_schema(schema: &u16) -> bool {
+    *schema == 1
 }
 
 pub fn verdicts_dir(dir: &Path) -> PathBuf {
@@ -387,8 +406,19 @@ pub fn write_durable_verdict(
     if plan.source_task != source_task.id {
         anyhow::bail!("agency plan source mismatch");
     }
-    let evaluation_bytes = serde_json::to_vec(evaluation)?;
-    let evaluation_digest = format!("b3:{}", blake3::hash(&evaluation_bytes).to_hex());
+    // The evaluation writer has already atomically renamed its JSON before
+    // reaching this call. Pin those exact durable bytes rather than serializing
+    // the in-memory `HashMap` again: HashMap iteration order is not stable
+    // across the evaluator and daemon processes.
+    let evidence = load_evaluation_evidence(dir, &evaluation.id)?;
+    if canonical_evaluation_bytes(&evidence.evaluation)? != canonical_evaluation_bytes(evaluation)?
+    {
+        anyhow::bail!(
+            "error[WG-EVAL-VERDICT-EVIDENCE]: durable evaluation {:?} differs from writer value",
+            evaluation.id
+        );
+    }
+    let evaluation_digest = digest_bytes(&evidence.bytes);
     let verdict_id = format!(
         "verdict-{}-{}-{}",
         plan.pipeline_id,
@@ -412,6 +442,7 @@ pub fn write_durable_verdict(
             .clone()
             .unwrap_or_else(|| "manual".to_string()),
         score: evaluation.score,
+        evaluation_digest_schema: EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA,
         evaluation_digest,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
@@ -441,6 +472,12 @@ pub fn write_durable_verdict(
                     path.display()
                 );
             }
+            // Independently validate the existing record against the durable
+            // evaluation. This also makes an upgrade replay from legacy scheme
+            // 1 to scheme 2 a no-op: both schemes must pin the same bytes, but
+            // observational timestamps/run ids and the digest encoding itself
+            // are not semantic conflicts.
+            verify_evaluation_digest(dir, &parsed)?;
             if parsed.schema != verdict.schema
                 || parsed.verdict_id != verdict.verdict_id
                 || parsed.evaluation_id != verdict.evaluation_id
@@ -449,7 +486,6 @@ pub fn write_durable_verdict(
                 || parsed.source_attempt != verdict.source_attempt
                 || parsed.stage != verdict.stage
                 || parsed.score != verdict.score
-                || parsed.evaluation_digest != verdict.evaluation_digest
             {
                 anyhow::bail!(
                     "error[WG-EVAL-VERDICT-CONFLICT]: verdict id {} has conflicting content",
@@ -471,31 +507,101 @@ fn compute_verdict_digest(verdict: &DurableEvalVerdict) -> Result<String> {
     ))
 }
 
-fn verify_evaluation_digest(dir: &Path, verdict: &DurableEvalVerdict) -> Result<()> {
-    let evaluations = crate::agency::load_all_evaluations_or_warn(&dir.join("agency/evaluations"));
-    let matching: Vec<_> = evaluations
-        .iter()
-        .filter(|evaluation| evaluation.id == verdict.evaluation_id)
-        .collect();
+struct EvaluationEvidence {
+    evaluation: Evaluation,
+    bytes: Vec<u8>,
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    format!("b3:{}", blake3::hash(bytes).to_hex())
+}
+
+/// Serialize through `Value`, whose default map representation is ordered.
+/// This is used only to prove the just-written file has the same semantics as
+/// the writer value; integrity itself pins the exact durable file bytes.
+fn canonical_evaluation_bytes(evaluation: &Evaluation) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&serde_json::to_value(evaluation)?)?)
+}
+
+/// Remove JSON formatting whitespace while preserving object member order and
+/// every byte inside strings. The schema-1 writer hashed compact serde JSON and
+/// saved pretty serde JSON from the same object, so this exactly reconstructs
+/// its pre-restart byte sequence without guessing HashMap order.
+fn compact_durable_json(bytes: &[u8]) -> Vec<u8> {
+    let mut compact = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for byte in bytes {
+        if in_string {
+            compact.push(*byte);
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+        } else if *byte == b'"' {
+            in_string = true;
+            compact.push(*byte);
+        } else if !byte.is_ascii_whitespace() {
+            compact.push(*byte);
+        }
+    }
+    compact
+}
+
+fn load_evaluation_evidence(dir: &Path, evaluation_id: &str) -> Result<EvaluationEvidence> {
+    let directory = dir.join("agency/evaluations");
+    let mut matching = Vec::new();
+    if directory.exists() {
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let bytes = fs::read(&path)?;
+            let evaluation: Evaluation = serde_json::from_slice(&bytes)
+                .with_context(|| format!("loading evaluation evidence {}", path.display()))?;
+            if evaluation.id == evaluation_id {
+                matching.push(EvaluationEvidence { evaluation, bytes });
+            }
+        }
+    }
     if matching.len() != 1 {
         anyhow::bail!(
-            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} references {} matching evaluations for {:?}",
-            verdict.verdict_id,
-            matching.len(),
-            verdict.evaluation_id
+            "error[WG-EVAL-VERDICT-EVIDENCE]: evaluation {:?} has {} durable matches",
+            evaluation_id,
+            matching.len()
         );
     }
-    let evaluation = matching[0];
-    if evaluation.task_id != verdict.source_task {
+    Ok(matching.pop().expect("one matching evaluation"))
+}
+
+fn verify_evaluation_digest(dir: &Path, verdict: &DurableEvalVerdict) -> Result<()> {
+    let evidence = load_evaluation_evidence(dir, &verdict.evaluation_id).map_err(|error| {
+        anyhow::anyhow!(
+            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {}: {error:#}",
+            verdict.verdict_id
+        )
+    })?;
+    if evidence.evaluation.task_id != verdict.source_task
+        || evidence.evaluation.score != verdict.score
+    {
         anyhow::bail!(
-            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} source/evaluation mismatch",
+            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} source/score evaluation mismatch",
             verdict.verdict_id
         );
     }
-    let digest = format!(
-        "b3:{}",
-        blake3::hash(&serde_json::to_vec(evaluation)?).to_hex()
-    );
+    let digest = match verdict.evaluation_digest_schema {
+        1 => digest_bytes(&compact_durable_json(&evidence.bytes)),
+        EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA => digest_bytes(&evidence.bytes),
+        schema => anyhow::bail!(
+            "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} uses unsupported evaluation digest schema {}",
+            verdict.verdict_id,
+            schema
+        ),
+    };
     if digest != verdict.evaluation_digest {
         anyhow::bail!(
             "error[WG-EVAL-VERDICT-EVIDENCE]: verdict {} evaluation digest mismatch",
@@ -1316,6 +1422,7 @@ mod tests {
             stage,
             producer_run_id: "run-1".into(),
             score,
+            evaluation_digest_schema: EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA,
             evaluation_digest: format!("b3:{suffix}"),
             created_at: Utc::now().to_rfc3339(),
         }
@@ -1582,6 +1689,20 @@ mod tests {
             &evaluation,
         )
         .unwrap();
+        // Re-encode the record exactly as a pre-schema-2 writer did. The
+        // durable evaluation's pretty member order reconstructs the original
+        // compact digest losslessly.
+        let evaluation_path = dir
+            .path()
+            .join("agency/evaluations")
+            .join(format!("{}.json", evaluation.id));
+        let mut legacy: DurableEvalVerdict =
+            serde_json::from_slice(&fs::read(&first).unwrap()).unwrap();
+        legacy.evaluation_digest_schema = 1;
+        legacy.evaluation_digest =
+            digest_bytes(&compact_durable_json(&fs::read(evaluation_path).unwrap()));
+        legacy.verdict_digest = compute_verdict_digest(&legacy).unwrap();
+        fs::write(&first, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
         let first_bytes = fs::read(&first).unwrap();
 
         satellite.assigned = Some("agent-restarted-wrapper".into());
@@ -1693,6 +1814,34 @@ mod tests {
     }
 
     #[test]
+    fn incident_legacy_verdict_verifies_from_durable_member_order() {
+        // Exact bytes from the 2026-07-19 Pi/Terra live incident. The writer's
+        // dimensions order was correctness, completeness, ...; deserializing
+        // into a newly seeded HashMap changed that order, so schema 1's old
+        // `to_vec(&evaluation)` reader rejected its own valid verdict.
+        let dir = tempfile::tempdir().unwrap();
+        let evaluations = dir.path().join("agency/evaluations");
+        let verdicts = verdicts_dir(dir.path());
+        fs::create_dir_all(&evaluations).unwrap();
+        fs::create_dir_all(&verdicts).unwrap();
+        fs::write(
+            evaluations.join("evaluation.json"),
+            include_bytes!("../tests/fixtures/live_eval_digest_mismatch/evaluation.json"),
+        )
+        .unwrap();
+        fs::write(
+            verdicts.join("verdict-evalp-499fd5ddac13a90963448679-evaluate-97e39ad55786b39b.json"),
+            include_bytes!("../tests/fixtures/live_eval_digest_mismatch/verdict.json"),
+        )
+        .unwrap();
+
+        let loaded = load_durable_verdicts(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].evaluation_digest_schema, 1);
+        assert_eq!(loaded[0].score, 0.88);
+    }
+
+    #[test]
     fn durable_verdict_load_verifies_record_and_evaluation_digests() {
         let dir = tempfile::tempdir().unwrap();
         let source = source();
@@ -1722,7 +1871,12 @@ mod tests {
             &evaluation,
         )
         .unwrap();
-        assert_eq!(load_durable_verdicts(dir.path()).unwrap().len(), 1);
+        let loaded = load_durable_verdicts(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].evaluation_digest_schema,
+            EVALUATION_DIGEST_DURABLE_BYTES_SCHEMA
+        );
 
         let original = fs::read(&verdict_path).unwrap();
         let mut tampered: serde_json::Value = serde_json::from_slice(&original).unwrap();

@@ -2319,3 +2319,12 @@ owners = [
 ]
 description = "Credential-free real CLI/dispatcher regression for the FailedPendingEval lifecycle repair: Codex scaffolding persists a handler-first two-stage plan, the owning FLIP completes over FailedPendingEval while ordinary work stays gated, why-blocked agrees with dispatcher readiness without inventing an SCC cycle, a terminal evaluator without durable evidence cannot scorelessly promote its source, a historical bare-Codex pre-claim breaker row normalizes/rearms exactly once, and a completed claimed legacy evaluator with exactly one post-start Evaluation is losslessly linked once after restart without a semantic rerun. Handler matrices and concurrent-tick reservation are pinned by companion Rust tests."
 timeout_seconds = 60
+
+[[scenario]]
+name = "live_pi_evaluation_verdict_restart"
+script = "scenarios/live_pi_evaluation_verdict_restart.sh"
+owners = [
+    "fix-live-evaluation",
+]
+description = "Exact live writer→satellite-completion→restart-reader regression for the 2026-07-19 PendingEval stall: a real persisted-plan `wg evaluate run` drives the explicit Pi/openai-codex/Terra one-shot path (credential-free remote-response stub, Claude sentinel), writes the seven-dimension score-0.88 Evaluation and schema-2 durable-byte verdict, pins both files before/after satellite completion, then a fresh service tick consumes once and repeated restart ticks remain byte/idempotent. Independent evaluation/verdict tamper branches fail closed loudly and keep the parent pending."
+timeout_seconds = 90

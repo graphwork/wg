@@ -684,7 +684,10 @@ pub fn run(
         score: parsed.score,
         dimensions,
         notes: parsed.notes,
-        evaluator: format!("claude:{}", model),
+        // `model` is already the authoritative handler-first invocation route.
+        // Prefixing it with `claude:` falsely recorded live Pi evaluations as
+        // `claude:pi:...` even though no Claude process ran.
+        evaluator: model.clone(),
         timestamp,
         model: task_model.clone(),
         source: "llm".to_string(),
