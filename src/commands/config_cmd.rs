@@ -155,6 +155,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!("  interval = {}", config.agent.interval);
         println!("  heartbeat_timeout = {}", config.agent.heartbeat_timeout);
+        if let Some(seconds) = config.agent.heartbeat_timeout_seconds {
+            println!("  heartbeat_timeout_seconds = {}", seconds);
+        }
         if let Some(max) = config.agent.max_tasks {
             println!("  max_tasks = {}", max);
         }
@@ -210,6 +213,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  auto_triage = {}", config.agency.auto_triage);
         if let Some(timeout) = config.agency.triage_timeout {
             println!("  triage_timeout = {}", timeout);
+        }
+        if let Some(timeout) = config.agency.inference_timeout {
+            println!("  inference_timeout = {}", timeout);
         }
         if let Some(max_bytes) = config.agency.triage_max_log_bytes {
             println!("  triage_max_log_bytes = {}", max_bytes);
@@ -2737,7 +2743,13 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
         "agent.heartbeat_timeout" => {
             config.agent.heartbeat_timeout = v
                 .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
+                .map_err(|_| anyhow::anyhow!("expected positive integer (minutes)"))?;
+        }
+        "agent.heartbeat_timeout_seconds" => {
+            config.agent.heartbeat_timeout_seconds = Some(
+                v.parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?,
+            );
         }
         "agent.interval" => {
             config.agent.interval = v
@@ -2793,6 +2805,12 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
         }
         "agency.auto_create" => {
             config.agency.auto_create = parse_bool(v)?;
+        }
+        "agency.inference_timeout" => {
+            config.agency.inference_timeout = Some(
+                v.parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?,
+            );
         }
         "tiers.fast" => {
             worksgood::config::parse_model_spec_strict(v)

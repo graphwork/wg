@@ -215,7 +215,7 @@ fn detect_dead_reason(
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {
     let config = Config::load_or_default(dir);
     let grace_secs = config.agent.reaper_grace_seconds as i64;
-    let heartbeat_timeout_secs = (config.agent.heartbeat_timeout * 60) as i64; // Config is in minutes
+    let heartbeat_timeout_secs = config.agent.heartbeat_timeout_secs() as i64;
 
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
 

@@ -1562,6 +1562,10 @@ pub enum Commands {
         /// Seconds between registry heartbeat writes.
         #[arg(long, default_value = "120")]
         interval_seconds: u64,
+
+        /// PID of the wrapper process this watcher is allowed to refresh.
+        #[arg(long)]
+        supervised_pid: Option<u32>,
     },
 
     /// Manage task artifacts (produced outputs)

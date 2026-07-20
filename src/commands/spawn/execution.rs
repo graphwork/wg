@@ -2290,7 +2290,7 @@ unset CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH
 # owns the anonymous pipe's write descriptor. The executor runs with that
 # descriptor closed, so even an untrappable wrapper death produces immediate
 # EOF and the watcher exits instead of orphaning a `sleep 120` subprocess.
-exec {{HEARTBEAT_GUARD_FD}}> >(wg heartbeat-watch "$WG_AGENT_ID" 2>/dev/null)
+exec {{HEARTBEAT_GUARD_FD}}> >(wg heartbeat-watch "$WG_AGENT_ID" --supervised-pid "$$" 2>/dev/null)
 HEARTBEAT_PID=$!
 
 # Run the agent command without inheriting the heartbeat guard writer.

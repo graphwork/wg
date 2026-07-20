@@ -3642,9 +3642,21 @@ pub struct AgencyConfig {
     #[serde(default)]
     pub auto_triage: bool,
 
-    /// Timeout in seconds for triage calls (default: 30)
+    /// Timeout in seconds for triage calls (default: 30).
+    ///
+    /// This remains separate from one-shot model inference: a short triage
+    /// budget must not become the evaluator/FLIP/assignment hard deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_timeout: Option<u64>,
+
+    /// Hard timeout in seconds for evaluator, FLIP, and assignment inference.
+    ///
+    /// Heartbeats prove that the supervising inline process is alive; they do
+    /// not waive this independent deadline. `None` preserves compatibility
+    /// with an explicitly configured historical `triage_timeout`, otherwise
+    /// the default is 15 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_timeout: Option<u64>,
 
     /// Maximum bytes to read from agent output log for triage (default: 50000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3813,6 +3825,19 @@ pub struct AgencyConfig {
     pub gate_confidence_threshold: f64,
 }
 
+impl AgencyConfig {
+    /// Independent hard deadline for one-shot agency inference.
+    pub fn inference_timeout_secs(&self) -> u64 {
+        self.inference_timeout
+            .map(|seconds| seconds.max(1))
+            // Historical configs used triage_timeout for both paths and eval
+            // clamped it to five minutes. Preserve that explicit setting while
+            // giving unconfigured inference a genuinely independent budget.
+            .or_else(|| self.triage_timeout.map(|seconds| seconds.max(300)))
+            .unwrap_or(900)
+    }
+}
+
 impl Default for AgencyConfig {
     fn default() -> Self {
         Self {
@@ -3829,6 +3854,7 @@ impl Default for AgencyConfig {
             retention_heuristics: None,
             auto_triage: false,
             triage_timeout: None,
+            inference_timeout: None,
             triage_max_log_bytes: None,
             exploration_interval: default_exploration_interval(),
             cache_population_threshold: default_cache_population_threshold(),
@@ -3887,9 +3913,17 @@ pub struct AgentConfig {
     #[serde(default)]
     pub max_tasks: Option<u32>,
 
-    /// Heartbeat timeout in minutes (for detecting dead agents)
+    /// Heartbeat timeout in minutes (for detecting dead agents).
     #[serde(default = "default_heartbeat_timeout")]
     pub heartbeat_timeout: u64,
+
+    /// Optional exact heartbeat timeout in seconds.
+    ///
+    /// Production configuration normally uses `heartbeat_timeout` in minutes;
+    /// this precision override supports short supervised calls and accelerated
+    /// liveness checks without changing the long-standing field's units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_timeout_seconds: Option<u64>,
 
     /// Grace period in seconds before the reaper acts on a dead PID.
     /// Agents started less than this many seconds ago are not reaped,
@@ -4629,6 +4663,15 @@ fn default_reaper_grace_seconds() -> u64 {
     30
 }
 
+impl AgentConfig {
+    /// Effective dead-agent heartbeat window in seconds.
+    pub fn heartbeat_timeout_secs(&self) -> u64 {
+        self.heartbeat_timeout_seconds
+            .unwrap_or_else(|| self.heartbeat_timeout.saturating_mul(60))
+            .max(1)
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -4637,6 +4680,7 @@ impl Default for AgentConfig {
             interval: default_interval(),
             max_tasks: None,
             heartbeat_timeout: default_heartbeat_timeout(),
+            heartbeat_timeout_seconds: None,
             reaper_grace_seconds: default_reaper_grace_seconds(),
         }
     }

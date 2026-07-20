@@ -2347,3 +2347,12 @@ owners = [
 ]
 description = "Credential-free Casa companion acceptance flow across two filesystem-independent HOME/graph instances using only the real untrusted HTTP WG-Fed relay: signed+sealed request and recipient ACL; canonical derived trust and enforcing Review/digest pin; stable attributed origin/srcId product dedupe; exactly one wgid owner, correctly dated/device-aware outward reply, restart/outbox crash convergence and deterministic non-authoritative feed rebuild; content-addressed Exec offer/claim/grant/result transfer with scoped UCAN/lease wrong-task/expiry/replay/stale fences; then a signed+sealed report back."
 timeout_seconds = 120
+
+[[scenario]]
+name = "inline_evaluator_silent_heartbeat"
+script = "scenarios/inline_evaluator_silent_heartbeat.sh"
+owners = [
+    "fix-inline-evaluator",
+]
+description = "Installed-binary credential-free production regression for the five-minute inline-evaluator false reap: an exact persisted codex:gpt-5.6-luna evaluator emits no model output for longer than an accelerated heartbeat window while the process-bound, absolute-WG, explicit-graph watcher refreshes registry liveness; registry and a real tmux TUI report it active, daemon SIGKILL/restart does not duplicate it, and it completes once. A second genuinely hung Luna stub keeps heartbeating but is terminated by the independent hard inference timeout with no wrapper/model/heartbeat orphan. Foreign PATH wg plus Claude/Pi sentinels pin project and same-system route isolation."
+timeout_seconds = 60

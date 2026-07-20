@@ -2327,7 +2327,10 @@ fn main() -> Result<()> {
         Commands::HeartbeatWatch {
             agent,
             interval_seconds,
-        } => commands::heartbeat::run_watch(&workgraph_dir, &agent, interval_seconds),
+            supervised_pid,
+        } => {
+            commands::heartbeat::run_watch(&workgraph_dir, &agent, interval_seconds, supervised_pid)
+        }
         Commands::Checkpoint {
             task,
             summary,

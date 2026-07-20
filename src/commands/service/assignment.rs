@@ -393,7 +393,9 @@ pub(crate) fn run_lightweight_assignment(
     active_tasks_context: &str,
     graph: Option<&WorkGraph>,
 ) -> Result<(AssignmentVerdict, Option<TokenUsage>)> {
-    let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
+    // Assignment inference shares the agency one-shot hard deadline, not the
+    // short triage budget. Its inline supervisor heartbeats independently.
+    let timeout_secs = config.agency.inference_timeout_secs();
     let history_class = history_class_for_assignment(task);
 
     let catalog_entries =

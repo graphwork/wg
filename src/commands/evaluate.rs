@@ -528,9 +528,10 @@ pub fn run(
     // Step 6: Run lightweight LLM call for evaluation (replaces claude --print)
     println!("Evaluating task '{}' with model '{}'...", task_id, model);
 
-    // Eval calls can be slow with large task outputs — use a generous timeout.
-    // The triage_timeout is designed for short triage calls; evals need more.
-    let timeout_secs = config.agency.triage_timeout.unwrap_or(60).max(300);
+    // Eval calls can remain silent during long inference. Their independent
+    // hard deadline is deliberately not the registry heartbeat window (nor the
+    // short triage budget): a live supervisor still cannot run forever.
+    let timeout_secs = config.agency.inference_timeout_secs();
 
     // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
     let (eval_json, eval_token_usage) = {
@@ -1154,7 +1155,7 @@ pub fn run_flip(
         inference_model
     );
 
-    let flip_timeout = config.agency.triage_timeout.unwrap_or(60).max(300);
+    let flip_timeout = config.agency.inference_timeout_secs();
 
     // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
     let (inference_json, inference_token_usage) = {

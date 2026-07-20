@@ -2947,63 +2947,69 @@ fn build_inline_eval_script(
     escaped_eval_id: &str,
     escaped_output: &str,
     special_agent_id: Option<&str>,
+    wg_cmd: &str,
+    escaped_agent_id: &str,
+    heartbeat_interval_seconds: u64,
 ) -> String {
-    if let Some(sa_id) = special_agent_id {
-        let escaped_sa_id = sa_id.replace('\'', "'\\''");
-        format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+    let (success_record, failure_record) = special_agent_id.map_or_else(
+        || (String::new(), String::new()),
+        |sa_id| {
+            let escaped_sa_id = sa_id.replace('\'', "'\\''");
+            (
+                format!(
+                    "    {wg_cmd} evaluate record --task '{escaped_eval_id}' --score 1.0 --source system --notes \"Inline evaluation completed successfully (agent: {escaped_sa_id})\" 2>> '{escaped_output}' || true\n"
+                ),
+                format!(
+                    "        {wg_cmd} evaluate record --task '{escaped_eval_id}' --score 0.0 --source system --notes \"Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})\" 2>> '{escaped_output}' || true\n"
+                ),
+            )
+        },
+    );
+
+    format!(
+        r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 _WG_STDERR=$(mktemp)
-{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+# The watcher owns no timer subprocess. Its stdin is an anonymous guard pipe
+# whose sole writer belongs to this wrapper; the inference child explicitly
+# closes the writer so wrapper death (including SIGKILL) produces immediate EOF.
+exec {{INLINE_HEARTBEAT_GUARD_FD}}> >({wg_cmd} heartbeat-watch '{escaped_agent_id}' --interval-seconds {heartbeat_interval_seconds} --supervised-pid "$$" 2>> '{escaped_output}')
+INLINE_HEARTBEAT_PID=$!
+_WG_STOP_INLINE_HEARTBEAT() {{
+    exec {{INLINE_HEARTBEAT_GUARD_FD}}>&- 2>/dev/null || true
+    if [ -n "${{INLINE_HEARTBEAT_PID:-}}" ]; then
+        kill "$INLINE_HEARTBEAT_PID" 2>/dev/null || true
+        wait "$INLINE_HEARTBEAT_PID" 2>/dev/null || true
+        INLINE_HEARTBEAT_PID=
+    fi
+}}
+trap '_WG_STOP_INLINE_HEARTBEAT' EXIT
+trap '_WG_STOP_INLINE_HEARTBEAT; trap - EXIT; exit 143' TERM INT HUP
+{{
+    {eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+}} {{INLINE_HEARTBEAT_GUARD_FD}}>&-
 EXIT_CODE=$?
+_WG_STOP_INLINE_HEARTBEAT
+trap - EXIT TERM INT HUP
 cat "$_WG_STDERR" >> '{escaped_output}'
 if [ $EXIT_CODE -eq 0 ]; then
     rm -f "$_WG_STDERR"
-    wg evaluate record --task '{escaped_eval_id}' --score 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
+{success_record}    {wg_cmd} done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
     _WG_ROUTE_FAILURE=0
     grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
     _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
     _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
     rm -f "$_WG_STDERR"
-    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    {wg_cmd} log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
     if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
-        wg wait '{escaped_eval_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
+        {wg_cmd} wait '{escaped_eval_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
     else
-        wg evaluate record --task '{escaped_eval_id}' --score 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-        REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-        wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
+{failure_record}        REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+        {wg_cmd} fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
     fi
 fi
 exit $EXIT_CODE"#,
-        )
-    } else {
-        format!(
-            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-_WG_STDERR=$(mktemp)
-{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
-EXIT_CODE=$?
-cat "$_WG_STDERR" >> '{escaped_output}'
-if [ $EXIT_CODE -eq 0 ]; then
-    rm -f "$_WG_STDERR"
-    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
-else
-    _WG_ROUTE_FAILURE=0
-    grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
-    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
-    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
-    rm -f "$_WG_STDERR"
-    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
-    if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
-        wg wait '{escaped_eval_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
-    else
-        REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-        wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
-    fi
-fi
-exit $EXIT_CODE"#,
-        )
-    }
+    )
 }
 
 fn persisted_agency_plan(
@@ -3068,6 +3074,42 @@ fn persisted_agency_plan(
     Ok(migrated)
 }
 
+fn inline_shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Absolute, graph-pinned command prefix for every recursive WG invocation in
+/// an inline wrapper. Resolving this once at spawn prevents PATH collisions and
+/// an inherited sibling project's cwd/WG_DIR from redirecting heartbeats or
+/// lifecycle transitions.
+fn authoritative_inline_wg_command(dir: &Path) -> Result<String> {
+    let exe = std::env::current_exe().context("resolve authoritative WG executable")?;
+    if !exe.is_absolute() {
+        anyhow::bail!(
+            "authoritative WG executable is not absolute: {}",
+            exe.display()
+        );
+    }
+    let graph_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    Ok(format!(
+        "{} --dir {}",
+        inline_shell_quote(&exe.to_string_lossy()),
+        inline_shell_quote(&graph_dir.to_string_lossy())
+    ))
+}
+
+fn qualify_inline_wg_exec(exec: &str, wg_cmd: &str) -> Option<String> {
+    exec.strip_prefix("wg ")
+        .map(|arguments| format!("{wg_cmd} {arguments}"))
+}
+
+/// Keep at least three beats inside the configured reaper window. The exact
+/// seconds override makes this production primitive accelerated-testable while
+/// the ordinary default remains the long-standing five-minute window.
+fn inline_heartbeat_interval_seconds(config: &Config) -> u64 {
+    (config.agent.heartbeat_timeout_secs() / 3).clamp(1, 120)
+}
+
 fn spawn_eval_inline(
     dir: &Path,
     eval_task_id: &str,
@@ -3078,6 +3120,8 @@ fn spawn_eval_inline(
     // Persisted stage-aware plans are invocation authority across scaffold,
     // restart and retry. Only lossless historical rows are migrated.
     let config = Config::load_or_default(dir);
+    let wg_cmd = authoritative_inline_wg_command(dir)?;
+    let heartbeat_interval_seconds = inline_heartbeat_interval_seconds(&config);
     let plan = persisted_agency_plan(dir, eval_task_id)?;
     let primary = plan
         .calls
@@ -3106,6 +3150,7 @@ fn spawn_eval_inline(
     let output_file_str = output_file.to_string_lossy().to_string();
 
     let escaped_eval_id = eval_task_id.replace('\'', "'\\''");
+    let escaped_agent_id = agent_id.replace('\'', "'\\''");
     let escaped_output = output_file_str.replace('\'', "'\\''");
 
     // Atomically claim the task and extract needed fields.
@@ -3218,10 +3263,11 @@ fn spawn_eval_inline(
     let base_eval_cmd = if let Some(ref exec) = eval_task_exec
         && exec.starts_with("wg evaluate")
     {
-        exec.to_string()
+        qualify_inline_wg_exec(exec, &wg_cmd)
+            .ok_or_else(|| anyhow::anyhow!("invalid inline eval command: {exec:?}"))?
     } else {
         format!(
-            "wg evaluate run '{}'",
+            "{wg_cmd} evaluate run '{}'",
             source_task_id.replace('\'', "'\\''")
         )
     };
@@ -3257,6 +3303,9 @@ fn spawn_eval_inline(
         &escaped_eval_id,
         &escaped_output,
         special_agent_verified.as_deref(),
+        &wg_cmd,
+        &escaped_agent_id,
+        heartbeat_interval_seconds,
     );
 
     // Route resolution happened before the claim so registry metadata and the
@@ -3356,6 +3405,8 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     // Preflight before any claim/artifact mutation. Built-in Claude catalog
     // defaults do not authorize an assignment call.
     let assign_config = Config::load_or_default(dir);
+    let wg_cmd = authoritative_inline_wg_command(dir)?;
+    let heartbeat_interval_seconds = inline_heartbeat_interval_seconds(&assign_config);
     let assign_dispatch =
         worksgood::service::llm::resolve_agency_dispatch(&assign_config, DispatchRole::Assigner)
             .context("agency assigner execution route is not selected")?;
@@ -3378,6 +3429,7 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     let output_file_str = output_file.to_string_lossy().to_string();
 
     let escaped_assign_id = assign_task_id.replace('\'', "'\\''");
+    let escaped_agent_id = agent_id.replace('\'', "'\\''");
     let escaped_output = output_file_str.replace('\'', "'\\''");
 
     // Atomically claim the task and extract needed fields.
@@ -3435,10 +3487,11 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     let assign_cmd = if let Some(ref exec) = assign_task_exec
         && exec.starts_with("wg assign")
     {
-        exec.to_string()
+        qualify_inline_wg_exec(exec, &wg_cmd)
+            .ok_or_else(|| anyhow::anyhow!("invalid inline assignment command: {exec:?}"))?
     } else {
         format!(
-            "wg assign '{}' --auto",
+            "{wg_cmd} assign '{}' --auto",
             source_task_id.replace('\'', "'\\''")
         )
     };
@@ -3447,24 +3500,40 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     let script = format!(
         r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 _WG_STDERR=$(mktemp)
-{assign_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+exec {{INLINE_HEARTBEAT_GUARD_FD}}> >({wg_cmd} heartbeat-watch '{escaped_agent_id}' --interval-seconds {heartbeat_interval_seconds} --supervised-pid "$$" 2>> '{escaped_output}')
+INLINE_HEARTBEAT_PID=$!
+_WG_STOP_INLINE_HEARTBEAT() {{
+    exec {{INLINE_HEARTBEAT_GUARD_FD}}>&- 2>/dev/null || true
+    if [ -n "${{INLINE_HEARTBEAT_PID:-}}" ]; then
+        kill "$INLINE_HEARTBEAT_PID" 2>/dev/null || true
+        wait "$INLINE_HEARTBEAT_PID" 2>/dev/null || true
+        INLINE_HEARTBEAT_PID=
+    fi
+}}
+trap '_WG_STOP_INLINE_HEARTBEAT' EXIT
+trap '_WG_STOP_INLINE_HEARTBEAT; trap - EXIT; exit 143' TERM INT HUP
+{{
+    {assign_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
+}} {{INLINE_HEARTBEAT_GUARD_FD}}>&-
 EXIT_CODE=$?
+_WG_STOP_INLINE_HEARTBEAT
+trap - EXIT TERM INT HUP
 cat "$_WG_STDERR" >> '{escaped_output}'
 if [ $EXIT_CODE -eq 0 ]; then
     rm -f "$_WG_STDERR"
-    wg done '{escaped_assign_id}' 2>> '{escaped_output}'
+    {wg_cmd} done '{escaped_assign_id}' 2>> '{escaped_output}'
 else
     _WG_ROUTE_FAILURE=0
     grep -q 'error\[WG-EXEC-' "$_WG_STDERR" 2>/dev/null && _WG_ROUTE_FAILURE=1
     _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
     _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
     rm -f "$_WG_STDERR"
-    wg log '{escaped_assign_id}' "Assign stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    {wg_cmd} log '{escaped_assign_id}' "Assign stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
     if [ $_WG_ROUTE_FAILURE -eq 1 ]; then
-        wg wait '{escaped_assign_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
+        {wg_cmd} wait '{escaped_assign_id}' --until 'timer:1m' --checkpoint 'LLM execution route unavailable; retry without recording a semantic verdict' 2>> '{escaped_output}'
     else
         REASON=$(printf 'wg assign exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
-        wg fail '{escaped_assign_id}' --reason "$REASON" 2>> '{escaped_output}'
+        {wg_cmd} fail '{escaped_assign_id}' --reason "$REASON" 2>> '{escaped_output}'
     fi
 fi
 exit $EXIT_CODE"#,
@@ -5254,6 +5323,9 @@ mod tests {
             ".flip-my-source",
             "/tmp/out.log",
             Some("agent-hash-deadbeef"),
+            "wg",
+            "agent-1",
+            1,
         );
 
         // Success branch: must use --task / --score, NOT positional.
@@ -5284,6 +5356,50 @@ mod tests {
     }
 
     #[test]
+    fn inline_eval_script_uses_managed_process_bound_heartbeat() {
+        let script = build_inline_eval_script(
+            "wg evaluate run my-source",
+            ".evaluate-my-source",
+            "/tmp/out.log",
+            None,
+            "'/opt/wg/bin/wg' --dir '/srv/project/.wg'",
+            "agent-41",
+            2,
+        );
+        assert!(script.contains(
+            "'/opt/wg/bin/wg' --dir '/srv/project/.wg' heartbeat-watch 'agent-41' --interval-seconds 2 --supervised-pid \"$$\""
+        ));
+        assert!(script.contains("} {INLINE_HEARTBEAT_GUARD_FD}>&-"));
+        assert!(script.contains("trap '_WG_STOP_INLINE_HEARTBEAT' EXIT"));
+        assert!(script.contains("kill \"$INLINE_HEARTBEAT_PID\""));
+        assert!(script.contains("wait \"$INLINE_HEARTBEAT_PID\""));
+    }
+
+    #[test]
+    fn inline_runtime_is_absolute_graph_pinned_and_accelerated() {
+        let dir = tempdir().unwrap();
+        let command = authoritative_inline_wg_command(dir.path()).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert!(command.contains(&exe.to_string_lossy().to_string()));
+        assert!(
+            command.contains(
+                &dir.path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+        assert!(command.contains(" --dir "));
+
+        let mut config = Config::default();
+        config.agent.heartbeat_timeout_seconds = Some(6);
+        assert_eq!(inline_heartbeat_interval_seconds(&config), 2);
+        config.agency.inference_timeout = Some(4);
+        assert_eq!(config.agency.inference_timeout_secs(), 4);
+    }
+
+    #[test]
     fn test_inline_eval_script_without_special_agent_skips_record() {
         // When there is no resolved special agent, the script must NOT
         // emit a `wg evaluate record` line at all (success or failure branch).
@@ -5292,6 +5408,9 @@ mod tests {
             "evaluate-my-source",
             "/tmp/out.log",
             None,
+            "wg",
+            "agent-1",
+            1,
         );
 
         assert!(
@@ -5310,6 +5429,9 @@ mod tests {
             ".evaluate-my-source",
             "/tmp/out.log",
             Some("agent-hash-deadbeef"),
+            "wg",
+            "agent-1",
+            1,
         );
 
         assert!(script.contains("grep -q 'error\\[WG-EXEC-'"));
