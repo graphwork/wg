@@ -2337,3 +2337,12 @@ owners = [
 ]
 description = "Real CLI + tmux/TUI regression for add-disk-sentinel: synthesizes warn/pause/hard-refuse/auto-resume thresholds relative to measured free bytes without filling disk; pins cached wg status and async TUI disk state; exercises scriptable doctor/cleanup; and proves an unknown /tmp/wg-target-* survives because filenames never confer ownership. Rust companion tests pin four-build serialization with Pi/Terra evaluation eligibility, external owned-target reaping, PID identity/restart, open-file/artifact/dirty-worktree preservation, and measured stream compression."
 timeout_seconds = 45
+
+[[scenario]]
+name = "casa_wgfed_adapter_e2e"
+script = "scenarios/casa_wgfed_adapter_e2e.sh"
+owners = [
+    "prototype-and-test",
+]
+description = "Credential-free Casa companion acceptance flow across two filesystem-independent HOME/graph instances using only the real untrusted HTTP WG-Fed relay: signed+sealed request and recipient ACL; canonical derived trust and enforcing Review/digest pin; stable attributed origin/srcId product dedupe; exactly one wgid owner, correctly dated/device-aware outward reply, restart/outbox crash convergence and deterministic non-authoritative feed rebuild; content-addressed Exec offer/claim/grant/result transfer with scoped UCAN/lease wrong-task/expiry/replay/stale fences; then a signed+sealed report back."
+timeout_seconds = 120

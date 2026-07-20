@@ -28,6 +28,12 @@ path = "src/main.rs"
 name = "nex"
 path = "src/bin/nex.rs"
 
+# Casa is deliberately a companion adapter target. Product election/projection/
+# delivery policy lives under adapters/, outside WG-Fed/Review/Exec core modules.
+[[bin]]
+name = "casa-adapter"
+path = "adapters/casa/src/main.rs"
+
 [features]
 default = ["matrix-lite"]
 matrix = ["dep:matrix-sdk"]

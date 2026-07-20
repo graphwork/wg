@@ -1180,6 +1180,11 @@ pub fn run_poll(
                     let mut ev_json = serde_json::json!({
                         "verdict": "VERIFIED",
                         "from": from,
+                        // The authenticated replay key is the canonical event handle:
+                        // outer event id normally; signed inner CID for sealed-sender.
+                        // Connectors may project native ids, but must never use them as
+                        // identity or replay authority.
+                        "event_cid": dedup_key,
                         "consumable": consume,
                         "replayed": is_replay,
                         "review": {
@@ -1223,6 +1228,7 @@ pub fn run_poll(
                     // `replayed` so a caller may dedup (audit M9).
                     let ev_json = serde_json::json!({
                         "verdict": "VERIFIED", "from": from, "body": body,
+                        "event_cid": dedup_key,
                         "replayed": is_replay,
                     });
                     if !json {
