@@ -381,6 +381,13 @@ impl DaemonLogger {
         self.log("ERROR", msg);
     }
 
+    /// Low-severity diagnostic line. Used for benign, expected conditions
+    /// (e.g. an IPC peer closing the socket mid-response) that we still want a
+    /// breadcrumb for but that must NOT show up as `[ERROR]` noise.
+    pub fn debug(&self, msg: &str) {
+        self.log("DEBUG", msg);
+    }
+
     /// Rotate: rename current log to `.log.1` (overwriting any previous
     /// backup) and open a fresh file.
     fn rotate(inner: &mut DaemonLoggerInner) {
