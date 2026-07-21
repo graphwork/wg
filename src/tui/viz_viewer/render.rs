@@ -29,6 +29,8 @@ fn text_primary(is_light: bool) -> Color {
 // Auto-dock hysteresis thresholds are implemented in `VizApp`; retain the
 // names here because renderer regression tests pin the same public behavior.
 #[cfg(test)]
+use super::state::CoordinatorPickerState;
+#[cfg(test)]
 const SIDE_MIN_WIDTH: u16 = 100;
 
 const MIN_GRAPH_COLS: u16 = 24;
@@ -159,9 +161,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clean up expired touch echo indicators.
     app.cleanup_touch_echoes();
 
-    // Reset scrollbar areas each frame (re-set by draw_scrollbar / panel scrollbar code).
+    // Reset all frame-derived hit areas before drawing. In particular, a
+    // resize/rerender must never leave Chat-selector coordinates from the
+    // previous viewport live for a queued tap.
     app.last_graph_scrollbar_area = Rect::default();
     app.last_panel_scrollbar_area = Rect::default();
+    app.clear_coordinator_picker_hits();
 
     let area = frame.area();
 
@@ -689,8 +694,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.last_dialog_area = draw_exit_prompt(frame, state);
     } else if matches!(app.input_mode, InputMode::CoordinatorPicker) {
         if let Some(ref picker) = app.coordinator_picker {
-            app.last_dialog_area =
-                draw_coordinator_picker(frame, picker, app.active_coordinator_id);
+            let layout = draw_coordinator_picker(frame, picker, app.active_coordinator_id);
+            app.last_dialog_area = layout.area;
+            app.last_coordinator_picker_list_area = layout.list_area;
+            app.coordinator_picker_row_hits = layout.row_hits;
+            app.last_coordinator_picker_new_area = layout.new_area;
+            app.last_coordinator_picker_close_area = layout.close_area;
+            app.last_coordinator_picker_cancel_area = layout.cancel_area;
         }
     } else if matches!(app.input_mode, InputMode::ChatManager) {
         if let Some(ref mgr) = app.chat_manager {
@@ -7129,18 +7139,88 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
     area
 }
 
-/// Draw the coordinator picker overlay. Returns the dialog area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoordinatorPickerFooterAction {
+    New,
+    Close,
+    Cancel,
+}
+
+#[derive(Debug, Default)]
+struct CoordinatorPickerLayout {
+    area: Rect,
+    list_area: Rect,
+    row_hits: Vec<(usize, Rect)>,
+    new_area: Rect,
+    close_area: Rect,
+    cancel_area: Rect,
+}
+
+/// Pack footer actions into as many label-tight rows as the current width
+/// needs. This keeps all three controls visible on phone/Termux viewports
+/// without Paragraph wrapping (which would make their hit coordinates lie).
+fn coordinator_picker_footer_lines(
+    width: u16,
+) -> Vec<Vec<(CoordinatorPickerFooterAction, &'static str, u16)>> {
+    let actions = [
+        (CoordinatorPickerFooterAction::New, "[+] New"),
+        (CoordinatorPickerFooterAction::Close, "[−] Close"),
+        (CoordinatorPickerFooterAction::Cancel, "[Esc] Cancel"),
+    ];
+    let mut lines: Vec<Vec<(CoordinatorPickerFooterAction, &'static str, u16)>> = Vec::new();
+    for (action, label) in actions {
+        let label_width = UnicodeWidthStr::width(label) as u16;
+        if width == 0 || label_width > width {
+            continue;
+        }
+        let needs_line = lines.last().is_none_or(|line| {
+            let used = line
+                .last()
+                .map(|(_, previous, x)| *x + UnicodeWidthStr::width(*previous) as u16)
+                .unwrap_or(0);
+            used > 0 && used.saturating_add(1).saturating_add(label_width) > width
+        });
+        if needs_line {
+            lines.push(Vec::new());
+        }
+        if lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        let line = lines.last_mut().expect("footer line exists");
+        let x = line
+            .last()
+            .map(|(_, previous, x)| *x + UnicodeWidthStr::width(*previous) as u16 + 1)
+            .unwrap_or(0);
+        line.push((action, label, x));
+    }
+    lines
+}
+
+/// Draw the coordinator picker overlay and return every pointer target from
+/// this exact frame. Long lists are windowed around `selected`; no entry is
+/// made unreachable by terminal clipping.
 fn draw_coordinator_picker(
     frame: &mut Frame,
     picker: &super::state::CoordinatorPickerState,
     active_cid: u32,
-) -> Rect {
+) -> CoordinatorPickerLayout {
     let size = frame.area();
     let width: u16 = 90.min(size.width.saturating_sub(4));
-    let height: u16 = (3 + picker.entries.len() as u16 + 2).min(size.height.saturating_sub(2)); // border + entries + footer + border
+    let inner_width = width.saturating_sub(2);
+    let footer_lines = coordinator_picker_footer_lines(inner_width);
+    let separator_rows = u16::from(!picker.entries.is_empty() && !footer_lines.is_empty());
+    let desired_height = (picker.entries.len() as u16)
+        .saturating_add(footer_lines.len() as u16)
+        .saturating_add(separator_rows)
+        .saturating_add(2);
+    let height = desired_height.min(size.height.saturating_sub(2));
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
+    let mut layout = CoordinatorPickerLayout {
+        area,
+        ..CoordinatorPickerLayout::default()
+    };
 
     frame.render_widget(Clear, area);
 
@@ -7155,11 +7235,29 @@ fn draw_coordinator_picker(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, (cid, label, status, alive)) in picker.entries.iter().enumerate() {
-        let is_selected = i == picker.selected;
-        let is_active = *cid == active_cid;
+    let visible_footer_rows = (footer_lines.len() as u16).min(inner.height);
+    let visible_separator_rows =
+        u16::from(separator_rows > 0 && inner.height.saturating_sub(visible_footer_rows) > 0);
+    let row_capacity = inner
+        .height
+        .saturating_sub(visible_footer_rows)
+        .saturating_sub(visible_separator_rows) as usize;
+    let visible_rows = row_capacity.min(picker.entries.len());
+    let selected = picker.selected.min(picker.entries.len().saturating_sub(1));
+    let window_start = if visible_rows == 0 || selected < visible_rows {
+        0
+    } else {
+        selected + 1 - visible_rows
+    };
+    let list_height = visible_rows as u16;
+    layout.list_area = Rect::new(inner.x, inner.y, inner.width, list_height);
 
+    for (screen_row, entry_index) in
+        (window_start..window_start.saturating_add(visible_rows)).enumerate()
+    {
+        let (cid, label, status, alive) = &picker.entries[entry_index];
+        let is_selected = entry_index == picker.selected;
+        let is_active = *cid == active_cid;
         let bg = if is_selected {
             Color::DarkGray
         } else {
@@ -7167,10 +7265,9 @@ fn draw_coordinator_picker(
         };
         let fg = if *alive { Color::Green } else { Color::Gray };
         let marker = if is_active { ">" } else { " " };
-
         let status_indicator = if *alive { "●" } else { "○" };
-
-        lines.push(Line::from(vec![
+        let row_area = Rect::new(inner.x, inner.y + screen_row as u16, inner.width, 1);
+        let line = Line::from(vec![
             Span::styled(
                 format!(" {} ", marker),
                 Style::default()
@@ -7190,24 +7287,56 @@ fn draw_coordinator_picker(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {}", status), Style::default().bg(bg).fg(fg)),
-        ]));
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            row_area,
+        );
+        layout.row_hits.push((entry_index, row_area));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(" [↑↓]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Nav  "),
-        Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Open  "),
-        Span::styled("[+]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" New  "),
-        Span::styled("[−]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Close  "),
-        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
-        Span::raw(" Cancel"),
-    ]));
 
-    frame.render_widget(Paragraph::new(lines), inner);
-    area
+    let footer_y = inner
+        .y
+        .saturating_add(list_height)
+        .saturating_add(visible_separator_rows);
+    for (line_offset, actions) in footer_lines
+        .iter()
+        .take(visible_footer_rows as usize)
+        .enumerate()
+    {
+        let mut spans = Vec::new();
+        let mut rendered_width = 0u16;
+        for (action, label, action_x) in actions {
+            if *action_x > rendered_width {
+                spans.push(Span::raw(" ".repeat((*action_x - rendered_width) as usize)));
+            }
+            spans.push(Span::styled(
+                *label,
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            let action_width = UnicodeWidthStr::width(*label) as u16;
+            let action_area = Rect::new(
+                inner.x + *action_x,
+                footer_y + line_offset as u16,
+                action_width,
+                1,
+            );
+            match action {
+                CoordinatorPickerFooterAction::New => layout.new_area = action_area,
+                CoordinatorPickerFooterAction::Close => layout.close_area = action_area,
+                CoordinatorPickerFooterAction::Cancel => layout.cancel_area = action_area,
+            }
+            rendered_width = action_x.saturating_add(action_width);
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(inner.x, footer_y + line_offset as u16, inner.width, 1),
+        );
+    }
+
+    layout
 }
 
 /// Draw the chat manager pane overlay (fix-tui-chat).
@@ -13456,6 +13585,76 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    fn picker_with_entries(count: usize, selected: usize) -> CoordinatorPickerState {
+        CoordinatorPickerState {
+            selected,
+            entries: (0..count)
+                .map(|index| {
+                    (
+                        index as u32 + 1,
+                        format!(".chat-{}", index + 1),
+                        format!("Chat {} • in-progress", index + 1),
+                        true,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn render_coordinator_picker_layout(
+        width: u16,
+        height: u16,
+        picker: &CoordinatorPickerState,
+    ) -> CoordinatorPickerLayout {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut layout = None;
+        terminal
+            .draw(|frame| layout = Some(draw_coordinator_picker(frame, picker, 1)))
+            .unwrap();
+        layout.expect("picker layout")
+    }
+
+    #[test]
+    fn coordinator_picker_records_exact_rows_and_footer_at_responsive_widths() {
+        let picker = picker_with_entries(5, 2);
+        for width in [120, 72, 40] {
+            let layout = render_coordinator_picker_layout(width, 24, &picker);
+            assert_eq!(layout.row_hits.len(), picker.entries.len(), "width={width}");
+            assert_eq!(layout.row_hits[0].0, 0, "width={width}");
+            assert_eq!(layout.row_hits[2].0, 2, "width={width}");
+            assert_eq!(layout.row_hits[4].0, 4, "width={width}");
+            for (screen_row, (_, area)) in layout.row_hits.iter().enumerate() {
+                assert_eq!(area.x, layout.list_area.x, "width={width}");
+                assert_eq!(area.width, layout.list_area.width, "width={width}");
+                assert_eq!(area.height, 1, "width={width}");
+                assert_eq!(area.y, layout.list_area.y + screen_row as u16);
+                assert!(layout.area.contains(Position::new(area.x, area.y)));
+            }
+            for area in [layout.new_area, layout.close_area, layout.cancel_area] {
+                assert!(area.width > 0, "missing footer hit at width={width}");
+                assert_eq!(area.height, 1, "width={width}");
+                assert!(layout.area.contains(Position::new(area.x, area.y)));
+                assert!(layout.row_hits.iter().all(|(_, row)| row.y != area.y));
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_picker_windows_long_list_around_selected_row() {
+        let picker = picker_with_entries(30, 24);
+        let layout = render_coordinator_picker_layout(60, 10, &picker);
+        let visible: Vec<usize> = layout.row_hits.iter().map(|(index, _)| *index).collect();
+        assert!(!visible.is_empty());
+        assert!(visible.len() < picker.entries.len());
+        assert!(visible.contains(&picker.selected), "visible={visible:?}");
+        assert!(visible.windows(2).all(|pair| pair[1] == pair[0] + 1));
+        assert_eq!(layout.list_area.height as usize, visible.len());
+        assert!(layout.cancel_area.width > 0);
     }
 
     /// Validation criterion #1: tui settings tab renders without panic.

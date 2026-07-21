@@ -7508,6 +7508,14 @@ pub struct VizApp {
     pub last_text_prompt_area: Rect,
     /// The choice/confirm dialog overlay area from the last render frame (for click-outside dismiss).
     pub last_dialog_area: Rect,
+    /// Exact hit regions emitted by the most recent Chat selector render.
+    /// Row tuples carry the stable entry index from `CoordinatorPickerState`;
+    /// footer actions are label-tight so no bracketed affordance is inert.
+    pub coordinator_picker_row_hits: Vec<(usize, Rect)>,
+    pub last_coordinator_picker_list_area: Rect,
+    pub last_coordinator_picker_new_area: Rect,
+    pub last_coordinator_picker_close_area: Rect,
+    pub last_coordinator_picker_cancel_area: Rect,
 
     /// The file browser tree pane area from the last render frame (for mouse clicks).
     pub last_file_tree_area: Rect,
@@ -8643,6 +8651,11 @@ impl VizApp {
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_dialog_area: Rect::default(),
+            coordinator_picker_row_hits: Vec::new(),
+            last_coordinator_picker_list_area: Rect::default(),
+            last_coordinator_picker_new_area: Rect::default(),
+            last_coordinator_picker_close_area: Rect::default(),
+            last_coordinator_picker_cancel_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
             config_entry_y_positions: Vec::new(),
@@ -14072,6 +14085,11 @@ impl VizApp {
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_dialog_area: Rect::default(),
+            coordinator_picker_row_hits: Vec::new(),
+            last_coordinator_picker_list_area: Rect::default(),
+            last_coordinator_picker_new_area: Rect::default(),
+            last_coordinator_picker_close_area: Rect::default(),
+            last_coordinator_picker_cancel_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
             config_entry_y_positions: Vec::new(),
@@ -18997,8 +19015,20 @@ impl VizApp {
         self.create_coordinator(None);
     }
 
+    /// Invalidate all Chat-selector coordinates. Render calls this before
+    /// laying out a fresh frame; resize and modal transitions call it too so
+    /// queued pointer events can never target the previous viewport.
+    pub fn clear_coordinator_picker_hits(&mut self) {
+        self.coordinator_picker_row_hits.clear();
+        self.last_coordinator_picker_list_area = Rect::default();
+        self.last_coordinator_picker_new_area = Rect::default();
+        self.last_coordinator_picker_close_area = Rect::default();
+        self.last_coordinator_picker_cancel_area = Rect::default();
+    }
+
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
+        self.clear_coordinator_picker_hits();
         let mut entries: Vec<(u32, String, String, bool)> = self
             .coherent_graph()
             .map(|graph| {
@@ -19058,6 +19088,8 @@ impl VizApp {
     /// Close the coordinator picker without switching.
     pub fn close_coordinator_picker(&mut self) {
         self.coordinator_picker = None;
+        self.clear_coordinator_picker_hits();
+        self.last_dialog_area = Rect::default();
         self.input_mode = InputMode::Normal;
     }
 

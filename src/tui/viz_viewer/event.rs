@@ -7,7 +7,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 
 use super::render;
 
@@ -568,6 +568,8 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             // can be interpreted against the resized terminal. The next draw
             // derives fresh rectangles from the pointer-down preference.
             app.cancel_layout_drag();
+            app.clear_coordinator_picker_hits();
+            app.last_dialog_area = Rect::default();
         }
         Event::FocusGained => {
             // OS focus returned to wg's window. tmux re-mirrors the active
@@ -4437,8 +4439,71 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     }
 }
 
+/// Route mouse/touch events while the Chat selector is modal. Returning true
+/// means the event was consumed. Every event is swallowed while the selector
+/// is open so an inside tap can never fall through to the graph or chat PTY.
+fn handle_coordinator_picker_mouse(
+    app: &mut VizApp,
+    kind: MouseEventKind,
+    row: u16,
+    column: u16,
+) -> bool {
+    if !matches!(app.input_mode, InputMode::CoordinatorPicker) {
+        return false;
+    }
+
+    let pos = Position::new(column, row);
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if app.last_coordinator_picker_list_area.contains(pos) {
+                handle_coordinator_picker_input(app, KeyCode::Up);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.last_coordinator_picker_list_area.contains(pos) {
+                handle_coordinator_picker_input(app, KeyCode::Down);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            app.workspace_click_pending = false;
+            app.add_touch_echo(column, row);
+            let in_dialog = app.last_dialog_area.width > 0 && app.last_dialog_area.contains(pos);
+            if !in_dialog {
+                app.close_coordinator_picker();
+                return true;
+            }
+
+            let clicked_entry = app
+                .coordinator_picker_row_hits
+                .iter()
+                .find_map(|(index, area)| area.contains(pos).then_some(*index));
+            if let Some(index) = clicked_entry {
+                if let Some(picker) = app.coordinator_picker.as_mut() {
+                    picker.selected = index;
+                }
+                // Use the keyboard activation path verbatim: it captures the
+                // exact task id before closing and applies the shared
+                // live-vs-terminal navigation rule.
+                handle_coordinator_picker_input(app, KeyCode::Enter);
+            } else if app.last_coordinator_picker_new_area.contains(pos) {
+                handle_coordinator_picker_input(app, KeyCode::Char('+'));
+            } else if app.last_coordinator_picker_close_area.contains(pos) {
+                handle_coordinator_picker_input(app, KeyCode::Char('-'));
+            } else if app.last_coordinator_picker_cancel_area.contains(pos) {
+                handle_coordinator_picker_input(app, KeyCode::Esc);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
+
+    if handle_coordinator_picker_mouse(app, kind, row, column) {
+        return;
+    }
 
     let pos = Position::new(column, row);
 
@@ -11599,6 +11664,169 @@ mod chat_open_tests {
         app.last_service_badge_area = Rect::default();
         app.last_minimized_strip_area = Rect::default();
         app.last_fullscreen_restore_area = Rect::default();
+    }
+
+    fn render_chat_picker(app: &mut VizApp, width: u16, height: u16) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+            .unwrap();
+        assert!(app.last_dialog_area.width > 0);
+    }
+
+    fn dispatch_picker_mouse(app: &mut VizApp, kind: MouseEventKind, area: Rect) {
+        app.mouse_enabled = true;
+        super::dispatch_event(
+            app,
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: area.x + area.width.saturating_sub(1) / 2,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+    }
+
+    #[test]
+    fn real_mouse_events_open_exact_first_middle_and_last_visible_chat_rows() {
+        for (visible_position, expected_task, expected_cid, expected_tab) in [
+            (0usize, ".chat-1", 1, RightPanelTab::Chat),
+            (1usize, ".chat-2", 0, RightPanelTab::Detail),
+            (3usize, ".chat-4", 0, RightPanelTab::Detail),
+        ] {
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.open_coordinator_picker();
+            render_chat_picker(&mut app, 72, 24);
+            let (entry_index, area) = app.coordinator_picker_row_hits[visible_position];
+            assert_eq!(
+                app.coordinator_picker.as_ref().unwrap().entries[entry_index].1,
+                expected_task
+            );
+
+            dispatch_picker_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), area);
+
+            assert_eq!(app.selected_task_id(), Some(expected_task));
+            assert_eq!(app.active_coordinator_id, expected_cid);
+            assert_eq!(app.right_panel_tab, expected_tab);
+            assert!(app.coordinator_picker.is_none());
+            if expected_tab == RightPanelTab::Detail {
+                assert!(app.pending_chat_pty_spawn.is_none());
+                assert!(!app.task_panes.contains_key(expected_task));
+            } else if let Some(pending) = app.pending_chat_pty_spawn.as_ref() {
+                assert_eq!(pending.task_id, expected_task);
+            }
+        }
+    }
+
+    #[test]
+    fn real_mouse_events_activate_new_close_and_cancel_footer_actions() {
+        let (mut new_app, _new_tmp) = build_app_with_chat_node();
+        new_app.open_coordinator_picker();
+        render_chat_picker(&mut new_app, 40, 24);
+        let new_area = new_app.last_coordinator_picker_new_area;
+        dispatch_picker_mouse(
+            &mut new_app,
+            MouseEventKind::Down(MouseButton::Left),
+            new_area,
+        );
+        assert!(new_app.launcher.is_some());
+        assert_eq!(new_app.input_mode, InputMode::Launcher);
+
+        let (mut close_app, _close_tmp) = build_app_with_chat_node();
+        close_app.active_coordinator_id = 3;
+        close_app.open_coordinator_picker();
+        render_chat_picker(&mut close_app, 72, 24);
+        let close_area = close_app.last_coordinator_picker_close_area;
+        dispatch_picker_mouse(
+            &mut close_app,
+            MouseEventKind::Down(MouseButton::Left),
+            close_area,
+        );
+        let InputMode::ChoiceDialog(dialog) = &close_app.input_mode else {
+            panic!("Close footer did not open lifecycle confirmation");
+        };
+        let ChoiceDialogAction::CloseChat(context) = &dialog.action else {
+            panic!("Close footer opened the wrong action");
+        };
+        assert_eq!(context.identity.task_id, ".chat-3");
+        assert_eq!(context.identity.coordinator_id, 3);
+
+        let (mut cancel_app, _cancel_tmp) = build_app_with_chat_node();
+        cancel_app.open_coordinator_picker();
+        render_chat_picker(&mut cancel_app, 72, 24);
+        let cancel_area = cancel_app.last_coordinator_picker_cancel_area;
+        dispatch_picker_mouse(
+            &mut cancel_app,
+            MouseEventKind::Down(MouseButton::Left),
+            cancel_area,
+        );
+        assert_eq!(cancel_app.input_mode, InputMode::Normal);
+        assert!(cancel_app.coordinator_picker.is_none());
+    }
+
+    #[test]
+    fn picker_wheel_keeps_selection_visible_and_resize_rejects_stale_rows() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.coordinator_picker = Some(super::super::state::CoordinatorPickerState {
+            selected: 0,
+            entries: (0..20)
+                .map(|index| {
+                    (
+                        index as u32 + 1,
+                        format!(".chat-{}", index + 1),
+                        format!("Chat {index}"),
+                        true,
+                    )
+                })
+                .collect(),
+        });
+        app.input_mode = InputMode::CoordinatorPicker;
+        render_chat_picker(&mut app, 60, 10);
+        let list_area = app.last_coordinator_picker_list_area;
+        dispatch_picker_mouse(&mut app, MouseEventKind::ScrollDown, list_area);
+        assert_eq!(app.coordinator_picker.as_ref().unwrap().selected, 1);
+
+        app.coordinator_picker.as_mut().unwrap().selected = 19;
+        render_chat_picker(&mut app, 60, 10);
+        assert!(
+            app.coordinator_picker_row_hits
+                .iter()
+                .any(|(index, _)| *index == 19)
+        );
+        let stale_area = app.coordinator_picker_row_hits[0].1;
+        let active_before = app.active_coordinator_id;
+
+        super::dispatch_event(&mut app, Event::Resize(40, 8));
+        assert!(app.coordinator_picker_row_hits.is_empty());
+        assert_eq!(app.last_dialog_area, Rect::default());
+        dispatch_picker_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale_area,
+        );
+        assert_eq!(app.active_coordinator_id, active_before);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn click_inside_picker_chrome_is_modal_and_never_falls_through() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.selected_task_idx = app.task_order.iter().position(|id| id == "regular-task");
+        let selected_before = app.selected_task_idx;
+        app.open_coordinator_picker();
+        render_chat_picker(&mut app, 72, 24);
+        let separator = Rect::new(
+            app.last_coordinator_picker_list_area.x,
+            app.last_coordinator_picker_list_area.bottom(),
+            1,
+            1,
+        );
+        dispatch_picker_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), separator);
+        assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+        assert_eq!(app.selected_task_idx, selected_before);
     }
 
     /// Every cell in the large labeled New-chat control opens the launcher,

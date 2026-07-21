@@ -2356,3 +2356,12 @@ owners = [
 ]
 description = "Installed-binary credential-free production regression for the five-minute inline-evaluator false reap: an exact persisted codex:gpt-5.6-luna evaluator emits no model output for longer than an accelerated heartbeat window while the process-bound, absolute-WG, explicit-graph watcher refreshes registry liveness; registry and a real tmux TUI report it active, daemon SIGKILL/restart does not duplicate it, and it completes once. A second genuinely hung Luna stub keeps heartbeating but is terminated by the independent hard inference timeout with no wrapper/model/heartbeat orphan. Foreign PATH wg plus Claude/Pi sentinels pin project and same-system route isolation."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_chat_selector_mouse_actions"
+script = "scenarios/tui_chat_selector_mouse_actions.sh"
+owners = [
+    "make-chat-selector",
+]
+description = "Installed-binary real tmux/SGR mouse regression for the Chat selector: with tmux mouse enabled, clicks the rendered Chat control to open the modal, clicks an exact non-current row to attach that identity, creates a fresh chat through the clickable New footer, dismisses through the clickable Cancel footer, and reaches + confirms the identity-pinned Archive lifecycle through the clickable Close footer. Finishes with the authoritative keyboard chooser flow. Credential-free fake Claude route."
+timeout_seconds = 60
