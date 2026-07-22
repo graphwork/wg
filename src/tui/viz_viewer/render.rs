@@ -5812,8 +5812,8 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .log_pane
             .agent_id
             .as_deref()
-            .map(|id| format!("agent={}", id))
-            .unwrap_or_else(|| "no agent".to_string());
+            .map(|id| format!("agent={} src={}", id, app.log_pane_source_label()))
+            .unwrap_or_else(|| "no agent src=load".to_string());
         // For a retried task, show which attempt is displayed + its liveness,
         // e.g. "attempt 2/2 (live)", so the failed first attempt is never
         // mistaken for the live one.

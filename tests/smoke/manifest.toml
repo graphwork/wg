@@ -552,6 +552,15 @@ description = "After a fail→retry, wg tui's '4: Log' pane defaults to the LIVE
 timeout_seconds = 90
 
 [[scenario]]
+name = "tui_log_pane_live_retry_tail"
+script = "scenarios/tui_log_pane_live_retry_tail.sh"
+owners = [
+    "fix-live-attempt-log-tail",
+]
+description = "Live tmux regression for a failed agent-620 plus assigned/live agent-623 with a sparse ~600 MB Pi stream and an enormous early record. The first Session Log request must identify attempt 2/2 + agent-623/current, show the live `cargo test --bin wg` tail, incrementally follow completion exactly once, cycle to failed attempt 1 with `{`, and return to the current live tail with `}`."
+timeout_seconds = 90
+
+[[scenario]]
 name = "wg_show_retry_attempts"
 script = "scenarios/wg_show_retry_attempts.sh"
 owners = [

@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 use anyhow::{Context, Result};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -5676,12 +5679,194 @@ fn token_usage_from_pi_fields(usage: &serde_json::Value) -> TokenUsage {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LogFileIdentity(u128);
+
+fn log_file_identity(metadata: &std::fs::Metadata) -> LogFileIdentity {
+    #[cfg(unix)]
+    {
+        return LogFileIdentity(((metadata.dev() as u128) << 64) | metadata.ino() as u128);
+    }
+    #[cfg(not(unix))]
+    {
+        let created = metadata
+            .created()
+            .ok()
+            .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        LogFileIdentity(created)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveLogPage {
     next_offset: u64,
     bytes_read: usize,
     records_read: usize,
     reached_eof: bool,
+    skipped_oversized_record: bool,
+    source_identity: LogFileIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TailLogPage {
+    text: String,
+    window_start: u64,
+    next_offset: u64,
+    bytes_read: usize,
+    records_read: usize,
+    skipped_oversized_record: bool,
+    source_identity: LogFileIdentity,
+}
+
+/// Return complete JSONL record ranges in `data[start..]` and the local byte
+/// immediately after the last complete record. A valid final JSON value is a
+/// complete record even when a fixture omitted its trailing newline; a
+/// partially-written final value is deliberately retried later.
+fn complete_jsonl_ranges(data: &[u8], start: usize) -> (Vec<(usize, usize)>, usize) {
+    let mut ranges = Vec::new();
+    let mut record_start = start;
+    let mut complete_end = start;
+    for (index, byte) in data.iter().copied().enumerate().skip(start) {
+        if byte != b'\n' {
+            continue;
+        }
+        ranges.push((record_start, index));
+        record_start = index + 1;
+        complete_end = record_start;
+    }
+    if record_start < data.len()
+        && serde_json::from_slice::<serde_json::Value>(&data[record_start..]).is_ok()
+    {
+        ranges.push((record_start, data.len()));
+        complete_end = data.len();
+    }
+    (ranges, complete_end)
+}
+
+fn ranges_to_text(data: &[u8], ranges: &[(usize, usize)]) -> String {
+    let mut text = String::new();
+    for &(start, end) in ranges {
+        text.push_str(&String::from_utf8_lossy(&data[start..end]));
+        text.push('\n');
+    }
+    text
+}
+
+/// Read the newest bounded complete-record window without scanning from byte
+/// zero. This is the initial/re-enabled auto-tail primitive: regardless of a
+/// stream's total size it performs at most one 1 MiB read and keeps at most the
+/// newest 200 records. If the whole budget lands inside one over-sized record,
+/// the cursor advances to the observed EOF and the caller surfaces a marker.
+fn read_bounded_jsonl_tail(path: &Path) -> std::io::Result<TailLogPage> {
+    let mut file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    let source_identity = log_file_identity(&metadata);
+    let file_len = metadata.len();
+    let start_offset = file_len.saturating_sub(ACTIVE_LOG_PAGE_MAX_BYTES as u64);
+    file.seek(SeekFrom::Start(start_offset))?;
+
+    let mut data = Vec::new();
+    file.by_ref()
+        .take(ACTIVE_LOG_PAGE_MAX_BYTES as u64)
+        .read_to_end(&mut data)?;
+    let bytes_read = data.len();
+
+    // A reverse read usually begins in the middle of a record. Drop that
+    // prefix through its newline; it is never parsed as a bogus event.
+    let usable_start = if start_offset == 0 {
+        0
+    } else if let Some(index) = data.iter().position(|byte| *byte == b'\n') {
+        index + 1
+    } else {
+        return Ok(TailLogPage {
+            text: String::new(),
+            window_start: file_len,
+            next_offset: file_len,
+            bytes_read,
+            records_read: 0,
+            skipped_oversized_record: true,
+            source_identity,
+        });
+    };
+
+    let (ranges, complete_end) = complete_jsonl_ranges(&data, usable_start);
+    let keep_from = ranges.len().saturating_sub(ACTIVE_LOG_PAGE_MAX_RECORDS);
+    let kept = &ranges[keep_from..];
+    let window_start = kept
+        .first()
+        .map(|(start, _)| start_offset.saturating_add(*start as u64))
+        .unwrap_or_else(|| start_offset.saturating_add(complete_end as u64));
+    let next_offset = start_offset.saturating_add(complete_end as u64);
+    let skipped_oversized_record = kept.is_empty() && file_len > 0 && start_offset > 0;
+
+    Ok(TailLogPage {
+        text: ranges_to_text(&data, kept),
+        window_start,
+        next_offset,
+        bytes_read,
+        records_read: kept.len(),
+        skipped_oversized_record,
+        source_identity,
+    })
+}
+
+/// Read one bounded reverse-history page ending immediately before `before`.
+/// The returned records are still chronological; callers prepend them to the
+/// retained window. No read is issued when the window already begins at zero.
+fn read_bounded_jsonl_before(path: &Path, before: u64) -> std::io::Result<TailLogPage> {
+    let mut file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    let source_identity = log_file_identity(&metadata);
+    let end_offset = before.min(metadata.len());
+    let start_offset = end_offset.saturating_sub(ACTIVE_LOG_PAGE_MAX_BYTES as u64);
+    if start_offset == end_offset {
+        return Ok(TailLogPage {
+            text: String::new(),
+            window_start: end_offset,
+            next_offset: end_offset,
+            bytes_read: 0,
+            records_read: 0,
+            skipped_oversized_record: false,
+            source_identity,
+        });
+    }
+    file.seek(SeekFrom::Start(start_offset))?;
+    let mut data = vec![0; (end_offset - start_offset) as usize];
+    file.read_exact(&mut data)?;
+    let bytes_read = data.len();
+    let usable_start = if start_offset == 0 {
+        0
+    } else if let Some(index) = data.iter().position(|byte| *byte == b'\n') {
+        index + 1
+    } else {
+        return Ok(TailLogPage {
+            text: String::new(),
+            window_start: start_offset,
+            next_offset: end_offset,
+            bytes_read,
+            records_read: 0,
+            skipped_oversized_record: true,
+            source_identity,
+        });
+    };
+    let (ranges, _) = complete_jsonl_ranges(&data, usable_start);
+    let keep_from = ranges.len().saturating_sub(ACTIVE_LOG_PAGE_MAX_RECORDS);
+    let kept = &ranges[keep_from..];
+    let window_start = kept
+        .first()
+        .map(|(start, _)| start_offset.saturating_add(*start as u64))
+        .unwrap_or(start_offset);
+    Ok(TailLogPage {
+        text: ranges_to_text(&data, kept),
+        window_start,
+        next_offset: end_offset,
+        bytes_read,
+        records_read: kept.len(),
+        skipped_oversized_record: kept.is_empty() && start_offset > 0,
+        source_identity,
+    })
 }
 
 /// Read one bounded JSONL page. A trailing partial record is retried from its
@@ -5689,7 +5874,9 @@ struct ActiveLogPage {
 /// one byte-capped read so it cannot wedge the cursor forever.
 fn read_bounded_jsonl_page(path: &Path, offset: u64) -> std::io::Result<(String, ActiveLogPage)> {
     let mut file = std::fs::File::open(path)?;
-    let file_len = file.metadata()?.len();
+    let metadata = file.metadata()?;
+    let source_identity = log_file_identity(&metadata);
+    let file_len = metadata.len();
     let offset = if offset > file_len { 0 } else { offset };
     file.seek(SeekFrom::Start(offset))?;
 
@@ -5718,11 +5905,17 @@ fn read_bounded_jsonl_page(path: &Path, offset: u64) -> std::io::Result<(String,
         consumed = record_start;
     }
 
-    if records_read < ACTIVE_LOG_PAGE_MAX_RECORDS && physical_eof && record_start < data.len() {
+    if records_read < ACTIVE_LOG_PAGE_MAX_RECORDS
+        && physical_eof
+        && record_start < data.len()
+        && serde_json::from_slice::<serde_json::Value>(&data[record_start..]).is_ok()
+    {
         text.push_str(&String::from_utf8_lossy(&data[record_start..]));
         records_read += 1;
         consumed = data.len();
-    } else if consumed == 0 && data.len() == ACTIVE_LOG_PAGE_MAX_BYTES {
+    }
+    let skipped_oversized_record = consumed == 0 && data.len() == ACTIVE_LOG_PAGE_MAX_BYTES;
+    if skipped_oversized_record {
         // No newline fits in the byte budget: discard this one malformed or
         // over-sized record page rather than rereading it forever.
         consumed = data.len();
@@ -5736,6 +5929,8 @@ fn read_bounded_jsonl_page(path: &Path, offset: u64) -> std::io::Result<(String,
             bytes_read,
             records_read,
             reached_eof: next_offset >= file_len,
+            skipped_oversized_record,
+            source_identity,
         },
     ))
 }
@@ -5782,6 +5977,92 @@ mod active_log_page_tests {
         assert_eq!(second.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
         assert_eq!(info.message_count, ACTIVE_LOG_PAGE_MAX_RECORDS * 2);
         assert_eq!(info.token_usage.as_ref().unwrap().output_tokens, 800);
+    }
+
+    #[test]
+    fn reverse_tail_reads_latest_records_of_sparse_600mb_stream_with_one_bounded_read() {
+        use std::io::{Seek, Write};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("raw_stream.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let sparse_prefix = 600_u64 * 1024 * 1024;
+        file.set_len(sparse_prefix).unwrap();
+        file.seek(SeekFrom::Start(sparse_prefix - 4096)).unwrap();
+        // The sparse prefix acts like one enormous early record. Its newline
+        // is followed by the only records that the initial TUI request needs.
+        file.write_all(b"}\n").unwrap();
+        file.write_all(
+            br#"{"type":"turn_end","message":{"content":[{"type":"text","text":"attempt-2 startup"}]}}"#,
+        )
+        .unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(
+            br#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test --bin wg"}}"#,
+        )
+        .unwrap();
+        file.write_all(b"\n").unwrap();
+        let final_len = file.stream_position().unwrap();
+        file.set_len(final_len).unwrap();
+        drop(file);
+
+        let started = Instant::now();
+        let page = read_bounded_jsonl_tail(&path).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(page.bytes_read <= ACTIVE_LOG_PAGE_MAX_BYTES);
+        assert!(page.records_read <= ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert_eq!(page.next_offset, final_len);
+        assert!(page.text.contains("cargo test --bin wg"));
+        assert!(page.text.contains("attempt-2 startup"));
+        assert!(!page.text.as_bytes().contains(&0));
+    }
+
+    #[test]
+    fn reverse_tail_keeps_latest_200_and_incremental_cursor_appends_once() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("raw_stream.jsonl");
+        let initial = (0..350)
+            .map(|index| format!(r#"{{"type":"event","index":{index}}}"#))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, initial).unwrap();
+
+        let tail = read_bounded_jsonl_tail(&path).unwrap();
+        assert_eq!(tail.records_read, ACTIVE_LOG_PAGE_MAX_RECORDS);
+        assert!(!tail.text.contains(r#""index":149"#));
+        assert!(tail.text.contains(r#""index":150"#));
+        assert!(tail.text.contains(r#""index":349"#));
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(append, r#"{{"type":"event","index":350}}"#).unwrap();
+        drop(append);
+
+        let (new_data, next) = read_bounded_jsonl_page(&path, tail.next_offset).unwrap();
+        assert_eq!(new_data.matches(r#""index":350"#).count(), 1);
+        assert!(next.next_offset > tail.next_offset);
+        let (empty, unchanged) = read_bounded_jsonl_page(&path, next.next_offset).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(unchanged.next_offset, next.next_offset);
+    }
+
+    #[test]
+    fn reverse_tail_represents_single_oversized_record_without_wedging_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("raw_stream.jsonl");
+        let mut bytes = vec![b'x'; ACTIVE_LOG_PAGE_MAX_BYTES * 2];
+        bytes.push(b'\n');
+        std::fs::write(&path, bytes).unwrap();
+
+        let page = read_bounded_jsonl_tail(&path).unwrap();
+        assert!(page.skipped_oversized_record);
+        assert!(page.text.is_empty());
+        assert_eq!(page.next_offset, std::fs::metadata(&path).unwrap().len());
     }
 
     #[test]
@@ -6551,7 +6832,15 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LogPaneSourceKey {
+    task_id: String,
+    agent_id: String,
+    viewing_iteration: Option<usize>,
+}
+
 /// State for the log pane (now embedded as right panel tab 2).
+#[derive(Clone)]
 pub struct LogPaneState {
     /// Scroll offset from the top of log content.
     pub scroll: usize,
@@ -6600,6 +6889,26 @@ pub struct LogPaneState {
     pub stream_events: Vec<AgentStreamEvent>,
     /// Byte offset for incremental reads from raw_stream.jsonl.
     pub raw_stream_offset: u64,
+    /// First byte represented by the retained stream window. Used for bounded
+    /// reverse-history paging; it never causes a scan from byte zero.
+    stream_window_start: u64,
+    /// Coherent task/attempt/archive identity for both header and body.
+    source_key: Option<LogPaneSourceKey>,
+    /// Liveness captured on the same worker snapshot as source selection.
+    source_liveness: Option<AgentStatus>,
+    stream_source_identity: Option<LogFileIdentity>,
+    output_source_identity: Option<LogFileIdentity>,
+    stream_initialized: bool,
+    output_initialized: bool,
+    /// Set on a source change or when the user re-enables tail. The worker
+    /// satisfies it with one reverse-tail snapshot, not a prefix scan.
+    tail_jump_pending: bool,
+    output_tail_jump_pending: bool,
+    /// Set when Home/top asks for one older bounded history page.
+    history_page_pending: bool,
+    /// Monotonic UI identity generation. Slow completions apply only when
+    /// task + attempt + archive + this generation still match.
+    generation: u64,
 }
 
 impl Default for LogPaneState {
@@ -6623,11 +6932,38 @@ impl Default for LogPaneState {
             viewing_iteration: None,
             stream_events: Vec::new(),
             raw_stream_offset: 0,
+            stream_window_start: 0,
+            source_key: None,
+            source_liveness: None,
+            stream_source_identity: None,
+            output_source_identity: None,
+            stream_initialized: false,
+            output_initialized: false,
+            tail_jump_pending: true,
+            output_tail_jump_pending: true,
+            history_page_pending: false,
+            generation: 0,
         }
     }
 }
 
 impl LogPaneState {
+    fn reset_source_buffers(&mut self) {
+        self.agent_output = OutputAgentText::default();
+        self.stream_events.clear();
+        self.raw_stream_offset = 0;
+        self.stream_window_start = 0;
+        self.stream_source_identity = None;
+        self.output_source_identity = None;
+        self.source_liveness = None;
+        self.stream_initialized = false;
+        self.output_initialized = false;
+        self.tail_jump_pending = true;
+        self.output_tail_jump_pending = true;
+        self.history_page_pending = false;
+        self.has_new_content = false;
+    }
+
     pub(crate) fn max_scroll(&self) -> usize {
         self.total_wrapped_lines
             .saturating_sub(self.viewport_height)
@@ -6658,28 +6994,45 @@ impl LogPaneState {
     pub(crate) fn scroll_down(&mut self, amount: usize) {
         let max_scroll = self.max_scroll();
         let current = self.normalized_scroll();
+        let was_auto_tail = self.auto_tail;
         self.scroll = current.saturating_add(amount).min(max_scroll);
         if self.scroll >= max_scroll {
             self.auto_tail = true;
             self.has_new_content = false;
+            if !was_auto_tail {
+                self.tail_jump_pending = true;
+                self.output_tail_jump_pending = true;
+            }
         }
     }
 
     pub(crate) fn scroll_to_top(&mut self) {
         self.scroll = 0;
         self.auto_tail = false;
+        if self.stream_window_start > 0 {
+            self.history_page_pending = true;
+        }
     }
 
     pub(crate) fn scroll_to_bottom(&mut self) {
+        let was_auto_tail = self.auto_tail;
         self.scroll = self.max_scroll();
         self.auto_tail = true;
         self.has_new_content = false;
+        if !was_auto_tail || !self.stream_initialized {
+            self.tail_jump_pending = true;
+            self.output_tail_jump_pending = true;
+        }
     }
 
     pub(crate) fn jump_to_scroll(&mut self, position: usize) {
         let max_scroll = self.max_scroll();
         self.scroll = position.min(max_scroll);
         if self.scroll >= max_scroll {
+            if !self.auto_tail {
+                self.tail_jump_pending = true;
+                self.output_tail_jump_pending = true;
+            }
             self.auto_tail = true;
             self.has_new_content = false;
         } else {
@@ -7087,7 +7440,7 @@ impl Default for OutputAgentScroll {
 
 /// Per-agent accumulated text buffer for the Output pane.
 /// Phase 4 dead code — Output tab removed.
-#[derive(Default)]
+#[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct OutputAgentText {
     /// Accumulated extracted markdown text from output.log.
@@ -10844,11 +11197,26 @@ impl VizApp {
         // Invalidate HUD, lifecycle, and log pane so they reload for the new selection.
         self.invalidate_hud();
         self.invalidate_agency_lifecycle();
-        // Reset log auto-tail when the selected task actually changes, so the new
-        // task's log opens pinned to the bottom (same as terminal emulators).
-        if self.log_pane.task_id.as_deref() != Some(&selected_id) {
+        // Reset the body immediately when the selected task actually changes,
+        // so a slow old-task completion cannot leave its header/body visible
+        // under the new graph selection. `source_key` survives ordinary cache
+        // invalidation and therefore distinguishes a real task switch from a
+        // same-task refresh whose `task_id` was temporarily cleared.
+        let displayed_task = self
+            .log_pane
+            .source_key
+            .as_ref()
+            .map(|source| source.task_id.as_str())
+            .or(self.log_pane.task_id.as_deref());
+        if displayed_task != Some(selected_id.as_str()) {
             self.log_pane.auto_tail = true;
-            self.log_pane.has_new_content = false;
+            self.log_pane.manual_pin = None;
+            self.log_pane.pinned_for_task = None;
+            self.log_pane.agent_id = None;
+            self.log_pane.attempt_agent_ids.clear();
+            self.log_pane.source_key = None;
+            self.log_pane.reset_source_buffers();
+            self.log_pane.scroll = usize::MAX;
         }
         self.invalidate_log_pane();
         // Only invalidate the messages panel when the selected task actually changed.
@@ -12185,6 +12553,14 @@ impl VizApp {
             >= std::time::Duration::from_secs(2)
             || self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10);
         self.request_periodic_auxiliary_snapshots(chat_refresh_due, service_snapshot_due);
+        // raw_stream.jsonl/output.log appends do not mutate graph.jsonl and
+        // some filesystems coalesce or omit notify events. While Log is
+        // visible, submit one non-blocking bounded continuation each tick.
+        // The auxiliary lane coalesces requests and all stat/read/parse work
+        // remains off the render/input thread.
+        if self.right_panel_tab == RightPanelTab::Log {
+            self.request_log_pane();
+        }
 
         // Auto-refresh config panel when config.toml changes on disk,
         // but only when the user is not actively editing.
@@ -14126,9 +14502,6 @@ impl VizApp {
 
         self.log_pane.rendered_lines.clear();
 
-        // Reset agent output if task changed.
-        let prev_agent_id = self.log_pane.agent_id.clone();
-
         // Every `agent-*` referenced in the log, in chronological order. A
         // retried task accumulates one block of entries per attempt, oldest
         // first — so this is the attempt order. We collect ALL of them (not
@@ -14208,14 +14581,25 @@ impl VizApp {
         );
         self.log_pane.attempt_agent_ids = selection.ordered;
         let agent_id = selection.selected;
-
-        // Reset agent output buffer if agent changed.
-        if agent_id != prev_agent_id {
-            self.log_pane.agent_output = OutputAgentText::default();
-            self.log_pane.stream_events.clear();
-            self.log_pane.raw_stream_offset = 0;
+        let source_liveness = agent_id.as_ref().and_then(|selected| {
+            self.agent_monitor
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == *selected)
+                .map(|agent| agent.status)
+        });
+        let source_key = agent_id.as_ref().map(|agent_id| LogPaneSourceKey {
+            task_id: task_id.clone(),
+            agent_id: agent_id.clone(),
+            viewing_iteration: self.viewing_iteration,
+        });
+        if self.log_pane.source_key != source_key {
+            self.log_pane.reset_source_buffers();
+            self.log_pane.source_key = source_key;
         }
         self.log_pane.agent_id = agent_id;
+        self.log_pane.source_liveness = source_liveness;
+        self.log_pane.viewing_iteration = self.viewing_iteration;
 
         // If auto-tail is on, scroll to bottom so newest entries are visible.
         // Use usize::MAX — the render function clamps to the actual wrapped line count.
@@ -14229,6 +14613,7 @@ impl VizApp {
     /// Force reload of log pane content.
     pub fn invalidate_log_pane(&mut self) {
         self.log_pane.task_id = None;
+        self.log_pane.generation = self.log_pane.generation.wrapping_add(1).max(1);
         // Mark agent output as dirty so markdown is re-rendered.
         self.log_pane.agent_output.dirty = true;
     }
@@ -14263,11 +14648,10 @@ impl VizApp {
 
         if self.log_pane.agent_id.as_deref() != Some(target.as_str()) {
             self.log_pane.agent_id = Some(target);
-            // Fresh agent → reset the incremental read state so the new
-            // attempt's output/events load from the top.
-            self.log_pane.agent_output = OutputAgentText::default();
-            self.log_pane.stream_events.clear();
-            self.log_pane.raw_stream_offset = 0;
+            self.log_pane.source_key = None;
+            // Fresh attempt → one bounded reverse-tail snapshot. Even an old
+            // failed attempt opens at its ending activity, never at startup.
+            self.log_pane.reset_source_buffers();
             self.log_pane.scroll = usize::MAX;
             self.log_pane.auto_tail = true;
             self.log_pane.has_new_content = false;
@@ -14281,13 +14665,19 @@ impl VizApp {
     /// Liveness suffix for an agent, derived from the registry, e.g. ` (live)`.
     /// Empty when the agent isn't in the registry (status unknown).
     fn agent_liveness_suffix(&self, agent_id: &str) -> &'static str {
-        match self
-            .agent_monitor
-            .agents
-            .iter()
-            .find(|a| a.agent_id == agent_id)
-            .map(|a| a.status)
-        {
+        let status = if self.log_pane.agent_id.as_deref() == Some(agent_id) {
+            self.log_pane.source_liveness
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.agent_monitor
+                .agents
+                .iter()
+                .find(|a| a.agent_id == agent_id)
+                .map(|a| a.status)
+        });
+        match status {
             Some(AgentStatus::Working | AgentStatus::Starting | AgentStatus::Idle) => " (live)",
             Some(AgentStatus::Done) => " (done)",
             Some(AgentStatus::Failed) => " (failed)",
@@ -14314,6 +14704,26 @@ impl VizApp {
         ))
     }
 
+    /// Compact body-source currentness for the header. `now` means the
+    /// displayed body was loaded for the exact task/attempt/current archive;
+    /// `arch` identifies iteration history and `load` is an intentional
+    /// source transition whose previous body has already been cleared.
+    pub fn log_pane_source_label(&self) -> &'static str {
+        let Some(source) = self.log_pane.source_key.as_ref() else {
+            return "load";
+        };
+        if self.log_pane.task_id.as_deref() != Some(source.task_id.as_str())
+            || self.log_pane.agent_id.as_deref() != Some(source.agent_id.as_str())
+            || !(self.log_pane.stream_initialized || self.log_pane.output_initialized)
+        {
+            "load"
+        } else if source.viewing_iteration.is_some() {
+            "arch"
+        } else {
+            "now"
+        }
+    }
+
     /// Scroll log pane up.
     pub fn log_scroll_up(&mut self, amount: usize) {
         self.log_pane.scroll_up(amount);
@@ -14321,17 +14731,34 @@ impl VizApp {
 
     /// Scroll log pane down.
     pub fn log_scroll_down(&mut self, amount: usize) {
+        let was_auto_tail = self.log_pane.auto_tail;
         self.log_pane.scroll_down(amount);
+        if !was_auto_tail && self.log_pane.auto_tail {
+            self.invalidate_log_pane();
+            self.request_log_pane();
+        }
     }
 
-    /// Scroll log pane to the very top.
+    /// Scroll log pane to the very top and request at most one bounded older
+    /// page. Submission is non-blocking; all file work stays on the auxiliary
+    /// storage lane.
     pub fn log_scroll_to_top(&mut self) {
         self.log_pane.scroll_to_top();
+        if self.log_pane.history_page_pending {
+            self.invalidate_log_pane();
+            self.request_log_pane();
+        }
     }
 
-    /// Scroll log pane to the very bottom.
+    /// Scroll log pane to the very bottom. Re-entering tail intentionally
+    /// requests a fresh EOF window so skipped appends appear immediately.
     pub fn log_scroll_to_bottom(&mut self) {
+        let was_auto_tail = self.log_pane.auto_tail;
         self.log_pane.scroll_to_bottom();
+        if !was_auto_tail || self.log_pane.tail_jump_pending {
+            self.invalidate_log_pane();
+            self.request_log_pane();
+        }
     }
 
     /// Toggle log pane JSON mode.
@@ -16378,17 +16805,7 @@ impl VizApp {
             Some(id) => id.clone(),
             None => return,
         };
-
-        // Check if iteration changed — if so, invalidate cached text so we reload
-        // from the new archive (or live output if returning to current).
-        if self.log_pane.viewing_iteration != self.viewing_iteration {
-            self.log_pane.viewing_iteration = self.viewing_iteration;
-            self.log_pane.agent_output = OutputAgentText::default();
-        }
-
         let agents_dir = self.workgraph_dir.join("agents");
-
-        // When viewing a past iteration, read from the archived output instead of live.
         let log_path = if let Some(iter_idx) = self.viewing_iteration {
             self.iteration_archives
                 .get(iter_idx)
@@ -16402,34 +16819,72 @@ impl VizApp {
         } else {
             agents_dir.join(&agent_id).join("output.log")
         };
-        if !log_path.exists() {
-            return;
-        }
-
-        let text_entry = &mut self.log_pane.agent_output;
-
-        let Ok((new_data, page)) = read_bounded_jsonl_page(&log_path, text_entry.file_offset)
-        else {
+        let Ok(metadata) = std::fs::metadata(&log_path) else {
             return;
         };
-        if page.next_offset == text_entry.file_offset {
+        let identity = log_file_identity(&metadata);
+        if self
+            .log_pane
+            .output_source_identity
+            .is_some_and(|old| old != identity)
+            || metadata.len() < self.log_pane.agent_output.file_offset
+        {
+            self.log_pane.agent_output = OutputAgentText::default();
+            self.log_pane.output_initialized = false;
+            self.log_pane.output_source_identity = None;
+            self.log_pane.tail_jump_pending = true;
+            self.log_pane.output_tail_jump_pending = true;
+        }
+        if self.log_pane.output_initialized && !self.log_pane.auto_tail {
+            if metadata.len() > self.log_pane.agent_output.file_offset {
+                self.log_pane.has_new_content = true;
+            }
             return;
         }
-        text_entry.file_offset = page.next_offset;
 
-        // Same extraction as the Output tab.
-        let new_text = extract_enriched_text_from_log(&new_data);
+        let initial_tail =
+            !self.log_pane.output_initialized || self.log_pane.output_tail_jump_pending;
+        let (new_data, next_offset, source_identity, skipped_oversized) = if initial_tail {
+            let Ok(page) = read_bounded_jsonl_tail(&log_path) else {
+                return;
+            };
+            (
+                page.text,
+                page.next_offset,
+                page.source_identity,
+                page.skipped_oversized_record,
+            )
+        } else {
+            let Ok((data, page)) =
+                read_bounded_jsonl_page(&log_path, self.log_pane.agent_output.file_offset)
+            else {
+                return;
+            };
+            (
+                data,
+                page.next_offset,
+                page.source_identity,
+                page.skipped_oversized_record,
+            )
+        };
+
+        let mut new_text = extract_enriched_text_from_log(&new_data);
+        if skipped_oversized && new_text.is_empty() {
+            new_text = "[oversized output record skipped]".to_string();
+        }
+        let text_entry = &mut self.log_pane.agent_output;
+        if initial_tail {
+            text_entry.full_text.clear();
+        }
+        text_entry.file_offset = next_offset;
+        self.log_pane.output_source_identity = Some(source_identity);
+        self.log_pane.output_initialized = true;
+        self.log_pane.output_tail_jump_pending = false;
         if !new_text.is_empty() {
             if !text_entry.full_text.is_empty() {
                 text_entry.full_text.push_str("\n\n");
             }
             text_entry.full_text.push_str(&new_text);
-
-            // Cap at OUTPUT_MAX_CHARS (misnomer: it's bytes). Find the
-            // next `\n` at/after the cut point via byte scan — newlines
-            // are always 1 byte and always at char boundaries, so the
-            // resulting slice is safe even when `full_text` contains
-            // multi-byte chars (e.g. the `─` in tool-box borders).
             if text_entry.full_text.len() > OUTPUT_MAX_CHARS {
                 let min_skip = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
                 let boundary = text_entry
@@ -16443,38 +16898,148 @@ impl VizApp {
                     .unwrap_or_else(|| text_entry.full_text.len());
                 text_entry.full_text = text_entry.full_text[boundary..].to_string();
             }
-
             text_entry.dirty = true;
-
-            // Signal new content if scrolled up.
-            if !self.log_pane.auto_tail {
-                self.log_pane.has_new_content = true;
-            }
         }
     }
 
     pub fn update_log_stream_events(&mut self) {
+        const MAX_STREAM_EVENTS: usize = 2000;
+
         let agent_id = match &self.log_pane.agent_id {
             Some(id) => id.clone(),
             None => return,
         };
-
         let agents_dir = self.workgraph_dir.join("agents");
-        let stream_path = agents_dir.join(&agent_id).join("raw_stream.jsonl");
-        if !stream_path.exists() {
+        let stream_path = if let Some(iter_idx) = self.viewing_iteration {
+            self.iteration_archives
+                .get(iter_idx)
+                .and_then(|(_, dir)| find_archive_file(dir, "raw_stream.jsonl"))
+                .unwrap_or_else(|| agents_dir.join(&agent_id).join("raw_stream.jsonl"))
+        } else {
+            agents_dir.join(&agent_id).join("raw_stream.jsonl")
+        };
+        let Ok(metadata) = std::fs::metadata(&stream_path) else {
+            return;
+        };
+        let identity = log_file_identity(&metadata);
+        if self
+            .log_pane
+            .stream_source_identity
+            .is_some_and(|old| old != identity)
+            || metadata.len() < self.log_pane.raw_stream_offset
+        {
+            // Truncation and rename/recreate rotation are source generations,
+            // not appends. Drop the old body before loading the new EOF window.
+            self.log_pane.stream_events.clear();
+            self.log_pane.raw_stream_offset = 0;
+            self.log_pane.stream_window_start = 0;
+            self.log_pane.stream_initialized = false;
+            self.log_pane.stream_source_identity = None;
+            self.log_pane.tail_jump_pending = true;
+            self.log_pane.history_page_pending = false;
+        }
+
+        if self.log_pane.history_page_pending && self.log_pane.stream_initialized {
+            let Ok(page) =
+                read_bounded_jsonl_before(&stream_path, self.log_pane.stream_window_start)
+            else {
+                return;
+            };
+            self.log_pane.history_page_pending = false;
+            if page.source_identity != identity {
+                self.log_pane.tail_jump_pending = true;
+                return;
+            }
+            let mut older: Vec<_> = page
+                .text
+                .lines()
+                .filter_map(|line| parse_raw_stream_line(line, &agent_id))
+                .collect();
+            if page.skipped_oversized_record && older.is_empty() {
+                older.push(AgentStreamEvent {
+                    kind: AgentStreamEventKind::SystemEvent,
+                    agent_id: agent_id.clone(),
+                    summary: "⚠ oversized stream record skipped".to_string(),
+                    details: Some(EventDetails::SystemEvent {
+                        subtype: "oversized_record".to_string(),
+                        text: format!(
+                            "record exceeded {} byte history budget",
+                            ACTIVE_LOG_PAGE_MAX_BYTES
+                        ),
+                    }),
+                });
+            }
+            let added = older.len();
+            older.append(&mut self.log_pane.stream_events);
+            if older.len() > MAX_STREAM_EVENTS {
+                older.truncate(MAX_STREAM_EVENTS);
+            }
+            self.log_pane.stream_events = older;
+            self.log_pane.stream_window_start = page.window_start;
+            // Keep the previously-visible first event approximately anchored;
+            // render will clamp using exact wrapped-line geometry.
+            self.log_pane.scroll = self.log_pane.scroll.saturating_add(added);
             return;
         }
 
-        let Ok((new_data, page)) =
-            read_bounded_jsonl_page(&stream_path, self.log_pane.raw_stream_offset)
-        else {
+        if self.log_pane.stream_initialized && !self.log_pane.auto_tail {
+            if metadata.len() > self.log_pane.raw_stream_offset {
+                self.log_pane.has_new_content = true;
+            }
+            return;
+        }
+
+        let backlog = metadata
+            .len()
+            .saturating_sub(self.log_pane.raw_stream_offset);
+        let initial_tail = !self.log_pane.stream_initialized
+            || self.log_pane.tail_jump_pending
+            || backlog > ACTIVE_LOG_PAGE_MAX_BYTES as u64;
+        if initial_tail {
+            let Ok(page) = read_bounded_jsonl_tail(&stream_path) else {
+                return;
+            };
+            let mut events: Vec<_> = page
+                .text
+                .lines()
+                .filter_map(|line| parse_raw_stream_line(line, &agent_id))
+                .collect();
+            if page.skipped_oversized_record && events.is_empty() {
+                events.push(AgentStreamEvent {
+                    kind: AgentStreamEventKind::SystemEvent,
+                    agent_id: agent_id.clone(),
+                    summary: "⚠ oversized stream record skipped".to_string(),
+                    details: Some(EventDetails::SystemEvent {
+                        subtype: "oversized_record".to_string(),
+                        text: format!(
+                            "record exceeded {} byte tail budget",
+                            ACTIVE_LOG_PAGE_MAX_BYTES
+                        ),
+                    }),
+                });
+            }
+            self.log_pane.stream_events = events;
+            self.log_pane.raw_stream_offset = page.next_offset;
+            self.log_pane.stream_window_start = page.window_start;
+            self.log_pane.stream_source_identity = Some(page.source_identity);
+            self.log_pane.stream_initialized = true;
+            self.log_pane.tail_jump_pending = false;
+            self.log_pane.has_new_content = false;
+            return;
+        }
+
+        let prior_offset = self.log_pane.raw_stream_offset;
+        let Ok((new_data, page)) = read_bounded_jsonl_page(&stream_path, prior_offset) else {
             return;
         };
-        if page.next_offset == self.log_pane.raw_stream_offset {
+        if page.source_identity != identity {
+            self.log_pane.tail_jump_pending = true;
+            return;
+        }
+        if page.next_offset == prior_offset {
             return;
         }
         self.log_pane.raw_stream_offset = page.next_offset;
-
         let mut had_new = false;
         for line in new_data.lines() {
             if let Some(event) = parse_raw_stream_line(line, &agent_id) {
@@ -16482,13 +17047,30 @@ impl VizApp {
                 had_new = true;
             }
         }
-
-        const MAX_STREAM_EVENTS: usize = 2000;
+        if page.skipped_oversized_record {
+            self.log_pane.stream_events.push(AgentStreamEvent {
+                kind: AgentStreamEventKind::SystemEvent,
+                agent_id: agent_id.clone(),
+                summary: "⚠ oversized stream record skipped".to_string(),
+                details: Some(EventDetails::SystemEvent {
+                    subtype: "oversized_record".to_string(),
+                    text: format!(
+                        "record exceeded {} byte page budget",
+                        ACTIVE_LOG_PAGE_MAX_BYTES
+                    ),
+                }),
+            });
+            had_new = true;
+        }
         if self.log_pane.stream_events.len() > MAX_STREAM_EVENTS {
             let drain = self.log_pane.stream_events.len() - MAX_STREAM_EVENTS;
             self.log_pane.stream_events.drain(..drain);
         }
-
+        if !page.reached_eof && self.log_pane.auto_tail {
+            // A record-capped burst needs one more coalesced request. The next
+            // request jumps to the current EOF rather than paging from zero.
+            self.log_pane.tail_jump_pending = true;
+        }
         if had_new && !self.log_pane.auto_tail {
             self.log_pane.has_new_content = true;
         }
@@ -21168,19 +21750,61 @@ impl VizApp {
             });
     }
 
+    fn apply_log_pane_snapshot(
+        &mut self,
+        target: &str,
+        generation: u64,
+        viewing_iteration: Option<usize>,
+        mut panel: LogPaneState,
+    ) {
+        if self.selected_task_id() != Some(target)
+            || self.log_pane.generation != generation
+            || self.viewing_iteration != viewing_iteration
+        {
+            return;
+        }
+        // Scroll/mode changes are presentation-only and may occur while
+        // storage is in flight. Preserve them without mixing the old body's
+        // task/attempt/archive identity.
+        panel.scroll = self.log_pane.scroll;
+        panel.auto_tail = self.log_pane.auto_tail;
+        panel.json_mode = self.log_pane.json_mode;
+        panel.view_mode = self.log_pane.view_mode;
+        panel.summary_mode = self.log_pane.summary_mode;
+        panel.has_new_content |= self.log_pane.has_new_content;
+        panel.generation = self.log_pane.generation;
+        let needs_followup = panel.auto_tail && panel.stream_initialized && panel.tail_jump_pending;
+        self.log_pane = panel;
+        if needs_followup {
+            self.invalidate_log_pane();
+            self.request_log_pane();
+        }
+    }
+
     pub fn request_log_pane(&mut self) {
         let Some(target) = self.selected_task_id().map(str::to_string) else {
             self.invalidate_log_pane();
+            self.log_pane.rendered_lines.clear();
+            self.log_pane.agent_id = None;
+            self.log_pane.attempt_agent_ids.clear();
+            self.log_pane.manual_pin = None;
+            self.log_pane.pinned_for_task = None;
+            self.log_pane.source_key = None;
+            self.log_pane.reset_source_buffers();
+            self.log_pane.scroll = 0;
             return;
         };
         let workgraph_dir = self.workgraph_dir.clone();
         let graph = self.published_graph.clone();
-        let json_mode = self.log_pane.json_mode;
-        let view_mode = self.log_pane.view_mode;
-        let summary_mode = self.log_pane.summary_mode;
-        let manual_pin = self.log_pane.manual_pin.clone();
-        let pinned_for_task = self.log_pane.pinned_for_task.clone();
         let viewing_iteration = self.viewing_iteration;
+        let iteration_archives = self.iteration_archives.clone();
+        let iteration_archives_task_id = self.iteration_archives_task_id.clone();
+        let generation = self.log_pane.generation;
+        // Carry the exact bounded cursor/window forward. `task_id = None`
+        // forces graph/attempt metadata to be rebuilt while source buffers,
+        // file identities, offsets, and manual pin remain coherent.
+        let mut carried_panel = self.log_pane.clone();
+        carried_panel.task_id = None;
         self.auxiliary
             .request(super::auxiliary::Kind::Log, move || {
                 let mut loader = Self::auxiliary_loader(workgraph_dir, graph);
@@ -21188,26 +21812,16 @@ impl VizApp {
                 loader.rebuild_snapshot_indexes();
                 loader.selected_task_idx = Some(0);
                 loader.viewing_iteration = viewing_iteration;
-                loader.log_pane.json_mode = json_mode;
-                loader.log_pane.view_mode = view_mode;
-                loader.log_pane.summary_mode = summary_mode;
-                loader.log_pane.manual_pin = manual_pin;
-                loader.log_pane.pinned_for_task = pinned_for_task;
+                loader.iteration_archives = iteration_archives;
+                loader.iteration_archives_task_id = iteration_archives_task_id;
+                loader.log_pane = carried_panel;
                 loader.load_agent_monitor();
                 loader.load_log_pane();
                 loader.update_log_output();
                 loader.update_log_stream_events();
-                let mut panel = loader.log_pane;
+                let panel = loader.log_pane;
                 Box::new(move |app| {
-                    if app.selected_task_id() != Some(target.as_str()) {
-                        return;
-                    }
-                    panel.scroll = app.log_pane.scroll;
-                    panel.auto_tail = app.log_pane.auto_tail;
-                    panel.json_mode = app.log_pane.json_mode;
-                    panel.view_mode = app.log_pane.view_mode;
-                    panel.summary_mode = app.log_pane.summary_mode;
-                    app.log_pane = panel;
+                    app.apply_log_pane_snapshot(&target, generation, viewing_iteration, panel);
                 })
             });
     }
@@ -36809,6 +37423,262 @@ mod retry_log_pane_tests {
         // Cycling forward returns to the live agent.
         app.log_pane_cycle_attempt(true);
         assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
+    }
+
+    #[test]
+    fn live_retry_initial_load_reverse_tails_sparse_600mb_pi_stream_and_follows_once() {
+        use std::io::{Seek, Write};
+
+        let (viz, tmp) = build_retried_task_graph();
+        for agent in ["agent-275", "agent-280"] {
+            std::fs::create_dir_all(tmp.path().join("agents").join(agent)).unwrap();
+            std::fs::write(tmp.path().join("agents").join(agent).join("output.log"), "").unwrap();
+        }
+        std::fs::write(
+            tmp.path()
+                .join("agents/agent-275/raw_stream.jsonl"),
+            "{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"FAILED_ATTEMPT_ONLY\"}]}}\n",
+        )
+        .unwrap();
+
+        let live_path = tmp.path().join("agents/agent-280/raw_stream.jsonl");
+        let mut live = std::fs::File::create(&live_path).unwrap();
+        let sparse_prefix = 600_u64 * 1024 * 1024;
+        live.set_len(sparse_prefix).unwrap();
+        live.seek(SeekFrom::Start(sparse_prefix - 4096)).unwrap();
+        live.write_all(b"}\n").unwrap();
+        live.write_all(b"{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ATTEMPT_2_STARTUP\"}]}}\n").unwrap();
+        live.write_all(b"{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"args\":{\"command\":\"cargo test --bin wg\"}}\n").unwrap();
+        let initial_len = live.stream_position().unwrap();
+        live.set_len(initial_len).unwrap();
+        drop(live);
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
+        assert_eq!(app.log_pane_attempt_label().as_deref(), Some("attempt 2/2"));
+        let summaries = app
+            .log_pane
+            .stream_events
+            .iter()
+            .map(|event| event.summary.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            summaries
+                .iter()
+                .any(|line| line.contains("cargo test --bin wg"))
+        );
+        assert!(
+            !summaries
+                .iter()
+                .any(|line| line.contains("FAILED_ATTEMPT_ONLY"))
+        );
+        assert_eq!(app.log_pane.raw_stream_offset, initial_len);
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&live_path)
+            .unwrap();
+        writeln!(append, "{{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"args\":{{\"command\":\"cargo test --bin wg --exact live_follow\"}}}}" ).unwrap();
+        drop(append);
+        app.update_log_stream_events();
+        app.update_log_stream_events();
+        assert_eq!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .filter(|event| event.summary.contains("live_follow"))
+                .count(),
+            1,
+            "same-source refresh must advance the cursor and append exactly once"
+        );
+        assert_eq!(
+            app.log_pane.raw_stream_offset,
+            std::fs::metadata(&live_path).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn log_auto_tail_off_preserves_window_then_end_jumps_to_current_eof() {
+        use std::io::Write;
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), "").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        std::fs::write(
+            &stream,
+            "{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"VISIBLE_ANCHOR\"}]}}\n",
+        )
+        .unwrap();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.update_log_stream_events();
+        let offset = app.log_pane.raw_stream_offset;
+        let before = app.log_pane.stream_events.len();
+        app.log_pane.auto_tail = false;
+        app.log_pane.scroll = 0;
+
+        let mut append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&stream)
+            .unwrap();
+        writeln!(append, "{{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"args\":{{\"command\":\"AUTO_TAIL_NEW_CONTENT\"}}}}" ).unwrap();
+        drop(append);
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.raw_stream_offset, offset);
+        assert_eq!(app.log_pane.stream_events.len(), before);
+        assert!(app.log_pane.has_new_content);
+
+        app.log_pane.scroll_to_bottom();
+        app.update_log_stream_events();
+        assert!(
+            app.log_pane
+                .stream_events
+                .iter()
+                .any(|event| event.summary.contains("AUTO_TAIL_NEW_CONTENT"))
+        );
+        assert!(!app.log_pane.has_new_content);
+    }
+
+    #[test]
+    fn reverse_history_rotation_and_oversized_record_are_bounded_and_recover() {
+        use std::io::Write;
+
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), "").unwrap();
+        let stream = live_dir.join("raw_stream.jsonl");
+        let mut file = std::fs::File::create(&stream).unwrap();
+        for index in 0..350 {
+            writeln!(file, "{{\"type\":\"turn_end\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"HISTORY_{index:03}\"}}]}}}}" ).unwrap();
+        }
+        drop(file);
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 200);
+        assert!(
+            app.log_pane.stream_events[0]
+                .summary
+                .contains("HISTORY_150")
+        );
+        app.log_pane.scroll_to_top();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 350);
+        assert!(
+            app.log_pane.stream_events[0]
+                .summary
+                .contains("HISTORY_000")
+        );
+
+        let rotated = live_dir.join("raw_stream.old");
+        std::fs::rename(&stream, rotated).unwrap();
+        std::fs::write(
+            &stream,
+            "{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"args\":{\"command\":\"ROTATED_SOURCE_NOW\"}}\n",
+        )
+        .unwrap();
+        app.log_pane.auto_tail = true;
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 1);
+        assert!(
+            app.log_pane.stream_events[0]
+                .summary
+                .contains("ROTATED_SOURCE_NOW")
+        );
+
+        std::fs::write(
+            &stream,
+            std::iter::repeat_n(b'x', ACTIVE_LOG_PAGE_MAX_BYTES * 2)
+                .chain(std::iter::once(b'\n'))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events.len(), 1);
+        assert!(app.log_pane.stream_events[0].summary.contains("oversized"));
+        assert_eq!(
+            app.log_pane.raw_stream_offset,
+            std::fs::metadata(&stream).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn archive_and_current_switch_reset_to_the_exact_stream_source() {
+        let (viz, tmp) = build_retried_task_graph();
+        let live_dir = tmp.path().join("agents/agent-280");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::write(live_dir.join("output.log"), "").unwrap();
+        std::fs::write(
+            live_dir.join("raw_stream.jsonl"),
+            "{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"CURRENT_STREAM\"}]}}\n",
+        )
+        .unwrap();
+        let archive_dir = tmp.path().join("iteration-archive");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::write(archive_dir.join("output.log"), "").unwrap();
+        std::fs::write(
+            archive_dir.join("raw_stream.jsonl"),
+            "{\"type\":\"turn_end\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ARCHIVED_STREAM\"}]}}\n",
+        )
+        .unwrap();
+
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.iteration_archives = vec![("archive".to_string(), archive_dir)];
+        app.iteration_archives_task_id = "retry-task".to_string();
+        app.viewing_iteration = Some(0);
+        app.load_log_pane();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events[0].summary, "ARCHIVED_STREAM");
+        assert_eq!(app.log_pane_source_label(), "arch");
+
+        app.viewing_iteration = None;
+        app.invalidate_log_pane();
+        app.load_log_pane();
+        app.update_log_stream_events();
+        assert_eq!(app.log_pane.stream_events[0].summary, "CURRENT_STREAM");
+        assert_eq!(app.log_pane_source_label(), "now");
+    }
+
+    #[test]
+    fn stale_attempt_archive_generation_and_deleted_task_results_are_rejected() {
+        let (viz, tmp) = build_retried_task_graph();
+        let mut app = build_app(&viz, "retry-task", tmp.path());
+        app.load_log_pane();
+        app.log_pane.stream_initialized = true;
+        app.log_pane.stream_events.push(AgentStreamEvent {
+            kind: AgentStreamEventKind::TextOutput,
+            agent_id: "agent-280".to_string(),
+            summary: "LIVE_BODY".to_string(),
+            details: None,
+        });
+        let old_generation = app.log_pane.generation;
+        let mut stale = app.log_pane.clone();
+        stale.agent_id = Some("agent-275".to_string());
+        stale.stream_events[0].summary = "STALE_BODY".to_string();
+
+        app.invalidate_log_pane();
+        app.apply_log_pane_snapshot("retry-task", old_generation, None, stale.clone());
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-280"));
+        assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
+
+        app.viewing_iteration = Some(0);
+        app.apply_log_pane_snapshot("retry-task", app.log_pane.generation, None, stale.clone());
+        assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
+        app.viewing_iteration = None;
+
+        app.selected_task_idx = None;
+        app.apply_log_pane_snapshot("retry-task", app.log_pane.generation, None, stale);
+        assert_eq!(app.log_pane.stream_events[0].summary, "LIVE_BODY");
+        app.request_log_pane();
+        assert!(app.log_pane.stream_events.is_empty());
+        assert!(app.log_pane.agent_id.is_none());
+        assert!(app.log_pane.source_key.is_none());
     }
 
     /// The attempt label reflects the displayed attempt and its liveness.
