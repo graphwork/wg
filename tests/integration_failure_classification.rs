@@ -55,6 +55,7 @@ fn test_failure_class_display() {
     assert_eq!(ApiError5xxTransient.to_string(), "api-error-5xx-transient");
     assert_eq!(AgentHardTimeout.to_string(), "agent-hard-timeout");
     assert_eq!(AgentExitNonzero.to_string(), "agent-exit-nonzero");
+    assert_eq!(ResourceExhaustedDisk.to_string(), "resource-exhausted-disk");
     assert_eq!(ExecutorConfig.to_string(), "executor-config");
     assert_eq!(WrapperInternal.to_string(), "wrapper-internal");
 }
@@ -86,6 +87,7 @@ fn test_failure_class_serde_round_trip() {
         ApiError5xxTransient,
         AgentHardTimeout,
         AgentExitNonzero,
+        ResourceExhaustedDisk,
         ExecutorConfig,
         WrapperInternal,
     ];

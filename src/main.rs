@@ -4438,6 +4438,7 @@ fn parse_failure_class(s: &str) -> Option<worksgood::graph::FailureClass> {
         "api-error-5xx-transient" => Some(FailureClass::ApiError5xxTransient),
         "agent-hard-timeout" => Some(FailureClass::AgentHardTimeout),
         "agent-exit-nonzero" => Some(FailureClass::AgentExitNonzero),
+        "resource-exhausted-disk" => Some(FailureClass::ResourceExhaustedDisk),
         "executor-config" => Some(FailureClass::ExecutorConfig),
         "wrapper-internal" => Some(FailureClass::WrapperInternal),
         "deliverable-missing" => Some(FailureClass::DeliverableMissing),

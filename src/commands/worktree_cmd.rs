@@ -156,13 +156,14 @@ pub fn archive(workgraph_dir: &Path, agent_id: &str, remove: bool) -> Result<()>
     Ok(())
 }
 
+/// Source-dirtiness predicate for destructive worktree operations.
+///
+/// The wrapper's exact, untracked root marker is WG lifecycle metadata rather
+/// than user source. Nothing else is ignored: a tracked marker, a marker in a
+/// subdirectory, any other untracked file, or an inconclusive git status keeps
+/// the worktree protected.
 pub(crate) fn has_uncommitted_changes(wt_path: &Path) -> bool {
-    Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(wt_path)
-        .output()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false)
+    worksgood::disk_sentinel::worktree_has_user_source_changes(wt_path)
 }
 
 fn dir_size_human(path: &Path) -> String {
@@ -531,6 +532,53 @@ mod tests {
         assert!(
             has_uncommitted_changes(&wt_path),
             "untracked files are uncommitted agent work and must block GC"
+        );
+    }
+
+    #[test]
+    fn cleanup_pending_marker_is_the_only_ignored_untracked_path() {
+        let tmp = TempDir::new().unwrap();
+        let (project_root, _wg_dir) = fixture_repo(&tmp);
+        let wt_path = add_agent_worktree(&project_root, "agent-marker", "task-marker");
+
+        std::fs::write(wt_path.join(".wg-cleanup-pending"), "").unwrap();
+        assert!(
+            !has_uncommitted_changes(&wt_path),
+            "exact untracked WG lifecycle marker is not user source"
+        );
+        std::fs::write(wt_path.join(".wg-cleanup-pending"), "user note").unwrap();
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "small arbitrary content is not validated lifecycle metadata"
+        );
+        std::fs::write(wt_path.join(".wg-cleanup-pending"), vec![b'x'; 256]).unwrap();
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "oversized lookalike is not validated lifecycle metadata"
+        );
+        std::fs::write(wt_path.join(".wg-cleanup-pending"), "").unwrap();
+
+        std::fs::create_dir_all(wt_path.join("nested")).unwrap();
+        std::fs::write(
+            wt_path.join("nested/.wg-cleanup-pending"),
+            "not an owned root marker\n",
+        )
+        .unwrap();
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "same basename outside the validated root path must remain protected"
+        );
+        std::fs::remove_dir_all(wt_path.join("nested")).unwrap();
+        std::fs::write(wt_path.join("README.md"), "valuable tracked edit\n").unwrap();
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "tracked source modification must remain protected"
+        );
+        run_git(&wt_path, &["checkout", "--", "README.md"]);
+        run_git(&wt_path, &["add", ".wg-cleanup-pending"]);
+        assert!(
+            has_uncommitted_changes(&wt_path),
+            "a tracked/staged marker is source, not lifecycle metadata"
         );
     }
 

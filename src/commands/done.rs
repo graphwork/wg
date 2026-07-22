@@ -1877,6 +1877,11 @@ fn run_inner(
                 let _ = locked_registry.save_ref();
             }
 
+            if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None)
+            {
+                eprintln!("Warning: failed to release build-cache lease: {error:#}");
+            }
+
             println!(
                 "Task '{}' is pending separate verification (verify command: {})",
                 id, verify_cmd
@@ -2256,6 +2261,10 @@ fn run_inner(
             config.log.rotation_threshold,
         );
 
+        if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+            eprintln!("Warning: failed to release build-cache lease: {error:#}");
+        }
+
         println!("Task '{}' is pending LLM gate validation", id);
 
         if let Some(ref agent_id) = assigned_agent {
@@ -2329,6 +2338,10 @@ fn run_inner(
             serde_json::json!({ "validation": "external", "status": "pending-validation" }),
             config.log.rotation_threshold,
         );
+
+        if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+            eprintln!("Warning: failed to release build-cache lease: {error:#}");
+        }
 
         println!("Task '{}' is pending external validation", id);
 
@@ -2674,6 +2687,9 @@ fn run_inner(
             }
         }
         let _ = locked_registry.save_ref();
+    }
+    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+        eprintln!("Warning: failed to release build-cache lease: {error:#}");
     }
 
     // Record operation

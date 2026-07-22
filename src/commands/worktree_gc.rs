@@ -402,6 +402,30 @@ mod tests {
     /// Returns (workgraph_dir, project_root, worktrees_dir).
     fn fixture(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
         let project_root = tmp.path().to_path_buf();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&project_root)
+            .status()
+            .unwrap();
+        std::fs::write(project_root.join(".gitignore"), ".wg\n.wg-worktrees\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", ".gitignore"])
+            .current_dir(&project_root)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=WG Test",
+                "-c",
+                "user.email=wg@example.invalid",
+                "commit",
+                "-qm",
+                "base",
+            ])
+            .current_dir(&project_root)
+            .status()
+            .unwrap();
         let wg_dir = project_root.join(".wg");
         let worktrees_dir = project_root.join(".wg-worktrees");
         std::fs::create_dir_all(&wg_dir).unwrap();

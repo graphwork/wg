@@ -67,6 +67,21 @@ pub fn run(dir: &Path, command: DiskCommand, json: bool) -> Result<()> {
                     report.deduplicated_files,
                     report.deduplication_bytes_saved
                 );
+                for item in report.eligible {
+                    println!("  eligible {} — {}", item.path, item.reason);
+                }
+                for item in report.reaped_paths {
+                    println!("  reaped {} — {}", item.path, item.reason);
+                }
+                for item in report.compressed_paths {
+                    println!("  compressed {} — {}", item.path, item.reason);
+                }
+                for item in report.deduplicated_paths {
+                    println!("  deduplicated {} — {}", item.path, item.reason);
+                }
+                for item in report.ignored {
+                    println!("  ignored {} — {}", item.path, item.reason);
+                }
                 for preserved in report.preserved {
                     println!("  preserved {} — {}", preserved.path, preserved.reason);
                 }

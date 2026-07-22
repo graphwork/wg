@@ -362,28 +362,34 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
 
     // Fail-safe direct-spawn admission. The dispatcher performs the same
     // class-specific check so it can skip builds and continue evaluators, but
-    // this closes the race for `wg spawn` and for disk pressure that changes
-    // between scheduling and process creation.
+    // process creation repeats it under the registry lock below to close races.
     let build_class = worksgood::disk_sentinel::classify_task(task);
-    if build_class.is_build_capable() {
-        let (level, reason, _) = worksgood::disk_sentinel::current_admission(
-            dir,
-            &config.coordinator.resource_management,
-        );
-        if level.blocks_builds() {
-            anyhow::bail!(
-                "build admission {:?}: {} (LLM-only evaluation and graph operations remain eligible)",
-                level,
-                reason
-            );
-        }
-    }
 
     // Load agent registry with lock for concurrent safety.
     // The lock is held until save() to prevent two concurrent spawns from
     // reading the same next_agent_id and overwriting each other's registration.
     // Lock hierarchy: graph lock (per-call in load/save_graph) < registry lock (held here).
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
+
+    // The registry lock serializes the measured projection + reservation with
+    // process registration. Without this second, projected check two concurrent
+    // spawns could both spend the same free bytes after passing the cheap level
+    // check above.
+    if build_class.is_build_capable() {
+        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+            dir,
+            &config.coordinator.resource_management,
+            build_class,
+        );
+        if !admission.allowed {
+            anyhow::bail!(
+                "build admission refused: {} (candidate={} bytes, concurrent-reserve={} bytes; safe retry will reuse this worktree)",
+                admission.reason,
+                admission.candidate_bytes,
+                admission.concurrent_reserved_bytes
+            );
+        }
+    }
 
     // We need to know the agent ID before spawning to set up the output directory
     let temp_agent_id = format!("agent-{}", locked_registry.next_agent_id);
@@ -2359,8 +2365,14 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
     else
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
-        FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code $EXIT_CODE 2>/dev/null || echo "agent-exit-nonzero")
-        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
+        if tail -c 65536 "$OUTPUT_FILE" 2>/dev/null | grep -Eiq 'no space left on device|os error 28|ENOSPC|disk quota exceeded'; then
+            FAIL_CLASS="resource-exhausted-disk"
+            FAIL_REASON="Disk resource exhausted during agent execution (exit code $EXIT_CODE); source preserved for retry-in-place"
+        else
+            FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code $EXIT_CODE 2>/dev/null || echo "agent-exit-nonzero")
+            FAIL_REASON="Agent exited with code $EXIT_CODE"
+        fi
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "$FAIL_REASON" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
     fi
 fi
 

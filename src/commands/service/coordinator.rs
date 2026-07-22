@@ -3649,6 +3649,21 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
     }
 
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
+    if build_class.is_build_capable() {
+        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+            dir,
+            &config.coordinator.resource_management,
+            build_class,
+        );
+        if !admission.allowed {
+            anyhow::bail!(
+                "build admission refused: {} (candidate={} bytes, concurrent-reserve={} bytes)",
+                admission.reason,
+                admission.candidate_bytes,
+                admission.concurrent_reserved_bytes
+            );
+        }
+    }
     let agent_id = format!("agent-{}", locked_registry.next_agent_id);
     let target_path = if build_class.is_build_capable() {
         Some(
@@ -4281,15 +4296,27 @@ fn spawn_agents_for_ready_tasks(
         // that can create build caches. Agency evaluation/assignment and graph
         // operations continue through the same ready queue.
         let build_class = worksgood::disk_sentinel::classify_task(task);
-        if let Some(reason) = build_admission_denial(
-            task,
-            builds_blocked,
-            active_build_heavy,
-            config.coordinator.resource_management.max_build_agents,
+        let projected = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+            dir,
+            &config.coordinator.resource_management,
+            build_class,
+        );
+        let projection_reason;
+        let disk_reason = if !projected.allowed {
+            projection_reason = projected.reason;
+            projection_reason.as_str()
+        } else {
             disk_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.reason.as_str())
-                .unwrap_or("disk sentinel has no healthy snapshot"),
+                .unwrap_or("disk sentinel has no healthy snapshot")
+        };
+        if let Some(reason) = build_admission_denial(
+            task,
+            builds_blocked || !projected.allowed,
+            active_build_heavy,
+            config.coordinator.resource_management.max_build_agents,
+            disk_reason,
         ) {
             eprintln!(
                 "[dispatcher] Deferring '{}' while ordinary/evaluator tasks remain eligible: {}",
@@ -4792,6 +4819,17 @@ pub fn coordinator_tick(
             Ok(_) => {}
             Err(error) => eprintln!("[dispatcher] Disk cleanup warning: {error:#}"),
         }
+    }
+
+    // Source cleanup is a separate policy from rebuildable cache cleanup. The
+    // sweep ignores only the exact WG marker and removes a worktree only after
+    // eval + merge proof and a fresh real-source-dirtiness check.
+    match super::worktree::sweep_cleanup_pending_worktrees(dir) {
+        Ok(removed) if removed > 0 => {
+            eprintln!("[dispatcher] Archived/removed {removed} integrated clean worktree(s)")
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("[dispatcher] Worktree cleanup warning: {error:#}"),
     }
 
     // Phase 1: Clean up dead agents and count alive ones

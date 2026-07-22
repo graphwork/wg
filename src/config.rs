@@ -4272,8 +4272,19 @@ pub struct ResourceManagementConfig {
     /// agents. One serial validator is the safe default.
     #[serde(default = "default_max_build_agents")]
     pub max_build_agents: usize,
+    /// Cold-start projection for a build-capable (but not explicitly heavy)
+    /// worker. Measured target high-water marks supersede this floor.
     #[serde(default = "default_estimated_build_bytes")]
     pub estimated_build_bytes: u64,
+    /// Cold-start projection for Cargo test/build/install and other heavy
+    /// validation. The default reflects the 40–60 GiB targets seen in this
+    /// repository rather than the old optimistic 16 GiB reserve.
+    #[serde(default = "default_estimated_build_heavy_bytes")]
+    pub estimated_build_heavy_bytes: u64,
+    /// Additional final-link/test scratch headroom reserved above the measured
+    /// or configured target projection.
+    #[serde(default = "default_build_link_test_safety_bytes")]
+    pub build_link_test_safety_bytes: u64,
     #[serde(default = "default_disk_scan_interval_seconds")]
     pub disk_scan_interval_seconds: u64,
     #[serde(default = "default_disk_scan_max_entries")]
@@ -4286,6 +4297,15 @@ pub struct ResourceManagementConfig {
     pub compress_terminal_streams: bool,
     #[serde(default = "default_stream_retention_days")]
     pub stream_retention_days: u64,
+    /// A terminal raw/canonical stream larger than this is compressed even
+    /// before the age window. This is a per-file bound; zstd preserves the
+    /// complete evidence bytes.
+    #[serde(default = "default_terminal_stream_max_bytes")]
+    pub terminal_stream_max_bytes: u64,
+    /// Plain terminal output retained for `wg show`/TUI tail history. The full
+    /// output is kept once as zstd when this bound is exceeded.
+    #[serde(default = "default_terminal_output_tail_bytes")]
+    pub terminal_output_tail_bytes: u64,
 }
 
 fn default_max_incomplete_retries() -> u32 {
@@ -4514,6 +4534,12 @@ fn default_max_build_agents() -> usize {
 fn default_estimated_build_bytes() -> u64 {
     16 * 1024 * 1024 * 1024
 }
+fn default_estimated_build_heavy_bytes() -> u64 {
+    64 * 1024 * 1024 * 1024
+}
+fn default_build_link_test_safety_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
 fn default_disk_scan_interval_seconds() -> u64 {
     30
 }
@@ -4531,6 +4557,12 @@ fn default_compress_terminal_streams() -> bool {
 }
 fn default_stream_retention_days() -> u64 {
     7
+}
+fn default_terminal_stream_max_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_terminal_output_tail_bytes() -> u64 {
+    2 * 1024 * 1024
 }
 
 impl Default for ResourceManagementConfig {
@@ -4556,12 +4588,16 @@ impl Default for ResourceManagementConfig {
             disk_resume_hysteresis_percent: default_disk_resume_hysteresis_percent(),
             max_build_agents: default_max_build_agents(),
             estimated_build_bytes: default_estimated_build_bytes(),
+            estimated_build_heavy_bytes: default_estimated_build_heavy_bytes(),
+            build_link_test_safety_bytes: default_build_link_test_safety_bytes(),
             disk_scan_interval_seconds: default_disk_scan_interval_seconds(),
             disk_scan_max_entries: default_disk_scan_max_entries(),
             owned_cache_lease_seconds: default_owned_cache_lease_seconds(),
             disk_agent_heartbeat_seconds: default_disk_agent_heartbeat_seconds(),
             compress_terminal_streams: default_compress_terminal_streams(),
             stream_retention_days: default_stream_retention_days(),
+            terminal_stream_max_bytes: default_terminal_stream_max_bytes(),
+            terminal_output_tail_bytes: default_terminal_output_tail_bytes(),
         }
     }
 }

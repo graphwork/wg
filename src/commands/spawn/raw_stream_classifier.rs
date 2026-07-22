@@ -6,9 +6,10 @@
 use std::path::Path;
 use worksgood::graph::FailureClass;
 
-/// Maximum bytes to read from the tail of raw_stream.jsonl when scanning for
-/// api_error_status. The relevant event is always near the end of the stream.
-const TAIL_BYTES: u64 = 4096;
+/// Maximum bytes to read from the tail of executor streams when scanning for
+/// error patterns. Cargo/linker ENOSPC diagnostics can be followed by wrapper
+/// bookkeeping, so retain a bounded 64 KiB rather than the historical 4 KiB.
+const TAIL_BYTES: u64 = 64 * 1024;
 
 /// Classify an agent failure from the raw JSONL stream and exit code.
 ///
@@ -34,6 +35,13 @@ pub fn classify_from_raw_stream(raw_stream: &Path, exit_code: i32) -> FailureCla
             return FailureClass::AgentExitNonzero;
         }
     };
+
+    // Disk exhaustion is infrastructure pressure, not a quality signal. It
+    // takes precedence over generic non-zero classification so `wg fail`
+    // queues a safe in-place retry rather than dispatching a bogus evaluator.
+    if looks_like_disk_exhaustion(&tail) {
+        return FailureClass::ResourceExhaustedDisk;
+    }
 
     // Scan for api_error_status numeric value.
     if let Some(status_code) = extract_api_error_status(&tail) {
@@ -165,6 +173,23 @@ fn extract_api_error_status(text: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
+fn looks_like_disk_exhaustion(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("no space left on device")
+        || lower.contains("os error 28")
+        || lower.contains("enospc")
+        || lower.contains("disk quota exceeded")
+}
+
+/// Detect disk exhaustion in either executor stdout/stderr or its structured
+/// raw stream. Dead-agent recovery uses this when the filesystem was too full
+/// for the wrapper's final `wg fail` graph write to succeed.
+pub fn is_disk_resource_failure(raw_stream: &Path, output_log: &Path) -> bool {
+    [raw_stream, output_log]
+        .into_iter()
+        .any(|path| read_tail(path).is_some_and(|tail| looks_like_disk_exhaustion(&tail)))
+}
+
 fn looks_like_executor_tool_model_config_failure(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("param: tools")
@@ -258,6 +283,31 @@ mod tests {
             classify_from_raw_stream(f.path(), 1),
             FailureClass::AgentExitNonzero
         );
+    }
+
+    #[test]
+    fn test_classifier_disk_exhaustion_is_resource_failure() {
+        for message in [
+            "error: failed to write: No space left on device (os error 28)",
+            "link failed: ENOSPC",
+            "Disk quota exceeded",
+        ] {
+            let f = write_stream(message);
+            assert_eq!(
+                classify_from_raw_stream(f.path(), 1),
+                FailureClass::ResourceExhaustedDisk
+            );
+        }
+    }
+
+    #[test]
+    fn test_dead_attempt_detects_output_only_disk_failure_after_large_bookkeeping() {
+        let raw = write_stream("{\"type\":\"result\",\"subtype\":\"success\"}\n");
+        let output = write_stream(&format!(
+            "No space left on device (os error 28)\n{}",
+            "wrapper bookkeeping\n".repeat(2_000)
+        ));
+        assert!(is_disk_resource_failure(raw.path(), output.path()));
     }
 
     #[test]

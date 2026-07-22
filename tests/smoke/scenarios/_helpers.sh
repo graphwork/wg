@@ -128,9 +128,70 @@ WG_SMOKE_REGISTRY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wgsmoke-registry.XXXXXX")"
 export WG_SMOKE_REGISTRY_DIR
 WG_SMOKE_SCRATCHES_FILE="$WG_SMOKE_REGISTRY_DIR/scratches"
 WG_SMOKE_DAEMONS_FILE="$WG_SMOKE_REGISTRY_DIR/daemons"
-export WG_SMOKE_SCRATCHES_FILE WG_SMOKE_DAEMONS_FILE
+WG_SMOKE_TMUX_FILE="$WG_SMOKE_REGISTRY_DIR/tmux"
+export WG_SMOKE_SCRATCHES_FILE WG_SMOKE_DAEMONS_FILE WG_SMOKE_TMUX_FILE
 : >"$WG_SMOKE_SCRATCHES_FILE"
 : >"$WG_SMOKE_DAEMONS_FILE"
+: >"$WG_SMOKE_TMUX_FILE"
+
+# Wrap tmux only when the real binary was present before defining the function.
+# Every scenario that sources this helper then gets strict ownership metadata
+# and exact-session teardown without having to remember another ad-hoc trap.
+WG_SMOKE_TMUX_BIN="$(type -P tmux 2>/dev/null || true)"
+if [[ -n "$WG_SMOKE_TMUX_BIN" ]]; then
+    tmux() {
+        local -a argv=("$@") prefix=()
+        local command_index=-1 session="" mode="default" endpoint=""
+        local i
+        for ((i=0; i<${#argv[@]}; i++)); do
+            case "${argv[$i]}" in
+                -L|-S)
+                    prefix+=("${argv[$i]}")
+                    ((i+=1))
+                    [[ $i -lt ${#argv[@]} ]] && prefix+=("${argv[$i]}")
+                    if [[ "${argv[$((i-1))]}" == "-L" ]]; then
+                        mode="label"
+                    else
+                        mode="socket"
+                    fi
+                    endpoint="${argv[$i]:-}"
+                    ;;
+                new-session|new)
+                    command_index=$i
+                    break
+                    ;;
+                *)
+                    # Global tmux flags other than -L/-S are retained in the
+                    # command itself; owned smoke callers currently use only
+                    # the two explicit server selectors above.
+                    ;;
+            esac
+        done
+        "$WG_SMOKE_TMUX_BIN" "${argv[@]}"
+        local rc=$?
+        if [[ $rc -ne 0 || $command_index -lt 0 ]]; then
+            return "$rc"
+        fi
+        for ((i=command_index+1; i<${#argv[@]}; i++)); do
+            if [[ "${argv[$i]}" == "-s" && $((i+1)) -lt ${#argv[@]} ]]; then
+                session="${argv[$((i+1))]}"
+                break
+            fi
+        done
+        [[ -n "$session" ]] || return "$rc"
+        local scratch_root
+        scratch_root="$(tail -n 1 "$WG_SMOKE_SCRATCHES_FILE" 2>/dev/null || true)"
+        [[ -n "$scratch_root" ]] || scratch_root="$(wg_smoke_root)"
+        "$WG_SMOKE_TMUX_BIN" "${prefix[@]}" set-option -q -t "$session" \
+            @wg_smoke_owned "wg-smoke-v1" >/dev/null 2>&1 || true
+        "$WG_SMOKE_TMUX_BIN" "${prefix[@]}" set-option -q -t "$session" \
+            @wg_smoke_owner_pid "$BASHPID" >/dev/null 2>&1 || true
+        "$WG_SMOKE_TMUX_BIN" "${prefix[@]}" set-option -q -t "$session" \
+            @wg_smoke_root "$scratch_root" >/dev/null 2>&1 || true
+        printf '%s|%s|%s\n' "$mode" "$endpoint" "$session" >>"$WG_SMOKE_TMUX_FILE"
+        return "$rc"
+    }
+fi
 
 # Add a cleanup hook (function name) to run before daemon teardown. Use
 # this to e.g. `tmux kill-session` before the WG dir disappears.
@@ -265,6 +326,51 @@ wg_smoke_sweep() {
             fi
         done
     fi
+
+    # Reap stale tmux sessions only when the session itself carries the exact
+    # helper-written ownership tuple. Names such as "wg-*" or "smoke-*" are
+    # never proof: real chat/user sessions without these options are invisible.
+    local tmux_bin
+    tmux_bin="${WG_SMOKE_TMUX_BIN:-$(type -P tmux 2>/dev/null || true)}"
+    if [[ -n "$tmux_bin" ]]; then
+        local -a server_modes=(default) server_endpoints=("")
+        local socket_dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" socket
+        if [[ -d "$socket_dir" ]]; then
+            for socket in "$socket_dir"/*; do
+                [[ -S "$socket" ]] || continue
+                server_modes+=(socket)
+                server_endpoints+=("$socket")
+            done
+        fi
+        local index sessions session owned owner_pid owned_root stale
+        for ((index=0; index<${#server_modes[@]}; index++)); do
+            if [[ "${server_modes[$index]}" == socket ]]; then
+                sessions=$("$tmux_bin" -S "${server_endpoints[$index]}" list-sessions \
+                    -F '#{session_name}|#{@wg_smoke_owned}|#{@wg_smoke_owner_pid}|#{@wg_smoke_root}' 2>/dev/null || true)
+            else
+                sessions=$("$tmux_bin" list-sessions \
+                    -F '#{session_name}|#{@wg_smoke_owned}|#{@wg_smoke_owner_pid}|#{@wg_smoke_root}' 2>/dev/null || true)
+            fi
+            while IFS='|' read -r session owned owner_pid owned_root; do
+                [[ "$owned" == "wg-smoke-v1" && -n "$session" ]] || continue
+                case "$owned_root" in
+                    "$root"|"$root"/*) ;;
+                    *) continue ;;
+                esac
+                stale=0
+                [[ -d "$owned_root" ]] || stale=1
+                if [[ ! "$owner_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$owner_pid" 2>/dev/null; then
+                    stale=1
+                fi
+                [[ $stale -eq 1 ]] || continue
+                if [[ "${server_modes[$index]}" == socket ]]; then
+                    "$tmux_bin" -S "${server_endpoints[$index]}" kill-session -t "$session" >/dev/null 2>&1 || true
+                else
+                    "$tmux_bin" kill-session -t "$session" >/dev/null 2>&1 || true
+                fi
+            done <<<"$sessions"
+        done
+    fi
     if [[ -d "$root" ]]; then
         find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
     fi
@@ -281,6 +387,26 @@ wg_smoke_cleanup() {
         [[ -n "$fn" ]] || continue
         "$fn" 2>/dev/null || true
     done
+    # Exact owned tmux sessions first, while their work directories still
+    # exist. Never pattern-match names: the registry is populated only after
+    # the wrapper successfully writes the wg-smoke-v1 ownership option.
+    local tmux_mode tmux_endpoint tmux_session
+    if [[ -n "${WG_SMOKE_TMUX_BIN:-}" && -f "$WG_SMOKE_TMUX_FILE" ]]; then
+        while IFS='|' read -r tmux_mode tmux_endpoint tmux_session; do
+            [[ -n "$tmux_session" ]] || continue
+            case "$tmux_mode" in
+                label)
+                    "$WG_SMOKE_TMUX_BIN" -L "$tmux_endpoint" kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+                    ;;
+                socket)
+                    "$WG_SMOKE_TMUX_BIN" -S "$tmux_endpoint" kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    "$WG_SMOKE_TMUX_BIN" kill-session -t "$tmux_session" >/dev/null 2>&1 || true
+                    ;;
+            esac
+        done <"$WG_SMOKE_TMUX_FILE"
+    fi
     # Daemon teardown — graceful via IPC, then SIGTERM, then SIGKILL.
     # Read entries from the persistent file (survives subshell registers).
     local pid dir had_daemons=0

@@ -689,8 +689,9 @@ script = "scenarios/smoke_cleanup_survives_panic.sh"
 owners = [
     "smoke-tests-leak",
     "smoke-gate-is",
+    "fix-disk-cleanup-recurrence",
 ]
-description = "Pins the smoke-tests-leak regression: production runs left 70+ orphaned `wg service daemon` processes and 200+ /tmp scratch dirs because per-test traps did not survive SIGKILL/panic. Spawns a real daemon in a child shell, kills the child with SIGKILL (no trap fires), then asserts wg_smoke_sweep reaps both the re-parented daemon and the leftover scratch dir. Defense in depth for the central trap in `tests/smoke/scenarios/_helpers.sh`."
+description = "Pins smoke fixture lifecycle: helper-owned tmux sessions are stamped with strict metadata and cleaned on pass/fail/timeout/SIGTERM; a SIGKILL child leaves a real daemon, owned tmux and scratch for wg_smoke_sweep to reap, while a smoke-looking unowned user/chat tmux session survives. Never matches sessions by name."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2335,8 +2336,9 @@ name = "disk_sentinel_admission_cleanup"
 script = "scenarios/disk_sentinel_admission_cleanup.sh"
 owners = [
     "add-disk-sentinel",
+    "fix-disk-cleanup-recurrence",
 ]
-description = "Real CLI + tmux/TUI regression for add-disk-sentinel: synthesizes warn/pause/hard-refuse/auto-resume thresholds relative to measured free bytes without filling disk; pins cached wg status and async TUI disk state; exercises scriptable doctor/cleanup; and proves an unknown /tmp/wg-target-* survives because filenames never confer ownership. Rust companion tests pin four-build serialization with Pi/Terra evaluation eligibility, external owned-target reaping, PID identity/restart, open-file/artifact/dirty-worktree preservation, and measured stream compression."
+description = "Real CLI + tmux/TUI disk-pressure regression: synthesizes warn/pause/hard-refuse/cleanup/resume relative to measured free bytes without filling disk; pins cached status and TUI state; proves unknown targets survive. Rust companions pin marker-vs-real-source safety, cache-only cleanup, 40–60 GiB measured projection/concurrency, terminal lease release, bounded Pi/Claude/Codex evidence streams, and idempotent reporting."
 timeout_seconds = 45
 
 [[scenario]]

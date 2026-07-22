@@ -178,6 +178,9 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
         }
         let _ = locked_registry.save_ref();
     }
+    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+        eprintln!("Warning: failed to release build-cache lease: {error:#}");
+    }
 
     let detail = match reason {
         Some(r) => serde_json::json!({

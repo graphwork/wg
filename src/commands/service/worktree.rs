@@ -131,6 +131,37 @@ pub fn is_branch_merged(project_root: &Path, branch: &str) -> bool {
         {
             return true;
         }
+
+        // WG normally squash-merges task branches, so reachability alone says
+        // "unmerged" even when every patch is already integrated. `git cherry`
+        // is the exact incident recovery proof: all `-` (or no output) means
+        // patch-equivalent. Refuse branches with unique merge commits because
+        // cherry intentionally ignores merges and would otherwise over-claim.
+        let unique_merges = Command::new("git")
+            .args(["rev-list", "--count", "--merges"])
+            .arg(format!("{main}..{branch}"))
+            .current_dir(project_root)
+            .output();
+        let no_unique_merges = unique_merges
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .is_some_and(|count| count.trim() == "0");
+        if !no_unique_merges {
+            continue;
+        }
+        let cherry = Command::new("git")
+            .args(["cherry", main, branch])
+            .current_dir(project_root)
+            .output();
+        if let Ok(cherry) = cherry
+            && cherry.status.success()
+            && String::from_utf8_lossy(&cherry.stdout)
+                .lines()
+                .all(|line| line.starts_with('-'))
+        {
+            return true;
+        }
     }
     false
 }
@@ -206,6 +237,55 @@ fn calculate_directory_size(dir: &Path) -> Result<u64> {
     });
 
     Ok(total_size)
+}
+
+/// Automatic source-safe removal used only after the retention/source gates.
+/// The lifecycle marker is removed, then `git worktree remove` runs WITHOUT
+/// `--force`; a source change racing the earlier status check makes git refuse.
+/// There is deliberately no filesystem fallback.
+fn remove_worktree_source_safe(
+    project_root: &Path,
+    worktree_path: &Path,
+    branch: Option<&str>,
+) -> Result<()> {
+    let marker = worktree_path.join(CLEANUP_PENDING_MARKER);
+    if marker.exists() {
+        fs::remove_file(&marker).with_context(|| {
+            format!(
+                "failed to remove validated lifecycle marker {}",
+                marker.display()
+            )
+        })?;
+    }
+    let output = Command::new("git")
+        .args(["worktree", "remove"])
+        .arg(worktree_path)
+        .current_dir(project_root)
+        .output()
+        .context("failed to run source-safe git worktree remove")?;
+    if !output.status.success() {
+        // Keep the lifecycle request queued after a TOCTOU refusal. This exact
+        // marker is the only path the source predicate ignores.
+        let _ = fs::write(&marker, "wg-owned cleanup retry\n");
+        anyhow::bail!(
+            "source-safe git worktree remove refused: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if let Some(branch) = branch {
+        let output = Command::new("git")
+            .args(["branch", "-D", branch])
+            .current_dir(project_root)
+            .output()
+            .context("failed to delete archived worktree branch")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "worktree removed but branch cleanup failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
@@ -1030,6 +1110,17 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
                 })
             });
 
+        // Destructive worktree removal has a source gate independent of target
+        // cache cleanup. Ignore only the exact untracked WG lifecycle marker;
+        // any real tracked/untracked edit keeps the worktree recoverable.
+        if worksgood::disk_sentinel::worktree_has_user_source_changes(&wt_path) {
+            eprintln!(
+                "[worktree-sweep] Skipping {}: real uncommitted source is present",
+                name
+            );
+            continue;
+        }
+
         if !is_safe_to_reap(
             graph.as_ref(),
             task_id.as_deref(),
@@ -1047,45 +1138,13 @@ pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
             name
         );
 
-        match branch {
-            Some(branch) => match remove_worktree(project_root, &wt_path, &branch) {
-                Ok(()) => removed += 1,
-                Err(e) => {
-                    eprintln!(
-                        "[worktree-sweep] remove_worktree failed for {}: {}",
-                        name, e
-                    );
-                    // Fall back to manual cleanup so the worktree doesn't leak.
-                    if wt_path.exists() {
-                        if let Err(e2) = fs::remove_dir_all(&wt_path) {
-                            eprintln!(
-                                "[worktree-sweep] Manual fallback remove_dir_all failed: {}",
-                                e2
-                            );
-                        } else {
-                            removed += 1;
-                        }
-                    }
-                }
-            },
-            None => {
-                // No branch found (already pruned or never registered).
-                // Fall back to filesystem + git-worktree-remove attempt.
-                let _ = Command::new("git")
-                    .args(["worktree", "remove", "--force"])
-                    .arg(&wt_path)
-                    .current_dir(project_root)
-                    .output();
-                if wt_path.exists() {
-                    if let Err(e) = fs::remove_dir_all(&wt_path) {
-                        eprintln!(
-                            "[worktree-sweep] Branchless cleanup failed for {}: {}",
-                            name, e
-                        );
-                        continue;
-                    }
-                }
-                removed += 1;
+        match remove_worktree_source_safe(project_root, &wt_path, branch.as_deref()) {
+            Ok(()) => removed += 1,
+            Err(error) => {
+                eprintln!(
+                    "[worktree-sweep] Source-safe removal refused for {}: {} — preserving worktree",
+                    name, error
+                );
             }
         }
     }
@@ -2664,6 +2723,38 @@ mod tests {
         assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 0);
     }
 
+    #[test]
+    fn atomic_cleanup_ignores_only_marker_and_preserves_real_dirty_source() {
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".wg");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+        let (wt, branch) = create_test_worktree(&project, "agent-dirty", "task-dirty");
+        fs::write(wt.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        fs::write(wt.join("valuable-untracked.rs"), "preserve me").unwrap();
+        write_graph_with_task_and_eval(&wg_dir, "task-dirty", Status::Done, Some(Status::Done));
+        register_agent(
+            &wg_dir,
+            "agent-dirty",
+            "task-dirty",
+            999_999_994,
+            AgentStatus::Done,
+        );
+        merge_branch_into_main(&project, &branch);
+
+        assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 0);
+        assert_eq!(
+            fs::read_to_string(wt.join("valuable-untracked.rs")).unwrap(),
+            "preserve me"
+        );
+        assert!(wt.join(CLEANUP_PENDING_MARKER).exists());
+    }
+
     /// New retention policy (worktree-retention-don):
     /// Both eval-pass AND merge-to-main are required. Either alone keeps the
     /// worktree alive.
@@ -2770,6 +2861,66 @@ mod tests {
             "Done + eval-pass + merged → reap"
         );
         assert!(!wt_c.exists());
+    }
+
+    #[test]
+    fn patch_equivalent_squash_or_cherry_pick_is_safe_to_archive() {
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".wg");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+        let (wt, branch) = create_test_worktree(&project, "agent-patch", "task-patch");
+        fs::write(wt.join("patch.txt"), "same patch on main\n").unwrap();
+        Command::new("git")
+            .args(["add", "patch.txt"])
+            .current_dir(&wt)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "branch patch"])
+            .current_dir(&wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")
+            .status()
+            .unwrap();
+        let branch_tip = Command::new("git")
+            .args(["rev-parse", &branch])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        let branch_tip = String::from_utf8(branch_tip.stdout).unwrap();
+        Command::new("git")
+            .args(["cherry-pick", branch_tip.trim()])
+            .current_dir(&project)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_DATE", "2021-01-01T00:00:00Z")
+            .status()
+            .unwrap();
+        assert!(is_branch_merged(&project, &branch));
+
+        fs::write(wt.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task_and_eval(&wg_dir, "task-patch", Status::Done, Some(Status::Done));
+        register_agent(
+            &wg_dir,
+            "agent-patch",
+            "task-patch",
+            999_999_988,
+            AgentStatus::Done,
+        );
+        assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 1);
+        assert!(!wt.exists());
     }
 
     /// Crash without marker: under new policy, orphan cleanup should ALSO

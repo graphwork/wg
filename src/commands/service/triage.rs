@@ -95,6 +95,24 @@ fn parse_token_usage_from_stream(
     }
 }
 
+/// The wrapper normally records a typed resource failure itself. At 100% disk,
+/// however, that final graph write can be the operation that fails. Re-check
+/// both bounded stream tails before dead-agent LLM triage so infrastructure
+/// pressure can never become a bogus implementation-quality verdict.
+fn dead_attempt_exhausted_disk(dir: &Path, output_file: &str) -> bool {
+    let output = Path::new(output_file);
+    let output = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        dir.parent().unwrap_or(dir).join(output)
+    };
+    let raw = output
+        .parent()
+        .map(|parent| parent.join(stream_event::RAW_STREAM_FILE_NAME))
+        .unwrap_or_else(|| dir.join("agents/unknown/raw_stream.jsonl"));
+    crate::commands::spawn::raw_stream_classifier::is_disk_resource_failure(&raw, &output)
+}
+
 /// Default grace period value, used by tests.
 /// Production code reads from `config.agent.reaper_grace_seconds`.
 #[cfg(test)]
@@ -292,11 +310,31 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     let mut graph = load_graph(graph_path).context("Failed to load graph")?;
     let mut tasks_modified = false;
     let mut tasks_completed_by_triage: Vec<String> = Vec::new();
+    let mut resource_exhausted_tasks: Vec<String> = Vec::new();
 
     for (agent_id, task_id, pid, output_file, reason) in &dead {
         if let Some(task) = graph.get_task_mut(task_id) {
             // Only unclaim if task is still in progress (agent didn't finish it properly)
             if task.status == Status::InProgress {
+                if dead_attempt_exhausted_disk(dir, output_file) {
+                    task.status = Status::Open;
+                    task.assigned = None;
+                    task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
+                    task.failure_reason = Some(
+                        "Disk resource exhausted before terminal bookkeeping; source preserved for safe retry-in-place"
+                            .to_string(),
+                    );
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some(agent_id.clone()),
+                        user: Some(worksgood::current_user()),
+                        message: "Dead attempt contained ENOSPC evidence — skipped quality triage/evaluation, released its cache lease, and queued a safe in-place retry"
+                            .to_string(),
+                    });
+                    resource_exhausted_tasks.push(task_id.clone());
+                    tasks_modified = true;
+                    continue;
+                }
                 if config.agency.auto_triage {
                     // Run synchronous triage to assess progress
                     match run_triage(&config, task, output_file) {
@@ -361,6 +399,18 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 }
                 tasks_modified = true;
             }
+        }
+    }
+
+    // A dead wrapper cannot release its own lease. Queue its rebuildable cache
+    // for the next owned-cache cleanup without touching the source worktree.
+    for task_id in &resource_exhausted_tasks {
+        if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, task_id, None)
+        {
+            eprintln!(
+                "[triage] Warning: failed to release disk-exhausted cache lease for '{}': {error:#}",
+                task_id
+            );
         }
     }
 
@@ -436,6 +486,8 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 {
                     fresh.status = local.status;
                     fresh.assigned = local.assigned.clone();
+                    fresh.failure_class = local.failure_class;
+                    fresh.failure_reason = local.failure_reason.clone();
                     fresh.log = local.log.clone();
                     fresh.session_id = local.session_id.clone();
                     fresh.token_usage = local.token_usage.clone();
@@ -763,6 +815,9 @@ fn classify_typed_or_legacy_failure(
     stderr: &str,
 ) -> Option<ProviderErrorKind> {
     let kind = match failure_class {
+        // Local disk pressure says nothing about provider health. Do not open
+        // or increment a provider breaker for a safely queued in-place retry.
+        Some(FailureClass::ResourceExhaustedDisk) => return None,
         Some(FailureClass::ApiError400Document)
         | Some(FailureClass::AgentHardTimeout)
         | Some(FailureClass::DeliverableMissing)
@@ -1724,6 +1779,105 @@ mod tests {
             agent.status,
             AgentStatus::Dead,
             "Agent should be marked dead in registry"
+        );
+    }
+
+    #[test]
+    fn test_dead_agent_disk_failure_skips_quality_triage_and_releases_lease() {
+        let temp_dir = TempDir::new().unwrap();
+        let wg_dir = temp_dir.path();
+        let gpath = wg_dir.join("graph.jsonl");
+        fs::write(
+            wg_dir.join("config.toml"),
+            "[agent]\nreaper_grace_seconds = 0\n[agency]\nauto_triage = true\n",
+        )
+        .unwrap();
+
+        let mut graph = worksgood::graph::WorkGraph::new();
+        graph.add_node(worksgood::graph::Node::Task(Task {
+            id: "disk-task".to_string(),
+            title: "Valuable partial implementation".to_string(),
+            status: Status::InProgress,
+            assigned: Some("agent-1".to_string()),
+            ..Default::default()
+        }));
+        worksgood::parser::save_graph(&graph, &gpath).unwrap();
+
+        let agent_dir = wg_dir.join("agents/agent-1");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let output = agent_dir.join("output.log");
+        fs::write(
+            &output,
+            "cargo test failed: No space left on device (os error 28)\n",
+        )
+        .unwrap();
+        fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            "{\"type\":\"error\",\"message\":\"ENOSPC while linking\"}\n",
+        )
+        .unwrap();
+
+        let mut registry = AgentRegistry::new();
+        let agent_id = registry.register_agent(
+            999_999_999,
+            "disk-task",
+            "claude",
+            &output.to_string_lossy(),
+        );
+        assert_eq!(agent_id, "agent-1");
+        registry.save(wg_dir).unwrap();
+
+        let target = temp_dir.path().join("owned-target");
+        fs::create_dir_all(&target).unwrap();
+        worksgood::disk_sentinel::register_owned_cache(
+            wg_dir,
+            worksgood::disk_sentinel::make_owned_cache(
+                &target,
+                worksgood::disk_sentinel::CacheKind::CargoTarget,
+                "disk-task",
+                "agent-1",
+                999_999_999,
+                None,
+                3600,
+            ),
+        )
+        .unwrap();
+
+        let cleaned = cleanup_dead_agents(wg_dir, &gpath).unwrap();
+        assert_eq!(cleaned, vec!["agent-1"]);
+        let graph = worksgood::parser::load_graph(&gpath).unwrap();
+        let task = graph.get_task("disk-task").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.assigned, None);
+        assert_eq!(
+            task.retry_count, 0,
+            "resource failure is not a quality retry"
+        );
+        assert_eq!(
+            task.failure_class,
+            Some(FailureClass::ResourceExhaustedDisk)
+        );
+        assert!(
+            task.failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("preserved")
+        );
+        assert!(task.log.last().unwrap().message.contains("skipped quality"));
+
+        let ownership = worksgood::disk_sentinel::load_ownership(wg_dir).unwrap();
+        let expiry = chrono::DateTime::parse_from_rfc3339(
+            &ownership.caches.first().unwrap().lease_expires_at,
+        )
+        .unwrap()
+        .with_timezone(&Utc);
+        assert!(
+            expiry <= Utc::now(),
+            "dead attempt lease must be queued now"
+        );
+        assert!(
+            target.exists(),
+            "triage only queues cache; it never touches source/cache"
         );
     }
 

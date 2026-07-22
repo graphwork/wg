@@ -139,6 +139,10 @@ pub enum FailureClass {
     /// Generic non-zero exit with no recognised api_error pattern.
     /// Equivalent to the pre-classification "Agent exited with code N".
     AgentExitNonzero,
+    /// Local filesystem ran out of allocatable blocks/inodes during execution.
+    /// This is infrastructure pressure, never an implementation-quality verdict;
+    /// queue a safe retry in the preserved worktree after cleanup.
+    ResourceExhaustedDisk,
     /// Executor/tool configuration prevented the worker from starting usefully
     /// (for example, Codex optional tool config references an unavailable
     /// image model). Action: fix executor config; do not spend cycle restarts.
@@ -168,6 +172,7 @@ impl std::fmt::Display for FailureClass {
             FailureClass::ApiError5xxTransient => "api-error-5xx-transient",
             FailureClass::AgentHardTimeout => "agent-hard-timeout",
             FailureClass::AgentExitNonzero => "agent-exit-nonzero",
+            FailureClass::ResourceExhaustedDisk => "resource-exhausted-disk",
             FailureClass::ExecutorConfig => "executor-config",
             FailureClass::WrapperInternal => "wrapper-internal",
             FailureClass::DeliverableMissing => "deliverable-missing",
@@ -179,7 +184,10 @@ impl std::fmt::Display for FailureClass {
 
 impl FailureClass {
     pub fn suppresses_cycle_failure_restart(self) -> bool {
-        matches!(self, FailureClass::ExecutorConfig)
+        matches!(
+            self,
+            FailureClass::ExecutorConfig | FailureClass::ResourceExhaustedDisk
+        )
     }
 }
 

@@ -856,7 +856,8 @@ fn print_human_readable(details: &TaskDetails) {
     // Failure info
     if (details.status == Status::Failed
         || details.status == Status::Abandoned
-        || details.status == Status::FailedPendingEval)
+        || details.status == Status::FailedPendingEval
+        || details.failure_class == Some(FailureClass::ResourceExhaustedDisk))
         && let Some(ref reason) = details.failure_reason
     {
         println!("Failure reason: {}", reason);
@@ -872,6 +873,9 @@ fn print_human_readable(details: &TaskDetails) {
             ApiError5xxTransient => "transient upstream error — retry is safe",
             AgentHardTimeout => "agent exceeded hard timeout — split task or raise timeout",
             AgentExitNonzero => "generic non-zero exit — inspect agent output for details",
+            ResourceExhaustedDisk => {
+                "disk resource failure — source/worktree preserved; cleanup owned caches, then retry in place"
+            }
             ExecutorConfig => {
                 "executor/tool configuration failed before useful work began — fix executor config, then retry deliberately"
             }

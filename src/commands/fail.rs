@@ -98,6 +98,7 @@ fn run_inner(
     let mut agent_id_for_archive = None;
     let mut cycle_reactivated = Vec::new();
     let mut already_failed = false;
+    let mut resource_retry_queued = false;
 
     let id_owned = id.to_string();
     let reason_owned = reason.map(String::from);
@@ -124,6 +125,35 @@ fn run_inner(
         //
         // FailedPendingEval → Failed is the terminal path after eval rejection
         // (or operator-forced fail). Does NOT trigger auto-rescue spawn.
+
+        // ENOSPC is an infrastructure refusal, never a semantic verdict. Put
+        // the source task straight back in the admission queue so cleanup can
+        // run and the next attempt reuses its dirty worktree. Keeping it Open
+        // also prevents `.evaluate-*` from scoring a partial implementation.
+        if !eval_reject && class == Some(FailureClass::ResourceExhaustedDisk) {
+            agent_id_for_archive = task.assigned.clone();
+            task.status = Status::Open;
+            task.started_at = None;
+            task.completed_at = None;
+            task.assigned = None;
+            task.failure_class = class;
+            task.failure_reason = reason_owned.clone();
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: agent_id_for_archive.clone(),
+                user: Some(worksgood::current_user()),
+                message: "Disk resource exhausted — implementation preserved; queued for safe retry-in-place after owned-cache cleanup".to_string(),
+            });
+            if task.token_usage.is_none()
+                && let Some(ref usage) = token_usage
+            {
+                task.token_usage = Some(usage.clone());
+            }
+            retry_count = task.retry_count;
+            max_retries = task.max_retries;
+            resource_retry_queued = true;
+            return true;
+        }
 
         // Route to FailedPendingEval when conditions are met (Fork 5):
         // agent-exit-nonzero + auto_evaluate + not an eval-reject call.
@@ -221,6 +251,9 @@ fn run_inner(
         }
         let _ = locked_registry.save_ref();
     }
+    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+        eprintln!("Warning: failed to release build-cache lease: {error:#}");
+    }
 
     if !cycle_reactivated.is_empty() {
         println!(
@@ -246,10 +279,17 @@ fn run_inner(
     );
 
     let reason_msg = reason.map(|r| format!(" ({})", r)).unwrap_or_default();
-    println!(
-        "Marked '{}' as failed{} (retry #{})",
-        id, reason_msg, retry_count
-    );
+    if resource_retry_queued {
+        println!(
+            "Disk resource failure for '{}'{} — source preserved; safe retry-in-place queued behind disk admission",
+            id, reason_msg
+        );
+    } else {
+        println!(
+            "Marked '{}' as failed{} (retry #{})",
+            id, reason_msg, retry_count
+        );
+    }
 
     // Show retry info if max_retries is set
     if let Some(max) = max_retries {
@@ -314,6 +354,63 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Failed);
+    }
+
+    #[test]
+    fn disk_resource_failure_queues_safe_retry_without_evaluation_state() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("disk-task", "cargo test full suite", Status::InProgress);
+        task.assigned = Some("agent-disk".into());
+        setup_workgraph(dir_path, vec![task]);
+        let target = dir_path.join("owned-target");
+        std::fs::create_dir_all(&target).unwrap();
+        worksgood::disk_sentinel::register_owned_cache(
+            dir_path,
+            worksgood::disk_sentinel::make_owned_cache(
+                &target,
+                worksgood::disk_sentinel::CacheKind::CargoTarget,
+                "disk-task",
+                "agent-disk",
+                999_999_999,
+                None,
+                3600,
+            ),
+        )
+        .unwrap();
+
+        run(
+            dir_path,
+            "disk-task",
+            Some("No space left on device"),
+            Some(FailureClass::ResourceExhaustedDisk),
+        )
+        .unwrap();
+
+        let graph = load_graph(graph_path(dir_path)).unwrap();
+        let task = graph.get_task("disk-task").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.assigned, None);
+        assert_eq!(task.retry_count, 0);
+        assert_eq!(
+            task.failure_class,
+            Some(FailureClass::ResourceExhaustedDisk)
+        );
+        assert!(task.log.last().unwrap().message.contains("preserved"));
+        let ownership = worksgood::disk_sentinel::load_ownership(dir_path).unwrap();
+        let expiry = chrono::DateTime::parse_from_rfc3339(
+            &ownership.caches.first().unwrap().lease_expires_at,
+        )
+        .unwrap()
+        .with_timezone(&Utc);
+        assert!(
+            expiry <= Utc::now(),
+            "terminal resource path releases its lease"
+        );
+        assert!(
+            target.exists(),
+            "failure bookkeeping never deletes source/cache inline"
+        );
     }
 
     #[test]

@@ -207,6 +207,9 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         }
         let _ = registry.save();
     }
+    if let Err(error) = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, None) {
+        eprintln!("Warning: failed to release build-cache lease: {error:#}");
+    }
 
     super::notify_graph_changed(dir);
 
