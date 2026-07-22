@@ -72,7 +72,7 @@ fn split_areas(area: Rect, dock: InspectorDock, percent: u16) -> Option<(Rect, R
             (split[0], split[2])
         })
     } else {
-        if area.height < MIN_GRAPH_ROWS + MIN_PANEL_ROWS {
+        if area.height < MIN_GRAPH_ROWS + MIN_PANEL_ROWS + 1 {
             return None;
         }
         let panel_height = ((area.height as u32 * percent as u32 / 100) as u16)
@@ -167,6 +167,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // previous viewport live for a queued tap.
     app.last_graph_scrollbar_area = Rect::default();
     app.last_panel_scrollbar_area = Rect::default();
+    // Divider geometry has one-frame ownership. Clear both axes before the
+    // effective dock is resolved so a resize can never leave a stale side seam
+    // active while the phone is presenting a horizontal stacked seam.
+    app.last_divider_area = Rect::default();
+    app.last_horizontal_divider_area = Rect::default();
     app.clear_coordinator_picker_hits();
     app.clear_symbolic_context_hits();
 
@@ -240,7 +245,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
     match app.responsive_breakpoint {
         ResponsiveBreakpoint::Compact => {
-            // Single-panel mode: show graph OR detail OR log, one at a time.
+            // Truly insufficient geometry: show graph OR the exact inspector,
+            // one at a time. Narrow portrait widths with usable height take
+            // the stacked path instead.
             // No room for tri-state strips in compact mode.
             app.last_minimized_strip_area = Rect::default();
             app.last_fullscreen_restore_area = Rect::default();
@@ -265,7 +272,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             }
         }
         ResponsiveBreakpoint::Narrow => {
-            // Narrow split: side-by-side at ~40/60 or stacked, depending on split layout.
+            // Phone/narrow split: effective policy never permits a side dock.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
                     app.last_graph_area = Rect::default();
@@ -17702,11 +17709,11 @@ mod tests {
         assert_eq!(panel.width, MIN_PANEL_COLS);
         assert_eq!(graph.width, area.width - MIN_PANEL_COLS - 1);
         assert!(split_areas(Rect::new(0, 0, 43, 40), InspectorDock::Left, 50).is_none());
-        assert!(split_areas(Rect::new(0, 0, 100, 11), InspectorDock::Top, 50).is_none());
+        assert!(split_areas(Rect::new(0, 0, 100, 12), InspectorDock::Top, 50).is_none());
     }
 
     #[test]
-    fn explicit_dock_and_ratio_survive_phone_rotation_compact_fallback() {
+    fn side_and_auto_preferences_stack_on_phone_and_restore_wide_without_mutation() {
         use crate::tui::viz_viewer::state::{
             InspectorMode, LayoutPreference, ResponsiveBreakpoint,
         };
@@ -17714,56 +17721,160 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let (viz, _) = build_hud_test_graph();
+        for desired_dock in [
+            InspectorDock::Left,
+            InspectorDock::Right,
+            InspectorDock::Auto,
+        ] {
+            let mut app = build_app_from_viz_output(&viz, "a");
+            let desired = LayoutPreference {
+                dock: desired_dock,
+                size_percent: 63,
+                mode: InspectorMode::Split,
+            };
+            app.set_layout_preference(desired);
+
+            for width in [40, 50, 60, 70, 80] {
+                let mut phone = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                phone.draw(|frame| draw(frame, &mut app)).unwrap();
+                assert_ne!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
+                assert_eq!(app.effective_inspector_dock, InspectorDock::Bottom);
+                assert_eq!(app.layout_preference, desired, "width={width}");
+                assert_eq!(app.last_graph_area.x, app.last_right_panel_area.x);
+                assert_eq!(app.last_graph_area.width, width);
+                assert_eq!(app.last_right_panel_area.width, width);
+                assert_eq!(
+                    app.last_graph_area.bottom() + 1,
+                    app.last_right_panel_area.y
+                );
+                assert_eq!(app.last_divider_area, Rect::default());
+                assert!(app.last_horizontal_divider_area.height > 0);
+            }
+
+            for width in [120, 140, 200] {
+                let mut wide = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                wide.draw(|frame| draw(frame, &mut app)).unwrap();
+                assert_eq!(app.layout_preference, desired, "width={width}");
+                assert!(app.effective_inspector_dock.is_horizontal());
+                let panel = app.last_right_panel_area;
+                let graph = app.last_graph_area;
+                match desired_dock {
+                    InspectorDock::Left => assert!(panel.x < graph.x),
+                    InspectorDock::Right | InspectorDock::Auto => assert!(panel.x > graph.x),
+                    _ => unreachable!(),
+                }
+                assert_eq!(panel.width, width * 63 / 100);
+                assert!(app.last_divider_area.width > 0);
+                assert_eq!(app.last_horizontal_divider_area, Rect::default());
+            }
+        }
+    }
+
+    #[test]
+    fn layout_defaults_and_legacy_missing_dock_are_auto() {
+        use crate::tui::viz_viewer::state::LayoutPreference;
+
+        let fresh = LayoutPreference::default();
+        assert_eq!(fresh.dock, InspectorDock::Auto);
+
+        let empty: LayoutPreference = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.dock, InspectorDock::Auto);
+        let legacy: LayoutPreference =
+            serde_json::from_str(r#"{"size_percent":55,"mode":"split"}"#).unwrap();
+        assert_eq!(legacy.dock, InspectorDock::Auto);
+        assert_eq!(legacy.size_percent, 55);
+    }
+
+    #[test]
+    fn side_stack_hysteresis_does_not_flap_or_mutate_preferences() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+
+        for desired_dock in [
+            InspectorDock::Left,
+            InspectorDock::Right,
+            InspectorDock::Auto,
+        ] {
+            let (viz, _) = build_hud_test_graph();
+            let mut app = build_app_from_viz_output(&viz, "a");
+            let desired = LayoutPreference {
+                dock: desired_dock,
+                size_percent: 58,
+                mode: InspectorMode::Split,
+            };
+            app.set_layout_preference(desired);
+            app.inspector_is_beside = false;
+
+            assert_eq!(app.resolved_inspector_dock(119), InspectorDock::Bottom);
+            assert!(app.resolved_inspector_dock(120).is_horizontal());
+            // One-cell jitter cannot undo the side orientation.
+            assert!(app.resolved_inspector_dock(119).is_horizontal());
+            assert!(app.resolved_inspector_dock(100).is_horizontal());
+            assert_eq!(app.resolved_inspector_dock(99), InspectorDock::Bottom);
+            // Nor can one-cell jitter re-enter it from the stacked side.
+            assert_eq!(app.resolved_inspector_dock(100), InspectorDock::Bottom);
+            assert_eq!(app.resolved_inspector_dock(119), InspectorDock::Bottom);
+            assert!(app.resolved_inspector_dock(120).is_horizontal());
+            assert_eq!(app.layout_preference, desired);
+        }
+    }
+
+    #[test]
+    fn explicit_top_stays_vertical_and_extreme_modes_never_invent_phone_split() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
-        let desired = LayoutPreference {
-            dock: InspectorDock::Left,
-            size_percent: 63,
+        let mut desired = LayoutPreference {
+            dock: InspectorDock::Top,
+            size_percent: 40,
             mode: InspectorMode::Split,
         };
         app.set_layout_preference(desired);
-
-        let mut wide = Terminal::new(TestBackend::new(140, 40)).unwrap();
-        wide.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
-
         let mut phone = Terminal::new(TestBackend::new(40, 24)).unwrap();
         phone.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
-        assert_eq!(app.layout_preference, desired);
+        assert_eq!(app.effective_inspector_dock, InspectorDock::Top);
+        assert!(app.last_right_panel_area.y < app.last_graph_area.y);
 
-        // Rotating back past compact hysteresis restores the exact explicit
-        // edge and ratio; Auto policy is never allowed to overwrite it.
-        let mut rotated = Terminal::new(TestBackend::new(70, 40)).unwrap();
-        rotated.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
-        assert_eq!(app.layout_preference, desired);
-        assert!(app.last_right_panel_area.x < app.last_graph_area.x);
-        assert_eq!(app.last_right_panel_area.width, 44); // floor(70 * .63)
+        desired.mode = InspectorMode::Full;
+        app.set_layout_preference(desired);
+        phone.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.last_graph_area, Rect::default());
+        assert_eq!(app.last_divider_area, Rect::default());
+        assert_eq!(app.last_horizontal_divider_area, Rect::default());
+
+        desired.mode = InspectorMode::Hidden;
+        app.set_layout_preference(desired);
+        phone.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.last_right_panel_area, Rect::default());
+        assert_eq!(app.last_divider_area, Rect::default());
+        assert_eq!(app.last_horizontal_divider_area, Rect::default());
     }
 
     #[test]
     fn test_responsive_breakpoint_from_width() {
         use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
-        // Compact: < 50
+        // Width-only Compact means truly too narrow for usable content.
         assert_eq!(
             ResponsiveBreakpoint::from_width(0),
             ResponsiveBreakpoint::Compact
         );
         assert_eq!(
-            ResponsiveBreakpoint::from_width(30),
-            ResponsiveBreakpoint::Compact
-        );
-        assert_eq!(
-            ResponsiveBreakpoint::from_width(40),
-            ResponsiveBreakpoint::Compact
-        );
-        assert_eq!(
-            ResponsiveBreakpoint::from_width(49),
+            ResponsiveBreakpoint::from_width(23),
             ResponsiveBreakpoint::Compact
         );
 
-        // Narrow: 50–80
+        // Narrow: a portrait phone can stack when height is usable.
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(24),
+            ResponsiveBreakpoint::Narrow
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(40),
+            ResponsiveBreakpoint::Narrow
+        );
         assert_eq!(
             ResponsiveBreakpoint::from_width(50),
             ResponsiveBreakpoint::Narrow
@@ -17793,8 +17904,8 @@ mod tests {
     }
 
     #[test]
-    fn test_responsive_compact_40_cols_no_panic() {
-        // Render at 40-col width (phone-like, Termux/Blink Shell).
+    fn test_responsive_compact_truly_insufficient_width_no_panic() {
+        // Compact is reserved for a viewport too small for usable panes.
         use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -17802,7 +17913,7 @@ mod tests {
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
 
-        let backend = TestBackend::new(40, 25);
+        let backend = TestBackend::new(20, 25);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -17859,14 +17970,13 @@ mod tests {
         let mut app = build_app_from_viz_output(&viz, "a");
         app.single_panel_view = SinglePanelView::Graph;
 
-        let backend = TestBackend::new(40, 25);
+        let backend = TestBackend::new(20, 25);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
 
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
-        // Graph area should have width == 40 (full terminal width).
-        assert_eq!(app.last_graph_area.width, 40);
+        assert_eq!(app.last_graph_area.width, 20);
         // Exactly one task context row replaces the three global chrome rows.
         assert_eq!(app.last_graph_area.height, 24);
         // Right panel area should be empty (not shown).
@@ -17875,8 +17985,7 @@ mod tests {
 
     #[test]
     fn test_responsive_compact_single_panel_detail_view() {
-        // In compact mode with SinglePanelView::Detail, only the inspector
-        // should render — graph area should be zeroed out.
+        // In truly compact geometry only the exact inspector is rendered.
         use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, SinglePanelView};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -17885,7 +17994,7 @@ mod tests {
         let mut app = build_app_from_viz_output(&viz, "a");
         app.single_panel_view = SinglePanelView::Detail;
 
-        let backend = TestBackend::new(40, 25);
+        let backend = TestBackend::new(20, 25);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -17984,8 +18093,8 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
 
-        // "Resize" to compact
-        let backend = TestBackend::new(40, 25);
+        // Resize to geometry genuinely too small for a usable stack.
+        let backend = TestBackend::new(20, 25);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Compact);
@@ -18175,7 +18284,7 @@ mod tests {
         app.single_panel_view = SinglePanelView::Detail;
         app.right_panel_tab = RightPanelTab::Log;
 
-        let backend = TestBackend::new(40, 25);
+        let backend = TestBackend::new(20, 25);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();

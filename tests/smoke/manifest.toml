@@ -2403,3 +2403,12 @@ owners = [
 ]
 description = "Installed-binary real tmux/PTY human flow for durable Pi lifecycle evidence: submit exactly one turn to an isolated fake Pi, SIGKILL the recorded inner PID, require the TUI and `wg chat show` to agree on the inner signal (not outer attach), restart the TUI without implicit launch, press R once, and prove byte-stable graph/UUID/Pi-session/tmux/route/reasoning identity with zero recovery stdin and no duplicate turn. Archiving then proves stale runtime metadata cannot relaunch a terminal chat."
 timeout_seconds = 90
+
+[[scenario]]
+name = "tui_termux_stacked_inspector"
+script = "scenarios/tui_termux_stacked_inspector.sh"
+owners = [
+    "fix-termux-stacked-inspector",
+]
+description = "Candidate-binary real tmux/SGR phone rotation flow: starts with persisted explicit Left and a live command Chat on a wide viewport, rotates through 70- and 40-column Termux portrait geometry and capture-verifies graph above the horizontal contextual seam with Chat below and no side divider, vertically drags the same-frame seam without click/input fall-through, exercises direct Task/Chat navigation, then restores the exact wide Left/ratio while preserving PTY PID, dimensions, input bytes, and mouse confinement. Credential-free."
+timeout_seconds = 180

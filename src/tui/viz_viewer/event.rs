@@ -5117,10 +5117,12 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.divider_drag_start_pct = app.right_panel_percent;
                 app.divider_drag_start_col = column;
                 let viewport = current_layout_viewport(app);
-                let dock = match app.layout_preference.dock {
-                    InspectorDock::Left => InspectorDock::Left,
-                    _ => InspectorDock::Right,
-                };
+                let dock = app.effective_inspector_dock;
+                if !dock.is_horizontal() {
+                    // A stale side-divider rectangle must never acquire a drag
+                    // after responsive policy switched this frame to stacking.
+                    return;
+                }
                 app.layout_drag = Some(LayoutDragSnapshot {
                     dock,
                     viewport,
@@ -5137,10 +5139,12 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.divider_drag_start_pct = app.right_panel_percent;
                 app.divider_drag_start_row = row;
                 let viewport = current_layout_viewport(app);
-                let dock = match app.layout_preference.dock {
-                    InspectorDock::Top => InspectorDock::Top,
-                    _ => InspectorDock::Bottom,
-                };
+                let dock = app.effective_inspector_dock;
+                if dock.is_horizontal() || dock == InspectorDock::Auto {
+                    // Geometry and dock resolution are frame-owned together;
+                    // never reinterpret a stale horizontal seam on the side axis.
+                    return;
+                }
                 app.layout_drag = Some(LayoutDragSnapshot {
                     dock,
                     viewport,
@@ -8453,8 +8457,58 @@ mod scrollbar_tests {
     // ── Horizontal divider drag tests (stacked mode) ──
 
     #[test]
+    fn rendered_phone_side_preference_owns_horizontal_drag_and_snaps_full() {
+        use crate::tui::viz_viewer::render::draw;
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for desired_dock in [
+            InspectorDock::Left,
+            InspectorDock::Right,
+            InspectorDock::Auto,
+        ] {
+            let (mut app, _tmp) = build_test_app();
+            let desired = LayoutPreference {
+                dock: desired_dock,
+                size_percent: 67,
+                mode: InspectorMode::Split,
+            };
+            app.set_layout_preference(desired);
+            let mut terminal = Terminal::new(TestBackend::new(70, 40)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+            assert_eq!(app.effective_inspector_dock, InspectorDock::Bottom);
+            assert_eq!(app.last_divider_area, Rect::default());
+            let seam = app.last_tab_bar_area;
+            assert_eq!(seam.height, 1);
+            let press_row = seam.y.saturating_sub(1);
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                press_row,
+                35,
+            );
+            assert_eq!(
+                app.scrollbar_drag,
+                Some(ScrollbarDragTarget::HorizontalDivider)
+            );
+            assert_eq!(app.layout_drag.unwrap().dock, InspectorDock::Bottom);
+            assert!(!app.workspace_click_pending, "seam press fell through");
+
+            handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 0, 35);
+            assert_eq!(app.layout_preference.mode, InspectorMode::Full);
+            assert_eq!(app.layout_preference.dock, desired_dock);
+            assert!(app.layout_drag.unwrap().snapped_full);
+            handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 0, 35);
+            assert!(app.layout_drag.is_none());
+        }
+    }
+
+    #[test]
     fn horizontal_divider_click_starts_drag() {
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70; // Narrow — will be stacked
 
@@ -8516,6 +8570,7 @@ mod scrollbar_tests {
     #[test]
     fn horizontal_divider_drag_up_grows_inspector() {
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70;
 
@@ -8585,6 +8640,7 @@ mod scrollbar_tests {
     #[test]
     fn horizontal_divider_drag_down_shrinks_inspector() {
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70;
 
@@ -8654,6 +8710,7 @@ mod scrollbar_tests {
     #[test]
     fn horizontal_divider_percent_clamped_at_extremes() {
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70;
 
@@ -8734,6 +8791,7 @@ mod scrollbar_tests {
         // Like the vertical divider no-snap test: first drag at same row should
         // not change percent.
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70;
 
@@ -8805,6 +8863,7 @@ mod scrollbar_tests {
     #[test]
     fn horizontal_divider_mouseup_clears_state() {
         let (mut app, _tmp) = build_test_app();
+        app.effective_inspector_dock = InspectorDock::Bottom;
         let total_height: u16 = 40;
         let total_width: u16 = 70;
 

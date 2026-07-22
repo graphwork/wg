@@ -1382,8 +1382,9 @@ impl LayoutMode {
     }
 }
 
-/// Desired inspector dock. `Auto` is the only variant responsive policy may
-/// resolve differently as the viewport changes; explicit choices are sticky.
+/// Desired inspector dock. Responsive policy may temporarily present a side
+/// preference (`Left`/`Right`) as `Bottom` when the viewport is not genuinely
+/// wide, but the desired value itself is sticky and is never rewritten.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InspectorDock {
@@ -1490,26 +1491,29 @@ pub struct LayoutOverlayState {
     pub original_single_panel_view: SinglePanelView,
 }
 
-/// Responsive layout breakpoint determined by terminal width.
+/// Responsive layout breakpoint derived from terminal geometry.
 ///
-/// Detected dynamically on each frame from `frame.area().width`:
-/// - `Compact`: < 50 cols — Graph OR exact last inspector, Tab to switch
-/// - `Narrow`: 50–80 cols — narrow split, hide non-essential columns
-/// - `Full`: > 80 cols — current full layout (no change)
+/// The live updater considers width *and height* with hysteresis:
+/// - `Compact`: geometry cannot hold two usable stacked panes
+/// - `Narrow`: usable phone stack, with non-essential columns hidden
+/// - `Full`: desktop rendering; effective dock policy may still stack until
+///   the independent hysteretic side threshold is genuinely wide
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponsiveBreakpoint {
-    /// < 50 cols: single-panel mode.
+    /// Insufficient geometry: intentional single-panel fallback.
     Compact,
-    /// 50–80 cols: narrow split with hidden non-essential columns.
+    /// Usable phone/narrow stack with hidden non-essential columns.
     Narrow,
     /// > 80 cols: full layout.
     Full,
 }
 
 impl ResponsiveBreakpoint {
-    /// Determine the breakpoint from terminal width.
+    /// Coarse width-only classification for callers without a height. The live
+    /// renderer uses `update_responsive_breakpoint` so portrait phones at this
+    /// width can stack when they have enough rows.
     pub fn from_width(width: u16) -> Self {
-        if width < 50 {
+        if width < 24 {
             Self::Compact
         } else if width <= 80 {
             Self::Narrow
@@ -8417,10 +8421,14 @@ pub struct VizApp {
     pub layout_overlay: Option<LayoutOverlayState>,
     /// Current responsive breakpoint (updated with hysteresis from the viewport).
     pub responsive_breakpoint: ResponsiveBreakpoint,
-    /// Hysteresis: whether inspector is currently laid out beside (right) rather than below.
-    /// Used to prevent oscillation at the SIDE_MIN_WIDTH boundary.
+    /// Hysteresis: whether inspector is currently laid out beside rather than stacked.
+    /// Used to prevent oscillation at the side/stack boundary.
     pub inspector_is_beside: bool,
-    /// Which panel is shown in compact (< 50 cols) single-panel mode.
+    /// Authoritative presentation edge derived for the current frame. Mouse
+    /// divider ownership uses this exact value rather than re-resolving desired
+    /// state against potentially stale geometry.
+    pub effective_inspector_dock: InspectorDock,
+    /// Which panel is shown in compact (insufficient geometry) single-panel mode.
     pub single_panel_view: SinglePanelView,
     /// Explicit symbolic-lane/Tab presentation override. This lets compact
     /// `⌂` expose Graph even when the persisted desired mode is Full, without
@@ -9761,6 +9769,7 @@ impl VizApp {
             layout_overlay: None,
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
+            effective_inspector_dock: InspectorDock::Right,
             single_panel_view: SinglePanelView::Graph,
             compact_navigation_override: None,
 
@@ -15334,6 +15343,7 @@ impl VizApp {
             layout_overlay: None,
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
+            effective_inspector_dock: InspectorDock::Right,
             single_panel_view: SinglePanelView::Graph,
             compact_navigation_override: None,
 
@@ -15574,13 +15584,16 @@ impl VizApp {
         self.input_mode = InputMode::Normal;
     }
 
-    /// Responsive breakpoints have hysteresis at the compact boundary so a
-    /// one-cell resize cannot repeatedly flip split/single-panel layout.
+    /// Compact is reserved for geometry that cannot hold two usable stacked
+    /// panes. Width alone must not force a phone into single-panel mode: a
+    /// 32–40 column portrait terminal can still use the full-width stack.
+    /// Independent enter/leave limits absorb one-cell resize jitter.
     pub fn update_responsive_breakpoint(&mut self, width: u16, height: u16) {
-        const COMPACT_ENTER_WIDTH: u16 = 50;
-        const COMPACT_LEAVE_WIDTH: u16 = 56;
-        const COMPACT_ENTER_HEIGHT: u16 = 12;
-        const COMPACT_LEAVE_HEIGHT: u16 = 14;
+        const COMPACT_ENTER_WIDTH: u16 = 24;
+        const COMPACT_LEAVE_WIDTH: u16 = 28;
+        // Six rows per pane plus the single shared contextual seam.
+        const COMPACT_ENTER_HEIGHT: u16 = 13;
+        const COMPACT_LEAVE_HEIGHT: u16 = 15;
 
         self.responsive_breakpoint = if self.responsive_breakpoint == ResponsiveBreakpoint::Compact
         {
@@ -15600,28 +15613,44 @@ impl VizApp {
         };
     }
 
-    /// Resolve Auto with independent enter/leave widths. Explicit docks are
-    /// returned verbatim and never overwritten by responsive policy.
+    /// Resolve the desired dock into the one authoritative presentation edge
+    /// for this frame. Side preferences and Auto share the same hysteretic
+    /// wide-screen threshold; narrow/phone presentation is always Bottom.
+    /// The desired dock and ratio remain untouched.
     pub fn resolved_inspector_dock(&mut self, width: u16) -> InspectorDock {
-        match self.layout_preference.dock {
-            InspectorDock::Auto => {
+        const SIDE_LEAVE_WIDTH: u16 = 100;
+        const SIDE_ENTER_WIDTH: u16 = 120;
+
+        let desired = self.layout_preference.dock;
+        let effective = match desired {
+            InspectorDock::Auto | InspectorDock::Left | InspectorDock::Right => {
                 let beside = if self.inspector_is_beside {
-                    width >= 100
+                    width >= SIDE_LEAVE_WIDTH
                 } else {
-                    width >= 120
+                    width >= SIDE_ENTER_WIDTH
                 };
                 self.inspector_is_beside = beside;
                 if beside {
-                    InspectorDock::Right
+                    match desired {
+                        InspectorDock::Left => InspectorDock::Left,
+                        InspectorDock::Auto | InspectorDock::Right => InspectorDock::Right,
+                        _ => unreachable!(),
+                    }
                 } else {
                     InspectorDock::Bottom
                 }
             }
-            dock => {
-                self.inspector_is_beside = dock.is_horizontal();
-                dock
+            InspectorDock::Top => {
+                self.inspector_is_beside = false;
+                InspectorDock::Top
             }
-        }
+            InspectorDock::Bottom => {
+                self.inspector_is_beside = false;
+                InspectorDock::Bottom
+            }
+        };
+        self.effective_inspector_dock = effective;
+        effective
     }
 
     /// Toggle focus between Graph and RightPanel.
