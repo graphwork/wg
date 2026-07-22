@@ -11193,6 +11193,7 @@ fn source_label(src: &worksgood::config::ConfigSource) -> (&'static str, Color) 
         worksgood::config::ConfigSource::Default => ("built-in", Color::DarkGray),
         worksgood::config::ConfigSource::Global => ("global", Color::Green),
         worksgood::config::ConfigSource::Local => ("local", Color::Blue),
+        worksgood::config::ConfigSource::ProjectProfile => ("project profile", Color::Cyan),
     }
 }
 

@@ -1330,6 +1330,10 @@ pub fn update_with_reasoning(
                 println!("Configuration saved.");
             }
         }
+        let _ = worksgood::profile::project::record_successful_event(
+            dir,
+            worksgood::profile::project::UsageEventCategory::ConfigApplied,
+        );
 
         // Auto-restart: model/endpoint changes don't propagate through a
         // soft Reconfigure IPC — already-running CoordinatorAgent

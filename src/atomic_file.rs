@@ -39,11 +39,15 @@ pub fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
         unique_suffix()
     ));
 
+    let existing_permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
     let result = (|| -> io::Result<()> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&tmp_path)?;
+        if let Some(permissions) = existing_permissions {
+            file.set_permissions(permissions)?;
+        }
         file.write_all(contents.as_ref())?;
         file.sync_all()?;
         Ok(())
@@ -59,6 +63,37 @@ pub fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
         return Err(err);
     }
 
+    sync_parent_dir(parent);
+    Ok(())
+}
+
+/// Atomically create a complete file without replacing an existing path.
+///
+/// The bytes are written and synced under a same-directory temporary name,
+/// then linked into place. `hard_link` provides no-replace semantics: a
+/// concurrent creator wins cleanly and its file is never overwritten.
+pub fn write_atomic_create_new(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let tmp_path = parent.join(format!(
+        ".{}.tmp.{}",
+        file_name_lossy(path),
+        unique_suffix()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(contents.as_ref())?;
+        file.sync_all()?;
+        fs::hard_link(&tmp_path, path)?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&tmp_path);
+    result?;
     sync_parent_dir(parent);
     Ok(())
 }

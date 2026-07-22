@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::atomic_file::write_atomic;
 use crate::config::Config;
 
 // ── Starter templates (baked into binary) ────────────────────────────────────
@@ -119,13 +120,18 @@ pub fn set_active(name: Option<&str>) -> Result<()> {
     let path = active_pointer_path()?;
     match name {
         Some(n) => {
+            validate_profile_name(n)?;
             // Ensure global dir exists
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create directory {}", parent.display()))?;
             }
-            std::fs::write(&path, n)
-                .with_context(|| format!("Failed to write active-profile to {}", path.display()))?;
+            write_atomic(&path, format!("{}\n", n).as_bytes()).with_context(|| {
+                format!(
+                    "Failed to atomically write active-profile to {}",
+                    path.display()
+                )
+            })?;
         }
         None => {
             if path.exists() {
@@ -257,19 +263,20 @@ pub fn migrate_stale_description(path: &Path) -> Result<bool> {
     if content.ends_with('\n') && !new_content.ends_with('\n') {
         new_content.push('\n');
     }
-    std::fs::write(path, new_content)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_atomic(path, new_content.as_bytes())
+        .with_context(|| format!("Failed to atomically write {}", path.display()))?;
     Ok(true)
 }
 
 /// Save raw TOML content as a named profile in `~/.wg/profiles/<name>.toml`.
 pub fn save_raw(name: &str, content: &str) -> Result<()> {
+    validate_profile_name(name)?;
     let dir = profiles_dir()?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create profiles directory {}", dir.display()))?;
     let path = dir.join(format!("{}.toml", name));
-    std::fs::write(&path, content)
-        .with_context(|| format!("Failed to write profile file {}", path.display()))?;
+    write_atomic(&path, content.as_bytes())
+        .with_context(|| format!("Failed to atomically write profile file {}", path.display()))?;
     Ok(())
 }
 
@@ -286,7 +293,9 @@ pub fn list_installed() -> Result<Vec<String>> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && validate_profile_name(stem).is_ok()
+            {
                 names.push(stem.to_string());
             }
         }
@@ -295,8 +304,32 @@ pub fn list_installed() -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Validate a profile name before it is used as a file name. Profile
+/// definitions are global reusable objects, never arbitrary paths.
+pub fn validate_profile_name(name: &str) -> Result<()> {
+    // Keep historical Unicode/space/colon names working while rejecting every
+    // form that can become a path component traversal on supported platforms.
+    // Platform-invalid file-name characters still produce the OS's normal
+    // create error; they can never escape `profiles_dir()`.
+    let valid = !name.is_empty()
+        && name.len() <= 128
+        && name != "."
+        && name != ".."
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | '\0'));
+    if !valid {
+        anyhow::bail!(
+            "Invalid profile name '{}'. Use one 1-128 byte file-name component; '/', '\\', control characters, '.' and '..' are not allowed.",
+            name
+        );
+    }
+    Ok(())
+}
+
 /// Return the path for a named profile file.
 pub fn profile_path(name: &str) -> Result<PathBuf> {
+    validate_profile_name(name)?;
     Ok(profiles_dir()?.join(format!("{}.toml", name)))
 }
 
@@ -398,8 +431,12 @@ pub fn apply_profile_as_global_config(name: &str) -> Result<PathBuf> {
 
     let content = toml::to_string_pretty(&merged)
         .context("Failed to serialize merged profile + global config")?;
-    std::fs::write(&dst, content)
-        .with_context(|| format!("Failed to write merged global config to {}", dst.display()))?;
+    write_atomic(&dst, content.as_bytes()).with_context(|| {
+        format!(
+            "Failed to atomically write merged global config to {}",
+            dst.display()
+        )
+    })?;
     Ok(dst)
 }
 
@@ -415,24 +452,42 @@ const PROFILE_ROUTING_TOP_KEYS: &[&str] = &[
     "models",
 ];
 
-/// Overlay a profile's routing keys onto an existing global config TOML tree,
-/// preserving unrelated global state (endpoints/credentials, agency flags, …).
-///
-/// Merge rules:
-/// - Scalar top-level routing keys (`description`, `profile`): profile wins,
-///   replace.
-/// - Subtable routing keys (`agent`, `dispatcher`, `tiers`, `models`): merge
-///   field-by-field with the profile winning on conflict, so an existing
-///   `dispatcher.safety_interval` or `agent.interval` survives a swap while
-///   the profile's `model` / `max_agents` / tier / role pins take effect.
-/// - `llm_endpoints`: when the profile declares it, the profile owns the
-///   endpoint set (replace) — this lets the `nex` starter install its
-///   localhost endpoint. When the profile omits it (the `pi` / `claude` /
-///   `codex` starters), the existing global endpoints are preserved — this
-///   is the fix for the OpenRouter-login-clobbering bug.
-/// - Any other top-level key in the existing config (agency, tui, checkpoint,
-///   log, …) is left untouched.
-fn overlay_profile_onto_global(mut existing: toml::Value, profile: &toml::Value) -> toml::Value {
+/// Overlay an explicitly selected project profile without inheriting stale
+/// routing keys from the global active profile or local config. Unlike the
+/// legacy global overlay, the reusable profile is the complete routing
+/// authority: absent `[models.<role>]` entries stay absent and therefore use
+/// this profile's own tier/default cascade, never another profile's role pin.
+pub fn overlay_project_profile(mut existing: toml::Value, profile: &toml::Value) -> toml::Value {
+    if let Some(root) = existing.as_table_mut() {
+        root.remove("profile");
+        root.remove("tiers");
+        root.remove("models");
+        let mut ignored = Vec::new();
+        remove_section_keys(root, "agent", &["model", "executor"], &mut ignored);
+        remove_section_keys(
+            root,
+            "dispatcher",
+            &["model", "executor", "provider", "max_agents"],
+            &mut ignored,
+        );
+        remove_section_keys(
+            root,
+            "coordinator",
+            &["model", "executor", "provider", "max_agents"],
+            &mut ignored,
+        );
+    }
+    overlay_profile_onto_global(existing, profile)
+}
+
+/// Overlay a profile's routing keys onto an existing config TOML tree while
+/// preserving unrelated state. Scalar routing keys replace; agent/dispatcher/
+/// tier/model tables merge field-by-field; a profile-declared `llm_endpoints`
+/// table replaces the endpoint set while an omitted one preserves it.
+pub fn overlay_profile_onto_global(
+    mut existing: toml::Value,
+    profile: &toml::Value,
+) -> toml::Value {
     let prof_table = match profile.as_table() {
         Some(t) => t,
         None => return existing,
@@ -512,8 +567,12 @@ pub fn patch_global_pinned_model(model: &str) -> Result<()> {
     }
     crate::config_migrate::canonicalize_in_place(&mut doc);
     let body = toml::to_string_pretty(&doc).context("Failed to serialize pinned global config")?;
-    std::fs::write(&dst, body)
-        .with_context(|| format!("Failed to write pinned global config {}", dst.display()))?;
+    write_atomic(&dst, body.as_bytes()).with_context(|| {
+        format!(
+            "Failed to atomically write pinned global config {}",
+            dst.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -626,8 +685,12 @@ pub fn clear_local_profile_routing_overrides(
             removed_keys
         )
     })?;
-    std::fs::write(&path, cleaned)
-        .with_context(|| format!("Failed to write cleaned local config {}", path.display()))?;
+    write_atomic(&path, cleaned.as_bytes()).with_context(|| {
+        format!(
+            "Failed to atomically write cleaned local config {}",
+            path.display()
+        )
+    })?;
 
     // Fold the canonicalization renames into the reported removed-keys list so
     // the user sees what changed (e.g. `dispatcher.poll_interval` removed as

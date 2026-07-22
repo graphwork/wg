@@ -787,9 +787,24 @@ fn main() -> Result<()> {
         );
     }
 
-    // Track command usage (fire-and-forget, ignores errors). `wg upgrade --dry-run`
-    // is intentionally write-free, including command telemetry in the target WG dir.
-    let skip_usage_log = matches!(&command, Commands::Upgrade { dry_run: true, .. });
+    // Track command usage (fire-and-forget, ignores errors). Strict dry-runs
+    // and read-only profile inspection are intentionally write-free, including
+    // the legacy per-project command counter. Profile ranking has its own
+    // privacy-bounded successful-event records and never consumes shell/command
+    // history.
+    let skip_usage_log = matches!(&command, Commands::Upgrade { dry_run: true, .. })
+        || matches!(
+            &command,
+            Commands::Profile {
+                command: ProfileCommands::List { .. }
+                    | ProfileCommands::Show { .. }
+                    | ProfileCommands::Diff { .. }
+                    | ProfileCommands::History { clear: false }
+                    | ProfileCommands::Select { dry_run: true, .. }
+                    | ProfileCommands::Pi { dry_run: true, .. }
+                    | ProfileCommands::SetModel { dry_run: true, .. },
+            }
+        );
     if !skip_usage_log {
         worksgood::usage::append_usage_log(&workgraph_dir, command_name(&command));
     }
@@ -2643,6 +2658,22 @@ fn main() -> Result<()> {
                 no_reload,
                 clear,
             ),
+            ProfileCommands::Select {
+                name,
+                clear,
+                dry_run,
+                no_reload,
+            } => commands::profile_cmd::select_project_profile(
+                &workgraph_dir,
+                name.as_deref(),
+                clear,
+                dry_run,
+                no_reload,
+                cli.json,
+            ),
+            ProfileCommands::History { clear } => {
+                commands::profile_cmd::profile_history(clear, cli.json)
+            }
             ProfileCommands::Show {
                 profile_name,
                 verbose,
@@ -2675,8 +2706,11 @@ fn main() -> Result<()> {
             ProfileCommands::Edit { name, no_reload } => {
                 commands::profile_cmd::edit_profile(&workgraph_dir, &name, no_reload)
             }
+            ProfileCommands::Rename { from, to } => {
+                commands::profile_cmd::rename_profile(&workgraph_dir, &from, &to)
+            }
             ProfileCommands::Delete { name, force } => {
-                commands::profile_cmd::delete_profile(&name, force)
+                commands::profile_cmd::delete_profile(&workgraph_dir, &name, force)
             }
             ProfileCommands::Diff { a, b } => {
                 commands::profile_cmd::diff_profiles(&a, b.as_deref())

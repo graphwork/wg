@@ -7,6 +7,7 @@ use worksgood::dispatch::ExecutorKind;
 use worksgood::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use worksgood::profile;
 use worksgood::profile::named as named_profile;
+use worksgood::profile::project as project_profile;
 
 struct ProfileUseTarget {
     profile_name: String,
@@ -71,13 +72,6 @@ fn parse_profile_use_target(name: &str) -> Result<ProfileUseTarget> {
         profile_name: profile_name.to_string(),
         pinned_model: Some(pinned_model),
     })
-}
-
-/// Extract the top-level `description` key from a profile TOML string.
-/// Returns None if the file has no description or fails to parse.
-fn parse_top_level_description(content: &str) -> Option<String> {
-    let val: toml::Value = content.parse().ok()?;
-    val.get("description")?.as_str().map(|s| s.to_string())
 }
 
 /// File name for the cached ranked tiers (inside .wg/).
@@ -389,7 +383,37 @@ pub fn show(
         return Ok(());
     }
 
-    // Default: show current merged config (with active profile applied).
+    // Default: show current project association first. Drift/unavailable state
+    // is inspectable without pretending a global route is the project's route.
+    let project_selection = project_profile::inspect_association(dir);
+    if project_selection.association.is_some()
+        && project_selection.state != project_profile::AssociationState::Ready
+    {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "project_selection": project_selection,
+                    "routing_ready": false,
+                    "fallback_used": false,
+                }))?
+            );
+        } else {
+            let selected = project_selection
+                .association
+                .as_ref()
+                .map(|a| a.profile.as_str())
+                .unwrap_or("(invalid)");
+            println!("Project selected profile: {}", selected);
+            println!("  State: {:?}", project_selection.state);
+            println!("  {}", project_selection.message);
+            println!("  No global/provider fallback was used.");
+        }
+        return Ok(());
+    }
+
+    // Current merged config includes the fingerprint-verified project profile,
+    // when selected; otherwise legacy global/local routing remains unchanged.
     let config = Config::load_merged(dir)?;
     let effective_tiers = config.effective_tiers_public();
     let active = named_profile::active().unwrap_or(None);
@@ -406,6 +430,7 @@ pub fn show(
     if json {
         let mut val = serde_json::json!({
             "active_named_profile": active,
+            "project_selection": project_selection,
             "profile": config.profile,
             "agent_model": config.agent.model,
             "dispatcher_model": config.coordinator.model,
@@ -424,32 +449,41 @@ pub fn show(
         return Ok(());
     }
 
-    // Header
-    match active.as_deref() {
-        Some(name) => {
-            println!("Active named profile: {} *", name);
-            if let Ok(prof) = named_profile::load(name) {
-                if let Some(ref desc) = prof.description {
-                    println!("  {}", desc);
-                }
-            }
+    // Header: project selection is authoritative and distinct from the global
+    // active pointer. The latter remains visible as context only.
+    if let Some(association) = project_selection.association.as_ref() {
+        println!("Project selected profile: {} *", association.profile);
+        println!("  Fingerprint: {}", association.profile_fingerprint);
+        if let Some(global) = active.as_deref() {
+            println!("  Global active (separate): {}", global);
         }
-        None => match config.profile.as_deref() {
+    } else {
+        match active.as_deref() {
             Some(name) => {
-                if let Some(prof) = profile::get_profile(name) {
-                    println!("Profile: {} ({})", name, prof.strategy_label());
-                    println!("  {}", prof.description);
-                } else {
-                    println!("Profile: {} (unknown — not a built-in profile)", name);
+                println!("Active named profile: {} *", name);
+                if let Ok(prof) = named_profile::load(name) {
+                    if let Some(ref desc) = prof.description {
+                        println!("  {}", desc);
+                    }
                 }
             }
-            None => {
-                println!("Profile: (none)");
-                println!(
-                    "  Using default config. Run `wg profile init-starters` and `wg profile use <name>`."
-                );
-            }
-        },
+            None => match config.profile.as_deref() {
+                Some(name) => {
+                    if let Some(prof) = profile::get_profile(name) {
+                        println!("Profile: {} ({})", name, prof.strategy_label());
+                        println!("  {}", prof.description);
+                    } else {
+                        println!("Profile: {} (unknown — not a built-in profile)", name);
+                    }
+                }
+                None => {
+                    println!("Profile: (none)");
+                    println!(
+                        "  Using default config. Run `wg profile init-starters` and `wg profile use <name>`."
+                    );
+                }
+            },
+        }
     }
 
     println!();
@@ -610,105 +644,277 @@ fn print_ranked_tier(tier_name: &str, ranked: &[model_benchmarks::RankedModel], 
     }
 }
 
+/// Select or clear a reusable named profile for only this project.
+///
+/// Planning is strictly read-only. Apply writes the fingerprint-pinned local
+/// association atomically, then asks only this project's daemon to re-read its
+/// effective config. The legacy global active pointer/config are untouched.
+pub fn select_project_profile(
+    dir: &Path,
+    name: Option<&str>,
+    clear: bool,
+    dry_run: bool,
+    no_reload: bool,
+    json: bool,
+) -> Result<()> {
+    if clear {
+        let plan = project_profile::plan_clear_project_selection(dir)?;
+        if dry_run {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+            } else {
+                println!("Project profile clear plan (READ ONLY)");
+                println!("  Project: {}", plan.project_digest);
+                println!(
+                    "  Selected: {}",
+                    if plan.had_selection { "yes" } else { "no" }
+                );
+                println!("  Would write: nothing (--dry-run)");
+            }
+            return Ok(());
+        }
+        project_profile::apply_clear_project_selection(dir, &plan)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "cleared": plan.had_selection,
+                    "project_digest": plan.project_digest,
+                    "scope": "project",
+                }))?
+            );
+        } else if plan.had_selection {
+            println!("Project profile selection cleared.");
+            println!("  Global `wg profile use` state was not changed.");
+        } else {
+            println!("No project profile selection was set. Nothing changed.");
+        }
+        if !no_reload {
+            trigger_daemon_reload(dir, None);
+        }
+        return Ok(());
+    }
+
+    let name = name.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Choose a profile name, or pass --clear. See reusable profiles with `wg profile list`."
+        )
+    })?;
+    let plan = project_profile::plan_project_selection(dir, name)?;
+    if dry_run {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            println!("Project profile selection plan (READ ONLY)");
+            println!("  Project:     {}", plan.project_digest);
+            println!(
+                "  Profile:     {} ({:?})",
+                plan.profile, plan.profile_source
+            );
+            println!("  Fingerprint: {}", plan.profile_fingerprint);
+            println!(
+                "  Definition:  {}",
+                if plan.materializes_global_profile_definition {
+                    "install built-in once as a reusable global definition"
+                } else {
+                    "reuse installed global definition"
+                }
+            );
+            println!("  Strong:      {}", plan.readiness.strong_route);
+            println!("  Weak:        {}", plan.readiness.weak_route);
+            println!("  Readiness:   {}", plan.readiness.annotation);
+            println!("  Would write: nothing (--dry-run)");
+        }
+        return Ok(());
+    }
+
+    let association = project_profile::apply_project_selection(dir, &plan)?;
+    if let Err(e) = project_profile::record_successful_event(
+        dir,
+        project_profile::UsageEventCategory::ProfileSelected,
+    ) {
+        eprintln!(
+            "Warning: project selection succeeded but local usage history was not recorded: {e}"
+        );
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "association": association,
+                "scope": "project",
+                "readiness": plan.readiness,
+                "global_active_profile_changed": false,
+                "global_config_changed": false,
+            }))?
+        );
+    } else {
+        println!("Project profile selected: {}", association.profile);
+        println!(
+            "  Scope:       this canonical project only ({})",
+            association.project_digest
+        );
+        println!("  Fingerprint: {}", association.profile_fingerprint);
+        if plan.materializes_global_profile_definition {
+            println!("  Definition:  installed reusable built-in profile definition globally");
+        } else {
+            println!("  Definition:  reused existing global profile definition");
+        }
+        println!("  Strong:      {}", plan.readiness.strong_route);
+        println!("  Weak:        {}", plan.readiness.weak_route);
+        println!("  Readiness:   {}", plan.readiness.annotation);
+        println!("  Global ~/.wg/config.toml and active-profile were not changed.");
+    }
+    if !no_reload {
+        trigger_daemon_reload(dir, Some(&association.profile));
+    }
+    Ok(())
+}
+
+pub fn profile_history(clear: bool, json: bool) -> Result<()> {
+    if clear {
+        project_profile::clear_usage_history()?;
+        if json {
+            println!("{{\"cleared\":true}}");
+        } else {
+            println!("Local profile usage history cleared.");
+        }
+        return Ok(());
+    }
+    let records = project_profile::usage_records()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&records)?);
+    } else if records.is_empty() {
+        println!("No local profile usage records.");
+    } else {
+        println!("Local profile usage (redacted; newest last):");
+        for record in records {
+            println!(
+                "  {}  {:<18} {:<16} project={} profile={}",
+                record.timestamp,
+                record.profile,
+                serde_json::to_value(record.category)?
+                    .as_str()
+                    .unwrap_or("event"),
+                record.project_digest,
+                record.profile_fingerprint,
+            );
+        }
+    }
+    Ok(())
+}
+
 /// List available profiles (installed user profiles + built-in starters).
 pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
-    let active = named_profile::active().unwrap_or(None);
-    let installed = named_profile::list_installed().unwrap_or_default();
-    let builtin_names = named_profile::STARTER_NAMES;
+    let catalog = project_profile::catalog(dir)?;
+    let visible: Vec<_> = catalog
+        .iter()
+        .filter(|entry| {
+            !installed_only
+                || matches!(
+                    entry.source,
+                    project_profile::ProfileSource::Installed
+                        | project_profile::ProfileSource::Unavailable
+                )
+        })
+        .collect();
 
     if json {
-        let mut items: Vec<serde_json::Value> = vec![];
-
-        // Installed user profiles
-        for name in &installed {
-            let is_active = active.as_deref() == Some(name.as_str());
-            let desc = named_profile::load(name).ok().and_then(|p| p.description);
-            items.push(serde_json::json!({
-                "name": name,
-                "kind": "user",
-                "active": is_active,
-                "description": desc,
-            }));
-        }
-
-        // Built-in starters (not shown if installed_only)
-        if !installed_only {
-            for name in builtin_names {
-                if !installed.iter().any(|i| i == name) {
-                    items.push(serde_json::json!({
-                        "name": name,
-                        "kind": "builtin",
-                        "active": false,
-                        "description": named_profile::starter_template(name)
-                            .and_then(parse_top_level_description),
-                    }));
-                }
+        // Preserve the historical `kind` / `active` compatibility keys while
+        // exposing the complete read-only concierge API on each item.
+        let mut items = Vec::new();
+        for entry in visible {
+            let mut value = serde_json::to_value(entry)?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "kind".to_string(),
+                    serde_json::Value::String(
+                        match entry.source {
+                            project_profile::ProfileSource::Installed => "user",
+                            project_profile::ProfileSource::BuiltinTemplate => "builtin",
+                            project_profile::ProfileSource::Unavailable => "unavailable",
+                        }
+                        .to_string(),
+                    ),
+                );
+                object.insert(
+                    "active".to_string(),
+                    serde_json::Value::Bool(entry.global_active),
+                );
             }
+            items.push(value);
         }
-
-        // Legacy built-in profiles (for backward compat display)
-        if !installed_only {
-            for p in profile::builtin_profiles() {
-                items.push(serde_json::json!({
-                    "name": p.name,
-                    "kind": "legacy-builtin",
-                    "active": false,
-                    "description": p.description,
-                }));
-            }
-        }
-
         println!("{}", serde_json::to_string_pretty(&items)?);
         return Ok(());
     }
 
-    println!("Named profiles:");
+    println!("Named profiles (installed definitions first):");
     println!();
-
-    if installed.is_empty() && !installed_only {
-        println!("  (no profiles installed — run `wg profile init-starters`)");
-    } else {
-        for name in &installed {
-            let is_active = active.as_deref() == Some(name.as_str());
-            let desc = named_profile::load(name)
-                .ok()
-                .and_then(|p| p.description)
-                .unwrap_or_default();
-            let marker = if is_active { " *" } else { "" };
-            println!("  [user]    {:<14} {}{}", name, desc, marker);
+    if visible.is_empty() {
+        println!("  (no installed profiles)");
+    }
+    for entry in visible {
+        let kind = match entry.source {
+            project_profile::ProfileSource::Installed => "user",
+            project_profile::ProfileSource::BuiltinTemplate => "builtin",
+            project_profile::ProfileSource::Unavailable => "missing",
+        };
+        let mut labels = Vec::new();
+        if entry.selected_for_project {
+            labels.push("current project".to_string());
         }
+        if entry.global_active {
+            labels.push("global active".to_string());
+        }
+        if let Some(label) = entry.usage_label.as_ref() {
+            labels.push(label.clone());
+        }
+        let labels = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", labels.join(", "))
+        };
+        println!(
+            "  [{}] {:<14} {}{}",
+            kind,
+            entry.name,
+            entry.description.as_deref().unwrap_or(""),
+            labels,
+        );
+        println!("              {}", entry.readiness.annotation);
+        println!(
+            "              strong={} weak={}",
+            entry.readiness.strong_route, entry.readiness.weak_route
+        );
     }
 
-    if !installed_only {
-        println!();
-        println!("Starter templates (not yet installed — run `wg profile init-starters`):");
-        println!();
-        for name in builtin_names {
-            if !installed.iter().any(|i| i == name) {
-                let desc = named_profile::starter_template(name)
-                    .and_then(parse_top_level_description)
-                    .unwrap_or_default();
-                println!("  [builtin] {:<14} {}", name, desc);
-            }
-        }
-    }
-
+    let inspection = project_profile::inspect_association(dir);
     println!();
-    match active.as_deref() {
-        Some(name) => println!("Active: {} *", name),
-        None => println!("Active: (none — run `wg profile use <name>` to activate)"),
+    match inspection.association.as_ref() {
+        Some(association) => println!(
+            "Project selection: {} ({:?}) — {}",
+            association.profile, inspection.state, inspection.message
+        ),
+        None => println!("Project selection: (none) — {}", inspection.message),
+    }
+    match named_profile::active().unwrap_or(None) {
+        Some(name) => println!(
+            "Global active: {} (legacy/global scope; separate from project selection)",
+            name
+        ),
+        None => println!("Global active: (none; `wg profile use` remains available globally)"),
     }
 
-    // Also show legacy built-in profiles
     if !installed_only {
         let legacy = profile::builtin_profiles();
         if !legacy.is_empty() {
+            let active_legacy = Config::load_merged(dir)
+                .ok()
+                .and_then(|config| config.profile);
             println!();
             println!("Legacy tier presets (wg profile set <name>):");
             for p in &legacy {
-                let config = Config::load_merged(dir)?;
-                let active_legacy = config.profile.as_deref();
-                let marker = if active_legacy == Some(p.name) {
+                let marker = if active_legacy.as_deref() == Some(p.name) {
                     " *"
                 } else {
                     ""
@@ -717,7 +923,6 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
             }
         }
     }
-
     Ok(())
 }
 
@@ -749,6 +954,9 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
             ),
             None => println!("No active profile was set. Nothing changed."),
         }
+        println!(
+            "  Scope: global active-profile only; explicit project selections were not changed."
+        );
         if !no_reload {
             trigger_daemon_reload(dir, None);
         }
@@ -823,6 +1031,9 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
             profile_name
         ),
     }
+    println!(
+        "  Scope: GLOBAL legacy profile activation. Explicit `wg profile select` project associations were not changed."
+    );
     if let Some(ref pinned_model) = target.pinned_model {
         println!(
             "  Default/task-agent route pinned to {} via model-qualified profile activation.",
@@ -1027,58 +1238,186 @@ pub fn edit_profile(dir: &Path, name: &str, no_reload: bool) -> Result<()> {
         );
     }
 
+    // Edit a same-directory candidate, not the live reusable definition. Only
+    // a validated candidate whose original preimage is still current may be
+    // atomically committed. Invalid edits and concurrent writers leave the
+    // definition byte-for-byte unchanged.
+    let original = std::fs::read(&path)?;
+    let edit_path = path.with_file_name(format!(".{}.edit.{}", name, std::process::id()));
+    worksgood::atomic_file::write_atomic(&edit_path, &original)?;
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    let status = std::process::Command::new(&editor)
-        .arg(&path)
-        .status()
-        .with_context(|| format!("Failed to launch editor '{}'", editor))?;
+    let status = match std::process::Command::new(&editor).arg(&edit_path).status() {
+        Ok(status) => status,
+        Err(e) => {
+            let _ = std::fs::remove_file(&edit_path);
+            return Err(e).with_context(|| format!("Failed to launch editor '{}'", editor));
+        }
+    };
 
     if !status.success() {
-        anyhow::bail!("Editor exited with non-zero status");
+        let _ = std::fs::remove_file(&edit_path);
+        anyhow::bail!("Editor exited with non-zero status; profile was not changed");
     }
-
-    named_profile::validate_file(&path).with_context(|| {
-        format!(
-            "Profile '{}' has invalid content after editing. File at {}",
+    if let Err(e) = named_profile::validate_file(&edit_path) {
+        let _ = std::fs::remove_file(&edit_path);
+        anyhow::bail!(
+            "Profile '{}' has invalid edited content: {}. Original definition was not changed.",
             name,
-            path.display()
-        )
-    })?;
-    println!("Profile '{}' saved and validated.", name);
+            e
+        );
+    }
+    if std::fs::read(&path)? != original {
+        let _ = std::fs::remove_file(&edit_path);
+        anyhow::bail!(
+            "Profile '{}' changed concurrently while the editor was open. Original concurrent change was preserved; retry.",
+            name
+        );
+    }
+    let edited = std::fs::read(&edit_path)?;
+    worksgood::atomic_file::write_atomic(&path, &edited)?;
+    let _ = std::fs::remove_file(&edit_path);
+    println!("Profile '{}' saved atomically and validated.", name);
 
     let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(name);
-
-    if is_active && !no_reload {
+    let project_selected = project_profile::read_association(dir)
+        .ok()
+        .flatten()
+        .is_some_and(|association| association.profile == name);
+    if project_selected {
+        println!(
+            "  This project's association still pins the prior fingerprint and is now intentionally drifted. Inspect, then run `wg profile select {}` to acknowledge the new routes.",
+            name
+        );
+    } else if is_active && !no_reload {
         trigger_daemon_reload(dir, Some(name));
     }
 
     Ok(())
 }
 
+/// Rename one global reusable definition without silently retargeting project
+/// associations. The target is created with no-replace semantics; global
+/// active-pointer update is rolled back on failure.
+pub fn rename_profile(dir: &Path, from: &str, to: &str) -> Result<()> {
+    named_profile::validate_profile_name(from)?;
+    named_profile::validate_profile_name(to)?;
+    if from == to {
+        anyhow::bail!("Old and new profile names are identical; nothing changed.");
+    }
+    let source = named_profile::profile_path(from)?;
+    let target = named_profile::profile_path(to)?;
+    if !source.is_file() {
+        anyhow::bail!("Profile '{}' not found at {}", from, source.display());
+    }
+    if target.exists() {
+        anyhow::bail!(
+            "Profile '{}' already exists at {}; nothing changed.",
+            to,
+            target.display()
+        );
+    }
+    let original = std::fs::read(&source)?;
+    // Same-directory hard-link creation is atomic and refuses an existing
+    // target, unlike rename(2)'s overwrite behavior. The bytes are immutable
+    // during the short preimage-checked commit window.
+    if std::fs::read(&source)? != original {
+        anyhow::bail!(
+            "Profile '{}' changed while rename was planned; retry.",
+            from
+        );
+    }
+    std::fs::hard_link(&source, &target).with_context(|| {
+        format!(
+            "Failed to atomically create renamed profile '{}' from '{}'",
+            to, from
+        )
+    })?;
+    let was_global_active = named_profile::active().unwrap_or(None).as_deref() == Some(from);
+    if was_global_active && let Err(e) = named_profile::set_active(Some(to)) {
+        let _ = std::fs::remove_file(&target);
+        return Err(e).context("Could not update global active profile; rename rolled back");
+    }
+    if let Err(e) = std::fs::remove_file(&source) {
+        if was_global_active {
+            let _ = named_profile::set_active(Some(from));
+        }
+        let _ = std::fs::remove_file(&target);
+        return Err(e).context("Could not remove old profile name; rename rolled back");
+    }
+    println!("Profile '{}' renamed to '{}'.", from, to);
+    if was_global_active {
+        println!(
+            "  Global active pointer now names '{}'; materialized global routes are unchanged.",
+            to
+        );
+    }
+    let project_selected = project_profile::read_association(dir)
+        .ok()
+        .flatten()
+        .is_some_and(|association| association.profile == from);
+    if project_selected {
+        println!(
+            "  Current project still explicitly selects '{}', which is now unavailable. Inspect '{}', then run `wg profile select {}`; no association was silently retargeted.",
+            from, to, to
+        );
+    } else {
+        println!(
+            "  Existing project associations were not retargeted; select '{}' explicitly in each project that should follow the rename.",
+            to
+        );
+    }
+    Ok(())
+}
+
 /// Delete a named profile file.
-pub fn delete_profile(name: &str, force: bool) -> Result<()> {
+pub fn delete_profile(dir: &Path, name: &str, force: bool) -> Result<()> {
     let path = named_profile::profile_path(name)?;
     if !path.exists() {
         anyhow::bail!("Profile '{}' not found at {}", name, path.display());
     }
 
     let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(name);
+    let project_selected = project_profile::read_association(dir)
+        .ok()
+        .flatten()
+        .is_some_and(|association| association.profile == name);
 
-    if is_active && !force {
+    if (is_active || project_selected) && !force {
         anyhow::bail!(
-            "Profile '{}' is currently active. Use --force to delete it.",
+            "Profile '{}' is {}. Use --force only if you intend to leave that scope unavailable, then recover with `wg profile select <name>` or `wg profile select --clear`.",
             name,
+            if project_selected {
+                "selected for the current project"
+            } else {
+                "globally active"
+            },
         );
     }
 
-    std::fs::remove_file(&path)
-        .with_context(|| format!("Failed to delete profile file {}", path.display()))?;
-
     if is_active {
         named_profile::set_active(None)?;
+    }
+    if let Err(e) = std::fs::remove_file(&path) {
+        if is_active {
+            let _ = named_profile::set_active(Some(name));
+        }
+        return Err(e).with_context(|| {
+            format!(
+                "Failed to delete profile file {}; active pointer rollback attempted",
+                path.display()
+            )
+        });
+    }
+
+    if is_active {
         println!("Profile '{}' deleted. Active profile cleared.", name);
     } else {
         println!("Profile '{}' deleted.", name);
+    }
+    if project_selected {
+        println!(
+            "  Current project association was preserved and is now unavailable (fail-closed). Select a replacement or clear it explicitly."
+        );
     }
 
     Ok(())

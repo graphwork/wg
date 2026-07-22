@@ -482,9 +482,18 @@ EXECUTORS & MODELS
   wg config -m nex:qwen3-coder -e http://127.0.0.1:8088     # in-process nex handler
   wg config -m openrouter:anthropic/claude-opus-4-7         # in-process nex handler
 
-  Or pick a named profile (writes ~/.wg/active-profile, hot-reloads daemon):
+  Reuse a named profile in only the current project (recommended for
+  concurrent projects; fingerprint-pinned, never rewrites global config):
 
-  wg profile use claude         # Starter profile: claude:opus worker
+  wg profile select claude      # Current project only
+  wg profile select codex       # Another project may select something else
+  wg profile list               # Project selection pinned first + readiness
+  wg profile select --clear     # Clear only this project's association
+  wg profile history --clear    # Clear privacy-bounded local usage labels
+
+  The legacy machine-global activation remains explicit and available:
+
+  wg profile use claude         # GLOBAL: writes ~/.wg/active-profile/config.toml
   wg profile use codex          # Starter profile: codex:gpt-5.5
   wg profile use codex:gpt-5.5  # Codex profile with exact default/task-agent route
   wg profile use nex            # Starter profile: in-process nex endpoint
@@ -930,8 +939,11 @@ fn json_output() -> serde_json::Value {
             "config_lint": "wg config lint (read-only audit for deprecated keys / stale model strings)"
         },
         "named_profiles": {
-            "description": "Named profiles bundle (model, endpoint, secret refs) into a presetting that can be activated atomically.",
-            "use": "wg profile use <name> (writes ~/.wg/active-profile, hot-reloads daemon)",
+            "description": "Reusable global profile definitions with explicit fingerprint-pinned per-project selection; legacy global activation remains separate.",
+            "select": "wg profile select <name> (current project only; never rewrites global config)",
+            "select_clear": "wg profile select --clear (current project only)",
+            "history": "wg profile history [--clear] (privacy-bounded local successful-event records)",
+            "use": "wg profile use <name> (legacy GLOBAL activation; writes ~/.wg/active-profile and ~/.wg/config.toml)",
             "show": "wg profile show",
             "list": "wg profile list",
             "create": "wg profile create <name>",

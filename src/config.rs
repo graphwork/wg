@@ -4828,6 +4828,8 @@ impl MatrixConfig {
 pub enum ConfigSource {
     Global,
     Local,
+    #[serde(rename = "project-profile")]
+    ProjectProfile,
     Default,
 }
 
@@ -4836,6 +4838,7 @@ impl std::fmt::Display for ConfigSource {
         match self {
             ConfigSource::Global => write!(f, "global"),
             ConfigSource::Local => write!(f, "local"),
+            ConfigSource::ProjectProfile => write!(f, "project-profile"),
             ConfigSource::Default => write!(f, "default"),
         }
     }
@@ -5230,10 +5233,53 @@ impl Config {
             &local_path.display().to_string(),
             &mut warnings,
         );
+        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
+        if let Some(profile) = project_profile.as_mut() {
+            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
+        }
         emit_legacy_warnings(&warnings);
-        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        let active_named_profile =
+            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
         apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
-        Ok(merge_toml(global_val, local_val))
+        let mut merged = merge_toml(global_val, local_val);
+        if let Some(profile) = project_profile.as_ref() {
+            // An explicit project association is authoritative for routing.
+            // Overlay it after the ordinary global/local merge so a later
+            // local route edit cannot silently masquerade as the selected
+            // reusable profile. Non-routing local settings remain intact.
+            merged = crate::profile::named::overlay_project_profile(merged, profile);
+        }
+        Ok(merged)
+    }
+
+    fn profile_selection_blocked_config(_reason: &str) -> Self {
+        // Some long-lived/non-fallible call sites historically require a
+        // Config value. When an explicit project association is invalid, they
+        // must never receive `Config::default()` (which would silently route
+        // to Claude). Return an endpoint-less, explicit nex sentinel for every
+        // execution role instead. Checked execution entry points return the
+        // original error; any legacy non-fallible path fails for lack of an
+        // endpoint rather than crossing into another handler/provider.
+        let route = "nex:__project-profile-selection-invalid__".to_string();
+        let mut config = Self::default();
+        config.agent.model = route.clone();
+        config.agent.executor = "native".to_string();
+        config.coordinator.model = Some(route.clone());
+        config.coordinator.executor = Some("native".to_string());
+        config.tiers.fast = Some(route.clone());
+        config.tiers.standard = Some(route.clone());
+        config.tiers.premium = Some(route.clone());
+        config.llm_endpoints = EndpointsConfig::default();
+        for role in DispatchRole::ALL {
+            *config.models.get_role_mut(*role) = Some(RoleModelConfig {
+                provider: None,
+                model: Some(route.clone()),
+                tier: None,
+                endpoint: None,
+                reasoning: None,
+            });
+        }
+        config
     }
 
     /// Load merged configuration: global config deep-merged with local config.
@@ -5260,6 +5306,10 @@ impl Config {
             &local_path.display().to_string(),
             &mut warnings,
         );
+        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
+        if let Some(profile) = project_profile.as_mut() {
+            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
+        }
         emit_legacy_warnings(&warnings);
 
         // Surface deprecated `executor` keys regardless of which file
@@ -5277,29 +5327,32 @@ impl Config {
             }
         }
 
-        let agent_model_is_local = local_val
-            .get("agent")
-            .and_then(|a| a.get("model"))
-            .and_then(|m| m.as_str())
-            .is_some();
+        let agent_model_is_local = project_profile.is_none()
+            && local_val
+                .get("agent")
+                .and_then(|a| a.get("model"))
+                .and_then(|m| m.as_str())
+                .is_some();
 
-        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        let active_named_profile =
+            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
         apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
         let mut merged = merge_toml(global_val.clone(), local_val.clone());
-        strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        if let Some(profile) = project_profile.as_ref() {
+            merged = crate::profile::named::overlay_project_profile(merged, profile);
+        } else {
+            strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        }
         let mut config: Config = merged
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
         config.agent_model_is_local = agent_model_is_local;
 
-        // Note: named profile resolution is now a *file swap*, not an overlay.
-        // `wg profile use <name>` copies `~/.wg/profiles/<name>.toml` over
-        // `~/.wg/config.toml`, so by the time we read the global config above
-        // it already reflects the active profile. The `~/.wg/active-profile`
-        // pointer is used only for user-facing labels and for the endpoint
-        // inheritance exception above; model routing authority is handled by
-        // `wg profile use`, which removes local model-routing keys that would
-        // shadow the selected profile.
+        // Legacy/global `wg profile use <name>` remains a materialized global
+        // overlay plus `~/.wg/active-profile`. The newer project association
+        // is separate: when present, its fingerprint-verified reusable
+        // definition is overlaid in-memory after global/local config. It never
+        // mutates global state, and drift/missing definitions fail closed.
 
         config.validate_model_format()?;
 
@@ -5455,6 +5508,12 @@ impl Config {
     pub fn load_or_default(workgraph_dir: &Path) -> Self {
         match Self::load_merged(workgraph_dir) {
             Ok(config) => config,
+            Err(e) if crate::profile::project::association_path(workgraph_dir).exists() => {
+                eprintln!(
+                    "ERROR: {e}. Explicit project profile selection is invalid; execution is disabled (no global/provider fallback)."
+                );
+                Self::profile_selection_blocked_config(&e.to_string())
+            }
             Err(e) => {
                 eprintln!("Warning: {}, using defaults", e);
                 Self::default()
@@ -5469,8 +5528,8 @@ impl Config {
         let content = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
 
-        fs::write(&config_path, content)
-            .map_err(|e| anyhow::anyhow!("Failed to write config: {}", e))?;
+        crate::atomic_file::write_atomic(&config_path, content.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to atomically write config: {}", e))?;
 
         Ok(())
     }
@@ -5817,9 +5876,9 @@ impl Config {
         let content = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
 
-        fs::write(&global_path, content).map_err(|e| {
+        crate::atomic_file::write_atomic(&global_path, content.as_bytes()).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to write global config at {}: {}",
+                "Failed to atomically write global config at {}: {}",
                 global_path.display(),
                 e
             )
@@ -5881,29 +5940,42 @@ impl Config {
             &local_path.display().to_string(),
             &mut warnings,
         );
+        let mut project_profile = crate::profile::project::selected_profile_toml(workgraph_dir)?;
+        if let Some(profile) = project_profile.as_mut() {
+            normalize_legacy_tables(profile, "selected project profile", &mut warnings);
+        }
         emit_legacy_warnings(&warnings);
 
         // Apply endpoint inheritance policy BEFORE recording sources, so the
         // source map reflects the effective merged config: a global endpoint
         // entry that's been suppressed because local opted out should not
         // appear as "from global" in `wg config --list`.
-        let active_named_profile = crate::profile::named::active().ok().flatten().is_some();
+        let active_named_profile =
+            crate::profile::named::active().ok().flatten().is_some() || project_profile.is_some();
         apply_endpoint_inheritance_policy(&mut global_val, &local_val, active_named_profile);
 
-        // Record sources: global first, then local overwrites
+        // Record sources: global first, local next, explicit project profile last.
         let mut sources = BTreeMap::new();
         record_sources(&global_val, "", &ConfigSource::Global, &mut sources);
         record_sources(&local_val, "", &ConfigSource::Local, &mut sources);
+        if let Some(profile) = project_profile.as_ref() {
+            record_sources(profile, "", &ConfigSource::ProjectProfile, &mut sources);
+        }
 
-        let agent_model_is_local = local_val
-            .get("agent")
-            .and_then(|a| a.get("model"))
-            .and_then(|m| m.as_str())
-            .is_some();
+        let agent_model_is_local = project_profile.is_none()
+            && local_val
+                .get("agent")
+                .and_then(|a| a.get("model"))
+                .and_then(|m| m.as_str())
+                .is_some();
 
         // Merge and deserialize
         let mut merged = merge_toml(global_val.clone(), local_val.clone());
-        strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        if let Some(profile) = project_profile.as_ref() {
+            merged = crate::profile::named::overlay_project_profile(merged, profile);
+        } else {
+            strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        }
         let mut config: Config = merged
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
@@ -7046,6 +7118,7 @@ model = "claude:haiku"
     fn test_config_source_display() {
         assert_eq!(ConfigSource::Global.to_string(), "global");
         assert_eq!(ConfigSource::Local.to_string(), "local");
+        assert_eq!(ConfigSource::ProjectProfile.to_string(), "project-profile");
         assert_eq!(ConfigSource::Default.to_string(), "default");
     }
 

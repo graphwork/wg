@@ -2460,6 +2460,12 @@ pub fn run_daemon(
     {
         logger.warn(&format!("Failed to record launcher history: {}", e));
     }
+    if let Err(e) = worksgood::profile::project::record_successful_event(
+        &dir,
+        worksgood::profile::project::UsageEventCategory::ServiceStarted,
+    ) {
+        logger.warn(&format!("Failed to record project profile usage: {}", e));
+    }
 
     // Clean up legacy daemon-managed graph tasks from older coordinator models.
     cleanup_legacy_daemon_tasks(&dir, &logger);

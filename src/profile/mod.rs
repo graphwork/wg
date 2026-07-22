@@ -6,3 +6,6 @@ pub use template::*;
 
 // Named runtime profiles (the new feature).
 pub mod named;
+
+// Explicit project-to-profile associations and privacy-bounded local usage.
+pub mod project;

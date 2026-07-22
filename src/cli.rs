@@ -4439,7 +4439,10 @@ pub enum ProfileCommands {
         #[arg(long)]
         premium: Option<String>,
     },
-    /// Activate a named profile (clears local routing pins, hot-reloads daemon)
+    /// Activate a named profile globally (legacy/global scope; rewrites ~/.wg/config.toml)
+    ///
+    /// This intentionally remains machine-global. For an isolated reusable
+    /// project association use `wg profile select <name>` instead.
     Use {
         /// Profile name to activate, or provider:model to activate that profile with an exact default route
         name: Option<String>,
@@ -4449,6 +4452,32 @@ pub enum ProfileCommands {
         no_reload: bool,
 
         /// Clear the active profile (revert to base config)
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Select a reusable named profile for only the current project
+    ///
+    /// Writes an explicit fingerprint-pinned association under the current
+    /// WG directory. It never changes ~/.wg/config.toml or active-profile.
+    Select {
+        /// Installed profile name (built-in starters are installed once on apply)
+        name: Option<String>,
+
+        /// Clear only this project's association
+        #[arg(long, conflicts_with = "name")]
+        clear: bool,
+
+        /// Print the redacted immutable plan without writing anything
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Do not hot-reload this project's running daemon after apply
+        #[arg(long)]
+        no_reload: bool,
+    },
+    /// Inspect or clear privacy-bounded local profile usage history
+    History {
+        /// Clear all local profile-usage records
         #[arg(long)]
         clear: bool,
     },
@@ -4504,6 +4533,17 @@ pub enum ProfileCommands {
         /// Skip sending IPC reload after save
         #[arg(long)]
         no_reload: bool,
+    },
+    /// Rename a reusable profile definition
+    ///
+    /// Existing project associations are intentionally not retargeted; each
+    /// project must explicitly select the new name.
+    Rename {
+        /// Existing profile name
+        from: String,
+
+        /// New profile name
+        to: String,
     },
     /// Delete a named profile
     Delete {

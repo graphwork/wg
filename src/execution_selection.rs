@@ -177,9 +177,20 @@ fn resolve_config_sources(
         let path = match source {
             ConfigSource::Global => Config::global_config_path()?,
             ConfigSource::Local => dir.join("config.toml"),
+            ConfigSource::ProjectProfile => crate::profile::project::read_association(dir)?
+                .map(|association| crate::profile::named::profile_path(&association.profile))
+                .transpose()?
+                .unwrap_or_else(|| crate::profile::project::association_path(dir)),
             ConfigSource::Default => continue,
         };
-        let selection_source = if *source == ConfigSource::Global {
+        let selection_source = if *source == ConfigSource::ProjectProfile {
+            let association = crate::profile::project::read_association(dir)?
+                .ok_or_else(|| anyhow::anyhow!("project-profile source has no association"))?;
+            ExecutionSelectionSource::Profile {
+                name: association.profile,
+                path,
+            }
+        } else if *source == ConfigSource::Global {
             if let Ok(Some(name)) = crate::profile::named::active() {
                 ExecutionSelectionSource::Profile {
                     name: name.clone(),

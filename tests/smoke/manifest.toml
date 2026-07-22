@@ -1159,6 +1159,15 @@ description = "Named profiles: create a profile, verify file written, wg profile
 timeout_seconds = 30
 
 [[scenario]]
+name = "project_profile_history"
+script = "scenarios/project_profile_history.sh"
+owners = [
+    "implement-project-profile-history",
+]
+description = "Project-scoped reusable profiles: strict read-only plan, atomic edit/rename/delete fail-closed recovery, canonical fingerprint-pinned A/B selections, concurrent live daemon route isolation, current-first ordering, and bounded redacted successful-event history."
+timeout_seconds = 120
+
+[[scenario]]
 name = "profile_use_without_daemon"
 script = "scenarios/profile_use_without_daemon.sh"
 owners = [

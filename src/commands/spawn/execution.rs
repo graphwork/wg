@@ -106,7 +106,8 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
     //
     // The plan-derived endpoint is the only source consulted when assembling
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
-    let config = Config::load_or_default(dir);
+    let config = Config::load_merged(dir)
+        .context("Cannot spawn while the project profile selection is invalid")?;
     // Get task model preference. Freeform task tags are inert labels, so they
     // never participate in executor/model routing.
     let task_model = task.model.clone().or_else(|| {

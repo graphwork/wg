@@ -950,7 +950,6 @@ pub fn run_with_remote_provider(
         detail,
         config.log.rotation_threshold,
     );
-
     // --subtask: set wait condition on parent task so it blocks until child completes
     if let Some(ref parent_id) = subtask_parent_id {
         let child_id = task_id.clone();
@@ -1041,6 +1040,12 @@ pub fn run_with_remote_provider(
     if id.is_none() && subtask_parent_id.is_none() {
         println!("  Use --after {} to depend on this task", task_id);
     }
+    // Profile ranking is based only on successful WG events. All graph and
+    // optional subtask-parent mutations have succeeded at this point.
+    let _ = worksgood::profile::project::record_successful_event(
+        dir,
+        worksgood::profile::project::UsageEventCategory::TaskCreated,
+    );
     super::print_service_hint(dir);
     Ok(())
 }

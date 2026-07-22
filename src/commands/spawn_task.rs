@@ -209,7 +209,8 @@ pub fn resolve_handler(
     task: &Task,
     role_override: Option<&str>,
 ) -> Result<HandlerSpec> {
-    let config = worksgood::config::Config::load_or_default(workgraph_dir);
+    let config = worksgood::config::Config::load_merged(workgraph_dir)
+        .context("Cannot resolve task handler while the project profile selection is invalid")?;
 
     // chat_ref convention: task id IS the chat alias, until Phase 5
     // migration swaps to `.chat-<uuid>`. Exceptions: `.chat-N` and
