@@ -842,6 +842,16 @@ description = "Agency MUST honor explicit `[models.assigner]` / `[models.evaluat
 timeout_seconds = 60
 
 [[scenario]]
+name = "generated_evaluator_preserves_codex_route"
+script = "scenarios/generated_evaluator_preserves_codex_route.sh"
+owners = [
+    "fix-generated-evaluator-provider-prefix",
+    "smoke-gate-is",
+]
+description = "Generated implementation and later merge evaluator/FLIP tasks retain the canonical codex:gpt-5.6-luna route in serialized task.model and the pinned inline-eval invocation, preventing bare-model preflight retries and circuit-breaker exhaustion."
+timeout_seconds = 60
+
+[[scenario]]
 name = "evolve_fanout_codex_route_no_bare_aliases"
 script = "scenarios/evolve_fanout_codex_route_no_bare_aliases.sh"
 owners = [

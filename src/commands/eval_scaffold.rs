@@ -89,6 +89,7 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     }
 
     let flip_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+    let flip_route = flip_resolved.spawn_model_spec();
 
     // Calculate auto-priority for flip task
     let priority = calculate_auto_priority(graph, task_id, "flip");
@@ -104,8 +105,11 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
         priority,
         after: vec![task_id.to_string()],
         tags: vec!["flip".to_string(), "agency".to_string()],
-        exec: Some(format!("wg evaluate run {} --flip", task_id)),
-        model: Some(flip_resolved.model),
+        exec: Some(format!(
+            "wg evaluate run {} --flip --evaluator-model {}",
+            task_id, flip_route
+        )),
+        model: Some(flip_route),
         provider: flip_resolved.provider,
         exec_mode: Some("bare".to_string()),
         visibility: "internal".to_string(),
@@ -201,6 +205,7 @@ pub fn scaffold_full_pipeline(
     if run_flip && graph.get_task(&flip_task_id).is_none() {
         let flip_resolved =
             config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+        let flip_route = flip_resolved.spawn_model_spec();
         let flip_task = Task {
             id: flip_task_id.clone(),
             title: format!("FLIP: {}", task_id),
@@ -211,8 +216,11 @@ pub fn scaffold_full_pipeline(
             status: Status::Open,
             after: vec![task_id.to_string()],
             tags: vec!["flip".to_string(), "agency".to_string()],
-            exec: Some(format!("wg evaluate run {} --flip", task_id)),
-            model: Some(flip_resolved.model),
+            exec: Some(format!(
+                "wg evaluate run {} --flip --evaluator-model {}",
+                task_id, flip_route
+            )),
+            model: Some(flip_route),
             provider: flip_resolved.provider,
             exec_mode: Some("bare".to_string()),
             visibility: "internal".to_string(),
@@ -251,6 +259,7 @@ pub fn scaffold_full_pipeline(
 
         let eval_resolved =
             config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+        let eval_route = eval_resolved.spawn_model_spec();
         let eval_task = Task {
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),
@@ -258,8 +267,11 @@ pub fn scaffold_full_pipeline(
             status: Status::Open,
             after: eval_after,
             tags: vec!["evaluation".to_string(), "agency".to_string()],
-            exec: Some(format!("wg evaluate run {}", task_id)),
-            model: Some(eval_resolved.model),
+            exec: Some(format!(
+                "wg evaluate run {} --evaluator-model {}",
+                task_id, eval_route
+            )),
+            model: Some(eval_route),
             provider: eval_resolved.provider,
             agent: config.agency.evaluator_agent.clone(),
             exec_mode: Some("bare".to_string()),
@@ -429,6 +441,7 @@ pub fn scaffold_eval_task(
     ));
 
     let eval_resolved = config.resolve_model_for_role(worksgood::config::DispatchRole::Evaluator);
+    let eval_route = eval_resolved.spawn_model_spec();
 
     // Calculate auto-priority for eval task
     let priority = calculate_auto_priority(graph, task_id, "evaluate");
@@ -441,8 +454,11 @@ pub fn scaffold_eval_task(
         priority,
         after: eval_after,
         tags: vec!["evaluation".to_string(), "agency".to_string()],
-        exec: Some(format!("wg evaluate run {}", task_id)),
-        model: Some(eval_resolved.model),
+        exec: Some(format!(
+            "wg evaluate run {} --evaluator-model {}",
+            task_id, eval_route
+        )),
+        model: Some(eval_route),
         provider: eval_resolved.provider,
         agent: config.agency.evaluator_agent.clone(),
         exec_mode: Some("bare".to_string()),
@@ -516,6 +532,7 @@ pub fn scaffold_eval_tasks_batch(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use worksgood::config::RoleModelConfig;
     use worksgood::graph::{Node, Status, Task, WorkGraph};
 
     fn make_task(id: &str, title: &str) -> Task {
@@ -898,6 +915,54 @@ mod tests {
         assert!(graph.get_task(".assign-foo").is_some());
         assert!(graph.get_task(".flip-foo").is_some());
         assert!(graph.get_task(".evaluate-foo").is_some());
+    }
+
+    #[test]
+    fn test_generated_evaluators_preserve_explicit_codex_route() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_evaluate = true;
+        config.agency.flip_enabled = true;
+        config.models.evaluator = Some(RoleModelConfig {
+            provider: None,
+            model: Some("codex:gpt-5.6-luna".to_string()),
+            tier: None,
+            endpoint: None,
+            reasoning: None,
+        });
+        let mut graph = WorkGraph::new();
+
+        for (id, title) in [
+            ("implementation", "Implementation"),
+            (
+                "merge-rank-level-containment",
+                "Merge: rank-level containment",
+            ),
+        ] {
+            graph.add_node(Node::Task(make_task(id, title)));
+            assert!(scaffold_full_pipeline(
+                dir.path(),
+                &mut graph,
+                id,
+                title,
+                &config
+            ));
+
+            for generated_id in [format!(".flip-{id}"), format!(".evaluate-{id}")] {
+                let generated = graph.get_task(&generated_id).unwrap();
+                assert_eq!(generated.model.as_deref(), Some("codex:gpt-5.6-luna"));
+                assert_eq!(generated.provider.as_deref(), Some("codex"));
+                assert!(
+                    generated
+                        .exec
+                        .as_deref()
+                        .unwrap()
+                        .contains("--evaluator-model codex:gpt-5.6-luna"),
+                    "stored invocation lost its canonical route: {:?}",
+                    generated.exec
+                );
+            }
+        }
     }
 
     #[test]
