@@ -2365,3 +2365,12 @@ owners = [
 ]
 description = "Installed-binary real tmux/SGR mouse regression for the Chat selector: with tmux mouse enabled, clicks the rendered Chat control to open the modal, clicks an exact non-current row to attach that identity, creates a fresh chat through the clickable New footer, dismisses through the clickable Cancel footer, and reaches + confirms the identity-pinned Archive lifecycle through the clickable Close footer. Finishes with the authoritative keyboard chooser flow. Credential-free fake Claude route."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_inspector_drag_to_full"
+script = "scenarios/tui_inspector_drag_to_full.sh"
+owners = [
+    "fix-inspector-full-drag",
+]
+description = "Candidate-binary real tmux/SGR mouse regression for drag-to-Full: drags the live Right and Bottom seams through the intentional Full snap threshold and back across it to prove one-way gesture hysteresis; checks bounded remembered Split state, one contextual row and zero fullscreen frame/seam; exercises Chat PTY input confinement and stable process identity, Detail, keyboard restore, Full persistence across TUI restart, terminal resize, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
+timeout_seconds = 180

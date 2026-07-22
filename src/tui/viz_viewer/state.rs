@@ -1037,6 +1037,9 @@ pub struct LayoutDragSnapshot {
     /// Pointer-down alone is not a layout edit. This becomes true only after
     /// movement on the dock's active axis.
     pub moved: bool,
+    /// Full is latched once the gesture crosses its snap threshold. Pointer
+    /// jitter after the live seam disappears cannot transition back to Split.
+    pub snapped_full: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

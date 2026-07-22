@@ -273,36 +273,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_graph_area = Rect::default();
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
-                    // Reserve all four borders (1 col left, 1 col right, 1 row top, 1 row bottom).
-                    let has_h_room = main_area.width > 2;
-                    let has_v_room = main_area.height > 2;
-                    if has_h_room {
-                        app.last_fullscreen_restore_area =
-                            Rect::new(main_area.x, main_area.y, 1, main_area.height);
-                        app.last_fullscreen_right_border_area = Rect::new(
-                            main_area.x + main_area.width - 1,
-                            main_area.y,
-                            1,
-                            main_area.height,
-                        );
-                    } else {
-                        app.last_fullscreen_restore_area = Rect::default();
-                        app.last_fullscreen_right_border_area = Rect::default();
-                    }
-                    if has_v_room {
-                        app.last_fullscreen_top_border_area =
-                            Rect::new(main_area.x, main_area.y, main_area.width, 1);
-                        app.last_fullscreen_bottom_border_area = Rect::new(
-                            main_area.x,
-                            main_area.y + main_area.height - 1,
-                            main_area.width,
-                            1,
-                        );
-                    } else {
-                        app.last_fullscreen_top_border_area = Rect::default();
-                        app.last_fullscreen_bottom_border_area = Rect::default();
-                    }
+                    // Full is genuinely edge-to-edge. There is no invisible
+                    // restore strip, frame reservation, or dead mouse target.
                     app.last_minimized_strip_area = Rect::default();
+                    app.last_fullscreen_restore_area = Rect::default();
+                    app.last_fullscreen_right_border_area = Rect::default();
+                    app.last_fullscreen_top_border_area = Rect::default();
+                    app.last_fullscreen_bottom_border_area = Rect::default();
                 }
                 LayoutMode::Off => {
                     // Always reserve 1 col for the minimized strip so the graph
@@ -368,36 +345,13 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.last_graph_area = Rect::default();
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
-                    // Reserve all four borders (1 col left, 1 col right, 1 row top, 1 row bottom).
-                    let has_h_room = main_area.width > 2;
-                    let has_v_room = main_area.height > 2;
-                    if has_h_room {
-                        app.last_fullscreen_restore_area =
-                            Rect::new(main_area.x, main_area.y, 1, main_area.height);
-                        app.last_fullscreen_right_border_area = Rect::new(
-                            main_area.x + main_area.width - 1,
-                            main_area.y,
-                            1,
-                            main_area.height,
-                        );
-                    } else {
-                        app.last_fullscreen_restore_area = Rect::default();
-                        app.last_fullscreen_right_border_area = Rect::default();
-                    }
-                    if has_v_room {
-                        app.last_fullscreen_top_border_area =
-                            Rect::new(main_area.x, main_area.y, main_area.width, 1);
-                        app.last_fullscreen_bottom_border_area = Rect::new(
-                            main_area.x,
-                            main_area.y + main_area.height - 1,
-                            main_area.width,
-                            1,
-                        );
-                    } else {
-                        app.last_fullscreen_top_border_area = Rect::default();
-                        app.last_fullscreen_bottom_border_area = Rect::default();
-                    }
+                    // Full is genuinely edge-to-edge. There is no invisible
+                    // restore strip, frame reservation, or dead mouse target.
                     app.last_minimized_strip_area = Rect::default();
+                    app.last_fullscreen_restore_area = Rect::default();
+                    app.last_fullscreen_right_border_area = Rect::default();
+                    app.last_fullscreen_top_border_area = Rect::default();
+                    app.last_fullscreen_bottom_border_area = Rect::default();
                 }
                 LayoutMode::Off => {
                     // Always reserve 1 col for the minimized strip so the graph
@@ -528,11 +482,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Narrow split mode.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    // Compute panel area inset by all four reserved borders.
-                    let panel_area = fullscreen_panel_area(main_area, app);
-                    // Draw each border only on hover (or always when mouse not supported).
-                    draw_fullscreen_borders(frame, app);
-                    draw_right_panel(frame, app, panel_area);
+                    draw_right_panel(frame, app, main_area);
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
                 LayoutMode::Off => {
@@ -599,11 +549,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             // Full layout: existing behavior.
             match app.layout_mode {
                 LayoutMode::FullInspector => {
-                    // Compute panel area inset by all four reserved borders.
-                    let panel_area = fullscreen_panel_area(main_area, app);
-                    // Draw each border only on hover (or always when mouse not supported).
-                    draw_fullscreen_borders(frame, app);
-                    draw_right_panel(frame, app, panel_area);
+                    draw_right_panel(frame, app, main_area);
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
                 LayoutMode::Off => {
@@ -2065,18 +2011,6 @@ fn draw_horizontal_scrollbar(
     frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
     scrollbar_area
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Fullscreen inspector borders
-// ══════════════════════════════════════════════════════════════════════════════
-
-fn fullscreen_panel_area(main_area: Rect, _app: &super::state::VizApp) -> Rect {
-    main_area
-}
-
-/// Fullscreen deliberately has no visible border. Kept as a no-op call site
-/// while older event-state fields are migrated away.
-fn draw_fullscreen_borders(_frame: &mut Frame, _app: &super::state::VizApp) {}
 
 /// Draw the 1-col minimized strip on the right edge in Off mode.
 /// Clicking this strip restores the normal split view.
@@ -16347,24 +16281,67 @@ mod tests {
             mode: InspectorMode::Full,
             ..LayoutPreference::default()
         });
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert_eq!(app.last_right_panel_area, Rect::new(0, 0, 80, 24));
-        assert_eq!(app.last_tab_bar_area, Rect::new(0, 0, 80, 1));
-        assert_eq!(app.last_right_content_area, Rect::new(0, 1, 80, 23));
-        assert_eq!(app.last_fullscreen_restore_area, Rect::default());
-        assert_eq!(app.last_fullscreen_right_border_area, Rect::default());
-        let top: String = (0..80)
-            .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
-            .collect();
-        assert!(
-            top.contains("Chat") && top.contains("[ New chat ]"),
-            "{top}"
-        );
-        assert!(
-            !top.contains('┌') && !top.contains('┐') && !top.contains('│'),
-            "{top}"
-        );
+
+        // Compact, narrow-boundary, and wide buffers all derive the same
+        // borderless geometry: graph=zero, one contextual row, inspector gets
+        // every remaining cell. No width may grow a restore strip/frame.
+        for width in [40, 80, 120, 200] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.last_graph_area, Rect::default(), "width={width}");
+            assert_eq!(
+                app.last_right_panel_area,
+                Rect::new(0, 0, width, 24),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_tab_bar_area,
+                Rect::new(0, 0, width, 1),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_right_content_area,
+                Rect::new(0, 1, width, 23),
+                "width={width}"
+            );
+            assert_eq!(app.last_divider_area, Rect::default(), "width={width}");
+            assert_eq!(
+                app.last_horizontal_divider_area,
+                Rect::default(),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_fullscreen_restore_area,
+                Rect::default(),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_fullscreen_right_border_area,
+                Rect::default(),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_fullscreen_top_border_area,
+                Rect::default(),
+                "width={width}"
+            );
+            assert_eq!(
+                app.last_fullscreen_bottom_border_area,
+                Rect::default(),
+                "width={width}"
+            );
+            let top: String = (0..width)
+                .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
+                .collect();
+            assert!(top.contains("Chat"), "width={width}: {top}");
+            if width >= 80 {
+                assert!(top.contains("[ New chat ]"), "width={width}: {top}");
+            }
+            assert!(
+                !top.contains('┌') && !top.contains('┐') && !top.contains('│'),
+                "width={width}: {top}"
+            );
+        }
     }
 
     #[test]
@@ -16378,15 +16355,59 @@ mod tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_last_spawn_info
             .insert(3, ("pi".to_string(), "pi".to_string()));
+        let task_id = worksgood::chat_id::format_chat_task_id(3);
+        let pane = match crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            10,
+            40,
+        ) {
+            Ok(pane) => pane,
+            Err(_) => return,
+        };
+        app.task_panes.insert(task_id.clone(), pane);
+        let pane_identity = app.task_panes.get(&task_id).unwrap() as *const _ as usize;
+        let input_before = app
+            .task_panes
+            .get(&task_id)
+            .unwrap()
+            .child_input_bytes_written();
+
         app.set_layout_preference(LayoutPreference {
             mode: InspectorMode::Full,
             ..LayoutPreference::default()
         });
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let mut full = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        full.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.last_chat_message_area, Rect::new(0, 1, 80, 23));
         assert_eq!(app.last_chat_input_area.height, 0);
         assert_eq!(app.last_right_content_area.height, 23);
+        assert_eq!(app.task_panes.get(&task_id).unwrap().dims(), (23, 80));
+
+        // Restoring and resizing reuse the exact pane/process identity. The
+        // PTY follows content dimensions only; no duplicated WG row is passed
+        // to the child and layout changes never write input.
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 60,
+            mode: InspectorMode::Split,
+        });
+        let mut split = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        split.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.task_panes.get(&task_id).unwrap().dims(), (29, 72));
+
+        app.set_layout_preference(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..app.layout_preference
+        });
+        let mut resized_full = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        resized_full.draw(|frame| draw(frame, &mut app)).unwrap();
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert_eq!(pane_after as *const _ as usize, pane_identity);
+        assert_eq!(pane_after.dims(), (29, 120));
+        assert_eq!(pane_after.child_input_bytes_written(), input_before);
     }
 
     #[test]

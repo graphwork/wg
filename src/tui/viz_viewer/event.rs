@@ -17,19 +17,34 @@ use super::render;
 /// keyboard shortcuts (`=`, `\`).
 const MIN_DRAG_PERCENT: i32 = 10;
 const MAX_DRAG_PERCENT: i32 = 90;
+/// A deliberate dead band separates the largest valid Split (90%) from Full.
+/// Reaching 96% latches Full for the rest of the pointer gesture, so 90% is
+/// still easy to select and a few cells of mouse jitter cannot flap modes.
+const FULL_DRAG_SNAP_PERCENT: i32 = 96;
 
-/// Derive inspector percentage from the immutable drag-start geometry.
-/// `extent` is width for Left/Right and height for Top/Bottom.
-pub(super) fn divider_ratio_from_drag(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DividerDragTarget {
+    split_percent: u16,
+    snap_full: bool,
+}
+
+/// Derive the bounded Split ratio and Full snap decision from immutable
+/// drag-start geometry. `extent` is width for Left/Right and height for
+/// Top/Bottom. Auto is accepted for synthetic callers and follows its default
+/// Right/Bottom direction; real pointer-down resolves Auto first.
+fn divider_drag_target(
     dock: super::state::InspectorDock,
     start_percent: u16,
     extent: u16,
     start_axis: u16,
     current_axis: u16,
-) -> u16 {
+) -> DividerDragTarget {
     use super::state::InspectorDock;
     if extent == 0 {
-        return start_percent.clamp(MIN_DRAG_PERCENT as u16, MAX_DRAG_PERCENT as u16);
+        return DividerDragTarget {
+            split_percent: start_percent.clamp(MIN_DRAG_PERCENT as u16, MAX_DRAG_PERCENT as u16),
+            snap_full: false,
+        };
     }
     let delta = current_axis as i32 - start_axis as i32;
     let signed_delta = match dock {
@@ -37,8 +52,22 @@ pub(super) fn divider_ratio_from_drag(
         InspectorDock::Left | InspectorDock::Top => delta,
         InspectorDock::Auto => -delta,
     };
-    (start_percent as i32 + signed_delta * 100 / extent as i32)
-        .clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16
+    let raw_percent = start_percent as i32 + signed_delta * 100 / extent as i32;
+    DividerDragTarget {
+        split_percent: raw_percent.clamp(MIN_DRAG_PERCENT, MAX_DRAG_PERCENT) as u16,
+        snap_full: raw_percent >= FULL_DRAG_SNAP_PERCENT,
+    }
+}
+
+/// Bounded Split ratio retained for callers that only need resize geometry.
+pub(super) fn divider_ratio_from_drag(
+    dock: super::state::InspectorDock,
+    start_percent: u16,
+    extent: u16,
+    start_axis: u16,
+    current_axis: u16,
+) -> u16 {
+    divider_drag_target(dock, start_percent, extent, start_axis, current_axis).split_percent
 }
 
 fn is_safe_launcher_field_char(c: char) -> bool {
@@ -4374,34 +4403,18 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
 
 fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     let Some(snapshot) = app.layout_drag else {
-        // Compatibility path for synthetic/unit callers that predate the
-        // snapshot field. Real pointer-down paths always populate it.
-        let horizontal =
-            app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::HorizontalDivider);
-        let extent = if horizontal {
-            app.last_graph_area.height + app.last_right_panel_area.height
-        } else {
-            app.last_graph_area.width + app.last_right_panel_area.width
-        };
-        if extent == 0 {
-            return;
-        }
-        let start_axis = if horizontal {
-            app.divider_drag_start_row
-        } else {
-            app.divider_drag_start_col
-        };
-        let current_axis = if horizontal { row } else { column };
-        let delta = current_axis as i32 - start_axis as i32;
-        let pct = (app.divider_drag_start_pct as i32 - delta * 100 / extent as i32)
-            .clamp(MIN_DRAG_PERCENT, 100) as u16;
-        app.right_panel_percent = pct;
-        app.layout_preference.size_percent = pct;
-        app.layout_preference.mode = InspectorMode::Split;
-        app.layout_mode = VizApp::layout_mode_for_percent(pct);
-        app.right_panel_visible = true;
+        // Real pointer-down paths always capture an immutable snapshot. A
+        // synthetic stale Drag without one is ignored rather than constructing
+        // an invalid 100%-Split state from incomplete geometry.
         return;
     };
+
+    // Full is a one-way latch for this gesture. The live seam disappears when
+    // it snaps, but capture remains owned until mouse-up so neither jitter nor
+    // the now-full inspector can receive the remaining pointer events.
+    if snapshot.snapped_full {
+        return;
+    }
 
     // SIGWINCH/phone rotation during adjustment invalidates every coordinate
     // in the old frame. Cancel rather than jumping or inverting the split.
@@ -4420,22 +4433,30 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     if current_axis == start_axis {
         return;
     }
-    let pct = divider_ratio_from_drag(
+    let target = divider_drag_target(
         snapshot.dock,
         snapshot.start_percent,
         extent,
         start_axis,
         current_axis,
     );
+    let mode = if target.snap_full {
+        InspectorMode::Full
+    } else {
+        InspectorMode::Split
+    };
     app.set_layout_preference(super::state::LayoutPreference {
-        dock: snapshot.dock,
-        size_percent: pct,
-        mode: InspectorMode::Split,
+        // Auto is desired state, while snapshot.dock is only the resolved
+        // direction used for this frame's geometry.
+        dock: snapshot.original.dock,
+        size_percent: target.split_percent,
+        mode,
     });
-    app.last_split_percent = pct;
-    app.last_split_mode = app.layout_mode;
+    app.last_split_percent = target.split_percent;
+    app.last_split_mode = VizApp::layout_mode_for_percent(target.split_percent);
     if let Some(drag) = app.layout_drag.as_mut() {
         drag.moved = true;
+        drag.snapped_full = target.snap_full;
     }
 }
 
@@ -4864,6 +4885,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     start_percent: app.right_panel_percent,
                     original: app.layout_preference,
                     moved: false,
+                    snapped_full: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_horizontal_divider {
@@ -4883,6 +4905,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     start_percent: app.right_panel_percent,
                     original: app.layout_preference,
                     moved: false,
+                    snapped_full: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::HorizontalDivider);
             } else if in_graph_hscrollbar {
@@ -7878,6 +7901,184 @@ mod scrollbar_tests {
             super::divider_ratio_from_drag(InspectorDock::Top, 60, 40, 10, 14),
             70
         );
+    }
+
+    fn arm_layout_drag(
+        app: &mut VizApp,
+        desired_dock: InspectorDock,
+        resolved_dock: InspectorDock,
+    ) {
+        use super::super::state::{InspectorMode, LayoutDragSnapshot, LayoutPreference};
+
+        let original = LayoutPreference {
+            dock: desired_dock,
+            size_percent: 60,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(original);
+        app.focused_panel = FocusedPanel::RightPanel;
+        let viewport = Rect::new(0, 0, 100, 100);
+        app.layout_viewport = viewport;
+        app.layout_drag = Some(LayoutDragSnapshot {
+            dock: resolved_dock,
+            viewport,
+            start_column: 40,
+            start_row: 40,
+            start_percent: 60,
+            original,
+            moved: false,
+            snapped_full: false,
+        });
+        app.scrollbar_drag = Some(if resolved_dock.is_horizontal() {
+            ScrollbarDragTarget::Divider
+        } else {
+            ScrollbarDragTarget::HorizontalDivider
+        });
+    }
+
+    fn axis_for_raw_percent(dock: InspectorDock, raw_percent: u16) -> (u16, u16) {
+        let distance = raw_percent - 60;
+        match dock {
+            InspectorDock::Right => (40 - distance, 40),
+            InspectorDock::Left => (40 + distance, 40),
+            InspectorDock::Bottom => (40, 40 - distance),
+            InspectorDock::Top => (40, 40 + distance),
+            InspectorDock::Auto => unreachable!("pointer-down resolves Auto"),
+        }
+    }
+
+    #[test]
+    fn divider_full_snap_threshold_latches_for_every_dock_and_auto_resolution() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+
+        let cases = [
+            (InspectorDock::Right, InspectorDock::Right),
+            (InspectorDock::Left, InspectorDock::Left),
+            (InspectorDock::Bottom, InspectorDock::Bottom),
+            (InspectorDock::Top, InspectorDock::Top),
+            (InspectorDock::Auto, InspectorDock::Right),
+            (InspectorDock::Auto, InspectorDock::Bottom),
+        ];
+        for (desired_dock, resolved_dock) in cases {
+            let (mut app, _tmp) = build_test_app();
+            arm_layout_drag(&mut app, desired_dock, resolved_dock);
+
+            // The largest ordinary split remains reachable throughout the
+            // 90..95 dead band immediately below the Full threshold.
+            let (column, row) = axis_for_raw_percent(resolved_dock, 95);
+            super::apply_layout_drag(&mut app, row, column);
+            assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+            assert_eq!(
+                app.layout_preference.size_percent,
+                LayoutPreference::MAX_PERCENT
+            );
+            assert_eq!(app.layout_preference.dock, desired_dock);
+
+            // Crossing 96% is one atomic desired-state transition, never an
+            // out-of-range Split ratio.
+            let (column, row) = axis_for_raw_percent(resolved_dock, 96);
+            super::apply_layout_drag(&mut app, row, column);
+            assert_eq!(app.layout_preference.mode, InspectorMode::Full);
+            assert_eq!(
+                app.layout_mode,
+                super::super::state::LayoutMode::FullInspector
+            );
+            assert_eq!(
+                app.layout_preference.size_percent,
+                LayoutPreference::MAX_PERCENT
+            );
+            assert_eq!(app.layout_preference.dock, desired_dock);
+            assert!(app.layout_drag.unwrap().snapped_full);
+
+            // A noisy device can report coordinates back across the threshold;
+            // the gesture stays captured and Full remains latched.
+            let snapped = app.layout_preference;
+            let (column, row) = axis_for_raw_percent(resolved_dock, 94);
+            super::apply_layout_drag(&mut app, row, column);
+            assert_eq!(app.layout_preference, snapped);
+            assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        }
+    }
+
+    #[test]
+    fn vertical_and_horizontal_terminal_edges_persist_full_and_keyboard_restores() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+
+        for resolved_dock in [InspectorDock::Right, InspectorDock::Bottom] {
+            let (mut app, _tmp) = build_test_app();
+            // Auto must survive its responsive Right/Bottom resolution as the
+            // user's remembered desired dock.
+            arm_layout_drag(&mut app, InspectorDock::Auto, resolved_dock);
+            let (column, row) = match resolved_dock {
+                InspectorDock::Right => (0, 40),
+                InspectorDock::Bottom => (40, 0),
+                _ => unreachable!(),
+            };
+            super::apply_layout_drag(&mut app, row, column);
+            handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), row, column);
+            assert!(app.layout_drag.is_none());
+            assert!(app.scrollbar_drag.is_none());
+
+            let persisted: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(app.workgraph_dir.join("tui-state.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(persisted["layout"]["mode"], "full");
+            assert_eq!(persisted["layout"]["dock"], "auto");
+            assert_eq!(
+                persisted["layout"]["size_percent"],
+                LayoutPreference::MAX_PERCENT
+            );
+
+            // A fresh process reloads Full with the bounded remembered split.
+            let saved: LayoutPreference =
+                serde_json::from_value(persisted["layout"].clone()).unwrap();
+            let (mut restarted, _restart_tmp) = build_test_app();
+            restarted.set_layout_preference(saved);
+            assert_eq!(restarted.layout_preference.mode, InspectorMode::Full);
+            assert_eq!(
+                restarted.layout_mode,
+                super::super::state::LayoutMode::FullInspector
+            );
+
+            // The documented command escape makes keyboard layout control
+            // authoritative even when Chat owns printable input. Selecting Auto
+            // restores the exact remembered dock/ratio and command-mode focus.
+            super::handle_key(&mut restarted, KeyCode::Char('o'), KeyModifiers::CONTROL);
+            let restore_focus = restarted.focused_panel;
+            super::handle_key(&mut restarted, KeyCode::Char('p'), KeyModifiers::NONE);
+            super::handle_key(&mut restarted, KeyCode::Char('a'), KeyModifiers::NONE);
+            super::handle_key(&mut restarted, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(restarted.layout_preference.mode, InspectorMode::Split);
+            assert_eq!(restarted.layout_preference.dock, InspectorDock::Auto);
+            assert_eq!(
+                restarted.layout_preference.size_percent,
+                LayoutPreference::MAX_PERCENT
+            );
+            assert_eq!(restarted.focused_panel, restore_focus);
+        }
+    }
+
+    #[test]
+    fn just_below_full_threshold_releases_as_persisted_split() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+
+        let (mut app, _tmp) = build_test_app();
+        arm_layout_drag(&mut app, InspectorDock::Left, InspectorDock::Left);
+        let (column, row) = axis_for_raw_percent(InspectorDock::Left, 95);
+        super::apply_layout_drag(&mut app, row, column);
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), row, column);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+        assert_eq!(
+            app.layout_preference.size_percent,
+            LayoutPreference::MAX_PERCENT
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(app.workgraph_dir.join("tui-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["layout"]["mode"], "split");
+        assert_eq!(persisted["layout"]["size_percent"], 90);
     }
 
     #[test]
