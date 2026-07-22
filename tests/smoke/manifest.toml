@@ -2374,3 +2374,12 @@ owners = [
 ]
 description = "Candidate-binary real tmux/SGR mouse regression for drag-to-Full: drags the live Right and Bottom seams through the intentional Full snap threshold and back across it to prove one-way gesture hysteresis; checks bounded remembered Split state, one contextual row and zero fullscreen frame/seam; exercises Chat PTY input confinement and stable process identity, Detail, keyboard restore, Full persistence across TUI restart, terminal resize, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_pi_durable_exit_recovery"
+script = "scenarios/tui_pi_durable_exit_recovery.sh"
+owners = [
+    "fix-durable-pi-chat-exit",
+]
+description = "Installed-binary real tmux/PTY human flow for durable Pi lifecycle evidence: submit exactly one turn to an isolated fake Pi, SIGKILL the recorded inner PID, require the TUI and `wg chat show` to agree on the inner signal (not outer attach), restart the TUI without implicit launch, press R once, and prove byte-stable graph/UUID/Pi-session/tmux/route/reasoning identity with zero recovery stdin and no duplicate turn. Archiving then proves stale runtime metadata cannot relaunch a terminal chat."
+timeout_seconds = 90

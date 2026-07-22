@@ -1243,6 +1243,11 @@ fn main() -> Result<()> {
             agent_dir,
             exit_code,
         } => commands::pi_stream_bridge::run(std::path::Path::new(&agent_dir), exit_code),
+        Commands::ChatRuntimeWrapper { command } => {
+            let command = command.into_iter().map(std::ffi::OsString::from).collect();
+            let exit_code = worksgood::chat_runtime::run_wrapper(command)?;
+            std::process::exit(exit_code);
+        }
         Commands::Incomplete { id, reason } => {
             commands::incomplete::run(&workgraph_dir, &id, reason.as_deref())
         }

@@ -3801,29 +3801,87 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 .map(|p| p.is_alive())
                 .unwrap_or(false);
         if pane_exists && !alive {
-            // Capture exit status before drop.
-            let exit_status = app
+            // The local child is only `tmux attach`. Prefer the inner wrapper's
+            // already-durable exit; otherwise append an explicitly outer
+            // attach/tmux-server observation so those boundaries are never
+            // confused again.
+            let (outer_status, tmux_session) = app
                 .task_panes
                 .get_mut(&task_id)
-                .and_then(|p| p.try_exit_status_desc())
-                .unwrap_or_else(|| "unknown exit status".to_string());
+                .map(|pane| {
+                    (
+                        pane.try_exit_status_desc()
+                            .unwrap_or_else(|| "unknown exit status".to_string()),
+                        pane.tmux_session().map(str::to_string),
+                    )
+                })
+                .unwrap_or_else(|| ("unknown exit status".to_string(), None));
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+            if let Ok(chat_dir) =
+                worksgood::chat_runtime::runtime_chat_dir(&app.workgraph_dir, &chat_ref)
+            {
+                let ledger = worksgood::chat_runtime::read_ledger(&chat_dir);
+                let has_inner_exit_for_latest_start =
+                    ledger.pending_vendor_failure().is_some_and(|event| {
+                        event.source == worksgood::chat_runtime::RuntimeSource::InnerVendor
+                    });
+                if !has_inner_exit_for_latest_start {
+                    let identity = ledger
+                        .last_start()
+                        .map(|(_, event)| event.identity.clone())
+                        .or_else(|| {
+                            let session = tmux_session.as_deref()?;
+                            let (executor, _) = app.chat_last_spawn_info.get(&cid)?.clone();
+                            worksgood::chat_runtime::identity_for_chat(
+                                &app.workgraph_dir,
+                                &task_id,
+                                &chat_ref,
+                                session,
+                                &executor,
+                                None,
+                                None,
+                                None,
+                            )
+                            .ok()
+                        });
+                    if let Some(identity) = identity {
+                        let session_live = tmux_session
+                            .as_deref()
+                            .is_some_and(crate::tui::pty_pane::tmux_has_session);
+                        let _ = worksgood::chat_runtime::append_attach_exit(
+                            &chat_dir,
+                            identity,
+                            &outer_status,
+                            session_live,
+                        );
+                    }
+                }
+            }
             let (executor, spawn_cmd) = app
                 .chat_last_spawn_info
                 .get(&cid)
                 .cloned()
                 .unwrap_or_else(|| ("unknown".to_string(), "(unknown command)".to_string()));
-            app.chat_agent_death.insert(
-                cid,
+            let death_info = app.durable_chat_death_info(cid).unwrap_or_else(|| {
                 super::state::ChatAgentDeathInfo {
-                    exit_status,
+                    exit_status: format!("outer attach client {outer_status}"),
                     executor,
                     spawn_cmd,
-                },
-            );
+                    runtime_source: Some("OuterTmuxAttach".to_string()),
+                    at: None,
+                    inner_pid: None,
+                    wrapper_pid: None,
+                    stderr_path: None,
+                    stderr_tail: None,
+                    recovery_decision: None,
+                    recovery_attempt: None,
+                }
+            });
+            app.chat_agent_death.insert(cid, death_info);
             app.task_panes.remove(&task_id);
-            let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
-            let chat_dir = worksgood::chat::chat_dir_for_ref(&app.workgraph_dir, &chat_ref);
-            worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+            // A live TUI owns the durable death/recovery decision. Keep its
+            // sentinel so the daemon cannot race an adapter into the missing
+            // vendor pane; normal TUI shutdown makes the sentinel stale.
         }
 
         // Lazy spawn at the actual msg_area dimensions. If
@@ -4669,15 +4727,66 @@ fn draw_chat_agent_death_panel(
         Span::styled("  Executor:    ", Style::default().fg(Color::DarkGray)),
         Span::styled(info.executor.clone(), Style::default().fg(Color::White)),
     ]));
+    if let Some(source) = info.runtime_source.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("  Boundary:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(source.clone(), Style::default().fg(Color::White)),
+        ]));
+    }
+    if let Some(at) = info.at.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("  UTC:         ", Style::default().fg(Color::DarkGray)),
+            Span::styled(at.clone(), Style::default().fg(Color::White)),
+        ]));
+    }
+    if info.inner_pid.is_some() || info.wrapper_pid.is_some() {
+        lines.push(Line::from(vec![
+            Span::styled("  PIDs:        ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(
+                    "wrapper={} inner={}",
+                    info.wrapper_pid
+                        .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    info.inner_pid
+                        .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ),
+                Style::default().fg(Color::White),
+            ),
+        ]));
+    }
     lines.push(Line::from(vec![
         Span::styled("  Command:     ", Style::default().fg(Color::DarkGray)),
         Span::styled(info.spawn_cmd.clone(), Style::default().fg(Color::Yellow)),
     ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Stderr not captured for this handler — see daemon.log for details.",
-        Style::default().fg(Color::DarkGray),
-    )));
+    if let Some(path) = info.stderr_path.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("  Stderr:      ", Style::default().fg(Color::DarkGray)),
+            Span::styled(path.clone(), Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+    if let Some(tail) = info.stderr_tail.as_ref().filter(|tail| !tail.is_empty()) {
+        lines.push(Line::from(Span::styled(
+            format!("  Tail: {}", tail.replace('\n', " | ")),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    if let Some(decision) = info.recovery_decision.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("  Recovery:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(
+                    "{} attempt {}",
+                    decision,
+                    info.recovery_attempt
+                        .map(|attempt| attempt.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Press R to retry with same config",

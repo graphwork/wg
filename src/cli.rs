@@ -637,6 +637,15 @@ pub enum Commands {
         exit_code: i32,
     },
 
+    /// [Internal] Own a tmux chat's inner vendor process and durably record
+    /// its exact start/exit status in the canonical UUID chat directory.
+    #[command(hide = true)]
+    ChatRuntimeWrapper {
+        /// Inner command and argv. Everything follows the required `--`.
+        #[arg(last = true, required = true, num_args = 1.., allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+
     /// Mark a task as incomplete (retryable — needs another pass)
     Incomplete {
         /// Task ID to mark as incomplete
@@ -6501,6 +6510,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ClassifyFailure { .. } => "classify-failure",
         Commands::ClassifyNoOp { .. } => "classify-no-op",
         Commands::PiStreamBridge { .. } => "pi-stream-bridge",
+        Commands::ChatRuntimeWrapper { .. } => "chat-runtime-wrapper",
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",

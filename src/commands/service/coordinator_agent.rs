@@ -924,9 +924,15 @@ fn subprocess_coordinator_loop(
         if worksgood::chat_id::chat_tmux_session_is_live(dir, coordinator_id) {
             tui_deferrals = tui_deferrals.saturating_add(1);
             if should_log_tui_deferral(tui_deferrals) {
+                let durable_reason = worksgood::chat_runtime::read_ledger_for_chat(
+                    dir,
+                    &worksgood::chat_id::format_chat_session_ref(coordinator_id),
+                )
+                .last_specific_reason()
+                .unwrap_or_else(|| "no durable exit recorded".to_string());
                 logger.info(&format!(
-                    "Coordinator-{}: persistent TUI tmux pane is live — deferring daemon respawn 5s",
-                    coordinator_id
+                    "Coordinator-{}: persistent TUI tmux pane is live — deferring daemon respawn 5s; last runtime: {}",
+                    coordinator_id, durable_reason
                 ));
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -942,10 +948,16 @@ fn subprocess_coordinator_loop(
         if let Some(tui_pid) = tui_driver_deferral_pid(&chat_dir) {
             tui_deferrals = tui_deferrals.saturating_add(1);
             if should_log_tui_deferral(tui_deferrals) {
+                let durable_reason = worksgood::chat_runtime::read_ledger_for_chat(
+                    dir,
+                    &worksgood::chat_id::format_chat_session_ref(coordinator_id),
+                )
+                .last_specific_reason()
+                .unwrap_or_else(|| "no durable exit recorded".to_string());
                 logger.info(&format!(
                     "Coordinator-{}: TUI sentinel alive (pid={}) — deferring respawn 5s \
-                     (deferral #{}; identical deferrals now logged ~once/min)",
-                    coordinator_id, tui_pid, tui_deferrals
+                     (deferral #{}; identical deferrals now logged ~once/min); last runtime: {}",
+                    coordinator_id, tui_pid, tui_deferrals, durable_reason
                 ));
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -1169,6 +1181,35 @@ fn subprocess_coordinator_loop(
         }
 
         let success = matches!(&exit_status, Ok(s) if s.success());
+        let (adapter_exit_code, adapter_signal) = match &exit_status {
+            Ok(status) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    (status.code(), status.signal())
+                }
+                #[cfg(not(unix))]
+                {
+                    (status.code(), None)
+                }
+            }
+            Err(_) => (None, None),
+        };
+        if let Ok(event) = worksgood::chat_runtime::append_daemon_adapter_exit(
+            dir,
+            coordinator_id,
+            child_pid,
+            adapter_exit_code,
+            adapter_signal,
+        ) && let Some(reason) = event.specific_reason()
+        {
+            // This exact string is also rendered by `wg chat show` and the TUI
+            // death panel when this adapter is the latest runtime boundary.
+            logger.info(&format!(
+                "Coordinator-{}: last runtime: {}",
+                coordinator_id, reason
+            ));
+        }
         // Read the live session-lock holder right at exit time. If the
         // child crashed *because* it lost a startup race against another
         // handler, the winning holder will still be present here. We

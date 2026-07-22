@@ -419,7 +419,83 @@ impl PtyPane {
         }
 
         let session_exists = tmux_has_session(session_name);
-        if !session_exists {
+        let is_pi_chat = env
+            .iter()
+            .any(|(key, value)| key == "WG_EXECUTOR_TYPE" && value.eq_ignore_ascii_case("pi"));
+        let runtime_identity = if is_pi_chat {
+            Some(
+                worksgood::chat_runtime::identity_from_spawn(session_name, command, args, env)
+                    .context("prepare exact Pi runtime identity")?,
+            )
+        } else {
+            None
+        };
+        let runtime_chat_dir = runtime_identity
+            .as_ref()
+            .map(|identity| {
+                let wg_dir = env
+                    .iter()
+                    .find(|(key, _)| key == "WG_DIR")
+                    .map(|(_, value)| std::path::PathBuf::from(value))
+                    .context("Pi runtime wrapper requires WG_DIR")?;
+                worksgood::chat_runtime::runtime_chat_dir(&wg_dir, &identity.chat_ref)
+            })
+            .transpose()?;
+
+        if session_exists {
+            if let (Some(identity), Some(chat_dir)) =
+                (runtime_identity.as_ref(), runtime_chat_dir.as_deref())
+            {
+                let ledger = worksgood::chat_runtime::read_ledger(chat_dir);
+                if let Some((_, start)) = ledger.last_start()
+                    && !worksgood::chat_runtime::runtime_identity_compatible(
+                        &start.identity,
+                        identity,
+                    )
+                {
+                    anyhow::bail!(
+                        "refusing tmux reattach: live session identity/route does not match durable Pi runtime evidence"
+                    );
+                }
+                let _ = worksgood::chat_runtime::request_recovery(chat_dir, identity, None, true)?;
+            }
+        } else {
+            let mut inner_command = command.to_string();
+            let mut inner_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+            let mut inner_env = env.to_vec();
+            if let (Some(identity), Some(chat_dir)) =
+                (runtime_identity.as_ref(), runtime_chat_dir.as_deref())
+            {
+                let original_argv: Vec<String> = std::iter::once(command.to_string())
+                    .chain(args.iter().map(|arg| (*arg).to_string()))
+                    .collect();
+                let ledger = worksgood::chat_runtime::read_ledger(chat_dir);
+                if ledger.pending_vendor_failure().is_some() {
+                    if !ledger.restart_authorized() {
+                        anyhow::bail!(
+                            "refusing implicit Pi restart after durable inner exit; press R on the death panel"
+                        );
+                    }
+                    let last_start = ledger.last_start().map(|(_, event)| event);
+                    if last_start.is_none_or(|event| {
+                        !worksgood::chat_runtime::runtime_identity_matches(
+                            &event.identity,
+                            identity,
+                        ) || event.argv != worksgood::chat_runtime::sanitize_argv(&original_argv)
+                    }) {
+                        anyhow::bail!(
+                            "refusing Pi restart: exact identity or sanitized argv changed since the recorded start"
+                        );
+                    }
+                }
+                worksgood::chat_runtime::install_identity_env(&mut inner_env, identity, chat_dir);
+                let wrapper = worksgood::self_exe::handoff_reexec_path()
+                    .context("resolve exact WG image for Pi runtime wrapper")?;
+                inner_command = wrapper.display().to_string();
+                inner_args = vec!["chat-runtime-wrapper".to_string(), "--".to_string()];
+                inner_args.extend(original_argv);
+            }
+
             // Build `tmux new-session -d -s <name> [-c cwd] [-e K=V ...] -- <bin> [args...]`
             let mut tmux_args: Vec<String> = vec![
                 "new-session".to_string(),
@@ -431,7 +507,7 @@ impl PtyPane {
                 tmux_args.push("-c".to_string());
                 tmux_args.push(c.display().to_string());
             }
-            for (k, v) in env {
+            for (k, v) in &inner_env {
                 tmux_args.push("-e".to_string());
                 tmux_args.push(format!("{}={}", k, v));
             }
@@ -439,10 +515,8 @@ impl PtyPane {
             // works after the session-creation flags — everything after
             // is passed to the inner shell exec.
             tmux_args.push("--".to_string());
-            tmux_args.push(command.to_string());
-            for a in args {
-                tmux_args.push(a.to_string());
-            }
+            tmux_args.push(inner_command);
+            tmux_args.extend(inner_args);
             let status = status_silently(Command::new("tmux").args(&tmux_args))
                 .context("failed to invoke tmux new-session")?;
             if !status.success() {

@@ -24,6 +24,7 @@ pub mod attempt_select;
 pub mod chat;
 pub mod chat_command;
 pub mod chat_id;
+pub mod chat_runtime;
 pub mod chat_sessions;
 pub mod check;
 pub mod config;

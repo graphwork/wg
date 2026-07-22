@@ -479,6 +479,12 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .filter(|info| info.alive);
     let tmux_session = chat_id::chat_tmux_session_for_id(dir, cid);
     let tmux_live = chat_id::chat_tmux_session_is_live(dir, cid);
+    let runtime_chat_dir = worksgood::chat_runtime::runtime_chat_dir(dir, &chat_ref)
+        .unwrap_or_else(|_| chat_dir.clone());
+    let runtime_ledger = worksgood::chat_runtime::read_ledger(&runtime_chat_dir);
+    let last_runtime = runtime_ledger.last_specific_event();
+    let last_runtime_reason = runtime_ledger.last_specific_reason();
+    let last_recovery = runtime_ledger.last_decision();
 
     if json {
         let v = serde_json::json!({
@@ -498,6 +504,13 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
             "tmux": {
                 "session": tmux_session,
                 "live": tmux_live,
+            },
+            "runtime": {
+                "ledger": worksgood::chat_runtime::ledger_path(&runtime_chat_dir),
+                "malformed_records": runtime_ledger.malformed_records,
+                "last_reason": last_runtime_reason,
+                "last_event": last_runtime,
+                "last_recovery": last_recovery,
             },
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
@@ -527,6 +540,27 @@ pub fn run_show(dir: &Path, reference: &str, json: bool) -> Result<()> {
         ),
         None if tmux_live => println!("  handler  : live tmux={tmux_session}"),
         None => println!("  handler  : none"),
+    }
+    println!(
+        "  runtime  : {}",
+        last_runtime_reason
+            .as_deref()
+            .unwrap_or("no durable exit recorded")
+    );
+    if let Some(event) = last_runtime {
+        println!("  observed : {} UTC ({:?})", event.at, event.source);
+        if let Some(path) = event.stderr_path.as_deref() {
+            println!("  stderr   : {}", path);
+        }
+    }
+    if let Some(decision) = last_recovery
+        && let Some(value) = decision.decision
+    {
+        println!(
+            "  recovery : {:?} attempt {}",
+            value,
+            decision.attempt.unwrap_or(0)
+        );
     }
     Ok(())
 }

@@ -4342,12 +4342,23 @@ pub enum ChatStartupState {
 /// Displayed in the chat tab instead of the normal "chat agent not active" placeholder.
 #[derive(Clone, Debug)]
 pub struct ChatAgentDeathInfo {
-    /// Human-readable exit status, e.g. "exit code 1".
+    /// One durable, boundary-specific reason shared with `wg chat show` and
+    /// daemon.log (for example `inner pi terminated by SIGKILL (9)`).
     pub exit_status: String,
     /// Executor type that was running, e.g. "claude", "nex", "codex".
     pub executor: String,
-    /// Full spawn command (bin + args) for display in the error panel.
+    /// Sanitized inner spawn command from the durable start event.
     pub spawn_cmd: String,
+    /// Process boundary that produced the observation.
+    pub runtime_source: Option<String>,
+    /// UTC event time.
+    pub at: Option<String>,
+    pub inner_pid: Option<u32>,
+    pub wrapper_pid: Option<u32>,
+    pub stderr_path: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub recovery_decision: Option<String>,
+    pub recovery_attempt: Option<u32>,
 }
 
 /// State for the Dashboard panel tab.
@@ -8503,6 +8514,17 @@ impl VizApp {
                         tmux_session
                     )
                 })?;
+            let executor = task
+                .executor_preset_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut env = chat_pty_env(&workgraph_dir, &task_id, &chat_ref, &executor);
+            if let Some(model) = task.model.as_ref() {
+                env.push(("WG_MODEL".to_string(), model.clone()));
+            }
+            if let Some(reasoning) = task.reasoning {
+                env.push(("WG_REASONING".to_string(), reasoning.as_str().to_string()));
+            }
             loader.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
                 task_id,
                 reattach: true,
@@ -8510,12 +8532,9 @@ impl VizApp {
                 // non-handler sentinel makes accidental fallback fail closed.
                 bin: "false".to_string(),
                 args: Vec::new(),
-                env: Vec::new(),
+                env,
                 cwd: Some(project_root),
-                executor: task
-                    .executor_preset_name
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
+                executor,
                 tmux_session: Some(tmux_session),
             });
             loader.chat_pty_mode = true;
@@ -8537,6 +8556,7 @@ impl VizApp {
         let forwards = loader.chat_pty_forwards_stdin;
         let focused = loader.focused_panel;
         let identity = loader.active_chat_identity;
+        let durable_deaths = loader.chat_agent_death;
         Ok(Box::new(move |app| {
             app.set_layout_preference(saved_layout);
             app.active_coordinator_id = active;
@@ -8551,6 +8571,7 @@ impl VizApp {
             app.right_panel_tab = RightPanelTab::Chat;
             app.chat_startup_state = ChatStartupState::Ready;
             app.active_chat_identity = identity;
+            app.chat_agent_death = durable_deaths;
         }))
     }
 
@@ -17622,11 +17643,9 @@ impl VizApp {
             let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
                 .or_else(|| (task.id == ".coordinator").then_some(0));
             if let Some(cid) = cid {
-                // Selecting a live tab is also an explicit resurrection
-                // request. Clear a prior death panel before switch_coordinator
-                // queues the saved route; otherwise render suppresses the new
-                // pending spawn forever and the click silently stays dead.
-                self.chat_agent_death.remove(&cid);
+                // Selecting a live tab is navigation, not process authority.
+                // Keep any durable death panel: only its explicit R action may
+                // persist a bounded exact-identity restart decision.
                 // Chooser/task-row navigation can reopen a previously hidden
                 // live chat. Make that tab membership explicit before the
                 // switch; otherwise lifecycle Close on the reopened chat sees
@@ -17641,6 +17660,36 @@ impl VizApp {
                 self.right_panel_visible = true;
                 self.focused_panel = FocusedPanel::RightPanel;
                 return;
+            }
+        }
+        if let Some(cid) = worksgood::chat_id::parse_chat_task_id(&task.id)
+            .or_else(|| (task.id == ".coordinator").then_some(0))
+        {
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+            if let Ok(chat_dir) =
+                worksgood::chat_runtime::runtime_chat_dir(&self.workgraph_dir, &chat_ref)
+            {
+                let executor = task.executor_preset_name.as_deref().unwrap_or("unknown");
+                let tmux =
+                    worksgood::chat_id::prepare_chat_tmux_session_for_id(&self.workgraph_dir, cid);
+                if let Ok(identity) = worksgood::chat_runtime::identity_for_chat(
+                    &self.workgraph_dir,
+                    &task.id,
+                    &chat_ref,
+                    &tmux,
+                    executor,
+                    task.model.as_deref(),
+                    task.reasoning.map(|level| level.as_str()),
+                    (executor == "pi")
+                        .then(|| chat_dir.join("pi-sessions"))
+                        .as_deref(),
+                ) {
+                    let _ = worksgood::chat_runtime::append_refused_terminal(
+                        &chat_dir,
+                        identity,
+                        "authoritative chat is terminal/archived; opening Detail without relaunch",
+                    );
+                }
             }
         }
         self.open_task_detail(&task.id);
@@ -17703,6 +17752,7 @@ impl VizApp {
             }
             if allow_pty
                 && self.chat_is_live(target_id)
+                && !self.chat_agent_death.contains_key(&target_id)
                 && !self
                     .task_panes
                     .contains_key(&worksgood::chat_id::format_chat_task_id(target_id))
@@ -17829,6 +17879,154 @@ impl VizApp {
         }
     }
 
+    /// Reconstruct the death panel exclusively from the durable UUID ledger.
+    /// Malformed/truncated trailing records are ignored by the reader, so a
+    /// TUI restart never erases the last complete inner-process reason.
+    pub fn durable_chat_death_info(&self, cid: u32) -> Option<ChatAgentDeathInfo> {
+        let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+        let chat_dir =
+            worksgood::chat_runtime::runtime_chat_dir(&self.workgraph_dir, &chat_ref).ok()?;
+        let ledger = worksgood::chat_runtime::read_ledger(&chat_dir);
+        let event = ledger.last_specific_event()?;
+        let decision = ledger.last_decision();
+        Some(ChatAgentDeathInfo {
+            exit_status: event.specific_reason()?,
+            executor: event.identity.executor.clone(),
+            spawn_cmd: if event.argv.is_empty() {
+                ledger
+                    .last_start()
+                    .map(|(_, start)| start.argv.join(" "))
+                    .unwrap_or_else(|| "(sanitized argv unavailable)".to_string())
+            } else {
+                event.argv.join(" ")
+            },
+            runtime_source: Some(format!("{:?}", event.source)),
+            at: Some(event.at.clone()),
+            inner_pid: event.inner_pid,
+            wrapper_pid: event.wrapper_pid,
+            stderr_path: event.stderr_path.clone(),
+            stderr_tail: event.stderr_tail.clone(),
+            recovery_decision: decision
+                .and_then(|record| record.decision)
+                .map(|value| format!("{:?}", value)),
+            recovery_attempt: decision.and_then(|record| record.attempt),
+        })
+    }
+
+    /// Handle the death panel's explicit R action. Graph state and the current
+    /// route are authoritative; the ledger only proves exact continuity and a
+    /// bounded attempt. No bytes are sent to Pi here or by the spawn path.
+    pub fn request_active_chat_recovery(&mut self) {
+        let cid = self.active_coordinator_id;
+        if self
+            .chat_agent_death
+            .get(&cid)
+            .is_some_and(|death| !death.executor.eq_ignore_ascii_case("pi"))
+        {
+            // The durable exact-session wrapper is intentionally Pi-scoped.
+            // Preserve the established explicit retry for other executors.
+            self.chat_agent_death.remove(&cid);
+            self.maybe_auto_enable_chat_pty();
+            return;
+        }
+        let Some(task) = self
+            .coherent_graph()
+            .and_then(|graph| worksgood::chat_id::find_chat_task(&graph, cid).cloned())
+        else {
+            self.chat_startup_state = ChatStartupState::Error(format!(
+                "refused recovery: authoritative chat .chat-{cid} no longer exists"
+            ));
+            return;
+        };
+        let terminal = task.status.is_terminal() || task.tags.iter().any(|tag| tag == "archived");
+        let chat_ref = worksgood::chat_id::format_chat_session_ref(cid);
+        let Ok(chat_dir) =
+            worksgood::chat_runtime::runtime_chat_dir(&self.workgraph_dir, &chat_ref)
+        else {
+            self.chat_startup_state =
+                ChatStartupState::Error("refused recovery: canonical UUID is unavailable".into());
+            return;
+        };
+        let config = load_tui_config(&self.workgraph_dir);
+        let (executor, model) = resolve_chat_pty_executor_and_model_with_task(
+            &self.workgraph_dir,
+            &config,
+            cid,
+            Some(&task),
+        );
+        let tmux_session =
+            worksgood::chat_id::prepare_chat_tmux_session_for_id(&self.workgraph_dir, cid);
+        let session_dir = (executor == "pi").then(|| chat_dir.join("pi-sessions"));
+        let expected = match worksgood::chat_runtime::identity_for_chat(
+            &self.workgraph_dir,
+            &task.id,
+            &chat_ref,
+            &tmux_session,
+            &executor,
+            model.as_deref(),
+            task.reasoning.map(|level| level.as_str()),
+            session_dir.as_deref(),
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                self.chat_startup_state = ChatStartupState::Error(format!(
+                    "refused recovery: exact chat identity is unavailable: {error}"
+                ));
+                return;
+            }
+        };
+        if terminal {
+            let _ = worksgood::chat_runtime::append_refused_terminal(
+                &chat_dir,
+                expected,
+                "authoritative graph task is terminal or archived; runtime metadata cannot relaunch it",
+            );
+            self.open_task_detail(&task.id);
+            return;
+        }
+        if executor != "pi" {
+            self.chat_agent_death.remove(&cid);
+            self.maybe_auto_enable_chat_pty();
+            return;
+        }
+        let ledger = worksgood::chat_runtime::read_ledger(&chat_dir);
+        let prior_argv = ledger.last_start().map(|(_, event)| event.argv.clone());
+        let session_live = crate::tui::pty_pane::tmux_has_session(&tmux_session);
+        match worksgood::chat_runtime::request_recovery(
+            &chat_dir,
+            &expected,
+            prior_argv.as_deref(),
+            session_live,
+        ) {
+            Ok(
+                worksgood::chat_runtime::RecoveryRequest::ReattachExisting { .. }
+                | worksgood::chat_runtime::RecoveryRequest::ExplicitRestart { .. }
+                | worksgood::chat_runtime::RecoveryRequest::InitialLaunch,
+            ) => {
+                self.chat_agent_death.remove(&cid);
+                self.maybe_auto_enable_chat_pty();
+            }
+            Ok(
+                worksgood::chat_runtime::RecoveryRequest::NeedsExplicitRestart
+                | worksgood::chat_runtime::RecoveryRequest::RefusedIdentityMismatch
+                | worksgood::chat_runtime::RecoveryRequest::BudgetExhausted { .. },
+            ) => {
+                if let Some(info) = self.durable_chat_death_info(cid) {
+                    self.chat_agent_death.insert(cid, info);
+                }
+                self.chat_startup_state = ChatStartupState::Error(
+                    "refused recovery: exact identity changed or restart budget is exhausted"
+                        .to_string(),
+                );
+            }
+            Err(error) => {
+                self.chat_startup_state = ChatStartupState::Error(format!(
+                    "could not persist recovery decision: {error}"
+                ));
+            }
+        }
+    }
+
     /// For the currently-active coordinator, auto-enable `chat_pty_mode`
     /// and spawn an embedded REPL chosen by the coordinator's effective
     /// executor. The coordinator view is just a container for
@@ -17862,15 +18060,49 @@ impl VizApp {
         // `--executor codex` / `--model codex:gpt-5` the user actually
         // picked when creating that chat — chat-launched-with bug.
         let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
-        let chat_task = self
-            .coherent_graph()
-            .and_then(|graph| graph.get_task(&task_id).cloned());
+        let chat_task = self.coherent_graph().and_then(|graph| {
+            worksgood::chat_id::find_chat_task(&graph, self.active_coordinator_id).cloned()
+        });
         let (executor, chat_model) = resolve_chat_pty_executor_and_model_with_task(
             &self.workgraph_dir,
             &config,
             self.active_coordinator_id,
             chat_task.as_ref(),
         );
+        let authoritative_task = chat_task.as_ref();
+        // The exact-identity recovery contract is Pi-specific. Preserve the
+        // legacy synthetic native-pane test/REPL path, but never let Pi runtime
+        // evidence synthesize a missing or terminal graph task.
+        if executor == "pi" && authoritative_task.is_none() {
+            self.chat_startup_state = ChatStartupState::Error(format!(
+                "refused Pi chat start: authoritative task {task_id} no longer exists"
+            ));
+            self.chat_pty_mode = false;
+            self.chat_pty_forwards_stdin = false;
+            return;
+        }
+        if executor == "pi"
+            && authoritative_task.is_some_and(|task| {
+                task.status.is_terminal() || task.tags.iter().any(|tag| tag == "archived")
+            })
+        {
+            let task = authoritative_task.expect("checked above");
+            let chat_ref = worksgood::chat_id::format_chat_session_ref(self.active_coordinator_id);
+            if let Ok(chat_dir) =
+                worksgood::chat_runtime::runtime_chat_dir(&self.workgraph_dir, &chat_ref)
+            {
+                let ledger = worksgood::chat_runtime::read_ledger(&chat_dir);
+                if let Some((_, start)) = ledger.last_start() {
+                    let _ = worksgood::chat_runtime::append_refused_terminal(
+                        &chat_dir,
+                        start.identity.clone(),
+                        "authoritative graph task is terminal or archived; refusing pane relaunch",
+                    );
+                }
+            }
+            self.open_task_detail(&task.id);
+            return;
+        }
         self.update_active_chat_route(&task_id, executor.clone(), chat_model.clone());
         let chat_endpoint = crate::commands::service::CoordinatorState::load_for(
             &self.workgraph_dir,
@@ -17917,6 +18149,37 @@ impl VizApp {
         } else {
             None
         };
+        // A completed inner-Pi exit is durable. On TUI restart (or after X/R
+        // cleared the in-memory map) reconstruct the same death panel and stop
+        // before writing a sentinel, creating tmux, or sending any stdin. An
+        // explicit, persisted restart decision is the only bypass.
+        if executor == "pi" {
+            let chat_dir = prepared_pi_session
+                .as_ref()
+                .expect("Pi storage was prepared above")
+                .chat_dir
+                .clone();
+            let tmux_session = worksgood::chat_id::prepare_chat_tmux_session_for_id(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+            );
+            if !crate::tui::pty_pane::tmux_has_session(&tmux_session)
+                && worksgood::chat_runtime::pending_failure_requires_explicit(&chat_dir)
+            {
+                if let Some(info) = self.durable_chat_death_info(self.active_coordinator_id) {
+                    self.chat_agent_death
+                        .insert(self.active_coordinator_id, info);
+                }
+                worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                // Keep PTY rendering mode selected even though no pane will
+                // spawn: the render branch uses this durable map to paint the
+                // death panel after R/TUI restart. Input forwarding stays off.
+                self.chat_pty_mode = true;
+                self.chat_pty_forwards_stdin = false;
+                return;
+            }
+        }
+
         let chat_task_metadata = self
             .coherent_graph()
             .and_then(|g| g.get_task(&task_id).cloned());
@@ -18297,6 +18560,9 @@ impl VizApp {
                             marg.model,
                         ]);
                     }
+                    if let Some(reasoning) = authoritative_task.and_then(|task| task.reasoning) {
+                        args.extend(["--thinking".to_string(), reasoning.as_str().to_string()]);
+                    }
                     args.extend([
                         "--session-id".to_string(),
                         session_id,
@@ -18394,6 +18660,9 @@ impl VizApp {
         // honors it instead of falling back to `[dispatcher].model`.
         if let Some(ref m) = chat_model {
             env.push(("WG_MODEL".to_string(), m.clone()));
+        }
+        if let Some(reasoning) = authoritative_task.and_then(|task| task.reasoning) {
+            env.push(("WG_REASONING".to_string(), reasoning.as_str().to_string()));
         }
 
         // tmux-wrap the chat process when tmux is on PATH so it
@@ -33892,7 +34161,49 @@ mod prioritized_chat_startup_tests {
     }
 
     #[test]
-    fn selecting_dead_live_chat_resurrects_saved_route() {
+    fn terminal_and_archived_chats_persist_refusal_and_never_queue_runtime() {
+        for (index, status, archived) in [
+            (10, Status::Done, false),
+            (11, Status::Abandoned, false),
+            (12, Status::Failed, false),
+            (13, Status::InProgress, true),
+        ] {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().join(".wg");
+            std::fs::create_dir_all(&dir).unwrap();
+            worksgood::chat_sessions::register_coordinator_session(&dir, index).unwrap();
+            let task_id = format!(".chat-{index}");
+            let mut task = make_task_with_status(&task_id, "Terminal Pi", status);
+            task.tags = vec!["chat-loop".to_string()];
+            if archived {
+                task.tags.push("archived".to_string());
+            }
+            task.executor_preset_name = Some("pi".to_string());
+            task.model = Some("pi:openai-codex:gpt-5.6-sol".to_string());
+            let mut graph = WorkGraph::new();
+            graph.add_node(Node::Task(task));
+            save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+
+            let mut app = VizApp::new(dir.clone(), VizOptions::default(), Some(false), None, true);
+            app.published_graph = Some(Arc::new(graph));
+            app.open_chat_task_or_detail(&task_id);
+
+            assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+            assert!(app.pending_chat_pty_spawn.is_none());
+            assert!(!app.task_panes.contains_key(&task_id));
+            let ledger = worksgood::chat_runtime::read_ledger_for_chat(
+                &dir,
+                &worksgood::chat_id::format_chat_session_ref(index),
+            );
+            assert_eq!(
+                ledger.last_decision().and_then(|event| event.decision),
+                Some(worksgood::chat_runtime::RecoveryDecision::RefusedTerminal)
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_dead_live_chat_preserves_explicit_recovery_gate() {
         let project = tempfile::tempdir().unwrap();
         let dir = project.path().join(".wg");
         std::fs::create_dir_all(&dir).unwrap();
@@ -33918,22 +34229,26 @@ mod prioritized_chat_startup_tests {
                 exit_status: "exit 1".to_string(),
                 executor: "pi".to_string(),
                 spawn_cmd: "pi --session-id chat-4".to_string(),
+                runtime_source: None,
+                at: None,
+                inner_pid: None,
+                wrapper_pid: None,
+                stderr_path: None,
+                stderr_tail: None,
+                recovery_decision: None,
+                recovery_attempt: None,
             },
         );
 
         app.open_chat_task_or_detail(".chat-4");
 
-        assert!(!app.chat_agent_death.contains_key(&4));
-        let pending = app
-            .pending_chat_pty_spawn
-            .as_ref()
-            .expect("selecting a dead live tab must queue resurrection");
-        assert_eq!(pending.executor, "pi");
         assert!(
-            pending
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--session-id", "chat-4"])
+            app.chat_agent_death.contains_key(&4),
+            "navigation must not erase durable death evidence or imply restart authority"
+        );
+        assert!(
+            app.pending_chat_pty_spawn.is_none(),
+            "only the death panel's explicit R action may queue a Pi restart"
         );
     }
 }
@@ -34143,7 +34458,52 @@ mod chat_agent_death_tests {
             exit_status: "exit code 1".to_string(),
             executor: "nex".to_string(),
             spawn_cmd: "wg nex --resume chat-0".to_string(),
+            runtime_source: None,
+            at: None,
+            inner_pid: None,
+            wrapper_pid: None,
+            stderr_path: None,
+            stderr_tail: None,
+            recovery_decision: None,
+            recovery_attempt: None,
         }
+    }
+
+    #[test]
+    fn durable_reason_survives_in_memory_clear_and_new_tui_state() {
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path().join(".wg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let uuid = worksgood::chat_sessions::register_coordinator_session(&dir, 0).unwrap();
+        let chat_dir = worksgood::chat_sessions::chat_dir_for_uuid(&dir, &uuid);
+        let identity = worksgood::chat_runtime::identity_for_chat(
+            &dir,
+            ".chat-0",
+            "chat-0",
+            "wg-chat-test-chat-0",
+            "pi",
+            Some("pi:openai-codex:gpt-5.6-sol"),
+            Some("xhigh"),
+            Some(&chat_dir.join("pi-sessions")),
+        )
+        .unwrap();
+        worksgood::chat_runtime::append_attach_exit(&chat_dir, identity, "exit code 1", false)
+            .unwrap();
+
+        let mut first = VizApp::new(dir.clone(), VizOptions::default(), Some(false), None, true);
+        let observed = first
+            .durable_chat_death_info(0)
+            .expect("first TUI reads durable reason");
+        first.chat_agent_death.insert(0, observed.clone());
+        first.chat_agent_death.remove(&0); // models X/R clearing volatile state
+        assert!(first.chat_agent_death.is_empty());
+
+        let reopened = VizApp::new(dir, VizOptions::default(), Some(false), None, true)
+            .durable_chat_death_info(0)
+            .expect("new TUI reconstructs reason from UUID ledger");
+        assert_eq!(reopened.exit_status, observed.exit_status);
+        assert!(reopened.exit_status.contains("inner status unavailable"));
+        assert_eq!(reopened.runtime_source.as_deref(), Some("TmuxServer"));
     }
 
     /// death info inserted for coordinator 0 must be retrievable.

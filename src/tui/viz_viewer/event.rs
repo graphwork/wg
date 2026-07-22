@@ -2646,8 +2646,7 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     {
         match code {
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                app.chat_agent_death.remove(&app.active_coordinator_id);
-                app.maybe_auto_enable_chat_pty();
+                app.request_active_chat_recovery();
                 return;
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
@@ -11209,6 +11208,14 @@ mod chat_tab_navigation_tests {
             exit_status: "exit code 1".to_string(),
             executor: "codex".to_string(),
             spawn_cmd: "codex --resume chat-0".to_string(),
+            runtime_source: None,
+            at: None,
+            inner_pid: None,
+            wrapper_pid: None,
+            stderr_path: None,
+            stderr_tail: None,
+            recovery_decision: None,
+            recovery_attempt: None,
         }
     }
 
