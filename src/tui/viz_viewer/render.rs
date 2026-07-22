@@ -174,6 +174,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     app.last_horizontal_divider_area = Rect::default();
     app.clear_coordinator_picker_hits();
     app.clear_symbolic_context_hits();
+    app.log_header_hits.clear();
+    app.last_settings_scope_area = Rect::default();
+    app.last_settings_setup_area = Rect::default();
+    app.last_settings_lint_area = Rect::default();
 
     let area = frame.area();
 
@@ -5803,85 +5807,127 @@ fn render_editor_word_wrap(
 /// fall back to the raw agent output buffer. `WgLog` instead consumes
 /// `app.log_pane.rendered_lines` (populated from `task.log`).
 fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    use super::state::{LogHeaderAction, LogHeaderHit};
     use ratatui::widgets::Paragraph;
 
+    // Direct render tests call this function without the top-level draw pass;
+    // keep its hit-map ownership self-contained too.
+    app.log_header_hits.clear();
     if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let header_line = {
-        let task_label = app
-            .log_pane
-            .task_id
-            .clone()
-            .unwrap_or_else(|| "(no task selected)".to_string());
-        let agent_label = app
-            .log_pane
-            .agent_id
-            .as_deref()
-            .map(|id| format!("agent={} src={}", id, app.log_pane_source_label()))
-            .unwrap_or_else(|| "no agent src=load".to_string());
-        // For a retried task, show which attempt is displayed + its liveness,
-        // e.g. "attempt 2/2 (live)", so the failed first attempt is never
-        // mistaken for the live one.
-        let attempt_label = app.log_pane_attempt_label();
-        let mode_label = format!("view=[{}]", app.log_pane.view_mode.label());
-        let tail_label = if app.log_pane.auto_tail {
-            "tail=on"
-        } else {
-            "tail=off"
-        };
-        let summary_label = if app.log_pane.summary_mode {
-            "summary=on"
-        } else {
-            "summary=off"
-        };
-        // When the task has multiple attempts, surface the attempt label
-        // prominently (bold, colored by liveness) and advertise the switcher.
-        let (attempt_span, attempt_hint) = match attempt_label {
-            Some(ref label) => {
-                let color = if label.contains("(live)") {
-                    Color::Green
-                } else if label.contains("(failed)") || label.contains("(dead)") {
-                    Color::Red
-                } else {
-                    Color::Yellow
-                };
-                (
-                    Span::styled(
-                        format!(" [{}] ", label),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    "  {/} attempt",
-                )
-            }
-            None => (Span::raw(""), ""),
-        };
-        Line::from(vec![
-            Span::styled(
-                format!(" {} ", task_label),
-                Style::default()
-                    .fg(text_primary(app.is_light_theme))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            attempt_span,
-            Span::styled(
-                format!(
-                    " {}  {}  {}  {}",
-                    agent_label, mode_label, tail_label, summary_label
-                ),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                format!("    [4] cycle view  [s] summary  [J] json{}", attempt_hint),
-                Style::default().fg(Color::Indexed(239)),
-            ),
-        ])
-    };
-
     let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    frame.render_widget(Paragraph::new(header_line), header_area);
+
+    // Controls lead the row so the phone/Termux layout preserves touch parity
+    // before optional identity/provenance text. Wide panes use descriptive
+    // labels; narrow panes use the same keyboard glyphs without dead prose.
+    let compact_controls = header_area.width < 72;
+    let mode_name = match app.log_pane.view_mode {
+        super::state::LogViewMode::Events => "Events",
+        super::state::LogViewMode::HighLevel => "HighLevel",
+        super::state::LogViewMode::RawPretty => "RawPretty",
+        super::state::LogViewMode::WgLog => "WgLog",
+    };
+    let owner = LogHeaderHit {
+        action: LogHeaderAction::CycleView,
+        area: Rect::default(),
+        selected_task_id: app.selected_task_id().map(str::to_owned),
+        log_task_id: app.log_pane.task_id.clone(),
+        agent_id: app.log_pane.agent_id.clone(),
+        view_mode: app.log_pane.view_mode,
+        summary_mode: app.log_pane.summary_mode,
+        json_mode: app.log_pane.json_mode,
+    };
+    let action_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut hits = Vec::new();
+    let mut cursor = 0u16;
+    {
+        let mut push_action = |text: String, action: LogHeaderAction| {
+            let width = UnicodeWidthStr::width(text.as_str()) as u16;
+            // An action is rendered only when its complete label fits. A partially
+            // clipped bracket/button must never retain a partial hit rectangle.
+            if width > 0 && cursor.saturating_add(width) <= header_area.width {
+                spans.push(Span::styled(text, action_style));
+                let mut hit = owner.clone();
+                hit.action = action;
+                hit.area = Rect::new(header_area.x + cursor, header_area.y, width, 1);
+                hits.push(hit);
+                cursor += width;
+            }
+        };
+
+        push_action(format!("view=[{mode_name}]"), LogHeaderAction::CycleView);
+        push_action(
+            if compact_controls {
+                " [s]".to_string()
+            } else {
+                "  [s] summary".to_string()
+            },
+            LogHeaderAction::ToggleSummary,
+        );
+        push_action(
+            if compact_controls {
+                " [J]".to_string()
+            } else {
+                "  [J] json".to_string()
+            },
+            LogHeaderAction::ToggleJson,
+        );
+        if app.log_pane.attempt_agent_ids.len() > 1 {
+            push_action(
+                if compact_controls {
+                    " [{]".to_string()
+                } else {
+                    "  [{] older".to_string()
+                },
+                LogHeaderAction::PreviousAttempt,
+            );
+            push_action(
+                if compact_controls {
+                    " [}]".to_string()
+                } else {
+                    "  [}] newer".to_string()
+                },
+                LogHeaderAction::NextAttempt,
+            );
+        }
+    }
+    app.log_header_hits = hits;
+
+    // Everything after the controls is deliberately informational prose. It
+    // may be clipped and therefore owns no pointer region.
+    let task_label = app.log_pane.task_id.as_deref().unwrap_or("no task");
+    let agent_label = app
+        .log_pane
+        .agent_id
+        .as_deref()
+        .map(|id| format!("agent={} src={}", id, app.log_pane_source_label()))
+        .unwrap_or_else(|| "no agent src=load".to_string());
+    let attempt_label = app.log_pane_attempt_label();
+    let mut metadata = String::new();
+    if let Some(label) = attempt_label {
+        metadata.push_str("  ");
+        metadata.push_str(&label);
+    }
+    metadata.push_str(&format!(
+        "  {}  task={}  tail={}  summary={}  json={}",
+        agent_label,
+        task_label,
+        if app.log_pane.auto_tail { "on" } else { "off" },
+        if app.log_pane.summary_mode {
+            "on"
+        } else {
+            "off"
+        },
+        if app.log_pane.json_mode { "on" } else { "off" },
+    ));
+    spans.push(Span::styled(metadata, Style::default().fg(Color::DarkGray)));
+    frame.render_widget(Paragraph::new(Line::from(spans)), header_area);
 
     app.log_pane.viewport_height = body_area.height as usize;
 
@@ -11150,7 +11196,10 @@ fn source_label(src: &worksgood::config::ConfigSource) -> (&'static str, Color) 
     }
 }
 
-fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_settings_actions(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    app.last_settings_scope_area = Rect::default();
+    app.last_settings_setup_area = Rect::default();
+    app.last_settings_lint_area = Rect::default();
     if area.height == 0 {
         return;
     }
@@ -11163,10 +11212,15 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
     let focus = app.settings_panel.focus_actions;
     let action_idx = app.settings_panel.action_index.min(buttons.len() - 1);
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(
-        format!("Scope: {}  ", scope_label),
-        Style::default().fg(Color::Yellow),
-    ));
+    let scope_text = format!("Scope: {}  ", scope_label);
+    let mut action_x = area.x;
+    let action_y = area.y.saturating_add(1); // inside the TOP border below
+    let scope_width = UnicodeWidthStr::width(scope_text.as_str()) as u16;
+    if area.height > 1 && scope_width <= area.width {
+        app.last_settings_scope_area = Rect::new(action_x, action_y, scope_width, 1);
+    }
+    spans.push(Span::styled(scope_text, Style::default().fg(Color::Yellow)));
+    action_x = action_x.saturating_add(scope_width);
     for (i, b) in buttons.iter().enumerate() {
         let style = if focus && i == action_idx {
             Style::default()
@@ -11176,8 +11230,18 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
         } else {
             Style::default().fg(Color::White).bg(Color::DarkGray)
         };
+        let button_width = UnicodeWidthStr::width(*b) as u16;
+        if area.height > 1 && action_x.saturating_add(button_width) <= area.right() {
+            let hit = Rect::new(action_x, action_y, button_width, 1);
+            if i == 0 {
+                app.last_settings_setup_area = hit;
+            } else {
+                app.last_settings_lint_area = hit;
+            }
+        }
         spans.push(Span::styled(b.to_string(), style));
         spans.push(Span::raw(" "));
+        action_x = action_x.saturating_add(button_width + 1);
     }
     let action_line = Line::from(spans);
 
@@ -11243,7 +11307,14 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 lines.push((Line::from(""), false)); // blank separator
             }
             let is_collapsed = app.config_panel.collapsed.contains(&entry.section);
-            let arrow = if is_collapsed { "▶" } else { "▼" };
+            // This header is state, not a pointer button: collapse remains the
+            // selected-row Tab action. Use explicit prose instead of a dead
+            // disclosure triangle that promises an unimplemented click.
+            let disclosure = if is_collapsed {
+                "collapsed"
+            } else {
+                "expanded"
+            };
 
             // Section header status indicators
             let extra = if entry.section == ConfigSection::Service {
@@ -11285,8 +11356,11 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
             lines.push((
                 Line::from(vec![
-                    Span::styled(format!("{} ", arrow), header_style),
                     Span::styled(entry.section.label().to_string(), header_style),
+                    Span::styled(
+                        format!("  {}", disclosure),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::styled(extra, Style::default().fg(status_color)),
                 ]),
                 false,
@@ -18907,6 +18981,364 @@ mod tests {
             rendered.contains("UNIQUE_STREAM_MARKER_ALPHA"),
             "Log tab must render the stream event text after the first snapshot. Rendered:\n{}",
             rendered
+        );
+    }
+
+    fn log_header_test_app() -> VizApp {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.selected_task_idx = app.task_order.iter().position(|id| id == "a");
+        app.right_panel_visible = true;
+        app.right_panel_tab = RightPanelTab::Log;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.mouse_enabled = true;
+        app.log_pane = super::super::state::LogPaneState::default();
+        app.log_pane.task_id = Some("a".to_string());
+        app.log_pane.agent_id = Some("agent-new".to_string());
+        app.log_pane.attempt_agent_ids = vec!["agent-old".to_string(), "agent-new".to_string()];
+        app.log_pane.agent_output.full_text = "visible log body".to_string();
+        app
+    }
+
+    fn render_log_header(app: &mut VizApp, width: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|frame| draw_log_tab(frame, app, frame.area()))
+            .unwrap();
+        (0..width)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>()
+    }
+
+    fn click_log_hit(app: &mut VizApp, action: super::super::state::LogHeaderAction) {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let area = app
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == action)
+            .unwrap_or_else(|| panic!("missing rendered hit for {action:?}"))
+            .area;
+        super::super::event::dispatch_event(
+            app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x + area.width / 2,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+    }
+
+    /// The regression path clicks the actual newly-rendered `view=[Mode]`
+    /// cells four times and compares each transition with the real `4` key.
+    #[test]
+    fn log_header_view_cells_cycle_all_modes_with_exact_key_4_parity() {
+        use super::super::state::{LogHeaderAction, LogViewMode};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut clicked = log_header_test_app();
+        let mut keyed = log_header_test_app();
+        let expected = [
+            (LogViewMode::Events, "view=[Events]"),
+            (LogViewMode::HighLevel, "view=[HighLevel]"),
+            (LogViewMode::RawPretty, "view=[RawPretty]"),
+            (LogViewMode::WgLog, "view=[WgLog]"),
+        ];
+
+        for (mode, rendered_label) in expected {
+            assert_eq!(clicked.log_pane.view_mode, mode);
+            let row = render_log_header(&mut clicked, 120);
+            let hit = clicked
+                .log_header_hits
+                .iter()
+                .find(|hit| hit.action == LogHeaderAction::CycleView)
+                .unwrap()
+                .clone();
+            let local_x = hit.area.x as usize;
+            let cells = row
+                .chars()
+                .skip(local_x)
+                .take(hit.area.width as usize)
+                .collect::<String>();
+            assert_eq!(cells, rendered_label, "hit must derive from actual cells");
+
+            click_log_hit(&mut clicked, LogHeaderAction::CycleView);
+            super::super::event::dispatch_event(
+                &mut keyed,
+                Event::Key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE)),
+            );
+            assert_eq!(clicked.log_pane.view_mode, keyed.log_pane.view_mode);
+            assert_eq!(clicked.log_pane.scroll, keyed.log_pane.scroll);
+            assert_eq!(clicked.log_pane.auto_tail, keyed.log_pane.auto_tail);
+            assert_eq!(clicked.log_pane.manual_pin, keyed.log_pane.manual_pin);
+        }
+        assert_eq!(clicked.log_pane.view_mode, LogViewMode::Events);
+    }
+
+    /// Wide, medium and 40-column Termux headers retain complete, clickable
+    /// cycle/summary/JSON/older/newer controls. No action owns clipped cells.
+    #[test]
+    fn log_header_actions_have_actual_coordinate_hits_at_all_responsive_widths() {
+        use super::super::state::LogHeaderAction;
+
+        for width in [120, 70, 40] {
+            let mut app = log_header_test_app();
+            let row = render_log_header(&mut app, width);
+            for action in [
+                LogHeaderAction::CycleView,
+                LogHeaderAction::ToggleSummary,
+                LogHeaderAction::ToggleJson,
+                LogHeaderAction::PreviousAttempt,
+                LogHeaderAction::NextAttempt,
+            ] {
+                let hit = app
+                    .log_header_hits
+                    .iter()
+                    .find(|hit| hit.action == action)
+                    .unwrap_or_else(|| panic!("{action:?} missing at width {width}"));
+                assert_eq!(hit.area.y, 0);
+                assert!(hit.area.right() <= width);
+                let visible = row
+                    .chars()
+                    .skip(hit.area.x as usize)
+                    .take(hit.area.width as usize)
+                    .collect::<String>();
+                assert!(!visible.trim().is_empty());
+                assert!(visible.contains('['), "{action:?}: {visible:?}");
+            }
+
+            let mut summary = log_header_test_app();
+            render_log_header(&mut summary, width);
+            click_log_hit(&mut summary, LogHeaderAction::ToggleSummary);
+            assert!(summary.log_pane.summary_mode);
+
+            let mut json = log_header_test_app();
+            render_log_header(&mut json, width);
+            click_log_hit(&mut json, LogHeaderAction::ToggleJson);
+            assert!(json.log_pane.json_mode);
+
+            let mut older = log_header_test_app();
+            render_log_header(&mut older, width);
+            click_log_hit(&mut older, LogHeaderAction::PreviousAttempt);
+            assert_eq!(older.log_pane.manual_pin.as_deref(), Some("agent-old"));
+
+            let mut newer = log_header_test_app();
+            newer.log_pane.agent_id = Some("agent-old".to_string());
+            render_log_header(&mut newer, width);
+            click_log_hit(&mut newer, LogHeaderAction::NextAttempt);
+            assert_eq!(newer.log_pane.manual_pin.as_deref(), Some("agent-new"));
+        }
+    }
+
+    #[test]
+    fn clipped_and_stale_log_header_coordinates_do_not_activate() {
+        use super::super::state::LogHeaderAction;
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = log_header_test_app();
+        render_log_header(&mut app, 120);
+        let stale_summary = app
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::ToggleSummary)
+            .unwrap()
+            .area;
+
+        // Three cells cannot contain any complete control. The renderer
+        // omits every action rather than exposing partial hit cells.
+        let narrow = render_log_header(&mut app, 3);
+        assert!(app.log_header_hits.is_empty());
+        assert!(!narrow.contains("view=["));
+        super::super::event::dispatch_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: stale_summary.x,
+                row: stale_summary.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(!app.log_pane.summary_mode);
+        assert!(!app.log_pane.json_mode);
+
+        render_log_header(&mut app, 120);
+        let view = app
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::CycleView)
+            .unwrap()
+            .area;
+        super::super::event::dispatch_event(&mut app, Event::Resize(40, 20));
+        assert!(app.log_header_hits.is_empty());
+        super::super::event::dispatch_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: view.x,
+                row: view.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(
+            app.log_pane.view_mode,
+            super::super::state::LogViewMode::Events
+        );
+    }
+
+    #[test]
+    fn log_header_owner_changes_swallow_stale_hits_without_fallthrough() {
+        use super::super::state::{LogHeaderAction, LogViewMode};
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let stale_click = |app: &mut VizApp, area: Rect| {
+            super::super::event::dispatch_event(
+                app,
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x + area.width / 2,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+            );
+        };
+
+        // Selected-task ownership changes before repaint: stale summary is
+        // swallowed and cannot select/pan the overlapping graph row.
+        let mut task_changed = log_header_test_app();
+        render_log_header(&mut task_changed, 120);
+        let summary = task_changed
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::ToggleSummary)
+            .unwrap()
+            .area;
+        task_changed.selected_task_idx = task_changed.task_order.iter().position(|id| id == "b");
+        task_changed.last_graph_area = summary;
+        let selected = task_changed.selected_task_id().map(str::to_owned);
+        stale_click(&mut task_changed, summary);
+        assert!(!task_changed.log_pane.summary_mode);
+        assert_eq!(task_changed.selected_task_id().map(str::to_owned), selected);
+        assert!(task_changed.graph_pan_last.is_none());
+
+        // Presentation, attempt and tab ownership are each checked even when
+        // the old rectangle still geometrically exists.
+        let mut mode_changed = log_header_test_app();
+        render_log_header(&mut mode_changed, 120);
+        let cycle = mode_changed
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::CycleView)
+            .unwrap()
+            .area;
+        mode_changed.log_pane.view_mode = LogViewMode::HighLevel;
+        stale_click(&mut mode_changed, cycle);
+        assert_eq!(mode_changed.log_pane.view_mode, LogViewMode::HighLevel);
+
+        let mut attempt_changed = log_header_test_app();
+        render_log_header(&mut attempt_changed, 120);
+        let older = attempt_changed
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::PreviousAttempt)
+            .unwrap()
+            .area;
+        attempt_changed.log_pane.agent_id = Some("agent-old".to_string());
+        stale_click(&mut attempt_changed, older);
+        assert!(attempt_changed.log_pane.manual_pin.is_none());
+
+        let mut tab_changed = log_header_test_app();
+        render_log_header(&mut tab_changed, 120);
+        let json = tab_changed
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::ToggleJson)
+            .unwrap()
+            .area;
+        tab_changed.right_panel_tab = RightPanelTab::Detail;
+        stale_click(&mut tab_changed, json);
+        assert!(!tab_changed.log_pane.json_mode);
+    }
+
+    #[test]
+    fn log_header_hit_preempts_graph_scrollbar_divider_and_pty_capture() {
+        use super::super::state::{LogHeaderAction, ScrollbarDragTarget};
+
+        let mut app = log_header_test_app();
+        render_log_header(&mut app, 120);
+        let area = app
+            .log_header_hits
+            .iter()
+            .find(|hit| hit.action == LogHeaderAction::CycleView)
+            .unwrap()
+            .area;
+        app.last_graph_area = area;
+        app.last_graph_scrollbar_area = area;
+        app.last_panel_scrollbar_area = area;
+        app.last_divider_area = area;
+        app.last_horizontal_divider_area = area;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        let selected = app.selected_task_id().map(str::to_owned);
+        click_log_hit(&mut app, LogHeaderAction::CycleView);
+
+        assert_eq!(
+            app.log_pane.view_mode,
+            super::super::state::LogViewMode::HighLevel
+        );
+        assert_eq!(app.selected_task_id().map(str::to_owned), selected);
+        assert_eq!(app.scrollbar_drag, None);
+        assert_eq!(app.layout_drag, None);
+        assert_ne!(app.scrollbar_drag, Some(ScrollbarDragTarget::Graph));
+    }
+
+    #[test]
+    fn settings_action_buttons_register_exact_visible_cells() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = log_header_test_app();
+        app.right_panel_tab = RightPanelTab::Settings;
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal
+            .draw(|frame| draw_settings_actions(frame, &mut app, frame.area()))
+            .unwrap();
+        assert!(app.last_settings_scope_area.width > 0);
+        assert!(app.last_settings_setup_area.width > 0);
+        assert!(app.last_settings_lint_area.width > 0);
+
+        let old_scope = app.settings_panel.edit_scope;
+        let scope = app.last_settings_scope_area;
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        super::super::event::dispatch_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: scope.x + scope.width - 1,
+                row: scope.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_ne!(app.settings_panel.edit_scope, old_scope);
+
+        let setup = app.last_settings_setup_area;
+        super::super::event::dispatch_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: setup.x + setup.width - 1,
+                row: setup.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(
+            app.settings_panel
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("wg setup"))
         );
     }
 

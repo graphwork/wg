@@ -2412,3 +2412,12 @@ owners = [
 ]
 description = "Candidate-binary real tmux/SGR phone rotation flow: starts with persisted explicit Left and a live command Chat on a wide viewport, rotates through 70- and 40-column Termux portrait geometry and capture-verifies graph above the horizontal contextual seam with Chat below and no side divider, vertically drags the same-frame seam without click/input fall-through, exercises direct Task/Chat navigation, then restores the exact wide Left/ratio while preserving PTY PID, dimensions, input bytes, and mouse confinement. Credential-free."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_session_log_header_clicks"
+script = "scenarios/tui_session_log_header_clicks.sh"
+owners = [
+    "restore-tui-visible-clickability",
+]
+description = "Candidate-binary real tmux/SGR flow: selects an exact task, enters Session Log, clicks the actual view=[Mode] cells through all four modes, toggles summary/JSON and both retry-attempt directions, repeats compact controls at 40 columns, resizes, then proves keyboard 4 parity and exact task/attempt ownership. Credential-free; scratch-bounded build target is removed by smoke cleanup."
+timeout_seconds = 240

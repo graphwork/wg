@@ -6217,6 +6217,45 @@ pub enum LogViewMode {
     WgLog,
 }
 
+/// Exact keyboard-equivalent action owned by a visible Session Log header span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogHeaderAction {
+    CycleView,
+    ToggleSummary,
+    ToggleJson,
+    PreviousAttempt,
+    NextAttempt,
+}
+
+/// Same-frame ownership snapshot for one Session Log header hit rectangle.
+///
+/// A rectangle is actionable only while every rendered owner still matches.
+/// This makes a queued tap after a task/attempt/mode change a no-op even before
+/// the next frame has had a chance to clear and rebuild the hit map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogHeaderHit {
+    pub action: LogHeaderAction,
+    pub area: Rect,
+    pub selected_task_id: Option<String>,
+    pub log_task_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub view_mode: LogViewMode,
+    pub summary_mode: bool,
+    pub json_mode: bool,
+}
+
+impl LogHeaderHit {
+    pub fn owns_current_frame(&self, app: &VizApp) -> bool {
+        app.right_panel_tab == RightPanelTab::Log
+            && self.selected_task_id.as_deref() == app.selected_task_id()
+            && self.log_task_id == app.log_pane.task_id
+            && self.agent_id == app.log_pane.agent_id
+            && self.view_mode == app.log_pane.view_mode
+            && self.summary_mode == app.log_pane.summary_mode
+            && self.json_mode == app.log_pane.json_mode
+    }
+}
+
 impl LogViewMode {
     /// Cycle to the next mode in the order
     /// Events -> HighLevel -> RawPretty -> WgLog -> Events.
@@ -8797,6 +8836,15 @@ pub struct VizApp {
     /// Hit-test area for the "▼ new output" indicator in the Log tab.
     #[allow(dead_code)]
     pub last_log_new_output_area: Rect,
+    /// Same-frame, span-derived Session Log header controls. The renderer
+    /// clears and rebuilds this list every frame; clipped controls are absent.
+    pub log_header_hits: Vec<LogHeaderHit>,
+
+    /// Same-frame Settings action-bar controls. These are separate rectangles
+    /// because the labels have distinct keyboard-equivalent actions.
+    pub last_settings_scope_area: Rect,
+    pub last_settings_setup_area: Rect,
+    pub last_settings_lint_area: Rect,
 
     /// Hit-test area for the entire iteration navigation bar in the Detail tab header.
     /// Used to short-circuit pass-through to other detail-tab handlers.
@@ -9882,6 +9930,10 @@ impl VizApp {
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
+            log_header_hits: Vec::new(),
+            last_settings_scope_area: Rect::default(),
+            last_settings_setup_area: Rect::default(),
+            last_settings_lint_area: Rect::default(),
             last_iter_nav_area: Rect::default(),
             iter_nav_prev_zone: Rect::default(),
             iter_nav_next_zone: Rect::default(),
@@ -15448,6 +15500,10 @@ impl VizApp {
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
+            log_header_hits: Vec::new(),
+            last_settings_scope_area: Rect::default(),
+            last_settings_setup_area: Rect::default(),
+            last_settings_lint_area: Rect::default(),
             last_iter_nav_area: Rect::default(),
             iter_nav_prev_zone: Rect::default(),
             iter_nav_next_zone: Rect::default(),

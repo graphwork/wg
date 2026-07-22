@@ -118,8 +118,9 @@ fn is_ctrl_chord(code: KeyCode, modifiers: KeyModifiers, key: char) -> bool {
 use super::state::{
     AppearanceChoice, ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind,
     ConfirmAction, ContextLane, ControlPanelFocus, FocusedPanel, InputMode, InspectorDock,
-    InspectorMode, InspectorSubFocus, LayoutDragSnapshot, NavEntry, ResponsiveBreakpoint,
-    RightPanelTab, SymbolMode, TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
+    InspectorMode, InspectorSubFocus, LayoutDragSnapshot, LogHeaderAction, NavEntry,
+    ResponsiveBreakpoint, RightPanelTab, SymbolMode, TabBarEntryKind, TaskFormField,
+    TextPromptAction, VizApp,
 };
 
 /// Switch to a chat tab by zero-based positional index in `active_tabs`.
@@ -599,6 +600,10 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             app.cancel_layout_drag();
             app.clear_coordinator_picker_hits();
             app.clear_symbolic_context_hits();
+            app.log_header_hits.clear();
+            app.last_settings_scope_area = Rect::default();
+            app.last_settings_setup_area = Rect::default();
+            app.last_settings_lint_area = Rect::default();
             app.last_dialog_area = Rect::default();
         }
         Event::FocusGained => {
@@ -4999,6 +5004,56 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.last_chat_close_area.contains(pos)
             {
                 open_retire_chat_dialog(app);
+                return;
+            }
+
+            // Session Log controls are same-frame spans, routed before any
+            // graph/divider/scrollbar/PTY surface. A stale owner is swallowed
+            // as a no-op rather than falling through at its old coordinate.
+            if let Some(hit) = app
+                .log_header_hits
+                .iter()
+                .find(|hit| hit.area.contains(pos))
+                .cloned()
+            {
+                if hit.owns_current_frame(app) {
+                    app.focused_panel = FocusedPanel::RightPanel;
+                    match hit.action {
+                        LogHeaderAction::CycleView => app.cycle_log_view(),
+                        LogHeaderAction::ToggleSummary => app.toggle_log_summary(),
+                        LogHeaderAction::ToggleJson => app.toggle_log_json(),
+                        LogHeaderAction::PreviousAttempt => app.log_pane_cycle_attempt(false),
+                        LogHeaderAction::NextAttempt => app.log_pane_cycle_attempt(true),
+                    }
+                    // The action changed at least one ownership field (or the
+                    // attempt request invalidated the source). Await a new
+                    // frame before accepting another tap.
+                    app.log_header_hits.clear();
+                }
+                return;
+            }
+
+            // Settings action-bar buttons share their keyboard paths exactly.
+            // Renderer-owned rectangles are cleared on every frame/resize.
+            if app.right_panel_tab == RightPanelTab::Settings
+                && app.last_settings_scope_area.contains(pos)
+            {
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.toggle_settings_scope();
+                return;
+            }
+            if app.right_panel_tab == RightPanelTab::Settings
+                && app.last_settings_setup_area.contains(pos)
+            {
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.run_settings_setup_hint();
+                return;
+            }
+            if app.right_panel_tab == RightPanelTab::Settings
+                && app.last_settings_lint_area.contains(pos)
+            {
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.run_settings_lint();
                 return;
             }
 
