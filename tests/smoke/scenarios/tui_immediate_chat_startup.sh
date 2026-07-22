@@ -124,7 +124,7 @@ tmux resize-window -t "$outer" -x 140 -y 42
 first=0
 for _ in $(seq 1 100); do
     screen=$(tmux capture-pane -p -t "$outer" 2>/dev/null || true)
-    if printf '%s\n' "$screen" | grep -Eq 'Chat ▾|Task ▾|\[ New chat \]'; then
+    if printf '%s\n' "$screen" | grep -Eq '↯.*⌁.*⌂|\[ New chat \]'; then
         first=1
         break
     fi
@@ -151,14 +151,14 @@ grep -q 'pane_attached' "$trace" 2>/dev/null \
     || loud_fail "prioritized pane did not attach within the <3s interaction deadline: $(tr '\n' ' ' <"$trace" 2>/dev/null || true)"
 # The visible identity must be coherent with the pane we are about to type
 # into. In particular, a delayed full snapshot may not leave a generic Chat
-# heading or paint another tab's route over this reattached terminal. Wide
-# The one contextual row owns identity, connection, and route; no separate tab,
-# status, or PTY-mode row remains. Assert that semantic row rather than legacy
-# "Active:"/"route" decorations.
+# heading or paint another tab's identity over this reattached terminal. The
+# approved contextual row puts exact `.chat-N` first and deliberately omits
+# optional route/status before identity; assert that semantic row rather than
+# legacy "Active:"/"route" decorations.
 identity_ready=0
 for _ in $(seq 1 100); do
     screen=$(capture)
-    if printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected.*command:default'; then
+    if printf '%s\n' "$screen" | grep -Eq '↯.*⌁.*⌂.*[.]chat-0'; then
         identity_ready=1
         break
     fi
@@ -252,10 +252,10 @@ if printf '%s\n' "$screen" | grep -q '^ Commands'; then
 fi
 for _ in $(seq 1 100); do
     screen=$(capture)
-    printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected' && break
+    printf '%s\n' "$screen" | grep -Eq '↯.*⌁.*⌂.*[.]chat-0' && break
     sleep 0.01
 done
-printf '%s\n' "$screen" | grep -Eq 'Chat ▾.*[.]chat-0.*connected' \
+printf '%s\n' "$screen" | grep -Eq '↯.*⌁.*⌂.*[.]chat-0' \
     || loud_fail "daemon-on phase could not focus the existing chat PTY: $(capture | tail -12 | tr '\n' ' ')"
 second="Y"
 tmux send-keys -t "$outer" Y Enter

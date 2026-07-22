@@ -122,8 +122,11 @@ open_layout() {
     wait_screen "h/j/k/l dock" "layout command did not open"
 }
 
+chat_context="↯  ⌁  ⌂  .chat-0"
+task_context="↯  ⌁  ⌂  drag-detail-exact"
+
 start_tui
-wait_screen "Chat ▾" "Chat context did not render"
+wait_screen "$chat_context" "Chat context did not render"
 for _ in $(seq 1 200); do
     inner=$(tmux list-sessions -F '#S' 2>/dev/null | grep -E '^wg-chat-.*-chat-0$' | head -1 || true)
     [[ -n "$inner" ]] && break
@@ -143,8 +146,8 @@ sgr 0 8 12 m
 wait_layout mode full
 [[ $(layout_field dock) == right ]] || loud_fail "side drag changed desired dock"
 [[ $(layout_field size_percent) == 90 ]] || loud_fail "Full did not retain bounded 90% split"
-wait_screen "Chat ▾" "Chat context vanished in Full"
-assert_full_chrome "Chat ▾"
+wait_screen "$chat_context" "Chat context vanished in Full"
+assert_full_chrome "$chat_context"
 if grep -aFq $'\033[<' "$ptydump".env.*.in.bin 2>/dev/null; then
     loud_fail "mouse drag leaked an SGR sequence into Chat PTY"
 fi
@@ -175,14 +178,14 @@ PY
 tmux send-keys -t "$session" C-o
 sleep 0.05
 tmux send-keys -t "$session" 1
-wait_screen "Task ▾" "Detail context did not render"
+wait_screen "$task_context" "Detail context did not render"
 wait_screen "drag-detail-exact-id" "Detail identity changed"
 open_layout
 tmux send-keys -t "$session" j Enter
 wait_layout dock bottom
 wait_layout mode split
-wait_screen "Task ▾" "stacked contextual seam did not render"
-context_y=$(context_row_y "Task ▾") || loud_fail "could not locate stacked seam"
+wait_screen "$task_context" "stacked contextual seam did not render"
+context_y=$(context_row_y "$task_context") || loud_fail "could not locate stacked seam"
 start_y=$((context_y - 1))
 (( start_y >= 1 )) || loud_fail "invalid stacked seam coordinate $start_y"
 sgr 0 60 "$start_y" M
@@ -192,17 +195,17 @@ sgr 0 60 4 m
 wait_layout mode full
 [[ $(layout_field dock) == bottom ]] || loud_fail "stacked drag changed desired dock"
 [[ $(layout_field size_percent) == 90 ]] || loud_fail "stacked Full lost bounded split"
-wait_screen "Task ▾" "Detail context vanished in Full"
-assert_full_chrome "Task ▾"
+wait_screen "$task_context" "Detail context vanished in Full"
+assert_full_chrome "$task_context"
 
 # Kill only the outer TUI. Full is already atomically persisted; the inner Chat
 # tmux process must survive and a fresh TUI must reload Full without respawn.
 tmux kill-session -t "$session"
 start_tui
 wait_layout mode full
-wait_screen "Chat ▾" "restarted TUI did not reload the full inspector"
+wait_screen "$chat_context" "restarted TUI did not reload the full inspector"
 [[ $(tmux display-message -p -t "$inner" '#{pane_pid}') == "$chat_pid" ]] || loud_fail "TUI restart respawned persistent Chat"
-assert_full_chrome "Chat ▾"
+assert_full_chrome "$chat_context"
 
 # Restore Bottom exactly, then start a real drag and resize mid-gesture. The
 # stale coordinates after SIGWINCH must be ignored rather than selecting,
@@ -212,8 +215,8 @@ tmux send-keys -t "$session" j Enter
 wait_layout mode split
 wait_layout dock bottom
 [[ $(layout_field size_percent) == 90 ]] || loud_fail "restart restore lost remembered ratio"
-wait_screen "Chat ▾" "stacked Chat context missing after restore"
-context_y=$(context_row_y "Chat ▾") || loud_fail "could not locate restored stacked seam"
+wait_screen "$chat_context" "stacked Chat context missing after restore"
+context_y=$(context_row_y "$chat_context") || loud_fail "could not locate restored stacked seam"
 start_y=$((context_y - 1))
 sgr 0 60 "$start_y" M
 tmux resize-window -t "$session" -x 100 -y 28

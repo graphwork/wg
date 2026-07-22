@@ -114,17 +114,19 @@ mouse_click_label() {
     tmux send-keys -t "$session" -l "$(printf '\033[<0;%s;%sm' "$x" "$y")"
 }
 open_selector_by_mouse() {
-    mouse_click_label 'Chat ▾'
+    # The approved persistent Chat lane opens the existing bounded selector
+    # when activated while already active.
+    mouse_click_label '↯'
     wait_screen 'Choose Chat' 'mouse click did not open Chat selector'
 }
 
-wait_screen 'Chat ▾  .chat-0' 'initial live chat did not render'
+wait_screen '↯  ⌁  ⌂  .chat-0' 'initial live chat did not render'
 
 # Open and select an exact non-current row with a single pointer press.
 open_selector_by_mouse
 mouse_click_label '.chat-1' 1
 wait_not_screen 'Choose Chat' 'row click did not close selector'
-wait_screen 'Chat ▾  .chat-1' 'row click did not attach exact .chat-1 identity'
+wait_screen '↯  ⌁  ⌂  .chat-1' 'row click did not attach exact .chat-1 identity'
 
 # The rendered New footer action must create exactly one fresh chat through
 # the real launcher; mouse chooses the action, Enter accepts its default route.
@@ -137,13 +139,13 @@ for _ in $(seq 1 200); do
     sleep 0.03
 done
 [[ "$(chat_count)" == 3 ]] || loud_fail "New footer did not create exactly one chat"
-wait_screen 'Chat ▾  .chat-2' 'fresh chat did not become the exact active identity'
+wait_screen '↯  ⌁  ⌂  .chat-2' 'fresh chat did not become the exact active identity'
 
 # Cancel is itself a pointer target, not merely a printed keyboard hint.
 open_selector_by_mouse
 mouse_click_label '[Esc] Cancel' 1
 wait_not_screen 'Choose Chat' 'Cancel footer did not dismiss selector'
-wait_screen 'Chat ▾  .chat-2' 'Cancel changed the active chat identity'
+wait_screen '↯  ⌁  ⌂  .chat-2' 'Cancel changed the active chat identity'
 [[ "$(chat_count)" == 3 ]] || loud_fail "Cancel mutated chat count"
 
 # Close targets the highlighted identity and reaches the normal destructive
@@ -193,7 +195,7 @@ fi
 wait_screen 'Choose Chat' 'keyboard did not open selector after mouse flow'
 tmux send-keys -t "$session" Down Enter
 wait_not_screen 'Choose Chat' 'keyboard Enter did not activate selector row'
-wait_screen 'Chat ▾' 'keyboard selection did not return to a live Chat context'
+wait_screen '↯  ⌁  ⌂' 'keyboard selection did not return to a live Chat context'
 
 echo "PASS: real tmux mouse flow opened Chat selector, selected exact row, created via New, canceled, and confirmed Close; keyboard flow remains live"
 exit 0

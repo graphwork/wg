@@ -109,8 +109,8 @@ screen = open(screen_path, encoding="utf-8").read()
 lines = screen.splitlines()
 assert "can't find session" not in screen, screen
 assert archived not in screen, (archived, screen)
-assert screen.count("Chat ▾") == 1, screen
-assert screen.count("[ New chat ]") == 1, screen
+assert screen.count("↯  ⌁  ⌂") == 1, screen
+assert screen.count("⊞") == 1, screen
 assert ".chat-0" in screen, screen
 for stale in ("Graph | NAV", "Commands •", "Close…", "Prev", "Next", "Choose", "┌", "┐", "└", "┘"):
     assert stale not in screen, (stale, screen)
@@ -129,7 +129,7 @@ tmux new-session -d -s "$outer" -x 120 -y 36 \
 # client whose `window-size latest` policy overrides new-session -x/-y.
 tmux resize-window -t "$outer" -x 120 -y 36
 wait_screen '.chat-0' 'live .chat-0 identity did not render'
-wait_screen '[ New chat ]' 'minimal Chat context did not render'
+wait_screen '⊞' 'live Chat context did not render compact New-chat tile'
 initial_screen=$(capture)
 printf '%s\n' "$initial_screen" | grep -Fq 'Close…' \
     && loud_fail "legacy always-visible Close… action remained in Chat context"
@@ -153,7 +153,7 @@ tmux send-keys -t "$outer" Enter
 wait_screen '.chat-36' 'abandoned .chat-36 did not render in Detail'
 wait_screen 'abandoned' 'abandoned state did not render in Detail'
 screen=$(capture)
-printf '%s\n' "$screen" | grep -Fq 'Task ▾' \
+printf '%s\n' "$screen" | grep -Fq '↯  ⌁  ⌂  .chat-36' \
     || loud_fail "abandoned .chat-36 did not open the contextual Task/Detail inspector"
 printf '%s\n' "$screen" | grep -Fq '[ New chat ]' \
     && loud_fail "terminal Task/Detail context leaked the Chat action"
@@ -171,7 +171,7 @@ sessions_after=$(printf '%s\n' "$project_sessions_after" | grep -c . || true)
 # identity remains pinned to 0 (terminal Detail never changed it).
 tmux send-keys -t "$outer" 0
 wait_screen '.chat-0' 'could not return to live .chat-0'
-wait_screen '[ New chat ]' 'minimal Chat context missing after terminal Detail return'
+wait_screen '⊞' 'live Chat compact New-chat tile missing after terminal Detail return'
 chat0_session=$(session_for 0)
 for _ in $(seq 1 200); do tmux has-session -t "$chat0_session" 2>/dev/null && break; sleep 0.02; done
 tmux has-session -t "$chat0_session" 2>/dev/null \
@@ -197,7 +197,7 @@ tmux send-keys -t "$outer" w
 wait_screen 'Close Chat' 'Hide did not reopen Close… modal'
 tmux send-keys -t "$outer" h
 wait_not_screen 'Close Chat' 'Hide did not close the modal'
-wait_not_screen 'Chat ▾  .chat-0' 'Hide left the detached chat active'
+wait_not_screen '↯  ⌁  ⌂  .chat-0' 'Hide left the detached chat active'
 tmux has-session -t "$chat0_session" 2>/dev/null \
     || loud_fail "Hide/detach killed the agent"
 [[ "$(tmux display-message -p -t "$chat0_session" '#{pane_pid}')" == "$chat0_pid" ]] \
@@ -213,7 +213,7 @@ wait_screen 'Choose Chat' 'chooser did not open after Hide'
 # on that identity. Enter selects it; Down would race the stale header and
 # silently select chat-2 instead.
 tmux send-keys -t "$outer" Enter
-wait_screen 'Chat ▾  .chat-1' 'live chat-1 did not open from chooser'
+wait_screen '↯  ⌁  ⌂  .chat-1' 'live chat-1 did not open from chooser'
 
 # Start the real daemon for canonical `wg chat stop`; TUI sentinel ownership
 # makes the selected PTY the process that the successful effect must terminate.
@@ -256,7 +256,7 @@ done
 assert_graph .chat-1 open no
 # Closing the stopped identity advances directly to the next live chat rather
 # than leaving a disconnected composer. Pin that coherent handoff to chat-2.
-wait_screen 'Chat ▾  .chat-2' 'Stop did not advance to live chat-2'
+wait_screen '↯  ⌁  ⌂  .chat-2' 'Stop did not advance to live chat-2'
 
 # Archive has explicit Done+archived semantics and tears down its process.
 chat2_session=$(session_for 2)
@@ -281,7 +281,7 @@ assert_graph .chat-2 done yes
 ! tmux has-session -t "$chat2_session" 2>/dev/null \
     || loud_fail "Archive left the chat-2 agent session running"
 wait_not_screen '.chat-2  (' 'Archive graph row did not leave the physical frame'
-wait_screen 'Chat ▾  .chat-0' 'Archive did not settle on one live identity'
+wait_screen '↯  ⌁  ⌂  .chat-0' 'Archive did not settle on one live identity'
 # Lifecycle toasts intentionally overlay graph cells; wait for them to expire
 # before asserting the settled physical/differential frame.
 wait_not_screen 'Archived coordinator 2' 'Archive toast did not expire'

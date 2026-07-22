@@ -7,13 +7,14 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
-    ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
-    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, InspectorDock, LayoutMode,
-    ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView,
-    SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
-    VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
-    format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
+    ActivityEventKind, AppearanceChoice, ChoiceDialogState, ColorCapability, ConfigEditKind,
+    ConfigSection, ConfirmAction, ContextLane, ControlPanelFocus, CoordinatorArrowHit,
+    CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, ExitPromptState, FocusedPanel,
+    InputMode, InspectorDock, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
+    SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind, TaskFormField,
+    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
+    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
+    spinner_wave_pos, vitals_staleness_color,
 };
 use worksgood::AgentStatus;
 use worksgood::graph::{TokenUsage, format_tokens};
@@ -146,7 +147,7 @@ fn spinner_wave_line(elapsed: std::time::Duration, indent: &str) -> Line<'static
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clear expired jump targets (>2 seconds old).
-    if let Some((_, when)) = app.jump_target
+    if let Some((_, when)) = app.jump_target.as_ref()
         && when.elapsed() > std::time::Duration::from_secs(2)
     {
         app.jump_target = None;
@@ -167,6 +168,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     app.last_graph_scrollbar_area = Rect::default();
     app.last_panel_scrollbar_area = Rect::default();
     app.clear_coordinator_picker_hits();
+    app.clear_symbolic_context_hits();
 
     let area = frame.area();
 
@@ -233,11 +235,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Compact is a temporary presentation fallback, never a rewrite of the
     // desired dock/ratio/mode. Extreme modes still choose their sole visible
     // pane; Split remembers the user's compact pane across phone rotations.
-    let compact_view = match app.layout_preference.mode {
-        super::state::InspectorMode::Full => SinglePanelView::Detail,
-        super::state::InspectorMode::Hidden => SinglePanelView::Graph,
-        super::state::InspectorMode::Split => app.single_panel_view,
-    };
+    let compact_view = app.effective_compact_view();
 
     // Phase 1: Compute viewport dimensions from layout (needed for deferred centering).
     match app.responsive_breakpoint {
@@ -259,7 +257,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.scroll.viewport_height = main_area.height as usize;
                     app.scroll.viewport_width = main_area.width as usize;
                 }
-                SinglePanelView::Detail | SinglePanelView::Log => {
+                SinglePanelView::Detail => {
                     app.last_graph_area = Rect::default();
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
@@ -472,7 +470,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                         app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
                     );
                 }
-                SinglePanelView::Detail | SinglePanelView::Log => {
+                SinglePanelView::Detail => {
                     draw_right_panel(frame, app, main_area);
                     app.last_graph_hscrollbar_area = Rect::default();
                 }
@@ -635,7 +633,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     } else if let InputMode::Confirm(ref action) = app.input_mode {
         app.last_dialog_area = draw_confirm_dialog(frame, action);
     } else if let InputMode::ChoiceDialog(ref state) = app.input_mode {
-        app.last_dialog_area = draw_choice_dialog(frame, state);
+        let area = draw_choice_dialog(frame, state);
+        app.choice_dialog_row_hits = choice_dialog_row_hits(state, area);
+        app.last_dialog_area = area;
     } else if let InputMode::ExitPrompt(ref state) = app.input_mode {
         app.last_dialog_area = draw_exit_prompt(frame, state);
     } else if matches!(app.input_mode, InputMode::CoordinatorPicker) {
@@ -648,6 +648,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.last_coordinator_picker_close_area = layout.close_area;
             app.last_coordinator_picker_cancel_area = layout.cancel_area;
         }
+    } else if matches!(app.input_mode, InputMode::TaskPicker) {
+        let layout = draw_task_picker(frame, app);
+        app.last_dialog_area = layout.area;
+        app.last_task_picker_list_area = layout.list_area;
+        app.task_picker_row_hits = layout.row_hits;
+        app.last_task_picker_cancel_area = layout.cancel_area;
     } else if matches!(app.input_mode, InputMode::ChatManager) {
         if let Some(ref mgr) = app.chat_manager {
             app.last_dialog_area = draw_chat_manager(frame, mgr);
@@ -1159,7 +1165,11 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     let has_search = app.has_active_search() && !app.fuzzy_matches.is_empty();
     let current_match_orig_line = app.current_match_line();
-    let jump_target_line = app.jump_target.map(|(line, _)| line);
+    let jump_target_line = app
+        .jump_target
+        .as_ref()
+        .and_then(|(task_id, _)| app.node_line_map.get(task_id))
+        .copied();
     let has_trace = app.selected_task_idx.is_some() && app.trace_visible;
     let has_selected = app.selected_task_idx.is_some();
 
@@ -2033,7 +2043,532 @@ fn draw_minimized_strip(frame: &mut Frame, area: Rect, hover: bool) {
 // Right panel rendering
 // ══════════════════════════════════════════════════════════════════════════════
 
-fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: bool) {
+#[derive(Clone, Copy)]
+enum ContextBarControl {
+    Search,
+    Controls,
+    Help,
+    Previous,
+    Next,
+    Menu,
+    Pulse,
+}
+
+fn ansi16_color(index: u8) -> Color {
+    match index % 16 {
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Yellow,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::Gray,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::LightYellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        _ => Color::White,
+    }
+}
+
+fn rgb_to_ansi256((r, g, b): (u8, u8, u8)) -> u8 {
+    let component = |value: u8| ((value as u16 * 5 + 127) / 255) as u8;
+    16 + 36 * component(r) + 6 * component(g) + component(b)
+}
+
+fn rgb_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |value: u8| {
+        let value = value as f64 / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+fn contrast_foreground(rgb: (u8, u8, u8)) -> Color {
+    let luminance = rgb_luminance(rgb);
+    let black_ratio = (luminance + 0.05) / 0.05;
+    let white_ratio = 1.05 / (luminance + 0.05);
+    if black_ratio >= white_ratio {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+fn ansi_index_rgb(index: u8) -> (u8, u8, u8) {
+    const BASE: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if index < 16 {
+        return BASE[index as usize];
+    }
+    if index >= 232 {
+        let value = 8 + (index - 232) * 10;
+        return (value, value, value);
+    }
+    let value = index - 16;
+    let component = |part: u8| if part == 0 { 0 } else { 55 + part * 40 };
+    (
+        component(value / 36),
+        component((value % 36) / 6),
+        component(value % 6),
+    )
+}
+
+fn workspace_bar_styles(app: &VizApp) -> (Style, Style) {
+    let appearance = &app.workspace_appearance;
+    let unresolved = appearance.context_rows_rendered == 0
+        || (appearance.choice == AppearanceChoice::Auto && appearance.auto_rgb.is_none());
+    if unresolved {
+        // The storage-independent first frame is a neutral inverse bar. It
+        // uses no workspace hue and therefore also satisfies mono/NO_COLOR.
+        return (
+            Style::default().add_modifier(Modifier::REVERSED),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        );
+    }
+    if appearance.choice == AppearanceChoice::None || appearance.capability == ColorCapability::Mono
+    {
+        return (
+            Style::default().add_modifier(Modifier::REVERSED),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        );
+    }
+
+    let (background, rgb) = match appearance.choice {
+        AppearanceChoice::Ansi(index) => match appearance.capability {
+            ColorCapability::TrueColor | ColorCapability::Ansi256 => {
+                (Color::Indexed(index), ansi_index_rgb(index))
+            }
+            ColorCapability::Ansi16 => {
+                let mapped = index % 16;
+                (ansi16_color(mapped), ansi_index_rgb(mapped))
+            }
+            ColorCapability::Mono => (Color::Reset, (0, 0, 0)),
+        },
+        AppearanceChoice::Auto | AppearanceChoice::Rgb(_, _, _) => {
+            let rgb = appearance.effective_rgb().unwrap_or((192, 192, 192));
+            match appearance.capability {
+                ColorCapability::TrueColor => (Color::Rgb(rgb.0, rgb.1, rgb.2), rgb),
+                ColorCapability::Ansi256 => {
+                    let index = rgb_to_ansi256(rgb);
+                    (Color::Indexed(index), ansi_index_rgb(index))
+                }
+                ColorCapability::Ansi16 => {
+                    let digest = rgb.0 ^ rgb.1.rotate_left(2) ^ rgb.2.rotate_left(4);
+                    // Restrict the auto fallback to bright backgrounds whose
+                    // conventional ANSI palettes retain black-text contrast.
+                    let index = [11, 14, 15, 10][(digest % 4) as usize];
+                    (ansi16_color(index), ansi_index_rgb(index))
+                }
+                ColorCapability::Mono => (Color::Reset, (0, 0, 0)),
+            }
+        }
+        AppearanceChoice::None => unreachable!("handled above"),
+    };
+    let foreground = contrast_foreground(rgb);
+    (
+        Style::default().fg(foreground).bg(background),
+        Style::default()
+            .fg(background)
+            .bg(foreground)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )
+}
+
+fn clip_cells(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "~".to_string();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        if UnicodeWidthStr::width(out.as_str())
+            + unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+            > width - 1
+        {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('~');
+    out
+}
+
+fn activity_pulse_failure(app: &VizApp) -> bool {
+    // Before the startup snapshot has committed, default false/zero fields are
+    // not evidence of failure. Keep the first status presentation neutral.
+    if !app.bootstrap_complete {
+        return false;
+    }
+    let coord_stale = app
+        .vitals
+        .coord_last_tick
+        .and_then(|tick| tick.elapsed().ok())
+        .is_some_and(|age| age.as_secs() >= 30);
+    let disk_warning = app
+        .async_fs
+        .cached_disk_snapshot()
+        .is_some_and(|snapshot| snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy);
+    !app.vitals.daemon_running || coord_stale || disk_warning
+}
+
+fn cached_activity_pulse(app: &VizApp, symbols: SymbolMode) -> String {
+    let max = if app.service_health.agents_max == 0 {
+        "?".to_string()
+    } else {
+        app.service_health.agents_max.to_string()
+    };
+    let warning = activity_pulse_failure(app);
+    match symbols {
+        SymbolMode::Workshop => {
+            let mut pulse = if warning {
+                "!".to_string()
+            } else {
+                String::new()
+            };
+            if app.vitals.agents_alive == 0 {
+                pulse.push_str(&format!("○0/{max}"));
+            } else {
+                pulse.push_str(&format!("●{}/{max}", app.vitals.agents_alive));
+            }
+            if app.task_counts.ready > 0 {
+                pulse.push_str(&format!("⊳{}", app.task_counts.ready));
+            }
+            if app.vitals.running > 0 {
+                pulse.push_str(&format!("▸{}", app.vitals.running));
+            }
+            if app.task_counts.pending_eval > 0 {
+                pulse.push_str(&format!("∴{}", app.task_counts.pending_eval));
+            }
+            pulse
+        }
+        SymbolMode::Letters => {
+            let mut pulse = if warning {
+                "!".to_string()
+            } else {
+                String::new()
+            };
+            pulse.push_str(&format!("A{}/{max}", app.vitals.agents_alive));
+            if app.task_counts.ready > 0 {
+                pulse.push_str(&format!("Q{}", app.task_counts.ready));
+            }
+            if app.vitals.running > 0 {
+                pulse.push_str(&format!("R{}", app.vitals.running));
+            }
+            if app.task_counts.pending_eval > 0 {
+                pulse.push_str(&format!("E{}", app.task_counts.pending_eval));
+            }
+            pulse
+        }
+    }
+}
+
+fn activity_pulse_style(app: &VizApp, base: Style) -> Style {
+    if app.workspace_appearance.capability == ColorCapability::Mono {
+        return if activity_pulse_failure(app) {
+            base.add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else if app.bootstrap_complete && app.vitals.running > 0 {
+            base.add_modifier(Modifier::BOLD)
+        } else {
+            base.add_modifier(Modifier::DIM)
+        };
+    }
+    // The whole packed segment has exactly one state color. Textual phase
+    // counts keep the same meaning in mono/NO_COLOR.
+    if activity_pulse_failure(app) {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else if app.bootstrap_complete && app.vitals.running > 0 {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        base.add_modifier(Modifier::DIM)
+    }
+}
+
+fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bool) {
+    app.clear_symbolic_context_hits();
+    app.last_coordinator_bar_area = area;
+    app.coordinator_tab_hits.clear();
+    app.coordinator_left_arrow_hit = CoordinatorArrowHit::default();
+    app.coordinator_right_arrow_hit = CoordinatorArrowHit::default();
+    app.last_chat_prev_area = Rect::default();
+    app.last_chat_next_area = Rect::default();
+    app.last_chat_picker_area = Rect::default();
+    app.last_chat_close_area = Rect::default();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let (bar_style, tile_style) = workspace_bar_styles(app);
+    frame.render_widget(Paragraph::new(" ").style(bar_style), area);
+
+    let symbols = app.workspace_appearance.symbols;
+    let lane = app.current_context_lane();
+    let lane_width = if area.width < 32 { 2 } else { 3 };
+    let lane_text = |glyph: &str| {
+        if lane_width == 2 {
+            format!("{glyph} ")
+        } else {
+            format!(" {glyph} ")
+        }
+    };
+    let (chat_glyph, task_glyph, workspace_glyph) = match symbols {
+        SymbolMode::Workshop => ("↯", "⌁", "⌂"),
+        SymbolMode::Letters => ("C", "T", "W"),
+    };
+    let lanes = [
+        (ContextLane::Chat, lane_text(chat_glyph)),
+        (ContextLane::Task, lane_text(task_glyph)),
+        (ContextLane::Workspace, lane_text(workspace_glyph)),
+    ];
+    let mut cursor = area.x;
+    for (which, text) in lanes {
+        if cursor >= area.right() {
+            break;
+        }
+        let width = lane_width.min(area.right().saturating_sub(cursor));
+        let rect = Rect::new(cursor, area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(clip_cells(&text, width as usize)).style(if lane == which {
+                tile_style
+            } else {
+                bar_style
+            }),
+            rect,
+        );
+        match which {
+            ContextLane::Chat => app.last_context_chat_lane_area = rect,
+            ContextLane::Task => app.last_context_task_lane_area = rect,
+            ContextLane::Workspace => app.last_context_workspace_lane_area = rect,
+        }
+        cursor = cursor.saturating_add(width);
+    }
+
+    // Terminal/archived identities remain inspectable but are deliberately
+    // not resumable-chat evidence. Only the coherent cached lifecycle count
+    // may select the compact inverse tile.
+    let compact_new = app.task_counts.resumable_chats > 0;
+    let new_label = if compact_new {
+        match symbols {
+            SymbolMode::Workshop => " ⊞ ",
+            SymbolMode::Letters => " + ",
+        }
+    } else {
+        NEW_CHAT_BUTTON_LABEL
+    };
+    let new_width = UnicodeWidthStr::width(new_label).min(area.width as usize) as u16;
+    let new_x = area.right().saturating_sub(new_width);
+    let new_rect = Rect::new(new_x, area.y, new_width, 1);
+    frame.render_widget(Paragraph::new(new_label).style(tile_style), new_rect);
+    app.coordinator_plus_hit = CoordinatorPlusHit {
+        start: new_rect.x,
+        end: new_rect.right(),
+    };
+
+    if matches!(app.input_mode, InputMode::Layout) {
+        let width = new_x.saturating_sub(cursor) as usize;
+        let text = clip_cells(
+            " Layout h/j/k/l dock a auto +/- size = preset f full 0 hide Enter apply Esc cancel ",
+            width,
+        );
+        frame.render_widget(
+            Paragraph::new(text).style(bar_style.add_modifier(Modifier::BOLD)),
+            Rect::new(cursor, area.y, width as u16, 1),
+        );
+        app.workspace_appearance.context_rows_rendered = app
+            .workspace_appearance
+            .context_rows_rendered
+            .saturating_add(1);
+        return;
+    }
+
+    let exact = match lane {
+        ContextLane::Chat => app
+            .active_chat_view_identity()
+            .map(|identity| identity.task_id)
+            .unwrap_or_else(|| "No chat".to_string()),
+        ContextLane::Task => app
+            .selected_task_id()
+            .map(str::to_owned)
+            .unwrap_or_else(|| "No task".to_string()),
+        ContextLane::Workspace => match app.right_panel_tab {
+            RightPanelTab::Config => "Config".to_string(),
+            RightPanelTab::Settings => "Settings".to_string(),
+            RightPanelTab::CoordLog => "Service".to_string(),
+            _ => "Workspace".to_string(),
+        },
+    };
+    let friendly = match lane {
+        ContextLane::Chat => app
+            .active_chat_view_identity()
+            .map(|identity| identity.label)
+            .filter(|label| label != &exact),
+        ContextLane::Task => app.selected_task_title().map(str::to_owned),
+        ContextLane::Workspace => None,
+    };
+
+    let available = new_x.saturating_sub(cursor) as usize;
+    let min_identity =
+        (UnicodeWidthStr::width(exact.as_str()) + 1).min(if area.width < 32 { 8 } else { 11 });
+    let mut budget = available.saturating_sub(min_identity);
+    let active_search = match lane {
+        ContextLane::Chat => {
+            app.input_mode == InputMode::ChatSearch || !app.chat.search.query.is_empty()
+        }
+        ContextLane::Task | ContextLane::Workspace => app.search_active,
+    };
+    let search_text = if active_search {
+        let query = if lane == ContextLane::Chat {
+            app.chat.search.query.as_str()
+        } else {
+            app.search_input.as_str()
+        };
+        let glyph = match symbols {
+            SymbolMode::Workshop => "⌕",
+            SymbolMode::Letters => "S",
+        };
+        if area.width < 28 {
+            format!(" {glyph}/")
+        } else {
+            format!(" {glyph}/{query} ")
+        }
+    } else {
+        match symbols {
+            SymbolMode::Workshop => " ⌕ ".to_string(),
+            SymbolMode::Letters => " S ".to_string(),
+        }
+    };
+
+    let mut controls: Vec<(ContextBarControl, String)> = Vec::new();
+    let mut reserve = |kind: ContextBarControl, text: String, threshold: u16, priority: bool| {
+        if area.width < threshold && !priority {
+            return;
+        }
+        let natural = UnicodeWidthStr::width(text.as_str());
+        if natural <= budget {
+            budget -= natural;
+            controls.push((kind, text));
+        } else if priority && budget >= 3 {
+            let clipped = clip_cells(&text, budget);
+            budget = 0;
+            controls.push((kind, clipped));
+        }
+    };
+    if area.width >= 100 && lane == ContextLane::Task {
+        let idx = app.selected_task_idx.unwrap_or(0);
+        if idx > 0 {
+            reserve(ContextBarControl::Previous, " ‹ ".to_string(), 100, false);
+        }
+        if idx + 1 < app.task_order.len() {
+            reserve(ContextBarControl::Next, " › ".to_string(), 100, false);
+        }
+    }
+    reserve(ContextBarControl::Search, search_text, 28, active_search);
+    reserve(
+        ContextBarControl::Controls,
+        match symbols {
+            SymbolMode::Workshop => " ⌘ ".to_string(),
+            SymbolMode::Letters => " = ".to_string(),
+        },
+        32,
+        false,
+    );
+    reserve(ContextBarControl::Help, " ? ".to_string(), 40, false);
+    reserve(ContextBarControl::Menu, " ⋮ ".to_string(), 32, false);
+    reserve(
+        ContextBarControl::Pulse,
+        format!(" {} ", cached_activity_pulse(app, symbols)),
+        60,
+        false,
+    );
+
+    let controls_width: usize = controls
+        .iter()
+        .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
+        .sum();
+    let identity_width = available.saturating_sub(controls_width);
+    let identity_text = if let Some(title) = friendly {
+        let with_title = format!(" {exact}  {title}");
+        if UnicodeWidthStr::width(with_title.as_str()) <= identity_width {
+            with_title
+        } else {
+            format!(" {exact}")
+        }
+    } else {
+        format!(" {exact}")
+    };
+    let identity_text = clip_cells(&identity_text, identity_width);
+    frame.render_widget(
+        Paragraph::new(identity_text).style(bar_style.add_modifier(Modifier::BOLD)),
+        Rect::new(cursor, area.y, identity_width as u16, 1),
+    );
+    cursor = cursor.saturating_add(identity_width as u16);
+
+    for (kind, text) in controls {
+        let width = UnicodeWidthStr::width(text.as_str()) as u16;
+        if width == 0 || cursor.saturating_add(width) > new_x {
+            continue;
+        }
+        let rect = Rect::new(cursor, area.y, width, 1);
+        let style = if matches!(kind, ContextBarControl::Pulse) {
+            activity_pulse_style(app, bar_style)
+        } else {
+            bar_style
+        };
+        frame.render_widget(Paragraph::new(text).style(style), rect);
+        match kind {
+            ContextBarControl::Search => app.last_context_search_area = rect,
+            ContextBarControl::Controls => app.last_context_controls_area = rect,
+            ContextBarControl::Help => app.last_context_help_area = rect,
+            ContextBarControl::Previous => app.last_context_prev_area = rect,
+            ContextBarControl::Next => app.last_context_next_area = rect,
+            ContextBarControl::Menu => app.last_context_menu_area = rect,
+            ContextBarControl::Pulse => app.last_context_pulse_area = rect,
+        }
+        cursor = cursor.saturating_add(width);
+    }
+    app.workspace_appearance.context_rows_rendered = app
+        .workspace_appearance
+        .context_rows_rendered
+        .saturating_add(1);
+}
+
+#[allow(dead_code)]
+fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, chat: bool) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -6957,6 +7492,8 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
         ),
         ChoiceDialogAction::TaskContext(task_id) => format!(" Task actions: {task_id} "),
         ChoiceDialogAction::WorkspaceContext => " Workspace actions ".to_string(),
+        ChoiceDialogAction::GlobalControls => " Controls — global owners ".to_string(),
+        ChoiceDialogAction::Appearance => " Appearance ".to_string(),
     };
     let size = frame.area();
     let width = size.width.saturating_sub(2).clamp(1, 100);
@@ -7002,6 +7539,16 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
             Line::from("Choose a cached system surface."),
             Line::from(""),
         ],
+        ChoiceDialogAction::GlobalControls => vec![
+            Line::from("Each entry has a distinct configuration/runtime owner."),
+            Line::from("Opening this palette performs no mutation."),
+            Line::from(""),
+        ],
+        ChoiceDialogAction::Appearance => vec![
+            Line::from("Cached bar color and explicit glyph mode."),
+            Line::from("No font probing; Letters mode is always manual."),
+            Line::from(""),
+        ],
     };
     for (i, (hotkey, label, desc)) in state.options.iter().enumerate() {
         let selected = i == state.selected;
@@ -7023,6 +7570,31 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     lines.push(Line::from(" ↑↓ navigate • Enter select • Esc cancel "));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     area
+}
+
+fn choice_dialog_row_hits(state: &ChoiceDialogState, area: Rect) -> Vec<(usize, Rect)> {
+    if area.width < 2 || area.height < 2 {
+        return Vec::new();
+    }
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let prefix_lines = match state.action {
+        super::state::ChoiceDialogAction::CloseChat(_) => 4,
+        _ => 3,
+    };
+    state
+        .options
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| {
+            let y = inner.y.saturating_add(prefix_lines + index as u16);
+            (y < inner.bottom()).then_some((index, Rect::new(inner.x, y, inner.width, 1)))
+        })
+        .collect()
 }
 
 /// Draw the chat-exit prompt overlay (tmux-persistence UX). Two
@@ -7182,6 +7754,104 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
     area
 }
 
+#[derive(Debug, Default)]
+struct TaskPickerLayout {
+    area: Rect,
+    list_area: Rect,
+    row_hits: Vec<(String, Rect)>,
+    cancel_area: Rect,
+}
+
+fn draw_task_picker(frame: &mut Frame, app: &VizApp) -> TaskPickerLayout {
+    let size = frame.area();
+    let entries = &app.cached_task_picker_entries;
+    let width = size.width.saturating_sub(2).clamp(1, 88);
+    let max_rows = size.height.saturating_sub(6).min(12) as usize;
+    let selected = app
+        .task_picker_selected_index()
+        .unwrap_or(0)
+        .min(entries.len().saturating_sub(1));
+    let visible_rows = entries.len().min(max_rows.max(1));
+    let start = selected
+        .saturating_sub(visible_rows / 2)
+        .min(entries.len().saturating_sub(visible_rows));
+    let height = (visible_rows as u16 + 4).min(size.height).max(1);
+    let x = size.x + size.width.saturating_sub(width) / 2;
+    let y = size.y + size.height.saturating_sub(height) / 2;
+    let area = Rect::new(x, y, width, height);
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Tasks — exact destination ")
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let list_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        (visible_rows as u16).min(inner.height.saturating_sub(1)),
+    );
+    let mut row_hits = Vec::with_capacity(visible_rows);
+    let end = start.saturating_add(visible_rows).min(entries.len());
+    for (visible, (task_id, title)) in entries[start..end].iter().enumerate() {
+        let index = start + visible;
+        let row = Rect::new(
+            list_area.x,
+            list_area.y + visible as u16,
+            list_area.width,
+            1,
+        );
+        let marker = if index == selected { "›" } else { " " };
+        let exact = format!("{marker} {task_id}");
+        let text = if !title.is_empty() && title != task_id {
+            let candidate = format!("{exact}  {title}");
+            if UnicodeWidthStr::width(candidate.as_str()) <= row.width as usize {
+                candidate
+            } else {
+                clip_cells(&exact, row.width as usize)
+            }
+        } else {
+            clip_cells(&exact, row.width as usize)
+        };
+        let style = if index == selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(Paragraph::new(text).style(style), row);
+        row_hits.push((task_id.clone(), row));
+    }
+    let cancel_area = if inner.height > list_area.height {
+        let rect = Rect::new(
+            inner.x,
+            inner.bottom().saturating_sub(1),
+            inner.width.min(14),
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(" [Esc] Cancel ").style(Style::default().fg(Color::DarkGray)),
+            rect,
+        );
+        rect
+    } else {
+        Rect::default()
+    };
+    TaskPickerLayout {
+        area,
+        list_area,
+        row_hits,
+        cancel_area,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CoordinatorPickerFooterAction {
     New,
@@ -7252,7 +7922,8 @@ fn draw_coordinator_picker(
     let inner_width = width.saturating_sub(2);
     let footer_lines = coordinator_picker_footer_lines(inner_width);
     let separator_rows = u16::from(!picker.entries.is_empty() && !footer_lines.is_empty());
-    let desired_height = (picker.entries.len() as u16)
+    let desired_height = u16::try_from(picker.entries.len())
+        .unwrap_or(u16::MAX)
         .saturating_add(footer_lines.len() as u16)
         .saturating_add(separator_rows)
         .saturating_add(2);
@@ -8664,6 +9335,12 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 ("Esc", "cancel"),
             ],
         ),
+        InputMode::TaskPicker => (
+            "Tasks",
+            "NAV",
+            Color::Cyan,
+            vec![("↑↓", "select"), ("Enter", "open exact"), ("Esc", "cancel")],
+        ),
         InputMode::ChatManager => (
             "Chats",
             "NAV",
@@ -8704,7 +9381,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             }
             FocusedPanel::Graph => {
                 let tab_hint = if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
-                    ("Tab/]/[", "panels")
+                    ("Tab/]/[", "Graph/inspector")
                 } else {
                     ("Tab", "panel")
                 };
@@ -8841,7 +9518,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 if !vendor_pty_active {
                     // Common hints for all right-panel tabs (except vendor PTY).
                     if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
-                        hints.push(("Tab/]/[", "panels"));
+                        hints.push(("Tab/]/[", "Graph/inspector"));
                     } else {
                         hints.push(("Tab", "graph"));
                     }
@@ -8849,12 +9526,12 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     hints.push(("?", "help"));
                     hints.push(("Alt←→", "cycle views"));
                 }
-                // In compact mode, prefix the tab label with a breadcrumb indicator.
+                // Compact presentation is Graph or the exact tab owner; never
+                // imply a hidden Detail/Log cycle that can replace Chat.
                 let label: &str = if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
-                    match app.single_panel_view {
-                        SinglePanelView::Detail => "▸Detail",
-                        SinglePanelView::Log => "▸Log",
-                        _ => tab_label,
+                    match app.effective_compact_view() {
+                        SinglePanelView::Graph => "▸Graph",
+                        SinglePanelView::Detail => tab_label,
                     }
                 } else {
                     tab_label
@@ -10182,6 +10859,22 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
     let blank = || Line::from("");
 
     let lines = vec![
+        heading("Symbolic context bar"),
+        binding("↯ / C", "Chat; repeat for exact Chat selector"),
+        binding("⌁ / T", "Task; repeat for bounded exact Task selector"),
+        binding("⌂ / W", "Workspace; repeat for actions/dashboard"),
+        binding(
+            "⌕ / S",
+            "Current-lane search (graph and Chat remain isolated)",
+        ),
+        binding(
+            "⌘ / =",
+            "Controls: Profiles, Models, Config, Settings, Appearance, Service, Disk, Help",
+        ),
+        binding("⋮", "Actions for the exact captured context"),
+        binding("⊞ / +", "New chat; [ New chat ] means no resumable chat"),
+        binding("●/○", "Cached agents, ready, running, pending-eval pulse"),
+        blank(),
         heading("Navigation"),
         binding("↑ / ↓", "Select prev / next task"),
         binding("j / k", "Scroll down / up"),
@@ -10224,7 +10917,7 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("Ctrl-C", "Kill agent on focused task"),
         blank(),
         heading("Chat Panel (command mode)"),
-        binding("n", "New chat (launcher); next match if search active"),
+        binding("n", "New chat (launcher)"),
         binding("w / Ctrl-W", "Close current tab (non-destructive)"),
         binding("1..9", "Jump to chat tab N"),
         binding("←/→ / [ / ]", "Prev / next chat"),
@@ -10233,11 +10926,12 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("-", "Close/archive chat"),
         binding("Ctrl-O", "Toggle PTY focus / command mode"),
         blank(),
-        heading("Search (vim-style)"),
-        binding("/", "Start search"),
-        binding("N", "Previous match (n = new chat when no search)"),
-        binding("Enter", "Accept and jump to match"),
-        binding("Esc", "Clear search"),
+        heading("Graph search transaction"),
+        binding("/", "Start exact-task search in command mode"),
+        binding("↑/k/BackTab", "Previous result"),
+        binding("↓/j/Tab", "Next result"),
+        binding("Enter/tap", "Commit stable task ID; clear all match state"),
+        binding("Esc", "Clear totally without quitting"),
         blank(),
         heading("General"),
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
@@ -13633,16 +14327,18 @@ mod tests {
     fn picker_with_entries(count: usize, selected: usize) -> CoordinatorPickerState {
         CoordinatorPickerState {
             selected,
-            entries: (0..count)
-                .map(|index| {
-                    (
-                        index as u32 + 1,
-                        format!(".chat-{}", index + 1),
-                        format!("Chat {} • in-progress", index + 1),
-                        true,
-                    )
-                })
-                .collect(),
+            entries: std::sync::Arc::new(
+                (0..count)
+                    .map(|index| {
+                        (
+                            index as u32 + 1,
+                            format!(".chat-{}", index + 1),
+                            format!("Chat {} • in-progress", index + 1),
+                            true,
+                        )
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -16238,40 +16934,374 @@ mod tests {
     }
 
     #[test]
-    fn one_row_chat_context_width_matrix_keeps_identity_and_new_chat() {
+    fn approved_activity_segment_is_packed_and_uses_failure_active_idle_priority() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.workspace_appearance.capability = ColorCapability::TrueColor;
+        app.bootstrap_complete = false;
+        app.vitals.daemon_running = false;
+        assert!(!cached_activity_pulse(&app, SymbolMode::Workshop).starts_with('!'));
+        assert_ne!(
+            activity_pulse_style(&app, Style::default()).bg,
+            Some(Color::Red)
+        );
+
+        app.bootstrap_complete = true;
+        app.vitals.daemon_running = true;
+        app.vitals.agents_alive = 2;
+        app.service_health.agents_max = 4;
+        app.task_counts.ready = 3;
+        app.vitals.running = 7;
+        app.task_counts.pending_eval = 9;
+
+        assert_eq!(
+            cached_activity_pulse(&app, SymbolMode::Workshop),
+            "●2/4⊳3▸7∴9"
+        );
+        assert_eq!(
+            cached_activity_pulse(&app, SymbolMode::Letters),
+            "A2/4Q3R7E9"
+        );
+        let active = activity_pulse_style(&app, Style::default());
+        assert_eq!(active.bg, Some(Color::Yellow));
+
+        app.vitals.daemon_running = false;
+        let failure = activity_pulse_style(&app, Style::default());
+        assert_eq!(failure.bg, Some(Color::Red));
+        assert!(cached_activity_pulse(&app, SymbolMode::Workshop).starts_with('!'));
+
+        app.vitals.daemon_running = true;
+        app.vitals.running = 0;
+        let idle = activity_pulse_style(&app, Style::default());
+        assert!(idle.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn approved_literal_context_buffer_captures() {
         let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
         app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
             coordinator_id: 7,
+            task_id: ".chat-7".into(),
+            label: "Dinner planning".into(),
+            executor: Some("pi".into()),
+            model: Some("m".into()),
+        });
+        app.task_counts.resumable_chats = 1;
+        let chat = context_row_text(&mut app, 40);
+
+        app.workspace_appearance.set_symbols(SymbolMode::Letters);
+        let letters = context_row_text(&mut app, 40);
+
+        app.workspace_appearance.set_symbols(SymbolMode::Workshop);
+        app.active_tabs.clear();
+        app.active_chat_identity = None;
+        app.task_counts.resumable_chats = 0;
+        app.chat_startup_state = super::super::state::ChatStartupState::Empty;
+        app.right_panel_tab = RightPanelTab::Dashboard;
+        let empty = context_row_text(&mut app, 40);
+
+        app.active_tabs.push(7);
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 7,
+            task_id: ".chat-7".into(),
+            label: "Dinner planning".into(),
+            executor: Some("pi".into()),
+            model: Some("m".into()),
+        });
+        app.task_counts.resumable_chats = 1;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.vitals.agents_alive = 2;
+        app.service_health.agents_max = 4;
+        app.task_counts.ready = 3;
+        app.vitals.running = 1;
+        app.task_counts.pending_eval = 2;
+        let wide = context_row_text(&mut app, 120);
+
+        assert_eq!(chat, " ↯  ⌁  ⌂  .chat-7         ⌕  ⌘  ?  ⋮  ⊞ ");
+        assert_eq!(letters, " C  T  W  .chat-7         S  =  ?  ⋮  + ");
+        assert_eq!(empty, " ↯  ⌁  ⌂  Workspace ⌕  ⌘  ? [ New chat ]");
+        assert_eq!(
+            wide,
+            " ↯  ⌁  ⌂  .chat-7  Dinner planning                                                           ⌕  ⌘  ?  ⋮  !●2/4⊳3▸1∴2  ⊞ "
+        );
+    }
+
+    #[test]
+    fn letters_mode_is_explicit_and_immediately_replaces_every_optional_symbol() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.task_counts.resumable_chats = 1;
+        app.workspace_appearance.set_symbols(SymbolMode::Letters);
+        app.vitals.agents_alive = 2;
+        app.service_health.agents_max = 4;
+        app.task_counts.ready = 3;
+        app.vitals.running = 1;
+        app.task_counts.pending_eval = 2;
+        let row = context_row_text(&mut app, 120);
+        assert!(
+            row.contains(" C ") && row.contains(" T ") && row.contains(" W "),
+            "{row}"
+        );
+        assert!(
+            row.contains(" S ") && row.contains(" = ") && row.contains(" + "),
+            "{row}"
+        );
+        assert!(row.contains("A2/4Q3R1E2"), "{row}");
+        for forbidden in ['↯', '⌁', '⌂', '⌕', '⌘', '⊞'] {
+            assert!(
+                !row.contains(forbidden),
+                "letters mode leaked {forbidden}: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_symbolic_frame_is_neutral_with_dark_inverse_active_lane() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        app.task_counts.resumable_chats = 1;
+        assert_eq!(app.workspace_appearance.context_rows_rendered, 0);
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| render_context_row(frame, &mut app, frame.area(), true))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .cell((12, 0))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            buffer
+                .cell((1, 0))
+                .unwrap()
+                .modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+        );
+        assert_eq!(app.workspace_appearance.context_rows_rendered, 1);
+    }
+
+    #[test]
+    fn contrast_foreground_is_wcag_safe_across_dark_mid_and_light_overrides() {
+        for rgb in [
+            (0, 0, 0),
+            (32, 64, 96),
+            (96, 128, 160),
+            (184, 216, 240),
+            (255, 255, 255),
+        ] {
+            let luminance = rgb_luminance(rgb);
+            let ratio = match contrast_foreground(rgb) {
+                Color::Black => (luminance + 0.05) / 0.05,
+                Color::White => 1.05 / (luminance + 0.05),
+                other => panic!("unexpected contrast foreground: {other:?}"),
+            };
+            assert!(ratio >= 4.5, "rgb={rgb:?}, ratio={ratio}");
+        }
+    }
+
+    #[test]
+    fn workspace_bar_color_falls_back_truecolor_256_16_and_mono() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        app.task_counts.resumable_chats = 1;
+        app.workspace_appearance.context_rows_rendered = 1;
+        app.workspace_appearance.auto_rgb = Some((184, 216, 240));
+        app.workspace_appearance.set_choice(AppearanceChoice::Auto);
+
+        let render_cell = |app: &mut VizApp| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+            terminal
+                .draw(|frame| render_context_row(frame, app, frame.area(), true))
+                .unwrap();
+            terminal.backend().buffer().cell((12, 0)).unwrap().clone()
+        };
+
+        app.workspace_appearance.capability = ColorCapability::TrueColor;
+        assert_eq!(render_cell(&mut app).bg, Color::Rgb(184, 216, 240));
+        app.workspace_appearance.capability = ColorCapability::Ansi256;
+        assert!(matches!(render_cell(&mut app).bg, Color::Indexed(_)));
+        app.workspace_appearance.capability = ColorCapability::Ansi16;
+        assert!(matches!(
+            render_cell(&mut app).bg,
+            Color::LightRed
+                | Color::LightGreen
+                | Color::LightYellow
+                | Color::LightBlue
+                | Color::LightMagenta
+                | Color::LightCyan
+                | Color::White
+        ));
+        app.workspace_appearance.set_choice(AppearanceChoice::None);
+        assert_eq!(render_cell(&mut app).bg, Color::Reset);
+    }
+
+    #[test]
+    fn symbolic_context_width_matrix_keeps_lanes_identity_hits_and_inverse_new_tile() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.task_counts.resumable_chats = 1;
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 7,
             task_id: ".chat-7".to_string(),
-            label: "Chat 7".to_string(),
+            label: "Dinner planning".to_string(),
             executor: Some("pi".to_string()),
             model: Some("m".to_string()),
         });
-        for width in [40, 50, 60, 80, 120] {
+        for width in [20, 32, 40, 60, 80, 120, 200] {
             let row = context_row_text(&mut app, width);
-            assert!(row.contains("Chat"), "width={width}: {row}");
-            assert!(row.contains(".chat-7"), "width={width}: {row}");
-            assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "width={width}: {row}");
             assert!(
-                !row.contains("Task"),
-                "chat context leaked task controls: {row}"
+                row.contains('↯') && row.contains('⌁') && row.contains('⌂'),
+                "width={width}: {row}"
             );
+            assert!(row.contains(".chat-7"), "width={width}: {row}");
+            assert!(row.contains('⊞'), "width={width}: {row}");
+            assert!(
+                !row.contains('['),
+                "compact tile must have no literal brackets: {row}"
+            );
+            let expected_lane_width = if width < 32 { 2 } else { 3 };
+            assert_eq!(app.last_context_chat_lane_area.width, expected_lane_width);
+            assert_eq!(app.last_context_task_lane_area.width, expected_lane_width);
+            assert_eq!(
+                app.last_context_workspace_lane_area.width,
+                expected_lane_width
+            );
+            assert_eq!(
+                app.coordinator_plus_hit.end - app.coordinator_plus_hit.start,
+                3
+            );
+            if width >= 40 {
+                assert!(
+                    row.contains('?'),
+                    "direct Help disappeared at width={width}: {row}"
+                );
+            }
         }
-        let narrow = context_row_text(&mut app, 40);
-        let warning_width = context_row_text(&mut app, 50);
         let wide = context_row_text(&mut app, 120);
         assert!(
-            !narrow.contains("pi:m"),
-            "optional route did not collapse: {narrow}"
+            wide.contains("Dinner planning"),
+            "friendly title should use spare width: {wide}"
         );
-        assert!(
-            warning_width.contains("daemon down") && !warning_width.contains("pi:m"),
-            "actionable daemon warning must preempt route: {warning_width}"
-        );
-        assert!(
-            wide.contains("pi:m"),
-            "route should restore when width returns: {wide}"
-        );
+    }
+
+    #[test]
+    fn approved_symbolic_golden_matrix_covers_modes_widths_and_context_states() {
+        use super::super::state::{ChatStartupState, ColorCapability, SymbolMode};
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 7,
+            task_id: ".chat-7".into(),
+            label: "Dinner planning".into(),
+            executor: Some("pi".into()),
+            model: Some("m".into()),
+        });
+        app.workspace_appearance.auto_rgb = Some((184, 216, 240));
+        app.workspace_appearance.context_rows_rendered = 1;
+
+        for symbols in [SymbolMode::Workshop, SymbolMode::Letters] {
+            app.workspace_appearance.set_symbols(symbols);
+            for capability in [
+                ColorCapability::TrueColor,
+                ColorCapability::Ansi256,
+                ColorCapability::Ansi16,
+                ColorCapability::Mono,
+            ] {
+                app.workspace_appearance.capability = capability;
+                for state in [
+                    "chat",
+                    "task",
+                    "workspace",
+                    "config",
+                    "search",
+                    "no-chat",
+                    "all-archived",
+                    "terminal-chat",
+                    "startup",
+                ] {
+                    app.input_mode = InputMode::Normal;
+                    app.search_active = false;
+                    app.search_input.clear();
+                    app.task_counts.inspectable_chats = 1;
+                    app.task_counts.resumable_chats = 1;
+                    app.chat_startup_state = ChatStartupState::Ready;
+                    app.right_panel_tab = match state {
+                        "chat" => RightPanelTab::Chat,
+                        "task" | "search" | "terminal-chat" => RightPanelTab::Detail,
+                        "config" => RightPanelTab::Config,
+                        _ => RightPanelTab::Dashboard,
+                    };
+                    if state == "search" {
+                        app.search_active = true;
+                        app.search_input = "needle".into();
+                        app.input_mode = InputMode::Search;
+                    }
+                    if matches!(
+                        state,
+                        "no-chat" | "all-archived" | "terminal-chat" | "startup"
+                    ) {
+                        app.task_counts.resumable_chats = 0;
+                        app.task_counts.inspectable_chats =
+                            usize::from(matches!(state, "all-archived" | "terminal-chat")) * 4;
+                        app.chat_startup_state = if state == "startup" {
+                            ChatStartupState::Loading
+                        } else {
+                            ChatStartupState::Empty
+                        };
+                    }
+                    for width in [20, 32, 40, 60, 80, 120, 200] {
+                        let row = context_row_text(&mut app, width);
+                        let lane_glyphs = match symbols {
+                            SymbolMode::Workshop => ['↯', '⌁', '⌂'],
+                            SymbolMode::Letters => ['C', 'T', 'W'],
+                        };
+                        for glyph in lane_glyphs {
+                            assert!(
+                                row.contains(glyph),
+                                "{symbols:?}/{capability:?}/{state}/{width}: {row}"
+                            );
+                        }
+                        let no_resumable = matches!(
+                            state,
+                            "no-chat" | "all-archived" | "terminal-chat" | "startup"
+                        );
+                        if no_resumable {
+                            assert!(
+                                row.contains(NEW_CHAT_BUTTON_LABEL),
+                                "{state}/{width}: {row}"
+                            );
+                        } else {
+                            let tile = if symbols == SymbolMode::Workshop {
+                                '⊞'
+                            } else {
+                                '+'
+                            };
+                            assert!(row.contains(tile), "{state}/{width}: {row}");
+                        }
+                        if state == "search" {
+                            let anchor = match (symbols, width < 28) {
+                                (SymbolMode::Workshop, true) => "⌕/",
+                                (SymbolMode::Workshop, false) => "⌕/needle",
+                                (SymbolMode::Letters, true) => "S/",
+                                (SymbolMode::Letters, false) => "S/needle",
+                            };
+                            assert!(row.contains(anchor), "{state}/{width}: {row}");
+                            assert!(app.last_context_search_area.width >= 3);
+                        }
+                        let lanes = [
+                            app.last_context_chat_lane_area,
+                            app.last_context_task_lane_area,
+                            app.last_context_workspace_lane_area,
+                        ];
+                        assert!(lanes.iter().all(|area| area.width >= 2));
+                        assert!(lanes[0].right() <= lanes[1].x && lanes[1].right() <= lanes[2].x);
+                        assert!(app.coordinator_plus_hit.start >= lanes[2].right());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -16290,7 +17320,9 @@ mod tests {
             RightPanelTab::Settings,
         ] {
             app.right_panel_tab = tab;
-            for width in [40, 80, 140] {
+            app.chat_startup_state = super::super::state::ChatStartupState::Empty;
+            app.task_counts.resumable_chats = 0;
+            for width in [20, 32, 40, 60, 80, 120, 200] {
                 let row = context_row_text(&mut app, width);
                 assert!(
                     row.contains(NEW_CHAT_BUTTON_LABEL),
@@ -16303,7 +17335,7 @@ mod tests {
     }
 
     #[test]
-    fn one_row_pulse_prioritizes_agents_running_ready_and_disk() {
+    fn one_row_pulse_prioritizes_warning_agents_ready_running_and_pending() {
         use worksgood::disk_sentinel::{AreaUsage, DiskLevel, DiskSnapshot};
 
         let (viz, _) = build_hud_test_graph();
@@ -16345,15 +17377,21 @@ mod tests {
 
         for width in [80, 140] {
             let row = context_row_text(&mut app, width);
-            assert!(row.contains("A2/8"), "width={width}: {row}");
-            assert!(row.contains("R3"), "width={width}: {row}");
-            assert!(row.contains("Q4"), "width={width}: {row}");
-            assert!(row.contains("E1"), "width={width}: {row}");
-            assert!(row.contains("42G"), "width={width}: {row}");
+            assert!(row.contains("●2/8⊳4▸3∴1"), "width={width}: {row}");
             assert!(row.contains(NEW_CHAT_BUTTON_LABEL), "width={width}: {row}");
+            assert_eq!(
+                app.last_context_pulse_area.width as usize,
+                UnicodeWidthStr::width(" ●2/8⊳4▸3∴1 ")
+            );
         }
+        let mut warning = app.async_fs.cached_disk_snapshot().unwrap();
+        warning.level = DiskLevel::Warning;
+        app.async_fs.seed_disk_snapshot(warning);
+        let warned = context_row_text(&mut app, 140);
+        assert!(warned.contains("!●2/8⊳4▸3∴1"), "{warned}");
+
         let narrow = context_row_text(&mut app, 40);
-        assert!(narrow.contains("Task") && narrow.contains("a"), "{narrow}");
+        assert!(narrow.contains('⌁') && narrow.contains('a'), "{narrow}");
         assert!(narrow.contains(NEW_CHAT_BUTTON_LABEL), "{narrow}");
     }
 
@@ -16363,7 +17401,7 @@ mod tests {
         let mut app = build_app_from_viz_output(&viz, "a");
         app.right_panel_tab = RightPanelTab::Detail;
         let row = context_row_text(&mut app, 140);
-        assert!(row.contains("Task"), "{row}");
+        assert!(row.contains('⌁'), "{row}");
         assert!(row.contains("a"), "exact task id missing: {row}");
         assert!(row.contains('›'), "next navigation missing: {row}");
         assert!(
@@ -16378,6 +17416,17 @@ mod tests {
             !row.contains('┌') && !row.contains('┐') && !row.contains('│'),
             "{row}"
         );
+        app.selected_task_idx = Some(app.task_order.len() - 1);
+        let last = context_row_text(&mut app, 140);
+        assert!(
+            last.contains('‹') && !last.contains('›'),
+            "last boundary: {last}"
+        );
+        let compact = context_row_text(&mut app, 80);
+        assert!(
+            !compact.contains('‹') && !compact.contains('›'),
+            "compact arrows leaked: {compact}"
+        );
     }
 
     #[test]
@@ -16386,6 +17435,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let (mut app, _tmp) = build_app_for_tab_color_test(&[3]);
+        app.task_counts.resumable_chats = 1;
         app.set_layout_preference(LayoutPreference {
             mode: InspectorMode::Full,
             ..LayoutPreference::default()
@@ -16442,10 +17492,8 @@ mod tests {
             let top: String = (0..width)
                 .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
                 .collect();
-            assert!(top.contains("Chat"), "width={width}: {top}");
-            if width >= 80 {
-                assert!(top.contains("[ New chat ]"), "width={width}: {top}");
-            }
+            assert!(top.contains('↯'), "width={width}: {top}");
+            assert!(top.contains('⊞'), "width={width}: {top}");
             assert!(
                 !top.contains('┌') && !top.contains('┐') && !top.contains('│'),
                 "width={width}: {top}"
@@ -16538,7 +17586,7 @@ mod tests {
         let top: String = (0..80)
             .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
             .collect();
-        assert!(top.contains("Task") && top.contains("a"), "{top}");
+        assert!(top.contains('⌁') && top.contains("a"), "{top}");
         assert!(
             top.contains("New chat") && !top.contains('┌') && !top.contains('┐'),
             "{top}"
@@ -16598,7 +17646,7 @@ mod tests {
             })
             .collect();
         assert!(
-            seam.contains("Task"),
+            seam.contains('⌁'),
             "stacked seam must carry context: {seam}"
         );
         assert!(!seam.contains('┌') && !seam.contains('┐'), "{seam}");
@@ -16610,7 +17658,7 @@ mod tests {
         let normal = context_row_text(&mut app, 120);
         app.input_mode = InputMode::Layout;
         let layout = context_row_text(&mut app, 120);
-        assert!(normal.contains("Chat"), "{normal}");
+        assert!(normal.contains('↯'), "{normal}");
         assert!(layout.contains("h/j/k/l dock"), "{layout}");
         assert!(
             !layout.contains("Chat ▾"),
@@ -16851,8 +17899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_responsive_compact_toggle_single_panel() {
-        // Verify that toggle_single_panel_view cycles through Graph → Detail → Log → Graph.
+    fn test_responsive_compact_toggle_preserves_exact_chat_inspector() {
         use crate::tui::viz_viewer::state::{FocusedPanel, RightPanelTab, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
@@ -16860,23 +17907,17 @@ mod tests {
         app.responsive_breakpoint = crate::tui::viz_viewer::state::ResponsiveBreakpoint::Compact;
         app.single_panel_view = SinglePanelView::Graph;
         app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
 
-        // Toggle: Graph -> Detail
         app.toggle_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Detail);
         assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
 
-        // Toggle: Detail -> Log
-        app.toggle_single_panel_view();
-        assert_eq!(app.single_panel_view, SinglePanelView::Log);
-        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Log);
-
-        // Toggle: Log -> Graph
         app.toggle_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Graph);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
     }
 
     #[test]
@@ -17027,37 +18068,31 @@ mod tests {
     }
 
     #[test]
-    fn test_responsive_compact_tab_toggles_panel_focus() {
-        // In compact mode, toggle_panel_focus should cycle through all three panels.
-        use crate::tui::viz_viewer::state::{FocusedPanel, SinglePanelView};
+    fn test_responsive_compact_tab_is_graph_last_inspector_fallback() {
+        use crate::tui::viz_viewer::state::{FocusedPanel, RightPanelTab, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
         app.responsive_breakpoint = crate::tui::viz_viewer::state::ResponsiveBreakpoint::Compact;
         app.single_panel_view = SinglePanelView::Graph;
         app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
 
-        // Tab: Graph -> Detail
         app.toggle_panel_focus();
         assert_eq!(app.single_panel_view, SinglePanelView::Detail);
         assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
 
-        // Tab: Detail -> Log
-        app.toggle_panel_focus();
-        assert_eq!(app.single_panel_view, SinglePanelView::Log);
-        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-
-        // Tab: Log -> Graph
         app.toggle_panel_focus();
         assert_eq!(app.single_panel_view, SinglePanelView::Graph);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
     }
 
     // ── Single-panel navigation mode tests ──
 
     #[test]
-    fn test_single_panel_forward_cycle() {
-        // ]/Tab cycles: Graph → Detail → Log → Graph
+    fn test_single_panel_forward_toggle_is_binary_and_identity_safe() {
         use crate::tui::viz_viewer::state::{FocusedPanel, RightPanelTab, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
@@ -17065,28 +18100,21 @@ mod tests {
         app.responsive_breakpoint = crate::tui::viz_viewer::state::ResponsiveBreakpoint::Compact;
         app.single_panel_view = SinglePanelView::Graph;
         app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
 
-        // Forward: Graph → Detail
         app.toggle_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Detail);
         assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
 
-        // Forward: Detail → Log
-        app.toggle_single_panel_view();
-        assert_eq!(app.single_panel_view, SinglePanelView::Log);
-        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Log);
-
-        // Forward: Log → Graph (wraps)
         app.toggle_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Graph);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
     }
 
     #[test]
-    fn test_single_panel_backward_cycle() {
-        // [ cycles backward: Graph → Log → Detail → Graph
+    fn test_single_panel_backward_toggle_matches_binary_fallback() {
         use crate::tui::viz_viewer::state::{FocusedPanel, RightPanelTab, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
@@ -17094,23 +18122,17 @@ mod tests {
         app.responsive_breakpoint = crate::tui::viz_viewer::state::ResponsiveBreakpoint::Compact;
         app.single_panel_view = SinglePanelView::Graph;
         app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
 
-        // Backward: Graph → Log
-        app.prev_single_panel_view();
-        assert_eq!(app.single_panel_view, SinglePanelView::Log);
-        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Log);
-
-        // Backward: Log → Detail
         app.prev_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Detail);
         assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
 
-        // Backward: Detail → Graph (wraps)
         app.prev_single_panel_view();
         assert_eq!(app.single_panel_view, SinglePanelView::Graph);
         assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
     }
 
     #[test]
@@ -17128,9 +18150,8 @@ mod tests {
         app.scroll.offset_y = 5;
         let original_selected = app.selected_task_idx;
 
-        // Cycle through all panels and back.
-        app.toggle_single_panel_view(); // → Detail
-        app.toggle_single_panel_view(); // → Log
+        // Toggle to the exact inspector and back.
+        app.toggle_single_panel_view(); // → inspector
         app.toggle_single_panel_view(); // → Graph
 
         assert_eq!(app.single_panel_view, SinglePanelView::Graph);
@@ -17142,16 +18163,16 @@ mod tests {
     }
 
     #[test]
-    fn test_single_panel_log_view_renders() {
-        // In compact mode with SinglePanelView::Log, the right panel renders
-        // with the Log tab active, and graph area is zeroed.
+    fn test_compact_exact_log_inspector_renders_without_a_log_panel_state() {
+        // Compact has one generic exact-inspector pane; Log is retained by the
+        // stable right-panel tab rather than a hidden third panel state.
         use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, RightPanelTab, SinglePanelView};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
-        app.single_panel_view = SinglePanelView::Log;
+        app.single_panel_view = SinglePanelView::Detail;
         app.right_panel_tab = RightPanelTab::Log;
 
         let backend = TestBackend::new(40, 25);
@@ -17163,37 +18184,6 @@ mod tests {
         assert_eq!(app.last_graph_area, Rect::default());
         assert!(app.last_right_panel_area.width > 0);
         assert!(app.last_right_panel_area.height > 0);
-    }
-
-    #[test]
-    fn test_single_panel_labels() {
-        use crate::tui::viz_viewer::state::SinglePanelView;
-
-        assert_eq!(SinglePanelView::Graph.label(), "Graph");
-        assert_eq!(SinglePanelView::Detail.label(), "Detail");
-        assert_eq!(SinglePanelView::Log.label(), "Log");
-    }
-
-    #[test]
-    fn test_single_panel_next_prev_inverse() {
-        use crate::tui::viz_viewer::state::SinglePanelView;
-
-        for view in [
-            SinglePanelView::Graph,
-            SinglePanelView::Detail,
-            SinglePanelView::Log,
-        ] {
-            assert_eq!(
-                view.next().prev(),
-                view,
-                "next then prev should return to original"
-            );
-            assert_eq!(
-                view.prev().next(),
-                view,
-                "prev then next should return to original"
-            );
-        }
     }
 
     // ══════════════════════════════════════════════════════════════════════

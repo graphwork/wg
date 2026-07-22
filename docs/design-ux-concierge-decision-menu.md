@@ -1,8 +1,46 @@
 # UX and concierge decision menu
 
-**Status:** maintainer decision menu; design only; no implementation, command name, CLI topology, execution provider, install, configuration, or service change is approved
+**Status:** the symbolic one-row TUI trial is maintainer-approved and implemented; concierge naming/topology, execution-provider defaults, installation, and attended lifecycle work remain unapproved
 
 **Inputs:** [symbolic context bar][bar], [search navigation][search], [concierge entrypoint][concierge], [push-button configurator][configurator], the [validated minimal TUI][minimal], the [PTY key-routing contract][keymap], and the completed [clickable Chat selector flow][selector]
+
+## Approved symbolic TUI trial (implemented 2026-07-22)
+
+This approval **supersedes the earlier ASCII ` C / T / W ` recommendation below**. The historical decision menu remains for concierge traceability, but it is no longer the TUI visual contract.
+
+- Persistent destinations are padded ` ↯ ` Chat/live-agent, ` ⌁ ` Task/work, and ` ⌂ ` Workspace. Explicit `letters` mode renders ` C `, ` T `, and ` W `; glyph support is never auto-detected.
+- A first lane tap returns to its remembered exact chat/task/owner. Repeating the active lane opens the existing bounded Chat selector, the bounded exact Task selector, or Workspace actions. In compact presentation `↯` shows the exact Chat inspector, `⌁` the remembered exact task inspector, and `⌂` Graph/Workspace even over a persisted Full preference; plain command-mode Tab is a binary Graph↔last-inspector fallback that preserves Chat rather than cycling through Detail/Log. Every visible cell is a same-frame hit target and resize clears every hit map.
+- Exact `.chat-N` or task ID precedes a friendly title. Clipping is a viewport only; all actions and search commits retain the stable backing ID.
+- Search is ` ⌕ ` / ` ⌕/query ` (` S ` in letters mode). Graph search is a temporary exact-task transaction: Up/`k`/BackTab and Down/`j`/Tab navigate, Enter or exact-row tap commits, and Esc clears query/filter/colors/navigation without quitting. Only a stable-ID two-second pulse survives. Chat-history occurrence search remains separate; starting either clears the other, and lane changes clear graph search.
+- ` ⌘ ` (` = ` in letters mode) opens one bounded Controls palette with distinct Profiles, Models/execution, Config, Settings, Appearance, Service, Disk/resources, and Help owners. ` ? ` stays direct at supported widths. ` ⋮ ` captures the exact context before opening actions.
+- With a live/resumable chat, New Chat is the three-cell inverse tile ` ⊞ ` (` + ` in letters mode), with no brackets. With no resumable chat—including archived/terminal-only recovery—it is exactly `[ New chat ]`. Rendering/opening is non-mutating; activation opens one launcher.
+- The packed cached pulse is `●alive/max⊳ready▸running∴pending-eval`, omitting zero phase counts, using `○` at zero agents and `!` for an actionable warning. Letters mode is `Aalive/maxQreadyRrunningEpending-eval`. The segment also uses one status color (priority failure → active → idle), so phase meaning remains textual in mono/`NO_COLOR`; disk detail is omitted from the row. The entire packed value is one Workspace/system-detail hit.
+- The whole row is a light workspace-colored bar; active lane and New Chat are dark/inverse and active meaning also uses weight/underline. The first frame is neutral. A post-first-frame worker derives and caches a color with BLAKE3 derive-key context `worksgood.tui.workspace-color.v1` from `user@hostname:canonical Git common-directory/project identity`, so linked worktrees share a color. Render/input do no environment, path, Git, filesystem, subprocess, or hash work. Valid overrides are `auto`, `none`, `#RRGGBB`/`rgb:RRGGBB`, and `ansi:N`; capabilities fall through truecolor → 256 → 16 → mono/`NO_COLOR`. Runtime environment entry points are `WG_TUI_APPEARANCE` and `WG_TUI_SYMBOLS=workshop|letters`; the Appearance owner offers the same validated cached choices.
+- The PTY contract is unchanged: the child owns every row below the one bar and every printable, including `/`; `Ctrl+O` is the host command escape.
+
+### Captured one-row buffers
+
+These are TestBackend/tmux-equivalent buffer captures; inverse/color styling is described because a code fence cannot carry cell styles. Markdown omits the final bar-padding cell on rows that end in one space; the golden test pins that cell and the exact 40/120-cell width.
+
+```text
+40 workshop, live Chat (↯ and ⊞ inverse):
+ ↯  ⌁  ⌂  .chat-7         ⌕  ⌘  ?  ⋮  ⊞
+
+40 workshop, no resumable Chat (Workspace inverse):
+ ↯  ⌁  ⌂  Workspace ⌕  ⌘  ? [ New chat ]
+
+40 letters compatibility, live Chat (C and + inverse):
+ C  T  W  .chat-7         S  =  ?  ⋮  +
+
+120 workshop, packed lifecycle sample:
+ ↯  ⌁  ⌂  .chat-7  Dinner planning                                                           ⌕  ⌘  ?  ⋮  !●2/4⊳3▸1∴2  ⊞
+```
+
+Golden tests additionally pin widths 20/32/40/60/80/120/200, workshop/letters, first-frame neutral, truecolor/256/16/mono, no-chat/full-label, stable exact identity, and exact hit widths. The implementation lives in `src/tui/viz_viewer/{state,render,event}.rs`; the live human-flow smoke is `tests/smoke/scenarios/tui_symbolic_context_bar.sh`.
+
+## Historical recommendation and concierge menu
+
+The section below records the pre-approval menu. Its ASCII TUI rows are historical evidence, not a fallback recommendation; only explicit `letters` mode is supported by the approved trial.
 
 ## One-page recommended default
 

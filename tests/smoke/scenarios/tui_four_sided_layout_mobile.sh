@@ -62,7 +62,7 @@ wait_layout() {
 }
 open_layout() {
   tmux send-keys -t "$session" p
-  wait_screen "h/j/k/l dock"
+  wait_screen "h/j/k/l"
 }
 assert_one_context_row() {
   local needle=$1 screen count
@@ -77,51 +77,53 @@ assert_one_context_row() {
 # without implicitly creating/resurrecting a chat, then switch to Task.
 tmux new-session -d -s "$session" -x 160 -y 44 \
   "cd '$scratch/project' && env TERMUX_VERSION=0.119 MOSH_CONNECTION='smoke 0 0' MOSH_SERVER_PID=4242 '$WG_BIN' --dir '$G' tui --no-mouse"
+chat_context="↯  ⌁  ⌂"
+task_context="↯  ⌁  ⌂  layout-fixture-exact"
 wait_screen "[ New chat ]"
-wait_screen "Chat ▾"
-assert_one_context_row "Chat ▾"
+wait_screen "$chat_context"
+assert_one_context_row "$chat_context"
 capture >"$scratch/wide-chat-side.txt"
 tmux send-keys -t "$session" 1
 # Inspect the real graph row rather than accepting a generic "no task" shell.
 # All chats are archived, so explicitly return focus to the graph first.
 tmux send-keys -t "$session" Tab Down Enter
-wait_screen "Task ▾  layout-fixture-exact"
-assert_one_context_row "Task ▾"
+wait_screen "$task_context"
+assert_one_context_row "$task_context"
 capture >"$scratch/wide-task-stacked-initial.txt"
 open_layout; tmux send-keys -t "$session" l Enter
 wait_layout dock right
 wait_layout mode split
-wait_screen "Task ▾  layout-fixture-exact"
-assert_one_context_row "Task ▾"
+wait_screen "$task_context"
+assert_one_context_row "$task_context"
 capture >"$scratch/wide-task-side.txt"
 
 # Stacked split: the Task context is embedded into the one horizontal seam.
 open_layout; tmux send-keys -t "$session" j Enter
 wait_layout dock bottom
-wait_screen "Task ▾"
-assert_one_context_row "Task ▾"
+wait_screen "$task_context"
+assert_one_context_row "$task_context"
 capture >"$scratch/wide-task-stacked.txt"
 
 # Full inspector has no outer restore frame and still exactly one context row.
 open_layout; tmux send-keys -t "$session" f Enter
 wait_layout mode full
-wait_screen "Task ▾"
-assert_one_context_row "Task ▾"
+wait_screen "$task_context"
+assert_one_context_row "$task_context"
 task_full=$(capture)
 grep -qF "[ New chat ]" <<<"$task_full" || loud_fail "Task context lost global New chat"
-grep -Eq 'A[0-9]+/[0-9?]+.*R[0-9]+.*Q[0-9]+' <<<"$task_full" \
-  || loud_fail "Task context lost agents/running/ready pulse: $task_full"
-grep -Eq 'disk ok 42GiB|D42G' <<<"$task_full" \
-  || loud_fail "Task context lost cached projected disk headroom: $task_full"
+grep -Eq '(!)?(●|○)[0-9]+/[0-9?]+.*⊳[0-9]+' <<<"$task_full" \
+  || loud_fail "Task context lost packed cached agent/ready pulse: $task_full"
+! grep -Eq 'disk ok|D[0-9]+G' <<<"$task_full" \
+  || loud_fail "packed lifecycle pulse leaked an unapproved disk segment: $task_full"
 capture >"$scratch/wide-task-full.txt"
 
 # Chat exposes only contextual chat controls and a fully-labelled fixed action.
 tmux send-keys -t "$session" 0
 wait_screen "[ New chat ]"
-assert_one_context_row "Chat ▾"
+assert_one_context_row "$chat_context"
 chat_screen=$(capture)
 grep -qF "[ New chat ]" <<<"$chat_screen" || loud_fail "fully-labelled New chat missing"
-! grep -qF "Task ▾" <<<"$chat_screen" || loud_fail "task controls leaked into Chat context"
+! grep -qF "$task_context" <<<"$chat_screen" || loud_fail "task identity leaked into Chat context"
 capture >"$scratch/wide-chat-full.txt"
 
 # Medium and Termux widths keep the labelled action. Optional route/actions
@@ -134,7 +136,7 @@ for spec in "76 30 medium" "40 22 termux"; do
   tmux resize-window -t "$session" -x "$1" -y "$2"
   sleep 0.25
   wait_screen "[ New chat ]"
-  assert_one_context_row "Chat ▾"
+  assert_one_context_row "$chat_context"
   capture >"$scratch/$3-chat.txt"
 done
 
@@ -152,7 +154,7 @@ wait_layout dock left
 wait_layout mode split
 tmux resize-window -t "$session" -x 160 -y 44
 sleep 0.25
-wait_screen "Chat"
+wait_screen "$chat_context"
 [[ $(layout_field dock) == left ]] || loud_fail "wide restoration lost desired dock"
 
 [[ $(sha256sum "$G/graph.jsonl" | cut -d' ' -f1) == "$graph_before" ]] \
@@ -160,4 +162,4 @@ wait_screen "Chat"
 [[ $(sha256sum "$G/config.toml" | cut -d' ' -f1) == "$config_before" ]] \
   || loud_fail "TUI layout mutated config"
 
-echo "PASS: all-archived recovery, global fixed New chat, cached A/R/Q/disk pulse, exact Task context, one seam, responsive layout, and non-mutating startup"
+echo "PASS: all-archived recovery, global fixed New chat, packed cached lifecycle pulse, exact Task context, one seam, responsive layout, and non-mutating startup"

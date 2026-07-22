@@ -116,10 +116,10 @@ fn is_ctrl_chord(code: KeyCode, modifiers: KeyModifiers, key: char) -> bool {
 }
 
 use super::state::{
-    ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
-    ControlPanelFocus, FocusedPanel, InputMode, InspectorDock, InspectorMode, InspectorSubFocus,
-    LayoutDragSnapshot, NavEntry, ResponsiveBreakpoint, RightPanelTab, TabBarEntryKind,
-    TaskFormField, TextPromptAction, VizApp,
+    AppearanceChoice, ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind,
+    ConfirmAction, ContextLane, ControlPanelFocus, FocusedPanel, InputMode, InspectorDock,
+    InspectorMode, InspectorSubFocus, LayoutDragSnapshot, NavEntry, ResponsiveBreakpoint,
+    RightPanelTab, SymbolMode, TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
 };
 
 /// Switch to a chat tab by zero-based positional index in `active_tabs`.
@@ -598,6 +598,7 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             // derives fresh rectangles from the pointer-down preference.
             app.cancel_layout_drag();
             app.clear_coordinator_picker_hits();
+            app.clear_symbolic_context_hits();
             app.last_dialog_area = Rect::default();
         }
         Event::FocusGained => {
@@ -1051,6 +1052,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::TextPrompt(_) => handle_text_prompt_input(app, code, modifiers),
         InputMode::ChoiceDialog(_) => handle_choice_dialog_input(app, code),
         InputMode::CoordinatorPicker => handle_coordinator_picker_input(app, code),
+        InputMode::TaskPicker => handle_task_picker_input(app, code),
         InputMode::ChatManager => handle_chat_manager_input(app, code, modifiers),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
@@ -1290,6 +1292,8 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
             }
             app.input_mode = InputMode::Normal;
         }
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => app.prev_match(),
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => app.next_match(),
         KeyCode::Backspace | KeyCode::Delete => {
             app.search_input.pop();
             app.update_search();
@@ -1299,14 +1303,13 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
             app.update_search();
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.should_quit = true;
+            app.clear_search();
+            app.input_mode = InputMode::Normal;
         }
         KeyCode::Char(c) => {
             app.search_input.push(c);
             app.update_search();
         }
-        KeyCode::BackTab => app.prev_match(),
-        KeyCode::Tab => app.next_match(),
         KeyCode::Left => {
             app.record_graph_scroll_activity();
             app.record_graph_hscroll_activity();
@@ -1316,14 +1319,6 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
             app.record_graph_scroll_activity();
             app.record_graph_hscroll_activity();
             app.scroll.scroll_right(4);
-        }
-        KeyCode::Up => {
-            app.record_graph_scroll_activity();
-            app.scroll.scroll_up(1);
-        }
-        KeyCode::Down => {
-            app.record_graph_scroll_activity();
-            app.scroll.scroll_down(1);
         }
         _ => {}
     }
@@ -1625,59 +1620,165 @@ pub(crate) fn open_retire_chat_dialog(app: &mut VizApp) {
 /// the exact rendered identity before showing a modal, preventing a refresh or
 /// later selection change from retargeting it.
 fn open_context_action_menu(app: &mut VizApp) {
-    if app.right_panel_tab == RightPanelTab::Chat && app.active_chat_view_identity().is_some() {
-        open_retire_chat_dialog(app);
+    match app.current_context_lane() {
+        ContextLane::Chat if app.active_chat_view_identity().is_some() => {
+            open_retire_chat_dialog(app);
+        }
+        ContextLane::Task => {
+            let Some(task_id) = app.selected_task_id().map(str::to_owned) else {
+                app.push_toast(
+                    "No exact task context is available".into(),
+                    super::state::ToastSeverity::Warning,
+                );
+                return;
+            };
+            app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                action: ChoiceDialogAction::TaskContext(task_id),
+                selected: 0,
+                options: vec![
+                    (
+                        'd',
+                        "Detail".into(),
+                        "Inspect task metadata and result".into(),
+                    ),
+                    (
+                        'a',
+                        "Agency".into(),
+                        "Inspect assignment/evaluation lifecycle".into(),
+                    ),
+                    ('l', "Log".into(), "Inspect task output and events".into()),
+                    ('m', "Messages".into(), "Inspect task messages".into()),
+                    ('c', "Cancel".into(), "Make no changes".into()),
+                ],
+            });
+        }
+        ContextLane::Chat | ContextLane::Workspace => {
+            app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                action: ChoiceDialogAction::WorkspaceContext,
+                selected: 0,
+                options: vec![
+                    (
+                        'd',
+                        "Dashboard".into(),
+                        "Open the cached system overview".into(),
+                    ),
+                    ('c', "Config".into(), "Inspect merged configuration".into()),
+                    ('l', "Service log".into(), "Inspect daemon activity".into()),
+                    ('x', "Cancel".into(), "Make no changes".into()),
+                ],
+            });
+        }
+    }
+}
+
+fn open_task_context_picker(app: &mut VizApp) {
+    app.begin_graph_search();
+}
+
+fn activate_context_lane_control(app: &mut VizApp, lane: ContextLane) {
+    if app.current_context_lane() != lane {
+        app.activate_context_lane(lane);
         return;
     }
-    if app.right_panel_tab != RightPanelTab::Dashboard
-        && let Some(task_id) = app.selected_task_id().map(str::to_owned)
-    {
-        app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-            action: ChoiceDialogAction::TaskContext(task_id),
-            selected: 0,
-            options: vec![
-                (
-                    'd',
-                    "Detail".into(),
-                    "Inspect task metadata and result".into(),
-                ),
-                (
-                    'a',
-                    "Agency".into(),
-                    "Inspect assignment/evaluation lifecycle".into(),
-                ),
-                ('l', "Log".into(), "Inspect task output and events".into()),
-                ('m', "Messages".into(), "Inspect task messages".into()),
-                ('c', "Cancel".into(), "Make no changes".into()),
-            ],
-        });
-        return;
+    match lane {
+        ContextLane::Chat => app.open_coordinator_picker(),
+        ContextLane::Task => app.open_task_picker(),
+        ContextLane::Workspace => open_context_action_menu(app),
     }
+}
+
+fn open_global_controls(app: &mut VizApp) {
+    // A cached system-detail popup must not sit above the palette or steal its
+    // keyboard/mouse actions after the pulse was used to reach Workspace.
+    app.service_health.detail_open = false;
     app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-        action: ChoiceDialogAction::WorkspaceContext,
+        action: ChoiceDialogAction::GlobalControls,
         selected: 0,
         options: vec![
             (
-                'd',
-                "Dashboard".into(),
-                "Open the cached system overview".into(),
+                'p',
+                "Profiles".into(),
+                "profile activation and routing owner".into(),
             ),
-            ('c', "Config".into(), "Inspect merged configuration".into()),
-            ('l', "Service log".into(), "Inspect daemon activity".into()),
-            ('x', "Cancel".into(), "Make no changes".into()),
+            (
+                'm',
+                "Models / execution".into(),
+                "handler, model, endpoint owner".into(),
+            ),
+            ('c', "Config".into(), "merged configuration owner".into()),
+            (
+                's',
+                "Settings".into(),
+                "validated setting editor owner".into(),
+            ),
+            (
+                'a',
+                "Appearance".into(),
+                "workspace color and symbol mode".into(),
+            ),
+            ('v', "Service".into(), "daemon and agent-slot owner".into()),
+            (
+                'd',
+                "Disk / resources".into(),
+                "cached workspace resource detail".into(),
+            ),
+            (
+                'h',
+                "Help".into(),
+                "symbols, bindings, and PTY ownership".into(),
+            ),
         ],
     });
 }
 
-fn open_task_context_picker(app: &mut VizApp) {
-    app.focused_panel = FocusedPanel::Graph;
-    app.search_active = true;
-    app.input_mode = InputMode::Search;
-    app.search_input.clear();
-    app.fuzzy_matches.clear();
-    app.current_match = None;
-    app.filtered_indices = None;
-    app.update_scroll_bounds();
+fn open_appearance_controls(app: &mut VizApp) -> InputMode {
+    let active = |label: &str, is_active: bool| {
+        if is_active {
+            format!("{label} (active)")
+        } else {
+            label.to_string()
+        }
+    };
+    let choice = app.workspace_appearance.choice;
+    let symbols = app.workspace_appearance.symbols;
+    app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+        action: ChoiceDialogAction::Appearance,
+        selected: 0,
+        options: vec![
+            (
+                'a',
+                active("Auto", choice == AppearanceChoice::Auto),
+                "BLAKE3 project identity color".into(),
+            ),
+            (
+                'n',
+                active("None", choice == AppearanceChoice::None),
+                "mono / NO_COLOR grammar".into(),
+            ),
+            (
+                'r',
+                active("RGB", matches!(choice, AppearanceChoice::Rgb(..))),
+                "validated #B8D8F0 override".into(),
+            ),
+            (
+                'i',
+                active("ANSI", matches!(choice, AppearanceChoice::Ansi(_))),
+                "validated ansi:45 override".into(),
+            ),
+            (
+                'w',
+                active("Workshop symbols", symbols == SymbolMode::Workshop),
+                "↯ ⌁ ⌂ ⌕ ⌘ ⊞".into(),
+            ),
+            (
+                'l',
+                active("Letters", symbols == SymbolMode::Letters),
+                "C T W S = + compatibility".into(),
+            ),
+            ('b', "Back".into(), "return to Controls".into()),
+        ],
+    });
+    app.input_mode.clone()
 }
 
 fn execute_choice_dialog_option(
@@ -1701,22 +1802,79 @@ fn execute_choice_dialog_option(
             if app.selected_task_id() != Some(task_id.as_str()) {
                 return InputMode::Normal;
             }
-            app.right_panel_tab = match idx {
+            let tab = match idx {
                 0 => RightPanelTab::Detail,
                 1 => RightPanelTab::Agency,
                 2 => RightPanelTab::Log,
                 3 => RightPanelTab::Messages,
                 _ => return InputMode::Normal,
             };
+            app.show_inspector_tab(tab);
             InputMode::Normal
         }
         ChoiceDialogAction::WorkspaceContext => {
-            app.right_panel_tab = match idx {
+            let tab = match idx {
                 0 => RightPanelTab::Dashboard,
                 1 => RightPanelTab::Config,
                 2 => RightPanelTab::CoordLog,
                 _ => return InputMode::Normal,
             };
+            app.show_inspector_tab(tab);
+            InputMode::Normal
+        }
+        ChoiceDialogAction::GlobalControls => match idx {
+            0 => {
+                app.show_inspector_tab(RightPanelTab::Settings);
+                app.push_toast(
+                    "Profiles owner: Settings".into(),
+                    super::state::ToastSeverity::Info,
+                );
+                InputMode::Normal
+            }
+            1 | 2 => {
+                app.show_inspector_tab(RightPanelTab::Config);
+                InputMode::Normal
+            }
+            3 => {
+                app.show_inspector_tab(RightPanelTab::Settings);
+                InputMode::Normal
+            }
+            4 => open_appearance_controls(app),
+            5 => {
+                app.toggle_service_control_panel();
+                InputMode::Normal
+            }
+            6 => {
+                app.show_inspector_tab(RightPanelTab::Dashboard);
+                app.service_health.detail_open = true;
+                InputMode::Normal
+            }
+            7 => {
+                app.show_help = true;
+                InputMode::Normal
+            }
+            _ => InputMode::Normal,
+        },
+        ChoiceDialogAction::Appearance => {
+            match idx {
+                0 => app.workspace_appearance.set_choice(AppearanceChoice::Auto),
+                1 => app.workspace_appearance.set_choice(AppearanceChoice::None),
+                2 => app
+                    .workspace_appearance
+                    .set_choice(AppearanceChoice::Rgb(0xb8, 0xd8, 0xf0)),
+                3 => app
+                    .workspace_appearance
+                    .set_choice(AppearanceChoice::Ansi(45)),
+                4 => app.workspace_appearance.set_symbols(SymbolMode::Workshop),
+                5 => app.workspace_appearance.set_symbols(SymbolMode::Letters),
+                6 => {
+                    return {
+                        open_global_controls(app);
+                        app.input_mode.clone()
+                    };
+                }
+                _ => {}
+            }
             InputMode::Normal
         }
     }
@@ -1777,6 +1935,24 @@ fn handle_coordinator_picker_input(app: &mut VizApp, code: KeyCode) {
             app.close_coordinator_picker();
             app.open_launcher();
         }
+        _ => {}
+    }
+}
+
+fn handle_task_picker_input(app: &mut VizApp, code: KeyCode) {
+    match code {
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => app.move_task_picker(-1),
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => app.move_task_picker(1),
+        KeyCode::Enter => {
+            let target = app.task_picker_selected_id.clone();
+            app.close_task_picker();
+            if let Some(task_id) = target
+                && app.select_task_by_id_exact(&task_id)
+            {
+                app.show_inspector_tab(app.remembered_task_tab);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => app.close_task_picker(),
         _ => {}
     }
 }
@@ -2801,22 +2977,14 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Search
-        KeyCode::Char('/') => {
-            app.search_active = true;
-            app.input_mode = InputMode::Search;
-            app.search_input.clear();
-            app.fuzzy_matches.clear();
-            app.current_match = None;
-            app.filtered_indices = None;
-            app.update_scroll_bounds();
-        }
+        KeyCode::Char('/') => app.begin_graph_search(),
 
         // Tab: switch panel focus (replaces old trace toggle)
         KeyCode::Tab => {
             app.toggle_panel_focus();
         }
 
-        // ]/[: cycle single-panel views in compact mode
+        // ]/[: mirror compact Graph ↔ exact-last-inspector fallback
         KeyCode::Char(']') if app.responsive_breakpoint == ResponsiveBreakpoint::Compact => {
             app.toggle_single_panel_view();
         }
@@ -2874,18 +3042,13 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.shrink_viz_pane();
         }
 
-        // 'n' opens the new-chat launcher when no search matches are active;
-        // when matches exist it navigates forward (vim-style n/N).
+        // Graph search has no accepted normal-mode n/N state. Plain `n`
+        // remains the command-mode New-chat binding after a transaction ends.
         KeyCode::Char('n') => {
-            if app.fuzzy_matches.is_empty() {
-                app.focused_panel = FocusedPanel::Graph;
-                app.right_panel_tab = RightPanelTab::Chat;
-                app.open_launcher();
-            } else {
-                app.next_match();
-            }
+            app.focused_panel = FocusedPanel::Graph;
+            app.right_panel_tab = RightPanelTab::Chat;
+            app.open_launcher();
         }
-        KeyCode::Char('N') => app.prev_match(),
 
         // '+' opens the new-chat launcher in command mode (Chat tab, graph
         // focus). This is the keyboard counterpart of clicking the rendered
@@ -3428,7 +3591,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             switch_chat_tab_to_index(app, n - 1);
         }
 
-        // ]/[: cycle single-panel views in compact mode
+        // ]/[: mirror compact Graph ↔ exact-last-inspector fallback
         KeyCode::Char(']') if app.responsive_breakpoint == ResponsiveBreakpoint::Compact => {
             app.toggle_single_panel_view();
         }
@@ -3900,21 +4063,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.toggle_detail_section_at_scroll();
         }
 
-        // Chat tab: '/' opens in-chat search, Ctrl+F also works
+        // Chat tab: '/' opens isolated in-chat search, Ctrl+F also works.
         KeyCode::Char('/') if app.right_panel_tab == RightPanelTab::Chat => {
-            app.chat.search.query.clear();
-            app.chat.search.matches.clear();
-            app.chat.search.current_match = None;
-            app.input_mode = InputMode::ChatSearch;
+            app.begin_chat_search();
         }
         KeyCode::Char('f')
             if modifiers.contains(KeyModifiers::CONTROL)
                 && app.right_panel_tab == RightPanelTab::Chat =>
         {
-            app.chat.search.query.clear();
-            app.chat.search.matches.clear();
-            app.chat.search.current_match = None;
-            app.input_mode = InputMode::ChatSearch;
+            app.begin_chat_search();
         }
 
         // Chat tab: 'n' / 'N' navigate between search matches (after search accepted)
@@ -4518,10 +4675,54 @@ fn handle_coordinator_picker_mouse(
     true
 }
 
+fn handle_task_picker_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) -> bool {
+    if !matches!(app.input_mode, InputMode::TaskPicker) {
+        return false;
+    }
+    let pos = Position::new(column, row);
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if app.last_task_picker_list_area.contains(pos) {
+                app.move_task_picker(-1);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.last_task_picker_list_area.contains(pos) {
+                app.move_task_picker(1);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            app.workspace_click_pending = false;
+            app.add_touch_echo(column, row);
+            if !app.last_dialog_area.contains(pos) {
+                app.close_task_picker();
+                return true;
+            }
+            if let Some(task_id) = app
+                .task_picker_row_hits
+                .iter()
+                .find_map(|(task_id, area)| area.contains(pos).then(|| task_id.clone()))
+            {
+                app.task_picker_selected_id = Some(task_id.clone());
+                app.close_task_picker();
+                if app.select_task_by_id_exact(&task_id) {
+                    app.show_inspector_tab(app.remembered_task_tab);
+                }
+            } else if app.last_task_picker_cancel_area.contains(pos) {
+                app.close_task_picker();
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
 
-    if handle_coordinator_picker_mouse(app, kind, row, column) {
+    if handle_coordinator_picker_mouse(app, kind, row, column)
+        || handle_task_picker_mouse(app, kind, row, column)
+    {
         return;
     }
 
@@ -4654,6 +4855,19 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             // Touch echo: record click position for visual feedback overlay.
             app.add_touch_echo(column, row);
 
+            // Full-row ChoiceDialog hits are routed before click-outside or
+            // underlying PTY/graph controls, so a palette tap activates once
+            // and can never fall through.
+            if let InputMode::ChoiceDialog(state) = app.input_mode.clone()
+                && let Some(index) = app
+                    .choice_dialog_row_hits
+                    .iter()
+                    .find_map(|(index, area)| area.contains(pos).then_some(*index))
+            {
+                app.input_mode = execute_choice_dialog_option(app, &state.action, index);
+                return;
+            }
+
             // Click-outside-to-dismiss for overlay dialogs.
             let in_dialog = app.last_dialog_area.width > 0 && app.last_dialog_area.contains(pos);
             match &app.input_mode {
@@ -4695,6 +4909,37 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             // The one-row controls are global pointer escapes from PTY capture.
             // Route them before terminal/message/content handling so every
             // visible glyph remains live even when a child owns keyboard focus.
+            if app.last_context_chat_lane_area.contains(pos) {
+                activate_context_lane_control(app, ContextLane::Chat);
+                return;
+            }
+            if app.last_context_task_lane_area.contains(pos) {
+                activate_context_lane_control(app, ContextLane::Task);
+                return;
+            }
+            if app.last_context_workspace_lane_area.contains(pos) {
+                activate_context_lane_control(app, ContextLane::Workspace);
+                return;
+            }
+            if app.last_context_search_area.width > 0 && app.last_context_search_area.contains(pos)
+            {
+                if app.current_context_lane() == ContextLane::Chat {
+                    app.begin_chat_search();
+                } else {
+                    app.begin_graph_search();
+                }
+                return;
+            }
+            if app.last_context_controls_area.width > 0
+                && app.last_context_controls_area.contains(pos)
+            {
+                open_global_controls(app);
+                return;
+            }
+            if app.last_context_help_area.width > 0 && app.last_context_help_area.contains(pos) {
+                app.show_help = true;
+                return;
+            }
             if app.last_context_picker_area.width > 0 && app.last_context_picker_area.contains(pos)
             {
                 if app.right_panel_tab == RightPanelTab::Chat {
@@ -4721,8 +4966,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
             if app.last_context_pulse_area.width > 0 && app.last_context_pulse_area.contains(pos) {
-                app.right_panel_tab = RightPanelTab::Dashboard;
-                app.focused_panel = FocusedPanel::RightPanel;
+                app.show_inspector_tab(RightPanelTab::Dashboard);
+                app.service_health.detail_open = true;
                 return;
             }
 
@@ -5074,6 +5319,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     let orig_line = app.visible_to_original(visible_idx);
                     // Guard: orig_line must be within plain_lines range.
                     if orig_line < app.plain_lines.len() {
+                        // During graph-search Editing, an exact visible-row tap
+                        // is the same stable-ID transaction as Enter. It never
+                        // falls through to Detail/Log/PTY routing.
+                        if app.search_active && app.commit_graph_search_line(orig_line) {
+                            app.input_mode = InputMode::Normal;
+                            return;
+                        }
                         let content_col = (column.saturating_sub(app.last_graph_area.x) as usize)
                             + app.scroll.offset_x;
 
@@ -9228,6 +9480,8 @@ mod chat_tab_navigation_tests {
 
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = wg_dir;
+        app.load_stats_from_graph(&graph);
+        app.refresh_chat_tab_caches(&graph);
         // Default to first coordinator so cycling has a predictable starting point.
         app.active_coordinator_id = coordinator_ids[0];
         app.right_panel_tab = RightPanelTab::Chat;
@@ -10182,9 +10436,10 @@ mod chat_tab_navigation_tests {
         assert_eq!(app.input_mode, InputMode::Launcher);
     }
 
-    /// 'n' with active search matches navigates to the next match instead of opening launcher.
+    /// Graph search has no accepted normal-mode match navigation. Even stale
+    /// match data cannot resurrect n/N semantics after the transaction ends.
     #[test]
-    fn test_command_mode_n_next_match_when_fuzzy_active() {
+    fn test_command_mode_n_opens_launcher_even_if_stale_matches_exist() {
         use crate::tui::viz_viewer::state::FuzzyLineMatch;
         let (mut app, _tmp) = build_app_with_chats(&[0]);
         app.right_panel_tab = RightPanelTab::Chat;
@@ -10206,14 +10461,10 @@ mod chat_tab_navigation_tests {
         app.current_match = Some(0);
         super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         assert!(
-            app.launcher.is_none(),
-            "'n' with active search matches must NOT open the launcher"
+            app.launcher.is_some(),
+            "normal-mode n must open New chat; accepted graph-match state is forbidden"
         );
-        assert_eq!(
-            app.current_match,
-            Some(1),
-            "'n' with active search matches must advance to the next match"
-        );
+        assert_eq!(app.input_mode, InputMode::Launcher);
     }
 
     /// Bare `w` opens the same modal; choosing default Hide only detaches.
@@ -11843,6 +12094,8 @@ mod chat_open_tests {
 
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.workgraph_dir = wg_dir;
+        app.load_stats_from_graph(&graph);
+        app.refresh_chat_tab_caches(&graph);
         app.active_coordinator_id = 0;
         (app, tmp)
     }
@@ -11980,16 +12233,18 @@ mod chat_open_tests {
         let (mut app, _tmp) = build_app_with_chat_node();
         app.coordinator_picker = Some(super::super::state::CoordinatorPickerState {
             selected: 0,
-            entries: (0..20)
-                .map(|index| {
-                    (
-                        index as u32 + 1,
-                        format!(".chat-{}", index + 1),
-                        format!("Chat {index}"),
-                        true,
-                    )
-                })
-                .collect(),
+            entries: std::sync::Arc::new(
+                (0..20)
+                    .map(|index| {
+                        (
+                            index as u32 + 1,
+                            format!(".chat-{}", index + 1),
+                            format!("Chat {index}"),
+                            true,
+                        )
+                    })
+                    .collect(),
+            ),
         });
         app.input_mode = InputMode::CoordinatorPicker;
         render_chat_picker(&mut app, 60, 10);
@@ -12174,11 +12429,60 @@ mod chat_open_tests {
         };
 
         render(&mut terminal, &mut app);
-        let picker = app.last_context_picker_area;
-        click(&mut app, picker);
+        let task_lane = app.last_context_task_lane_area;
+        click(&mut app, task_lane);
+        assert_eq!(app.input_mode, InputMode::TaskPicker);
+        app.close_task_picker();
+
+        app.right_panel_tab = RightPanelTab::Dashboard;
+        app.selected_task_idx = None;
+        app.activate_context_lane(ContextLane::Task);
+        assert_eq!(
+            app.selected_task_id(),
+            app.cached_task_picker_entries
+                .first()
+                .map(|entry| entry.0.as_str()),
+            "Task activation with no current selection must use the first cached stable id"
+        );
+
+        render(&mut terminal, &mut app);
+        let search = app.last_context_search_area;
+        click(&mut app, search);
         assert_eq!(app.input_mode, InputMode::Search);
+        app.clear_search();
         app.input_mode = InputMode::Normal;
-        app.search_active = false;
+
+        render(&mut terminal, &mut app);
+        let controls = app.last_context_controls_area;
+        click(&mut app, controls);
+        let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+            panic!("Controls did not open a bounded palette");
+        };
+        assert_eq!(dialog.action, ChoiceDialogAction::GlobalControls);
+        assert_eq!(
+            dialog
+                .options
+                .iter()
+                .map(|(_, label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Profiles",
+                "Models / execution",
+                "Config",
+                "Settings",
+                "Appearance",
+                "Service",
+                "Disk / resources",
+                "Help",
+            ]
+        );
+        app.input_mode = InputMode::Normal;
+
+        render(&mut terminal, &mut app);
+        let help = app.last_context_help_area;
+        click(&mut app, help);
+        assert!(app.show_help);
+        app.show_help = false;
 
         render(&mut terminal, &mut app);
         let next = app.last_context_next_area;
@@ -12224,11 +12528,235 @@ mod chat_open_tests {
         );
 
         app.close_launcher();
-        app.right_panel_tab = RightPanelTab::Chat;
+        app.right_panel_tab = RightPanelTab::Detail;
         render(&mut terminal, &mut app);
-        let chat_picker = app.last_context_picker_area;
-        click(&mut app, chat_picker);
+        let chat_lane = app.last_context_chat_lane_area;
+        click(&mut app, chat_lane);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        render(&mut terminal, &mut app);
+        let repeated_chat_lane = app.last_context_chat_lane_area;
+        click(&mut app, repeated_chat_lane);
         assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+    }
+
+    #[test]
+    fn task_selector_and_controls_rows_are_exact_clickable_and_modal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.set_layout_preference(crate::tui::viz_viewer::state::LayoutPreference {
+            mode: crate::tui::viz_viewer::state::InspectorMode::Full,
+            ..Default::default()
+        });
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.open_task_picker();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let (task_id, row) = app
+            .task_picker_row_hits
+            .iter()
+            .find(|(task_id, _)| task_id == "other-task")
+            .cloned()
+            .expect("other-task row must be visible");
+        let selected_before = app.selected_task_id().map(str::to_owned);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            row.y,
+            row.x + row.width - 1,
+        );
+        assert_eq!(task_id, "other-task");
+        assert_eq!(app.selected_task_id(), Some("other-task"));
+        assert_ne!(app.selected_task_id().map(str::to_owned), selected_before);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        app.service_health.detail_open = true;
+        open_global_controls(&mut app);
+        assert!(!app.service_health.detail_open);
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let appearance = app.choice_dialog_row_hits[4].1;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            appearance.y,
+            appearance.x + appearance.width - 1,
+        );
+        let InputMode::ChoiceDialog(dialog) = &app.input_mode else {
+            panic!("Appearance owner row did not open its bounded palette");
+        };
+        assert_eq!(dialog.action, ChoiceDialogAction::Appearance);
+        assert_eq!(dialog.options[0].1, "Auto (active)");
+        assert_eq!(dialog.options[4].1, "Workshop symbols (active)");
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let letters = app.choice_dialog_row_hits[5].1;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            letters.y,
+            letters.x,
+        );
+        assert_eq!(app.workspace_appearance.symbols, SymbolMode::Letters);
+        assert_eq!(
+            app.selected_task_id(),
+            Some("other-task"),
+            "palette click fell through"
+        );
+    }
+
+    #[test]
+    fn compact_lanes_and_tab_preserve_exact_chat_and_task_destinations() {
+        use super::super::state::{InspectorMode, SinglePanelView};
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.responsive_breakpoint = ResponsiveBreakpoint::Compact;
+        app.layout_preference.mode = InspectorMode::Split;
+        app.single_panel_view = SinglePanelView::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
+        let chat_id = app.active_chat_view_identity().map(|id| id.task_id);
+
+        assert_eq!(app.current_context_lane(), ContextLane::Workspace);
+        activate_context_lane_control(&mut app, ContextLane::Chat);
+        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(
+            app.active_chat_view_identity().map(|id| id.task_id),
+            chat_id
+        );
+
+        // Repeating the now-active Chat lane opens the existing exact selector.
+        activate_context_lane_control(&mut app, ContextLane::Chat);
+        assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+        app.close_coordinator_picker();
+
+        // Workspace is the compact Graph face. Plain Tab returns to the exact
+        // Chat inspector and never substitutes Detail or Log.
+        activate_context_lane_control(&mut app, ContextLane::Workspace);
+        assert_eq!(app.single_panel_view, SinglePanelView::Graph);
+        assert_eq!(app.current_context_lane(), ContextLane::Workspace);
+        app.toggle_panel_focus();
+        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(
+            app.active_chat_view_identity().map(|id| id.task_id),
+            chat_id
+        );
+
+        activate_context_lane_control(&mut app, ContextLane::Task);
+        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
+        assert_eq!(app.current_context_lane(), ContextLane::Task);
+        let exact_task = app.selected_task_id().map(str::to_owned);
+        activate_context_lane_control(&mut app, ContextLane::Task);
+        assert_eq!(app.input_mode, InputMode::TaskPicker);
+        assert_eq!(app.task_picker_selected_id, exact_task);
+    }
+
+    #[test]
+    fn graph_search_is_exact_temporary_and_isolated_from_chat_search() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.begin_graph_search();
+        app.search_input = "task".into();
+        app.update_search();
+        assert!(app.search_active && app.fuzzy_matches.len() >= 2);
+        let first = app.current_match;
+        handle_search_input(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_ne!(app.current_match, first);
+        handle_search_input(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.current_match, first);
+
+        app.search_input = "other-task".into();
+        app.update_search();
+        handle_search_input(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.selected_task_id(), Some("other-task"));
+        assert!(!app.search_active);
+        assert!(app.search_input.is_empty());
+        assert!(app.fuzzy_matches.is_empty());
+        assert!(app.filtered_indices.is_none());
+        assert_eq!(app.current_match, None);
+        assert_eq!(
+            app.jump_target.as_ref().map(|(id, _)| id.as_str()),
+            Some("other-task")
+        );
+
+        app.begin_graph_search();
+        app.search_input = "regular".into();
+        app.update_search();
+        handle_search_input(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.should_quit, "search Esc must clear without quitting");
+        assert!(app.search_input.is_empty() && app.fuzzy_matches.is_empty());
+        let selected = app.selected_task_id().map(str::to_owned);
+        let navigation = if app.selected_task_idx.unwrap_or(0) + 1 < app.task_order.len() {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        super::handle_key(&mut app, navigation, KeyModifiers::NONE);
+        assert_ne!(
+            app.selected_task_id().map(str::to_owned),
+            selected,
+            "Up/Down must work after search"
+        );
+
+        app.chat.search.query = "history".into();
+        app.begin_graph_search();
+        assert!(app.chat.search.query.is_empty());
+        app.search_input = "task".into();
+        app.update_search();
+        app.begin_chat_search();
+        assert!(!app.search_active && app.search_input.is_empty() && app.fuzzy_matches.is_empty());
+        assert_eq!(app.input_mode, InputMode::ChatSearch);
+    }
+
+    #[test]
+    fn graph_search_exact_row_tap_commits_without_click_fallthrough() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        setup_for_graph_click(&mut app);
+        app.begin_graph_search();
+        app.search_input = "regular-task".into();
+        app.update_search();
+        let target_line = app.current_match_line().expect("regular-task match");
+        let visible_row = app
+            .filtered_indices
+            .as_ref()
+            .and_then(|indices| indices.iter().position(|line| *line == target_line))
+            .expect("matched row must be visible") as u16;
+        let click_row = app.last_graph_area.y + visible_row;
+        let click_column = app.last_graph_area.x;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            click_row,
+            click_column,
+        );
+        assert_eq!(app.selected_task_id(), Some("regular-task"));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.search_input.is_empty() && app.fuzzy_matches.is_empty());
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Detail,
+            "search tap fell through to row action"
+        );
+    }
+
+    #[test]
+    fn resize_invalidates_symbolic_task_and_choice_hits() {
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.last_context_chat_lane_area = Rect::new(0, 0, 3, 1);
+        app.last_context_search_area = Rect::new(12, 0, 3, 1);
+        app.task_picker_row_hits = vec![("regular-task".into(), Rect::new(2, 3, 30, 1))];
+        app.choice_dialog_row_hits = vec![(0, Rect::new(2, 4, 30, 1))];
+        super::dispatch_event(&mut app, Event::Resize(20, 8));
+        assert_eq!(app.last_context_chat_lane_area, Rect::default());
+        assert_eq!(app.last_context_search_area, Rect::default());
+        assert!(app.task_picker_row_hits.is_empty());
+        assert!(app.choice_dialog_row_hits.is_empty());
     }
 
     #[test]

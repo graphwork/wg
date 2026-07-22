@@ -24,6 +24,430 @@ use worksgood::{AgentRegistry, AgentStatus};
 
 pub(super) type BootstrapApply = Box<dyn FnOnce(&mut VizApp) + Send>;
 
+/// Explicit glyph grammar for the symbolic context bar. We never attempt to
+/// probe glyph rendering: terminals with incomplete symbol fonts can switch to
+/// `Letters` immediately (or set `WG_TUI_SYMBOLS=letters`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SymbolMode {
+    #[default]
+    Workshop,
+    Letters,
+}
+
+impl SymbolMode {
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "workshop" => Ok(Self::Workshop),
+            "letters" => Ok(Self::Letters),
+            other => Err(format!(
+                "invalid symbolic mode '{other}'; expected workshop or letters"
+            )),
+        }
+    }
+}
+
+/// User-selected workspace bar color. `Rgb` and `Ansi` are exact overrides;
+/// `Auto` uses the asynchronously-derived project identity color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppearanceChoice {
+    #[default]
+    Auto,
+    None,
+    Rgb(u8, u8, u8),
+    Ansi(u8),
+}
+
+impl AppearanceChoice {
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        let value = value.trim();
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => return Ok(Self::Auto),
+            "none" => return Ok(Self::None),
+            _ => {}
+        }
+        if let Some(raw) = value
+            .strip_prefix('#')
+            .or_else(|| value.strip_prefix("rgb:"))
+        {
+            let compact = raw.replace(',', "");
+            if compact.len() == 6 && compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                let r = u8::from_str_radix(&compact[0..2], 16).map_err(|e| e.to_string())?;
+                let g = u8::from_str_radix(&compact[2..4], 16).map_err(|e| e.to_string())?;
+                let b = u8::from_str_radix(&compact[4..6], 16).map_err(|e| e.to_string())?;
+                return Ok(Self::Rgb(r, g, b));
+            }
+            return Err(format!(
+                "invalid RGB override '{value}'; expected #RRGGBB or rgb:RRGGBB"
+            ));
+        }
+        if let Some(raw) = value.strip_prefix("ansi:") {
+            return raw
+                .parse::<u8>()
+                .map(Self::Ansi)
+                .map_err(|_| format!("invalid ANSI override '{value}'; expected ansi:0..255"));
+        }
+        Err(format!(
+            "invalid appearance override '{value}'; expected auto, none, RGB, or ANSI"
+        ))
+    }
+}
+
+/// Color depth captured by the background appearance worker. Render reads this
+/// cached enum only; it never inspects environment variables or terminal state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorCapability {
+    TrueColor,
+    Ansi256,
+    Ansi16,
+    #[default]
+    Mono,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedWorkspaceAppearance {
+    identity: String,
+    auto_rgb: (u8, u8, u8),
+    choice: AppearanceChoice,
+    symbols: SymbolMode,
+    capability: ColorCapability,
+}
+
+/// Cached, asynchronous appearance state for the one-row workspace bar.
+///
+/// The first frame is deliberately neutral. `start()` is called only after
+/// that frame has been painted; all environment/path/Git/hash work runs on the
+/// named worker and `poll()` is a non-blocking channel read.
+pub struct WorkspaceAppearance {
+    pub choice: AppearanceChoice,
+    pub symbols: SymbolMode,
+    pub capability: ColorCapability,
+    pub auto_rgb: Option<(u8, u8, u8)>,
+    pub identity: Option<String>,
+    pub context_rows_rendered: u64,
+    worker: Option<mpsc::Receiver<std::result::Result<ResolvedWorkspaceAppearance, String>>>,
+    user_choice_override: bool,
+    user_symbol_override: bool,
+}
+
+impl Default for WorkspaceAppearance {
+    fn default() -> Self {
+        Self {
+            choice: AppearanceChoice::Auto,
+            symbols: SymbolMode::Workshop,
+            capability: ColorCapability::Mono,
+            auto_rgb: None,
+            identity: None,
+            context_rows_rendered: 0,
+            worker: None,
+            user_choice_override: false,
+            user_symbol_override: false,
+        }
+    }
+}
+
+impl WorkspaceAppearance {
+    fn start(&mut self, workgraph_dir: PathBuf) {
+        if self.worker.is_some() || self.auto_rgb.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.worker = Some(rx);
+        let _ = std::thread::Builder::new()
+            .name("wg-tui-appearance".into())
+            .spawn(move || {
+                let _ = tx.send(resolve_workspace_appearance(&workgraph_dir));
+            });
+    }
+
+    fn poll(&mut self) -> Option<std::result::Result<(), String>> {
+        let result = self.worker.as_ref()?.try_recv().ok()?;
+        self.worker = None;
+        Some(result.map(|resolved| {
+            self.identity = Some(resolved.identity);
+            self.auto_rgb = Some(resolved.auto_rgb);
+            self.capability = resolved.capability;
+            if !self.user_choice_override {
+                self.choice = resolved.choice;
+            }
+            if !self.user_symbol_override {
+                self.symbols = resolved.symbols;
+            }
+        }))
+    }
+
+    pub fn set_choice(&mut self, choice: AppearanceChoice) {
+        self.choice = choice;
+        self.user_choice_override = true;
+    }
+
+    pub fn set_symbols(&mut self, symbols: SymbolMode) {
+        self.symbols = symbols;
+        self.user_symbol_override = true;
+    }
+
+    pub fn effective_rgb(&self) -> Option<(u8, u8, u8)> {
+        match self.choice {
+            AppearanceChoice::Auto => self.auto_rgb,
+            AppearanceChoice::None | AppearanceChoice::Ansi(_) => None,
+            AppearanceChoice::Rgb(r, g, b) => Some((r, g, b)),
+        }
+    }
+}
+
+const WORKSPACE_COLOR_DERIVE_CONTEXT: &str = "worksgood.tui.workspace-color.v1";
+
+fn workspace_color_hash(identity: &str) -> [u8; 32] {
+    blake3::derive_key(WORKSPACE_COLOR_DERIVE_CONTEXT, identity.as_bytes())
+}
+
+fn workspace_color_rgb(identity: &str) -> (u8, u8, u8) {
+    let digest = workspace_color_hash(identity);
+    // A light bar is part of the grammar. Keeping every channel in this range
+    // guarantees strong black-text contrast while the digest still chooses a
+    // stable, visibly project-specific tint.
+    (
+        176 + digest[0] % 64,
+        176 + digest[1] % 64,
+        176 + digest[2] % 64,
+    )
+}
+
+fn terminal_color_capability() -> ColorCapability {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return ColorCapability::Mono;
+    }
+    let colorterm = std::env::var("COLORTERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+        return ColorCapability::TrueColor;
+    }
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if term.contains("256color") {
+        ColorCapability::Ansi256
+    } else if term.is_empty() || term == "dumb" {
+        ColorCapability::Mono
+    } else {
+        ColorCapability::Ansi16
+    }
+}
+
+fn system_hostname() -> String {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` is writable for its full declared length.
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+        if rc == 0 {
+            let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
+            let value = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown-host".to_string())
+}
+
+fn canonical_git_common_identity(project_root: &Path) -> String {
+    let canonical_project =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let dot_git = canonical_project.join(".git");
+    let common = if dot_git.is_dir() {
+        std::fs::canonicalize(&dot_git).ok()
+    } else if dot_git.is_file() {
+        std::fs::read_to_string(&dot_git).ok().and_then(|contents| {
+            let raw = contents.trim().strip_prefix("gitdir:")?.trim();
+            let git_dir = PathBuf::from(raw);
+            let git_dir = if git_dir.is_absolute() {
+                git_dir
+            } else {
+                canonical_project.join(git_dir)
+            };
+            let git_dir = std::fs::canonicalize(git_dir).ok()?;
+            let common = std::fs::read_to_string(git_dir.join("commondir"))
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    let path = PathBuf::from(value);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        git_dir.join(path)
+                    }
+                })
+                .unwrap_or(git_dir);
+            std::fs::canonicalize(common).ok()
+        })
+    } else {
+        None
+    };
+    common
+        .unwrap_or(canonical_project)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn resolve_workspace_appearance(
+    workgraph_dir: &Path,
+) -> std::result::Result<ResolvedWorkspaceAppearance, String> {
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown-user".to_string());
+    let identity = format!(
+        "{}@{}:{}",
+        user,
+        system_hostname(),
+        canonical_git_common_identity(project_root)
+    );
+    let choice = std::env::var("WG_TUI_APPEARANCE")
+        .ok()
+        .map(|value| AppearanceChoice::parse(&value))
+        .transpose()?
+        .unwrap_or_default();
+    let symbols = std::env::var("WG_TUI_SYMBOLS")
+        .ok()
+        .map(|value| SymbolMode::parse(&value))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(ResolvedWorkspaceAppearance {
+        auto_rgb: workspace_color_rgb(&identity),
+        identity,
+        choice,
+        symbols,
+        capability: terminal_color_capability(),
+    })
+}
+
+#[cfg(test)]
+mod workspace_appearance_tests {
+    use super::*;
+
+    #[test]
+    fn appearance_and_symbol_overrides_are_validated() {
+        assert_eq!(AppearanceChoice::parse("auto"), Ok(AppearanceChoice::Auto));
+        assert_eq!(AppearanceChoice::parse("none"), Ok(AppearanceChoice::None));
+        assert_eq!(
+            AppearanceChoice::parse("#B8D8F0"),
+            Ok(AppearanceChoice::Rgb(0xb8, 0xd8, 0xf0))
+        );
+        assert_eq!(
+            AppearanceChoice::parse("ansi:45"),
+            Ok(AppearanceChoice::Ansi(45))
+        );
+        assert!(AppearanceChoice::parse("rgb:nope").is_err());
+        assert!(AppearanceChoice::parse("ansi:999").is_err());
+        assert_eq!(SymbolMode::parse("workshop"), Ok(SymbolMode::Workshop));
+        assert_eq!(SymbolMode::parse("letters"), Ok(SymbolMode::Letters));
+        assert!(
+            SymbolMode::parse("detect").is_err(),
+            "font auto-detection is forbidden"
+        );
+    }
+
+    #[test]
+    fn domain_separated_workspace_hash_vector_and_contrast_are_stable() {
+        let identity = "erik@host:/srv/project/.git";
+        assert_eq!(
+            hex::encode(workspace_color_hash(identity)),
+            "647ea424e9fae266b36bbb58dcd47efe4969e32a593423b2ce0b9b17ca60f6be"
+        );
+        assert_ne!(
+            workspace_color_hash("erik@host:/srv/project/.git"),
+            workspace_color_hash("erik@other-host:/srv/project/.git")
+        );
+        assert_ne!(
+            workspace_color_hash("erik@host:/srv/project/.git"),
+            workspace_color_hash("sara@host:/srv/project/.git")
+        );
+        assert_ne!(
+            workspace_color_hash("erik@host:/srv/project/.git"),
+            workspace_color_hash("erik@host:/srv/other-clone/.git")
+        );
+        let rgb = workspace_color_rgb(identity);
+        let channel = |value: u8| {
+            let value = value as f64 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let luminance = 0.2126 * channel(rgb.0) + 0.7152 * channel(rgb.1) + 0.0722 * channel(rgb.2);
+        let contrast_with_black = (luminance + 0.05) / 0.05;
+        assert!(
+            contrast_with_black >= 4.5,
+            "rgb={rgb:?}, contrast={contrast_with_black}"
+        );
+    }
+
+    #[test]
+    fn linked_worktrees_share_canonical_common_git_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let common = temp.path().join("main/.git");
+        let git_dir_a = common.join("worktrees/a");
+        let git_dir_b = common.join("worktrees/b");
+        std::fs::create_dir_all(&git_dir_a).unwrap();
+        std::fs::create_dir_all(&git_dir_b).unwrap();
+        std::fs::write(git_dir_a.join("commondir"), "../..\n").unwrap();
+        std::fs::write(git_dir_b.join("commondir"), "../..\n").unwrap();
+        let worktree_a = temp.path().join("worktree-a");
+        let worktree_b = temp.path().join("worktree-b");
+        std::fs::create_dir_all(&worktree_a).unwrap();
+        std::fs::create_dir_all(&worktree_b).unwrap();
+        std::fs::write(
+            worktree_a.join(".git"),
+            format!("gitdir: {}\n", git_dir_a.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            worktree_b.join(".git"),
+            format!("gitdir: {}\n", git_dir_b.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_git_common_identity(&worktree_a),
+            canonical_git_common_identity(&worktree_b)
+        );
+    }
+
+    #[test]
+    fn interactive_override_precedes_late_async_auto_result() {
+        let mut appearance = WorkspaceAppearance::default();
+        appearance.set_choice(AppearanceChoice::None);
+        appearance.set_symbols(SymbolMode::Letters);
+        let (tx, rx) = mpsc::sync_channel(1);
+        appearance.worker = Some(rx);
+        tx.send(Ok(ResolvedWorkspaceAppearance {
+            identity: "user@host:/repo/.git".into(),
+            auto_rgb: (200, 210, 220),
+            choice: AppearanceChoice::Rgb(1, 2, 3),
+            symbols: SymbolMode::Workshop,
+            capability: ColorCapability::TrueColor,
+        }))
+        .unwrap();
+        assert_eq!(appearance.poll(), Some(Ok(())));
+        assert_eq!(appearance.choice, AppearanceChoice::None);
+        assert_eq!(appearance.symbols, SymbolMode::Letters);
+        assert_eq!(appearance.auto_rgb, Some((200, 210, 220)));
+        assert_eq!(appearance.capability, ColorCapability::TrueColor);
+    }
+
+    #[test]
+    fn appearance_first_frame_is_neutral_until_background_result() {
+        let appearance = WorkspaceAppearance::default();
+        assert_eq!(appearance.context_rows_rendered, 0);
+        assert_eq!(appearance.auto_rgb, None);
+        assert_eq!(appearance.capability, ColorCapability::Mono);
+    }
+}
+
 use edtui::{EditorEventHandler, EditorMode, EditorState};
 
 const CHAT_PTY_ACTIVITY_BUMP_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -674,6 +1098,15 @@ pub enum InspectorSubFocus {
     TextEntry,
 }
 
+/// Persistent primary destination in the symbolic context bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContextLane {
+    #[default]
+    Chat,
+    Task,
+    Workspace,
+}
+
 /// Which tab is active in the right panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RightPanelTab {
@@ -1057,7 +1490,7 @@ pub struct LayoutOverlayState {
 /// Responsive layout breakpoint determined by terminal width.
 ///
 /// Detected dynamically on each frame from `frame.area().width`:
-/// - `Compact`: < 50 cols — single-panel mode (graph OR detail, Tab to switch)
+/// - `Compact`: < 50 cols — Graph OR exact last inspector, Tab to switch
 /// - `Narrow`: 50–80 cols — narrow split, hide non-essential columns
 /// - `Full`: > 80 cols — current full layout (no change)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1086,42 +1519,10 @@ impl ResponsiveBreakpoint {
 /// Which panel is shown in single-panel (compact) mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SinglePanelView {
-    /// Show the graph panel.
+    /// Show the Graph/Workspace panel.
     Graph,
-    /// Show the detail/inspector panel.
+    /// Show the exact right-panel owner (`Chat`, task Detail/Log, Config, …).
     Detail,
-    /// Show the log/output panel.
-    Log,
-}
-
-impl SinglePanelView {
-    /// Cycle to the next panel: Graph → Detail → Log → Graph.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Graph => Self::Detail,
-            Self::Detail => Self::Log,
-            Self::Log => Self::Graph,
-        }
-    }
-
-    /// Cycle to the previous panel: Graph → Log → Detail → Graph.
-    pub fn prev(self) -> Self {
-        match self {
-            Self::Graph => Self::Log,
-            Self::Detail => Self::Graph,
-            Self::Log => Self::Detail,
-        }
-    }
-
-    /// Human-readable label for breadcrumb display.
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Graph => "Graph",
-            Self::Detail => "Detail",
-            Self::Log => "Log",
-        }
-    }
 }
 
 /// Input modes — at most one is active at a time.
@@ -1145,6 +1546,8 @@ pub enum InputMode {
     ChoiceDialog(ChoiceDialogState),
     /// Coordinator picker overlay (list of all coordinators).
     CoordinatorPicker,
+    /// Bounded exact-task selector opened by repeating the active Task lane.
+    TaskPicker,
     /// Chat manager pane: list of all chat tasks with multi-select +
     /// bulk-abandon, plus filter (all/empty/non-empty/alive).
     /// See `ChatManagerState`. Triggered by uppercase `M` from the Chat tab.
@@ -3020,6 +3423,10 @@ pub enum ChoiceDialogAction {
     TaskContext(String),
     /// Navigation/actions for the Workspace/system context.
     WorkspaceContext,
+    /// Global owner palette opened by the context-row Controls glyph.
+    GlobalControls,
+    /// Validated color/glyph overrides. These mutate only cached TUI state.
+    Appearance,
 }
 
 /// Immutable identity shown in both stages of the live-chat Close flow.
@@ -3047,8 +3454,9 @@ pub struct ChoiceDialogState {
 pub struct CoordinatorPickerState {
     /// Index of the currently highlighted coordinator.
     pub selected: usize,
-    /// List of (coordinator_id, label, status_description, is_alive).
-    pub entries: Vec<(u32, String, String, bool)>,
+    /// Immutable, snapshot-built list of
+    /// (coordinator_id, label, status_description, is_alive).
+    pub entries: Arc<Vec<(u32, String, String, bool)>>,
 }
 
 /// Filter mode for the chat manager pane.
@@ -7224,6 +7632,9 @@ pub struct TaskCounts {
     pub pending_eval: usize,
     /// Every canonical chat task, including archived/terminal identities.
     pub inspectable_chats: usize,
+    /// Non-terminal, non-archived chats. Drives the compact inverse New-chat
+    /// tile; terminal-only recovery deliberately leaves this at zero.
+    pub resumable_chats: usize,
     pub failed: usize,
     pub blocked: usize,
     pub archived: usize,
@@ -7320,6 +7731,8 @@ pub(super) struct GraphViewSnapshot {
     cached_chat_tab_entries: Vec<(u32, String)>,
     cached_user_board_entries: Vec<(String, String)>,
     cached_coordinator_id_set: HashMap<u32, String>,
+    cached_chat_picker_entries: Arc<Vec<(u32, String, String, bool)>>,
+    cached_task_picker_entries: Arc<Vec<(String, String)>>,
 }
 
 struct GraphBuildInput {
@@ -7478,6 +7891,12 @@ pub struct VizApp {
     pub last_tab_bar_area: Rect,
     /// Exact controls rendered in the single contextual row. These are routed
     /// before PTY/content capture, so every visible glyph is a real control.
+    pub last_context_chat_lane_area: Rect,
+    pub last_context_task_lane_area: Rect,
+    pub last_context_workspace_lane_area: Rect,
+    pub last_context_search_area: Rect,
+    pub last_context_controls_area: Rect,
+    pub last_context_help_area: Rect,
     pub last_context_picker_area: Rect,
     pub last_context_prev_area: Rect,
     pub last_context_next_area: Rect,
@@ -7530,6 +7949,13 @@ pub struct VizApp {
     pub last_coordinator_picker_new_area: Rect,
     pub last_coordinator_picker_close_area: Rect,
     pub last_coordinator_picker_cancel_area: Rect,
+    /// Bounded exact-task selector state and same-frame hit map.
+    pub task_picker_selected_id: Option<String>,
+    pub task_picker_row_hits: Vec<(String, Rect)>,
+    pub last_task_picker_list_area: Rect,
+    pub last_task_picker_cancel_area: Rect,
+    /// Same-frame option rows for ChoiceDialog palettes. Cleared before every draw.
+    pub choice_dialog_row_hits: Vec<(usize, Rect)>,
 
     /// The file browser tree pane area from the last render frame (for mouse clicks).
     pub last_file_tree_area: Rect,
@@ -7541,9 +7967,10 @@ pub struct VizApp {
     pub config_entry_y_positions: Vec<(usize, u16)>,
 
     // ── Jump target (transient highlight after Enter) ──
-    /// After pressing Enter on a search match, stores (original_line_index, when_set).
-    /// Render code applies a transient yellow highlight that fades after ~2 seconds.
-    pub jump_target: Option<(usize, Instant)>,
+    /// Stable task identity committed by graph search plus its pulse start.
+    /// Render resolves the latest line each frame, so refresh/removal cannot
+    /// revive a stale line-index highlight.
+    pub jump_target: Option<(String, Instant)>,
 
     // ── Task selection / edge tracing ──
     /// Ordered list of task IDs as they appear in the viz output (top to bottom).
@@ -7620,6 +8047,10 @@ pub struct VizApp {
     pub focused_panel: FocusedPanel,
     /// Active tab in the right panel.
     pub right_panel_tab: RightPanelTab,
+    /// Remembered per-lane surfaces. Exact task/chat identities remain in the
+    /// existing stable-ID selections; these fields remember only the owner tab.
+    pub remembered_task_tab: RightPanelTab,
+    pub remembered_workspace_tab: RightPanelTab,
     /// Right panel width as percentage of terminal width (default 35).
     pub right_panel_percent: u16,
     /// HUD panel size preset (Normal = ~1/3, Expanded = ~2/3).
@@ -7638,6 +8069,10 @@ pub struct VizApp {
     pub inspector_is_beside: bool,
     /// Which panel is shown in compact (< 50 cols) single-panel mode.
     pub single_panel_view: SinglePanelView,
+    /// Explicit symbolic-lane/Tab presentation override. This lets compact
+    /// `⌂` expose Graph even when the persisted desired mode is Full, without
+    /// rewriting that desired mode or the drag-to-Full contract.
+    pub compact_navigation_override: Option<SinglePanelView>,
     /// Current input mode.
     pub input_mode: InputMode,
     /// Deferred centering: set during state refresh, consumed by render after viewport_height is known.
@@ -7680,6 +8115,10 @@ pub struct VizApp {
     pub launcher_cancel_btn_hit: Rect,
     /// State for the coordinator picker overlay.
     pub coordinator_picker: Option<CoordinatorPickerState>,
+    /// Bounded task-selector source built with the graph snapshot. Opening or
+    /// rendering the selector clones/scans no unbounded graph collection.
+    pub cached_task_picker_entries: Arc<Vec<(String, String)>>,
+    pub cached_chat_picker_entries: Arc<Vec<(u32, String, String, bool)>>,
     /// State for the chat manager pane (bulk-cleanup of chat tasks).
     pub chat_manager: Option<ChatManagerState>,
 
@@ -8126,6 +8565,8 @@ pub struct VizApp {
     /// installed.  Render uses placeholders while this is false and never
     /// invokes lazy storage loaders.
     pub bootstrap_complete: bool,
+    /// Async/cached workspace identity, color capability, override, and glyph mode.
+    pub workspace_appearance: WorkspaceAppearance,
 }
 
 /// Scroll state for a 2D viewport.
@@ -8233,17 +8674,15 @@ impl VizApp {
     }
 
     fn chat_identity_from_graph(&self, coordinator_id: u32) -> Option<ActiveChatIdentity> {
-        self.coherent_graph()?.tasks().find_map(|task| {
-            let task_cid = worksgood::chat_id::parse_chat_task_id(&task.id)
-                .or_else(|| (task.id == ".coordinator").then_some(0));
-            (task_cid == Some(coordinator_id)
-                && !task.tags.iter().any(|tag| tag == "archived")
-                && task
-                    .tags
-                    .iter()
-                    .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag)))
-            .then(|| Self::chat_identity_from_task(coordinator_id, task))
-        })
+        let task_id = self.cached_coordinator_id_set.get(&coordinator_id)?;
+        let graph = self.coherent_graph()?;
+        let task = graph.get_task(task_id)?;
+        (!task.tags.iter().any(|tag| tag == "archived")
+            && task
+                .tags
+                .iter()
+                .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag)))
+        .then(|| Self::chat_identity_from_task(coordinator_id, task))
     }
 
     fn selected_chat_identity_or_placeholder(&self) -> Option<ActiveChatIdentity> {
@@ -8278,14 +8717,12 @@ impl VizApp {
     /// Terminal/archived tasks deliberately return `None`: they are task
     /// Detail surfaces and must never expose live-agent lifecycle controls.
     pub fn chat_close_context(&self, coordinator_id: u32) -> Option<ChatCloseContext> {
+        let task_id = self.cached_coordinator_id_set.get(&coordinator_id)?;
         let graph = self.coherent_graph()?;
-        let task = graph.tasks().find(|task| {
-            let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
-                .or_else(|| (task.id == ".coordinator").then_some(0));
-            cid == Some(coordinator_id)
-                && !task.status.is_terminal()
-                && !task.tags.iter().any(|tag| tag == "archived")
-        })?;
+        let task = graph.get_task(task_id)?;
+        if task.status.is_terminal() || task.tags.iter().any(|tag| tag == "archived") {
+            return None;
+        }
         let identity = Self::chat_identity_from_task(coordinator_id, task);
         let connection = if coordinator_id == self.active_coordinator_id {
             self.active_chat_connection_label(&identity.task_id)
@@ -8316,6 +8753,224 @@ impl VizApp {
             ChatStartupState::Ready if self.chat_pty_mode => "connecting",
             ChatStartupState::Ready => "disconnected",
         }
+    }
+
+    pub fn effective_compact_view(&self) -> SinglePanelView {
+        self.compact_navigation_override
+            .unwrap_or(match self.layout_preference.mode {
+                InspectorMode::Full => SinglePanelView::Detail,
+                InspectorMode::Hidden => SinglePanelView::Graph,
+                InspectorMode::Split => self.single_panel_view,
+            })
+    }
+
+    pub fn current_context_lane(&self) -> ContextLane {
+        // Compact Graph is the persistent Workspace destination. Keep the
+        // inspector tab untouched underneath it so plain Tab can return to the
+        // exact last inspector (especially Chat) instead of replacing it with
+        // the historical Detail/Log cycle.
+        if self.responsive_breakpoint == ResponsiveBreakpoint::Compact
+            && self.effective_compact_view() == SinglePanelView::Graph
+        {
+            return ContextLane::Workspace;
+        }
+        match self.right_panel_tab {
+            RightPanelTab::Chat => ContextLane::Chat,
+            RightPanelTab::Detail
+            | RightPanelTab::Agency
+            | RightPanelTab::Log
+            | RightPanelTab::Messages
+            | RightPanelTab::Output => ContextLane::Task,
+            RightPanelTab::Config
+            | RightPanelTab::CoordLog
+            | RightPanelTab::Dashboard
+            | RightPanelTab::Settings
+            | RightPanelTab::Files
+            | RightPanelTab::Firehose => ContextLane::Workspace,
+        }
+    }
+
+    fn remember_current_lane_tab(&mut self) {
+        match self.current_context_lane() {
+            ContextLane::Task => self.remembered_task_tab = self.right_panel_tab,
+            ContextLane::Workspace => self.remembered_workspace_tab = self.right_panel_tab,
+            ContextLane::Chat => {}
+        }
+    }
+
+    /// Show an exact inspector owner. In compact Split presentation this also
+    /// selects the one inspector pane without rewriting the user's persisted
+    /// dock/mode preference.
+    pub fn show_inspector_tab(&mut self, tab: RightPanelTab) {
+        self.right_panel_visible = true;
+        self.right_panel_tab = tab;
+        match self.current_context_lane() {
+            ContextLane::Task => self.remembered_task_tab = tab,
+            ContextLane::Workspace => self.remembered_workspace_tab = tab,
+            ContextLane::Chat => {}
+        }
+        if self.responsive_breakpoint == ResponsiveBreakpoint::Compact {
+            self.single_panel_view = SinglePanelView::Detail;
+            self.compact_navigation_override = Some(SinglePanelView::Detail);
+        }
+        self.focused_panel = FocusedPanel::RightPanel;
+    }
+
+    /// Activate one primary lane without opening its repeated-activation
+    /// selector. Exact task/chat selection is preserved independently.
+    pub fn activate_context_lane(&mut self, lane: ContextLane) {
+        if self.current_context_lane() == lane {
+            return;
+        }
+        self.remember_current_lane_tab();
+        if self.search_active || !self.search_input.is_empty() || !self.fuzzy_matches.is_empty() {
+            self.clear_search();
+        }
+        self.service_health.detail_open = false;
+        self.input_mode = InputMode::Normal;
+        match lane {
+            ContextLane::Chat => self.show_inspector_tab(RightPanelTab::Chat),
+            ContextLane::Task => {
+                if self.selected_task_id().is_none()
+                    && let Some((id, _)) = self.cached_task_picker_entries.first()
+                {
+                    let id = id.clone();
+                    self.select_task_by_id_exact(&id);
+                }
+                self.show_inspector_tab(self.remembered_task_tab);
+            }
+            ContextLane::Workspace
+                if self.responsive_breakpoint == ResponsiveBreakpoint::Compact =>
+            {
+                // Graph is the compact Workspace face. Preserve the exact
+                // inspector tab under it for the mosh-safe Tab fallback, even
+                // when the desired persisted mode is Full.
+                self.single_panel_view = SinglePanelView::Graph;
+                self.compact_navigation_override = Some(SinglePanelView::Graph);
+                self.focused_panel = FocusedPanel::Graph;
+            }
+            ContextLane::Workspace => self.show_inspector_tab(self.remembered_workspace_tab),
+        }
+    }
+
+    pub fn selected_task_title(&self) -> Option<&str> {
+        let id = self.selected_task_id()?;
+        self.published_graph
+            .as_ref()?
+            .get_task(id)
+            .map(|task| task.title.trim())
+            .filter(|title| !title.is_empty() && *title != id)
+    }
+
+    pub fn select_task_by_id_exact(&mut self, task_id: &str) -> bool {
+        let Some(index) = self.task_index.get(task_id).copied() else {
+            return false;
+        };
+        self.hud_pin = None;
+        self.selected_task_idx = Some(index);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+        true
+    }
+
+    pub fn open_task_picker(&mut self) {
+        let selected = self.selected_task_id().map(str::to_owned).or_else(|| {
+            self.cached_task_picker_entries
+                .first()
+                .map(|entry| entry.0.clone())
+        });
+        if selected.is_none() {
+            self.push_toast("No tasks to select".to_string(), ToastSeverity::Warning);
+            return;
+        }
+        self.task_picker_selected_id = selected;
+        self.input_mode = InputMode::TaskPicker;
+    }
+
+    pub fn task_picker_selected_index(&self) -> Option<usize> {
+        let id = self.task_picker_selected_id.as_ref()?;
+        self.task_index.get(id).copied()
+    }
+
+    pub fn move_task_picker(&mut self, delta: isize) {
+        let len = self.cached_task_picker_entries.len();
+        if len == 0 {
+            self.task_picker_selected_id = None;
+            return;
+        }
+        let current = self
+            .task_picker_selected_id
+            .as_ref()
+            .and_then(|id| self.task_index.get(id).copied())
+            .unwrap_or(0)
+            .min(len - 1);
+        let next = (current as isize + delta).clamp(0, len.saturating_sub(1) as isize) as usize;
+        self.task_picker_selected_id = self
+            .cached_task_picker_entries
+            .get(next)
+            .map(|entry| entry.0.clone());
+    }
+
+    pub fn close_task_picker(&mut self) {
+        self.task_picker_selected_id = None;
+        self.task_picker_row_hits.clear();
+        self.last_task_picker_list_area = Rect::default();
+        self.last_task_picker_cancel_area = Rect::default();
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn begin_graph_search(&mut self) {
+        self.clear_chat_search();
+        self.search_active = true;
+        self.search_input.clear();
+        self.fuzzy_matches.clear();
+        self.current_match = None;
+        self.filtered_indices = None;
+        self.update_scroll_bounds();
+        self.focused_panel = FocusedPanel::Graph;
+        self.input_mode = InputMode::Search;
+    }
+
+    pub fn begin_chat_search(&mut self) {
+        if self.search_active || !self.search_input.is_empty() || !self.fuzzy_matches.is_empty() {
+            self.clear_search();
+        }
+        self.clear_chat_search();
+        self.focused_panel = FocusedPanel::RightPanel;
+        self.input_mode = InputMode::ChatSearch;
+    }
+
+    /// Commit a stable task identity and remove every graph-search semantic.
+    /// The only post-commit indication is the bounded two-second target pulse.
+    pub fn commit_graph_search_task(&mut self, task_id: &str) -> bool {
+        if !self.task_index.contains_key(task_id) {
+            self.clear_search();
+            return false;
+        }
+        self.search_active = false;
+        self.search_input.clear();
+        self.fuzzy_matches.clear();
+        self.fuzzy_match_index_by_line.fill(None);
+        self.current_match = None;
+        self.filtered_indices = None;
+        self.visible_position_by_line = (0..self.lines.len()).map(Some).collect();
+        let selected = self.select_task_by_id_exact(task_id);
+        if selected {
+            self.jump_target = Some((task_id.to_string(), Instant::now()));
+            self.needs_center_on_selected = true;
+        }
+        self.update_scroll_bounds();
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+        }
+        selected
+    }
+
+    pub fn commit_graph_search_line(&mut self, line: usize) -> bool {
+        let Some(task_id) = self.line_task_map.get(&line).cloned() else {
+            return false;
+        };
+        self.commit_graph_search_task(&task_id)
     }
 
     fn update_active_chat_route(&mut self, task_id: &str, executor: String, model: Option<String>) {
@@ -8549,6 +9204,7 @@ impl VizApp {
 
         let entries = loader.cached_chat_tab_entries;
         let id_set = loader.cached_coordinator_id_set;
+        let picker_entries = loader.cached_chat_picker_entries;
         let tabs = loader.active_tabs;
         let pending = loader.pending_chat_pty_spawn;
         let pty_mode = loader.chat_pty_mode;
@@ -8563,6 +9219,7 @@ impl VizApp {
             app.active_tabs = tabs;
             app.cached_chat_tab_entries = entries;
             app.cached_coordinator_id_set = id_set;
+            app.cached_chat_picker_entries = picker_entries;
             app.pending_chat_pty_spawn = pending;
             app.chat_pty_mode = pty_mode;
             app.chat_pty_observer = observer;
@@ -8715,6 +9372,22 @@ impl VizApp {
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Chat,
+            remembered_task_tab: RightPanelTab::Detail,
+            remembered_workspace_tab: RightPanelTab::Dashboard,
+            last_context_chat_lane_area: Rect::default(),
+            last_context_task_lane_area: Rect::default(),
+            last_context_workspace_lane_area: Rect::default(),
+            last_context_search_area: Rect::default(),
+            last_context_controls_area: Rect::default(),
+            last_context_help_area: Rect::default(),
+            task_picker_selected_id: None,
+            task_picker_row_hits: Vec::new(),
+            last_task_picker_list_area: Rect::default(),
+            last_task_picker_cancel_area: Rect::default(),
+            choice_dialog_row_hits: Vec::new(),
+            cached_task_picker_entries: Arc::new(Vec::new()),
+            cached_chat_picker_entries: Arc::new(Vec::new()),
+            workspace_appearance: WorkspaceAppearance::default(),
             right_panel_percent: LayoutMode::from_config_str(&config.tui.default_inspector_size)
                 .panel_percent(),
             hud_size: HudSize::Normal,
@@ -8736,6 +9409,7 @@ impl VizApp {
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
+            compact_navigation_override: None,
 
             input_mode: InputMode::Normal,
             needs_center_on_selected: false,
@@ -8979,6 +9653,8 @@ impl VizApp {
         let cached_chat_tab_entries = std::mem::take(&mut self.cached_chat_tab_entries);
         let cached_user_board_entries = std::mem::take(&mut self.cached_user_board_entries);
         let cached_coordinator_id_set = std::mem::take(&mut self.cached_coordinator_id_set);
+        let cached_chat_picker_entries = std::mem::take(&mut self.cached_chat_picker_entries);
+        let cached_task_picker_entries = std::mem::take(&mut self.cached_task_picker_entries);
         let active_coordinator_id = self.active_coordinator_id;
         let active_tabs = std::mem::take(&mut self.active_tabs);
         let active_chat_identity = self.active_chat_identity.take();
@@ -9064,6 +9740,35 @@ impl VizApp {
                 app.active_chat_identity = active_chat_identity;
             }
             app.cached_user_board_entries = cached_user_board_entries;
+            let picker_selected_cid = app.coordinator_picker.as_ref().and_then(|picker| {
+                picker
+                    .entries
+                    .get(picker.selected)
+                    .map(|(cid, _, _, _)| *cid)
+            });
+            app.cached_chat_picker_entries = cached_chat_picker_entries;
+            // The prioritized chat bootstrap can make the lane clickable
+            // before the complete graph snapshot arrives. If its bounded
+            // selector is already open, atomically replace the active-only
+            // entries rather than leaving a stale/empty modal over fresh rows.
+            if let Some(picker) = app.coordinator_picker.as_mut() {
+                picker.entries = app.cached_chat_picker_entries.clone();
+                picker.selected = picker_selected_cid
+                    .and_then(|cid| {
+                        picker
+                            .entries
+                            .binary_search_by_key(&cid, |(id, _, _, _)| *id)
+                            .ok()
+                    })
+                    .or_else(|| {
+                        picker
+                            .entries
+                            .binary_search_by_key(&app.active_coordinator_id, |(id, _, _, _)| *id)
+                            .ok()
+                    })
+                    .unwrap_or(0);
+            }
+            app.cached_task_picker_entries = cached_task_picker_entries;
             app.chat.messages = chat_messages;
             app.chat.enforce_history_projection();
             app.chat.outbox_cursor = chat_history.0;
@@ -9111,6 +9816,7 @@ impl VizApp {
             return;
         }
         self.async_fs.start();
+        self.workspace_appearance.start(self.workgraph_dir.clone());
         let reporter = super::chat_startup::Reporter::new();
         reporter.record("first_frame", None);
         self.startup_reporter = Some(reporter);
@@ -9359,6 +10065,7 @@ impl VizApp {
         }
 
         app.apply_sort_mode_sync();
+        app.refresh_task_picker_cache(&input.graph);
         app.search_input = input.key.search_input.clone();
         app.search_active = input.key.search_active;
         app.rerun_search();
@@ -9461,6 +10168,8 @@ impl VizApp {
             cached_chat_tab_entries: std::mem::take(&mut self.cached_chat_tab_entries),
             cached_user_board_entries: std::mem::take(&mut self.cached_user_board_entries),
             cached_coordinator_id_set: std::mem::take(&mut self.cached_coordinator_id_set),
+            cached_chat_picker_entries: std::mem::take(&mut self.cached_chat_picker_entries),
+            cached_task_picker_entries: std::mem::take(&mut self.cached_task_picker_entries),
         }
     }
 
@@ -9474,6 +10183,10 @@ impl VizApp {
             let visible = self.original_to_visible(original)?;
             Some(visible as isize - old_offset_y as isize)
         });
+        let old_match_task_id = self
+            .current_match_line()
+            .and_then(|line| self.line_task_map.get(&line))
+            .cloned();
         let old_match = self.current_match;
         let old = self.take_graph_snapshot(
             self.snapshot_generation,
@@ -9517,6 +10230,8 @@ impl VizApp {
         self.cached_chat_tab_entries = std::mem::take(&mut snapshot.cached_chat_tab_entries);
         self.cached_user_board_entries = std::mem::take(&mut snapshot.cached_user_board_entries);
         self.cached_coordinator_id_set = std::mem::take(&mut snapshot.cached_coordinator_id_set);
+        self.cached_chat_picker_entries = std::mem::take(&mut snapshot.cached_chat_picker_entries);
+        self.cached_task_picker_entries = std::mem::take(&mut snapshot.cached_task_picker_entries);
         let newly_published_chat = self.pending_new_chat_focus.filter(|cid| {
             self.cached_coordinator_id_set.contains_key(cid)
                 && *cid == self.active_coordinator_id
@@ -9531,8 +10246,30 @@ impl VizApp {
             .as_ref()
             .and_then(|id| self.task_index.get(id).copied())
             .or_else(|| (!self.task_order.is_empty()).then_some(0));
+        if self
+            .jump_target
+            .as_ref()
+            .is_some_and(|(task_id, _)| !self.task_index.contains_key(task_id))
+        {
+            // Once a committed target disappears, discard the pulse itself;
+            // a later task with the same textual id must not revive stale UI.
+            self.jump_target = None;
+        }
+        if matches!(self.input_mode, InputMode::TaskPicker)
+            && self
+                .task_picker_selected_id
+                .as_ref()
+                .is_none_or(|id| !self.task_index.contains_key(id))
+        {
+            self.close_task_picker();
+        }
         self.current_match = if self.fuzzy_matches.is_empty() {
             None
+        } else if let Some(task_id) = old_match_task_id {
+            self.fuzzy_matches
+                .iter()
+                .position(|matched| self.line_task_map.get(&matched.line_idx) == Some(&task_id))
+                .or_else(|| Some(old_match.unwrap_or(0).min(self.fuzzy_matches.len() - 1)))
         } else {
             Some(old_match.unwrap_or(0).min(self.fuzzy_matches.len() - 1))
         };
@@ -10469,6 +11206,13 @@ impl VizApp {
     /// Performs incremental fuzzy matching and updates the filter.
     pub fn update_search(&mut self) {
         if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            // Never display a previous query's hits while the latest-wins
+            // worker derives this query.
+            self.fuzzy_matches.clear();
+            self.fuzzy_match_index_by_line.fill(None);
+            self.current_match = None;
+            self.filtered_indices = None;
+            self.update_scroll_bounds();
             self.request_graph_snapshot();
             return;
         }
@@ -10516,34 +11260,18 @@ impl VizApp {
         }
     }
 
-    /// Accept the current search (Enter key). Exit search mode, show all lines,
-    /// keep match highlights and viewport position (vim-style search).
-    pub fn accept_search(&mut self) {
-        self.search_active = false;
-        if self.snapshot_engine.is_some() && self.bootstrap_complete {
-            self.request_graph_snapshot();
-            return;
-        }
-        self.filtered_indices = None;
-        self.update_scroll_bounds();
-        // Keep search_input, fuzzy_matches, current_match for highlights + navigation.
-    }
-
-    /// Accept search and jump to the current match with a transient highlight.
-    /// Called when the user presses Enter on a search match.
+    /// Commit the current exact task match. Unlike the historical vim-style
+    /// accepted search, this clears query, filter, match colors, and navigation
+    /// state atomically; only the stable-ID pulse remains.
     pub fn accept_search_and_jump(&mut self) {
-        // Capture the current match's original line index before clearing filter.
-        let target_line = self.current_match_line();
-        self.accept_search();
-
-        if let Some(orig_line) = target_line {
-            // Set the transient highlight target.
-            self.jump_target = Some((orig_line, Instant::now()));
-
-            // Scroll to center on the target line in the full (unfiltered) view.
-            let half = self.scroll.viewport_height / 2;
-            self.scroll.offset_y = orig_line.saturating_sub(half);
-            self.scroll.clamp();
+        let target = self
+            .current_match_line()
+            .and_then(|line| self.line_task_map.get(&line))
+            .cloned();
+        if let Some(task_id) = target {
+            self.commit_graph_search_task(&task_id);
+        } else {
+            self.clear_search();
         }
     }
 
@@ -10578,14 +11306,15 @@ impl VizApp {
     pub fn clear_search(&mut self) {
         self.search_active = false;
         self.search_input.clear();
-        if self.snapshot_engine.is_some() && self.bootstrap_complete {
-            self.request_graph_snapshot();
-            return;
-        }
         self.fuzzy_matches.clear();
+        self.fuzzy_match_index_by_line.fill(None);
         self.current_match = None;
         self.filtered_indices = None;
+        self.visible_position_by_line = (0..self.lines.len()).map(Some).collect();
         self.update_scroll_bounds();
+        if self.snapshot_engine.is_some() && self.bootstrap_complete {
+            self.request_graph_snapshot();
+        }
     }
 
     /// Return a human-readable search status string for the status bar.
@@ -10604,15 +11333,6 @@ impl VizApp {
                     self.fuzzy_matches.len()
                 )
             }
-        } else if !self.search_input.is_empty() && !self.fuzzy_matches.is_empty() {
-            // Accepted search — highlights visible, navigating with n/N/Tab.
-            let idx = self.current_match.unwrap_or(0);
-            format!(
-                "/{} [{}/{}]",
-                self.search_input,
-                idx + 1,
-                self.fuzzy_matches.len()
-            )
         } else {
             String::new()
         }
@@ -10620,7 +11340,7 @@ impl VizApp {
 
     /// Check if any search/filter is active (for rendering decisions).
     pub fn has_active_search(&self) -> bool {
-        !self.search_input.is_empty() && !self.fuzzy_matches.is_empty()
+        self.search_active && !self.search_input.is_empty() && !self.fuzzy_matches.is_empty()
     }
 
     /// Get the fuzzy match info for an original line index, if any.
@@ -10859,6 +11579,9 @@ impl VizApp {
                 .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
             {
                 counts.inspectable_chats += 1;
+                if !task.status.is_terminal() && !task.tags.iter().any(|tag| tag == "archived") {
+                    counts.resumable_chats += 1;
+                }
             }
             if matches!(task.status, Status::PendingEval | Status::FailedPendingEval) {
                 counts.pending_eval += 1;
@@ -11184,6 +11907,14 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
+        let appearance_changed = match self.workspace_appearance.poll() {
+            Some(Ok(())) => true,
+            Some(Err(message)) => {
+                self.push_toast(message, ToastSeverity::Warning);
+                true
+            }
+            None => false,
+        };
         let auxiliary_changed = self.poll_auxiliary_snapshots();
         // Chat metadata and PTY completion have priority over every unrelated
         // full-project snapshot. Poll both even while bootstrap is loading.
@@ -11196,7 +11927,7 @@ impl VizApp {
         if self.poll_bootstrap() {
             return true;
         }
-        if auxiliary_changed {
+        if auxiliary_changed || appearance_changed {
             return true;
         }
         if !self.bootstrap_complete {
@@ -14149,6 +14880,22 @@ impl VizApp {
             right_panel_visible: false,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
+            remembered_task_tab: RightPanelTab::Detail,
+            remembered_workspace_tab: RightPanelTab::Dashboard,
+            last_context_chat_lane_area: Rect::default(),
+            last_context_task_lane_area: Rect::default(),
+            last_context_workspace_lane_area: Rect::default(),
+            last_context_search_area: Rect::default(),
+            last_context_controls_area: Rect::default(),
+            last_context_help_area: Rect::default(),
+            task_picker_selected_id: None,
+            task_picker_row_hits: Vec::new(),
+            last_task_picker_list_area: Rect::default(),
+            last_task_picker_cancel_area: Rect::default(),
+            choice_dialog_row_hits: Vec::new(),
+            cached_task_picker_entries: Arc::new(Vec::new()),
+            cached_chat_picker_entries: Arc::new(Vec::new()),
+            workspace_appearance: WorkspaceAppearance::default(),
             right_panel_percent: 35,
             hud_size: HudSize::Normal,
             layout_mode: LayoutMode::ThirdInspector,
@@ -14161,6 +14908,7 @@ impl VizApp {
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             single_panel_view: SinglePanelView::Graph,
+            compact_navigation_override: None,
 
             input_mode: InputMode::Normal,
             needs_center_on_selected: false,
@@ -14323,6 +15071,7 @@ impl VizApp {
     /// Apply desired state to the legacy presentation fields used by existing
     /// panel code. The bounded split ratio is retained across Full/Hidden.
     pub fn set_layout_preference(&mut self, preference: LayoutPreference) {
+        self.compact_navigation_override = None;
         self.layout_preference = preference.bounded();
         self.right_panel_percent = self.layout_preference.size_percent;
         match self.layout_preference.mode {
@@ -14449,22 +15198,23 @@ impl VizApp {
     }
 
     /// Toggle focus between Graph and RightPanel.
-    /// In compact mode, switches the single-panel view instead.
-    /// In full-inspector or off mode, focus stays locked to the visible content.
+    ///
+    /// Compact presentation is deliberately binary: Graph ↔ the exact last
+    /// inspector. It never cycles through Detail/Log because that silently
+    /// destroys a selected Chat surface on mosh/phone keyboards. The compact
+    /// override is presentation-only, so even desired Full/Hidden modes can use
+    /// the fallback without rewriting their persisted layout.
     pub fn toggle_panel_focus(&mut self) {
-        // In compact mode, Tab switches the single-panel view.
         if self.responsive_breakpoint == ResponsiveBreakpoint::Compact {
             self.toggle_single_panel_view();
             return;
         }
         match self.layout_mode {
             LayoutMode::FullInspector => {
-                // Only the panel is visible; stay focused on it.
                 self.focused_panel = FocusedPanel::RightPanel;
                 return;
             }
             LayoutMode::Off => {
-                // Only the graph is visible; stay focused on it.
                 self.focused_panel = FocusedPanel::Graph;
                 return;
             }
@@ -14484,31 +15234,32 @@ impl VizApp {
         };
     }
 
-    /// Cycle forward through panels in single-panel (compact) mode: Graph → Detail → Log → Graph.
-    /// Also updates focused_panel to match.
+    /// Toggle compact Graph ↔ exact last inspector. `]`, `[`, and plain Tab
+    /// intentionally share this mosh-safe two-state fallback.
     pub fn toggle_single_panel_view(&mut self) {
-        self.set_single_panel_view(self.single_panel_view.next());
+        let next = if self.effective_compact_view() == SinglePanelView::Graph {
+            SinglePanelView::Detail
+        } else {
+            SinglePanelView::Graph
+        };
+        self.set_single_panel_view(next);
     }
 
-    /// Cycle backward through panels in single-panel (compact) mode: Graph → Log → Detail → Graph.
     pub fn prev_single_panel_view(&mut self) {
-        self.set_single_panel_view(self.single_panel_view.prev());
+        self.toggle_single_panel_view();
     }
 
-    /// Set the single-panel view and update focused_panel + right_panel_tab accordingly.
     fn set_single_panel_view(&mut self, view: SinglePanelView) {
         self.single_panel_view = view;
+        if self.responsive_breakpoint == ResponsiveBreakpoint::Compact {
+            self.compact_navigation_override = Some(view);
+        }
         match view {
-            SinglePanelView::Graph => {
-                self.focused_panel = FocusedPanel::Graph;
-            }
+            SinglePanelView::Graph => self.focused_panel = FocusedPanel::Graph,
             SinglePanelView::Detail => {
+                // `right_panel_tab` is the stable inspector identity. Do not
+                // overwrite Chat with Detail/Log merely to expose the pane.
                 self.focused_panel = FocusedPanel::RightPanel;
-                self.right_panel_tab = RightPanelTab::Detail;
-            }
-            SinglePanelView::Log => {
-                self.focused_panel = FocusedPanel::RightPanel;
-                self.right_panel_tab = RightPanelTab::Log;
             }
         }
     }
@@ -17594,14 +18345,14 @@ impl VizApp {
     }
 
     pub fn chat_is_live(&self, coordinator_id: u32) -> bool {
-        self.coherent_graph().is_some_and(|graph| {
-            graph.tasks().any(|task| {
-                let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
-                    .or_else(|| (task.id == ".coordinator").then_some(0));
-                cid == Some(coordinator_id)
-                    && !task.status.is_terminal()
-                    && !task.tags.iter().any(|tag| tag == "archived")
-            })
+        let Some(task_id) = self.cached_coordinator_id_set.get(&coordinator_id) else {
+            return false;
+        };
+        let Some(graph) = self.coherent_graph() else {
+            return false;
+        };
+        graph.get_task(task_id).is_some_and(|task| {
+            !task.status.is_terminal() && !task.tags.iter().any(|tag| tag == "archived")
         })
     }
 
@@ -17611,20 +18362,21 @@ impl VizApp {
     /// surface. Every terminal/abandoned/archived chat is an ordinary task and
     /// therefore opens canonical Detail instead of a disconnected composer.
     pub fn open_coordinator_target(&mut self, target_id: u32) {
-        let task = self.coherent_graph().and_then(|graph| {
-            graph.tasks().find_map(|task| {
-                let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
-                    .or_else(|| (task.id == ".coordinator").then_some(0));
-                (cid == Some(target_id)).then(|| task.clone())
-            })
+        let task_id = self
+            .cached_chat_picker_entries
+            .binary_search_by_key(&target_id, |(cid, _, _, _)| *cid)
+            .ok()
+            .and_then(|index| self.cached_chat_picker_entries.get(index))
+            .map(|(_, task_id, _, _)| task_id.clone());
+        let task = task_id.and_then(|task_id| {
+            self.coherent_graph()
+                .and_then(|graph| graph.get_task(&task_id).cloned())
         });
         let Some(task) = task else {
             // Freshly-created chats can be selected before the graph snapshot
             // catches up. Preserve that existing live-create path.
             self.switch_coordinator(target_id);
-            self.right_panel_tab = RightPanelTab::Chat;
-            self.right_panel_visible = true;
-            self.focused_panel = FocusedPanel::RightPanel;
+            self.show_inspector_tab(RightPanelTab::Chat);
             return;
         };
         self.open_chat_task_or_detail(&task.id);
@@ -17633,7 +18385,7 @@ impl VizApp {
     pub fn open_chat_task_or_detail(&mut self, task_id: &str) {
         let task = self
             .coherent_graph()
-            .and_then(|graph| graph.tasks().find(|task| task.id == task_id).cloned());
+            .and_then(|graph| graph.get_task(task_id).cloned());
         let Some(task) = task else {
             self.open_task_detail(task_id);
             return;
@@ -17656,9 +18408,7 @@ impl VizApp {
                     self.active_tabs.push(cid);
                 }
                 self.switch_coordinator(cid);
-                self.right_panel_tab = RightPanelTab::Chat;
-                self.right_panel_visible = true;
-                self.focused_panel = FocusedPanel::RightPanel;
+                self.show_inspector_tab(RightPanelTab::Chat);
                 return;
             }
         }
@@ -17723,9 +18473,7 @@ impl VizApp {
             self.selected_task_idx = Some(idx);
             self.scroll_to_selected_task();
         }
-        self.right_panel_visible = true;
-        self.right_panel_tab = RightPanelTab::Detail;
-        self.focused_panel = FocusedPanel::RightPanel;
+        self.show_inspector_tab(RightPanelTab::Detail);
         self.request_hud_detail_for_task(task_id);
     }
 
@@ -19298,56 +20046,30 @@ impl VizApp {
         self.last_coordinator_picker_cancel_area = Rect::default();
     }
 
+    pub fn clear_symbolic_context_hits(&mut self) {
+        self.last_context_chat_lane_area = Rect::default();
+        self.last_context_task_lane_area = Rect::default();
+        self.last_context_workspace_lane_area = Rect::default();
+        self.last_context_search_area = Rect::default();
+        self.last_context_controls_area = Rect::default();
+        self.last_context_help_area = Rect::default();
+        self.last_context_picker_area = Rect::default();
+        self.last_context_prev_area = Rect::default();
+        self.last_context_next_area = Rect::default();
+        self.last_context_menu_area = Rect::default();
+        self.last_context_pulse_area = Rect::default();
+        self.task_picker_row_hits.clear();
+        self.last_task_picker_list_area = Rect::default();
+        self.last_task_picker_cancel_area = Rect::default();
+        self.choice_dialog_row_hits.clear();
+    }
+
     /// Open the coordinator picker overlay.
     pub fn open_coordinator_picker(&mut self) {
         self.clear_coordinator_picker_hits();
-        let mut entries: Vec<(u32, String, String, bool)> = self
-            .coherent_graph()
-            .map(|graph| {
-                graph
-                    .tasks()
-                    .filter(|task| {
-                        task.tags
-                            .iter()
-                            .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
-                    })
-                    .filter_map(|task| {
-                        let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
-                            .or_else(|| (task.id == ".coordinator").then_some(0))?;
-                        let archived = task.tags.iter().any(|tag| tag == "archived");
-                        let alive = !task.status.is_terminal() && !archived;
-                        let mut status = format!("{:?}", task.status).to_lowercase();
-                        if archived {
-                            status.push_str("/archived");
-                        }
-                        let recency = task
-                            .last_interaction_at
-                            .as_deref()
-                            .or(task.completed_at.as_deref())
-                            .or(task.started_at.as_deref())
-                            .unwrap_or("unknown");
-                        let route = match (&task.executor_preset_name, &task.model) {
-                            (Some(executor), Some(model)) => format!("{executor}/{model}"),
-                            (Some(executor), None) => executor.clone(),
-                            (None, Some(model)) => model.clone(),
-                            (None, None) if !task.command_argv.is_empty() => "command".to_string(),
-                            _ => "route unknown".to_string(),
-                        };
-                        Some((
-                            cid,
-                            task.id.clone(),
-                            format!("{} • {status} • {recency} • {route}", task.title),
-                            alive,
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        entries.sort_by_key(|(cid, _, _, _)| *cid);
-
+        let entries = self.cached_chat_picker_entries.clone();
         let current_idx = entries
-            .iter()
-            .position(|(id, _, _, _)| *id == self.active_coordinator_id)
+            .binary_search_by_key(&self.active_coordinator_id, |(id, _, _, _)| *id)
             .unwrap_or(0);
 
         self.coordinator_picker = Some(CoordinatorPickerState {
@@ -19739,6 +20461,58 @@ impl VizApp {
         }
         self.rebuild_active_tab_entries_from_cache();
         self.cached_user_board_entries = Self::list_user_board_entries_from_graph(graph);
+        let mut picker_entries: Vec<_> = graph
+            .tasks()
+            .filter(|task| {
+                task.tags
+                    .iter()
+                    .any(|tag| worksgood::chat_id::is_chat_loop_tag(tag))
+            })
+            .filter_map(|task| {
+                let cid = worksgood::chat_id::parse_chat_task_id(&task.id)
+                    .or_else(|| (task.id == ".coordinator").then_some(0))?;
+                let archived = task.tags.iter().any(|tag| tag == "archived");
+                let alive = !task.status.is_terminal() && !archived;
+                let mut status = format!("{:?}", task.status).to_lowercase();
+                if archived {
+                    status.push_str("/archived");
+                }
+                let recency = task
+                    .last_interaction_at
+                    .as_deref()
+                    .or(task.completed_at.as_deref())
+                    .or(task.started_at.as_deref())
+                    .unwrap_or("unknown");
+                let route = match (&task.executor_preset_name, &task.model) {
+                    (Some(executor), Some(model)) => format!("{executor}/{model}"),
+                    (Some(executor), None) => executor.clone(),
+                    (None, Some(model)) => model.clone(),
+                    (None, None) if !task.command_argv.is_empty() => "command".to_string(),
+                    _ => "route unknown".to_string(),
+                };
+                Some((
+                    cid,
+                    task.id.clone(),
+                    format!("{} • {status} • {recency} • {route}", task.title),
+                    alive,
+                ))
+            })
+            .collect();
+        picker_entries.sort_by_key(|entry| entry.0);
+        self.cached_chat_picker_entries = Arc::new(picker_entries);
+        self.refresh_task_picker_cache(graph);
+    }
+
+    fn refresh_task_picker_cache(&mut self, graph: &worksgood::graph::WorkGraph) {
+        let tasks = self
+            .task_order
+            .iter()
+            .filter_map(|id| {
+                let task = graph.get_task(id)?;
+                Some((task.id.clone(), task.title.trim().to_string()))
+            })
+            .collect();
+        self.cached_task_picker_entries = Arc::new(tasks);
     }
 
     /// Recompute `cached_chat_tab_entries` from `active_tabs` ∩
@@ -28523,6 +29297,39 @@ mod task_counts_active_tests {
         assert_eq!(app.task_counts.open, 1);
         // Waiting (not active, not terminal) lands in `blocked`.
         assert_eq!(app.task_counts.blocked, 1);
+    }
+
+    #[test]
+    fn symbolic_pulse_lifecycle_counts_drop_terminal_and_disappeared_stable_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+
+        let mut open = make_task_with_status(".chat-7", "chat", Status::Open);
+        open.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(open));
+        app.load_stats_from_graph(&graph);
+        assert_eq!(app.task_counts.inspectable_chats, 1);
+        assert_eq!(app.task_counts.resumable_chats, 1);
+
+        let mut done = make_task_with_status(".chat-7", "chat", Status::Done);
+        done.tags = vec![worksgood::chat_id::CHAT_LOOP_TAG.to_string()];
+        let mut terminal_graph = WorkGraph::new();
+        terminal_graph.add_node(Node::Task(done));
+        app.load_stats_from_graph(&terminal_graph);
+        assert_eq!(app.task_counts.inspectable_chats, 1);
+        assert_eq!(app.task_counts.resumable_chats, 0);
+
+        app.load_stats_from_graph(&WorkGraph::new());
+        assert_eq!(app.task_counts.inspectable_chats, 0);
+        assert_eq!(app.task_counts.resumable_chats, 0);
+        assert!(app.task_snapshots.get(".chat-7").is_none());
     }
 
     /// HUD vitals "X running" must equal the count of tasks the viz colors
