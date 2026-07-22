@@ -41,8 +41,10 @@ for spec in \
 do
     id=${spec%%:*}
     title=${spec#*:}
-    wg add "$title" --id "$id" >"add-$id.log" 2>&1 \
+    wg add "$title" --id "$id" --paused >"add-$id.log" 2>&1 \
         || loud_fail "wg add $id failed: $(tail -10 "add-$id.log")"
+    wg publish "$id" >"publish-$id.log" 2>&1 \
+        || loud_fail "wg publish $id failed: $(tail -10 "publish-$id.log")"
 
     for generated in ".flip-$id" ".evaluate-$id"
     do
