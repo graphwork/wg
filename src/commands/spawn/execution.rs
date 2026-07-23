@@ -3,9 +3,9 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use worksgood::agency;
 use worksgood::config::{CapBehavior, Config, EndpointConfig, ReasoningLevel};
@@ -13,7 +13,7 @@ use worksgood::dispatch::plan_spawn;
 use worksgood::graph::{LogEntry, Node, Status, Task, is_system_task};
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
-use worksgood::service::registry::AgentRegistry;
+use worksgood::service::registry::{AgentRegistry, LockedRegistry};
 
 use super::context::{
     build_previous_attempt_context, build_scope_context, build_task_context, discover_test_files,
@@ -24,6 +24,515 @@ use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
     sanitize_bash_path, shell_escape, strip_verbatim_prefix,
 };
+
+const OUTPUT_RESERVATION_FILE: &str = ".spawn-reservation";
+const LAUNCH_GATE_FILE: &str = ".launch-permit";
+
+#[cfg(test)]
+thread_local! {
+    static SPAWN_FAULT_BOUNDARY: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
+    static LAST_GATED_CHILD_PID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn spawn_fault(boundary: &str) -> Result<()> {
+    #[cfg(test)]
+    {
+        let injected = SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow() == Some(boundary));
+        if injected {
+            anyhow::bail!("injected spawn transaction failure at {boundary}");
+        }
+    }
+    let _ = boundary;
+    Ok(())
+}
+
+/// Filesystem resources prepared before graph claim/process launch. Until
+/// `commit`, Drop rolls back only resources carrying this transaction's exact
+/// ownership token. A dirty worktree is never deleted; rollback reports the
+/// preserved path loudly instead.
+#[derive(Debug)]
+struct PreparedSpawnWorkspace {
+    agent_id: String,
+    output_dir: PathBuf,
+    output_token: String,
+    worktree_info: Option<worktree::WorktreeInfo>,
+    created_worktree: bool,
+    removed_cleanup_marker: Option<Vec<u8>>,
+    committed: bool,
+}
+
+impl PreparedSpawnWorkspace {
+    fn prepare_launch(&mut self) -> Result<()> {
+        let reservation = self.output_dir.join(OUTPUT_RESERVATION_FILE);
+        let recorded = fs::read_to_string(&reservation).with_context(|| {
+            format!(
+                "spawn output reservation disappeared before launch: {}",
+                reservation.display()
+            )
+        })?;
+        if recorded != self.output_token {
+            anyhow::bail!(
+                "spawn output reservation ownership mismatch at {}; refusing launch",
+                reservation.display()
+            );
+        }
+        if let Some(ref info) = self.worktree_info {
+            let marker = info
+                .path
+                .join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
+            if marker.exists() {
+                let contents = fs::read(&marker).with_context(|| {
+                    format!(
+                        "failed to snapshot stale cleanup marker before isolated launch: {}",
+                        marker.display()
+                    )
+                })?;
+                fs::remove_file(&marker).with_context(|| {
+                    format!(
+                        "failed to clear stale cleanup marker before isolated launch: {}",
+                        marker.display()
+                    )
+                })?;
+                self.removed_cleanup_marker = Some(contents);
+            }
+        }
+        Ok(())
+    }
+
+    /// Called only after the atomic launch permit has been published. From
+    /// this point the process is live and rollback must never delete its cwd.
+    fn commit_after_launch(&mut self) {
+        self.committed = true;
+        self.removed_cleanup_marker = None;
+        let reservation = self.output_dir.join(OUTPUT_RESERVATION_FILE);
+        if let Err(error) = fs::remove_file(&reservation) {
+            eprintln!(
+                "[spawn] WARNING: live agent output reservation could not be cleared at {}: {}",
+                reservation.display(),
+                error
+            );
+        }
+    }
+
+    fn rollback(&mut self) {
+        if self.committed {
+            return;
+        }
+        if !self.created_worktree
+            && let Some(contents) = self.removed_cleanup_marker.take()
+            && let Some(ref info) = self.worktree_info
+        {
+            let marker = info
+                .path
+                .join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
+            if worktree::verify_worktree_info(info).is_err() {
+                eprintln!(
+                    "[spawn] refusing to restore cleanup marker through an unverified retry worktree {}; inspect it manually",
+                    info.path.display()
+                );
+            } else if !marker.exists()
+                && let Err(error) = fs::write(&marker, contents)
+            {
+                eprintln!(
+                    "[spawn] failed to restore retry cleanup marker {}: {}",
+                    marker.display(),
+                    error
+                );
+            }
+        }
+        if self.created_worktree
+            && let Some(ref info) = self.worktree_info
+            && let Err(error) = worktree::rollback_created_worktree(info)
+        {
+            eprintln!(
+                "[spawn] ISOLATION ROLLBACK PRESERVED {}: {:#}",
+                info.path.display(),
+                error
+            );
+        }
+        let reservation = self.output_dir.join(OUTPUT_RESERVATION_FILE);
+        let owns_output =
+            fs::read_to_string(&reservation).is_ok_and(|recorded| recorded == self.output_token);
+        if owns_output {
+            if let Err(error) = fs::remove_dir_all(&self.output_dir) {
+                eprintln!(
+                    "[spawn] failed to roll back owned agent output {}: {}",
+                    self.output_dir.display(),
+                    error
+                );
+            }
+        } else if self.output_dir.exists() {
+            eprintln!(
+                "[spawn] refusing to remove unverified agent output {}; inspect it manually",
+                self.output_dir.display()
+            );
+        }
+    }
+}
+
+impl Drop for PreparedSpawnWorkspace {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn advance_agent_id(registry: &mut LockedRegistry) -> Result<()> {
+    registry.next_agent_id = registry
+        .next_agent_id
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("agent ID space exhausted while allocating isolation"))?;
+    Ok(())
+}
+
+fn output_reservation(dir: &Path, agent_id: &str) -> Result<(PathBuf, String)> {
+    let parent = dir.join("agents");
+    fs::create_dir_all(&parent)
+        .with_context(|| format!("failed to create agent output parent {}", parent.display()))?;
+    let output_dir = agent_output_dir(dir, agent_id);
+    fs::create_dir(&output_dir).with_context(|| {
+        format!(
+            "agent output collision or reservation failure at {}",
+            output_dir.display()
+        )
+    })?;
+    let token = uuid::Uuid::new_v4().to_string();
+    if let Err(error) = fs::write(output_dir.join(OUTPUT_RESERVATION_FILE), &token) {
+        let _ = fs::remove_dir_all(&output_dir);
+        return Err(error).context("failed to persist agent output reservation");
+    }
+    Ok((output_dir, token))
+}
+
+fn reusable_worktree_is_available(
+    registry: &LockedRegistry,
+    info: &worktree::WorktreeInfo,
+    task_id: &str,
+) -> Result<()> {
+    for agent in registry.all() {
+        let claims_path = agent
+            .worktree_path
+            .as_deref()
+            .is_some_and(|path| same_path(Path::new(path), &info.path))
+            || agent.id == info.agent_id;
+        if !claims_path {
+            continue;
+        }
+        let process_alive = worksgood::service::is_process_alive(agent.pid);
+        if agent.task_id != task_id || agent.is_alive() || process_alive {
+            anyhow::bail!(
+                "isolated worktree {} is owned by {} attempt {} for task '{}' (status {:?}); no process launched. Recover by terminating/reaping that attempt or archive the worktree explicitly after inspection",
+                info.path.display(),
+                if agent.is_alive() || process_alive {
+                    "live"
+                } else {
+                    "terminal"
+                },
+                agent.id,
+                agent.task_id,
+                agent.status
+            );
+        }
+    }
+    Ok(())
+}
+
+fn prepare_spawn_workspace(
+    dir: &Path,
+    project_root: &Path,
+    task_id: &str,
+    needs_worktree: bool,
+    registry: &mut LockedRegistry,
+) -> Result<PreparedSpawnWorkspace> {
+    let reusable = if needs_worktree {
+        let attempted_agent = format!("agent-{}", registry.next_agent_id);
+        let attempted_path = project_root.join(".wg-worktrees").join(&attempted_agent);
+        let info = worktree::find_verified_worktree_for_task(project_root, dir, task_id)
+            .with_context(|| {
+                format!(
+                    "REQUIRED ISOLATION preflight failed for {} at {} while checking retry ownership. No process launched; repair with `git worktree repair` or inspect/archive the named worktree explicitly",
+                    attempted_agent,
+                    attempted_path.display()
+                )
+            })?;
+        if let Some(ref info) = info {
+            reusable_worktree_is_available(registry, info, task_id)?;
+        }
+        info
+    } else {
+        None
+    };
+    let cache_ownership = worksgood::disk_sentinel::load_ownership(dir)
+        .context("failed to inspect cache leases during collision-free agent allocation")?;
+
+    loop {
+        let agent_id = format!("agent-{}", registry.next_agent_id);
+        let worktree_path = project_root.join(".wg-worktrees").join(&agent_id);
+        let branch = format!("wg/{agent_id}/{task_id}");
+        let output_dir = agent_output_dir(dir, &agent_id);
+        let mut collisions = Vec::new();
+        if registry.get_agent(&agent_id).is_some() {
+            collisions.push("agent registry entry".to_string());
+        }
+        if cache_ownership
+            .caches
+            .iter()
+            .any(|cache| cache.agent_id == agent_id)
+        {
+            collisions.push("cache ownership lease".to_string());
+        }
+        if output_dir.exists() {
+            collisions.push(format!("output path {}", output_dir.display()));
+        }
+        if needs_worktree {
+            if worktree_path.exists() {
+                collisions.push(format!("worktree path {}", worktree_path.display()));
+            }
+            if worktree::agent_branch_exists(project_root, &agent_id).with_context(|| {
+                format!(
+                    "REQUIRED ISOLATION could not verify branch allocation for {} at {}. No process launched; repair the repository/worktree metadata and retry",
+                    agent_id,
+                    worktree_path.display()
+                )
+            })? {
+                collisions.push(format!("branch namespace wg/{agent_id}/* (candidate {branch})"));
+            }
+        }
+        if !collisions.is_empty() {
+            eprintln!(
+                "[spawn] ISOLATION COLLISION for {} at {}: {}; preserving unknown/dirty source and atomically trying the next agent ID. Inspect recovery with `git worktree list` and `wg worktree archive {} --remove` only after review",
+                agent_id,
+                worktree_path.display(),
+                collisions.join(", "),
+                agent_id
+            );
+            advance_agent_id(registry)?;
+            continue;
+        }
+
+        let (reserved_output, output_token) = match output_reservation(dir, &agent_id) {
+            Ok(reservation) => reservation,
+            Err(error) if output_dir.exists() => {
+                eprintln!(
+                    "[spawn] agent output collision for {} at {}; preserving it and trying the next ID: {:#}",
+                    agent_id,
+                    output_dir.display(),
+                    error
+                );
+                advance_agent_id(registry)?;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+
+        let (worktree_info, created_worktree) = if needs_worktree {
+            if let Some(ref prior) = reusable {
+                eprintln!(
+                    "[spawn] Reusing verified prior worktree for task '{}' at {} (branch: {}) — retry-in-place",
+                    task_id,
+                    prior.path.display(),
+                    prior.branch
+                );
+                (Some(prior.clone()), false)
+            } else {
+                match worktree::create_worktree(project_root, dir, &agent_id, task_id) {
+                    Ok(info) => {
+                        eprintln!(
+                            "[spawn] Created and verified isolated worktree for {} at {} (branch: {})",
+                            agent_id,
+                            info.path.display(),
+                            info.branch
+                        );
+                        (Some(info), true)
+                    }
+                    Err(error) if worktree::is_collision(&error) => {
+                        let _ = fs::remove_dir_all(&reserved_output);
+                        eprintln!(
+                            "[spawn] ISOLATION COLLISION for {} at {}: {:#}; source preserved, trying the next agent ID",
+                            agent_id,
+                            worktree_path.display(),
+                            error
+                        );
+                        advance_agent_id(registry)?;
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&reserved_output);
+                        return Err(error).with_context(|| {
+                            format!(
+                                "REQUIRED ISOLATION FAILED for {} at {}. No worker/handler was launched and task '{}' remains dispatchable. Preserve unknown/dirty source; inspect `git worktree list`, repair with `git worktree repair`, or archive explicitly after review",
+                                agent_id,
+                                worktree_path.display(),
+                                task_id
+                            )
+                        });
+                    }
+                }
+            }
+        } else {
+            (None, false)
+        };
+
+        return Ok(PreparedSpawnWorkspace {
+            agent_id,
+            output_dir: reserved_output,
+            output_token,
+            worktree_info,
+            created_worktree,
+            removed_cleanup_marker: None,
+            committed: false,
+        });
+    }
+}
+
+#[derive(Clone)]
+struct TaskClaimSnapshot {
+    status: Status,
+    started_at: Option<String>,
+    assigned: Option<String>,
+}
+
+fn claim_task_for_spawn(
+    graph_path: &Path,
+    task_id: &str,
+    agent_id: &str,
+) -> Result<TaskClaimSnapshot> {
+    let mut snapshot = None;
+    let mut claim_error = None;
+    modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            claim_error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            return false;
+        };
+        if !matches!(task.status, Status::Open | Status::Blocked | Status::Incomplete)
+            || task.assigned.is_some()
+        {
+            claim_error = Some(anyhow::anyhow!(
+                "Task '{}' changed during spawn and is no longer dispatchable (status={:?}, assigned={:?})",
+                task_id,
+                task.status,
+                task.assigned
+            ));
+            return false;
+        }
+        snapshot = Some(TaskClaimSnapshot {
+            status: task.status,
+            started_at: task.started_at.clone(),
+            assigned: task.assigned.clone(),
+        });
+        task.status = Status::InProgress;
+        task.started_at = Some(Utc::now().to_rfc3339());
+        task.assigned = Some(agent_id.to_string());
+        true
+    })
+    .context("failed to atomically claim task for spawn")?;
+    if let Some(error) = claim_error {
+        return Err(error);
+    }
+    snapshot.ok_or_else(|| anyhow::anyhow!("task claim produced no transaction snapshot"))
+}
+
+fn rollback_task_claim(
+    graph_path: &Path,
+    task_id: &str,
+    agent_id: &str,
+    snapshot: &TaskClaimSnapshot,
+) -> Result<()> {
+    let mut ownership_lost = false;
+    modify_graph(graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(task_id) else {
+            ownership_lost = true;
+            return false;
+        };
+        if task.status != Status::InProgress || task.assigned.as_deref() != Some(agent_id) {
+            ownership_lost = true;
+            return false;
+        }
+        task.status = snapshot.status;
+        task.started_at.clone_from(&snapshot.started_at);
+        task.assigned.clone_from(&snapshot.assigned);
+        true
+    })
+    .context("failed to roll back task claim")?;
+    if ownership_lost {
+        anyhow::bail!(
+            "refused to roll back task '{}' because claim ownership changed from {}",
+            task_id,
+            agent_id
+        );
+    }
+    Ok(())
+}
+
+fn publish_launch_permit_for_claim(
+    graph_path: &Path,
+    task_id: &str,
+    agent_id: &str,
+    output_dir: &Path,
+    token: &str,
+) -> Result<()> {
+    let mut outcome = None;
+    modify_graph(graph_path, |graph| {
+        let valid = graph.get_task(task_id).is_some_and(|task| {
+            task.status == Status::InProgress && task.assigned.as_deref() == Some(agent_id)
+        });
+        outcome = Some(if valid {
+            // Publish while the graph lock is still held. The claim and permit
+            // therefore have one commit point: another dispatcher cannot
+            // unclaim/reassign between the ownership check and handler launch.
+            release_launch_gate(output_dir, token)
+        } else {
+            Err(anyhow::anyhow!(
+                "task '{}' claim ownership changed before launch (expected status=in-progress assigned={}); refusing to release handler gate",
+                task_id,
+                agent_id
+            ))
+        });
+        false
+    })
+    .context("failed to lock/recheck task claim before launch")?;
+    outcome.ok_or_else(|| anyhow::anyhow!("task claim launch check produced no outcome"))?
+}
+
+fn kill_spawned_child(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(unix)]
+    unsafe {
+        // The wrapper calls setsid in pre_exec. Try the session/process group
+        // first, then the exact PID in case it has not completed setsid yet.
+        libc::kill(-(pid as i32), libc::SIGKILL);
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn release_launch_gate(output_dir: &Path, token: &str) -> Result<()> {
+    let temporary = output_dir.join(".launch-permit.tmp");
+    let gate = output_dir.join(LAUNCH_GATE_FILE);
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .with_context(|| format!("failed to create launch permit {}", temporary.display()))?;
+    use std::io::Write as _;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&temporary, &gate).with_context(|| {
+        format!(
+            "failed to atomically publish launch permit {}",
+            gate.display()
+        )
+    })?;
+    Ok(())
+}
 
 /// Internal shared implementation for spawning an agent.
 /// Both `run()` (CLI) and `spawn_agent()` (coordinator) delegate here.
@@ -392,9 +901,6 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         }
     }
 
-    // We need to know the agent ID before spawning to set up the output directory
-    let temp_agent_id = format!("agent-{}", locked_registry.next_agent_id);
-
     if build_class.is_heavy() {
         let active_heavy = locked_registry
             .all()
@@ -417,85 +923,43 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             );
         }
     }
-    let output_dir = agent_output_dir(dir, &temp_agent_id);
-    fs::create_dir_all(&output_dir).with_context(|| {
-        format!(
-            "Failed to create agent output directory at {:?}",
-            output_dir
-        )
-    })?;
-
-    let output_file = output_dir.join("output.log");
-    let output_file_str = output_file.to_string_lossy().to_string();
-
-    // --- Worktree isolation ---
-    // See `should_create_worktree` for the gating rules.
+    // --- Workspace reservation and mandatory isolation ---
+    // The registry lock is held across collision-free ID allocation, output
+    // reservation, worktree creation/verification, graph claim, gated process
+    // spawn, and registry commit. No isolation failure can reach cmd.spawn().
+    let project_root = dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
     let needs_worktree = should_create_worktree(
         config.coordinator.worktree_isolation,
         task_id,
         resolved_exec_mode.as_str(),
     );
+    let mut workspace = prepare_spawn_workspace(
+        dir,
+        project_root,
+        task_id,
+        needs_worktree,
+        &mut locked_registry,
+    )?;
+    spawn_fault("workspace-prepared")?;
+    let temp_agent_id = workspace.agent_id.clone();
+    let output_dir = workspace.output_dir.clone();
+    let worktree_info = workspace.worktree_info.clone();
+    if !config.coordinator.worktree_isolation {
+        eprintln!(
+            "[spawn] worktree isolation explicitly disabled by configuration for {}; shared/configured working directory mode is intentional",
+            temp_agent_id
+        );
+    } else if !needs_worktree {
+        eprintln!(
+            "[spawn] Isolation not required for {} (task '{}', exec_mode={}): system or read-only execution mode",
+            temp_agent_id, task_id, resolved_exec_mode
+        );
+    }
 
-    let worktree_info = if needs_worktree {
-        let project_root = dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-
-        // Retry-in-place: if a prior worktree exists for this task (from a
-        // previous attempt that hit rate limit, crashed, or was killed),
-        // reuse it. Preserves uncommitted WIP and prior commits — the new
-        // agent starts in the same dir, on the same branch, with all that
-        // context intact. The retention policy in worktree-sweep keeps the
-        // dir alive until eval+merge so this path is reachable.
-        //
-        // Use `wg retry --fresh` to opt out and start clean.
-        if let Some((prior_path, prior_branch)) =
-            worktree::find_worktree_for_task(project_root, task_id)
-        {
-            // Clear any cleanup-pending marker that the prior agent's
-            // wrapper may have written so the next sweep doesn't reap it.
-            let marker =
-                prior_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
-            if marker.exists() {
-                let _ = fs::remove_file(&marker);
-            }
-            eprintln!(
-                "[spawn] Reusing prior worktree for task '{}' at {:?} (branch: {}) — retry-in-place",
-                task_id, prior_path, prior_branch
-            );
-            Some(worktree::WorktreeInfo {
-                path: prior_path,
-                branch: prior_branch,
-                project_root: project_root.to_path_buf(),
-            })
-        } else {
-            match worktree::create_worktree(project_root, dir, &temp_agent_id, task_id) {
-                Ok(info) => {
-                    eprintln!(
-                        "[spawn] Created worktree for {} at {:?} (branch: {})",
-                        temp_agent_id, info.path, info.branch
-                    );
-                    Some(info)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[spawn] Worktree creation failed for {}, falling back to shared working directory: {}",
-                        temp_agent_id, e
-                    );
-                    None
-                }
-            }
-        }
-    } else {
-        if config.coordinator.worktree_isolation {
-            eprintln!(
-                "[spawn] Skipping worktree for {} (task '{}', exec_mode={}): meta or non-writing task",
-                temp_agent_id, task_id, resolved_exec_mode
-            );
-        }
-        None
-    };
-
+    let output_file = output_dir.join("output.log");
+    let output_file_str = output_file.to_string_lossy().to_string();
     vars.in_worktree = worktree_info.is_some();
 
     let owned_target_path = if build_class.is_build_capable() {
@@ -771,6 +1235,9 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
             .to_string(),
     );
     cmd.env("WG_SPAWN_RUN_ID", &spawn_run_id);
+    cmd.env("WG_LAUNCH_GATE", output_dir.join(LAUNCH_GATE_FILE));
+    cmd.env("WG_LAUNCH_TOKEN", &spawn_run_id);
+    cmd.env("WG_LAUNCH_PARENT_PID", std::process::id().to_string());
     // Propagate user identity to spawned agents
     cmd.env("WG_USER", worksgood::current_user());
     if let Some(ref m) = effective_model {
@@ -870,76 +1337,277 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
         cmd.creation_flags(0x0000_0200);
     }
 
-    // Claim the task BEFORE spawning the process to prevent race conditions
-    // where two concurrent spawns both pass the status check.
-    // Use modify_graph for atomic claim under flock.
-    let spawned_by_clone = spawned_by.to_string();
-    let executor_name_clone = resolved_executor_name.to_string();
-    let effective_model_clone = effective_model.clone();
-    let task_title_for_audit_clone = task_title_for_audit.clone();
-    let task_agent_for_audit_clone = task_agent_for_audit.clone();
-    let temp_agent_id_clone = temp_agent_id.clone();
-    let task_id_str = task_id.to_string();
-    let model_validation_warning_clone = model_validation_warning.clone();
+    // Claim under the graph lock only after all fallible command/workspace
+    // preparation. The closure re-checks status and assignment, closing the
+    // stale-read race between concurrent dispatchers.
+    let claim_snapshot = claim_task_for_spawn(&graph_path, task_id, &temp_agent_id)?;
 
-    let mut claim_error: Option<anyhow::Error> = None;
-    modify_graph(&graph_path, |graph| {
-        let task = match graph.get_task_mut(&task_id_str) {
-            Some(t) => t,
-            None => {
-                claim_error = Some(anyhow::anyhow!("Task '{}' not found", task_id_str));
-                return false;
-            }
+    // The wrapper is spawned behind an unpublished launch gate. It cannot
+    // start the handler until every durable transaction boundary succeeds.
+    let mut child: Option<Child> = None;
+    let mut registered_agent_id: Option<String> = None;
+    let mut registered_caches = Vec::new();
+    let launch_result = (|| -> Result<(String, u32)> {
+        spawn_fault("claim")?;
+        workspace.prepare_launch()?;
+        if needs_worktree {
+            let info = worktree_info.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "required isolation invariant lost for {} before launch",
+                    temp_agent_id
+                )
+            })?;
+            worktree::verify_worktree_info(info).with_context(|| {
+                format!(
+                    "REQUIRED ISOLATION verification failed for {} at {}; no handler launched",
+                    temp_agent_id,
+                    info.path.display()
+                )
+            })?;
+        }
+
+        child = Some(cmd.spawn().with_context(|| {
+            format!(
+                "failed to spawn gated executor '{}' (command: {})",
+                resolved_executor_name, settings.command
+            )
+        })?);
+        let pid = child.as_ref().expect("child assigned").id();
+        #[cfg(test)]
+        LAST_GATED_CHILD_PID.with(|recorded| recorded.set(pid));
+        spawn_fault("wrapper-spawned")?;
+
+        let agent_id = locked_registry.register_agent_with_model(
+            pid,
+            task_id,
+            resolved_executor_name,
+            &output_file_str,
+            effective_model.as_deref(),
+        );
+        if agent_id != temp_agent_id {
+            anyhow::bail!(
+                "agent allocation changed inside locked spawn transaction: reserved {}, registry returned {}",
+                temp_agent_id,
+                agent_id
+            );
+        }
+        registered_agent_id = Some(agent_id.clone());
+        if let Some(ref worktree) = worktree_info {
+            locked_registry.set_worktree_path(&agent_id, &worktree.path);
+        }
+        // Keep the registry lock held after the atomic write; rollback can
+        // remove this exact entry without another dispatcher interleaving.
+        locked_registry
+            .save_ref()
+            .context("failed to persist gated agent registry entry")?;
+        spawn_fault("registry-saved")?;
+
+        let lease_seconds = config
+            .coordinator
+            .resource_management
+            .owned_cache_lease_seconds;
+        let worktree_path = worktree_info
+            .as_ref()
+            .map(|worktree| worktree.path.as_path());
+        if let Some(path) = owned_target_path.as_ref() {
+            let cache = worksgood::disk_sentinel::make_owned_cache(
+                path,
+                worksgood::disk_sentinel::CacheKind::CargoTarget,
+                task_id,
+                &agent_id,
+                pid,
+                worktree_path,
+                lease_seconds,
+            );
+            worksgood::disk_sentinel::register_owned_cache(dir, cache.clone())
+                .context("failed to persist Cargo target ownership")?;
+            registered_caches.push(cache);
+        }
+        if let Some(path) = owned_tmp_path.as_ref() {
+            let cache = worksgood::disk_sentinel::make_owned_cache(
+                path,
+                worksgood::disk_sentinel::CacheKind::CargoInstallScratch,
+                task_id,
+                &agent_id,
+                pid,
+                worktree_path,
+                lease_seconds,
+            );
+            worksgood::disk_sentinel::register_owned_cache(dir, cache.clone())
+                .context("failed to persist build scratch ownership")?;
+            registered_caches.push(cache);
+        }
+        spawn_fault("ownership-registered")?;
+
+        let isolation_mode = if worktree_info.is_some() {
+            "required-worktree"
+        } else if !config.coordinator.worktree_isolation {
+            "shared-explicitly-configured"
+        } else {
+            "shared-nonwriting-policy"
         };
-        task.status = Status::InProgress;
-        task.started_at = Some(Utc::now().to_rfc3339());
-        task.assigned = Some(temp_agent_id_clone.clone());
+        let metadata_path = output_dir.join("metadata.json");
+        let mut metadata = serde_json::json!({
+            "agent_id": agent_id,
+            "pid": pid,
+            "task_id": task_id,
+            "executor": resolved_executor_name,
+            "model": &effective_model,
+            "reasoning": resolved_reasoning.map(|r| r.as_str()),
+            "started_at": Utc::now().to_rfc3339(),
+            "run_id": &spawn_run_id,
+            "health_route": &health_route,
+            "timeout_secs": effective_timeout_secs,
+            "worktree_isolation_enabled": config.coordinator.worktree_isolation,
+            "isolation_mode": isolation_mode,
+        });
+        if let Some(ref worktree) = worktree_info {
+            metadata["worktree_path"] = serde_json::json!(worktree.path.to_string_lossy());
+            metadata["worktree_branch"] = serde_json::json!(&worktree.branch);
+            metadata["effective_cwd"] = serde_json::json!(worktree.path.to_string_lossy());
+        } else if let Some(ref working_dir) = settings.working_dir {
+            metadata["effective_cwd"] = serde_json::json!(working_dir);
+        }
+        metadata["owned_cache_paths"] = serde_json::json!(
+            [owned_target_path.as_ref(), owned_tmp_path.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        );
+        fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)
+            .with_context(|| format!("failed to persist {}", metadata_path.display()))?;
+        spawn_fault("metadata-written")?;
+
+        // Re-verify after all setup and immediately before publishing the
+        // permit. This is the last operation before the handler can execute.
+        if let Some(ref worktree) = worktree_info {
+            worktree::verify_worktree_info(worktree).with_context(|| {
+                format!(
+                    "REQUIRED ISOLATION changed before launch for {} at {}",
+                    agent_id,
+                    worktree.path.display()
+                )
+            })?;
+        }
+        spawn_fault("before-launch-permit")?;
+        publish_launch_permit_for_claim(
+            &graph_path,
+            task_id,
+            &agent_id,
+            &output_dir,
+            &spawn_run_id,
+        )?;
+        workspace.commit_after_launch();
+        Ok((agent_id, pid))
+    })();
+
+    let (agent_id, pid) = match launch_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(ref mut spawned) = child {
+                kill_spawned_child(spawned);
+            }
+            let mut rollback_errors = Vec::new();
+            if let Some(ref agent_id) = registered_agent_id {
+                if let Err(rollback) =
+                    worksgood::disk_sentinel::unregister_owned_caches(dir, &registered_caches)
+                {
+                    rollback_errors.push(format!("cache ownership: {rollback:#}"));
+                }
+                locked_registry.unregister_agent(agent_id);
+                if let Err(rollback) = locked_registry.save_ref() {
+                    rollback_errors.push(format!("agent registry: {rollback:#}"));
+                }
+            }
+            if let Err(rollback) =
+                rollback_task_claim(&graph_path, task_id, &temp_agent_id, &claim_snapshot)
+            {
+                rollback_errors.push(format!("task claim: {rollback:#}"));
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "spawn transaction for {} rolled back (task remains dispatchable; rollback diagnostics: {})",
+                    temp_agent_id,
+                    if rollback_errors.is_empty() {
+                        "complete".to_string()
+                    } else {
+                        rollback_errors.join("; ")
+                    }
+                )
+            });
+        }
+    };
+
+    // The launch permit is the point of no return. Only now advance the new
+    // agent's message cursor; an aborted gated attempt must not consume queued
+    // messages. Audit records likewise follow the permit so a failed
+    // transaction cannot leave a false "Spawned" log or assignment task.
+    if let Ok(all_messages) = worksgood::messages::list_messages(dir, task_id)
+        && let Some(last) = all_messages.last()
+    {
+        let _ = worksgood::messages::write_cursor(dir, &agent_id, task_id, last.id);
+    }
+    let task_id_for_audit = task_id.to_string();
+    let agent_id_for_audit = agent_id.clone();
+    let effective_model_for_audit = effective_model.clone();
+    let model_warning_for_audit = model_validation_warning.clone();
+    if let Err(error) = modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(&task_id_for_audit) else {
+            return false;
+        };
+        if task.assigned.as_deref() != Some(agent_id_for_audit.as_str()) {
+            return false;
+        }
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
-            actor: Some(temp_agent_id_clone.clone()),
+            actor: Some(agent_id_for_audit.clone()),
             user: Some(worksgood::current_user()),
             message: format!(
-                "Spawned by {} --executor {}{}",
-                spawned_by_clone,
-                executor_name_clone,
-                effective_model_clone
+                "Spawned by {} --executor {}{} --isolation {}",
+                spawned_by,
+                resolved_executor_name,
+                effective_model_for_audit
                     .as_ref()
-                    .map(|m| format!(" --model {}", m))
-                    .unwrap_or_default()
+                    .map(|model| format!(" --model {model}"))
+                    .unwrap_or_default(),
+                if worktree_info.is_some() {
+                    "required-worktree"
+                } else if !config.coordinator.worktree_isolation {
+                    "shared-explicitly-configured"
+                } else {
+                    "shared-nonwriting-policy"
+                }
             ),
         });
-
-        // Log pre-flight model validation result
-        if let Some(ref warning) = model_validation_warning_clone {
+        if let Some(ref warning) = model_warning_for_audit {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("spawn".to_string()),
                 user: None,
-                message: format!("Pre-flight model validation: {}", warning),
+                message: format!("Pre-flight model validation: {warning}"),
             });
         }
 
-        // Create .assign-* audit trail if missing (defense-in-depth).
-        let assign_task_id = format!(".assign-{}", task_id_str);
-        if !is_system_task(&task_id_str) && graph.get_task(&assign_task_id).is_none() {
+        let assign_task_id = format!(".assign-{task_id_for_audit}");
+        if !is_system_task(&task_id_for_audit) && graph.get_task(&assign_task_id).is_none() {
             let now = Utc::now().to_rfc3339();
-            let audit_desc = if let Some(ref agent_id) = task_agent_for_audit_clone {
-                format!(
-                    "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
-                    agent_id, task_id_str
-                )
-            } else {
-                format!(
+            let description = task_agent_for_audit.as_ref().map_or_else(
+                || format!(
                     "Direct dispatch: '{}'\nNo agent pre-assigned (auto_assign disabled or skipped)",
-                    task_id_str
-                )
-            };
+                    task_id_for_audit
+                ),
+                |agency_agent| format!(
+                    "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
+                    agency_agent, task_id_for_audit
+                ),
+            );
             graph.add_node(Node::Task(Task {
                 id: assign_task_id,
-                title: format!("Assign agent for: {}", task_title_for_audit_clone),
-                description: Some(audit_desc),
+                title: format!("Assign agent for: {task_title_for_audit}"),
+                description: Some(description),
                 status: Status::Done,
-                before: vec![task_id_str.clone()],
+                before: vec![task_id_for_audit.clone()],
                 tags: vec!["assignment".to_string(), "agency".to_string()],
                 created_at: Some(now.clone()),
                 started_at: Some(now.clone()),
@@ -950,190 +1618,19 @@ pub(crate) fn spawn_agent_inner_with_reasoning(
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
                     user: Some(worksgood::current_user()),
-                    message: "Created at spawn time (no prior .assign-* task existed)".to_string(),
+                    message: "Created at committed spawn time (no prior .assign-* task existed)"
+                        .to_string(),
                 }],
                 ..Default::default()
             }));
         }
         true
-    })
-    .context("Failed to save graph")?;
-    if let Some(e) = claim_error {
-        return Err(e);
-    }
-
-    // Spawn the process (don't wait). If spawn fails, unclaim the task.
-    let child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            // Spawn failed — revert the task claim so it's not stuck
-            let task_id_rollback = task_id.to_string();
-            let agent_id_rollback = temp_agent_id.clone();
-            let err_msg = format!("Spawn failed, reverting claim: {}", e);
-            if let Err(rollback_err) = modify_graph(&graph_path, |graph| {
-                if let Some(t) = graph.get_task_mut(&task_id_rollback) {
-                    t.status = Status::Open;
-                    t.started_at = None;
-                    t.assigned = None;
-                    t.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some(agent_id_rollback.clone()),
-                        user: Some(worksgood::current_user()),
-                        message: err_msg.clone(),
-                    });
-                    true
-                } else {
-                    false
-                }
-            }) {
-                eprintln!(
-                    "Warning: failed to rollback graph for task '{}': {}",
-                    task_id, rollback_err
-                );
-            }
-            // Worktrees are sacred — preserved even on spawn failure so the
-            // user can inspect what was set up. Remove via `wg worktree archive --remove`.
-            if let Some(ref wt) = worktree_info {
-                eprintln!(
-                    "[spawn] Spawn failed for task '{}' — preserving worktree at {:?} (remove via: wg worktree archive <agent-id> --remove)",
-                    task_id, wt.path
-                );
-            }
-            return Err(anyhow::anyhow!(
-                "Failed to spawn executor '{}' (command: {}): {}",
-                resolved_executor_name,
-                settings.command,
-                e
-            ));
-        }
-    };
-
-    let pid = child.id();
-
-    // Register the agent (with model tracking)
-    let agent_id = locked_registry.register_agent_with_model(
-        pid,
-        task_id,
-        resolved_executor_name,
-        &output_file_str,
-        effective_model.as_deref(),
-    );
-    // Record the worktree path so the target-dir reaper can detect
-    // `wg retry`-in-place: the new agent's ID differs from the directory
-    // name (which was minted by a prior, now-dead agent).
-    if let Some(ref wt) = worktree_info {
-        locked_registry.set_worktree_path(&agent_id, &wt.path);
-    }
-    // Persist every build-capable worker's exact owned paths before allowing
-    // the spawn to become an invisible cache producer. Ownership includes the
-    // task, agent, exact PID start identity, mount and lease; names alone are
-    // never used by cleanup.
-    let lease_seconds = config
-        .coordinator
-        .resource_management
-        .owned_cache_lease_seconds;
-    let worktree_path = worktree_info.as_ref().map(|wt| wt.path.as_path());
-    let mut ownership_error = None;
-    if let Some(path) = owned_target_path.as_ref() {
-        let cache = worksgood::disk_sentinel::make_owned_cache(
-            path,
-            worksgood::disk_sentinel::CacheKind::CargoTarget,
-            task_id,
-            &agent_id,
-            pid,
-            worktree_path,
-            lease_seconds,
-        );
-        if let Err(error) = worksgood::disk_sentinel::register_owned_cache(dir, cache) {
-            ownership_error = Some(error);
-        }
-    }
-    if ownership_error.is_none()
-        && let Some(path) = owned_tmp_path.as_ref()
-    {
-        let cache = worksgood::disk_sentinel::make_owned_cache(
-            path,
-            worksgood::disk_sentinel::CacheKind::CargoInstallScratch,
-            task_id,
-            &agent_id,
-            pid,
-            worktree_path,
-            lease_seconds,
-        );
-        if let Err(error) = worksgood::disk_sentinel::register_owned_cache(dir, cache) {
-            ownership_error = Some(error);
-        }
-    }
-    if let Some(error) = ownership_error {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
-        }
-        let task_id_rollback = task_id.to_string();
-        let _ = modify_graph(&graph_path, |graph| {
-            if let Some(task) = graph.get_task_mut(&task_id_rollback) {
-                task.status = Status::Open;
-                task.started_at = None;
-                task.assigned = None;
-                true
-            } else {
-                false
-            }
-        });
-        return Err(error.context("failed to persist build-cache ownership; killed spawned worker"));
-    }
-
-    // save() consumes the LockedRegistry, releasing the lock after write.
-    if let Err(save_err) = locked_registry.save() {
-        // Registry save failed — kill the orphaned process to prevent invisible agents
+    }) {
         eprintln!(
-            "Warning: failed to save agent registry for {} (PID {}), killing process: {}",
-            agent_id, pid, save_err
+            "[spawn] WARNING: agent {} launched but spawn audit could not be appended: {}",
+            agent_id, error
         );
-        #[cfg(unix)]
-        {
-            // SAFETY: sending SIGKILL to a known PID we just spawned
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-        }
-        return Err(save_err.context("Failed to persist agent registry after spawn"));
     }
-
-    // Advance message cursor for this agent so queued messages aren't re-read.
-    // The queued messages were already included in the prompt via ScopeContext.
-    if let Ok(all_msgs) = worksgood::messages::list_messages(dir, task_id)
-        && let Some(last) = all_msgs.last()
-    {
-        let _ = worksgood::messages::write_cursor(dir, &agent_id, task_id, last.id);
-    }
-
-    // Write metadata
-    let metadata_path = output_dir.join("metadata.json");
-    let mut metadata = serde_json::json!({
-        "agent_id": agent_id,
-        "pid": pid,
-        "task_id": task_id,
-        "executor": resolved_executor_name,
-        "model": &effective_model,
-        "reasoning": resolved_reasoning.map(|r| r.as_str()),
-        "started_at": Utc::now().to_rfc3339(),
-        "run_id": &spawn_run_id,
-        "health_route": &health_route,
-        "timeout_secs": effective_timeout_secs,
-    });
-    if let Some(ref wt) = worktree_info {
-        metadata["worktree_path"] = serde_json::json!(wt.path.to_string_lossy());
-        metadata["worktree_branch"] = serde_json::json!(&wt.branch);
-    }
-    metadata["owned_cache_paths"] = serde_json::json!(
-        [owned_target_path.as_ref(), owned_tmp_path.as_ref()]
-            .into_iter()
-            .flatten()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect::<Vec<_>>()
-    );
-    fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
     Ok(SpawnResult {
         agent_id,
@@ -2281,6 +2778,29 @@ TASK_ID={escaped_task_id}
 OUTPUT_FILE={escaped_output_file}
 {raw_stream_shell_var}
 
+# Transactional launch gate. The wrapper exists so WG can obtain a PID, but
+# no handler/worker command is allowed to start until graph claim, registry,
+# ownership records, metadata, and final isolation verification are durable.
+if [ -n "${{WG_LAUNCH_GATE:-}}" ]; then
+    WG_GATE_WAITS=0
+    while [ ! -f "$WG_LAUNCH_GATE" ]; do
+        if [ -n "${{WG_LAUNCH_PARENT_PID:-}}" ] && ! kill -0 "$WG_LAUNCH_PARENT_PID" 2>/dev/null; then
+            exit 125
+        fi
+        WG_GATE_WAITS=$((WG_GATE_WAITS + 1))
+        if [ "$WG_GATE_WAITS" -ge 3000 ]; then
+            exit 125
+        fi
+        sleep 0.02
+    done
+    WG_GATE_VALUE=$(cat "$WG_LAUNCH_GATE" 2>/dev/null || true)
+    if [ "$WG_GATE_VALUE" != "${{WG_LAUNCH_TOKEN:-}}" ]; then
+        exit 125
+    fi
+    rm -f "$WG_LAUNCH_GATE" 2>/dev/null || true
+    unset WG_LAUNCH_GATE WG_LAUNCH_TOKEN WG_LAUNCH_PARENT_PID
+fi
+
 # Allow nested Claude Code sessions (spawned agents are independent).
 # The MANAGED_BY_HOST / SDK_HAS_OAUTH_REFRESH vars in particular leak
 # through when the daemon was launched from inside a Claude Code
@@ -2846,7 +3366,11 @@ fn handle_cost_cap_violation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
     use worksgood::config::{CLAUDE_FABLE_MODEL_ID, CLAUDE_OPUS_MODEL_ID};
+    use worksgood::graph::{Node, Task, WorkGraph};
+    use worksgood::parser::{load_graph, save_graph};
+    use worksgood::service::registry::{AgentRegistry, AgentStatus};
 
     // --- executor_uses_auto_prompt tests ---
 
@@ -5101,5 +5625,485 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("sleep 120")),
             "wrapper must not generate the orphan-prone heartbeat sleep command"
         );
+        assert!(
+            script.contains("Transactional launch gate"),
+            "wrapper must not start a handler before the spawn transaction commits"
+        );
+    }
+
+    struct GlobalConfigGuard {
+        saved: Option<std::ffi::OsString>,
+        _global: TempDir,
+    }
+
+    impl GlobalConfigGuard {
+        fn isolated() -> Self {
+            let global = TempDir::new().unwrap();
+            let saved = std::env::var_os("WG_GLOBAL_DIR");
+            unsafe { std::env::set_var("WG_GLOBAL_DIR", global.path()) };
+            Self {
+                saved,
+                _global: global,
+            }
+        }
+    }
+
+    impl Drop for GlobalConfigGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(saved) = self.saved.take() {
+                    std::env::set_var("WG_GLOBAL_DIR", saved);
+                } else {
+                    std::env::remove_var("WG_GLOBAL_DIR");
+                }
+            }
+        }
+    }
+
+    fn init_spawn_project(task_ids: &[&str], isolation: bool) -> TempDir {
+        let project = TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(project.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "spawn@test.invalid"]);
+        git(&["config", "user.name", "Spawn Test"]);
+        fs::write(project.path().join("source.txt"), "shared checkout\n").unwrap();
+        git(&["add", "source.txt"]);
+        git(&["commit", "-qm", "initial"]);
+
+        let dir = project.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            format!(
+                "[dispatcher]\nworktree_isolation = {}\nauto_test_discovery = false\n\
+                 \n[dispatcher.resource_management]\ndisk_sentinel_enabled = false\n",
+                isolation
+            ),
+        )
+        .unwrap();
+        let mut graph = WorkGraph::new();
+        for task_id in task_ids {
+            graph.add_node(Node::Task(Task {
+                id: (*task_id).to_string(),
+                title: format!("isolation transaction {task_id}"),
+                exec: Some("sleep 30".to_string()),
+                exec_mode: Some("shell".to_string()),
+                ..Task::default()
+            }));
+        }
+        save_graph(&graph, dir.join("graph.jsonl")).unwrap();
+        project
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn process_is_alive(_pid: u32) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn terminate_spawn(pid: u32) {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+            libc::kill(pid as i32, libc::SIGKILL);
+            libc::waitpid(pid as i32, std::ptr::null_mut(), 0);
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn terminate_spawn(_pid: u32) {}
+
+    #[cfg(target_os = "linux")]
+    fn child_pids(pid: u32) -> Vec<u32> {
+        fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|value| value.parse().ok())
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_handler_child(pid: u32) -> Option<u32> {
+        for _ in 0..100 {
+            let direct = child_pids(pid);
+            for child in direct {
+                let cmdline = fs::read(format!("/proc/{child}/cmdline")).unwrap_or_default();
+                if String::from_utf8_lossy(&cmdline).contains("sleep") {
+                    return Some(child);
+                }
+                for grandchild in child_pids(child) {
+                    let cmdline =
+                        fs::read(format!("/proc/{grandchild}/cmdline")).unwrap_or_default();
+                    if String::from_utf8_lossy(&cmdline).contains("sleep") {
+                        return Some(grandchild);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    fn stale_initial_worktree_reallocates_and_worker_and_handler_cwd_are_isolated() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["collision-task"], true);
+        let dir = project.path().join(".wg");
+        let stale = project.path().join(".wg-worktrees/agent-1");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("unknown-dirty.txt"), "preserve exactly").unwrap();
+
+        let result =
+            spawn_agent_inner(&dir, "collision-task", "shell", Some("1m"), None, "test").unwrap();
+        assert_eq!(result.agent_id, "agent-2");
+        assert_eq!(
+            fs::read_to_string(stale.join("unknown-dirty.txt")).unwrap(),
+            "preserve exactly"
+        );
+        let isolated = project.path().join(".wg-worktrees/agent-2");
+        assert_eq!(
+            fs::read_link(format!("/proc/{}/cwd", result.pid)).unwrap(),
+            isolated.canonicalize().unwrap()
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let handler = wait_for_handler_child(result.pid).expect("sleep handler child");
+            assert_eq!(
+                fs::read_link(format!("/proc/{handler}/cwd")).unwrap(),
+                isolated.canonicalize().unwrap()
+            );
+        }
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("agents/agent-2/metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["isolation_mode"], "required-worktree");
+        terminate_spawn(result.pid);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn corrupt_registered_retry_worktree_fails_closed_without_shared_spawn() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["corrupt-retry"], true);
+        let dir = project.path().join(".wg");
+        let info = worktree::create_worktree(project.path(), &dir, "agent-prior", "corrupt-retry")
+            .unwrap();
+        fs::write(info.path.join("valuable.txt"), "preserve retry source").unwrap();
+        let pointer_path = info.path.join(".git");
+        let original_pointer = fs::read_to_string(&pointer_path).unwrap();
+        fs::write(&pointer_path, "corrupt-interrupted-pointer\n").unwrap();
+
+        let error = spawn_agent_inner(&dir, "corrupt-retry", "shell", Some("1m"), None, "test")
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("REQUIRED ISOLATION preflight failed"));
+        assert!(message.contains("corrupt Git indirection"));
+        assert_eq!(
+            fs::read_to_string(info.path.join("valuable.txt")).unwrap(),
+            "preserve retry source"
+        );
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("corrupt-retry").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.assigned.is_none());
+        assert!(AgentRegistry::load(&dir).unwrap().agents.is_empty());
+        assert!(!dir.join("agents/agent-1").exists());
+
+        fs::write(pointer_path, original_pointer).unwrap();
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn explicit_shared_mode_remains_supported_and_recorded() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["shared-task"], false);
+        let dir = project.path().join(".wg");
+        let result =
+            spawn_agent_inner(&dir, "shared-task", "shell", Some("1m"), None, "test").unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("agents/agent-1/metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["isolation_mode"], "shared-explicitly-configured");
+        assert_eq!(metadata["worktree_isolation_enabled"], false);
+        terminate_spawn(result.pid);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn launch_gate_recheck_rejects_a_changed_graph_claim() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["claim-race"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        let snapshot = claim_task_for_spawn(&graph_path, "claim-race", "agent-1").unwrap();
+        modify_graph(&graph_path, |graph| {
+            let task = graph.get_task_mut("claim-race").unwrap();
+            task.assigned = Some("agent-other".to_string());
+            true
+        })
+        .unwrap();
+        let output_dir = project.path().join(".wg/agents/claim-race-check");
+        fs::create_dir_all(&output_dir).unwrap();
+        let error = publish_launch_permit_for_claim(
+            &graph_path,
+            "claim-race",
+            "agent-1",
+            &output_dir,
+            "token",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("claim ownership changed before launch"));
+        assert!(!output_dir.join(LAUNCH_GATE_FILE).exists());
+        assert!(
+            rollback_task_claim(&graph_path, "claim-race", "agent-1", &snapshot).is_err(),
+            "rollback must not overwrite the newer owner"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fault_injection_rolls_back_every_spawn_boundary_without_phantoms() {
+        let _global = GlobalConfigGuard::isolated();
+        for boundary in [
+            "workspace-prepared",
+            "claim",
+            "wrapper-spawned",
+            "registry-saved",
+            "ownership-registered",
+            "metadata-written",
+            "before-launch-permit",
+        ] {
+            let project = init_spawn_project(&["fault-task"], true);
+            let dir = project.path().join(".wg");
+            LAST_GATED_CHILD_PID.with(|pid| pid.set(0));
+            SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = Some(boundary));
+            let result = spawn_agent_inner(&dir, "fault-task", "shell", Some("1m"), None, "test");
+            SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = None);
+            assert!(result.is_err(), "{boundary} should fail");
+
+            let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+            let task = graph.get_task("fault-task").unwrap();
+            assert_eq!(task.status, Status::Open, "boundary={boundary}");
+            assert!(task.assigned.is_none(), "boundary={boundary}");
+            assert!(
+                graph.get_task(".assign-fault-task").is_none(),
+                "boundary={boundary}"
+            );
+            assert!(
+                AgentRegistry::load(&dir).unwrap().agents.is_empty(),
+                "boundary={boundary}"
+            );
+            assert!(
+                worksgood::disk_sentinel::load_ownership(&dir)
+                    .unwrap()
+                    .caches
+                    .is_empty(),
+                "boundary={boundary}"
+            );
+            assert!(
+                fs::read_dir(dir.join("agents"))
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(true),
+                "boundary={boundary}"
+            );
+            assert!(
+                fs::read_dir(project.path().join(".wg-worktrees"))
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(true),
+                "boundary={boundary}"
+            );
+            let porcelain = Command::new("git")
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(project.path())
+                .output()
+                .unwrap();
+            assert!(porcelain.status.success(), "boundary={boundary}");
+            assert_eq!(
+                String::from_utf8_lossy(&porcelain.stdout)
+                    .lines()
+                    .filter(|line| line.starts_with("worktree "))
+                    .count(),
+                1,
+                "boundary={boundary}: leaked Git worktree registration"
+            );
+            assert!(
+                !worktree::branch_exists(project.path(), "wg/agent-1/fault-task").unwrap(),
+                "boundary={boundary}: leaked worktree branch"
+            );
+            let pid = LAST_GATED_CHILD_PID.with(std::cell::Cell::get);
+            if pid != 0 {
+                assert!(
+                    !process_is_alive(pid),
+                    "boundary={boundary}, leaked pid={pid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn stale_cache_lease_is_a_collision_and_is_preserved() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["lease-task"], true);
+        let dir = project.path().join(".wg");
+        let stale = worksgood::disk_sentinel::make_owned_cache(
+            &project.path().join("valuable-stale-cache"),
+            worksgood::disk_sentinel::CacheKind::Temporary,
+            "old-task",
+            "agent-1",
+            std::process::id(),
+            None,
+            3_600,
+        );
+        worksgood::disk_sentinel::register_owned_cache(&dir, stale.clone()).unwrap();
+
+        let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+        let workspace =
+            prepare_spawn_workspace(&dir, project.path(), "lease-task", true, &mut locked).unwrap();
+        assert_eq!(workspace.agent_id, "agent-2");
+        drop(workspace);
+        drop(locked);
+        assert_eq!(
+            worksgood::disk_sentinel::load_ownership(&dir)
+                .unwrap()
+                .caches,
+            vec![stale]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn aborted_retry_restores_existing_cleanup_marker() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["retry-marker"], true);
+        let dir = project.path().join(".wg");
+        let info =
+            worktree::create_worktree(project.path(), &dir, "agent-prior", "retry-marker").unwrap();
+        let marker = info
+            .path
+            .join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
+        fs::write(&marker, b"prior-attempt\n").unwrap();
+        let mut registry = AgentRegistry::new();
+        let prior =
+            registry.register_agent(u32::MAX - 1, "retry-marker", "shell", "/tmp/prior-output");
+        registry.set_worktree_path(&prior, &info.path);
+        registry.set_status(&prior, AgentStatus::Done);
+        registry.save(&dir).unwrap();
+
+        SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = Some("wrapper-spawned"));
+        let result = spawn_agent_inner(&dir, "retry-marker", "shell", Some("1m"), None, "test");
+        SPAWN_FAULT_BOUNDARY.with(|fault| *fault.borrow_mut() = None);
+        assert!(result.is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"prior-attempt\n");
+        let graph = load_graph(dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("retry-marker").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.assigned.is_none());
+
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn live_or_other_terminal_attempt_cannot_reuse_worktree_path() {
+        let _global = GlobalConfigGuard::isolated();
+        for live in [false, true] {
+            let project = init_spawn_project(&["owner-task"], true);
+            let dir = project.path().join(".wg");
+            let info =
+                worktree::create_worktree(project.path(), &dir, "agent-1", "owner-task").unwrap();
+            let mut registry = AgentRegistry::new();
+            let id = registry.register_agent(
+                if live {
+                    std::process::id()
+                } else {
+                    u32::MAX - 1
+                },
+                if live { "owner-task" } else { "different-task" },
+                "shell",
+                "/tmp/out",
+            );
+            registry.set_worktree_path(&id, &info.path);
+            if !live {
+                registry.set_status(&id, AgentStatus::Done);
+            }
+            registry.save(&dir).unwrap();
+            let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+            let error =
+                prepare_spawn_workspace(&dir, project.path(), "owner-task", true, &mut locked)
+                    .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("owned by"), "{message}");
+            assert!(info.path.exists());
+            drop(locked);
+            worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    fn concurrent_spawns_allocate_unique_ids_branches_paths_and_cwds() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["parallel-a", "parallel-b"], true);
+        let dir = project.path().join(".wg");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut handles = Vec::new();
+        for task in ["parallel-a", "parallel-b"] {
+            let barrier = barrier.clone();
+            let dir = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                spawn_agent_inner(&dir, task, "shell", Some("1m"), None, "test").unwrap()
+            }));
+        }
+        barrier.wait();
+        let mut results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        results.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        assert_eq!(results[0].agent_id, "agent-1");
+        assert_eq!(results[1].agent_id, "agent-2");
+        let registry = AgentRegistry::load(&dir).unwrap();
+        assert_eq!(registry.agents.len(), 2);
+        let mut paths = std::collections::HashSet::new();
+        for result in &results {
+            let entry = registry.get_agent(&result.agent_id).unwrap();
+            let path = PathBuf::from(entry.worktree_path.as_ref().unwrap());
+            assert!(paths.insert(path.clone()));
+            assert_eq!(
+                fs::read_link(format!("/proc/{}/cwd", result.pid)).unwrap(),
+                path.canonicalize().unwrap()
+            );
+            assert!(
+                worktree::branch_exists(
+                    project.path(),
+                    &format!("wg/{}/{}", result.agent_id, result.task_id)
+                )
+                .unwrap()
+            );
+        }
+        for result in results {
+            terminate_spawn(result.pid);
+        }
     }
 }

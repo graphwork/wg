@@ -1540,6 +1540,10 @@ coordinator_agent = true
 executor = "native"
 model = "openrouter:deepseek/deepseek-chat"
 poll_interval = 2
+# This fixture is intentionally a non-Git temporary project. Keep the
+# task-agent executor in the explicit shared mode; the test exercises native
+# coordinator vs shell task routing, not worktree isolation.
+worktree_isolation = false
 
 [native_executor]
 provider = "openai"

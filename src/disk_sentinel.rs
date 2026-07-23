@@ -107,7 +107,7 @@ pub enum CacheKind {
     Temporary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedCache {
     pub path: String,
     pub kind: CacheKind,
@@ -341,6 +341,26 @@ pub fn register_owned_cache(dir: &Path, cache: OwnedCache) -> Result<()> {
     });
     registry.caches.push(cache);
     save_ownership(dir, &registry)
+}
+
+/// Remove only the exact cache-ownership records created by an aborted spawn
+/// transaction. Matching the full record (including PID start identity and
+/// creation timestamp) prevents rollback from deleting an older lease that
+/// happens to carry the same stale/reallocated agent ID. Paths themselves are
+/// intentionally untouched: they may contain user work or be shared.
+pub fn unregister_owned_caches(dir: &Path, owned: &[OwnedCache]) -> Result<usize> {
+    if owned.is_empty() {
+        return Ok(0);
+    }
+    let _lock = RegistryLock::acquire(dir)?;
+    let mut registry = load_ownership(dir)?;
+    let before = registry.caches.len();
+    registry.caches.retain(|cache| !owned.contains(cache));
+    let removed = before - registry.caches.len();
+    if removed > 0 {
+        save_ownership(dir, &registry)?;
+    }
+    Ok(removed)
 }
 
 pub fn make_owned_cache(

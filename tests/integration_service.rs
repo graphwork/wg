@@ -128,8 +128,17 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     // can't handle.  Without this, a global ~/.wg/config.toml with
     // auto_assign = true would cause every test task to be blocked behind an
     // unexecutable assign-* task.
-    let config_content =
-        "[agent]\nmodel = \"claude:opus\"\n[agency]\nauto_assign = false\nauto_evaluate = false\n";
+    let config_content = r#"[agent]
+model = "claude:opus"
+
+[coordinator]
+# These service fixtures intentionally use a non-Git shared working directory.
+worktree_isolation = false
+
+[agency]
+auto_assign = false
+auto_evaluate = false
+"#;
     fs::write(wg_dir.join("config.toml"), config_content).unwrap();
 
     let executors_dir = wg_dir.join("executors");
@@ -585,6 +594,8 @@ reaper_grace_seconds = 0
 max_agents = 2
 poll_interval = 2
 executor = "shell"
+# This lifecycle fixture intentionally uses a non-Git temporary directory.
+worktree_isolation = false
 
 [agency]
 auto_assign = false

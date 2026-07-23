@@ -105,6 +105,11 @@ heartbeat_timeout = 3
 [coordinator]
 max_agents = 5
 poll_interval = 1
+# Crash fixtures use an intentional non-Git shared working directory.
+worktree_isolation = false
+
+[coordinator.resource_management]
+disk_sentinel_enabled = false
 
 [agency]
 auto_assign = false
@@ -544,6 +549,11 @@ heartbeat_timeout = 1
 [coordinator]
 max_agents = 5
 poll_interval = 1
+# Crash fixtures use an intentional non-Git shared working directory.
+worktree_isolation = false
+
+[coordinator.resource_management]
+disk_sentinel_enabled = false
 
 [agency]
 auto_assign = false

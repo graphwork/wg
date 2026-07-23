@@ -2431,3 +2431,12 @@ owners = [
 ]
 description = "Candidate-binary real tmux/SGR flow: selects an exact task, enters Session Log, clicks the actual view=[Mode] cells through all four modes, toggles summary/JSON and both retry-attempt directions, repeats compact controls at 40 columns, resizes, then proves keyboard 4 parity and exact task/attempt ownership. Credential-free; scratch-bounded build target is removed by smoke cleanup."
 timeout_seconds = 240
+
+[[scenario]]
+name = "isolation_worktree_collision_transaction"
+script = "scenarios/isolation_worktree_collision_transaction.sh"
+owners = [
+    "fix-isolation-worktree",
+]
+description = "Candidate-binary live Linux /proc regression for required worktree isolation: an unknown dirty agent-1 directory with missing Git metadata is preserved byte-for-byte, spawn atomically reallocates agent-2, Git porcelain/path/branch/owner metadata agree, and both the real generated wrapper PID plus its nested shell handler PID have the isolated worktree cwd (never the shared checkout). Companion Rust tests cover corrupt/mismatched/interrupted metadata, live/terminal ownership, every injected transaction boundary, concurrency, dirty preservation, and explicit shared mode. Never globally installs the candidate."
+timeout_seconds = 180
