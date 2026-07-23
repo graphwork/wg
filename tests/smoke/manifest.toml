@@ -2391,8 +2391,9 @@ name = "tui_inspector_drag_to_full"
 script = "scenarios/tui_inspector_drag_to_full.sh"
 owners = [
     "fix-inspector-full-drag",
+    "fix-full-inspector-pointer-escape",
 ]
-description = "Candidate-binary real tmux/SGR mouse regression for drag-to-Full: drags the live Right and Bottom seams through the intentional Full snap threshold and back across it to prove one-way gesture hysteresis; checks bounded remembered Split state, one contextual row and zero fullscreen frame/seam; exercises Chat PTY input confinement and stable process identity, Detail, keyboard restore, Full persistence across TUI restart, terminal resize, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
+description = "Candidate-binary real tmux/SGR mouse regression for Full inspector navigation: drags the live Right and Bottom seams through the one-way Full snap, then restores Graph using the visible Workspace destination and tap/reverse-drags the same-frame contextual handle (never an invisible edge). Directly taps selected-task Detail↔current-attempt Log, checks bounded remembered dock/ratio, one contextual row and zero outer frame/seam, Chat PTY input confinement/stable PID, Full persistence across restart, phone rotation, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
 timeout_seconds = 180
 
 [[scenario]]

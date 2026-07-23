@@ -10,10 +10,10 @@ use super::state::{
     ActivityEventKind, AppearanceChoice, ChoiceDialogState, ColorCapability, ConfigEditKind,
     ConfigSection, ConfirmAction, ContextLane, ControlPanelFocus, CoordinatorArrowHit,
     CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, ExitPromptState, FocusedPanel,
-    InputMode, InspectorDock, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind, TaskFormField,
-    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
-    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
+    InputMode, InspectorDock, InspectorMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab,
+    ServiceHealthLevel, SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind,
+    TaskFormField, TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp,
+    WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
     spinner_wave_pos, vitals_staleness_color,
 };
 use worksgood::AgentStatus;
@@ -2056,6 +2056,8 @@ fn draw_minimized_strip(frame: &mut Frame, area: Rect, hover: bool) {
 
 #[derive(Clone, Copy)]
 enum ContextBarControl {
+    TaskDetail,
+    TaskLog,
     Search,
     Controls,
     Help,
@@ -2389,10 +2391,44 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         cursor = cursor.saturating_add(width);
     }
 
+    // Full keeps exactly the same one contextual row as Split, but that row
+    // must own a visible escape. The handle is allocated before optional
+    // identity/ambient text so even a narrow phone can tap or drag it. It is
+    // deliberately not an edge strip or outer frame.
+    if app.layout_preference.mode == InspectorMode::Full
+        && !matches!(app.input_mode, InputMode::Layout)
+        && cursor < area.right()
+    {
+        let horizontal = app.effective_inspector_dock.is_horizontal();
+        let text = match (symbols, area.width >= 60, horizontal) {
+            (SymbolMode::Workshop, true, true) => " ↔ Split ",
+            (SymbolMode::Workshop, true, false) => " ↕ Split ",
+            (SymbolMode::Workshop, false, true) => " ↔ ",
+            (SymbolMode::Workshop, false, false) => " ↕ ",
+            (SymbolMode::Letters, true, true) => " <> Split ",
+            (SymbolMode::Letters, true, false) => " ^v Split ",
+            (SymbolMode::Letters, false, true) => " <> ",
+            (SymbolMode::Letters, false, false) => " ^v ",
+        };
+        let width = (UnicodeWidthStr::width(text) as u16).min(area.right().saturating_sub(cursor));
+        if width > 0 {
+            let rect = Rect::new(cursor, area.y, width, 1);
+            frame.render_widget(
+                Paragraph::new(clip_cells(text, width as usize)).style(tile_style),
+                rect,
+            );
+            app.last_context_restore_area = rect;
+            cursor = cursor.saturating_add(width);
+        }
+    }
+
     // Terminal/archived identities remain inspectable but are deliberately
     // not resumable-chat evidence. Only the coherent cached lifecycle count
-    // may select the compact inverse tile.
-    let compact_new = app.task_counts.resumable_chats > 0;
+    // may select the compact inverse tile. Very narrow rows use the existing
+    // compact primary-action glyph so the Full escape and task switch remain
+    // reachable without a second row.
+    let compact_new = app.task_counts.resumable_chats > 0
+        || (app.layout_preference.mode == InspectorMode::Full && area.width < 60);
     let new_label = if compact_new {
         match symbols {
             SymbolMode::Workshop => " ⊞ ",
@@ -2413,7 +2449,7 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
     if matches!(app.input_mode, InputMode::Layout) {
         let width = new_x.saturating_sub(cursor) as usize;
         let text = clip_cells(
-            " Layout h/j/k/l dock a auto +/- size = preset f full 0 hide Enter apply Esc cancel ",
+            " Layout h/j/k/l dock a auto +/- size = preset r restore-split f full 0 hide Enter apply Esc cancel ",
             width,
         );
         frame.render_widget(
@@ -2499,6 +2535,32 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             controls.push((kind, clipped));
         }
     };
+    // Detail ↔ Log is a local, one-tap task operation. Do not expose it for
+    // terminal/archived Chat detail (a chat task is not an attempt log), nor
+    // for unrelated task-relative surfaces. Compact D/L tiles keep both
+    // destinations present on Termux widths; the ⋮ menu remains the verbose
+    // fallback.
+    let direct_task_switch = lane == ContextLane::Task
+        && matches!(
+            app.right_panel_tab,
+            RightPanelTab::Detail | RightPanelTab::Log
+        )
+        && app
+            .selected_task_id()
+            .is_some_and(|id| !worksgood::chat_id::is_chat_task_id(id))
+        && app.hud_pin.is_none();
+    if direct_task_switch {
+        app.context_task_switch_owner = app
+            .selected_task_id()
+            .map(|id| (id.to_owned(), app.right_panel_tab));
+        let (detail, log) = if area.width >= 80 {
+            (" Detail ", " Log ")
+        } else {
+            (" D ", " L ")
+        };
+        reserve(ContextBarControl::TaskDetail, detail.to_string(), 0, true);
+        reserve(ContextBarControl::TaskLog, log.to_string(), 0, true);
+    }
     if area.width >= 100 && lane == ContextLane::Task {
         let idx = app.selected_task_idx.unwrap_or(0);
         if idx > 0 {
@@ -2555,13 +2617,21 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             continue;
         }
         let rect = Rect::new(cursor, area.y, width, 1);
-        let style = if matches!(kind, ContextBarControl::Pulse) {
-            activity_pulse_style(app, bar_style)
-        } else {
-            bar_style
+        let style = match kind {
+            ContextBarControl::Pulse => activity_pulse_style(app, bar_style),
+            ContextBarControl::TaskDetail if app.right_panel_tab == RightPanelTab::Detail => {
+                tile_style
+            }
+            ContextBarControl::TaskLog if app.right_panel_tab == RightPanelTab::Log => tile_style,
+            ContextBarControl::TaskDetail | ContextBarControl::TaskLog => {
+                bar_style.add_modifier(Modifier::UNDERLINED)
+            }
+            _ => bar_style,
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
         match kind {
+            ContextBarControl::TaskDetail => app.last_context_detail_area = rect,
+            ContextBarControl::TaskLog => app.last_context_log_area = rect,
             ContextBarControl::Search => app.last_context_search_area = rect,
             ContextBarControl::Controls => app.last_context_controls_area = rect,
             ContextBarControl::Help => app.last_context_help_area = rect,

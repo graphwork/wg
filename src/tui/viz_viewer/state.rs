@@ -1477,6 +1477,10 @@ pub struct LayoutDragSnapshot {
     /// Full is latched once the gesture crosses its snap threshold. Pointer
     /// jitter after the live seam disappears cannot transition back to Split.
     pub snapped_full: bool,
+    /// The visible contextual-row handle starts at the top-left on every dock.
+    /// Its reverse gesture therefore shrinks on right/down motion rather than
+    /// pretending the pointer began on an invisible off-screen seam.
+    pub from_full_handle: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8290,6 +8294,14 @@ pub struct VizApp {
     pub last_context_chat_lane_area: Rect,
     pub last_context_task_lane_area: Rect,
     pub last_context_workspace_lane_area: Rect,
+    /// Full-inspector escape/drag handle rendered in the contextual row.
+    /// This is never an edge strip: the visible same-frame glyph owns it.
+    pub last_context_restore_area: Rect,
+    /// Direct selected-task Detail/Log destinations in the contextual row.
+    pub last_context_detail_area: Rect,
+    pub last_context_log_area: Rect,
+    /// Stable task + source-tab identity owning the D/L rectangles above.
+    pub context_task_switch_owner: Option<(String, RightPanelTab)>,
     pub last_context_search_area: Rect,
     pub last_context_controls_area: Rect,
     pub last_context_help_area: Rect,
@@ -9786,6 +9798,10 @@ impl VizApp {
             last_context_chat_lane_area: Rect::default(),
             last_context_task_lane_area: Rect::default(),
             last_context_workspace_lane_area: Rect::default(),
+            last_context_restore_area: Rect::default(),
+            last_context_detail_area: Rect::default(),
+            last_context_log_area: Rect::default(),
+            context_task_switch_owner: None,
             last_context_search_area: Rect::default(),
             last_context_controls_area: Rect::default(),
             last_context_help_area: Rect::default(),
@@ -15373,6 +15389,10 @@ impl VizApp {
             last_context_chat_lane_area: Rect::default(),
             last_context_task_lane_area: Rect::default(),
             last_context_workspace_lane_area: Rect::default(),
+            last_context_restore_area: Rect::default(),
+            last_context_detail_area: Rect::default(),
+            last_context_log_area: Rect::default(),
+            context_task_switch_owner: None,
             last_context_search_area: Rect::default(),
             last_context_controls_area: Rect::default(),
             last_context_help_area: Rect::default(),
@@ -15844,16 +15864,18 @@ impl VizApp {
         self.persist_tab_state();
     }
 
-    /// Restore the last normal split mode from FullInspector or Off.
+    /// Restore the exact bounded split remembered in the persisted desired
+    /// preference. Full/Hidden are modes, never sentinel percentages, so this
+    /// works across restart and responsive temporary Bottom presentation.
     pub fn restore_from_extreme(&mut self) {
-        let percent = self
-            .last_split_percent
-            .clamp(LayoutPreference::MIN_PERCENT, LayoutPreference::MAX_PERCENT);
-        self.layout_preference.size_percent = percent;
-        self.layout_preference.mode = InspectorMode::Split;
-        self.layout_mode = Self::layout_mode_for_percent(percent);
-        self.right_panel_visible = true;
-        self.right_panel_percent = percent;
+        let restored = LayoutPreference {
+            mode: InspectorMode::Split,
+            ..self.layout_preference
+        }
+        .bounded();
+        self.last_split_percent = restored.size_percent;
+        self.last_split_mode = Self::layout_mode_for_percent(restored.size_percent);
+        self.set_layout_preference(restored);
         self.persist_tab_state();
     }
 
@@ -20717,6 +20739,10 @@ impl VizApp {
         self.last_context_chat_lane_area = Rect::default();
         self.last_context_task_lane_area = Rect::default();
         self.last_context_workspace_lane_area = Rect::default();
+        self.last_context_restore_area = Rect::default();
+        self.last_context_detail_area = Rect::default();
+        self.last_context_log_area = Rect::default();
+        self.context_task_switch_owner = None;
         self.last_context_search_area = Rect::default();
         self.last_context_controls_area = Rect::default();
         self.last_context_help_area = Rect::default();

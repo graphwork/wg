@@ -1276,6 +1276,9 @@ fn handle_layout_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
             };
             draft.mode = InspectorMode::Split;
         }
+        // Explicit restore wording in the contextual row has exact keyboard
+        // parity; unlike a dock choice it preserves the remembered dock.
+        KeyCode::Char('r') => draft.mode = InspectorMode::Split,
         KeyCode::Char('f') => draft.mode = InspectorMode::Full,
         KeyCode::Char('0') => draft.mode = InspectorMode::Hidden,
         _ => return,
@@ -1681,15 +1684,36 @@ fn open_task_context_picker(app: &mut VizApp) {
 }
 
 fn activate_context_lane_control(app: &mut VizApp, lane: ContextLane) {
+    // In Full the Graph/Workspace destination is also the visible escape:
+    // restore the exact bounded preference first, then perform the normal
+    // lane navigation as one input transaction. This prevents selecting an
+    // invisible graph/workspace while presentation remains Full.
+    let restored_full =
+        lane == ContextLane::Workspace && app.layout_preference.mode == InspectorMode::Full;
+    if restored_full {
+        app.restore_from_extreme();
+    }
+
     if app.current_context_lane() != lane {
         app.activate_context_lane(lane);
-        return;
+    } else if !restored_full {
+        match lane {
+            ContextLane::Chat => app.open_coordinator_picker(),
+            ContextLane::Task => app.open_task_picker(),
+            ContextLane::Workspace => open_context_action_menu(app),
+        }
     }
-    match lane {
-        ContextLane::Chat => app.open_coordinator_picker(),
-        ContextLane::Task => app.open_task_picker(),
-        ContextLane::Workspace => open_context_action_menu(app),
+
+    if restored_full {
+        // Workspace's exact remembered inspector surface remains selected,
+        // while Graph receives focus and is now visibly present beside it.
+        if app.responsive_breakpoint == ResponsiveBreakpoint::Compact {
+            app.single_panel_view = super::state::SinglePanelView::Graph;
+            app.compact_navigation_override = Some(super::state::SinglePanelView::Graph);
+        }
+        app.focused_panel = FocusedPanel::Graph;
     }
+    app.clear_symbolic_context_hits();
 }
 
 fn open_global_controls(app: &mut VizApp) {
@@ -4562,6 +4586,76 @@ fn current_layout_viewport(app: &VizApp) -> ratatui::layout::Rect {
     ratatui::layout::Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
 }
 
+/// Begin a reverse resize from the visible Full contextual-row handle.
+/// Pointer-down itself is a tap activation, so the exact remembered Split is
+/// restored immediately; subsequent Drag/Moved events resize from that ratio.
+fn begin_full_restore_drag(app: &mut VizApp, row: u16, column: u16) {
+    use super::state::ScrollbarDragTarget;
+
+    if app.layout_preference.mode != InspectorMode::Full {
+        return;
+    }
+    let dock = app.effective_inspector_dock;
+    if dock == InspectorDock::Auto {
+        return;
+    }
+    let viewport = current_layout_viewport(app);
+    if viewport.width == 0 || viewport.height == 0 {
+        return;
+    }
+    let restored = super::state::LayoutPreference {
+        mode: InspectorMode::Split,
+        ..app.layout_preference
+    }
+    .bounded();
+    app.set_layout_preference(restored);
+    app.last_split_percent = restored.size_percent;
+    app.last_split_mode = VizApp::layout_mode_for_percent(restored.size_percent);
+    app.layout_drag = Some(LayoutDragSnapshot {
+        dock,
+        viewport,
+        start_column: column,
+        start_row: row,
+        start_percent: restored.size_percent,
+        original: restored,
+        // A tap is already an intentional Full → Split edit. Mouse-up must
+        // persist it even when the pointer never moved.
+        moved: true,
+        snapped_full: false,
+        from_full_handle: true,
+    });
+    app.scrollbar_drag = Some(if dock.is_horizontal() {
+        ScrollbarDragTarget::Divider
+    } else {
+        ScrollbarDragTarget::HorizontalDivider
+    });
+    app.clear_symbolic_context_hits();
+}
+
+fn activate_selected_task_surface(app: &mut VizApp, tab: RightPanelTab) {
+    let Some((owner_task, owner_tab)) = app.context_task_switch_owner.clone() else {
+        return;
+    };
+    let Some(task_id) = app.selected_task_id() else {
+        app.clear_symbolic_context_hits();
+        return;
+    };
+    if task_id != owner_task
+        || app.right_panel_tab != owner_tab
+        || worksgood::chat_id::is_chat_task_id(task_id)
+        || !matches!(tab, RightPanelTab::Detail | RightPanelTab::Log)
+    {
+        // A task/tab changed after the frame that emitted the rectangles.
+        // Swallow the stale action rather than retargeting the new identity.
+        app.clear_symbolic_context_hits();
+        return;
+    }
+    // `show_inspector_tab` deliberately does not invalidate Log: returning to
+    // the current-attempt tail preserves auto-tail/manual-scroll state.
+    app.show_inspector_tab(tab);
+    app.clear_symbolic_context_hits();
+}
+
 fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     let Some(snapshot) = app.layout_drag else {
         // Real pointer-down paths always capture an immutable snapshot. A
@@ -4594,8 +4688,17 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     if current_axis == start_axis {
         return;
     }
+    let drag_direction = if snapshot.from_full_handle {
+        if snapshot.dock.is_horizontal() {
+            InspectorDock::Right
+        } else {
+            InspectorDock::Bottom
+        }
+    } else {
+        snapshot.dock
+    };
     let target = divider_drag_target(
-        snapshot.dock,
+        drag_direction,
         snapshot.start_percent,
         extent,
         start_axis,
@@ -4914,6 +5017,12 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             // The one-row controls are global pointer escapes from PTY capture.
             // Route them before terminal/message/content handling so every
             // visible glyph remains live even when a child owns keyboard focus.
+            if app.last_context_restore_area.width > 0
+                && app.last_context_restore_area.contains(pos)
+            {
+                begin_full_restore_drag(app, row, column);
+                return;
+            }
             if app.last_context_chat_lane_area.contains(pos) {
                 activate_context_lane_control(app, ContextLane::Chat);
                 return;
@@ -4924,6 +5033,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
             if app.last_context_workspace_lane_area.contains(pos) {
                 activate_context_lane_control(app, ContextLane::Workspace);
+                return;
+            }
+            if app.last_context_detail_area.width > 0 && app.last_context_detail_area.contains(pos)
+            {
+                activate_selected_task_surface(app, RightPanelTab::Detail);
+                return;
+            }
+            if app.last_context_log_area.width > 0 && app.last_context_log_area.contains(pos) {
+                activate_selected_task_surface(app, RightPanelTab::Log);
                 return;
             }
             if app.last_context_search_area.width > 0 && app.last_context_search_area.contains(pos)
@@ -5187,6 +5305,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     original: app.layout_preference,
                     moved: false,
                     snapped_full: false,
+                    from_full_handle: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_horizontal_divider {
@@ -5209,6 +5328,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     original: app.layout_preference,
                     moved: false,
                     snapped_full: false,
+                    from_full_handle: false,
                 });
                 app.scrollbar_drag = Some(ScrollbarDragTarget::HorizontalDivider);
             } else if in_graph_hscrollbar {
@@ -5622,10 +5742,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
             app.graph_pan_last = None;
         }
-        // Moved events (mode 1003): treat as drag-to-pan when a touch/click is
-        // active.  Termux touch-to-mouse translation may report motion without
-        // the button-held flag, producing Moved instead of Drag(Left).  With
-        // mode 1003 enabled (auto for Termux), these events keep panning alive.
+        // Moved events (mode 1003): Termux touch translation can omit the
+        // button-held bit. Keep both the visible Full reverse handle and graph
+        // pan gestures alive without inventing an invisible edge target.
+        MouseEventKind::Moved
+            if app.scrollbar_drag == Some(ScrollbarDragTarget::Divider)
+                || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider) =>
+        {
+            apply_layout_drag(app, row, column);
+        }
         MouseEventKind::Moved if app.graph_pan_last.is_some() => {
             if let Some((prev_col, prev_row)) = app.graph_pan_last {
                 let dx = prev_col as i32 - column as i32;
@@ -8238,6 +8363,7 @@ mod scrollbar_tests {
             original,
             moved: false,
             snapped_full: false,
+            from_full_handle: false,
         });
         app.scrollbar_drag = Some(if resolved_dock.is_horizontal() {
             ScrollbarDragTarget::Divider
@@ -12505,6 +12631,307 @@ mod chat_open_tests {
             assert_eq!(context.task_status, "in-progress");
             assert!(app.active_tabs.contains(&1));
         }
+    }
+
+    #[test]
+    fn full_context_workspace_and_visible_handle_restore_every_dock_at_actual_coordinates() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let cases = [
+            (InspectorDock::Left, 160),
+            (InspectorDock::Right, 160),
+            (InspectorDock::Top, 100),
+            (InspectorDock::Bottom, 100),
+            (InspectorDock::Auto, 160),
+            (InspectorDock::Auto, 70),
+        ];
+        for (dock, width) in cases {
+            // Workspace is the one-tap escape and exact destination.
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.selected_task_idx = app.task_order.iter().position(|id| id == "regular-task");
+            app.right_panel_tab = RightPanelTab::Detail;
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: 67,
+                mode: InspectorMode::Full,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            let workspace = app.last_context_workspace_lane_area;
+            assert!(workspace.width > 0, "dock={dock:?} width={width}");
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                workspace.y,
+                workspace.x,
+            );
+            assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+            assert_eq!(app.layout_preference.dock, dock);
+            assert_eq!(app.layout_preference.size_percent, 67);
+            assert_eq!(app.focused_panel, FocusedPanel::Graph);
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.last_graph_area.width > 0 && app.last_graph_area.height > 0);
+            assert_eq!(app.last_context_restore_area, Rect::default());
+
+            // A fresh Full frame owns a visible reverse-drag handle. Right/down
+            // motion shrinks from the remembered ratio for every physical dock,
+            // including Auto's wide-side and narrow-stacked resolutions.
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: 67,
+                mode: InspectorMode::Full,
+            });
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            let handle = app.last_context_restore_area;
+            assert!(handle.width >= 3, "dock={dock:?} width={width}");
+            let start_col = handle.x + handle.width / 2;
+            let start_row = handle.y;
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                start_row,
+                start_col,
+            );
+            assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+            assert!(app.layout_drag.is_some());
+            let (drag_row, drag_col) = if app
+                .layout_drag
+                .is_some_and(|snapshot| snapshot.dock.is_horizontal())
+            {
+                (start_row, start_col.saturating_add(8).min(width - 1))
+            } else {
+                (start_row + 5, start_col)
+            };
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Drag(MouseButton::Left),
+                drag_row,
+                drag_col,
+            );
+            assert!(app.layout_preference.size_percent < 67, "dock={dock:?}");
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Up(MouseButton::Left),
+                drag_row,
+                drag_col,
+            );
+            assert!(app.layout_drag.is_none());
+            assert_eq!(app.layout_preference.dock, dock);
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            assert!(app.last_graph_area.width > 0 && app.last_graph_area.height > 0);
+        }
+
+        // Resize cancels capture and invalidates the old same-frame handle;
+        // already-queued motion cannot reinterpret its old coordinates.
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Bottom,
+            size_percent: 55,
+            mode: InspectorMode::Full,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(70, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let stale = app.last_context_restore_area;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale.y,
+            stale.x,
+        );
+        super::dispatch_event(&mut app, Event::Resize(40, 20));
+        assert_eq!(app.last_context_restore_area, Rect::default());
+        let after_resize = app.layout_preference;
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            stale.y + 10,
+            stale.x,
+        );
+        assert_eq!(app.layout_preference, after_resize);
+    }
+
+    #[test]
+    fn rendered_task_detail_log_switch_is_direct_at_wide_medium_and_termux_widths() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for width in [120, 70, 40] {
+            let (mut app, _tmp) = build_app_with_chat_node();
+            app.selected_task_idx = app.task_order.iter().position(|id| id == "regular-task");
+            app.right_panel_tab = RightPanelTab::Detail;
+            app.set_layout_preference(LayoutPreference {
+                dock: InspectorDock::Auto,
+                size_percent: 55,
+                mode: InspectorMode::Split,
+            });
+            // Model a manually-scrolled current-attempt tail. A local surface
+            // switch must not reload or reset it.
+            app.log_pane.task_id = Some("regular-task".into());
+            app.log_pane.scroll = 9;
+            app.log_pane.auto_tail = false;
+            app.log_pane.manual_pin = Some("attempt-agent".into());
+            app.log_pane.pinned_for_task = Some("regular-task".into());
+
+            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            let log = app.last_context_log_area;
+            let detail = app.last_context_detail_area;
+            assert!(detail.width > 0 && log.width > 0, "width={width}");
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                log.y,
+                log.x + log.width - 1,
+            );
+            assert_eq!(app.right_panel_tab, RightPanelTab::Log, "width={width}");
+            assert_eq!(app.selected_task_id(), Some("regular-task"));
+            assert_eq!(app.log_pane.task_id.as_deref(), Some("regular-task"));
+            assert_eq!(app.log_pane.scroll, 9);
+            assert!(!app.log_pane.auto_tail);
+            assert_eq!(app.log_pane.manual_pin.as_deref(), Some("attempt-agent"));
+
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            // The empty synthetic fixture may clamp its nonexistent body while
+            // rendering. Re-establish a manual live-history position to prove
+            // the Log → Detail control itself leaves it untouched.
+            app.log_pane.scroll = 9;
+            app.log_pane.auto_tail = false;
+            let detail = app.last_context_detail_area;
+            handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                detail.y,
+                detail.x,
+            );
+            assert_eq!(app.right_panel_tab, RightPanelTab::Detail, "width={width}");
+            assert_eq!(app.selected_task_id(), Some("regular-task"));
+            assert_eq!(app.log_pane.scroll, 9);
+            assert!(!app.log_pane.auto_tail);
+
+            // Keyboard parity remains the established 1=Detail, 4=Log map;
+            // the local pointer switch introduces no alternate/remapped keys.
+            super::handle_key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
+            assert_eq!(app.right_panel_tab, RightPanelTab::Log, "width={width}");
+            super::handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+            assert_eq!(app.right_panel_tab, RightPanelTab::Detail, "width={width}");
+        }
+
+        // Full Termux still retains both compact direct destinations beside
+        // the visible restore handle (one contextual row, no fallback frame).
+        let (mut full_phone, _phone_tmp) = build_app_with_chat_node();
+        full_phone.selected_task_idx = full_phone
+            .task_order
+            .iter()
+            .position(|id| id == "regular-task");
+        full_phone.right_panel_tab = RightPanelTab::Detail;
+        full_phone.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Auto,
+            size_percent: 67,
+            mode: InspectorMode::Full,
+        });
+        let mut phone_terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        phone_terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut full_phone))
+            .unwrap();
+        assert!(full_phone.last_context_restore_area.width >= 3);
+        assert!(full_phone.last_context_detail_area.width >= 3);
+        assert!(full_phone.last_context_log_area.width >= 3);
+        let log = full_phone.last_context_log_area;
+        handle_mouse(
+            &mut full_phone,
+            MouseEventKind::Down(MouseButton::Left),
+            log.y,
+            log.x,
+        );
+        assert_eq!(full_phone.right_panel_tab, RightPanelTab::Log);
+        phone_terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut full_phone))
+            .unwrap();
+        let detail = full_phone.last_context_detail_area;
+        handle_mouse(
+            &mut full_phone,
+            MouseEventKind::Down(MouseButton::Left),
+            detail.y,
+            detail.x,
+        );
+        assert_eq!(full_phone.right_panel_tab, RightPanelTab::Detail);
+        full_phone
+            .workspace_appearance
+            .set_symbols(SymbolMode::Letters);
+        phone_terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut full_phone))
+            .unwrap();
+        assert!(full_phone.last_context_restore_area.width >= 4);
+        assert!(full_phone.last_context_detail_area.width >= 3);
+        assert!(full_phone.last_context_log_area.width >= 3);
+
+        // Same-frame ownership rejects a queued tap after task/tab intent has
+        // changed but before the next render; it never retargets the new task.
+        let (mut stale_app, _stale_tmp) = build_app_with_chat_node();
+        stale_app.selected_task_idx = stale_app
+            .task_order
+            .iter()
+            .position(|id| id == "regular-task");
+        stale_app.right_panel_tab = RightPanelTab::Detail;
+        let mut stale_terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        stale_terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut stale_app))
+            .unwrap();
+        let stale_log = stale_app.last_context_log_area;
+        stale_app.selected_task_idx = stale_app
+            .task_order
+            .iter()
+            .position(|id| id == "other-task");
+        handle_mouse(
+            &mut stale_app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale_log.y,
+            stale_log.x,
+        );
+        assert_eq!(stale_app.selected_task_id(), Some("other-task"));
+        assert_eq!(stale_app.right_panel_tab, RightPanelTab::Detail);
+
+        stale_terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut stale_app))
+            .unwrap();
+        let stale_log = stale_app.last_context_log_area;
+        stale_app.right_panel_tab = RightPanelTab::Agency;
+        handle_mouse(
+            &mut stale_app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale_log.y,
+            stale_log.x,
+        );
+        assert_eq!(stale_app.right_panel_tab, RightPanelTab::Agency);
+
+        // A terminal/archived Chat routed to canonical Detail is not a task
+        // attempt-log surface and must never acquire the D/L targets.
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.selected_task_idx = app.task_order.iter().position(|id| id == ".chat-2");
+        app.right_panel_tab = RightPanelTab::Detail;
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.last_context_detail_area, Rect::default());
+        assert_eq!(app.last_context_log_area, Rect::default());
     }
 
     #[test]
