@@ -10,10 +10,11 @@ use super::state::{
     ActivityEventKind, AppearanceChoice, ChoiceDialogState, ColorCapability, ConfigEditKind,
     ConfigSection, ConfirmAction, ContextLane, ControlPanelFocus, CoordinatorArrowHit,
     CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, ExitPromptState, FocusedPanel,
-    InputMode, InspectorDock, InspectorMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab,
-    ServiceHealthLevel, SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind,
-    TaskFormField, TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp,
-    WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
+    InputMode, InspectorDock, InspectorMode, LayoutControlAction, LayoutControlHit,
+    LayoutControlPage, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
+    SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind, TaskFormField,
+    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
+    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
     spinner_wave_pos, vitals_staleness_color,
 };
 use worksgood::AgentStatus;
@@ -2061,6 +2062,7 @@ enum ContextBarControl {
     Search,
     Controls,
     Help,
+    PanelLayout,
     Previous,
     Next,
     Menu,
@@ -2332,6 +2334,432 @@ fn activity_pulse_style(app: &VizApp, base: Style) -> Style {
     }
 }
 
+#[derive(Clone)]
+struct LayoutRowSegment {
+    text: String,
+    action: Option<LayoutControlAction>,
+    selected: bool,
+    priority: u8,
+}
+
+impl LayoutRowSegment {
+    fn control(
+        text: impl Into<String>,
+        action: LayoutControlAction,
+        selected: bool,
+        priority: u8,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            action: Some(action),
+            selected,
+            priority,
+        }
+    }
+
+    fn label(text: impl Into<String>, priority: u8) -> Self {
+        Self {
+            text: text.into(),
+            action: None,
+            selected: false,
+            priority,
+        }
+    }
+
+    fn width(&self) -> usize {
+        UnicodeWidthStr::width(self.text.as_str())
+    }
+}
+
+/// Render the complete layout editor into the existing contextual row. On a
+/// side split the row spans the screen (the graph's first row is temporarily
+/// overpainted) so desktop first-use labels do not disappear merely because
+/// the pending inspector percentage is small. Stacked mode already owns the
+/// full-width seam row. No second row or outer frame is introduced.
+fn render_layout_context_row(
+    frame: &mut Frame,
+    app: &mut VizApp,
+    area: Rect,
+    bar_style: Style,
+    tile_style: Style,
+) {
+    let Some(overlay) = app.layout_overlay else {
+        return;
+    };
+    let draft = overlay.draft;
+    let page = overlay.page;
+    let width = area.width as usize;
+    if width == 0 || area.height == 0 {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(bar_style),
+        area,
+    );
+
+    let apply_label = if width >= 170 {
+        "Enter:Apply"
+    } else if width >= 50 {
+        "Apply"
+    } else {
+        "↵"
+    };
+    let cancel_label = if width >= 170 { "Esc:Cancel" } else { "Esc" };
+    let more_label = if width >= 100 { "Tab:More" } else { "Tab›" };
+
+    let mut segments = Vec::<LayoutRowSegment>::new();
+    let separator = || LayoutRowSegment::label("│", 20);
+    let dock_control = |text, dock| {
+        LayoutRowSegment::control(
+            text,
+            LayoutControlAction::Dock(dock),
+            draft.dock == dock,
+            185,
+        )
+    };
+    let preset_control = |text, percent, action| {
+        LayoutRowSegment::control(text, action, draft.size_percent == percent, 175)
+    };
+    let mode_control = |text, mode| {
+        LayoutRowSegment::control(
+            text,
+            LayoutControlAction::Mode(mode),
+            draft.mode == mode,
+            190,
+        )
+    };
+
+    if width >= 170 {
+        // The desktop strip shows docking, arbitrary sizing, named presets,
+        // pending mode, and transaction controls as visibly distinct groups.
+        segments.push(LayoutRowSegment::label("Dock", 180));
+        segments.extend([
+            dock_control("h:Left", InspectorDock::Left),
+            dock_control("j:Bottom", InspectorDock::Bottom),
+            dock_control("k:Top", InspectorDock::Top),
+            dock_control("l:Right", InspectorDock::Right),
+            dock_control("a:Auto", InspectorDock::Auto),
+        ]);
+        segments.push(separator());
+        segments.push(LayoutRowSegment::label("Size", 180));
+        segments.push(LayoutRowSegment::control(
+            "-",
+            LayoutControlAction::Decrease,
+            false,
+            250,
+        ));
+        segments.push(LayoutRowSegment::label(
+            format!("{}%", draft.size_percent),
+            252,
+        ));
+        segments.push(LayoutRowSegment::control(
+            "+",
+            LayoutControlAction::Increase,
+            false,
+            250,
+        ));
+        segments.extend([
+            preset_control("1:1/3", 33, LayoutControlAction::PresetThird),
+            preset_control("2:1/2", 50, LayoutControlAction::PresetHalf),
+            preset_control("3:2/3", 67, LayoutControlAction::PresetTwoThirds),
+        ]);
+        segments.push(separator());
+        segments.push(LayoutRowSegment::label("Mode", 180));
+        segments.extend([
+            mode_control("r:Split", InspectorMode::Split),
+            mode_control("f:Full", InspectorMode::Full),
+            mode_control("0:Hidden", InspectorMode::Hidden),
+        ]);
+    } else {
+        match page {
+            LayoutControlPage::Size => {
+                if width >= 64 {
+                    // At ordinary desktop widths, teach the exact Vim dock
+                    // meanings on first open while still keeping sizing apart.
+                    segments.extend([
+                        dock_control("h:Left", InspectorDock::Left),
+                        dock_control("j:Bottom", InspectorDock::Bottom),
+                        dock_control("k:Top", InspectorDock::Top),
+                        dock_control("l:Right", InspectorDock::Right),
+                        dock_control("a:Auto", InspectorDock::Auto),
+                    ]);
+                    segments.push(separator());
+                }
+                segments.push(LayoutRowSegment::control(
+                    "-",
+                    LayoutControlAction::Decrease,
+                    false,
+                    250,
+                ));
+                segments.push(LayoutRowSegment::label(
+                    format!("{}%", draft.size_percent),
+                    252,
+                ));
+                segments.push(LayoutRowSegment::control(
+                    "+",
+                    LayoutControlAction::Increase,
+                    false,
+                    250,
+                ));
+                if width >= 64 {
+                    segments.push(separator());
+                    segments.extend([
+                        preset_control("1:1/3", 33, LayoutControlAction::PresetThird),
+                        preset_control("2:1/2", 50, LayoutControlAction::PresetHalf),
+                        preset_control("3:2/3", 67, LayoutControlAction::PresetTwoThirds),
+                    ]);
+                }
+                if width >= 72 {
+                    segments.push(separator());
+                    segments.push(LayoutRowSegment::control(
+                        "d:Dock",
+                        LayoutControlAction::ShowPage(LayoutControlPage::DockLeftBottom),
+                        false,
+                        165,
+                    ));
+                    segments.push(LayoutRowSegment::control(
+                        "m:Mode",
+                        LayoutControlAction::ShowPage(LayoutControlPage::Mode),
+                        false,
+                        165,
+                    ));
+                }
+            }
+            LayoutControlPage::Presets => {
+                let labels = if width >= 55 {
+                    ["1:1/3", "2:1/2", "3:2/3"]
+                } else {
+                    ["1/3", "1/2", "2/3"]
+                };
+                segments.extend([
+                    preset_control(labels[0], 33, LayoutControlAction::PresetThird),
+                    preset_control(labels[1], 50, LayoutControlAction::PresetHalf),
+                    preset_control(labels[2], 67, LayoutControlAction::PresetTwoThirds),
+                ]);
+                if width >= 55 {
+                    segments.push(LayoutRowSegment::control(
+                        "s:Size",
+                        LayoutControlAction::ShowPage(LayoutControlPage::Size),
+                        false,
+                        165,
+                    ));
+                }
+            }
+            LayoutControlPage::DockLeftBottom => {
+                segments.extend([
+                    dock_control("h:Left", InspectorDock::Left),
+                    dock_control("j:Bottom", InspectorDock::Bottom),
+                ]);
+                if width >= 68 {
+                    segments.extend([
+                        dock_control("k:Top", InspectorDock::Top),
+                        dock_control("l:Right", InspectorDock::Right),
+                        dock_control("a:Auto", InspectorDock::Auto),
+                    ]);
+                }
+                if width >= 55 {
+                    segments.push(LayoutRowSegment::control(
+                        "s:Size",
+                        LayoutControlAction::ShowPage(LayoutControlPage::Size),
+                        false,
+                        165,
+                    ));
+                }
+            }
+            LayoutControlPage::DockTopRightAuto => {
+                segments.extend([
+                    dock_control("k:Top", InspectorDock::Top),
+                    dock_control("l:Right", InspectorDock::Right),
+                    dock_control("a:Auto", InspectorDock::Auto),
+                ]);
+                if width >= 55 {
+                    segments.push(LayoutRowSegment::control(
+                        "d:Dock",
+                        LayoutControlAction::ShowPage(LayoutControlPage::DockLeftBottom),
+                        false,
+                        165,
+                    ));
+                }
+            }
+            LayoutControlPage::Mode => {
+                let labels = if width >= 50 {
+                    ["r:Split", "f:Full", "0:Hidden"]
+                } else {
+                    ["Split", "Full", "Hidden"]
+                };
+                segments.extend([
+                    mode_control(labels[0], InspectorMode::Split),
+                    mode_control(labels[1], InspectorMode::Full),
+                    mode_control(labels[2], InspectorMode::Hidden),
+                ]);
+                if width >= 55 {
+                    segments.push(LayoutRowSegment::control(
+                        "s:Size",
+                        LayoutControlAction::ShowPage(LayoutControlPage::Size),
+                        false,
+                        165,
+                    ));
+                    segments.push(LayoutRowSegment::control(
+                        "d:Dock",
+                        LayoutControlAction::ShowPage(LayoutControlPage::DockLeftBottom),
+                        false,
+                        165,
+                    ));
+                }
+            }
+        }
+    }
+
+    segments.push(LayoutRowSegment::control(
+        apply_label,
+        LayoutControlAction::Apply,
+        false,
+        245,
+    ));
+    segments.push(LayoutRowSegment::control(
+        cancel_label,
+        LayoutControlAction::Cancel,
+        false,
+        240,
+    ));
+    if width < 170 {
+        segments.push(LayoutRowSegment::control(
+            more_label,
+            LayoutControlAction::NextPage,
+            false,
+            235,
+        ));
+    }
+
+    let summary = if width >= 140 {
+        format!(
+            "Dock:{} Size:{}% Pending:{}",
+            draft.dock.label(),
+            draft.size_percent,
+            draft.mode.label()
+        )
+    } else if width >= 28 {
+        match page {
+            LayoutControlPage::Size => format!(
+                "{} {}% P:{}",
+                draft.dock.label(),
+                draft.size_percent,
+                draft.mode.label()
+            ),
+            LayoutControlPage::Presets => format!("Presets {}%", draft.size_percent),
+            LayoutControlPage::DockLeftBottom | LayoutControlPage::DockTopRightAuto => {
+                if width >= 50 {
+                    format!("Dock:{}", draft.dock.label())
+                } else {
+                    format!("D:{}", draft.dock.label())
+                }
+            }
+            LayoutControlPage::Mode => {
+                if width >= 50 {
+                    format!("Pending:{}", draft.mode.label())
+                } else {
+                    format!("P:{}", draft.mode.label())
+                }
+            }
+        }
+    } else {
+        let dock = draft.dock.label().chars().next().unwrap_or('?');
+        let mode = draft.mode.label().chars().next().unwrap_or('?');
+        format!("{dock} {}% P:{mode}", draft.size_percent)
+    };
+    let min_summary = match width {
+        0..=27 => 8,
+        28..=39 => summary.len().min(14),
+        40..=99 => summary.len().min(18),
+        _ => summary.len().min(40),
+    };
+
+    let controls_width = |items: &[LayoutRowSegment]| -> usize {
+        items.iter().map(LayoutRowSegment::width).sum::<usize>() + items.len()
+    };
+    while controls_width(&segments) + min_summary > width {
+        let Some((index, _)) = segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| segment.priority < 230)
+            .min_by_key(|(_, segment)| segment.priority)
+        else {
+            break;
+        };
+        segments.remove(index);
+    }
+
+    // If a physically tiny terminal cannot hold the full mandatory set, drop
+    // More first, then Cancel, Apply, +, - in that order. No emitted action is
+    // clipped, and every retained glyph gets a label-tight hit rectangle.
+    while controls_width(&segments) >= width {
+        let Some((index, _)) = segments
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, segment)| segment.priority)
+        else {
+            break;
+        };
+        segments.remove(index);
+    }
+
+    let control_width = controls_width(&segments).min(width);
+    let summary_width = width.saturating_sub(control_width);
+    let summary_text = clip_cells(&summary, summary_width);
+    frame.render_widget(
+        Paragraph::new(summary_text).style(bar_style.add_modifier(Modifier::BOLD)),
+        Rect::new(area.x, area.y, summary_width as u16, 1),
+    );
+
+    let mut cursor = area.x.saturating_add(summary_width as u16);
+    for segment in segments {
+        if cursor >= area.right() {
+            break;
+        }
+        // One inert separator cell keeps adjacent label-tight hit regions from
+        // pretending their whitespace is clickable.
+        cursor = cursor.saturating_add(1);
+        let segment_width = segment.width() as u16;
+        if segment_width == 0 || cursor.saturating_add(segment_width) > area.right() {
+            continue;
+        }
+        let rect = Rect::new(cursor, area.y, segment_width, 1);
+        let style = if segment.selected {
+            tile_style
+        } else if let Some(action) = segment.action {
+            match action {
+                LayoutControlAction::Apply => Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                LayoutControlAction::Cancel => Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                _ => bar_style
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            }
+        } else {
+            bar_style.add_modifier(Modifier::DIM)
+        };
+        frame.render_widget(Paragraph::new(segment.text).style(style), rect);
+        if let Some(action) = segment.action {
+            app.layout_control_hits.push(LayoutControlHit {
+                action,
+                area: rect,
+                owner: draft,
+                page,
+            });
+        }
+        cursor = cursor.saturating_add(segment_width);
+    }
+
+    app.workspace_appearance.context_rows_rendered = app
+        .workspace_appearance
+        .context_rows_rendered
+        .saturating_add(1);
+}
+
 fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bool) {
     app.clear_symbolic_context_hits();
     app.last_coordinator_bar_area = area;
@@ -2348,6 +2776,14 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
 
     let (bar_style, tile_style) = workspace_bar_styles(app);
     frame.render_widget(Paragraph::new(" ").style(bar_style), area);
+
+    if matches!(app.input_mode, InputMode::Layout) {
+        // The layout row replaces every ordinary lane/New-chat affordance, so
+        // there is no visible modal-background action without keyboard parity.
+        app.coordinator_plus_hit = CoordinatorPlusHit::default();
+        render_layout_context_row(frame, app, area, bar_style, tile_style);
+        return;
+    }
 
     let symbols = app.workspace_appearance.symbols;
     let lane = app.current_context_lane();
@@ -2445,23 +2881,6 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         start: new_rect.x,
         end: new_rect.right(),
     };
-
-    if matches!(app.input_mode, InputMode::Layout) {
-        let width = new_x.saturating_sub(cursor) as usize;
-        let text = clip_cells(
-            " Layout h/j/k/l dock a auto +/- size = preset r restore-split f full 0 hide Enter apply Esc cancel ",
-            width,
-        );
-        frame.render_widget(
-            Paragraph::new(text).style(bar_style.add_modifier(Modifier::BOLD)),
-            Rect::new(cursor, area.y, width as u16, 1),
-        );
-        app.workspace_appearance.context_rows_rendered = app
-            .workspace_appearance
-            .context_rows_rendered
-            .saturating_add(1);
-        return;
-    }
 
     let exact = match lane {
         ContextLane::Chat => app
@@ -2561,6 +2980,14 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         reserve(ContextBarControl::TaskDetail, detail.to_string(), 0, true);
         reserve(ContextBarControl::TaskLog, log.to_string(), 0, true);
     }
+    if lane == ContextLane::Chat && app.chat_pty_mode {
+        let text = if app.focused_panel == FocusedPanel::RightPanel {
+            " Ctrl+O→p Panel "
+        } else {
+            " p Panel "
+        };
+        reserve(ContextBarControl::PanelLayout, text.to_string(), 0, true);
+    }
     if area.width >= 100 && lane == ContextLane::Task {
         let idx = app.selected_task_idx.unwrap_or(0);
         if idx > 0 {
@@ -2623,9 +3050,9 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
                 tile_style
             }
             ContextBarControl::TaskLog if app.right_panel_tab == RightPanelTab::Log => tile_style,
-            ContextBarControl::TaskDetail | ContextBarControl::TaskLog => {
-                bar_style.add_modifier(Modifier::UNDERLINED)
-            }
+            ContextBarControl::TaskDetail
+            | ContextBarControl::TaskLog
+            | ContextBarControl::PanelLayout => bar_style.add_modifier(Modifier::UNDERLINED),
             _ => bar_style,
         };
         frame.render_widget(Paragraph::new(text).style(style), rect);
@@ -2635,6 +3062,7 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
             ContextBarControl::Search => app.last_context_search_area = rect,
             ContextBarControl::Controls => app.last_context_controls_area = rect,
             ContextBarControl::Help => app.last_context_help_area = rect,
+            ContextBarControl::PanelLayout => app.last_context_layout_area = rect,
             ContextBarControl::Previous => app.last_context_prev_area = rect,
             ContextBarControl::Next => app.last_context_next_area = rect,
             ContextBarControl::Menu => app.last_context_menu_area = rect,
@@ -2699,10 +3127,7 @@ fn render_legacy_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, ch
             )
     };
 
-    let mut left = if matches!(app.input_mode, InputMode::Layout) {
-        " Layout  h/j/k/l dock  a auto  +/- size  = preset  f full  0 hide  Enter apply  Esc cancel"
-            .to_string()
-    } else if chat && app.chat_pty_mode && !app.chat_pty_forwards_stdin {
+    let mut left = if chat && app.chat_pty_mode && !app.chat_pty_forwards_stdin {
         " Commands  n new  w close  ←/→ chats  d dashboard  Ctrl+O return".to_string()
     } else {
         let label = if chat {
@@ -3047,6 +3472,11 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         (chunks[0], chunks[1])
     };
 
+    let context_area = if matches!(app.input_mode, InputMode::Layout) {
+        Rect::new(frame.area().x, context_area.y, frame.area().width, 1)
+    } else {
+        context_area
+    };
     app.last_tab_bar_area = context_area;
     app.last_right_content_area = content_area;
     let chat_context = app.right_panel_tab == RightPanelTab::Chat;
@@ -9317,10 +9747,11 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             "LAYOUT",
             Color::Yellow,
             vec![
-                ("h/j/k/l/a", "dock/auto"),
-                ("+/-/=", "size/preset"),
-                ("f/0", "full/hide"),
-                ("Enter/Esc", "apply/cancel"),
+                ("h/j/k/l", "Left/Bottom/Top/Right dock"),
+                ("+/-", "resize 5%"),
+                ("1/2/3", "1/3, 1/2, 2/3 presets"),
+                ("r/f/0", "Split/Full/Hidden"),
+                ("Enter/Esc", "Apply/Cancel"),
             ],
         ),
         InputMode::Search => (
@@ -11009,7 +11440,19 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("Tab", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-↑/↓", "Switch focus: Graph ↔ Right Panel"),
         binding("Alt-←/→", "Cycle inspector views (with slide animation)"),
-        binding("p", "Open keyboard Panel/Layout controls"),
+        binding(
+            "Ctrl-O → p",
+            "From Chat input: command mode, then Panel/Layout",
+        ),
+        binding("p", "Open Panel/Layout from another inspector surface"),
+        binding(
+            "h/j/k/l",
+            "Dock Left / Bottom / Top / Right (layout row only)",
+        ),
+        binding("+ / -", "Resize pending panel by 5% (layout row only)"),
+        binding("1 / 2 / 3", "Set panel to 1/3 / 1/2 / 2/3"),
+        binding("r / f / 0", "Pending Split / Full / Hidden"),
+        binding("Enter / Esc", "Apply / restore complete prior layout"),
         binding("\\", "Toggle right panel visible"),
         binding("i", "Grow viz pane (10% per press, wraps)"),
         binding("v", "Shrink viz pane (10% per press, wraps)"),
@@ -17728,9 +18171,16 @@ mod tests {
         let mut app = build_app_from_viz_output(&viz, "a");
         app.right_panel_tab = RightPanelTab::Detail;
         app.set_layout_preference(LayoutPreference {
-            mode: InspectorMode::Full,
-            ..LayoutPreference::default()
+            dock: InspectorDock::Bottom,
+            size_percent: 67,
+            mode: InspectorMode::Split,
         });
+        app.open_layout_overlay();
+        app.preview_layout_overlay(LayoutPreference {
+            mode: InspectorMode::Full,
+            ..app.layout_preference
+        });
+        app.apply_layout_overlay();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.last_tab_bar_area, Rect::new(0, 0, 80, 1));
@@ -17805,13 +18255,37 @@ mod tests {
     }
 
     #[test]
-    fn layout_command_mode_replaces_the_same_context_row() {
+    fn layout_command_mode_replaces_the_same_context_row_and_explains_first_use() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+
         let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
-        let normal = context_row_text(&mut app, 120);
-        app.input_mode = InputMode::Layout;
-        let layout = context_row_text(&mut app, 120);
+        let normal = context_row_text(&mut app, 180);
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 62,
+            mode: InspectorMode::Split,
+        });
+        app.open_layout_overlay();
+        let layout = context_row_text(&mut app, 180);
         assert!(normal.contains('↯'), "{normal}");
-        assert!(layout.contains("h/j/k/l dock"), "{layout}");
+        for expected in [
+            "Dock:Right",
+            "Size:62%",
+            "Pending:Split",
+            "h:Left",
+            "j:Bottom",
+            "k:Top",
+            "l:Right",
+            "-",
+            "+",
+            "1:1/3",
+            "2:1/2",
+            "3:2/3",
+            "Enter:Apply",
+            "Esc:Cancel",
+        ] {
+            assert!(layout.contains(expected), "missing {expected:?}: {layout}");
+        }
         assert!(
             !layout.contains("Chat ▾"),
             "mode added instead of replacing: {layout}"
@@ -17821,6 +18295,144 @@ mod tests {
     // ══════════════════════════════════════════════════════════════════════
     // Responsive breakpoint tests
     // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn help_teaches_chat_escape_and_five_percent_panel_resize() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        app.show_help = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 60)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = (0..60)
+            .map(|y| {
+                (0..80)
+                    .map(|x| terminal.backend().buffer().cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Ctrl-O → p"), "{screen}");
+        assert!(screen.contains("Resize pending panel by 5%"), "{screen}");
+        assert!(
+            screen.contains("Dock Left / Bottom / Top / Right"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn layout_row_width_matrix_keeps_primary_controls_and_pages_without_stale_hits() {
+        use crate::tui::viz_viewer::state::{
+            InspectorMode, LayoutControlAction, LayoutControlPage, LayoutPreference,
+        };
+
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[1]);
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 62,
+            mode: InspectorMode::Split,
+        });
+        app.open_layout_overlay();
+
+        for width in [180, 120, 80, 40, 32] {
+            let row = context_row_text(&mut app, width);
+            assert!(row.contains("62%"), "width={width}: {row}");
+            assert!(
+                row.contains('-') && row.contains('+'),
+                "width={width}: {row}"
+            );
+            assert!(
+                row.contains("Apply") || row.contains('↵'),
+                "width={width}: {row}"
+            );
+            assert!(row.contains("Esc"), "width={width}: {row}");
+            assert!(row.contains("Tab") || width >= 170, "width={width}: {row}");
+            let mut prior_right = 0;
+            for hit in &app.layout_control_hits {
+                assert!(hit.area.width > 0, "zero-width hit at width={width}");
+                assert_eq!(hit.area.y, 0, "width={width}: {hit:?}");
+                assert!(hit.area.right() <= width, "width={width}: {hit:?}");
+                assert!(hit.area.x >= prior_right, "overlapping hits: {hit:?}");
+                prior_right = hit.area.right();
+                let text: String = row
+                    .chars()
+                    .skip(hit.area.x as usize)
+                    .take(hit.area.width as usize)
+                    .collect();
+                assert!(!text.trim().is_empty(), "blank hit {hit:?}: {row}");
+                assert_eq!(hit.owner.size_percent, 62);
+                assert_eq!(hit.page, LayoutControlPage::Size);
+            }
+            assert_eq!(app.last_context_chat_lane_area, Rect::default());
+            assert_eq!(app.coordinator_plus_hit.start, 0);
+            assert_eq!(app.coordinator_plus_hit.end, 0);
+        }
+
+        let wide = context_row_text(&mut app, 180);
+        let ordinary_desktop = context_row_text(&mut app, 120);
+        let compact_desktop = context_row_text(&mut app, 80);
+        for exact in ["h:Left", "j:Bottom", "k:Top", "l:Right", "a:Auto"] {
+            assert!(wide.contains(exact), "{exact}: {wide}");
+            assert!(
+                ordinary_desktop.contains(exact),
+                "ordinary desktop missing {exact}: {ordinary_desktop}"
+            );
+            assert!(
+                compact_desktop.contains(exact),
+                "compact desktop missing {exact}: {compact_desktop}"
+            );
+        }
+        for preset in ["1:1/3", "2:1/2", "3:2/3"] {
+            assert!(wide.contains(preset), "{preset}: {wide}");
+        }
+
+        // A phone rerender removes desktop-only controls and their rectangles.
+        let stale_left = app
+            .layout_control_hits
+            .iter()
+            .find(|hit| hit.action == LayoutControlAction::Dock(InspectorDock::Left))
+            .unwrap()
+            .area;
+        let phone = context_row_text(&mut app, 40);
+        assert!(phone.contains("Right 62% P:Split"), "{phone}");
+        assert!(app.layout_control_hits.iter().all(|hit| {
+            hit.area.right() <= 40 && hit.action != LayoutControlAction::Dock(InspectorDock::Left)
+        }));
+        assert!(
+            !app.layout_control_hits
+                .iter()
+                .any(|hit| hit.area == stale_left)
+        );
+
+        // More pages expose every choice without adding a row or clipping an
+        // action-looking label at the phone width.
+        for (page, expected) in [
+            (LayoutControlPage::Presets, vec!["1/3", "1/2", "2/3"]),
+            (
+                LayoutControlPage::DockLeftBottom,
+                vec!["h:Left", "j:Bottom"],
+            ),
+            (
+                LayoutControlPage::DockTopRightAuto,
+                vec!["k:Top", "l:Right", "a:Auto"],
+            ),
+            (LayoutControlPage::Mode, vec!["Split", "Full", "Hidden"]),
+        ] {
+            app.layout_overlay.as_mut().unwrap().page = page;
+            let row = context_row_text(&mut app, 40);
+            for label in expected {
+                assert!(row.contains(label), "page={page:?}, missing {label}: {row}");
+            }
+            assert!(row.contains("Esc"), "page={page:?}: {row}");
+            assert!(row.contains("Tab"), "page={page:?}: {row}");
+            assert!(
+                app.layout_control_hits
+                    .iter()
+                    .all(|hit| hit.area.right() <= 40 && hit.page == page)
+            );
+        }
+    }
 
     #[test]
     fn one_seam_split_geometry_honors_dock_ratio_and_minimums() {

@@ -143,7 +143,7 @@ open_layout() {
     tmux send-keys -t "$session" C-o
     sleep 0.05
     tmux send-keys -t "$session" p
-    wait_screen "h/j/k/l dock" "layout command did not open"
+    wait_screen "h:Left" "layout command did not open with exact dock labels"
 }
 
 chat_context="↯  ⌁  ⌂  .chat-0"
@@ -195,7 +195,7 @@ wait_screen ".chat-0" "Chat did not return after Workspace pointer escape"
 # Workspace escape deliberately left host focus on Graph, so plain p (not a
 # second Ctrl+O toggle back into the child) opens the layout row.
 tmux send-keys -t "$session" p
-wait_screen "h/j/k/l dock" "layout command did not open from restored Graph"
+wait_screen "h:Left" "layout command did not open from restored Graph"
 tmux send-keys -t "$session" f Enter
 wait_layout mode full
 wait_screen "↔ Split" "side Full restore handle is not visible"

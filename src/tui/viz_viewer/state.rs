@@ -1422,6 +1422,16 @@ pub enum InspectorMode {
     Hidden,
 }
 
+impl InspectorMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Split => "Split",
+            Self::Full => "Full",
+            Self::Hidden => "Hidden",
+        }
+    }
+}
+
 /// Persisted desired layout. No viewport coordinates are stored: the current
 /// rectangle is always derived from this state and the current terminal size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1483,16 +1493,82 @@ pub struct LayoutDragSnapshot {
     pub from_full_handle: bool,
 }
 
+/// One-row layout-control pages. The compact pager is intentionally plain-key
+/// driven so every choice remains reachable through Termux → mosh → tmux even
+/// when a phone cannot display the complete desktop control strip at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayoutControlPage {
+    #[default]
+    Size,
+    Presets,
+    DockLeftBottom,
+    DockTopRightAuto,
+    Mode,
+}
+
+impl LayoutControlPage {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Size => Self::Presets,
+            Self::Presets => Self::DockLeftBottom,
+            Self::DockLeftBottom => Self::DockTopRightAuto,
+            Self::DockTopRightAuto => Self::Mode,
+            Self::Mode => Self::Size,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Size => Self::Mode,
+            Self::Presets => Self::Size,
+            Self::DockLeftBottom => Self::Presets,
+            Self::DockTopRightAuto => Self::DockLeftBottom,
+            Self::Mode => Self::DockTopRightAuto,
+        }
+    }
+}
+
+/// Semantic peer shared by one-row keyboard and pointer activation. A visible
+/// control is never a decorative label: its hit record names this exact action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutControlAction {
+    Decrease,
+    Increase,
+    PresetThird,
+    PresetHalf,
+    PresetTwoThirds,
+    Dock(InspectorDock),
+    Mode(InspectorMode),
+    ShowPage(LayoutControlPage),
+    NextPage,
+    PreviousPage,
+    Apply,
+    Cancel,
+}
+
+/// Same-frame layout-control rectangle. `owner` and `page` make stale hits
+/// harmless if preview state changes before a queued pointer event arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutControlHit {
+    pub action: LayoutControlAction,
+    pub area: Rect,
+    pub owner: LayoutPreference,
+    pub page: LayoutControlPage,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutOverlayState {
     /// Complete pre-modal desired state. Escape restores this verbatim.
     pub original: LayoutPreference,
     /// State currently rendered behind the overlay (live preview).
     pub draft: LayoutPreference,
+    /// The responsive one-row renderer pages controls instead of clipping them.
+    pub page: LayoutControlPage,
     /// Focus is presentation state rather than a persisted preference, but is
     /// still part of the user's pre-modal snapshot for reliable cancellation.
     pub original_focus: FocusedPanel,
     pub original_single_panel_view: SinglePanelView,
+    pub original_compact_navigation_override: Option<SinglePanelView>,
 }
 
 /// Responsive layout breakpoint derived from terminal geometry.
@@ -8305,11 +8381,16 @@ pub struct VizApp {
     pub last_context_search_area: Rect,
     pub last_context_controls_area: Rect,
     pub last_context_help_area: Rect,
+    /// Discoverable Chat-PTY escape into the one-row Panel/Layout editor.
+    pub last_context_layout_area: Rect,
     pub last_context_picker_area: Rect,
     pub last_context_prev_area: Rect,
     pub last_context_next_area: Rect,
     pub last_context_menu_area: Rect,
     pub last_context_pulse_area: Rect,
+    /// Same-frame, label-tight controls emitted by the layout editor. The
+    /// renderer clears this before every frame; resize also invalidates it.
+    pub layout_control_hits: Vec<LayoutControlHit>,
     /// The iteration navigator widget area within the tab bar for mouse click handling.
     pub last_iteration_nav_area: Rect,
     /// The content area inside the right panel (below tab bar) from the last render frame.
@@ -9831,6 +9912,8 @@ impl VizApp {
                 },
             },
             layout_overlay: None,
+            layout_control_hits: Vec::new(),
+            last_context_layout_area: Rect::default(),
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             effective_inspector_dock: InspectorDock::Right,
@@ -15413,6 +15496,8 @@ impl VizApp {
                 mode: InspectorMode::Split,
             },
             layout_overlay: None,
+            layout_control_hits: Vec::new(),
+            last_context_layout_area: Rect::default(),
             responsive_breakpoint: ResponsiveBreakpoint::Full,
             inspector_is_beside: true,
             effective_inspector_dock: InspectorDock::Right,
@@ -15621,11 +15706,14 @@ impl VizApp {
     }
 
     pub fn open_layout_overlay(&mut self) {
+        self.layout_control_hits.clear();
         self.layout_overlay = Some(LayoutOverlayState {
             original: self.layout_preference,
             draft: self.layout_preference,
+            page: LayoutControlPage::Size,
             original_focus: self.focused_panel,
             original_single_panel_view: self.single_panel_view,
+            original_compact_navigation_override: self.compact_navigation_override,
         });
         self.input_mode = InputMode::Layout;
     }
@@ -15642,15 +15730,18 @@ impl VizApp {
     }
 
     pub fn cancel_layout_overlay(&mut self) {
+        self.layout_control_hits.clear();
         if let Some(overlay) = self.layout_overlay.take() {
             self.set_layout_preference(overlay.original);
             self.focused_panel = overlay.original_focus;
             self.single_panel_view = overlay.original_single_panel_view;
+            self.compact_navigation_override = overlay.original_compact_navigation_override;
         }
         self.input_mode = InputMode::Normal;
     }
 
     pub fn apply_layout_overlay(&mut self) {
+        self.layout_control_hits.clear();
         if let Some(overlay) = self.layout_overlay.take() {
             // The live preview already applied the draft. Re-apply it here so
             // this method also remains correct for programmatic callers.
@@ -20746,11 +20837,13 @@ impl VizApp {
         self.last_context_search_area = Rect::default();
         self.last_context_controls_area = Rect::default();
         self.last_context_help_area = Rect::default();
+        self.last_context_layout_area = Rect::default();
         self.last_context_picker_area = Rect::default();
         self.last_context_prev_area = Rect::default();
         self.last_context_next_area = Rect::default();
         self.last_context_menu_area = Rect::default();
         self.last_context_pulse_area = Rect::default();
+        self.layout_control_hits.clear();
         self.task_picker_row_hits.clear();
         self.last_task_picker_list_area = Rect::default();
         self.last_task_picker_cancel_area = Rect::default();

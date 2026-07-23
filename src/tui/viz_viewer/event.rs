@@ -118,9 +118,9 @@ fn is_ctrl_chord(code: KeyCode, modifiers: KeyModifiers, key: char) -> bool {
 use super::state::{
     AppearanceChoice, ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind,
     ConfirmAction, ContextLane, ControlPanelFocus, FocusedPanel, InputMode, InspectorDock,
-    InspectorMode, InspectorSubFocus, LayoutDragSnapshot, LogHeaderAction, NavEntry,
-    ResponsiveBreakpoint, RightPanelTab, SymbolMode, TabBarEntryKind, TaskFormField,
-    TextPromptAction, VizApp,
+    InspectorMode, InspectorSubFocus, LayoutControlAction, LayoutControlPage, LayoutDragSnapshot,
+    LogHeaderAction, NavEntry, ResponsiveBreakpoint, RightPanelTab, SymbolMode, TabBarEntryKind,
+    TaskFormField, TextPromptAction, VizApp,
 };
 
 /// Switch to a chat tab by zero-based positional index in `active_tabs`.
@@ -1211,79 +1211,141 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     }
 }
 
-fn handle_layout_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    // Plain keys are authoritative through Termux → mosh → tmux. Shift is
-    // accepted because many terminals report '+' as Shift+'+', but Ctrl/Alt/
-    // Meta remain reserved and cannot accidentally mutate the modal.
-    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META) {
-        return;
-    }
-    let Some(mut draft) = app.layout_overlay.map(|overlay| overlay.draft) else {
+fn activate_layout_control(app: &mut VizApp, action: LayoutControlAction) {
+    let Some(overlay) = app.layout_overlay else {
+        app.layout_control_hits.clear();
         app.input_mode = InputMode::Normal;
         return;
     };
-    match code {
-        KeyCode::Esc => {
+    let mut draft = overlay.draft;
+    match action {
+        LayoutControlAction::Cancel => {
             app.cancel_layout_overlay();
             return;
         }
-        KeyCode::Enter => {
+        LayoutControlAction::Apply => {
             app.apply_layout_overlay();
             return;
         }
-        // Vim directions make the four docks easy to remember on a phone:
-        // h=left, j=bottom, k=top, l=right.
-        KeyCode::Char('h') => {
-            draft.dock = InspectorDock::Left;
-            draft.mode = InspectorMode::Split;
+        LayoutControlAction::ShowPage(page) => {
+            if let Some(overlay) = app.layout_overlay.as_mut() {
+                overlay.page = page;
+            }
         }
-        KeyCode::Char('j') => {
-            draft.dock = InspectorDock::Bottom;
-            draft.mode = InspectorMode::Split;
+        LayoutControlAction::NextPage => {
+            if let Some(overlay) = app.layout_overlay.as_mut() {
+                overlay.page = overlay.page.next();
+            }
         }
-        KeyCode::Char('k') => {
-            draft.dock = InspectorDock::Top;
-            draft.mode = InspectorMode::Split;
+        LayoutControlAction::PreviousPage => {
+            if let Some(overlay) = app.layout_overlay.as_mut() {
+                overlay.page = overlay.page.previous();
+            }
         }
-        KeyCode::Char('l') => {
-            draft.dock = InspectorDock::Right;
-            draft.mode = InspectorMode::Split;
-        }
-        KeyCode::Char('a') => {
-            draft.dock = InspectorDock::Auto;
-            draft.mode = InspectorMode::Split;
-        }
-        KeyCode::Char('+') => {
-            draft.size_percent =
-                (draft.size_percent + 5).min(super::state::LayoutPreference::MAX_PERCENT);
-            draft.mode = InspectorMode::Split;
-        }
-        KeyCode::Char('-') => {
+        LayoutControlAction::Decrease => {
             draft.size_percent = draft
                 .size_percent
                 .saturating_sub(5)
                 .max(super::state::LayoutPreference::MIN_PERCENT);
             draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
         }
-        // '=' cycles the robust, named presets independent of the current
-        // arbitrary percentage: 1/3 → 1/2 → 2/3 → 1/3.
-        KeyCode::Char('=') => {
-            draft.size_percent = match draft.size_percent {
-                0..=32 => 33,
-                33..=49 => 50,
-                50..=66 => 67,
-                _ => 33,
-            };
+        LayoutControlAction::Increase => {
+            draft.size_percent =
+                (draft.size_percent + 5).min(super::state::LayoutPreference::MAX_PERCENT);
             draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
         }
-        // Explicit restore wording in the contextual row has exact keyboard
-        // parity; unlike a dock choice it preserves the remembered dock.
-        KeyCode::Char('r') => draft.mode = InspectorMode::Split,
-        KeyCode::Char('f') => draft.mode = InspectorMode::Full,
-        KeyCode::Char('0') => draft.mode = InspectorMode::Hidden,
-        _ => return,
+        LayoutControlAction::PresetThird => {
+            draft.size_percent = 33;
+            draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
+        }
+        LayoutControlAction::PresetHalf => {
+            draft.size_percent = 50;
+            draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
+        }
+        LayoutControlAction::PresetTwoThirds => {
+            draft.size_percent = 67;
+            draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
+        }
+        LayoutControlAction::Dock(dock) => {
+            draft.dock = dock;
+            draft.mode = InspectorMode::Split;
+            app.preview_layout_overlay(draft);
+        }
+        LayoutControlAction::Mode(mode) => {
+            draft.mode = mode;
+            app.preview_layout_overlay(draft);
+        }
     }
-    app.preview_layout_overlay(draft);
+    // Preview/page activation supersedes every coordinate emitted by the old
+    // frame. The next draw rebuilds only controls that are still fully visible.
+    app.layout_control_hits.clear();
+}
+
+fn handle_layout_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    // Plain keys are authoritative through Termux → mosh → tmux. Shift is
+    // accepted because terminals may report '+' as Shift+'=', but Ctrl/Alt/
+    // Meta remain reserved and cannot accidentally mutate the editor.
+    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META) {
+        return;
+    }
+    let Some(overlay) = app.layout_overlay else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    let action = match code {
+        KeyCode::Esc => LayoutControlAction::Cancel,
+        KeyCode::Enter => LayoutControlAction::Apply,
+        // These exact meanings are printed in the same row on desktop and on
+        // the two compact Dock pages: h=Left, j=Bottom, k=Top, l=Right.
+        KeyCode::Char('h') => LayoutControlAction::Dock(InspectorDock::Left),
+        KeyCode::Char('j') => LayoutControlAction::Dock(InspectorDock::Bottom),
+        KeyCode::Char('k') => LayoutControlAction::Dock(InspectorDock::Top),
+        KeyCode::Char('l') => LayoutControlAction::Dock(InspectorDock::Right),
+        KeyCode::Char('a') => LayoutControlAction::Dock(InspectorDock::Auto),
+        KeyCode::Char('+') => LayoutControlAction::Increase,
+        KeyCode::Char('=') if modifiers.contains(KeyModifiers::SHIFT) => {
+            LayoutControlAction::Increase
+        }
+        KeyCode::Char('-') => LayoutControlAction::Decrease,
+        KeyCode::Char('1') => LayoutControlAction::PresetThird,
+        KeyCode::Char('2') => LayoutControlAction::PresetHalf,
+        KeyCode::Char('3') => LayoutControlAction::PresetTwoThirds,
+        // Retain '=' as a mosh-safe preset cycle while the three named direct
+        // preset controls provide non-cryptic first-class choices.
+        KeyCode::Char('=') => match overlay.draft.size_percent {
+            0..=32 => LayoutControlAction::PresetThird,
+            33..=49 => LayoutControlAction::PresetHalf,
+            50..=66 => LayoutControlAction::PresetTwoThirds,
+            _ => LayoutControlAction::PresetThird,
+        },
+        KeyCode::Char('r') => LayoutControlAction::Mode(InspectorMode::Split),
+        KeyCode::Char('f') => LayoutControlAction::Mode(InspectorMode::Full),
+        KeyCode::Char('0') => LayoutControlAction::Mode(InspectorMode::Hidden),
+        KeyCode::Char('s') => LayoutControlAction::ShowPage(LayoutControlPage::Size),
+        KeyCode::Char('p') => LayoutControlAction::ShowPage(LayoutControlPage::Presets),
+        KeyCode::Char('d') => {
+            let page = if overlay.page == LayoutControlPage::DockLeftBottom {
+                LayoutControlPage::DockTopRightAuto
+            } else {
+                LayoutControlPage::DockLeftBottom
+            };
+            LayoutControlAction::ShowPage(page)
+        }
+        KeyCode::Char('m') => LayoutControlAction::ShowPage(LayoutControlPage::Mode),
+        KeyCode::Tab | KeyCode::Right => LayoutControlAction::NextPage,
+        KeyCode::BackTab | KeyCode::Left => LayoutControlAction::PreviousPage,
+        KeyCode::Char('?') => {
+            app.show_help = true;
+            return;
+        }
+        _ => return,
+    };
+    activate_layout_control(app, action);
 }
 
 fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
@@ -4724,6 +4786,39 @@ fn apply_layout_drag(app: &mut VizApp, row: u16, column: u16) {
     }
 }
 
+/// Route pointer/touch input through the exact controls emitted by the latest
+/// layout-row frame. The editor is modal: every event is swallowed so taps,
+/// wheel motion, and transport-generated drags can never reach the child PTY or
+/// an underlying graph action while layout state is pending.
+fn handle_layout_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) -> bool {
+    if !matches!(app.input_mode, InputMode::Layout) {
+        return false;
+    }
+    if matches!(kind, MouseEventKind::Down(MouseButton::Left)) {
+        app.workspace_click_pending = false;
+        app.add_touch_echo(column, row);
+        let pos = Position::new(column, row);
+        let hit = app
+            .layout_control_hits
+            .iter()
+            .find(|hit| hit.area.contains(pos))
+            .copied();
+        if let Some(hit) = hit {
+            let still_owned = app
+                .layout_overlay
+                .is_some_and(|overlay| overlay.draft == hit.owner && overlay.page == hit.page);
+            if still_owned {
+                activate_layout_control(app, hit.action);
+            } else {
+                // A preview or responsive rerender superseded the source row.
+                // Swallow the stale coordinate instead of retargeting it.
+                app.layout_control_hits.clear();
+            }
+        }
+    }
+    true
+}
+
 /// Route mouse/touch events while the Chat selector is modal. Returning true
 /// means the event was consumed. Every event is swallowed while the selector
 /// is open so an inside tap can never fall through to the graph or chat PTY.
@@ -4828,7 +4923,8 @@ fn handle_task_picker_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, co
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
 
-    if handle_coordinator_picker_mouse(app, kind, row, column)
+    if handle_layout_mouse(app, kind, row, column)
+        || handle_coordinator_picker_mouse(app, kind, row, column)
         || handle_task_picker_mouse(app, kind, row, column)
     {
         return;
@@ -5061,6 +5157,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
             if app.last_context_help_area.width > 0 && app.last_context_help_area.contains(pos) {
                 app.show_help = true;
+                return;
+            }
+            if app.last_context_layout_area.width > 0 && app.last_context_layout_area.contains(pos)
+            {
+                // Pointer peer of the visible Ctrl+O → p sequence. Opening
+                // directly from the inspector preserves its original focus so
+                // Esc returns to the child-owned presentation exactly.
+                app.open_layout_overlay();
                 return;
             }
             if app.last_context_picker_area.width > 0 && app.last_context_picker_area.contains(pos)
@@ -12229,6 +12333,215 @@ mod chat_tab_navigation_tests {
         super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(app.layout_overlay.is_none());
         assert_ne!(app.input_mode, InputMode::Layout);
+    }
+
+    #[test]
+    fn actual_layout_control_coordinates_share_keyboard_actions_and_reject_stale_hits() {
+        use crate::tui::viz_viewer::state::{
+            LayoutControlAction, LayoutControlPage, LayoutPreference, SinglePanelView,
+        };
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn render(app: &mut VizApp, width: u16, height: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, app))
+                .unwrap();
+            let y = app.last_tab_bar_area.y;
+            (0..width)
+                .map(|x| terminal.backend().buffer().cell((x, y)).unwrap().symbol())
+                .collect()
+        }
+
+        fn area_for(app: &VizApp, action: LayoutControlAction) -> Rect {
+            app.layout_control_hits
+                .iter()
+                .find(|hit| hit.action == action)
+                .unwrap_or_else(|| panic!("missing {action:?}: {:?}", app.layout_control_hits))
+                .area
+        }
+
+        fn tap(app: &mut VizApp, action: LayoutControlAction) -> Rect {
+            let area = area_for(app, action);
+            super::handle_mouse(
+                app,
+                MouseEventKind::Down(MouseButton::Left),
+                area.y,
+                area.x + area.width.saturating_sub(1) / 2,
+            );
+            area
+        }
+
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.mouse_enabled = true;
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.focused_panel = FocusedPanel::RightPanel;
+        let original = LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 62,
+            mode: InspectorMode::Split,
+        };
+        app.set_layout_preference(original);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.single_panel_view = SinglePanelView::Detail;
+        app.compact_navigation_override = Some(SinglePanelView::Detail);
+
+        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        app.task_panes.insert(task_id.clone(), pane);
+        let input_before = app
+            .task_panes
+            .get(&task_id)
+            .unwrap()
+            .child_input_bytes_written();
+
+        // The live Chat frame itself teaches the two-step keyboard escape and
+        // offers an exact pointer peer before the user knows any Vim keys.
+        let normal = render(&mut app, 120, 30);
+        assert!(normal.contains("Ctrl+O→p Panel"), "{normal}");
+        let panel_hint = app.last_context_layout_area;
+        assert!(panel_hint.width > 0);
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            panel_hint.y,
+            panel_hint.x + 1,
+        );
+        assert_eq!(app.input_mode, InputMode::Layout);
+        assert_eq!(
+            app.layout_overlay.unwrap().original_focus,
+            FocusedPanel::RightPanel
+        );
+        render(&mut app, 120, 30);
+        tap(&mut app, LayoutControlAction::Cancel);
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+
+        app.open_layout_overlay();
+        let desktop = render(&mut app, 120, 30);
+        assert!(
+            desktop.contains("h:Left") && desktop.contains("j:Bottom"),
+            "{desktop}"
+        );
+        assert_eq!(app.last_tab_bar_area.width, 120);
+
+        // Pointer Increase is the exact same 5% operation as keyboard '+'.
+        let stale_increase = tap(&mut app, LayoutControlAction::Increase);
+        assert_eq!(app.layout_preference.size_percent, 67);
+        assert!(app.layout_control_hits.is_empty());
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale_increase.y,
+            stale_increase.x,
+        );
+        assert_eq!(
+            app.layout_preference.size_percent, 67,
+            "superseded same-frame hit fired twice"
+        );
+
+        render(&mut app, 120, 30);
+        tap(&mut app, LayoutControlAction::Decrease);
+        assert_eq!(app.layout_preference.size_percent, 62);
+        render(&mut app, 120, 30);
+        tap(&mut app, LayoutControlAction::PresetHalf);
+        assert_eq!(app.layout_preference.size_percent, 50);
+
+        // A SIGWINCH clears desktop coordinates before a queued pointer event.
+        render(&mut app, 120, 30);
+        let stale_left = area_for(&app, LayoutControlAction::Dock(InspectorDock::Left));
+        super::dispatch_event(&mut app, Event::Resize(40, 24));
+        assert!(app.layout_control_hits.is_empty());
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            stale_left.y,
+            stale_left.x,
+        );
+        assert_eq!(app.layout_preference.dock, InspectorDock::Right);
+
+        // Phone/touch flow pages through complete named choices without a
+        // second row. `p`, `d`, and `m` are mosh-safe direct page peers.
+        super::handle_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(app.layout_overlay.unwrap().page, LayoutControlPage::Presets);
+        let presets = render(&mut app, 40, 24);
+        assert!(
+            presets.contains("1/3") && presets.contains("2/3"),
+            "{presets}"
+        );
+        tap(&mut app, LayoutControlAction::PresetThird);
+        assert_eq!(app.layout_preference.size_percent, 33);
+
+        super::handle_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        let dock_primary = render(&mut app, 40, 24);
+        assert!(dock_primary.contains("h:Left") && dock_primary.contains("j:Bottom"));
+        tap(&mut app, LayoutControlAction::Dock(InspectorDock::Bottom));
+        assert_eq!(app.layout_preference.dock, InspectorDock::Bottom);
+
+        // Re-entering d from the first Dock page reaches Top/Right/Auto.
+        super::handle_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        let dock_secondary = render(&mut app, 40, 24);
+        assert!(dock_secondary.contains("k:Top") && dock_secondary.contains("a:Auto"));
+        tap(&mut app, LayoutControlAction::Dock(InspectorDock::Auto));
+        assert_eq!(app.layout_preference.dock, InspectorDock::Auto);
+
+        super::handle_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+        let modes = render(&mut app, 40, 24);
+        assert!(modes.contains("Split") && modes.contains("Full") && modes.contains("Hidden"));
+        tap(&mut app, LayoutControlAction::Mode(InspectorMode::Full));
+        assert_eq!(app.layout_preference.mode, InspectorMode::Full);
+        render(&mut app, 40, 24);
+        tap(&mut app, LayoutControlAction::Mode(InspectorMode::Hidden));
+        assert_eq!(app.layout_preference.mode, InspectorMode::Hidden);
+
+        // Mouse/touch layout interaction never writes any bytes to the child.
+        assert_eq!(
+            app.task_panes
+                .get(&task_id)
+                .unwrap()
+                .child_input_bytes_written(),
+            input_before
+        );
+
+        // Esc restores the complete presentation snapshot, not only the three
+        // persisted layout fields changed by live preview.
+        super::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.layout_preference, original);
+        assert_eq!(app.focused_panel, FocusedPanel::RightPanel);
+        assert_eq!(app.single_panel_view, SinglePanelView::Detail);
+        assert_eq!(
+            app.compact_navigation_override,
+            Some(SinglePanelView::Detail)
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // A pointer Apply persists exactly the current draft.
+        app.open_layout_overlay();
+        super::handle_key(&mut app, KeyCode::Char('l'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
+        render(&mut app, 120, 30);
+        tap(&mut app, LayoutControlAction::Apply);
+        assert_eq!(app.layout_preference.dock, InspectorDock::Right);
+        assert_eq!(app.layout_preference.size_percent, 67);
+        assert_eq!(app.layout_preference.mode, InspectorMode::Split);
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(app.workgraph_dir.join("tui-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["layout"]["dock"], "right");
+        assert_eq!(persisted["layout"]["size_percent"], 67);
+        assert_eq!(persisted["layout"]["mode"], "split");
     }
 
     #[test]
