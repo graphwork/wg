@@ -5030,6 +5030,200 @@ impl ControlPanelFocus {
     }
 }
 
+/// Immutable owner stamp for one authenticated daemon session. Pointer hits
+/// compare this complete birth identity against current state before opening
+/// details, so a service restart or graph switch can never retarget stale text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceContextOwner {
+    pub graph_digest: String,
+    pub socket_path: String,
+    pub pid: u32,
+    pub pid_start_identity: Option<String>,
+    pub build_id: String,
+}
+
+/// Read-only destination context accepted only from the state-file + live
+/// socket handshake agreement in `service_identity::observe_service`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthoritativeServiceContext {
+    pub owner: ServiceContextOwner,
+    pub service_user: String,
+    pub service_host: String,
+    pub service_home: Option<String>,
+    pub client_user: String,
+    pub client_host: String,
+    pub canonical_graph: String,
+    pub started_at: String,
+    pub build_id: String,
+    pub protocol: String,
+    pub selected_profile: Option<String>,
+    pub route: Option<String>,
+}
+
+fn safe_service_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { '�' } else { ch })
+        .collect()
+}
+
+impl AuthoritativeServiceContext {
+    fn project_path(&self) -> &Path {
+        Path::new(&self.canonical_graph)
+            .parent()
+            .unwrap_or_else(|| Path::new(&self.canonical_graph))
+    }
+
+    fn contracted_project_path(&self) -> String {
+        let project = self.project_path();
+        let contracted = self
+            .service_home
+            .as_deref()
+            .map(Path::new)
+            .and_then(|home| project.strip_prefix(home).ok())
+            .map(|suffix| {
+                if suffix.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{}", suffix.display())
+                }
+            })
+            .unwrap_or_else(|| project.display().to_string());
+        safe_service_label(&contracted)
+    }
+
+    fn destination_prefix(&self) -> String {
+        let service = format!(
+            "{}@{}:",
+            safe_service_label(&self.service_user),
+            safe_service_label(&self.service_host)
+        );
+        if self.client_user == self.service_user && self.client_host == self.service_host {
+            service
+        } else {
+            format!("local → {service}")
+        }
+    }
+
+    /// Preferred compact destination: `user@host:~/project`, with an explicit
+    /// local boundary whenever the client and daemon process identities differ.
+    pub fn compact_destination(&self) -> String {
+        format!(
+            "{}{}",
+            self.destination_prefix(),
+            self.contracted_project_path()
+        )
+    }
+
+    /// Last-resort optional bar form. It preserves the destination host and
+    /// project basename, never the incidental parent hierarchy.
+    pub fn elided_destination(&self) -> String {
+        let basename = self
+            .project_path()
+            .file_name()
+            .map(|name| safe_service_label(&name.to_string_lossy()))
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "/".to_string());
+        format!("{}…/{basename}", self.destination_prefix())
+    }
+
+    /// Wide-to-narrow candidates. Ancillary PID/build/profile/route data is
+    /// removed before the familiar clean identity, then parent directories are
+    /// elided. The renderer either uses one candidate in full or emits none.
+    pub fn bar_candidates(&self) -> Vec<String> {
+        let clean = self.compact_destination();
+        let mut candidates = Vec::new();
+        let mut ancillary = Vec::new();
+        if let Some(profile) = self.selected_profile.as_deref() {
+            ancillary.push(format!("profile {}", safe_service_label(profile)));
+        }
+        if let Some(route) = self.route.as_deref() {
+            ancillary.push(format!("route {}", safe_service_label(route)));
+        }
+        ancillary.push(format!("pid {}", self.owner.pid));
+        ancillary.push(format!("build {}", safe_service_label(&self.build_id)));
+        candidates.push(format!("{clean} · {}", ancillary.join(" · ")));
+        if self.selected_profile.is_some() || self.route.is_some() {
+            let profile_route = ancillary
+                .into_iter()
+                .filter(|item| item.starts_with("profile ") || item.starts_with("route "))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if !profile_route.is_empty() {
+                candidates.push(format!("{clean} · {profile_route}"));
+            }
+        }
+        candidates.push(clean);
+        candidates.push(self.elided_destination());
+        candidates.dedup();
+        candidates
+    }
+
+    pub fn owns(&self, owner: &ServiceContextOwner) -> bool {
+        &self.owner == owner
+    }
+}
+
+/// Same-frame hit region for the visible service identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceIdentityHit {
+    pub area: Rect,
+    pub owner: ServiceContextOwner,
+}
+
+fn authenticated_service_context(
+    observation: &worksgood::service_identity::ServiceObservation,
+    coordinator: &crate::commands::service::CoordinatorState,
+) -> Option<AuthoritativeServiceContext> {
+    use worksgood::service_identity::ServiceHealth;
+
+    if observation.health != ServiceHealth::Healthy {
+        return None;
+    }
+    let state = observation.state.as_ref()?;
+    let identity = observation.handshake_identity.as_ref()?;
+    let client = worksgood::service_identity::os_process_identity();
+    let executor = coordinator.executor_override.as_deref().or((!coordinator
+        .executor
+        .trim()
+        .is_empty())
+    .then_some(coordinator.executor.as_str()));
+    let model = coordinator
+        .model_override
+        .as_deref()
+        .or(coordinator.model.as_deref())
+        .filter(|value| !value.trim().is_empty());
+    let route = match (executor, model) {
+        (Some(executor), Some(model)) if model.starts_with(&format!("{executor}:")) => {
+            Some(model.to_string())
+        }
+        (Some(executor), Some(model)) => Some(format!("{executor} · {model}")),
+        (Some(executor), None) => Some(executor.to_string()),
+        (None, Some(model)) => Some(model.to_string()),
+        (None, None) => None,
+    };
+    Some(AuthoritativeServiceContext {
+        owner: ServiceContextOwner {
+            graph_digest: identity.graph_digest.clone(),
+            socket_path: state.socket_path.clone(),
+            pid: state.pid,
+            pid_start_identity: state.pid_start_identity.clone(),
+            build_id: identity.build_id.clone(),
+        },
+        service_user: identity.service_user.clone(),
+        service_host: identity.service_host.clone(),
+        service_home: identity.service_home.clone(),
+        client_user: client.user,
+        client_host: client.host,
+        canonical_graph: identity.canonical_graph.clone(),
+        started_at: state.started_at.clone(),
+        build_id: identity.build_id.clone(),
+        protocol: identity.protocol.clone(),
+        selected_profile: identity.selected_profile.clone(),
+        route,
+    })
+}
+
 /// State for the service health badge in the status bar.
 pub struct ServiceHealthState {
     /// Current health level (drives badge color).
@@ -5042,6 +5236,9 @@ pub struct ServiceHealthState {
     pub uptime: Option<String>,
     /// Socket path.
     pub socket_path: Option<String>,
+    /// Authenticated service/project context, or `None` when disconnected,
+    /// stale, legacy, foreign, or otherwise unverified.
+    pub authoritative: Option<AuthoritativeServiceContext>,
     /// Agents alive / max.
     pub agents_alive: usize,
     pub agents_max: usize,
@@ -5081,6 +5278,7 @@ impl Default for ServiceHealthState {
             pid: None,
             uptime: None,
             socket_path: None,
+            authoritative: None,
             agents_alive: 0,
             agents_max: 0,
             agents_total: 0,
@@ -8645,6 +8843,8 @@ pub struct VizApp {
     pub last_context_next_area: Rect,
     pub last_context_menu_area: Rect,
     pub last_context_pulse_area: Rect,
+    /// Optional identity hit rebuilt from complete text in the current frame.
+    pub last_service_identity_hit: Option<ServiceIdentityHit>,
     /// Same-frame, label-tight controls emitted by the layout editor. The
     /// renderer clears this before every frame; resize also invalidates it.
     pub layout_control_hits: Vec<LayoutControlHit>,
@@ -10006,6 +10206,7 @@ impl VizApp {
         let animation_mode = AnimationMode::from_config(&config.viz.animations);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let mut app = Self {
+            last_service_identity_hit: None,
             workgraph_dir,
             published_graph: None,
             viz_options,
@@ -10465,6 +10666,7 @@ impl VizApp {
         let viz_options = self.viz_options.clone();
         let graph = self.async_fs.cached_graph();
         let tracer = self.tracer.take();
+        let authoritative_service = self.service_health.authoritative.take();
 
         Box::new(move |app: &mut VizApp| {
             app.lines = lines;
@@ -10568,6 +10770,7 @@ impl VizApp {
             app.is_light_theme = is_light_theme;
             app.last_graph_mtime = last_graph_mtime;
             app.viz_options = viz_options;
+            app.service_health.authoritative = authoritative_service;
             if let Some((graph, mtime)) = graph {
                 app.published_graph = Some(graph.clone());
                 app.async_fs.seed_graph_arc(graph, mtime);
@@ -15654,6 +15857,7 @@ impl VizApp {
         let selected_task_idx = if task_order.is_empty() { None } else { Some(0) };
 
         Self {
+            last_service_identity_hit: None,
             workgraph_dir: std::path::PathBuf::from("/tmp/test-workgraph"),
             published_graph: None,
             viz_options: crate::commands::viz::VizOptions::default(),
@@ -18041,6 +18245,11 @@ impl VizApp {
 
         let dir = self.workgraph_dir.clone();
         let dir = &dir;
+        // The status handshake may wait up to its bounded socket timeout, so
+        // this function is called only by bootstrap/auxiliary workers. Render
+        // and input paths consume the cached result below and never probe.
+        let service_observation = worksgood::service_identity::observe_service(dir);
+        self.service_health.authoritative = None;
 
         // 1. Load service state
         let state = ServiceState::load(dir).ok().flatten();
@@ -18101,6 +18310,8 @@ impl VizApp {
             .ok()
             .flatten()
             .unwrap_or_default();
+        self.service_health.authoritative =
+            authenticated_service_context(&service_observation, &coord);
         self.service_health.paused = coord.paused;
         self.service_health.agents_max = coord.max_agents;
 
@@ -21321,6 +21532,7 @@ impl VizApp {
         self.last_context_next_area = Rect::default();
         self.last_context_menu_area = Rect::default();
         self.last_context_pulse_area = Rect::default();
+        self.last_service_identity_hit = None;
         self.layout_control_hits.clear();
         self.task_picker_row_hits.clear();
         self.last_task_picker_list_area = Rect::default();
@@ -22772,6 +22984,7 @@ impl VizApp {
         );
         self.auxiliary
             .request(super::auxiliary::Kind::Service, move || {
+                let requested_workgraph_dir = workgraph_dir.clone();
                 let mut loader = Self::auxiliary_loader(workgraph_dir, None);
                 loader.task_counts = task_counts;
                 loader.time_counters.service_uptime_secs = counter_values.0;
@@ -22790,6 +23003,13 @@ impl VizApp {
                 let vitals = loader.vitals;
                 let counters = loader.time_counters;
                 Box::new(move |app| {
+                    // A completion belongs only to the graph for which it was
+                    // requested. This is the latest-session fence when a TUI
+                    // switches/reloads projects while the bounded handshake is
+                    // still in flight.
+                    if app.workgraph_dir != requested_workgraph_dir {
+                        return;
+                    }
                     health.detail_open = app.service_health.detail_open;
                     health.detail_scroll = app.service_health.detail_scroll;
                     health.panel_open = app.service_health.panel_open;
@@ -28243,12 +28463,75 @@ mod firehose_tests {
 mod service_health_tests {
     use super::*;
 
+    fn service_context(client_user: &str, client_host: &str) -> AuthoritativeServiceContext {
+        AuthoritativeServiceContext {
+            owner: ServiceContextOwner {
+                graph_digest: "sha256:graph-a".into(),
+                socket_path: "/home/svc/work/project/.wg/service/daemon.sock".into(),
+                pid: 42,
+                pid_start_identity: Some("proc-start:9001".into()),
+                build_id: "0.1.0+abcdef012345".into(),
+            },
+            service_user: "svc".into(),
+            service_host: "buildbox".into(),
+            service_home: Some("/home/svc".into()),
+            client_user: client_user.into(),
+            client_host: client_host.into(),
+            canonical_graph: "/home/svc/work/project/.wg".into(),
+            started_at: "2026-07-24T12:00:00Z".into(),
+            build_id: "0.1.0+abcdef012345".into(),
+            protocol: worksgood::service_identity::SERVICE_IDENTITY_PROTOCOL.into(),
+            selected_profile: Some("pi".into()),
+            route: Some("pi:openrouter:example/model".into()),
+        }
+    }
+
+    #[test]
+    fn authoritative_destination_contracts_service_home_and_exposes_no_svc_prefix() {
+        let context = service_context("svc", "buildbox");
+        assert_eq!(context.compact_destination(), "svc@buildbox:~/work/project");
+        assert_eq!(context.elided_destination(), "svc@buildbox:…/project");
+        assert!(!context.compact_destination().starts_with("svc "));
+        assert_eq!(
+            context.bar_candidates().last(),
+            Some(&context.elided_destination())
+        );
+    }
+
+    #[test]
+    fn client_service_mismatch_is_explicit_in_every_degradation_tier() {
+        let context = service_context("local-user", "laptop");
+        for candidate in context.bar_candidates() {
+            assert!(
+                candidate.starts_with("local → svc@buildbox:"),
+                "{candidate}"
+            );
+        }
+        assert_eq!(
+            context.compact_destination(),
+            "local → svc@buildbox:~/work/project"
+        );
+    }
+
+    #[test]
+    fn service_context_owner_includes_graph_and_pid_birth() {
+        let a = service_context("svc", "buildbox");
+        let mut restarted = a.clone();
+        restarted.owner.pid_start_identity = Some("proc-start:9002".into());
+        assert!(a.owns(&a.owner));
+        assert!(!restarted.owns(&a.owner));
+        restarted.owner = a.owner.clone();
+        restarted.owner.graph_digest = "sha256:graph-b".into();
+        assert!(!restarted.owns(&a.owner));
+    }
+
     #[test]
     fn default_is_red_down() {
         let health = ServiceHealthState::default();
         assert_eq!(health.level, ServiceHealthLevel::Red);
         assert_eq!(health.label, "DOWN");
         assert!(health.pid.is_none());
+        assert!(health.authoritative.is_none());
         assert!(!health.detail_open);
         assert!(health.stuck_tasks.is_empty());
         assert!(health.recent_errors.is_empty());

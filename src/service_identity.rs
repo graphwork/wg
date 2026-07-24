@@ -18,9 +18,111 @@ use interprocess::local_socket::{Stream, prelude::*};
 
 pub const SERVICE_IDENTITY_PROTOCOL: &str = "worksgood-service-identity-v1";
 
+/// Kernel/account-database identity of the process doing the observation.
+///
+/// This intentionally never consults `USER`, `HOME`, `HOSTNAME`, or another
+/// inherited environment variable. A daemon stamps this into its authenticated
+/// handshake; a TUI separately captures its own process identity so a local ↔
+/// remote boundary can be rendered honestly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsProcessIdentity {
+    pub user: String,
+    pub host: String,
+    pub home: Option<PathBuf>,
+}
+
+#[cfg(unix)]
+pub fn os_process_identity() -> OsProcessIdentity {
+    use std::ffi::CStr;
+
+    let host = {
+        let mut buffer = [0_u8; 256];
+        // SAFETY: the buffer is writable for its complete declared length.
+        let rc = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+        if rc == 0 {
+            let end = buffer
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(buffer.len());
+            let value = String::from_utf8_lossy(&buffer[..end]).trim().to_string();
+            (!value.is_empty()).then_some(value)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| "unknown-host".to_string())
+    };
+
+    // `getpwuid_r` is the OS account database boundary. Unlike `$USER` and
+    // `$HOME`, both the name and home belong to the service process uid.
+    let uid = unsafe { libc::geteuid() };
+    let suggested = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let capacity = if suggested > 0 {
+        (suggested as usize).clamp(1024, 1024 * 1024)
+    } else {
+        16 * 1024
+    };
+    let mut storage = vec![0_u8; capacity];
+    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid,
+            passwd.as_mut_ptr(),
+            storage.as_mut_ptr().cast(),
+            storage.len(),
+            &mut result,
+        )
+    };
+    let (user, home) = if rc == 0 && !result.is_null() {
+        // SAFETY: a successful getpwuid_r initialized `passwd` and its string
+        // pointers remain backed by `storage` until this function returns.
+        let passwd = unsafe { passwd.assume_init() };
+        let read = |raw: *const libc::c_char| {
+            (!raw.is_null()).then(|| {
+                // SAFETY: passwd string fields are NUL-terminated on success.
+                unsafe { CStr::from_ptr(raw) }
+                    .to_string_lossy()
+                    .trim()
+                    .to_string()
+            })
+        };
+        let user = read(passwd.pw_name)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("uid-{uid}"));
+        let home = read(passwd.pw_dir)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+        (user, home)
+    } else {
+        (format!("uid-{uid}"), None)
+    };
+
+    OsProcessIdentity { user, host, home }
+}
+
+#[cfg(not(unix))]
+pub fn os_process_identity() -> OsProcessIdentity {
+    // Do not weaken destination identity by falling back to inherited shell
+    // text on platforms where an OS account adapter is not implemented yet.
+    OsProcessIdentity {
+        user: "unknown-user".to_string(),
+        host: "unknown-host".to_string(),
+        home: None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceIdentity {
     pub canonical_graph: String,
+    /// Account/host/home captured by the service process itself, then bound to
+    /// the state-file + live-socket identity agreement.
+    #[serde(default)]
+    pub service_user: String,
+    #[serde(default)]
+    pub service_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_home: Option<String>,
     pub graph_digest: String,
     pub executable: String,
     pub executable_sha256: String,
@@ -198,6 +300,22 @@ fn identity_shape_error(dir: &Path, identity: &ServiceIdentity) -> Option<String
     {
         return Some("live service reports a foreign canonical graph identity".to_string());
     }
+    if identity.protocol != SERVICE_IDENTITY_PROTOCOL {
+        return Some(format!(
+            "live service protocol {} is incompatible with {}",
+            identity.protocol, SERVICE_IDENTITY_PROTOCOL
+        ));
+    }
+    if identity.service_user.trim().is_empty() || identity.service_host.trim().is_empty() {
+        return Some("live service omitted its OS account/host identity".to_string());
+    }
+    if identity
+        .service_home
+        .as_deref()
+        .is_some_and(|home| !Path::new(home).is_absolute())
+    {
+        return Some("live service reports a non-absolute account home".to_string());
+    }
     if !Path::new(&identity.executable).is_absolute() {
         return Some("live service reports a non-absolute executable identity".to_string());
     }
@@ -228,8 +346,12 @@ pub fn expected_identity(
         .with_context(|| format!("Failed to canonicalize executable {}", executable.display()))?;
     let executable_hash = executable_sha256(&executable)?;
     let (selected_profile, selected_profile_fingerprint) = selected_profile_identity(dir)?;
+    let process = os_process_identity();
     Ok(ServiceIdentity {
         canonical_graph: graph.display().to_string(),
+        service_user: process.user,
+        service_host: process.host,
+        service_home: process.home.map(|path| path.display().to_string()),
         graph_digest: graph_digest(&graph)?,
         executable: executable.display().to_string(),
         executable_sha256: executable_hash.clone(),
@@ -446,6 +568,14 @@ mod tests {
         std::fs::write(&exe, b"candidate").unwrap();
         let identity = expected_identity(&graph, &exe, &Config::default()).unwrap();
         assert!(identity.canonical_graph.starts_with('/'));
+        assert!(!identity.service_user.is_empty());
+        assert!(!identity.service_host.is_empty());
+        assert!(
+            identity
+                .service_home
+                .as_deref()
+                .is_none_or(|home| Path::new(home).is_absolute())
+        );
         assert!(identity.executable.starts_with('/'));
         assert!(identity.executable_sha256.starts_with("sha256:"));
         assert_eq!(identity.protocol, SERVICE_IDENTITY_PROTOCOL);

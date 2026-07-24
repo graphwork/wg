@@ -2488,3 +2488,12 @@ owners = [
 ]
 description = "Candidate-only, credential-free attended tmux lifecycle for the profile-first worksgood trial: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; Continue without AI; mocked Pi exact strong/weak routes, effort, and real --thinking argv; every core profile; first-run start; exact/same-build-alias reuse without path loops; compatible config/profile/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; concurrent TUI clients keep one daemon; authenticated absolute executable/PID-birth/content-build/protocol/profile/config/socket/graph identity; no chat creation; post-TUI service persistence; explicit restart and graceful stop. One isolated wg+worksgood target, never installed."
 timeout_seconds = 600
+
+[[scenario]]
+name = "tui_authoritative_service_context"
+script = "scenarios/tui_authoritative_service_context.sh"
+owners = [
+    "show-authoritative-service",
+]
+description = "Candidate-binary credential-free real tmux/SGR flow for the one-row authoritative destination: two same-host project daemons and three TUI clients launched from forged/nested/other-project shell contexts must render the authenticated OS-account host + canonical project; wide-to-Termux resizing preserves exact .chat identity/primary controls while optional context degrades whole; same-frame click and command-mode I open full copyable graph/socket/PID-birth/build/protocol/profile-route details; daemon restart replaces the birth owner; graph bytes remain unchanged."
+timeout_seconds = 180

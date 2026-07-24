@@ -12,9 +12,9 @@ use super::state::{
     CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, ExitPromptState, FocusedPanel,
     InputMode, InspectorDock, InspectorMode, LayoutControlAction, LayoutControlHit,
     LayoutControlPage, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind, TaskFormField,
-    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
-    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
+    ServiceIdentityHit, SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind,
+    TaskFormField, TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp,
+    WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
     spinner_wave_pos, vitals_staleness_color,
 };
 use worksgood::AgentStatus;
@@ -2933,6 +2933,11 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
     // compact primary-action glyph so the Full escape and task switch remain
     // reachable without a second row.
     let compact_new = app.task_counts.resumable_chats > 0
+        // On a physically tiny contextual segment the exact destination and
+        // one-tap global New action fit only in compact form. This applies even
+        // to an empty/disconnected snapshot: the glyph remains the same action,
+        // while a verbose label must never crowd `.chat-N`/task identity.
+        || area.width < 32
         || (app.layout_preference.mode == InspectorMode::Full && area.width < 60);
     let new_label = if compact_new {
         match symbols {
@@ -3090,21 +3095,85 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
         .sum();
     let identity_width = available.saturating_sub(controls_width);
-    let identity_text = if let Some(title) = friendly {
-        let with_title = format!(" {exact}  {title}");
-        if UnicodeWidthStr::width(with_title.as_str()) <= identity_width {
-            with_title
-        } else {
-            format!(" {exact}")
+    let exact_text = format!(" {exact}");
+    let friendly_text = friendly.map(|title| format!("  {title}"));
+    let authority = app.service_health.authoritative.clone();
+    let service_gap = "  •  ";
+    let mut rendered_prefix = exact_text.clone();
+    let mut rendered_service: Option<(String, super::state::ServiceContextOwner)> = None;
+
+    // Exact task/chat identity is mandatory. Only after it and all primary
+    // controls fit do we consider the authenticated destination. Candidate
+    // labels are accepted whole: a clipped arrow/path would look actionable
+    // while owning a different or incomplete destination.
+    if UnicodeWidthStr::width(exact_text.as_str()) <= identity_width {
+        if let Some(context) = authority.as_ref() {
+            'candidate: for keep_friendly in [true, false] {
+                let prefix = if keep_friendly {
+                    friendly_text
+                        .as_ref()
+                        .map(|friendly| format!("{exact_text}{friendly}"))
+                        .unwrap_or_else(|| exact_text.clone())
+                } else {
+                    exact_text.clone()
+                };
+                for candidate in context.bar_candidates() {
+                    let total = UnicodeWidthStr::width(prefix.as_str())
+                        + UnicodeWidthStr::width(service_gap)
+                        + UnicodeWidthStr::width(candidate.as_str());
+                    if total <= identity_width {
+                        rendered_prefix = prefix;
+                        rendered_service = Some((candidate, context.owner.clone()));
+                        break 'candidate;
+                    }
+                }
+            }
         }
-    } else {
-        format!(" {exact}")
-    };
-    let identity_text = clip_cells(&identity_text, identity_width);
+        if rendered_service.is_none()
+            && let Some(friendly) = friendly_text.as_ref()
+        {
+            let with_friendly = format!("{exact_text}{friendly}");
+            if UnicodeWidthStr::width(with_friendly.as_str()) <= identity_width {
+                rendered_prefix = with_friendly;
+            }
+        }
+    }
+
+    let identity_area = Rect::new(cursor, area.y, identity_width as u16, 1);
+    let prefix = clip_cells(&rendered_prefix, identity_width);
     frame.render_widget(
-        Paragraph::new(identity_text).style(bar_style.add_modifier(Modifier::BOLD)),
-        Rect::new(cursor, area.y, identity_width as u16, 1),
+        Paragraph::new(prefix.clone()).style(bar_style.add_modifier(Modifier::BOLD)),
+        identity_area,
     );
+    if let Some((service, owner)) = rendered_service {
+        let service_x = cursor
+            .saturating_add(UnicodeWidthStr::width(prefix.as_str()) as u16)
+            .saturating_add(UnicodeWidthStr::width(service_gap) as u16);
+        let service_width = UnicodeWidthStr::width(service.as_str()) as u16;
+        let complete =
+            service_width > 0 && service_x.saturating_add(service_width) <= identity_area.right();
+        if complete {
+            frame.render_widget(
+                Paragraph::new(service_gap).style(bar_style.add_modifier(Modifier::DIM)),
+                Rect::new(
+                    service_x.saturating_sub(UnicodeWidthStr::width(service_gap) as u16),
+                    area.y,
+                    UnicodeWidthStr::width(service_gap) as u16,
+                    1,
+                ),
+            );
+            let service_area = Rect::new(service_x, area.y, service_width, 1);
+            frame.render_widget(
+                Paragraph::new(service)
+                    .style(bar_style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+                service_area,
+            );
+            app.last_service_identity_hit = Some(ServiceIdentityHit {
+                area: service_area,
+                owner,
+            });
+        }
+    }
     cursor = cursor.saturating_add(identity_width as u16);
 
     for (kind, text) in controls {
@@ -3139,6 +3208,11 @@ fn render_context_row(frame: &mut Frame, app: &mut VizApp, area: Rect, _chat: bo
         }
         cursor = cursor.saturating_add(width);
     }
+    // The global primary action owns the row's right edge. Repaint it after
+    // every optional identity/control span so a narrow priority-clipped label
+    // can never visually cover the already-reserved cells (and thereby look
+    // actionable under the wrong hit owner).
+    frame.render_widget(Paragraph::new(new_label).style(tile_style), new_rect);
     app.workspace_appearance.context_rows_rendered = app
         .workspace_appearance
         .context_rows_rendered
@@ -11047,8 +11121,8 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
     let size = frame.area();
     let health = &app.service_health;
 
-    let width = 50.min(size.width.saturating_sub(4));
-    let height = 22.min(size.height.saturating_sub(4));
+    let width = 100.min(size.width.saturating_sub(4));
+    let height = 28.min(size.height.saturating_sub(4));
 
     // Anchor to top-right, below the status bar.
     let x = size.width.saturating_sub(width + 1);
@@ -11064,7 +11138,7 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
     };
 
     let block = Block::default()
-        .title(format!(" {} Service Health ", title_dot))
+        .title(format!(" {} Workspace / Service Details ", title_dot))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
@@ -11076,25 +11150,94 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
     let value_style = Style::default().fg(text_primary(app.is_light_theme));
     let dim_style = Style::default().fg(Color::DarkGray);
 
-    // PID & uptime
-    lines.push(Line::from(vec![
-        Span::styled("  PID: ", label_style),
-        Span::styled(
-            health
-                .pid
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "N/A".to_string()),
-            value_style,
-        ),
-        Span::styled("    Uptime: ", label_style),
-        Span::styled(health.uptime.as_deref().unwrap_or("N/A"), value_style),
-    ]));
-
-    // Socket
-    lines.push(Line::from(vec![
-        Span::styled("  Socket: ", label_style),
-        Span::styled(health.socket_path.as_deref().unwrap_or("N/A"), dim_style),
-    ]));
+    if let Some(context) = health.authoritative.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("  Destination: ", label_style),
+            Span::styled(context.compact_destination(), value_style),
+        ]));
+        if context.client_user != context.service_user
+            || context.client_host != context.service_host
+        {
+            lines.push(Line::from(vec![
+                Span::styled("  Client: ", label_style),
+                Span::styled(
+                    format!(
+                        "{}@{} (local boundary)",
+                        context.client_user, context.client_host
+                    ),
+                    value_style,
+                ),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  Canonical graph: ", label_style),
+            Span::styled(context.canonical_graph.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Endpoint/socket: ", label_style),
+            Span::styled(context.owner.socket_path.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  PID birth: ", label_style),
+            Span::styled(
+                format!(
+                    "{} / {} / started {}",
+                    context.owner.pid,
+                    context
+                        .owner
+                        .pid_start_identity
+                        .as_deref()
+                        .unwrap_or("start-time only"),
+                    context.started_at
+                ),
+                value_style,
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Compatible build: ", label_style),
+            Span::styled(context.build_id.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Compatible protocol: ", label_style),
+            Span::styled(format!("{} (compatible)", context.protocol), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Project profile: ", label_style),
+            Span::styled(
+                context.selected_profile.as_deref().unwrap_or("none"),
+                value_style,
+            ),
+            Span::styled("    Active route: ", label_style),
+            Span::styled(
+                context.route.as_deref().unwrap_or("not recorded"),
+                value_style,
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Destination: ", label_style),
+            Span::styled(
+                "unavailable (disconnected or unauthenticated)",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  PID: ", label_style),
+            Span::styled(
+                health
+                    .pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "N/A".to_string()),
+                value_style,
+            ),
+            Span::styled("    Uptime: ", label_style),
+            Span::styled(health.uptime.as_deref().unwrap_or("N/A"), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Socket: ", label_style),
+            Span::styled(health.socket_path.as_deref().unwrap_or("N/A"), dim_style),
+        ]));
+    }
 
     lines.push(Line::from(""));
 
@@ -11228,7 +11371,10 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
         .take(inner.height as usize)
         .collect();
 
-    frame.render_widget(Paragraph::new(visible_lines), inner);
+    frame.render_widget(
+        Paragraph::new(visible_lines).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 /// Draw the service control panel - a modal overlay with service actions.
@@ -11557,6 +11703,10 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
         binding("↯ / C", "Chat; repeat for exact Chat selector"),
         binding("⌁ / T", "Task; repeat for bounded exact Task selector"),
         binding("⌂ / W", "Workspace; repeat for actions/dashboard"),
+        binding(
+            "I",
+            "Authenticated Workspace/Service details (Ctrl+O then I from Chat PTY)",
+        ),
         binding(
             "⌕ / S",
             "Current-lane search (graph and Chat remain isolated)",
@@ -17653,6 +17803,30 @@ mod tests {
         }
     }
 
+    fn test_authoritative_service_context() -> super::super::state::AuthoritativeServiceContext {
+        use super::super::state::{AuthoritativeServiceContext, ServiceContextOwner};
+        AuthoritativeServiceContext {
+            owner: ServiceContextOwner {
+                graph_digest: "sha256:project-a".into(),
+                socket_path: "/home/svc/work/project/.wg/service/daemon.sock".into(),
+                pid: 4242,
+                pid_start_identity: Some("proc-start:100".into()),
+                build_id: "0.1.0+abcdef012345".into(),
+            },
+            service_user: "svc".into(),
+            service_host: "remote".into(),
+            service_home: Some("/home/svc".into()),
+            client_user: "svc".into(),
+            client_host: "remote".into(),
+            canonical_graph: "/home/svc/work/project/.wg".into(),
+            started_at: "2026-07-24T12:00:00Z".into(),
+            build_id: "0.1.0+abcdef012345".into(),
+            protocol: worksgood::service_identity::SERVICE_IDENTITY_PROTOCOL.into(),
+            selected_profile: Some("pi".into()),
+            route: Some("pi:openrouter:example/model".into()),
+        }
+    }
+
     fn context_row_text(app: &mut VizApp, width: u16) -> String {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -17666,6 +17840,109 @@ mod tests {
         (0..width)
             .map(|x| terminal.backend().buffer().cell((x, 0)).unwrap().symbol())
             .collect()
+    }
+
+    #[test]
+    fn authoritative_service_context_degrades_whole_and_never_crowds_exact_chat_or_controls() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.active_chat_identity = Some(super::super::state::ActiveChatIdentity {
+            coordinator_id: 7,
+            task_id: ".chat-7".into(),
+            label: "Dinner planning".into(),
+            executor: Some("pi".into()),
+            model: Some("m".into()),
+        });
+        app.task_counts.resumable_chats = 1;
+        let context = test_authoritative_service_context();
+        let candidates = context.bar_candidates();
+        app.service_health.authoritative = Some(context);
+
+        let wide = context_row_text(&mut app, 240);
+        assert!(wide.contains(".chat-7"), "{wide}");
+        assert!(wide.contains("svc@remote:~/work/project"), "{wide}");
+        assert!(
+            wide.contains("pid 4242") && wide.contains("profile pi"),
+            "{wide}"
+        );
+        let wide_hit = app
+            .last_service_identity_hit
+            .clone()
+            .expect("complete wide identity must be actionable");
+        assert!(wide_hit.area.right() <= app.last_coordinator_bar_area.right());
+
+        let mut saw_clean = false;
+        let mut saw_elided_or_omitted = false;
+        for width in [160, 120, 100, 80, 60, 40, 32, 20] {
+            let row = context_row_text(&mut app, width);
+            assert!(row.contains(".chat-7"), "width={width}: {row}");
+            assert!(row.contains('⊞'), "width={width}: {row}");
+            if row.contains("svc@remote:~/work/project")
+                && !row.contains("pid 4242")
+                && !row.contains("profile pi")
+            {
+                saw_clean = true;
+            }
+            if row.contains("svc@remote:…/project") || !row.contains("svc@remote:") {
+                saw_elided_or_omitted = true;
+            }
+            if let Some(hit) = app.last_service_identity_hit.as_ref() {
+                assert!(hit.area.width > 0 && hit.area.right() <= width);
+                assert!(candidates.iter().any(|candidate| row.contains(candidate)));
+            }
+        }
+        assert!(saw_clean, "matrix never removed ancillary context first");
+        assert!(
+            saw_elided_or_omitted,
+            "matrix never elided/omitted optional context"
+        );
+    }
+
+    #[test]
+    fn service_details_expose_full_copyable_handshake_and_route_identity() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.service_health.authoritative = Some(test_authoritative_service_context());
+        app.service_health.detail_open = true;
+        app.service_health.level = ServiceHealthLevel::Green;
+        let mut terminal = Terminal::new(TestBackend::new(140, 36)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = (0..36)
+            .map(|y| {
+                (0..140)
+                    .map(|x| terminal.backend().buffer().cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "Workspace / Service Details",
+            "/home/svc/work/project/.wg",
+            "/home/svc/work/project/.wg/service/daemon.sock",
+            "proc-start:100",
+            "0.1.0+abcdef012345",
+            worksgood::service_identity::SERVICE_IDENTITY_PROTOCOL,
+            "Project profile: pi",
+            "Active route: pi:openrouter:example/model",
+        ] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn mismatch_arrow_is_actionable_only_when_complete() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[7]);
+        app.task_counts.resumable_chats = 1;
+        let mut context = test_authoritative_service_context();
+        context.client_user = "local".into();
+        context.client_host = "laptop".into();
+        app.service_health.authoritative = Some(context);
+        let wide = context_row_text(&mut app, 180);
+        assert!(wide.contains("local → svc@remote:"), "{wide}");
+        assert!(app.last_service_identity_hit.is_some());
+        let narrow = context_row_text(&mut app, 32);
+        assert!(!narrow.contains('→'), "{narrow}");
+        assert!(app.last_service_identity_hit.is_none());
     }
 
     #[test]
@@ -18002,17 +18279,17 @@ mod tests {
                             state,
                             "no-chat" | "all-archived" | "terminal-chat" | "startup"
                         );
-                        if no_resumable {
+                        let tile = if symbols == SymbolMode::Workshop {
+                            '⊞'
+                        } else {
+                            '+'
+                        };
+                        if no_resumable && width >= 32 {
                             assert!(
                                 row.contains(NEW_CHAT_BUTTON_LABEL),
                                 "{state}/{width}: {row}"
                             );
                         } else {
-                            let tile = if symbols == SymbolMode::Workshop {
-                                '⊞'
-                            } else {
-                                '+'
-                            };
                             assert!(row.contains(tile), "{state}/{width}: {row}");
                         }
                         if state == "search" {
@@ -18059,10 +18336,12 @@ mod tests {
             app.task_counts.resumable_chats = 0;
             for width in [20, 32, 40, 60, 80, 120, 200] {
                 let row = context_row_text(&mut app, width);
-                assert!(
-                    row.contains(NEW_CHAT_BUTTON_LABEL),
-                    "tab={tab:?} width={width}: {row}"
-                );
+                let has_action = if width < 32 {
+                    row.contains('⊞')
+                } else {
+                    row.contains(NEW_CHAT_BUTTON_LABEL)
+                };
+                assert!(has_action, "tab={tab:?} width={width}: {row}");
             }
         }
         // Merely rendering all states is strictly non-mutating.

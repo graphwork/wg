@@ -1001,6 +1001,18 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Keyboard peer of the authenticated destination label. A focused PTY
+    // still owns bare `I`; Ctrl+O enters command mode first, preserving the
+    // established child-input contract while keeping exact parity everywhere.
+    if matches!(code, KeyCode::Char('I'))
+        && modifiers.is_empty()
+        && matches!(app.input_mode, InputMode::Normal)
+        && app.service_health.authoritative.is_some()
+    {
+        app.service_health.detail_open = true;
+        return;
+    }
+
     // Global Ctrl+W opens the same identity-explicit Close… modal as the
     // header control. Only fires when NOT in PTY focus — the PTY-focused
     // branch above still forwards it to the embedded editor.
@@ -1735,6 +1747,11 @@ fn open_context_action_menu(app: &mut VizApp) {
                     ),
                     ('c', "Config".into(), "Inspect merged configuration".into()),
                     ('l', "Service log".into(), "Inspect daemon activity".into()),
+                    (
+                        'i',
+                        "Service identity".into(),
+                        "Open authenticated workspace/service details".into(),
+                    ),
                     ('x', "Cancel".into(), "Make no changes".into()),
                 ],
             });
@@ -1906,12 +1923,18 @@ fn execute_choice_dialog_option(
         }
         ChoiceDialogAction::WorkspaceContext => {
             let tab = match idx {
-                0 => RightPanelTab::Dashboard,
-                1 => RightPanelTab::Config,
-                2 => RightPanelTab::CoordLog,
+                0 => Some(RightPanelTab::Dashboard),
+                1 => Some(RightPanelTab::Config),
+                2 => Some(RightPanelTab::CoordLog),
+                3 => {
+                    app.service_health.detail_open = true;
+                    None
+                }
                 _ => return InputMode::Normal,
             };
-            app.show_inspector_tab(tab);
+            if let Some(tab) = tab {
+                app.show_inspector_tab(tab);
+            }
             InputMode::Normal
         }
         ChoiceDialogAction::GlobalControls => match idx {
@@ -5133,6 +5156,19 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             // The one-row controls are global pointer escapes from PTY capture.
             // Route them before terminal/message/content handling so every
             // visible glyph remains live even when a child owns keyboard focus.
+            // Identity hits are owner-stamped: a restart/graph switch between
+            // paint and tap is swallowed rather than opening stale details or
+            // falling through to whichever control now occupies the cell.
+            if let Some(hit) = app.last_service_identity_hit.clone()
+                && hit.area.contains(pos)
+            {
+                let current = app.service_health.authoritative.as_ref();
+                if current.is_some_and(|context| context.owns(&hit.owner)) {
+                    app.service_health.detail_open = true;
+                }
+                app.last_service_identity_hit = None;
+                return;
+            }
             if app.last_context_restore_area.width > 0
                 && app.last_context_restore_area.contains(pos)
             {
@@ -13550,6 +13586,109 @@ mod chat_open_tests {
         let repeated_chat_lane = app.last_context_chat_lane_area;
         click(&mut app, repeated_chat_lane);
         assert_eq!(app.input_mode, InputMode::CoordinatorPicker);
+    }
+
+    #[test]
+    fn authoritative_service_identity_click_keyboard_and_stale_coordinate_parity() {
+        use super::super::state::{AuthoritativeServiceContext, ServiceContextOwner};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_app_with_chat_node();
+        app.set_layout_preference(crate::tui::viz_viewer::state::LayoutPreference {
+            mode: crate::tui::viz_viewer::state::InspectorMode::Full,
+            ..Default::default()
+        });
+        app.task_counts.resumable_chats = 1;
+        app.service_health.authoritative = Some(AuthoritativeServiceContext {
+            owner: ServiceContextOwner {
+                graph_digest: "sha256:graph-a".into(),
+                socket_path: "/home/svc/project/.wg/service/daemon.sock".into(),
+                pid: 11,
+                pid_start_identity: Some("proc-start:1".into()),
+                build_id: "0.1.0+aaaaaaaaaaaa".into(),
+            },
+            service_user: "svc".into(),
+            service_host: "remote".into(),
+            service_home: Some("/home/svc".into()),
+            client_user: "local".into(),
+            client_host: "laptop".into(),
+            canonical_graph: "/home/svc/project/.wg".into(),
+            started_at: "2026-07-24T12:00:00Z".into(),
+            build_id: "0.1.0+aaaaaaaaaaaa".into(),
+            protocol: worksgood::service_identity::SERVICE_IDENTITY_PROTOCOL.into(),
+            selected_profile: Some("pi".into()),
+            route: Some("pi:example/model".into()),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let old_hit = app
+            .last_service_identity_hit
+            .clone()
+            .expect("wide authoritative identity must own exact cells");
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            old_hit.area.y,
+            old_hit.area.x + old_hit.area.width / 2,
+        );
+        assert!(app.service_health.detail_open);
+        app.service_health.detail_open = false;
+
+        // A service restart changes the PID-birth owner before a new frame.
+        // The queued old coordinate is consumed as a no-op, never retargeted.
+        app.service_health
+            .authoritative
+            .as_mut()
+            .unwrap()
+            .owner
+            .pid_start_identity = Some("proc-start:2".into());
+        app.last_service_identity_hit = Some(old_hit.clone());
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            old_hit.area.y,
+            old_hit.area.x,
+        );
+        assert!(!app.service_health.detail_open);
+        assert!(app.last_service_identity_hit.is_none());
+
+        // Fresh render installs the new owner and direct click works again.
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let fresh = app.last_service_identity_hit.clone().unwrap();
+        assert_ne!(fresh.owner, old_hit.owner);
+        handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            fresh.area.y,
+            fresh.area.x,
+        );
+        assert!(app.service_health.detail_open);
+        app.service_health.detail_open = false;
+
+        // Resize invalidates every old context coordinate before redraw; a
+        // narrow rerender omits the optional destination and owns no region.
+        dispatch_event(&mut app, Event::Resize(32, 20));
+        assert!(app.last_service_identity_hit.is_none());
+        let mut narrow = Terminal::new(TestBackend::new(32, 20)).unwrap();
+        narrow
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        assert!(app.last_service_identity_hit.is_none());
+
+        // Keyboard parity uses the Workspace actions menu's advertised `i`
+        // route and opens exactly the same cached, read-only details surface.
+        handle_key(&mut app, KeyCode::Char('I'), KeyModifiers::NONE);
+        assert!(app.service_health.detail_open);
+        app.service_health.detail_open = false;
+        app.activate_context_lane(ContextLane::Workspace);
+        open_context_action_menu(&mut app);
+        handle_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(app.service_health.detail_open);
     }
 
     #[test]
