@@ -105,7 +105,7 @@ grep -q 'ATTENDED_TTY_REQUIRED' /tmp/worksgood-nontty.$$ || loud_fail "stable no
 rm -f /tmp/worksgood-nontty.$$
 [[ ! -e "$scratch/PATH_WG_EXECUTED" ]] || loud_fail "unknown PATH wg was executed"
 [[ "$before" = "$(snapshot "$scratch/cancel")" ]] || loud_fail "non-TTY bare mutated repository"
-nested_plan=$(PATH="$scratch/fake-bin:$PATH" "$WORKSGOOD" --project "$scratch/cancel/sub/dir" --dry-run --profile codex setup)
+nested_plan=$(PATH="$scratch/fake-bin:$PATH" "$WORKSGOOD" --project "$scratch/cancel/sub/dir" --dry-run --profile codex --yes setup)
 grep -q "\"graph\": \"$scratch/cancel/.wg\"" <<<"$nested_plan" || loud_fail "nested repository resolution escaped nearest root"
 [[ "$before" = "$(snapshot "$scratch/cancel")" ]] || loud_fail "strict dry-run mutated repository"
 [[ ! -e "$WG_GLOBAL_DIR/profile-usage.jsonl" ]] || loud_fail "strict dry-run wrote history"
@@ -120,7 +120,7 @@ git -C "$scratch/base" worktree add -q -b smoke-worktree "$scratch/worktree"
 echo dirty >"$scratch/worktree/dirty-untracked"
 mkdir -p "$scratch/worktree/nested"
 worktree_before=$(snapshot "$scratch/worktree")
-worktree_plan=$("$WORKSGOOD" --project "$scratch/worktree/nested" --dry-run --profile claude setup)
+worktree_plan=$("$WORKSGOOD" --project "$scratch/worktree/nested" --dry-run --profile claude --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q "\"graph\": \"$scratch/worktree/.wg\"" <<<"$worktree_plan" || loud_fail "worktree resolved to parent graph"
 [[ "$worktree_before" = "$(snapshot "$scratch/worktree")" ]] || loud_fail "dirty worktree dry-run mutated files"
 
@@ -181,7 +181,7 @@ premium = "nex:test-model"
 TOML
 mk_repo "$scratch/endpoint"
 endpoint_before=$(snapshot "$scratch/endpoint")
-endpoint_plan=$("$WORKSGOOD" --project "$scratch/endpoint" --dry-run --profile missing-endpoint setup)
+endpoint_plan=$("$WORKSGOOD" --project "$scratch/endpoint" --dry-run --profile missing-endpoint --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q '"endpoint_status": "not configured"' <<<"$endpoint_plan" || loud_fail "missing endpoint readiness was not honest"
 [[ "$endpoint_before" = "$(snapshot "$scratch/endpoint")" ]] || loud_fail "endpoint readiness dry-run mutated project"
 
@@ -291,17 +291,87 @@ core_return_session="worksgood-core-return-$$"
 run_tui_lifecycle "$core_return_session" "$scratch/core" ""
 core_return_output=$(tmux capture-pane -p -S - -t "$core_return_session")
 grep -q 'Service remains detached and running' <<<"$core_return_output" || loud_fail "returning post-TUI running guidance missing"
-grep -q 'Resolved Worker/chat: codex:gpt-5.6-sol (effort high)' <<<"$core_return_output" || loud_fail "returning run omitted resolved Worker/chat effort"
-grep -q 'Resolved Agency/FLIP/evaluation: codex:gpt-5.6-luna (effort low)' <<<"$core_return_output" || loud_fail "returning run omitted resolved Agency effort"
+grep -q 'Resolved Worker/chat: codex:gpt-5.6-sol (effort high \[explicit\])' <<<"$core_return_output" || loud_fail "returning run omitted resolved Worker/chat effort"
+grep -q 'Resolved Agency/FLIP/evaluation: codex:gpt-5.6-luna (effort low \[explicit\])' <<<"$core_return_output" || loud_fail "returning run omitted resolved Agency effort"
+status_effort=$("$WORKSGOOD" --project "$scratch/core" status)
+grep -q 'Resolved effort: Worker/chat high \[explicit\] · Agency/FLIP/Eval low \[explicit\]' <<<"$status_effort" \
+    || loud_fail "returning status hid resolved effort: $status_effort"
 pid2=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$state")
 [[ "$pid1" = "$pid2" ]] || loud_fail "returning worksgood duplicated/restarted healthy daemon"
 kill -0 "$pid2" 2>/dev/null || loud_fail "service did not persist after returning TUI exit"
 assert_no_chat "$scratch/core/.wg"
 
+# --yes is confirmation only: on a profile with omitted effort it must refuse
+# rather than silently selecting the attended high/low recommendation.
+mk_repo "$scratch/no-silent-effort"
+no_silent_before=$(snapshot "$scratch/no-silent-effort")
+no_silent_session="worksgood-no-silent-effort-$$"
+tmux new-session -d -s "$no_silent_session" -x 80 -y 24 \
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/no-silent-effort' --profile claude --yes setup"
+tmux set-option -t "$no_silent_session" remain-on-exit on
+wait_session_exit "$no_silent_session"
+no_silent_output=$(tmux capture-pane -p -S - -t "$no_silent_session")
+grep -q -- '--yes does not choose' <<<"$no_silent_output" \
+    || loud_fail "--yes silently chose an omitted effort: $no_silent_output"
+[[ "$no_silent_before" = "$(snapshot "$scratch/no-silent-effort")" ]] \
+    || loud_fail "refused --yes effort choice mutated repository"
+
+# The attended editor visibly recommends high/low, accepts those choices, and
+# persists them as separate profile fields that a returning status can revisit.
+mk_repo "$scratch/attended-effort"
+attended_session="worksgood-attended-effort-$$"
+tmux new-session -d -s "$attended_session" -x 100 -y 30 \
+    "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/attended-effort' --profile claude setup"
+tmux set-option -t "$attended_session" remain-on-exit on
+for _ in $(seq 1 400); do
+    tmux capture-pane -p -S - -t "$attended_session" | grep -q 'Route choice:' && break
+    sleep 0.05
+done
+tmux send-keys -t "$attended_session" u Enter
+for _ in $(seq 1 400); do
+    attended_output=$(tmux capture-pane -p -S - -t "$attended_session")
+    grep -q 'Worker/chat reasoning.*default high' <<<"$attended_output" && break
+    sleep 0.05
+done
+grep -q 'Worker/chat reasoning.*default high' <<<"$attended_output" \
+    || loud_fail "attended Worker/chat recommendation was not visible: $attended_output"
+tmux send-keys -t "$attended_session" Enter
+for _ in $(seq 1 400); do
+    attended_output=$(tmux capture-pane -p -S - -t "$attended_session")
+    attended_flat=$(tr -d '\n' <<<"$attended_output")
+    grep -q 'Agency/FLIP/evaluation reasoning.*default low' <<<"$attended_flat" && break
+    sleep 0.05
+done
+grep -q 'Agency/FLIP/evaluation reasoning.*default low' <<<"$attended_flat" \
+    || loud_fail "attended Agency recommendation was not visible: $attended_output"
+tmux send-keys -t "$attended_session" Enter
+for _ in $(seq 1 400); do
+    attended_output=$(tmux capture-pane -p -S - -t "$attended_session")
+    grep -q 'Apply this exact plan?' <<<"$attended_output" && break
+    sleep 0.05
+done
+attended_flat=$(tr -d '\n' <<<"$attended_output")
+grep -q 'effort high' <<<"$attended_flat" \
+    || loud_fail "confirmation plan hid Worker/chat effort: $attended_output"
+grep -q 'effort low' <<<"$attended_flat" \
+    || loud_fail "confirmation plan hid Agency effort: $attended_output"
+tmux send-keys -t "$attended_session" y Enter
+wait_session_exit "$attended_session"
+attended_profile=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["profile"])' "$scratch/attended-effort/.wg/profile-selection.json")
+attended_profile_file="$WG_GLOBAL_DIR/profiles/$attended_profile.toml"
+grep -q 'reasoning = "high"' "$attended_profile_file" \
+    || loud_fail "attended Worker/chat effort was not persisted"
+grep -q 'reasoning = "low"' "$attended_profile_file" \
+    || loud_fail "attended Agency effort was not persisted"
+attended_status=$("$WORKSGOOD" --project "$scratch/attended-effort" status)
+grep -q 'Worker/chat high \[explicit\].*Agency/FLIP/Eval low \[explicit\]' <<<"$attended_status" \
+    || loud_fail "attended choices were not revisitable in status: $attended_status"
+"$WORKSGOOD" --project "$scratch/attended-effort" stop >/dev/null
+
 for profile in claude nex opencode; do
     session="worksgood-setup-$profile-$$"
     tmux new-session -d -s "$session" -x 80 -y 24 \
-        "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile '$profile' --yes setup"
+        "env HOME='$HOME' WG_GLOBAL_DIR='$WG_GLOBAL_DIR' '$WORKSGOOD' --project '$scratch/core' --profile '$profile' --strong-reasoning high --weak-reasoning low --yes setup"
     tmux set-option -t "$session" remain-on-exit on
     wait_session_exit "$session"
     setup_output=$(tmux capture-pane -p -S - -t "$session")
@@ -321,7 +391,7 @@ pid_reload=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pi
 # no restart loop merely because a receipt-authorized copy/hardlink spelling differs.
 identity_before=$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")
 alias_plan=$(WORKSGOOD_W_EXECUTABLE="$scratch/unknown-wg" WORKSGOOD_W_RECEIPT="$scratch/receipt.json" \
-    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode setup)
+    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q '"service_action": "reuse"' <<<"$alias_plan" || loud_fail "same-build alias dry-run did not plan reuse: $alias_plan"
 grep -q 'content build fingerprint all match' <<<"$alias_plan" || loud_fail "same-build reuse omitted exact reason"
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "reconcile dry-run mutated identity files"
@@ -346,7 +416,7 @@ cat >"$scratch/different-receipt.json" <<EOF
 EOF
 identity_before=$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")
 different_plan=$(WORKSGOOD_W_EXECUTABLE="$different_w" WORKSGOOD_W_RECEIPT="$scratch/different-receipt.json" \
-    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode setup)
+    "$WORKSGOOD" --project "$scratch/core" --dry-run --profile opencode --strong-reasoning high --weak-reasoning low --yes setup)
 grep -q '"service_action": "controlled_restart"' <<<"$different_plan" || loud_fail "different build dry-run did not plan restart: $different_plan"
 grep -q 'binary/build/protocol mismatch' <<<"$different_plan" || loud_fail "different build dry-run omitted exact reason"
 [[ "$identity_before" = "$(sha256sum "$state" "$scratch/core/.wg/profile-selection.json" "$scratch/core/.wg/concierge.json")" ]] || loud_fail "different-build dry-run mutated identity files"

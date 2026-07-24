@@ -14,7 +14,9 @@
 //! command line, endpoint URL, credential reference, or telemetry identifier.
 
 use crate::atomic_file::write_atomic;
-use crate::config::{Config, DispatchRole, ReasoningLevel, handler_first_rewrite};
+use crate::config::{
+    Config, DispatchRole, ReasoningLevel, ReasoningProvenance, handler_first_rewrite,
+};
 use crate::dispatch::handler_for_model;
 use crate::profile::named;
 use anyhow::{Context, Result};
@@ -98,6 +100,10 @@ pub struct ExactRoute {
     pub route: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningLevel>,
+    #[serde(default)]
+    pub reasoning_provenance: ReasoningProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_source: Option<String>,
     pub source: String,
 }
 
@@ -118,9 +124,17 @@ pub struct ProfileReadiness {
     pub strong_route: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strong_reasoning: Option<ReasoningLevel>,
+    #[serde(default)]
+    pub strong_reasoning_provenance: ReasoningProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strong_reasoning_source: Option<String>,
     pub weak_route: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weak_reasoning: Option<ReasoningLevel>,
+    #[serde(default)]
+    pub weak_reasoning_provenance: ReasoningProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak_reasoning_source: Option<String>,
     pub routes: Vec<ExactRoute>,
     pub handlers: Vec<HandlerReadiness>,
 }
@@ -479,44 +493,60 @@ fn raw_route_for_role(config: &Config, role: DispatchRole) -> (String, String) {
     )
 }
 
+fn exact_route(
+    config: &Config,
+    role_name: impl Into<String>,
+    route: String,
+    reasoning_role: DispatchRole,
+    source: String,
+) -> ExactRoute {
+    let reasoning = config.resolve_reasoning_detail(reasoning_role);
+    ExactRoute {
+        role: role_name.into(),
+        route,
+        reasoning: reasoning.level,
+        reasoning_provenance: reasoning.provenance,
+        reasoning_source: reasoning.source,
+        source,
+    }
+}
+
 fn profile_routes(config: &Config) -> Vec<ExactRoute> {
     let mut routes = Vec::with_capacity(DispatchRole::ALL.len() + 3);
-    routes.push(ExactRoute {
-        role: "agent".to_string(),
-        route: canonical_route(&config.agent.model),
-        reasoning: config.resolve_reasoning_for_role(DispatchRole::TaskAgent),
-        source: "profile-agent".to_string(),
-    });
-    routes.push(ExactRoute {
-        role: "dispatcher".to_string(),
-        route: canonical_route(
+    routes.push(exact_route(
+        config,
+        "agent",
+        canonical_route(&config.agent.model),
+        DispatchRole::TaskAgent,
+        "profile-agent".to_string(),
+    ));
+    routes.push(exact_route(
+        config,
+        "dispatcher",
+        canonical_route(
             config
                 .coordinator
                 .model
                 .as_deref()
                 .unwrap_or(&config.agent.model),
         ),
-        reasoning: config.resolve_reasoning_for_role(DispatchRole::Default),
-        source: "profile-dispatcher".to_string(),
-    });
+        DispatchRole::Default,
+        "profile-dispatcher".to_string(),
+    ));
     let (default_route, default_source) = raw_route_for_role(config, DispatchRole::Default);
-    routes.push(ExactRoute {
-        role: "default".to_string(),
-        route: default_route,
-        reasoning: config.resolve_reasoning_for_role(DispatchRole::Default),
-        source: default_source,
-    });
+    routes.push(exact_route(
+        config,
+        "default",
+        default_route,
+        DispatchRole::Default,
+        default_source,
+    ));
     for role in DispatchRole::ALL {
         if *role == DispatchRole::Default {
             continue;
         }
         let (route, source) = raw_route_for_role(config, *role);
-        routes.push(ExactRoute {
-            role: role.to_string(),
-            route,
-            reasoning: config.resolve_reasoning_for_role(*role),
-            source,
-        });
+        routes.push(exact_route(config, role.to_string(), route, *role, source));
     }
     routes
 }
@@ -556,6 +586,8 @@ fn readiness_for_config(config: &Config) -> ProfileReadiness {
             role: "task_agent".to_string(),
             route: canonical_route(&config.agent.model),
             reasoning: None,
+            reasoning_provenance: ReasoningProvenance::Omitted,
+            reasoning_source: None,
             source: "profile-agent".to_string(),
         });
     let weak = routes
@@ -644,8 +676,12 @@ fn readiness_for_config(config: &Config) -> ProfileReadiness {
         annotation,
         strong_route: strong.route,
         strong_reasoning: strong.reasoning,
+        strong_reasoning_provenance: strong.reasoning_provenance,
+        strong_reasoning_source: strong.reasoning_source,
         weak_route: weak.route,
         weak_reasoning: weak.reasoning,
+        weak_reasoning_provenance: weak.reasoning_provenance,
+        weak_reasoning_source: weak.reasoning_source,
         routes,
         handlers,
     }
@@ -1117,8 +1153,12 @@ fn unavailable_readiness() -> ProfileReadiness {
                 .to_string(),
         strong_route: "unavailable".to_string(),
         strong_reasoning: None,
+        strong_reasoning_provenance: ReasoningProvenance::Omitted,
+        strong_reasoning_source: None,
         weak_route: "unavailable".to_string(),
         weak_reasoning: None,
+        weak_reasoning_provenance: ReasoningProvenance::Omitted,
+        weak_reasoning_source: None,
         routes: Vec::new(),
         handlers: Vec::new(),
     }
@@ -1886,9 +1926,25 @@ mod tests {
         let pi = by_name[&"pi".to_string()];
         assert!(pi.readiness.strong_route.starts_with("pi:"));
         assert!(pi.readiness.weak_route.starts_with("nex:openrouter:"));
+        assert_eq!(
+            pi.readiness.strong_reasoning_provenance,
+            ReasoningProvenance::Omitted
+        );
+        assert_eq!(
+            pi.readiness.weak_reasoning_provenance,
+            ReasoningProvenance::Omitted
+        );
         let codex = by_name[&"codex".to_string()];
         assert_eq!(codex.readiness.strong_reasoning, Some(ReasoningLevel::High));
         assert_eq!(codex.readiness.weak_reasoning, Some(ReasoningLevel::Low));
+        assert_eq!(
+            codex.readiness.strong_reasoning_provenance,
+            ReasoningProvenance::Explicit
+        );
+        assert_eq!(
+            codex.readiness.weak_reasoning_provenance,
+            ReasoningProvenance::Explicit
+        );
         assert!(
             by_name[&"opencode".to_string()]
                 .readiness

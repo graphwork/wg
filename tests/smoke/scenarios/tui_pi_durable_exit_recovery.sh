@@ -215,4 +215,14 @@ if TM has-session -t "$inner_session" 2>/dev/null; then
     loud_fail "archived chat retained/recreated its exact inner tmux session $inner_session"
 fi
 
-echo "PASS: durable Pi inner SIGKILL reason survived TUI restart; one exact explicit recovery sent zero stdin and duplicated no turn; archived chat stayed terminal"
+# The live Settings surface makes effort inspectable without rendering inert
+# button-like prose: tier effort rows are editable settings, and profile effort
+# is compactly attached to the actionable profile row.
+TM send-keys -t "$outer" 8
+wait_screen "tiers.fast_reasoning" 100 \
+    || loud_fail "Settings did not expose the editable effort rows: $(capture)"
+settings_screen=$(capture)
+grep -q 'W:omit A:omit' <<<"$settings_screen" \
+    || loud_fail "Settings profile row hid omitted strong/weak effort: $settings_screen"
+
+echo "PASS: durable Pi xhigh argv/recovery stayed exact; Settings exposed compact editable/profile effort; archived chat stayed terminal"

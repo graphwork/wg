@@ -15370,6 +15370,28 @@ mod tests {
             .unwrap();
         assert_eq!(entry.value, "claude:sonnet");
         assert_eq!(entry.source, worksgood::config::ConfigSource::Local);
+
+        // Effort is an actual editable config row, not control-looking dead
+        // text. The same path accepts the complete ReasoningLevel vocabulary.
+        for level in worksgood::config::ReasoningLevel::ALL {
+            let idx = app
+                .settings_panel
+                .entries
+                .iter()
+                .position(|e| e.key == "tiers.standard_reasoning")
+                .expect("standard effort entry must exist");
+            app.settings_panel.selected = idx;
+            app.begin_settings_edit();
+            app.settings_panel.edit_buffer = level.to_string();
+            app.commit_settings_edit();
+            app.wait_for_auxiliary_snapshot();
+            assert_eq!(app.settings_panel.last_error, None);
+        }
+        let reloaded = worksgood::config::Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(
+            reloaded.tiers.standard_reasoning,
+            Some(worksgood::config::ReasoningLevel::Max)
+        );
     }
 
     /// Invalid input must not write the config file. Confirms the

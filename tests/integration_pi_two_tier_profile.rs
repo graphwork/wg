@@ -8,7 +8,7 @@
 //! contract). A scripted PTY smoke (`tests/smoke/scenarios/pi_two_tier_profile.sh`)
 //! covers the real CLI human flow on top of this.
 
-use worksgood::config::Config;
+use worksgood::config::{Config, DispatchRole, ReasoningLevel, ReasoningProvenance};
 use worksgood::profile::named::{self, STARTER_PI};
 
 /// Apply the `(strong, weak)` key-set to a TOML string exactly as
@@ -24,6 +24,21 @@ fn patch_in_memory(content: &str, strong: Option<&str>, weak: Option<&str>) -> S
     if let Some(w) = weak {
         for key in Config::PI_WEAK_TOML_KEYS {
             out = named::set_toml_string_value(&out, key, w);
+        }
+    }
+    out
+}
+
+fn patch_reasoning_in_memory(content: &str, strong: Option<&str>, weak: Option<&str>) -> String {
+    let mut out = content.to_string();
+    if let Some(level) = strong {
+        for key in Config::PI_STRONG_REASONING_TOML_KEYS {
+            out = named::set_toml_string_value(&out, key, level);
+        }
+    }
+    if let Some(level) = weak {
+        for key in Config::PI_WEAK_REASONING_TOML_KEYS {
+            out = named::set_toml_string_value(&out, key, level);
         }
     }
     out
@@ -108,6 +123,47 @@ fn test_pi_partial_apply_leaves_other_tier_unchanged() {
         "strong tier must be untouched by a weak-only update"
     );
     assert_eq!(weak.as_deref(), Some("openrouter:deepseek/deepseek-v3.1"));
+}
+
+#[test]
+fn test_pi_reasoning_reports_omitted_inherited_explicit_and_all_levels() {
+    let omitted: Config = toml::from_str(STARTER_PI).unwrap();
+    let detail = omitted.resolve_reasoning_detail(DispatchRole::TaskAgent);
+    assert_eq!(detail.level, None);
+    assert_eq!(detail.provenance, ReasoningProvenance::Omitted);
+
+    let inherited_text =
+        named::set_toml_string_value(STARTER_PI, "tiers.standard_reasoning", "high");
+    let inherited: Config = toml::from_str(&inherited_text).unwrap();
+    let detail = inherited.resolve_reasoning_detail(DispatchRole::TaskAgent);
+    assert_eq!(detail.level, Some(ReasoningLevel::High));
+    assert_eq!(detail.provenance, ReasoningProvenance::Inherited);
+
+    for level in ReasoningLevel::ALL {
+        let before: Config = toml::from_str(STARTER_PI).unwrap();
+        let patched = patch_reasoning_in_memory(STARTER_PI, Some(level.as_str()), None);
+        let after: Config = toml::from_str(&patched).unwrap();
+        assert_eq!(
+            after.resolve_reasoning_for_role(DispatchRole::TaskAgent),
+            Some(*level)
+        );
+        assert_eq!(
+            after
+                .resolve_reasoning_detail(DispatchRole::TaskAgent)
+                .provenance,
+            ReasoningProvenance::Explicit
+        );
+        assert_eq!(
+            before.pi_tiers(),
+            after.pi_tiers(),
+            "reasoning-only edit at {level} must preserve model bytes"
+        );
+        assert_eq!(
+            after.resolve_reasoning_for_role(DispatchRole::Evaluator),
+            None,
+            "partial strong update must not change weak effort"
+        );
+    }
 }
 
 #[test]

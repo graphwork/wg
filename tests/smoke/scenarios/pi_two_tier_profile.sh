@@ -21,6 +21,9 @@ cd "$scratch"
 
 # shellcheck disable=SC2086
 wg() { command wg $WG_DIR_FLAG "$@"; }
+snapshot() {
+    find "$1" -type f -printf '%P %s ' -exec sha256sum {} \; 2>/dev/null | sort
+}
 
 PI="$HOME/.wg/profiles/pi.toml"
 
@@ -36,15 +39,36 @@ $list_out"
 grep -q "\[strong\]" <<<"$list_out" \
     || loud_fail "--list did not tag the strong tier:
 $list_out"
+grep -q 'strong effort: (omit) \[unset/omitted\]' <<<"$list_out" \
+    || loud_fail "--list did not expose omitted strong effort:
+$list_out"
+grep -q 'weak effort:   (omit) \[unset/omitted\]' <<<"$list_out" \
+    || loud_fail "--list did not expose omitted weak effort:
+$list_out"
 
-# ── 2. SELECT + APPLY: set both tiers positionally; echo shows old → new ─────
+initial_show=$(wg profile pi 2>&1) || loud_fail "no-arg profile display failed: $initial_show"
+grep -q 'effort = (omit) \[unset/omitted\]' <<<"$initial_show" \
+    || loud_fail "no-arg profile display hid omitted effort: $initial_show"
+
+# ── 2. SELECT + APPLY: models and effort transition independently ───────────
 # fix-strong-tier: the STRONG tier is normalized to a `pi:` route on write (so
 # strong-tier work runs through the self-authenticating pi handler, NOT the
 # in-process nex OpenRouter client that would need a wg-side key). The user
 # typed a raw `openrouter:` spec; what gets echoed/persisted is the `pi:` form.
 # The WEAK/agency tier keeps its native `openrouter:` route.
-set_out=$(wg profile pi openrouter:qwen/qwen3-max openrouter:deepseek/deepseek-v3.1 2>&1) \
-    || loud_fail "wg profile pi <strong> <weak> failed:
+before_dry=$(snapshot "$HOME")
+dry_out=$(wg profile pi --strong-reasoning high --weak-reasoning low --dry-run 2>&1) \
+    || loud_fail "reasoning dry-run failed: $dry_out"
+[[ "$before_dry" = "$(snapshot "$HOME")" ]] \
+    || loud_fail "reasoning dry-run mutated profile files"
+grep -q '(omit) \[unset/omitted\] → high \[explicit\]' <<<"$dry_out" \
+    || loud_fail "dry-run omitted independent strong effort transition: $dry_out"
+grep -q '(omit) \[unset/omitted\] → low \[explicit\]' <<<"$dry_out" \
+    || loud_fail "dry-run omitted independent weak effort transition: $dry_out"
+
+set_out=$(wg profile pi openrouter:qwen/qwen3-max openrouter:deepseek/deepseek-v3.1 \
+    --strong-reasoning high --weak-reasoning low 2>&1) \
+    || loud_fail "wg profile pi model+effort update failed:
 $set_out"
 grep -q "glm-5.2 → pi:openrouter/qwen/qwen3-max" <<<"$set_out" \
     || loud_fail "set echo missing strong old → new transition (expected pi: route):
@@ -52,6 +76,10 @@ $set_out"
 grep -q "deepseek-chat → openrouter:deepseek/deepseek-v3.1" <<<"$set_out" \
     || loud_fail "set echo missing weak old → new transition:
 $set_out"
+grep -q '(omit) \[unset/omitted\] → high \[explicit\]' <<<"$set_out" \
+    || loud_fail "set echo missing strong effort old → new transition: $set_out"
+grep -q '(omit) \[unset/omitted\] → low \[explicit\]' <<<"$set_out" \
+    || loud_fail "set echo missing weak effort old → new transition: $set_out"
 [ -f "$PI" ] || loud_fail "profile file was not written at $PI"
 
 # The surgical patch updated the §4.1 key-set AND preserved the comment block.
@@ -71,7 +99,7 @@ if grep -q 'standard = "openrouter:qwen/qwen3-max"' "$PI"; then
     loud_fail "strong tier persisted as a raw openrouter: spec (routes to nex, needs a wg key):
 $(cat "$PI")"
 fi
-grep -q "PLUGIN INSTALL" "$PI" \
+grep -q "WORKSGOOD PI INSTALL" "$PI" \
     || loud_fail "comment block was lost by the patch (should be a line patch):
 $(cat "$PI")"
 
@@ -84,14 +112,43 @@ $show_out"
 grep -q "weak   = openrouter:deepseek/deepseek-v3.1" <<<"$show_out" \
     || loud_fail "--show did not reflect the persisted weak tier:
 $show_out"
+grep -q 'effort = high \[explicit: models.task_agent.reasoning\]' <<<"$show_out" \
+    || loud_fail "--show did not expose explicit strong effort: $show_out"
+grep -q 'effort = low \[explicit: models.evaluator.reasoning\]' <<<"$show_out" \
+    || loud_fail "--show did not expose explicit weak effort: $show_out"
 
-# ── 4. PARTIAL: --weak alone leaves strong untouched ────────────────────────
+profile_show=$(wg profile show pi 2>&1) || loud_fail "profile show pi failed: $profile_show"
+grep -q 'Worker/chat: .* high \[explicit:' <<<"$profile_show" \
+    || loud_fail "ordinary profile show hid Worker/chat effort: $profile_show"
+grep -q 'Agency/FLIP/Eval: .* low \[explicit:' <<<"$profile_show" \
+    || loud_fail "ordinary profile show hid Agency effort: $profile_show"
+
+# Every supported effort round-trips, and a reasoning-only edit never changes
+# any model assignment bytes.
+model_fingerprint() {
+    grep -E '^(model|fast|standard|premium) = ' "$PI" | sha256sum | awk '{print $1}'
+}
+model_before=$(model_fingerprint)
+for level in off minimal low medium high xhigh max; do
+    wg profile pi --strong-reasoning "$level" >/dev/null \
+        || loud_fail "supported effort '$level' was rejected"
+    [[ "$model_before" = "$(model_fingerprint)" ]] \
+        || loud_fail "reasoning-only '$level' edit changed model bytes"
+    wg profile pi | grep -q "effort = $level \[explicit:" \
+        || loud_fail "returning profile display lost '$level'"
+done
+# Restore the attended recommendation used by the remaining flow.
+wg profile pi --strong-reasoning high >/dev/null
+
+# ── 4. PARTIAL: --weak alone leaves strong model and effort untouched ───────
 partial_out=$(wg profile pi --weak openrouter:deepseek/deepseek-chat 2>&1) \
     || loud_fail "partial --weak update failed:
 $partial_out"
 grep -q "strong = pi:openrouter/qwen/qwen3-max .* (unchanged)" <<<"$partial_out" \
     || loud_fail "partial weak update should leave strong unchanged:
 $partial_out"
+grep -q 'effort = high .* (unchanged)' <<<"$partial_out" \
+    || loud_fail "partial model update should leave strong effort unchanged: $partial_out"
 
 # ── 5. ACTIVE: when pi is active, the set re-applies as global config so the ─
 #       next turn/worker picks it up (reflected next turn). --dir → no daemon,
@@ -138,6 +195,12 @@ $(cat "$CUSTOM")"
 grep -q 'reasoning = "medium"' "$CUSTOM" \
     || loud_fail "model update erased inherited default reasoning:
 $(cat "$CUSTOM")"
+custom_show=$(wg profile pi --profile codex-56 2>&1) \
+    || loud_fail "custom profile returning display failed: $custom_show"
+grep -q 'effort = high \[explicit:' <<<"$custom_show" \
+    || loud_fail "custom strong effort missing from returning display: $custom_show"
+grep -q 'effort = minimal \[explicit:' <<<"$custom_show" \
+    || loud_fail "custom weak effort missing from returning display: $custom_show"
 grep -q 'fast = "codex:gpt-5.6-luna"' "$CUSTOM" \
     || loud_fail "partial strong/reasoning update changed the weak model:
 $(cat "$CUSTOM")"
@@ -147,6 +210,30 @@ $(cat "$CUSTOM")"
 grep -q '# user-owned sentinel' "$CUSTOM" \
     || loud_fail "custom profile patch overwrote user-owned content:
 $(cat "$CUSTOM")"
+
+cat >"$HOME/.wg/profiles/inherited.toml" <<'TOML'
+[agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+[dispatcher]
+model = "pi:openai-codex:gpt-5.6-sol"
+[tiers]
+fast = "pi:openai-codex:gpt-5.6-luna"
+fast_reasoning = "low"
+standard = "pi:openai-codex:gpt-5.6-sol"
+standard_reasoning = "high"
+premium = "pi:openai-codex:gpt-5.6-sol"
+premium_reasoning = "xhigh"
+[models.task_agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+[models.evaluator]
+model = "pi:openai-codex:gpt-5.6-luna"
+TOML
+inherited_show=$(wg profile pi --profile inherited 2>&1) \
+    || loud_fail "inherited profile display failed: $inherited_show"
+grep -q 'effort = high \[inherited: tiers.standard_reasoning\]' <<<"$inherited_show" \
+    || loud_fail "inherited strong effort provenance missing: $inherited_show"
+grep -q 'effort = low \[inherited: tiers.fast_reasoning\]' <<<"$inherited_show" \
+    || loud_fail "inherited weak effort provenance missing: $inherited_show"
 
 # The inactive edit must not touch resolved global routing. Activation then
 # makes the custom handler-first routes and reasoning visible to config resolve.
@@ -163,8 +250,41 @@ grep -q 'codex:gpt-5.6-luna' <<<"$models_out" \
     || loud_fail "activated custom weak route did not resolve: $models_out"
 grep -Eq 'evaluator +fast +codex:gpt-5.6-luna +codex +codex +minimal' <<<"$models_out" \
     || loud_fail "activated custom weak reasoning did not resolve: $models_out"
+status_out=$(wg status 2>&1) || loud_fail "compact status failed: $status_out"
+grep -q 'effort=chat:medium worker:high agency:minimal' <<<"$status_out" \
+    || loud_fail "compact status hid independently resolved effort: $status_out"
 
-# ── 7. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
+# ── 7. PROJECT ISOLATION: two projects pin distinct profile generations ──────
+wg profile create codex-other --from codex >/dev/null 2>&1 \
+    || loud_fail "second custom profile creation failed"
+wg profile pi --profile codex-other --strong-reasoning max --weak-reasoning low >/dev/null \
+    || loud_fail "second custom profile effort update failed"
+mkdir -p "$scratch/project-a/.wg" "$scratch/project-b/.wg"
+command wg --dir "$scratch/project-a/.wg" profile select codex-56 --no-reload >/dev/null \
+    || loud_fail "project A selection failed"
+command wg --dir "$scratch/project-b/.wg" profile select codex-other --no-reload >/dev/null \
+    || loud_fail "project B selection failed"
+a_models=$(command wg --dir "$scratch/project-a/.wg" config --models 2>&1) \
+    || loud_fail "project A routing failed: $a_models"
+b_models=$(command wg --dir "$scratch/project-b/.wg" config --models 2>&1) \
+    || loud_fail "project B routing failed: $b_models"
+grep -Eq 'evaluator +fast +codex:gpt-5.6-luna +codex +codex +minimal' <<<"$a_models" \
+    || loud_fail "project A lost its weak effort: $a_models"
+grep -Eq 'task_agent +standard +codex:gpt-5.6-sol +codex +codex +max' <<<"$b_models" \
+    || loud_fail "project B lost its distinct strong effort: $b_models"
+wg profile pi --profile codex-other --weak-reasoning xhigh >/dev/null \
+    || loud_fail "second profile follow-up edit failed"
+# A's pinned definition and exact effort remain valid; B fails closed on its
+# now-drifted fingerprint instead of silently following A/global/edited bytes.
+a_after=$(command wg --dir "$scratch/project-a/.wg" config --models 2>&1) \
+    || loud_fail "editing project B's profile broke project A: $a_after"
+grep -Eq 'evaluator +fast +codex:gpt-5.6-luna +codex +codex +minimal' <<<"$a_after" \
+    || loud_fail "project A was rerouted by project B edit: $a_after"
+if command wg --dir "$scratch/project-b/.wg" config --models >/dev/null 2>&1; then
+    loud_fail "project B silently followed a changed global profile definition"
+fi
+
+# ── 8. GRAMMAR: a lone positional is rejected as ambiguous ──────────────────
 if wg profile pi openrouter:z-ai/glm-5.2 >/dev/null 2>&1; then
     loud_fail "a single positional tier must be rejected as ambiguous"
 fi

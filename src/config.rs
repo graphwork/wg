@@ -1390,6 +1390,43 @@ impl std::str::FromStr for ReasoningLevel {
     }
 }
 
+/// How a role obtained its effective reasoning effort.
+///
+/// This is deliberately separate from model identity and from config-file
+/// scope. `Explicit` means the role has its own `[models.<role>].reasoning`
+/// value, `Inherited` means it resolved through a tier or the default role,
+/// and `Omitted` means WG emits no handler effort flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningProvenance {
+    Explicit,
+    Inherited,
+    #[default]
+    Omitted,
+}
+
+impl std::fmt::Display for ReasoningProvenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Explicit => f.write_str("explicit"),
+            Self::Inherited => f.write_str("inherited"),
+            Self::Omitted => f.write_str("unset/omitted"),
+        }
+    }
+}
+
+/// Effective effort plus inspectable provenance. The source is a dotted
+/// logical key (for example `models.task_agent.reasoning` or
+/// `tiers.standard_reasoning`), never a model string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedReasoning {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<ReasoningLevel>,
+    pub provenance: ReasoningProvenance,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// Dispatch roles for model routing.
 /// Each role maps to a specific dispatch point in the coordinator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -3203,28 +3240,66 @@ impl Config {
         }
     }
 
-    /// Resolve reasoning independently from model/provider.
+    /// Resolve reasoning independently from model/provider, retaining enough
+    /// provenance for profile/status surfaces to say whether the value is a
+    /// role override, inherited, or omitted.
     ///
     /// Precedence: explicit task override (handled by callers) >
     /// role-specific `[models.<role>].reasoning` > role tier override /
     /// default tier reasoning > `[models.default].reasoning` > omitted handler
     /// default (`None`). This deliberately does not inspect or mutate the
     /// winning model string.
-    pub fn resolve_reasoning_for_role(&self, role: DispatchRole) -> Option<ReasoningLevel> {
+    pub fn resolve_reasoning_detail(&self, role: DispatchRole) -> ResolvedReasoning {
         if let Some(reasoning) = self.models.get_role(role).and_then(|c| c.reasoning) {
-            return Some(reasoning);
+            return ResolvedReasoning {
+                level: Some(reasoning),
+                provenance: ReasoningProvenance::Explicit,
+                source: Some(format!("models.{role}.reasoning")),
+            };
         }
+
+        let tier_key = |tier: Tier| match tier {
+            Tier::Fast => "tiers.fast_reasoning",
+            Tier::Standard => "tiers.standard_reasoning",
+            Tier::Premium => "tiers.premium_reasoning",
+        };
         if let Some(tier) = self.models.get_role(role).and_then(|c| c.tier)
             && let Some(reasoning) = self.tier_reasoning(tier)
         {
-            return Some(reasoning);
+            return ResolvedReasoning {
+                level: Some(reasoning),
+                provenance: ReasoningProvenance::Inherited,
+                source: Some(tier_key(tier).to_string()),
+            };
         }
-        if let Some(reasoning) = self.tier_reasoning(role.default_tier()) {
-            return Some(reasoning);
+        let default_tier = role.default_tier();
+        if let Some(reasoning) = self.tier_reasoning(default_tier) {
+            return ResolvedReasoning {
+                level: Some(reasoning),
+                provenance: ReasoningProvenance::Inherited,
+                source: Some(tier_key(default_tier).to_string()),
+            };
         }
-        self.models
+        if let Some(reasoning) = self
+            .models
             .get_role(DispatchRole::Default)
             .and_then(|c| c.reasoning)
+        {
+            return ResolvedReasoning {
+                level: Some(reasoning),
+                provenance: ReasoningProvenance::Inherited,
+                source: Some("models.default.reasoning".to_string()),
+            };
+        }
+        ResolvedReasoning {
+            level: None,
+            provenance: ReasoningProvenance::Omitted,
+            source: None,
+        }
+    }
+
+    pub fn resolve_reasoning_for_role(&self, role: DispatchRole) -> Option<ReasoningLevel> {
+        self.resolve_reasoning_detail(role).level
     }
 
     /// Look up a registry entry by its short ID.
@@ -5798,7 +5873,6 @@ impl Config {
     pub const PI_STRONG_REASONING_TOML_KEYS: &'static [&'static str] = &[
         "tiers.standard_reasoning",
         "tiers.premium_reasoning",
-        "models.default.reasoning",
         "models.task_agent.reasoning",
     ];
 
@@ -6581,6 +6655,44 @@ standard_reasoning = "xhigh"
                 .reasoning,
             Some(ReasoningLevel::Xhigh),
             "role-specific reasoning should outrank tier reasoning"
+        );
+    }
+
+    #[test]
+    fn test_reasoning_detail_distinguishes_omitted_inherited_and_explicit() {
+        let mut config = Config::default();
+        config.profile = None;
+        config.tiers = TierConfig::default();
+        config.models.default = None;
+        config.models.task_agent = None;
+
+        let omitted = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+        assert_eq!(omitted.level, None);
+        assert_eq!(omitted.provenance, ReasoningProvenance::Omitted);
+        assert_eq!(omitted.source, None);
+
+        config.tiers.standard_reasoning = Some(ReasoningLevel::High);
+        let inherited = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+        assert_eq!(inherited.level, Some(ReasoningLevel::High));
+        assert_eq!(inherited.provenance, ReasoningProvenance::Inherited);
+        assert_eq!(
+            inherited.source.as_deref(),
+            Some("tiers.standard_reasoning")
+        );
+
+        config.models.task_agent = Some(RoleModelConfig {
+            provider: None,
+            model: None,
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::Xhigh),
+        });
+        let explicit = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+        assert_eq!(explicit.level, Some(ReasoningLevel::Xhigh));
+        assert_eq!(explicit.provenance, ReasoningProvenance::Explicit);
+        assert_eq!(
+            explicit.source.as_deref(),
+            Some("models.task_agent.reasoning")
         );
     }
 

@@ -956,8 +956,19 @@ pub fn patch_two_tier_profile(
         }
     }
     if let Some(reasoning) = strong_reasoning {
+        // A pre-existing explicit default is the chat effort and therefore
+        // belongs to the strong update. When it is absent, leave it absent:
+        // default/chat inherits tiers.standard_reasoning, while weak roles do
+        // not accidentally inherit a newly-created models.default value.
+        let had_explicit_default_reasoning = toml::from_str::<Config>(&content)
+            .ok()
+            .and_then(|config| config.models.default.and_then(|role| role.reasoning))
+            .is_some();
         for dotted in Config::PI_STRONG_REASONING_TOML_KEYS {
             content = set_toml_string_value(&content, dotted, reasoning);
+        }
+        if had_explicit_default_reasoning {
+            content = set_toml_string_value(&content, "models.default.reasoning", reasoning);
         }
     }
     if let Some(reasoning) = weak_reasoning {

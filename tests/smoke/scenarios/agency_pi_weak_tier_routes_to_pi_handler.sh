@@ -41,6 +41,7 @@ marker="$scratch/invocations"
 cat >"$fake_bin/pi" <<'SH'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >>"${SMOKE_PI_MARKER:-/dev/null}/pi-argv.log"
 model=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -99,44 +100,16 @@ if ! wg init >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 
-# Configure the agency one-shot evaluator role to a handler-first Pi route —
-# the exact configuration that triggered the bug. `wg init` writes explicit
-# `[models.evaluator].model = "claude:haiku"` overrides (which would win over
-# the weak tier); rewrite them to the pi route so the agency dispatch lands
-# on the Pi handler. Also set `tiers.fast` for symmetry with a two-tier Pi
-# profile. The bug: `resolve_agency_dispatch` correctly returned
-# handler=Pi (so runtime metadata said Executor: pi), but
-# `run_lightweight_llm_call`'s catch-all arm shelled out to the claude CLI
-# instead, which failed with "Claude CLI call failed ... subscription
-# disabled". The fix adds an `ExecutorKind::Pi` arm that drives `pi` as a
-# one-shot.
-sed -i 's|^fast = .*|fast = "pi:openai-codex:gpt-5.6-terra"|' .wg/config.toml
-awk '
-    BEGIN { in_eval = 0; in_flip_inf = 0; in_flip_cmp = 0; in_assign = 0 }
-    /^\[models\.evaluator\]/    { in_eval = 1; print; next }
-    /^\[models\.flip_inference\]/{ in_flip_inf = 1; print; next }
-    /^\[models\.flip_comparison\]/{ in_flip_cmp = 1; print; next }
-    /^\[models\.assigner\]/     { in_assign = 1; print; next }
-    /^\[/ {
-        if (in_eval || in_flip_inf || in_flip_cmp || in_assign) {
-            in_eval = in_flip_inf = in_flip_cmp = in_assign = 0
-        }
-    }
-    {
-        if (in_eval && $1 == "model")      { print "model = \"pi:openai-codex:gpt-5.6-terra\""; in_eval = 0; next }
-        if (in_flip_inf && $1 == "model") { print "model = \"pi:openai-codex:gpt-5.6-terra\""; in_flip_inf = 0; next }
-        if (in_flip_cmp && $1 == "model") { print "model = \"pi:openai-codex:gpt-5.6-terra\""; in_flip_cmp = 0; next }
-        if (in_assign && $1 == "model")  { print "model = \"pi:openai-codex:gpt-5.6-terra\""; in_assign = 0; next }
-        print
-    }
-' .wg/config.toml >config.new
-mv config.new .wg/config.toml
-
-if ! grep -q '^model = "pi:openai-codex:gpt-5.6-terra"$' .wg/config.toml; then
-    loud_fail "failed to rewrite agency role models to the pi route"
-fi
-if ! grep -q '^fast = "pi:openai-codex:gpt-5.6-terra"$' .wg/config.toml; then
-    loud_fail "failed to set tiers.fast to the pi route in .wg/config.toml"
+# Configure agency through the public structured setters. Explicit role routes
+# win over any starter pins; the tier is set for the rest of the weak surface.
+for role in evaluator flip_inference flip_comparison assigner; do
+    wg config --local --set-model "$role" pi:openai-codex:gpt-5.6-terra --no-reload >/dev/null 2>&1 \
+        || loud_fail "failed to set $role Pi route"
+done
+wg config --local --tier fast=pi:openai-codex:gpt-5.6-terra --no-reload >/dev/null 2>&1 \
+    || loud_fail "failed to set fast Pi tier"
+if ! wg config --local --set-reasoning evaluator low --no-reload >/dev/null 2>&1; then
+    loud_fail "failed to set evaluator effort low"
 fi
 
 if ! wg add "Pi weak-tier evaluator smoke" --id pi-weak-tier-target >add.log 2>&1; then
@@ -192,6 +165,11 @@ fi
 if [[ -f "$scratch/claude.log" ]]; then
     loud_fail "Claude ran during explicit Pi fallback:
 $(cat evaluate-fallback.log)"
+fi
+if [[ ! -s "$scratch/pi-argv.log" ]] \
+    || grep -v -- '--thinking low' "$scratch/pi-argv.log" >/dev/null; then
+    loud_fail "actual Pi agency argv did not carry independent --thinking low:
+$(cat "$scratch/pi-argv.log" 2>/dev/null || true)"
 fi
 if ! grep -q 'fallback_route="pi:openai-codex:gpt-5.6-sol" outcome=success' evaluate-fallback.log; then
     loud_fail "successful same-system fallback diagnostic missing:

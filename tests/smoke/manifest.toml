@@ -1756,8 +1756,9 @@ owners = [
     "interactive-pi-model",
     "fix-strong-tier",
     "add-generic-custom",
+    "expose-thinking-effort",
 ]
-description = "Pins the two-tier profile setter (`wg profile pi`): existing Pi list/select/partial/active behavior and strong-route normalization remain compatible; in a fresh isolated HOME, the CLI creates a custom profile from the embedded direct Codex Sol/Luna starter, selects it with `--profile`, updates one model tier plus independent reasoning in one command, preserves handler-first routes/inherited reasoning/user content, leaves inactive global routing untouched, then activates it and confirms resolved routing. A lone positional remains rejected as ambiguous. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
+description = "Pins the two-tier profile setter (`wg profile pi`): exact omitted/explicit effort is always visible; dry-run and apply show independent model/effort transitions; every supported effort round-trips without changing model bytes; existing list/select/partial/active behavior and strong-route normalization remain compatible; custom profiles preserve handler-first routes/reasoning/user content, inactive routing stays isolated, and activation exposes resolved routing. A lone positional remains rejected as ambiguous. Fully HOME+--dir isolated — never touches the real ~/.wg or live daemon."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2029,8 +2030,9 @@ script = "scenarios/agency_pi_weak_tier_routes_to_pi_handler.sh"
 owners = [
     "bug-flip-pi-route-uses-claude-cli",
     "implement-same-system",
+    "expose-thinking-effort",
 ]
-description = "Pins bug-flip-pi-route-uses-claude-cli and implement-same-system: a handler-first `pi:` weak tier must stay on Pi after failure. Credential-free stubs prove: the failing Terra primary returns structured WG-EXEC-ROUTE-FAILED diagnostics and never runs Claude when no fallback exists; after an explicit same-system fallback is configured, attempts run in declared Terra -> Sol order, the success diagnostic names the fallback, and Claude still never runs."
+description = "Pins bug-flip-pi-route-uses-claude-cli, same-system fallback, and explicit effort: a handler-first `pi:` weak tier stays on Pi after failure and actual agency argv carries `--thinking low`. Credential-free stubs prove structured failure, declared Terra -> Sol fallback order, success diagnostics, and no Claude fallback."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2120,8 +2122,9 @@ name = "pi_structured_reasoning_codex"
 script = "scenarios/pi_structured_reasoning_codex.sh"
 owners = [
     "implement-structured-pi",
+    "expose-thinking-effort",
 ]
-description = "Pins structured Pi reasoning routing: the real wg CLI config/add/show/spawn flow keeps `pi:openai-codex:gpt-5.6-sol` as model identity while a fake Pi executable observes `--provider openai-codex --model gpt-5.6-sol --thinking high` at runtime, with no `model(high)` mutation. Credential-free and HOME-isolated."
+description = "Pins structured Pi reasoning routing: the real wg CLI config/add/show/spawn flow keeps model identity byte-stable while a fake Pi observes separate `--thinking high`; a second isolated unset flow proves WG emits no `--thinking` flag. Credential-free and HOME-isolated."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2428,8 +2431,9 @@ name = "tui_pi_durable_exit_recovery"
 script = "scenarios/tui_pi_durable_exit_recovery.sh"
 owners = [
     "fix-durable-pi-chat-exit",
+    "expose-thinking-effort",
 ]
-description = "Installed-binary real tmux/PTY human flow for durable Pi lifecycle evidence: submit exactly one turn to an isolated fake Pi, SIGKILL the recorded inner PID, require the TUI and `wg chat show` to agree on the inner signal (not outer attach), restart the TUI without implicit launch, press R once, and prove byte-stable graph/UUID/Pi-session/tmux/route/reasoning identity with zero recovery stdin and no duplicate turn. Archiving then proves stale runtime metadata cannot relaunch a terminal chat."
+description = "Installed-binary real tmux/PTY human flow for durable Pi lifecycle evidence and explicit effort: actual interactive Pi argv carries `--thinking xhigh`; submit one turn, kill the inner PID, require TUI/chat status agreement, restart without implicit launch, recover once, and prove byte-stable graph/UUID/session/tmux/route/reasoning identity with no duplicate turn."
 timeout_seconds = 90
 
 [[scenario]]
@@ -2485,8 +2489,9 @@ script = "scenarios/worksgood_concierge_trial.sh"
 owners = [
     "implement-worksg-concierge",
     "closeout-worksg-concierge",
+    "expose-thinking-effort",
 ]
-description = "Candidate-only, credential-free attended tmux lifecycle for the profile-first worksgood trial: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; Continue without AI; mocked Pi exact strong/weak routes, effort, and real --thinking argv; every core profile; first-run start; exact/same-build-alias reuse without path loops; compatible config/profile/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; concurrent TUI clients keep one daemon; authenticated absolute executable/PID-birth/content-build/protocol/profile/config/socket/graph identity; no chat creation; post-TUI service persistence; explicit restart and graceful stop. One isolated wg+worksgood target, never installed."
+description = "Candidate-only, credential-free attended tmux lifecycle for the profile-first worksgood trial, including explicit/revisitable Worker/chat and Agency effort plus noninteractive refusal to invent unset values: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; Continue without AI; mocked Pi exact strong/weak routes, effort, and real --thinking argv; every core profile; first-run start; exact/same-build-alias reuse without path loops; compatible config/profile/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; concurrent TUI clients keep one daemon; authenticated absolute executable/PID-birth/content-build/protocol/profile/config/socket/graph identity; no chat creation; post-TUI service persistence; explicit restart and graceful stop. One isolated wg+worksgood target, never installed."
 timeout_seconds = 600
 
 [[scenario]]

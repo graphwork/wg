@@ -396,6 +396,14 @@ fn patch_two_tier_content(
     for key in Config::PI_STRONG_REASONING_TOML_KEYS {
         content = named::set_toml_string_value(&content, key, &strong_reasoning.to_string());
     }
+    // Concierge configures Worker *and Chat* together and always configures
+    // the weak roles in the same transaction, so make the default/chat effort
+    // explicit without creating a partial-update inheritance surprise.
+    content = named::set_toml_string_value(
+        &content,
+        "models.default.reasoning",
+        &strong_reasoning.to_string(),
+    );
     for key in Config::PI_WEAK_REASONING_TOML_KEYS {
         content = named::set_toml_string_value(&content, key, &weak_reasoning.to_string());
     }
@@ -567,14 +575,16 @@ fn print_catalog(graph: &Path) -> Result<Vec<project::ProfileCatalogEntry>> {
             .map(|label| format!("; {label}"))
             .unwrap_or_default();
         println!(
-            "  {}. {}{} — worker/chat {} (effort {}); agency {} (effort {}){}\n       {}",
+            "  {}. {}{} — worker/chat {} (effort {} [{}]); agency {} (effort {} [{}]){}\n       {}",
             index + 1,
             entry.name,
             current,
             entry.readiness.strong_route,
             reasoning_label(entry.readiness.strong_reasoning),
+            entry.readiness.strong_reasoning_provenance,
             entry.readiness.weak_route,
             reasoning_label(entry.readiness.weak_reasoning),
+            entry.readiness.weak_reasoning_provenance,
             frequency,
             entry.readiness.annotation
         );
@@ -607,18 +617,44 @@ fn choose_reasoning(label: &str, default: ReasoningLevel) -> Result<ReasoningLev
     answer.parse()
 }
 
+fn resolve_effort_choice(
+    label: &str,
+    explicit: Option<ReasoningLevel>,
+    configured: Option<ReasoningLevel>,
+    recommended: ReasoningLevel,
+    yes: bool,
+    flag: &str,
+) -> Result<ReasoningLevel> {
+    if let Some(level) = explicit {
+        return Ok(level);
+    }
+    if yes {
+        return configured.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--yes does not choose a consequential {label} effort. The selected profile has no effective value; pass {flag} <off|minimal|low|medium|high|xhigh|max> explicitly"
+            )
+        });
+    }
+    choose_reasoning(label, configured.unwrap_or(recommended))
+}
+
 fn choose_pi_route(
     options: &LifecycleOptions,
+    configured: &Config,
 ) -> Result<(String, String, ReasoningLevel, ReasoningLevel)> {
-    if let (Some(strong), Some(weak)) = (&options.strong_model, &options.weak_model) {
-        return Ok((
-            strong.clone(),
-            weak.clone(),
-            options.strong_reasoning.unwrap_or(ReasoningLevel::High),
-            options.weak_reasoning.unwrap_or(ReasoningLevel::Low),
-        ));
-    }
-    let models = pi_available_models(!options.dry_run).unwrap_or_default();
+    let (configured_strong, configured_weak) = configured.pi_tiers();
+    let (strong, weak) = match (&options.strong_model, &options.weak_model) {
+        (Some(strong), Some(weak)) => (strong.clone(), weak.clone()),
+        (None, None) if options.yes => (
+            configured_strong.context(
+                "--yes cannot choose a Pi Worker/chat model; pass --strong-model explicitly",
+            )?,
+            configured_weak.context(
+                "--yes cannot choose a Pi Agency/FLIP/evaluation model; pass --weak-model explicitly",
+            )?,
+        ),
+        (None, None) => {
+            let models = pi_available_models(!options.dry_run).unwrap_or_default();
     if !models.is_empty() {
         println!("\nModels available through Pi's own authenticated registry:");
         for (index, model) in models.iter().enumerate() {
@@ -671,8 +707,28 @@ fn choose_pi_route(
                 .context("Pi model selection out of range")?,
         )
     };
-    let strong_reasoning = choose_reasoning("Worker/chat", ReasoningLevel::High)?;
-    let weak_reasoning = choose_reasoning("Agency/FLIP/evaluation", ReasoningLevel::Low)?;
+            (strong, weak)
+        }
+        _ => anyhow::bail!(
+            "Manual Pi configuration requires both --strong-model and --weak-model; no model route was inferred"
+        ),
+    };
+    let strong_reasoning = resolve_effort_choice(
+        "Worker/chat",
+        options.strong_reasoning,
+        configured.resolve_reasoning_for_role(crate::config::DispatchRole::TaskAgent),
+        ReasoningLevel::High,
+        options.yes,
+        "--strong-reasoning",
+    )?;
+    let weak_reasoning = resolve_effort_choice(
+        "Agency/FLIP/evaluation",
+        options.weak_reasoning,
+        configured.resolve_reasoning_for_role(crate::config::DispatchRole::Evaluator),
+        ReasoningLevel::Low,
+        options.yes,
+        "--weak-reasoning",
+    )?;
     Ok((strong, weak, strong_reasoning, weak_reasoning))
 }
 
@@ -685,7 +741,7 @@ fn customize_core_profile(
     let (configured_strong, configured_weak) = config.pi_tiers();
     let configured_strong = configured_strong.unwrap_or_else(|| config.agent.model.clone());
     let configured_weak = configured_weak.unwrap_or_else(|| configured_strong.clone());
-    let noninteractive_choice = options.yes || options.requested_profile.is_some();
+    let noninteractive_choice = options.yes;
     let (strong, weak) = match (&options.strong_model, &options.weak_model) {
         (None, None) if noninteractive_choice => {
             (configured_strong.clone(), configured_weak.clone())
@@ -723,16 +779,22 @@ fn customize_core_profile(
             configured_handler.as_str()
         );
     }
-    let strong_reasoning = match options.strong_reasoning {
-        Some(level) => level,
-        None if noninteractive_choice => ReasoningLevel::High,
-        None => choose_reasoning("Worker/chat", ReasoningLevel::High)?,
-    };
-    let weak_reasoning = match options.weak_reasoning {
-        Some(level) => level,
-        None if noninteractive_choice => ReasoningLevel::Low,
-        None => choose_reasoning("Agency/FLIP/evaluation", ReasoningLevel::Low)?,
-    };
+    let strong_reasoning = resolve_effort_choice(
+        "Worker/chat",
+        options.strong_reasoning,
+        config.resolve_reasoning_for_role(crate::config::DispatchRole::TaskAgent),
+        ReasoningLevel::High,
+        noninteractive_choice,
+        "--strong-reasoning",
+    )?;
+    let weak_reasoning = resolve_effort_choice(
+        "Agency/FLIP/evaluation",
+        options.weak_reasoning,
+        config.resolve_reasoning_for_role(crate::config::DispatchRole::Evaluator),
+        ReasoningLevel::Low,
+        noninteractive_choice,
+        "--weak-reasoning",
+    )?;
     patch_two_tier_content(content, &strong, &weak, strong_reasoning, weak_reasoning).map(Some)
 }
 
@@ -933,14 +995,12 @@ fn prepare_plan(
     let selection = if mode == ConciergeMode::Profile {
         let base = base_profile.context("Profile mode omitted profile")?;
         if base == "pi" || base.starts_with("pi-") {
-            let (strong, weak, strong_reasoning, weak_reasoning) = choose_pi_route(options)?;
-            let content = patch_two_tier_content(
-                profile_content(&base)?,
-                &strong,
-                &weak,
-                strong_reasoning,
-                weak_reasoning,
-            )?;
+            let content = profile_content(&base)?;
+            let configured: Config = toml::from_str(&content)?;
+            let (strong, weak, strong_reasoning, weak_reasoning) =
+                choose_pi_route(options, &configured)?;
+            let content =
+                patch_two_tier_content(content, &strong, &weak, strong_reasoning, weak_reasoning)?;
             planned_profile_toml = Some(content.parse::<toml::Value>()?);
             let (plan, generated) = existing_or_generated_plan(&target.graph, &base, content)?;
             generated_content = generated;
@@ -1004,12 +1064,14 @@ fn prepare_plan(
             ));
         }
         actions.push(format!(
-            "Select profile '{}' for this project only; Worker/chat {} (effort {}); Agency/FLIP/evaluation {} (effort {})",
+            "Select profile '{}' for this project only; Worker/chat {} (effort {} [{}]); Agency/FLIP/evaluation {} (effort {} [{}])",
             selection.profile,
             selection.readiness.strong_route,
             reasoning_label(selection.readiness.strong_reasoning),
+            selection.readiness.strong_reasoning_provenance,
             selection.readiness.weak_route,
-            reasoning_label(selection.readiness.weak_reasoning)
+            reasoning_label(selection.readiness.weak_reasoning),
+            selection.readiness.weak_reasoning_provenance,
         ));
         if selection
             .readiness
@@ -1367,14 +1429,16 @@ fn lifecycle_message(
     } else {
         if let Some(readiness) = readiness {
             println!(
-                "Resolved Worker/chat: {} (effort {})",
+                "Resolved Worker/chat: {} (effort {} [{}])",
                 readiness.strong_route,
-                reasoning_label(readiness.strong_reasoning)
+                reasoning_label(readiness.strong_reasoning),
+                readiness.strong_reasoning_provenance,
             );
             println!(
-                "Resolved Agency/FLIP/evaluation: {} (effort {})",
+                "Resolved Agency/FLIP/evaluation: {} (effort {} [{}])",
                 readiness.weak_route,
-                reasoning_label(readiness.weak_reasoning)
+                reasoning_label(readiness.weak_reasoning),
+                readiness.weak_reasoning_provenance,
             );
         }
         if let Some(pid) = observation.and_then(|o| o.state.as_ref().map(|s| s.pid)) {
@@ -1712,6 +1776,27 @@ pub fn run_status(project_path: Option<&Path>) -> Result<()> {
         "Project profile: {:?} — {}",
         inspection.state, inspection.message
     );
+    if inspection.state == project::AssociationState::Ready
+        && let Some(profile) = inspection
+            .association
+            .as_ref()
+            .map(|association| association.profile.as_str())
+    {
+        let readiness = project::plan_project_selection(&target.graph, profile)?.readiness;
+        println!(
+            "Resolved effort: Worker/chat {} [{}] · Agency/FLIP/Eval {} [{}]",
+            readiness
+                .strong_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            readiness.strong_reasoning_provenance,
+            readiness
+                .weak_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            readiness.weak_reasoning_provenance,
+        );
+    }
     let observation = observe_service(&target.graph);
     println!("Service: {:?} — {}", observation.health, observation.detail);
     if let Some(identity) = observation.handshake_identity {
@@ -1868,6 +1953,7 @@ mod tests {
             named::STARTER_CODEX.to_string(),
             &LifecycleOptions {
                 requested_profile: Some("codex".to_string()),
+                yes: true,
                 ..LifecycleOptions::default()
             },
         )
@@ -1882,6 +1968,65 @@ mod tests {
             config.resolve_reasoning_for_role(crate::config::DispatchRole::Evaluator),
             Some(ReasoningLevel::Low)
         );
+    }
+
+    #[test]
+    fn noninteractive_effort_preserves_configured_but_never_chooses_missing_value() {
+        assert_eq!(
+            resolve_effort_choice(
+                "Worker/chat",
+                None,
+                Some(ReasoningLevel::Xhigh),
+                ReasoningLevel::High,
+                true,
+                "--strong-reasoning",
+            )
+            .unwrap(),
+            ReasoningLevel::Xhigh
+        );
+        let error = resolve_effort_choice(
+            "Agency/FLIP/evaluation",
+            None,
+            None,
+            ReasoningLevel::Low,
+            true,
+            "--weak-reasoning",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("--yes does not choose"));
+        assert!(error.contains("--weak-reasoning"));
+
+        for level in ReasoningLevel::ALL {
+            assert_eq!(
+                resolve_effort_choice(
+                    "Worker/chat",
+                    Some(*level),
+                    None,
+                    ReasoningLevel::High,
+                    true,
+                    "--strong-reasoning",
+                )
+                .unwrap(),
+                *level
+            );
+        }
+    }
+
+    #[test]
+    fn core_profile_yes_requires_missing_effort_instead_of_silent_defaults() {
+        let error = customize_core_profile(
+            "claude",
+            named::STARTER_CLAUDE.to_string(),
+            &LifecycleOptions {
+                requested_profile: Some("claude".to_string()),
+                yes: true,
+                ..LifecycleOptions::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("--strong-reasoning"));
     }
 
     fn healthy_observation(identity: ServiceIdentity) -> ServiceObservation {

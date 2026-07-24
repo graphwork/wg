@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use worksgood::config::Config;
+use worksgood::config::{
+    Config, DispatchRole, ReasoningLevel, ReasoningProvenance, ResolvedReasoning,
+};
 use worksgood::dispatch::ExecutorKind;
 use worksgood::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use worksgood::profile;
@@ -316,11 +318,22 @@ pub fn show(
                     }
                 }
             }
+            let (strong_model, weak_model) = prof.config.pi_tiers();
             let val = serde_json::json!({
                 "name": name,
                 "description": prof.description,
                 "agent_model": prof.config.agent.model,
                 "dispatcher_model": prof.config.coordinator.model,
+                "effective_effort": {
+                    "worker_chat": {
+                        "model": strong_model,
+                        "reasoning": prof.config.resolve_reasoning_detail(DispatchRole::TaskAgent),
+                    },
+                    "agency_flip_eval": {
+                        "model": weak_model,
+                        "reasoning": prof.config.resolve_reasoning_detail(DispatchRole::Evaluator),
+                    },
+                },
                 "tiers": {
                     "fast": prof.config.tiers.fast,
                     "standard": prof.config.tiers.standard,
@@ -349,6 +362,29 @@ pub fn show(
             if let Some(ref p) = prof.config.tiers.premium {
                 println!("  tiers.premium    = \"{}\"", p);
             }
+            let (strong_model, weak_model) = prof.config.pi_tiers();
+            println!();
+            println!("  Effective effort:");
+            println!(
+                "    Worker/chat: {} · {}",
+                strong_model.as_deref().unwrap_or("(unset model)"),
+                reasoning_display(
+                    &prof
+                        .config
+                        .resolve_reasoning_detail(DispatchRole::TaskAgent),
+                    true,
+                )
+            );
+            println!(
+                "    Agency/FLIP/Eval: {} · {}",
+                weak_model.as_deref().unwrap_or("(unset model)"),
+                reasoning_display(
+                    &prof
+                        .config
+                        .resolve_reasoning_detail(DispatchRole::Evaluator),
+                    true,
+                )
+            );
             // Surface every per-role model override (default + all DispatchRole
             // variants), not just the four agency one-shots, so `wg profile show
             // <name>` reflects a `wg profile set-model <name> <role> <model>`
@@ -436,6 +472,10 @@ pub fn show(
             "dispatcher_model": config.coordinator.model,
             "default_model": config.models.default.as_ref().and_then(|m| m.model.clone()),
             "task_agent_model": config.models.task_agent.as_ref().and_then(|m| m.model.clone()),
+            "effective_effort": {
+                "worker_chat": config.resolve_reasoning_detail(DispatchRole::TaskAgent),
+                "agency_flip_eval": config.resolve_reasoning_detail(DispatchRole::Evaluator),
+            },
             "effective_tiers": {
                 "fast": effective_tiers.fast,
                 "standard": effective_tiers.standard,
@@ -513,6 +553,22 @@ pub fn show(
         .unwrap_or(default_route);
     println!("    models.default   = {}", default_route);
     println!("    models.task_agent= {}", task_agent_route);
+    println!();
+    println!("  Effective effort:");
+    println!(
+        "    Worker/chat:     {}",
+        reasoning_display(
+            &config.resolve_reasoning_detail(DispatchRole::TaskAgent),
+            true,
+        )
+    );
+    println!(
+        "    Agency/FLIP/Eval: {}",
+        reasoning_display(
+            &config.resolve_reasoning_detail(DispatchRole::Evaluator),
+            true,
+        )
+    );
     println!();
     println!("  Tier Mappings:");
     println!(
@@ -720,8 +776,24 @@ pub fn select_project_profile(
                     "reuse installed global definition"
                 }
             );
-            println!("  Strong:      {}", plan.readiness.strong_route);
-            println!("  Weak:        {}", plan.readiness.weak_route);
+            println!(
+                "  Worker/chat: {} · {} [{}]",
+                plan.readiness.strong_route,
+                plan.readiness
+                    .strong_reasoning
+                    .map(ReasoningLevel::as_str)
+                    .unwrap_or("(omit)"),
+                plan.readiness.strong_reasoning_provenance,
+            );
+            println!(
+                "  Agency:      {} · {} [{}]",
+                plan.readiness.weak_route,
+                plan.readiness
+                    .weak_reasoning
+                    .map(ReasoningLevel::as_str)
+                    .unwrap_or("(omit)"),
+                plan.readiness.weak_reasoning_provenance,
+            );
             println!("  Readiness:   {}", plan.readiness.annotation);
             println!("  Would write: nothing (--dry-run)");
         }
@@ -760,8 +832,24 @@ pub fn select_project_profile(
         } else {
             println!("  Definition:  reused existing global profile definition");
         }
-        println!("  Strong:      {}", plan.readiness.strong_route);
-        println!("  Weak:        {}", plan.readiness.weak_route);
+        println!(
+            "  Worker/chat: {} · {} [{}]",
+            plan.readiness.strong_route,
+            plan.readiness
+                .strong_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            plan.readiness.strong_reasoning_provenance,
+        );
+        println!(
+            "  Agency:      {} · {} [{}]",
+            plan.readiness.weak_route,
+            plan.readiness
+                .weak_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            plan.readiness.weak_reasoning_provenance,
+        );
         println!("  Readiness:   {}", plan.readiness.annotation);
         println!("  Global ~/.wg/config.toml and active-profile were not changed.");
     }
@@ -885,8 +973,21 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         );
         println!("              {}", entry.readiness.annotation);
         println!(
-            "              strong={} weak={}",
-            entry.readiness.strong_route, entry.readiness.weak_route
+            "              worker={} · {} [{}]  agency={} · {} [{}]",
+            entry.readiness.strong_route,
+            entry
+                .readiness
+                .strong_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            entry.readiness.strong_reasoning_provenance,
+            entry.readiness.weak_route,
+            entry
+                .readiness
+                .weak_reasoning
+                .map(ReasoningLevel::as_str)
+                .unwrap_or("(omit)"),
+            entry.readiness.weak_reasoning_provenance,
         );
     }
 
@@ -1279,6 +1380,28 @@ pub fn edit_profile(dir: &Path, name: &str, no_reload: bool) -> Result<()> {
     worksgood::atomic_file::write_atomic(&path, &edited)?;
     let _ = std::fs::remove_file(&edit_path);
     println!("Profile '{}' saved atomically and validated.", name);
+    let saved = named_profile::load(name)?;
+    let (strong_model, weak_model) = saved.config.pi_tiers();
+    println!(
+        "  Worker/chat: {} · {}",
+        strong_model.as_deref().unwrap_or("(unset model)"),
+        reasoning_display(
+            &saved
+                .config
+                .resolve_reasoning_detail(DispatchRole::TaskAgent),
+            true,
+        )
+    );
+    println!(
+        "  Agency/FLIP/Eval: {} · {}",
+        weak_model.as_deref().unwrap_or("(unset model)"),
+        reasoning_display(
+            &saved
+                .config
+                .resolve_reasoning_detail(DispatchRole::Evaluator),
+            true,
+        )
+    );
 
     let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(name);
     let project_selected = project_profile::read_association(dir)
@@ -1708,17 +1831,23 @@ pub fn pi(
     // profiles must already exist, which protects against typo-created files.
     let prof = named_profile::load(profile)?;
     let (cur_strong, cur_weak) = prof.config.pi_tiers();
+    let cur_strong_reasoning = prof
+        .config
+        .resolve_reasoning_detail(DispatchRole::TaskAgent);
+    let cur_weak_reasoning = prof
+        .config
+        .resolve_reasoning_detail(DispatchRole::Evaluator);
     let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(profile);
 
     // Explicit read-only intents win over any (likely contradictory) update.
     if show {
-        return pi_show(profile, is_active, &cur_strong, &cur_weak, json);
+        return pi_show(profile, is_active, &prof.config, json);
     }
     if list {
         return pi_list(profile, &prof.config, is_active, json);
     }
     if !update.has_update() {
-        return pi_show(profile, is_active, &cur_strong, &cur_weak, json);
+        return pi_show(profile, is_active, &prof.config, json);
     }
 
     // Custom profiles are generic: accept only unambiguous handler-first model
@@ -1752,6 +1881,16 @@ pub fn pi(
         })
         .or_else(|| cur_strong.clone());
     let new_weak = update.weak.clone().or_else(|| cur_weak.clone());
+    let new_strong_reasoning = updated_reasoning(
+        &cur_strong_reasoning,
+        update.strong_reasoning.as_deref(),
+        "models.task_agent.reasoning",
+    );
+    let new_weak_reasoning = updated_reasoning(
+        &cur_weak_reasoning,
+        update.weak_reasoning.as_deref(),
+        "models.evaluator.reasoning",
+    );
 
     if dry_run {
         pi_set_echo(
@@ -1761,8 +1900,14 @@ pub fn pi(
                 cur_weak: &cur_weak,
                 new_strong: &new_strong,
                 new_weak: &new_weak,
+                cur_strong_reasoning: &cur_strong_reasoning,
+                cur_weak_reasoning: &cur_weak_reasoning,
+                new_strong_reasoning: &new_strong_reasoning,
+                new_weak_reasoning: &new_weak_reasoning,
                 touched_strong: update.strong.is_some(),
                 touched_weak: update.weak.is_some(),
+                touched_strong_reasoning: update.strong_reasoning.is_some(),
+                touched_weak_reasoning: update.weak_reasoning.is_some(),
                 is_active,
                 dry_run: true,
                 wrote_path: None,
@@ -1806,8 +1951,14 @@ pub fn pi(
             cur_weak: &cur_weak,
             new_strong: &new_strong,
             new_weak: &new_weak,
+            cur_strong_reasoning: &cur_strong_reasoning,
+            cur_weak_reasoning: &cur_weak_reasoning,
+            new_strong_reasoning: &new_strong_reasoning,
+            new_weak_reasoning: &new_weak_reasoning,
             touched_strong: update.strong.is_some(),
             touched_weak: update.weak.is_some(),
+            touched_strong_reasoning: update.strong_reasoning.is_some(),
+            touched_weak_reasoning: update.weak_reasoning.is_some(),
             is_active,
             dry_run: false,
             wrote_path: Some(path),
@@ -1972,20 +2123,63 @@ fn pi_routing_block() {
     println!("           {PI_ROUTING_WEAK}");
 }
 
+fn reasoning_display(reasoning: &ResolvedReasoning, include_source: bool) -> String {
+    let value = reasoning
+        .level
+        .map(ReasoningLevel::as_str)
+        .unwrap_or("(omit)");
+    match reasoning.provenance {
+        ReasoningProvenance::Omitted => format!("{value} [unset/omitted]"),
+        provenance if include_source => format!(
+            "{value} [{provenance}: {}]",
+            reasoning.source.as_deref().unwrap_or("unknown source")
+        ),
+        provenance => format!("{value} [{provenance}]"),
+    }
+}
+
+fn updated_reasoning(
+    current: &ResolvedReasoning,
+    update: Option<&str>,
+    explicit_source: &str,
+) -> ResolvedReasoning {
+    match update {
+        Some(raw) => ResolvedReasoning {
+            level: Some(
+                raw.parse::<ReasoningLevel>()
+                    .expect("resolve_pi_update validated reasoning"),
+            ),
+            provenance: ReasoningProvenance::Explicit,
+            source: Some(explicit_source.to_string()),
+        },
+        None => current.clone(),
+    }
+}
+
+fn reasoning_annotation(old: &ResolvedReasoning, new: &ResolvedReasoning, touched: bool) -> String {
+    if !touched || old == new {
+        return "(unchanged)".to_string();
+    }
+    format!(
+        "({} → {})",
+        reasoning_display(old, false),
+        reasoning_display(new, false)
+    )
+}
+
 /// `wg profile pi --show` (and the no-arg default).
-fn pi_show(
-    profile: &str,
-    is_active: bool,
-    strong: &Option<String>,
-    weak: &Option<String>,
-    json: bool,
-) -> Result<()> {
+fn pi_show(profile: &str, is_active: bool, config: &Config, json: bool) -> Result<()> {
+    let (strong, weak) = config.pi_tiers();
+    let strong_reasoning = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+    let weak_reasoning = config.resolve_reasoning_detail(DispatchRole::Evaluator);
     if json {
         let val = serde_json::json!({
             "profile": profile,
             "active": is_active,
             "strong": strong,
+            "strong_reasoning": strong_reasoning,
             "weak": weak,
+            "weak_reasoning": weak_reasoning,
             "routing": { "strong": PI_ROUTING_STRONG, "weak": PI_ROUTING_WEAK },
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
@@ -1994,7 +2188,15 @@ fn pi_show(
     let active_tag = if is_active { "   [active]" } else { "" };
     println!("Two-tier profile  (profile: {profile}){active_tag}");
     println!("  strong = {}", strong.as_deref().unwrap_or("(unset)"));
+    println!(
+        "           effort = {}",
+        reasoning_display(&strong_reasoning, true)
+    );
     println!("  weak   = {}", weak.as_deref().unwrap_or("(unset)"));
+    println!(
+        "           effort = {}",
+        reasoning_display(&weak_reasoning, true)
+    );
     println!();
     pi_routing_block();
     println!();
@@ -2013,12 +2215,16 @@ fn pi_list(profile: &str, config: &Config, is_active: bool, json: bool) -> Resul
     let (strong, weak) = config.pi_tiers();
     let models = collect_configured_models(config);
 
+    let strong_reasoning = config.resolve_reasoning_detail(DispatchRole::TaskAgent);
+    let weak_reasoning = config.resolve_reasoning_detail(DispatchRole::Evaluator);
     if json {
         let val = serde_json::json!({
             "profile": profile,
             "active": is_active,
             "strong": strong,
+            "strong_reasoning": strong_reasoning,
             "weak": weak,
+            "weak_reasoning": weak_reasoning,
             "configured_models": models,
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
@@ -2029,6 +2235,15 @@ fn pi_list(profile: &str, config: &Config, is_active: bool, json: bool) -> Resul
     if models.is_empty() {
         println!("  (none configured)");
     }
+    println!(
+        "  strong effort: {}",
+        reasoning_display(&strong_reasoning, true)
+    );
+    println!(
+        "  weak effort:   {}",
+        reasoning_display(&weak_reasoning, true)
+    );
+    println!();
     for m in &models {
         let mut tags: Vec<&str> = Vec::new();
         if strong.as_deref() == Some(m.as_str()) {
@@ -2116,8 +2331,14 @@ struct PiSetEcho<'a> {
     cur_weak: &'a Option<String>,
     new_strong: &'a Option<String>,
     new_weak: &'a Option<String>,
+    cur_strong_reasoning: &'a ResolvedReasoning,
+    cur_weak_reasoning: &'a ResolvedReasoning,
+    new_strong_reasoning: &'a ResolvedReasoning,
+    new_weak_reasoning: &'a ResolvedReasoning,
     touched_strong: bool,
     touched_weak: bool,
+    touched_strong_reasoning: bool,
+    touched_weak_reasoning: bool,
     is_active: bool,
     dry_run: bool,
     wrote_path: Option<std::path::PathBuf>,
@@ -2132,12 +2353,26 @@ fn pi_set_echo(profile: &str, e: &PiSetEcho, update: &PiUpdate, json: bool) {
             "active": e.is_active,
             "dry_run": e.dry_run,
             "strong": e.new_strong,
+            "strong_reasoning": e.new_strong_reasoning,
             "weak": e.new_weak,
+            "weak_reasoning": e.new_weak_reasoning,
             "changed": {
                 "strong": e.touched_strong,
+                "strong_reasoning": e.touched_strong_reasoning,
                 "weak": e.touched_weak,
-                "strong_reasoning": update.strong_reasoning.is_some(),
-                "weak_reasoning": update.weak_reasoning.is_some(),
+                "weak_reasoning": e.touched_weak_reasoning,
+            },
+            "transitions": {
+                "strong": { "old": e.cur_strong, "new": e.new_strong },
+                "strong_reasoning": {
+                    "old": e.cur_strong_reasoning,
+                    "new": e.new_strong_reasoning,
+                },
+                "weak": { "old": e.cur_weak, "new": e.new_weak },
+                "weak_reasoning": {
+                    "old": e.cur_weak_reasoning,
+                    "new": e.new_weak_reasoning,
+                },
             },
             "wrote": e.wrote_path.as_ref().map(|p| p.display().to_string()),
             "note": e.reloaded_note,
@@ -2159,9 +2394,27 @@ fn pi_set_echo(profile: &str, e: &PiSetEcho, update: &PiUpdate, json: bool) {
         pi_tier_annotation(e.cur_strong, e.new_strong, e.touched_strong)
     );
     println!(
+        "           effort = {:<38} {}",
+        reasoning_display(e.new_strong_reasoning, true),
+        reasoning_annotation(
+            e.cur_strong_reasoning,
+            e.new_strong_reasoning,
+            e.touched_strong_reasoning,
+        )
+    );
+    println!(
         "  weak   = {:<44} {}",
         e.new_weak.as_deref().unwrap_or("(unset)"),
         pi_tier_annotation(e.cur_weak, e.new_weak, e.touched_weak)
+    );
+    println!(
+        "           effort = {:<38} {}",
+        reasoning_display(e.new_weak_reasoning, true),
+        reasoning_annotation(
+            e.cur_weak_reasoning,
+            e.new_weak_reasoning,
+            e.touched_weak_reasoning,
+        )
     );
     println!();
     pi_routing_block();

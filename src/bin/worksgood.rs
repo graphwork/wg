@@ -36,11 +36,11 @@ struct Cli {
     #[arg(long, global = true, requires = "strong_model")]
     weak_model: Option<String>,
 
-    /// Worker/chat effort. Defaults to high and is persisted separately from the model.
+    /// Worker/chat effort. Attended recommendation: high; --yes requires an explicit or already-configured value.
     #[arg(long, global = true, requires = "profile")]
     strong_reasoning: Option<ReasoningLevel>,
 
-    /// Agency/FLIP/evaluation effort. Defaults to low and is persisted separately.
+    /// Agency/FLIP/evaluation effort. Attended recommendation: low; --yes never chooses it silently.
     #[arg(long, global = true, requires = "profile")]
     weak_reasoning: Option<ReasoningLevel>,
 

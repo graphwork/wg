@@ -24168,6 +24168,17 @@ impl VizApp {
             kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
+            key: "tiers.fast_reasoning".into(),
+            value: config
+                .tiers
+                .fast_reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_default(),
+            source: lookup("tiers.fast_reasoning"),
+            section: "Tiers",
+            kind: SettingsEntryKind::Config,
+        });
+        entries.push(SettingsEntry {
             key: "tiers.standard".into(),
             value: config.tiers.standard.clone().unwrap_or_default(),
             source: lookup("tiers.standard"),
@@ -24175,9 +24186,31 @@ impl VizApp {
             kind: SettingsEntryKind::Config,
         });
         entries.push(SettingsEntry {
+            key: "tiers.standard_reasoning".into(),
+            value: config
+                .tiers
+                .standard_reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_default(),
+            source: lookup("tiers.standard_reasoning"),
+            section: "Tiers",
+            kind: SettingsEntryKind::Config,
+        });
+        entries.push(SettingsEntry {
             key: "tiers.premium".into(),
             value: config.tiers.premium.clone().unwrap_or_default(),
             source: lookup("tiers.premium"),
+            section: "Tiers",
+            kind: SettingsEntryKind::Config,
+        });
+        entries.push(SettingsEntry {
+            key: "tiers.premium_reasoning".into(),
+            value: config
+                .tiers
+                .premium_reasoning
+                .map(|level| level.to_string())
+                .unwrap_or_default(),
+            source: lookup("tiers.premium_reasoning"),
             section: "Tiers",
             kind: SettingsEntryKind::Config,
         });
@@ -24217,6 +24250,24 @@ impl VizApp {
         let active_profile = worksgood::profile::named::active().unwrap_or(None);
         let installed = worksgood::profile::named::list_installed().unwrap_or_default();
         let starters = worksgood::profile::named::STARTER_NAMES;
+        let profile_effort = |name: &str| {
+            worksgood::profile::named::load(name)
+                .ok()
+                .map(|profile| {
+                    let strong = profile
+                        .config
+                        .resolve_reasoning_for_role(worksgood::config::DispatchRole::TaskAgent)
+                        .map(|level| level.to_string())
+                        .unwrap_or_else(|| "omit".to_string());
+                    let weak = profile
+                        .config
+                        .resolve_reasoning_for_role(worksgood::config::DispatchRole::Evaluator)
+                        .map(|level| level.to_string())
+                        .unwrap_or_else(|| "omit".to_string());
+                    format!("W:{strong} A:{weak}")
+                })
+                .unwrap_or_else(|| "W:? A:?".to_string())
+        };
         // Active profile marker (read-only display).
         entries.push(SettingsEntry {
             key: "profile.active".into(),
@@ -24230,9 +24281,9 @@ impl VizApp {
             entries.push(SettingsEntry {
                 key: format!("profile.use {}", name),
                 value: if is_active {
-                    "✦ active".into()
+                    format!("{} · active", profile_effort(name))
                 } else {
-                    "installed".into()
+                    profile_effort(name)
                 },
                 source: worksgood::config::ConfigSource::Global,
                 section: "Profiles",
@@ -24246,7 +24297,7 @@ impl VizApp {
             if !installed.iter().any(|i| i == *name) {
                 entries.push(SettingsEntry {
                     key: format!("profile.use {}", name),
-                    value: "starter (not installed)".into(),
+                    value: format!("{} · starter", profile_effort(name)),
                     source: worksgood::config::ConfigSource::Default,
                     section: "Profiles",
                     kind: SettingsEntryKind::Profile {

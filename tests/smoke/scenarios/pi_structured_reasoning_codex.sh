@@ -24,6 +24,12 @@ SH
 chmod +x "$fake_bin/pi"
 
 cd "$scratch"
+git init -q -b main
+git config user.email smoke@example.invalid
+git config user.name 'WG Smoke'
+touch seed
+git add seed
+git commit -qm seed
 wgd="$scratch/.wg"
 arg_log="$scratch/pi-args.log"
 
@@ -95,4 +101,29 @@ if "pi:openai-codex:gpt-5.6-sol(high)" in args:
     raise SystemExit(f"reasoning leaked into model string: {args!r}")
 PY
 
-echo "PASS: Pi Codex route kept model/reasoning separate and spawned pi with --provider openai-codex --model gpt-5.6-sol --thinking high"
+# A separately initialized profile/config with effort omitted must reach the
+# actual process with no --thinking flag at all (handler default remains owner).
+unset_wgd="$scratch/unset/.wg"
+unset_log="$scratch/pi-args-unset.log"
+mkdir -p "$scratch/unset"
+run_unset() {
+    env -u WG_DIR -u WG_MODEL -u WG_EXECUTOR_TYPE -u WG_TIER -u WG_AGENT_ID -u WG_TASK_ID \
+        HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" \
+        PATH="$fake_bin:$PATH" PI_ARG_LOG="$unset_log" \
+        wg --dir "$unset_wgd" "$@"
+}
+run_unset init --no-agency >/dev/null 2>&1 || loud_fail "unset graph init failed"
+run_unset config --local -m pi:openai-codex:gpt-5.6-sol --no-reload >/dev/null 2>&1 \
+    || loud_fail "unset model config failed"
+run_unset add "Pi omitted effort probe" --id pi-omitted-effort \
+    --model pi:openai-codex:gpt-5.6-sol -d "Omit thinking." >/dev/null \
+    || loud_fail "unset task add failed"
+run_unset spawn pi-omitted-effort --executor pi >/dev/null 2>&1 \
+    || loud_fail "unset task spawn failed"
+for _ in $(seq 1 40); do [[ -s "$unset_log" ]] && break; sleep 0.1; done
+[[ -s "$unset_log" ]] || loud_fail "omitted-effort fake Pi was not invoked"
+if grep -qx -- '--thinking' "$unset_log"; then
+    loud_fail "unset effort emitted --thinking: $(cat "$unset_log")"
+fi
+
+echo "PASS: Pi model/reasoning stayed separate; high reached actual argv and unset emitted no --thinking"

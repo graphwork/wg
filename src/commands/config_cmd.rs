@@ -2821,15 +2821,24 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.fast = Some(v.to_string());
         }
+        "tiers.fast_reasoning" => {
+            config.tiers.fast_reasoning = Some(v.parse::<ReasoningLevel>()?);
+        }
         "tiers.standard" => {
             worksgood::config::parse_model_spec_strict(v)
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.standard = Some(v.to_string());
         }
+        "tiers.standard_reasoning" => {
+            config.tiers.standard_reasoning = Some(v.parse::<ReasoningLevel>()?);
+        }
         "tiers.premium" => {
             worksgood::config::parse_model_spec_strict(v)
                 .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
             config.tiers.premium = Some(v.to_string());
+        }
+        "tiers.premium_reasoning" => {
+            config.tiers.premium_reasoning = Some(v.parse::<ReasoningLevel>()?);
         }
         other => anyhow::bail!(
             "set_setting_value: unsupported key '{}'. Add a match arm in apply_setting() if this is a valid Config field.",

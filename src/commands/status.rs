@@ -41,6 +41,10 @@ struct CoordinatorInfo {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker_reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agency_reasoning: Option<String>,
     poll_interval: u64,
 }
 
@@ -274,9 +278,18 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
 
 fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
     let configured_reasoning = || {
-        worksgood::config::Config::load_or_default(dir)
-            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
-            .map(|r| r.to_string())
+        let config = worksgood::config::Config::load_or_default(dir);
+        (
+            config
+                .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
+                .map(|r| r.to_string()),
+            config
+                .resolve_reasoning_for_role(worksgood::config::DispatchRole::TaskAgent)
+                .map(|r| r.to_string()),
+            config
+                .resolve_reasoning_for_role(worksgood::config::DispatchRole::Evaluator)
+                .map(|r| r.to_string()),
+        )
     };
 
     // Try to get runtime state from coordinator (if daemon is running)
@@ -297,11 +310,14 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
                     .to_string()
             })
             .unwrap_or_else(|| coord.executor.clone());
+        let (reasoning, worker_reasoning, agency_reasoning) = configured_reasoning();
         return CoordinatorInfo {
             max_agents: coord.max_agents,
             executor,
             model: coord.model,
-            reasoning: configured_reasoning(),
+            reasoning,
+            worker_reasoning,
+            agency_reasoning,
             poll_interval: coord.poll_interval,
         };
     }
@@ -326,6 +342,12 @@ fn gather_coordinator_info(dir: &Path) -> CoordinatorInfo {
         model,
         reasoning: config
             .resolve_reasoning_for_role(worksgood::config::DispatchRole::Default)
+            .map(|r| r.to_string()),
+        worker_reasoning: config
+            .resolve_reasoning_for_role(worksgood::config::DispatchRole::TaskAgent)
+            .map(|r| r.to_string()),
+        agency_reasoning: config
+            .resolve_reasoning_for_role(worksgood::config::DispatchRole::Evaluator)
             .map(|r| r.to_string()),
         poll_interval: config.coordinator.poll_interval,
     }
@@ -681,11 +703,21 @@ fn print_status(status: &StatusOutput) {
         None => "default".to_string(),
     };
     println!(
-        "Dispatcher: max={}, executor={}, model={}, reasoning={}, poll={}s",
+        "Dispatcher: max={}, executor={}, model={}, effort=chat:{} worker:{} agency:{}, poll={}s",
         status.coordinator.max_agents,
         status.coordinator.executor,
         model_display,
-        status.coordinator.reasoning.as_deref().unwrap_or("(omit)"),
+        status.coordinator.reasoning.as_deref().unwrap_or("omit"),
+        status
+            .coordinator
+            .worker_reasoning
+            .as_deref()
+            .unwrap_or("omit"),
+        status
+            .coordinator
+            .agency_reasoning
+            .as_deref()
+            .unwrap_or("omit"),
         status.coordinator.poll_interval
     );
 
