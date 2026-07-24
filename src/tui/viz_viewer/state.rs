@@ -15666,9 +15666,21 @@ impl VizApp {
 
     // ── Multi-panel methods ──
 
+    /// Invalidate the renderer-owned side/stacked seam hit regions. Layout
+    /// geometry has frame ownership: once desired state or terminal geometry
+    /// changes, coordinates emitted by the prior frame must not start a new
+    /// pointer gesture while the replacement frame is pending.
+    pub fn invalidate_split_seam_hits(&mut self) {
+        self.last_divider_area = Rect::default();
+        self.last_horizontal_divider_area = Rect::default();
+        self.divider_hover = false;
+        self.horizontal_divider_hover = false;
+    }
+
     /// Apply desired state to the legacy presentation fields used by existing
     /// panel code. The bounded split ratio is retained across Full/Hidden.
     pub fn set_layout_preference(&mut self, preference: LayoutPreference) {
+        self.invalidate_split_seam_hits();
         self.compact_navigation_override = None;
         self.layout_preference = preference.bounded();
         self.right_panel_percent = self.layout_preference.size_percent;

@@ -598,6 +598,7 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
             // can be interpreted against the resized terminal. The next draw
             // derives fresh rectangles from the pointer-down preference.
             app.cancel_layout_drag();
+            app.invalidate_split_seam_hits();
             app.clear_coordinator_picker_hits();
             app.clear_symbolic_context_hits();
             app.log_header_hits.clear();
@@ -4930,6 +4931,25 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         return;
     }
 
+    // A live divider gesture owns the pointer stream until its left-button
+    // release. Once motion changes the layout, the old seam rectangle is
+    // invalidated immediately; transport duplicates or a second stale Down
+    // must not fall through into Graph/PTY content at that retired coordinate.
+    let split_drag_captured = matches!(
+        app.scrollbar_drag,
+        Some(ScrollbarDragTarget::Divider) | Some(ScrollbarDragTarget::HorizontalDivider)
+    );
+    if split_drag_captured
+        && !matches!(
+            kind,
+            MouseEventKind::Drag(MouseButton::Left)
+                | MouseEventKind::Moved
+                | MouseEventKind::Up(MouseButton::Left)
+        )
+    {
+        return;
+    }
+
     let pos = Position::new(column, row);
 
     // When a text prompt overlay is visible, intercept scroll events on it.
@@ -8650,6 +8670,144 @@ mod scrollbar_tests {
         // A motion event already queued by the old viewport is harmless.
         handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 90);
         assert_eq!(app.layout_preference, original);
+    }
+
+    #[test]
+    fn actual_split_coordinates_expire_immediately_after_preset_and_resize() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn stale_press(area: Rect) -> (u16, u16) {
+            (
+                area.y + area.height.saturating_sub(1) / 2,
+                area.x + area.width.saturating_sub(1) / 2,
+            )
+        }
+
+        for (dock, width) in [
+            (InspectorDock::Left, 160),
+            (InspectorDock::Right, 160),
+            (InspectorDock::Top, 100),
+            (InspectorDock::Bottom, 100),
+            (InspectorDock::Auto, 160),
+            (InspectorDock::Auto, 70),
+        ] {
+            let (mut app, _tmp) = build_test_app();
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: 62,
+                mode: InspectorMode::Split,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+
+            let old_hit = if app.last_divider_area.width > 0 {
+                app.last_divider_area
+            } else {
+                app.last_horizontal_divider_area
+            };
+            assert!(old_hit.width > 0 && old_hit.height > 0, "dock={dock:?}");
+            let old_press = stale_press(old_hit);
+
+            // The exact keyboard preset path live-previews and applies before
+            // another frame. Its source seam must stop accepting pointer-down
+            // immediately, not only after the renderer catches up.
+            app.open_layout_overlay();
+            super::handle_layout_input(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+            super::handle_layout_input(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(app.layout_preference.size_percent, 50);
+            assert_eq!(app.last_divider_area, Rect::default());
+            assert_eq!(app.last_horizontal_divider_area, Rect::default());
+            super::handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                old_press.0,
+                old_press.1,
+            );
+            assert!(app.layout_drag.is_none(), "stale preset hit dock={dock:?}");
+            assert!(
+                app.scrollbar_drag.is_none(),
+                "stale preset hit dock={dock:?}"
+            );
+            assert_eq!(app.layout_preference.size_percent, 50);
+
+            terminal
+                .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+                .unwrap();
+            let resized_hit = if app.last_divider_area.width > 0 {
+                app.last_divider_area
+            } else {
+                app.last_horizontal_divider_area
+            };
+            assert!(
+                resized_hit.width > 0 && resized_hit.height > 0,
+                "dock={dock:?}"
+            );
+            let resized_press = stale_press(resized_hit);
+
+            // SIGWINCH owns the same invalidation boundary. A queued Down from
+            // the pre-resize screen cannot acquire a fresh divider capture.
+            super::dispatch_event(&mut app, Event::Resize(width / 2, 30));
+            assert_eq!(app.last_divider_area, Rect::default());
+            assert_eq!(app.last_horizontal_divider_area, Rect::default());
+            super::handle_mouse(
+                &mut app,
+                MouseEventKind::Down(MouseButton::Left),
+                resized_press.0,
+                resized_press.1,
+            );
+            assert!(app.layout_drag.is_none(), "stale resize hit dock={dock:?}");
+            assert!(
+                app.scrollbar_drag.is_none(),
+                "stale resize hit dock={dock:?}"
+            );
+            assert_eq!(app.layout_preference.size_percent, 50);
+        }
+    }
+
+    #[test]
+    fn repeated_pointer_down_is_swallowed_while_split_drag_owns_stream() {
+        use super::super::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_test_app();
+        app.set_layout_preference(LayoutPreference {
+            dock: InspectorDock::Right,
+            size_percent: 50,
+            mode: InspectorMode::Split,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::viz_viewer::render::draw(frame, &mut app))
+            .unwrap();
+        let hit = app.last_divider_area;
+        let row = hit.y + hit.height / 2;
+        let column = hit.x + hit.width / 2;
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            row,
+            column,
+        );
+        assert!(app.layout_drag.is_some());
+        let focus = app.focused_panel;
+        let preference = app.layout_preference;
+
+        // Duplicate transport Down at the old coordinate remains part of the
+        // captured gesture and cannot become a Graph/PTY click.
+        super::handle_mouse(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            row,
+            column,
+        );
+        assert_eq!(app.focused_panel, focus);
+        assert_eq!(app.layout_preference, preference);
+        assert!(app.layout_drag.is_some());
     }
 
     #[test]

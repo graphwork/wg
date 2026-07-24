@@ -103,6 +103,68 @@ fn split_areas(area: Rect, dock: InspectorDock, percent: u16) -> Option<(Rect, R
     }
 }
 
+/// Return the one renderer-owned cell row/column between two adjacent panes.
+///
+/// Hit regions deliberately extend one cell into each pane, but the visible
+/// seam itself is always exactly one cell thick. Deriving it from the rendered
+/// rectangles keeps old-frame cleanup correct across every dock and responsive
+/// orientation without persisting terminal coordinates as user state.
+fn split_seam_area(graph: Rect, panel: Rect) -> Rect {
+    if graph.width == 0 || graph.height == 0 || panel.width == 0 || panel.height == 0 {
+        return Rect::default();
+    }
+
+    if graph.y == panel.y && graph.height == panel.height {
+        if graph.right().saturating_add(1) == panel.x {
+            return Rect::new(graph.right(), graph.y, 1, graph.height);
+        }
+        if panel.right().saturating_add(1) == graph.x {
+            return Rect::new(panel.right(), graph.y, 1, graph.height);
+        }
+    }
+
+    if graph.x == panel.x && graph.width == panel.width {
+        if graph.bottom().saturating_add(1) == panel.y {
+            return Rect::new(graph.x, graph.bottom(), graph.width, 1);
+        }
+        if panel.bottom().saturating_add(1) == graph.y {
+            return Rect::new(graph.x, panel.bottom(), graph.width, 1);
+        }
+    }
+
+    Rect::default()
+}
+
+/// Reset every in-bounds cell in an old seam before either pane renders into
+/// the newly-vacated coordinates. This is a local back-buffer repair, not a
+/// terminal/global clear: pane content drawn later in the frame wins normally.
+fn clear_split_seam(frame: &mut Frame, area: Rect) {
+    let area = frame.area().intersection(area);
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].reset();
+        }
+    }
+}
+
+/// Paint a current seam as owned cells rather than style-patching whatever the
+/// Graph happened to leave there. `Cell::reset` removes the old symbol,
+/// foreground, background, modifiers, and skip bit; the explicit Reset
+/// background then makes the complete seam style deterministic on light/dark
+/// terminals and through tmux/mosh diff buffers.
+fn paint_split_seam(frame: &mut Frame, area: Rect, glyph: char, style: Style) {
+    let area = frame.area().intersection(area);
+    let style = style.bg(Color::Reset);
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].reset();
+            buffer[(x, y)].set_char(glyph).set_style(style);
+        }
+    }
+}
+
 /// Creates a [`Line`] with the lightning-wave animation and elapsed time.
 ///
 /// Renders [`WAVE_NUM_BOLTS`] `↯` characters in a rainbow spectrum matching the
@@ -147,6 +209,14 @@ fn spinner_wave_line(elapsed: std::time::Duration, indent: &str) -> Line<'static
 }
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
+    // The inactive Ratatui buffer is normally reset between frames, but every
+    // widget is allowed to patch rather than replace cell style. Explicitly
+    // release the prior frame's one-cell seam before the new pane geometry
+    // renders, so a moved/removed seam cannot survive in an otherwise-blank
+    // Graph or inspector cell. This is intentionally bounded to the old seam.
+    let previous_seam = split_seam_area(app.last_graph_area, app.last_right_panel_area);
+    clear_split_seam(frame, previous_seam);
+
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target.as_ref()
         && when.elapsed() > std::time::Duration::from_secs(2)
@@ -171,8 +241,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Divider geometry has one-frame ownership. Clear both axes before the
     // effective dock is resolved so a resize can never leave a stale side seam
     // active while the phone is presenting a horizontal stacked seam.
-    app.last_divider_area = Rect::default();
-    app.last_horizontal_divider_area = Rect::default();
+    app.invalidate_split_seam_hits();
     app.clear_coordinator_picker_hits();
     app.clear_symbolic_context_hits();
     app.log_header_hits.clear();
@@ -3417,11 +3486,13 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         && graph.height > 0
         && area.x == graph.x
         && area.width == graph.width;
-    let seam_style = Style::default().fg(if matches!(app.input_mode, InputMode::Layout) {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    });
+    let seam_style = Style::default()
+        .fg(if matches!(app.input_mode, InputMode::Layout) {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        })
+        .bg(Color::Reset);
 
     let (context_area, content_area) = if stacked {
         let y = if area.y < graph.y {
@@ -3437,10 +3508,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             3.min(frame.area().height),
         );
         app.last_divider_area = Rect::default();
-        frame.render_widget(
-            Paragraph::new("─".repeat(seam.width as usize)).style(seam_style),
-            seam,
-        );
+        paint_split_seam(frame, seam, '─', seam_style);
         (seam, area)
     } else {
         if side_by_side {
@@ -3457,10 +3525,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 seam.height,
             );
             app.last_horizontal_divider_area = Rect::default();
-            let lines = (0..seam.height)
-                .map(|_| Line::styled("│", seam_style))
-                .collect::<Vec<_>>();
-            frame.render_widget(Paragraph::new(lines), seam);
+            paint_split_seam(frame, seam, '│', seam_style);
         } else {
             app.last_divider_area = Rect::default();
             app.last_horizontal_divider_area = Rect::default();
@@ -18252,6 +18317,202 @@ mod tests {
             "stacked seam must carry context: {seam}"
         );
         assert!(!seam.contains('┌') && !seam.contains('┐'), "{seam}");
+    }
+
+    #[test]
+    fn moved_split_seams_overwrite_seeded_graph_cells_and_vacated_back_buffer() {
+        use crate::tui::viz_viewer::state::{InspectorMode, LayoutPreference};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::Buffer;
+
+        fn poison_graph_cells(frame: &mut Frame, areas: [Rect; 2]) {
+            let bounds = frame.area();
+            let buf = frame.buffer_mut();
+            for area in areas {
+                let area = bounds.intersection(area);
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        let glyph = if (x + y) % 2 == 0 { '─' } else { 'X' };
+                        buf[(x, y)].set_char(glyph).set_style(
+                            Style::default()
+                                .fg(Color::Red)
+                                .bg(Color::Blue)
+                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                        );
+                    }
+                }
+            }
+        }
+
+        fn clean_transition(
+            viz: &VizOutput,
+            dock: InspectorDock,
+            from_percent: u16,
+            to_percent: u16,
+            width: u16,
+            height: u16,
+            symbols: SymbolMode,
+            is_light: bool,
+        ) -> (Buffer, Rect, Rect) {
+            let mut app = build_app_from_viz_output(viz, "a");
+            app.right_panel_tab = RightPanelTab::Detail;
+            app.workspace_appearance.set_symbols(symbols);
+            app.is_light_theme = is_light;
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: from_percent,
+                mode: InspectorMode::Split,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let old_seam = split_seam_area(app.last_graph_area, app.last_right_panel_area);
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: to_percent,
+                mode: InspectorMode::Split,
+            });
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let new_seam = split_seam_area(app.last_graph_area, app.last_right_panel_area);
+            (terminal.backend().buffer().clone(), old_seam, new_seam)
+        }
+
+        fn poisoned_transition(
+            viz: &VizOutput,
+            dock: InspectorDock,
+            from_percent: u16,
+            to_percent: u16,
+            width: u16,
+            height: u16,
+            symbols: SymbolMode,
+            is_light: bool,
+            old_seam: Rect,
+            new_seam: Rect,
+        ) -> Buffer {
+            let mut app = build_app_from_viz_output(viz, "a");
+            app.right_panel_tab = RightPanelTab::Detail;
+            app.workspace_appearance.set_symbols(symbols);
+            app.is_light_theme = is_light;
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: from_percent,
+                mode: InspectorMode::Split,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(
+                split_seam_area(app.last_graph_area, app.last_right_panel_area),
+                old_seam
+            );
+            app.set_layout_preference(LayoutPreference {
+                dock,
+                size_percent: to_percent,
+                mode: InspectorMode::Split,
+            });
+            terminal
+                .draw(|frame| {
+                    // Model stale Graph output already present in the frame's
+                    // back buffer at both the seam being vacated and the seam
+                    // about to be claimed. A correct renderer must not merely
+                    // patch a foreground color over either glyph/style.
+                    poison_graph_cells(frame, [old_seam, new_seam]);
+                    draw(frame, &mut app);
+                })
+                .unwrap();
+            assert_eq!(
+                split_seam_area(app.last_graph_area, app.last_right_panel_area),
+                new_seam
+            );
+            terminal.backend().buffer().clone()
+        }
+
+        fn assert_rect_matches(actual: &Buffer, expected: &Buffer, area: Rect, label: &str) {
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    let got = &actual[(x, y)];
+                    let want = &expected[(x, y)];
+                    assert_eq!(got.symbol(), want.symbol(), "{label} symbol at ({x},{y})");
+                    assert_eq!(got.fg, want.fg, "{label} foreground at ({x},{y})");
+                    assert_eq!(got.bg, want.bg, "{label} background at ({x},{y})");
+                    assert_eq!(
+                        got.modifier, want.modifier,
+                        "{label} modifiers at ({x},{y})"
+                    );
+                    assert_eq!(got.skip, want.skip, "{label} skip bit at ({x},{y})");
+                }
+            }
+        }
+
+        let (viz, _) = build_hud_test_graph();
+        for (label, dock, width, height, symbols, is_light) in [
+            (
+                "left",
+                InspectorDock::Left,
+                120,
+                30,
+                SymbolMode::Workshop,
+                false,
+            ),
+            (
+                "right",
+                InspectorDock::Right,
+                120,
+                30,
+                SymbolMode::Letters,
+                true,
+            ),
+            (
+                "top",
+                InspectorDock::Top,
+                70,
+                30,
+                SymbolMode::Workshop,
+                true,
+            ),
+            (
+                "bottom",
+                InspectorDock::Bottom,
+                70,
+                30,
+                SymbolMode::Letters,
+                false,
+            ),
+            (
+                "auto-wide",
+                InspectorDock::Auto,
+                120,
+                30,
+                SymbolMode::Workshop,
+                false,
+            ),
+            (
+                "auto-phone",
+                InspectorDock::Auto,
+                70,
+                30,
+                SymbolMode::Letters,
+                true,
+            ),
+        ] {
+            let (expected, old_seam, new_seam) =
+                clean_transition(&viz, dock, 33, 67, width, height, symbols, is_light);
+            assert_ne!(old_seam, new_seam, "{label} seam must move");
+            let actual = poisoned_transition(
+                &viz, dock, 33, 67, width, height, symbols, is_light, old_seam, new_seam,
+            );
+            assert_rect_matches(
+                &actual,
+                &expected,
+                old_seam,
+                &format!("{label} vacated seam"),
+            );
+            assert_rect_matches(
+                &actual,
+                &expected,
+                new_seam,
+                &format!("{label} current seam"),
+            );
+        }
     }
 
     #[test]

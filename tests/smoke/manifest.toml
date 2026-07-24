@@ -2327,6 +2327,7 @@ owners = [
     "implement-four-sided",
     "fix-one-row",
     "make-panel-resize",
+    "fix-stale-split",
 ]
 description = "Candidate-binary real tmux/PTY flow for the one-row borderless inspector at desktop, medium, and Termux sizes: all-chat-archived recovery, symbolic Chat/Task/Workspace lanes, globally fixed labelled New chat, packed cached lifecycle pulse, one side/stacked seam, frameless full mode, and non-mutating startup. Its owned first-use Panel/Layout flow visibly separates exact h=Left/j=Bottom/k=Top/l=Right docking from +/- 5% sizing and named 1/3, 1/2, 2/3 presets, then proves phone-prioritized controls, rollback/commit, and narrow-to-wide restoration with mouse disabled. Credential-free."
 timeout_seconds = 180
@@ -2394,6 +2395,7 @@ owners = [
     "fix-inspector-full-drag",
     "fix-full-inspector-pointer-escape",
     "make-panel-resize",
+    "fix-stale-split",
 ]
 description = "Candidate-binary real tmux/SGR mouse regression for Full inspector navigation: opens the exact-labelled Panel/Layout row from command mode, drags the live Right and Bottom seams through the one-way Full snap, then restores Graph using the visible Workspace destination and tap/reverse-drags the same-frame contextual handle (never an invisible edge). Directly taps selected-task Detail↔current-attempt Log, checks bounded remembered dock/ratio, one contextual row and zero outer frame/seam, Chat PTY input confinement/stable PID, Full persistence across restart, phone rotation, and stale post-SIGWINCH drag rejection. Credential-free command Chat."
 timeout_seconds = 180
@@ -2421,9 +2423,19 @@ name = "tui_termux_stacked_inspector"
 script = "scenarios/tui_termux_stacked_inspector.sh"
 owners = [
     "fix-termux-stacked-inspector",
+    "fix-stale-split",
 ]
 description = "Candidate-binary real tmux/SGR phone rotation flow: starts with persisted explicit Left and a live command Chat on a wide viewport, rotates through 70- and 40-column Termux portrait geometry and capture-verifies graph above the horizontal contextual seam with Chat below and no side divider, vertically drags the same-frame seam without click/input fall-through, exercises direct Task/Chat navigation, then restores the exact wide Left/ratio while preserving PTY PID, dimensions, input bytes, and mouse confinement. Credential-free."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_split_seam_redraw"
+script = "scenarios/tui_split_seam_redraw.sh"
+owners = [
+    "fix-stale-split",
+]
+description = "Candidate-binary isolated tmux back-buffer regression for stale split-seam glyphs: seeds long real Graph rows at both old/new seam coordinates, moves a Right side seam by an arbitrary +5% and named 2/3 preset, proves the new column is fully glyph-painted and each retired column is cleared with one seam/zero outer frames, crosses Full/Split/Hidden, rotates to a Termux+mosh phone stack and repeats at actual horizontal rows, then restores wide. Captured transition bytes reject percentage-move global clears and rapid captures reject blank flicker frames."
+timeout_seconds = 240
 
 [[scenario]]
 name = "tui_session_log_header_clicks"
