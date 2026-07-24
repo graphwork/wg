@@ -256,9 +256,13 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 && matches!(task.status, Status::InProgress | Status::Open)
                 && task.assigned.is_some()
             {
+                let starts_new_attempt = task.status == Status::InProgress;
                 task.status = Status::Open;
                 task.assigned = None;
                 task.started_at = None;
+                if starts_new_attempt {
+                    task.retry_count = task.retry_count.saturating_add(1);
+                }
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("sweep".to_string()),
@@ -267,6 +271,13 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 });
                 fixed.push(o.task_id.clone());
                 modified = true;
+                if starts_new_attempt {
+                    worksgood::eval_lifecycle::begin_source_attempt(
+                        graph,
+                        &o.task_id,
+                        "manual orphan sweep retry",
+                    );
+                }
             } else if let Some(task) = graph.get_task_mut(&o.task_id)
                 && task.status == Status::InProgress
                 && task.assigned.is_none()
@@ -274,6 +285,7 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 // The "(none)" sentinel branch: InProgress with no assigned.
                 // Just transition to Open; nothing to clear.
                 task.status = Status::Open;
+                task.retry_count = task.retry_count.saturating_add(1);
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("sweep".to_string()),
@@ -282,6 +294,11 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
                 });
                 fixed.push(o.task_id.clone());
                 modified = true;
+                worksgood::eval_lifecycle::begin_source_attempt(
+                    graph,
+                    &o.task_id,
+                    "manual orphan sweep retry",
+                );
             }
         }
         modified
@@ -431,6 +448,9 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                 let was_open = *prev_status == Status::Open;
                 task.status = Status::Open;
                 task.assigned = None;
+                if *prev_status == Status::InProgress {
+                    task.retry_count = task.retry_count.saturating_add(1);
+                }
                 // started_at only matters for InProgress; clearing it on
                 // an Open task is a no-op, but explicit is fine.
                 task.started_at = None;
@@ -448,6 +468,15 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         kind, prev_status, agent_desc
                     ),
                 });
+            }
+        }
+        for (task_id, prev_status, _) in &orphaned_ids {
+            if *prev_status == Status::InProgress {
+                worksgood::eval_lifecycle::begin_source_attempt(
+                    graph,
+                    task_id,
+                    "coordinator orphan reconciliation retry",
+                );
             }
         }
         count > 0

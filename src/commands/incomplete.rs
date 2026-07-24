@@ -162,6 +162,14 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>) -> Result<()> {
             task.token_usage = Some(usage.clone());
         }
 
+        if final_status == Status::Incomplete {
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                &id_owned,
+                "automatic incomplete retry",
+            );
+        }
+
         true
     })
     .context("Failed to save graph")?;
@@ -311,6 +319,57 @@ mod tests {
             max_retries, delay
         );
         fs::write(config_path, content).unwrap();
+    }
+
+    #[test]
+    fn test_incomplete_retry_rearms_existing_attempt_one_evaluator() {
+        use worksgood::config::{Config, RoleModelConfig};
+        use worksgood::eval_lifecycle::{DispatchSelectionSource, EvaluationLifecycle, build_plan};
+
+        let dir = tempdir().unwrap();
+        let initial = make_task("t1", "Test task", Status::InProgress);
+        let mut config = Config::default();
+        config.models.evaluator = Some(RoleModelConfig {
+            provider: None,
+            model: Some("codex:gpt-5.5".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(worksgood::config::ReasoningLevel::High),
+        });
+        let plan = build_plan(
+            &config,
+            &initial,
+            ".evaluate-t1",
+            DispatchSelectionSource::ScaffoldConfig,
+        )
+        .unwrap();
+        let calls = plan.calls.clone();
+        let mut source = initial;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
+        let evaluator = Task {
+            id: ".evaluate-t1".into(),
+            title: "evaluator".into(),
+            status: Status::Done,
+            model: Some("codex:gpt-5.5".into()),
+            reasoning: Some(worksgood::config::ReasoningLevel::High),
+            agency_dispatch: Some(plan),
+            ..Task::default()
+        };
+        setup_workgraph(dir.path(), vec![source, evaluator]);
+        setup_config(dir.path(), 3, "0s");
+
+        run(dir.path(), "t1", Some("continue after preemption")).unwrap();
+        let graph = load_graph(&dir.path().join("graph.jsonl")).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.source_attempt, 2);
+        let evaluator = graph.get_task(".evaluate-t1").unwrap();
+        assert_eq!(evaluator.status, Status::Open);
+        assert_eq!(evaluator.agency_dispatch.as_ref().unwrap().calls, calls);
+        assert_eq!(
+            evaluator.agency_dispatch.as_ref().unwrap().pipeline_id,
+            lifecycle.pipeline_id
+        );
     }
 
     #[test]

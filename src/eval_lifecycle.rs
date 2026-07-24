@@ -116,17 +116,31 @@ pub struct EvaluationLifecycle {
     pub consumed_verdict: Option<String>,
     #[serde(default)]
     pub repair_version: u16,
+    /// Number of coordinator plumbing repairs performed for this source
+    /// attempt. A repair may rearm one or both satellites, but the budget is
+    /// consumed once for the atomic repair transaction.
+    #[serde(default)]
+    pub repair_attempts: u16,
+    /// Stable, actionable fail-closed diagnostic. This is deliberately kept
+    /// separate from `Task.failure_reason`: FailedPendingEval still needs to
+    /// retain the worker's original failure evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
 }
 
 impl EvaluationLifecycle {
     pub fn for_source(task: &Task) -> Self {
-        // A low-score in-place rescue is a new semantic source attempt even
-        // though it intentionally preserves the worker identity/worktree and
-        // therefore does not increment `retry_count`.
+        // This derivation is the migration/default path. Once a source attempt
+        // has been explicitly minted, its stored `source_attempt` is
+        // authoritative even if legacy retry counters are later reset.
         let source_attempt = task
             .retry_count
             .saturating_add(task.rescue_count)
             .saturating_add(1);
+        Self::for_source_attempt(task, source_attempt)
+    }
+
+    fn for_source_attempt(task: &Task, source_attempt: u32) -> Self {
         Self {
             schema: EVAL_LIFECYCLE_SCHEMA,
             pipeline_id: pipeline_id(&task.id, source_attempt, task.loop_iteration),
@@ -140,6 +154,8 @@ impl EvaluationLifecycle {
             linked_eval_verdict: None,
             consumed_verdict: None,
             repair_version: 0,
+            repair_attempts: 0,
+            diagnostic: None,
         }
     }
 
@@ -160,17 +176,40 @@ impl EvaluationLifecycle {
 }
 
 /// Ensure a source entering a soft evaluation state has the lifecycle identity
-/// for its current worker/rescue attempt. A consumed prior attempt is retained
-/// until the source actually completes again, then replaced atomically here.
+/// minted when its current execution attempt began. Older code derived the id
+/// again at completion, which is precisely how a resumed worker and its
+/// already-scaffolded satellites acquired different pipelines.
 pub fn refresh_source_lifecycle(task: &mut Task) {
-    let expected = EvaluationLifecycle::for_source(task);
-    if task
-        .evaluation_lifecycle
-        .as_ref()
-        .is_none_or(|current| current.pipeline_id != expected.pipeline_id)
-    {
-        task.evaluation_lifecycle = Some(expected);
+    let derived = EvaluationLifecycle::for_source(task);
+    let replacement_attempt = match task.evaluation_lifecycle.as_ref() {
+        None => Some(derived.source_attempt),
+        Some(current) if current.consumed_verdict.is_some() => Some(
+            derived
+                .source_attempt
+                .max(current.source_attempt.saturating_add(1)),
+        ),
+        Some(current)
+            if current.pipeline_id
+                != pipeline_id(&task.id, current.source_attempt, task.loop_iteration) =>
+        {
+            Some(current.source_attempt.max(derived.source_attempt))
+        }
+        Some(_) => None,
+    };
+    if let Some(source_attempt) = replacement_attempt {
+        task.evaluation_lifecycle = Some(EvaluationLifecycle::for_source_attempt(
+            task,
+            source_attempt,
+        ));
     }
+}
+
+fn source_attempt_for_plan(task: &Task) -> u32 {
+    task.evaluation_lifecycle
+        .as_ref()
+        .filter(|lifecycle| lifecycle.consumed_verdict.is_none())
+        .map(|lifecycle| lifecycle.source_attempt)
+        .unwrap_or_else(|| EvaluationLifecycle::for_source(task).source_attempt)
 }
 
 pub fn pipeline_id(source_task: &str, source_attempt: u32, loop_iteration: u32) -> String {
@@ -200,10 +239,7 @@ pub fn build_plan(
     task_id: &str,
     source: DispatchSelectionSource,
 ) -> Result<AgencyDispatchPlan> {
-    let source_attempt = source_task
-        .retry_count
-        .saturating_add(source_task.rescue_count)
-        .saturating_add(1);
+    let source_attempt = source_attempt_for_plan(source_task);
     let mut calls = Vec::new();
     for stage in stages_for_task(task_id)? {
         let role = stage.role();
@@ -264,10 +300,7 @@ pub fn migrate_legacy_plan(source_task: &Task, satellite: &Task) -> Result<Agenc
         ),
     };
     let system = execution_system_key(&route)?;
-    let source_attempt = source_task
-        .retry_count
-        .saturating_add(source_task.rescue_count)
-        .saturating_add(1);
+    let source_attempt = source_attempt_for_plan(source_task);
     let calls = stages_for_task(&satellite.id)?
         .into_iter()
         .map(|stage| AgencyCallPlan {
@@ -757,14 +790,29 @@ fn lifecycle_for_plan(plan: &AgencyDispatchPlan) -> EvaluationLifecycle {
         linked_eval_verdict: None,
         consumed_verdict: None,
         repair_version: 0,
+        repair_attempts: 0,
+        diagnostic: None,
     }
 }
 
 fn lifecycle_conflict(task: &mut Task, message: String) -> bool {
-    if task.failure_reason.as_deref() == Some(message.as_str()) {
+    let already_recorded = if let Some(lifecycle) = task.evaluation_lifecycle.as_mut() {
+        if lifecycle.diagnostic.as_deref() == Some(message.as_str()) {
+            true
+        } else {
+            lifecycle.diagnostic = Some(message.clone());
+            lifecycle.execution_state = EvaluationExecutionState::Blocked;
+            false
+        }
+    } else if task.failure_reason.as_deref() == Some(message.as_str()) {
+        true
+    } else {
+        task.failure_reason = Some(message.clone());
+        false
+    };
+    if already_recorded {
         return false;
     }
-    task.failure_reason = Some(message.clone());
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some("eval-lifecycle-reconcile".to_string()),
@@ -1007,28 +1055,42 @@ fn mark_satellite_verdict(
 }
 
 fn rebind_plan_to_source(plan: &AgencyDispatchPlan, source: &Task) -> Result<AgencyDispatchPlan> {
+    validate_plan(plan)?;
+    if plan.source_task != source.id {
+        anyhow::bail!(
+            "error[WG-EVAL-PIPELINE-SOURCE]: plan for {:?} names source {:?}",
+            plan.task_id,
+            plan.source_task
+        );
+    }
     let mut rebound = plan.clone();
-    rebound.source_attempt = source
-        .retry_count
-        .saturating_add(source.rescue_count)
-        .saturating_add(1);
+    rebound.source_attempt = source_attempt_for_plan(source);
     rebound.pipeline_id = pipeline_id(&source.id, rebound.source_attempt, source.loop_iteration);
     rebound.plan_hash = compute_plan_hash(&rebound)?;
     validate_plan(&rebound)?;
     Ok(rebound)
 }
 
-fn reset_satellite_for_source(graph: &mut WorkGraph, task_id: &str, source: &Task) -> bool {
-    let Some(previous_plan) = graph
+fn prepare_rearm_plan(
+    graph: &WorkGraph,
+    task_id: &str,
+    source: &Task,
+) -> Result<AgencyDispatchPlan> {
+    let task = graph
         .get_task(task_id)
-        .and_then(|task| task.agency_dispatch.clone())
-    else {
-        return false;
+        .ok_or_else(|| anyhow::anyhow!("evaluation satellite {task_id:?} is missing"))?;
+    let previous = match task.agency_dispatch.as_ref() {
+        Some(plan) => {
+            validate_plan(plan)?;
+            plan.clone()
+        }
+        None => migrate_legacy_plan(source, task)?,
     };
-    let Ok(plan) = rebind_plan_to_source(&previous_plan, source) else {
-        return false;
-    };
-    let task = graph.get_task_mut(task_id).expect("plan came from task");
+    rebind_plan_to_source(&previous, source)
+}
+
+fn apply_rearm_plan(task: &mut Task, plan: AgencyDispatchPlan, actor: &str) {
+    let primary = &plan.calls[0];
     task.status = Status::Open;
     task.assigned = None;
     task.started_at = None;
@@ -1036,30 +1098,462 @@ fn reset_satellite_for_source(graph: &mut WorkGraph, task_id: &str, source: &Tas
     task.failure_reason = None;
     task.wait_condition = None;
     task.spawn_failures = 0;
+    // Compatibility mirrors follow the persisted plan; no route is resolved
+    // again from ambient config during retry or repair.
+    task.model = Some(primary.route.clone());
+    task.provider = Some(primary.system.handler.clone());
+    task.endpoint = primary.endpoint.clone();
+    task.reasoning = primary.reasoning;
     task.agency_dispatch = Some(plan.clone());
     task.evaluation_lifecycle = Some(lifecycle_for_plan(&plan));
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
-        actor: Some("eval-lifecycle-reconcile".to_string()),
+        actor: Some(actor.to_string()),
         user: None,
         message: format!(
             "Rearmed exact persisted route for source attempt {}; plan={}",
             plan.source_attempt, plan.plan_hash
         ),
     });
-    true
 }
 
-/// Rearm an existing evaluation chain for an explicit source retry while
-/// preserving the exact prior routes. The source keeps its consumed old
-/// lifecycle as audit evidence until it next enters a soft evaluation state.
+fn reset_satellite_for_source(graph: &mut WorkGraph, task_id: &str, source: &Task) -> Result<bool> {
+    if graph.get_task(task_id).is_none() {
+        return Ok(false);
+    }
+    let plan = prepare_rearm_plan(graph, task_id, source)?;
+    let task = graph.get_task_mut(task_id).expect("plan came from task");
+    apply_rearm_plan(task, plan, "eval-lifecycle-reconcile");
+    Ok(true)
+}
+
+/// Rearm an existing evaluation chain while preserving its exact prior call
+/// identities. This low-level helper assumes the caller has already minted the
+/// authoritative lifecycle on `source`.
 pub fn rearm_satellites_for_source(graph: &mut WorkGraph, source: &Task) -> bool {
     if source.id.starts_with('.') {
         return false;
     }
-    let mut modified = reset_satellite_for_source(graph, &format!(".flip-{}", source.id), source);
-    modified |= reset_satellite_for_source(graph, &format!(".evaluate-{}", source.id), source);
+    let mut modified = false;
+    for task_id in [
+        format!(".flip-{}", source.id),
+        format!(".evaluate-{}", source.id),
+    ] {
+        match reset_satellite_for_source(graph, &task_id, source) {
+            Ok(changed) => modified |= changed,
+            Err(error) => {
+                if let Some(task) = graph.get_task_mut(&task_id) {
+                    lifecycle_conflict(task, format!("error[WG-EVAL-PIPELINE-REARM]: {error:#}"));
+                    modified = true;
+                }
+            }
+        }
+    }
     modified
+}
+
+/// Atomically begin a new source execution attempt and rearm every existing
+/// evaluation satellite to that exact attempt. Callers invoke this from the
+/// same graph transaction that resets the source to a dispatchable state.
+/// Durable verdict files are never touched; only the mutable execution plans
+/// are rebound to the newly minted pipeline.
+pub fn begin_source_attempt(graph: &mut WorkGraph, source_id: &str, reason: &str) -> bool {
+    let Some(snapshot) = graph.get_task(source_id).cloned() else {
+        return false;
+    };
+    if snapshot.id.starts_with('.') {
+        return false;
+    }
+    let satellite_ids = [
+        format!(".flip-{source_id}"),
+        format!(".evaluate-{source_id}"),
+    ];
+    let has_pipeline = snapshot.evaluation_lifecycle.is_some()
+        || satellite_ids
+            .iter()
+            .any(|task_id| graph.get_task(task_id).is_some());
+    if !has_pipeline {
+        return false;
+    }
+
+    let derived = EvaluationLifecycle::for_source(&snapshot).source_attempt;
+    let highest_existing = std::iter::once(
+        snapshot
+            .evaluation_lifecycle
+            .as_ref()
+            .map(|lifecycle| lifecycle.source_attempt),
+    )
+    .chain(satellite_ids.iter().map(|task_id| {
+        graph
+            .get_task(task_id)
+            .and_then(|task| task.agency_dispatch.as_ref())
+            .map(|plan| plan.source_attempt)
+    }))
+    .flatten()
+    .max()
+    .unwrap_or(0);
+    let source_attempt = derived.max(highest_existing.saturating_add(1));
+
+    let mut minted = snapshot.clone();
+    minted.evaluation_lifecycle = Some(EvaluationLifecycle::for_source_attempt(
+        &minted,
+        source_attempt,
+    ));
+    if let Some(source) = graph.get_task_mut(source_id) {
+        source.evaluation_lifecycle = minted.evaluation_lifecycle.clone();
+        source.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("eval-lifecycle-attempt".to_string()),
+            user: None,
+            message: format!(
+                "Minted evaluation pipeline {} for source attempt {} ({reason})",
+                source
+                    .evaluation_lifecycle
+                    .as_ref()
+                    .expect("just minted")
+                    .pipeline_id,
+                source_attempt
+            ),
+        });
+    }
+
+    // Prepare every plan before opening any row. A retry must never expose a
+    // half-rearmed pipeline, nor relabel an old satellite that is still live.
+    let mut prepared = Vec::new();
+    let mut conflicts = Vec::new();
+    for task_id in &satellite_ids {
+        let Some(satellite) = graph.get_task(task_id) else {
+            continue;
+        };
+        if satellite.status == Status::InProgress || satellite.assigned.is_some() {
+            conflicts.push(format!(
+                "{task_id} is still active on the previous source attempt"
+            ));
+            continue;
+        }
+        match prepare_rearm_plan(graph, task_id, &minted) {
+            Ok(plan) => prepared.push((task_id.clone(), plan)),
+            Err(error) => conflicts.push(format!("{task_id}: {error:#}")),
+        }
+    }
+
+    if conflicts.is_empty() {
+        for (task_id, plan) in prepared {
+            apply_rearm_plan(
+                graph.get_task_mut(&task_id).expect("prepared satellite"),
+                plan,
+                "eval-lifecycle-attempt",
+            );
+        }
+    } else {
+        let diagnostic = format!(
+            "error[WG-EVAL-PIPELINE-REARM]: source attempt {} could not atomically rearm its evaluation pipeline: {}",
+            source_attempt,
+            conflicts.join("; ")
+        );
+        if let Some(source) = graph.get_task_mut(source_id) {
+            lifecycle_conflict(source, diagnostic.clone());
+        }
+        for task_id in satellite_ids {
+            if let Some(satellite) = graph.get_task_mut(&task_id)
+                && satellite.status != Status::InProgress
+                && satellite.assigned.is_none()
+            {
+                satellite.status = Status::Blocked;
+                lifecycle_conflict(satellite, diagnostic.clone());
+            }
+        }
+    }
+    true
+}
+
+const MAX_PIPELINE_REPAIRS_PER_SOURCE_ATTEMPT: u16 = 1;
+
+fn satellite_has_linked_stage(task: &Task) -> bool {
+    let Some(lifecycle) = task.evaluation_lifecycle.as_ref() else {
+        return false;
+    };
+    if task.id.starts_with(".evaluate-") {
+        lifecycle.linked_eval_verdict.is_some()
+    } else {
+        lifecycle.linked_flip_verdict.is_some()
+    }
+}
+
+/// Public read-only lifecycle health used by `status`, `show`, and
+/// `why-blocked`. It intentionally relies only on the atomically persisted
+/// graph. Durable evidence ambiguity is first recorded on the source by the
+/// coordinator transaction and then appears here as operator-required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvaluationHealthState {
+    ActiveEvaluation,
+    RepairablePipelineDrift,
+    OperatorRequiredAmbiguity,
+}
+
+impl std::fmt::Display for EvaluationHealthState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::ActiveEvaluation => "active-evaluation",
+            Self::RepairablePipelineDrift => "repairable-pipeline-drift",
+            Self::OperatorRequiredAmbiguity => "operator-required-ambiguity",
+        };
+        formatter.write_str(label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvaluationHealth {
+    pub state: EvaluationHealthState,
+    pub pipeline_id: String,
+    pub source_attempt: u32,
+    pub diagnostic: String,
+}
+
+pub fn evaluation_health(graph: &WorkGraph, source_id: &str) -> Option<EvaluationHealth> {
+    let source = graph.get_task(source_id)?;
+    if !matches!(
+        source.status,
+        Status::PendingEval | Status::FailedPendingEval
+    ) {
+        return None;
+    }
+    let Some(lifecycle) = source.evaluation_lifecycle.as_ref() else {
+        return Some(EvaluationHealth {
+            state: EvaluationHealthState::RepairablePipelineDrift,
+            pipeline_id: "unminted".to_string(),
+            source_attempt: 0,
+            diagnostic: "source lifecycle is missing; coordinator repair must mint it".to_string(),
+        });
+    };
+    if let Some(diagnostic) = lifecycle.diagnostic.as_ref() {
+        return Some(EvaluationHealth {
+            state: EvaluationHealthState::OperatorRequiredAmbiguity,
+            pipeline_id: lifecycle.pipeline_id.clone(),
+            source_attempt: lifecycle.source_attempt,
+            diagnostic: diagnostic.clone(),
+        });
+    }
+
+    let mut repairable = Vec::new();
+    let mut operator = Vec::new();
+    for task_id in [
+        format!(".flip-{source_id}"),
+        format!(".evaluate-{source_id}"),
+    ] {
+        let Some(satellite) = graph.get_task(&task_id) else {
+            if task_id.starts_with(".evaluate-") {
+                operator.push(format!("{task_id} is missing"));
+            }
+            continue;
+        };
+        let plan = match satellite.agency_dispatch.as_ref() {
+            Some(plan) => plan,
+            None => {
+                if migrate_legacy_plan(source, satellite).is_ok()
+                    && satellite.status != Status::InProgress
+                    && satellite.assigned.is_none()
+                {
+                    repairable.push(format!(
+                        "{task_id} has a losslessly recoverable legacy plan"
+                    ));
+                } else {
+                    operator.push(format!("{task_id} has no unambiguous persisted route"));
+                }
+                continue;
+            }
+        };
+        let matches = plan.source_task == source.id
+            && plan.pipeline_id == lifecycle.pipeline_id
+            && plan.source_attempt == lifecycle.source_attempt;
+        if !matches {
+            if satellite.status == Status::InProgress || satellite.assigned.is_some() {
+                operator.push(format!(
+                    "{task_id} is active on stale pipeline {}",
+                    plan.pipeline_id
+                ));
+            } else {
+                repairable.push(format!(
+                    "{task_id} is on stale pipeline {}",
+                    plan.pipeline_id
+                ));
+            }
+        } else if matches!(
+            satellite.status,
+            Status::Done
+                | Status::Failed
+                | Status::Abandoned
+                | Status::Blocked
+                | Status::Incomplete
+                | Status::PendingValidation
+                | Status::PendingEval
+                | Status::FailedPendingEval
+        ) && !satellite_has_linked_stage(satellite)
+        {
+            if lifecycle.repair_attempts < MAX_PIPELINE_REPAIRS_PER_SOURCE_ATTEMPT {
+                repairable.push(format!(
+                    "{task_id} is terminal without durable current-attempt evidence"
+                ));
+            } else {
+                operator.push(format!("{task_id} exhausted bounded pipeline repair"));
+            }
+        }
+    }
+
+    let (state, diagnostic) = if !operator.is_empty() {
+        (
+            EvaluationHealthState::OperatorRequiredAmbiguity,
+            operator.join("; "),
+        )
+    } else if !repairable.is_empty() {
+        (
+            EvaluationHealthState::RepairablePipelineDrift,
+            repairable.join("; "),
+        )
+    } else {
+        (
+            EvaluationHealthState::ActiveEvaluation,
+            "current-attempt evaluation is queued, running, or durably linking".to_string(),
+        )
+    };
+    Some(EvaluationHealth {
+        state,
+        pipeline_id: lifecycle.pipeline_id.clone(),
+        source_attempt: lifecycle.source_attempt,
+        diagnostic,
+    })
+}
+
+fn repair_pending_pipeline(
+    graph: &mut WorkGraph,
+    source_id: &str,
+    has_flip_evidence: bool,
+    has_eval_evidence: bool,
+) -> bool {
+    let Some(source_snapshot) = graph.get_task(source_id).cloned() else {
+        return false;
+    };
+    if !matches!(
+        source_snapshot.status,
+        Status::PendingEval | Status::FailedPendingEval
+    ) {
+        return false;
+    }
+    let Some(source_lifecycle) = source_snapshot.evaluation_lifecycle.as_ref() else {
+        return false;
+    };
+    if source_lifecycle.consumed_verdict.is_some() {
+        return false;
+    }
+
+    let mut prepared = Vec::<(String, AgencyDispatchPlan)>::new();
+    let mut conflicts = Vec::new();
+    for (task_id, has_evidence) in [
+        (format!(".flip-{source_id}"), has_flip_evidence),
+        (format!(".evaluate-{source_id}"), has_eval_evidence),
+    ] {
+        let Some(satellite) = graph.get_task(&task_id) else {
+            if task_id.starts_with(".evaluate-") && !has_evidence {
+                conflicts.push(format!(
+                    "{task_id} is missing and no evaluator verdict exists"
+                ));
+            }
+            continue;
+        };
+        let plan_matches = satellite.agency_dispatch.as_ref().is_some_and(|plan| {
+            plan.source_task == source_id
+                && plan.pipeline_id == source_lifecycle.pipeline_id
+                && plan.source_attempt == source_lifecycle.source_attempt
+        });
+        // Verified durable evidence is allowed to backfill a claimed,
+        // completed pre-schema row through `install_completed_legacy_plan`.
+        // It must never be rearmed or relabeled as an unexecuted run.
+        if has_evidence && satellite.status == Status::Done && satellite.agency_dispatch.is_none() {
+            continue;
+        }
+        let terminal_without_evidence = matches!(
+            satellite.status,
+            Status::Done
+                | Status::Failed
+                | Status::Abandoned
+                | Status::Blocked
+                | Status::Incomplete
+                | Status::PendingValidation
+                | Status::PendingEval
+                | Status::FailedPendingEval
+        ) && !has_evidence;
+        if plan_matches && !terminal_without_evidence {
+            continue;
+        }
+        if (satellite.status == Status::InProgress || satellite.assigned.is_some()) && !plan_matches
+        {
+            conflicts.push(format!(
+                "{task_id} is still active on a mismatched pipeline; refusing to relabel its run"
+            ));
+            continue;
+        }
+        match prepare_rearm_plan(graph, &task_id, &source_snapshot) {
+            Ok(plan) => prepared.push((task_id, plan)),
+            Err(error) => conflicts.push(format!("{task_id}: {error:#}")),
+        }
+    }
+
+    if !conflicts.is_empty() {
+        let source = graph.get_task_mut(source_id).expect("source snapshot");
+        return lifecycle_conflict(
+            source,
+            format!(
+                "error[WG-EVAL-PIPELINE-AMBIGUOUS]: operator action required: {}",
+                conflicts.join("; ")
+            ),
+        );
+    }
+    if prepared.is_empty() {
+        return false;
+    }
+    if source_lifecycle.repair_attempts >= MAX_PIPELINE_REPAIRS_PER_SOURCE_ATTEMPT {
+        let ids = prepared
+            .iter()
+            .map(|(task_id, _)| task_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = graph.get_task_mut(source_id).expect("source snapshot");
+        return lifecycle_conflict(
+            source,
+            format!(
+                "error[WG-EVAL-PIPELINE-REPAIR-EXHAUSTED]: bounded repair already ran for {}; terminal satellites still lack evidence: {ids}",
+                source_lifecycle.pipeline_id
+            ),
+        );
+    }
+
+    for (task_id, plan) in prepared {
+        apply_rearm_plan(
+            graph.get_task_mut(&task_id).expect("prepared satellite"),
+            plan,
+            "eval-lifecycle-repair",
+        );
+    }
+    let source = graph.get_task_mut(source_id).expect("source snapshot");
+    let lifecycle = source
+        .evaluation_lifecycle
+        .as_mut()
+        .expect("pending source lifecycle");
+    lifecycle.repair_attempts = lifecycle.repair_attempts.saturating_add(1);
+    lifecycle.repair_version = EVAL_LIFECYCLE_SCHEMA;
+    lifecycle.diagnostic = None;
+    lifecycle.execution_state = EvaluationExecutionState::Ready;
+    source.log.push(LogEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        actor: Some("eval-lifecycle-repair".to_string()),
+        user: None,
+        message: format!(
+            "Repaired evaluation pipeline drift for authoritative source attempt {} ({})",
+            lifecycle.source_attempt, lifecycle.pipeline_id
+        ),
+    });
+    true
 }
 
 /// Link durable stage evidence and atomically consume an evaluator verdict into
@@ -1093,7 +1587,7 @@ where
     let mut modified = false;
 
     for source_id in source_ids {
-        let source_snapshot = graph
+        let mut source_snapshot = graph
             .get_task(&source_id)
             .expect("collected source")
             .clone();
@@ -1101,6 +1595,18 @@ where
             .evaluation_lifecycle
             .clone()
             .unwrap_or_else(|| EvaluationLifecycle::for_source(&source_snapshot));
+        if matches!(
+            source_snapshot.status,
+            Status::PendingEval | Status::FailedPendingEval
+        ) && source_snapshot.evaluation_lifecycle.is_none()
+        {
+            graph
+                .get_task_mut(&source_id)
+                .expect("collected source")
+                .evaluation_lifecycle = Some(source_lifecycle.clone());
+            source_snapshot.evaluation_lifecycle = Some(source_lifecycle.clone());
+            modified = true;
+        }
         let matching: Vec<&DurableEvalVerdict> = verdicts
             .iter()
             .filter(|verdict| {
@@ -1149,6 +1655,17 @@ where
                     ),
                 );
             }
+            continue;
+        }
+
+        modified |=
+            repair_pending_pipeline(graph, &source_id, !flips.is_empty(), !evals.is_empty());
+        if graph
+            .get_task(&source_id)
+            .and_then(|source| source.evaluation_lifecycle.as_ref())
+            .and_then(|lifecycle| lifecycle.diagnostic.as_ref())
+            .is_some()
+        {
             continue;
         }
 
@@ -1263,11 +1780,11 @@ where
         modified = true;
 
         if retry_source {
-            let rebound_source = graph
-                .get_task(&source_id)
-                .expect("source still exists")
-                .clone();
-            modified |= rearm_satellites_for_source(graph, &rebound_source);
+            modified |= begin_source_attempt(
+                graph,
+                &source_id,
+                "automatic in-place rescue after rejected evaluation",
+            );
         }
     }
     modified
@@ -1563,6 +2080,364 @@ mod tests {
         assert_eq!(rebound.calls, old_plan.calls);
         assert_ne!(rebound.pipeline_id, old_plan.pipeline_id);
         assert_eq!(rebound.source_attempt, 2);
+    }
+
+    #[test]
+    fn preempted_attempt_rearms_before_resume_and_only_current_verdicts_promote() {
+        let mut attempt_one = source();
+        attempt_one.status = Status::InProgress;
+        let mut flip = planned_satellite(".flip-source", &attempt_one);
+        let mut eval = planned_satellite(".evaluate-source", &attempt_one);
+        let flip_calls = flip.agency_dispatch.as_ref().unwrap().calls.clone();
+        let eval_calls = eval.agency_dispatch.as_ref().unwrap().calls.clone();
+        let old_flip = verdict(&attempt_one, AgencyStage::FlipComparison, 0.96);
+        let old_eval = verdict(&attempt_one, AgencyStage::Evaluate, 0.95);
+        flip.status = Status::Done;
+        flip.assigned = None;
+        eval.status = Status::Done;
+        eval.assigned = None;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(attempt_one));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        // Coordinator preemption starts attempt 2. This is the atomic boundary
+        // that the live incident lacked: parent + both plans move together.
+        {
+            let source = graph.get_task_mut("source").unwrap();
+            source.status = Status::Open;
+            source.retry_count = 1;
+            source.assigned = None;
+        }
+        assert!(begin_source_attempt(
+            &mut graph,
+            "source",
+            "test preemption"
+        ));
+        let authoritative = graph
+            .get_task("source")
+            .unwrap()
+            .evaluation_lifecycle
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(authoritative.source_attempt, 2);
+        for (task_id, calls) in [
+            (".flip-source", flip_calls),
+            (".evaluate-source", eval_calls),
+        ] {
+            let task = graph.get_task(task_id).unwrap();
+            let plan = task.agency_dispatch.as_ref().unwrap();
+            assert_eq!(plan.pipeline_id, authoritative.pipeline_id);
+            assert_eq!(plan.source_attempt, 2);
+            assert_eq!(plan.calls, calls, "route/reasoning identity drifted");
+            assert_eq!(task.status, Status::Open);
+        }
+
+        // Daemon restart boundary: source completes after graph round-trip.
+        let restart_dir = tempfile::tempdir().unwrap();
+        let graph_path = restart_dir.path().join("graph.jsonl");
+        crate::parser::save_graph(&graph, &graph_path).unwrap();
+        let mut graph = crate::parser::load_graph(&graph_path).unwrap();
+        {
+            let source = graph.get_task_mut("source").unwrap();
+            source.status = Status::PendingEval;
+            refresh_source_lifecycle(source);
+        }
+        assert_eq!(
+            graph
+                .get_task("source")
+                .unwrap()
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .pipeline_id,
+            authoritative.pipeline_id
+        );
+
+        // Attempt-1 evidence remains visible to the reconciler but cannot
+        // mutate or score attempt 2.
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[old_flip.clone(), old_eval.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(
+            graph.get_task("source").unwrap().status,
+            Status::PendingEval
+        );
+
+        let current_source = graph.get_task("source").unwrap().clone();
+        let current_flip = verdict(&current_source, AgencyStage::FlipComparison, 0.91);
+        let current_eval = verdict(&current_source, AgencyStage::Evaluate, 0.93);
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[
+                old_flip.clone(),
+                old_eval.clone(),
+                current_flip.clone(),
+                current_eval.clone(),
+            ],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::Done);
+        assert_eq!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .consumed_verdict
+                .as_deref(),
+            Some(current_eval.verdict_id.as_str())
+        );
+        assert_eq!(old_eval.pipeline_id, pipeline_id("source", 1, 0));
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[old_flip, old_eval, current_flip, current_eval],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(
+            graph
+                .get_task("source")
+                .unwrap()
+                .log
+                .iter()
+                .filter(|entry| entry.message.contains("Consumed durable verdict"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn attempt_mint_fails_closed_without_exposing_half_rearmed_pipeline() {
+        let mut source = source();
+        source.status = Status::Open;
+        let mut flip = planned_satellite(".flip-source", &source);
+        flip.status = Status::Done;
+        let mut eval = planned_satellite(".evaluate-source", &source);
+        eval.status = Status::Done;
+        eval.agency_dispatch = None;
+        eval.provider = Some("openrouter".into());
+        eval.model = Some("ambiguous/model".into());
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        assert!(begin_source_attempt(&mut graph, "source", "test ambiguity"));
+        let source = graph.get_task("source").unwrap();
+        assert!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .diagnostic
+                .as_deref()
+                .unwrap()
+                .contains("could not atomically rearm")
+        );
+        assert_eq!(
+            graph.get_task(".flip-source").unwrap().status,
+            Status::Blocked
+        );
+        assert_eq!(
+            graph.get_task(".evaluate-source").unwrap().status,
+            Status::Blocked
+        );
+    }
+
+    #[test]
+    fn pending_parent_repairs_live_incident_stale_terminal_satellites_once() {
+        let attempt_one = source();
+        let mut flip = planned_satellite(".flip-source", &attempt_one);
+        let mut eval = planned_satellite(".evaluate-source", &attempt_one);
+        flip.status = Status::Done;
+        flip.assigned = None;
+        eval.status = Status::Done;
+        eval.assigned = None;
+        let stale_flip = verdict(&attempt_one, AgencyStage::FlipComparison, 0.96);
+        let stale_eval = verdict(&attempt_one, AgencyStage::Evaluate, 0.95);
+
+        let mut attempt_two = attempt_one;
+        attempt_two.retry_count = 1;
+        attempt_two.status = Status::PendingEval;
+        attempt_two.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&attempt_two));
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(attempt_two));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        let before = evaluation_health(&graph, "source").unwrap();
+        assert_eq!(before.state, EvaluationHealthState::RepairablePipelineDrift);
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[stale_flip.clone(), stale_eval.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::PendingEval);
+        assert_eq!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .repair_attempts,
+            1
+        );
+        for task_id in [".flip-source", ".evaluate-source"] {
+            let task = graph.get_task(task_id).unwrap();
+            assert_eq!(task.status, Status::Open);
+            assert_eq!(task.agency_dispatch.as_ref().unwrap().source_attempt, 2);
+        }
+        assert_eq!(
+            evaluation_health(&graph, "source").unwrap().state,
+            EvaluationHealthState::ActiveEvaluation
+        );
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[stale_flip, stale_eval],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+    }
+
+    #[test]
+    fn partial_flip_evidence_rearms_only_failed_evaluator_and_is_bounded() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
+        let mut flip = planned_satellite(".flip-source", &source);
+        let mut eval = planned_satellite(".evaluate-source", &source);
+        flip.status = Status::Done;
+        flip.assigned = None;
+        eval.status = Status::Failed;
+        eval.assigned = None;
+        let flip_verdict = verdict(&source, AgencyStage::FlipComparison, 0.9);
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(flip));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[flip_verdict.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(graph.get_task(".flip-source").unwrap().status, Status::Done);
+        assert_eq!(
+            graph.get_task(".evaluate-source").unwrap().status,
+            Status::Open
+        );
+        assert_eq!(
+            graph
+                .get_task(".flip-source")
+                .unwrap()
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .linked_flip_verdict
+                .as_deref(),
+            Some(flip_verdict.verdict_id.as_str())
+        );
+
+        graph.get_task_mut(".evaluate-source").unwrap().status = Status::Failed;
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[flip_verdict.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .diagnostic
+                .as_deref()
+                .unwrap()
+                .contains("REPAIR-EXHAUSTED")
+        );
+        let logs = source.log.len();
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[flip_verdict],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(graph.get_task("source").unwrap().log.len(), logs);
+    }
+
+    #[test]
+    fn multiple_current_evaluator_verdicts_fail_closed_without_consumption() {
+        let mut source = source();
+        source.status = Status::PendingEval;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&source));
+        let eval = planned_satellite(".evaluate-source", &source);
+        let first = verdict(&source, AgencyStage::Evaluate, 0.9);
+        let mut second = first.clone();
+        second.verdict_id = "verdict-eval-duplicate".into();
+        second.evaluation_id = "evaluation-eval-duplicate".into();
+        let mut graph = WorkGraph::new();
+        graph.add_node(crate::graph::Node::Task(source));
+        graph.add_node(crate::graph::Node::Task(eval));
+
+        assert!(reconcile_durable_verdicts(
+            &mut graph,
+            &[first.clone(), second.clone()],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        let source = graph.get_task("source").unwrap();
+        assert_eq!(source.status, Status::PendingEval);
+        assert!(
+            source
+                .evaluation_lifecycle
+                .as_ref()
+                .unwrap()
+                .consumed_verdict
+                .is_none()
+        );
+        assert_eq!(
+            evaluation_health(&graph, "source").unwrap().state,
+            EvaluationHealthState::OperatorRequiredAmbiguity
+        );
+        let logs = source.log.len();
+        assert!(!reconcile_durable_verdicts(
+            &mut graph,
+            &[first, second],
+            0.7,
+            true,
+            3,
+            |_| true,
+        ));
+        assert_eq!(graph.get_task("source").unwrap().log.len(), logs);
     }
 
     #[test]

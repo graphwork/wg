@@ -1,0 +1,29 @@
+Evaluation retry pipeline drift validation — 2026-07-24
+
+PASS  cargo fmt
+PASS  cargo fmt --check
+PASS  cargo test --lib -- --test-threads=1
+      2982 passed; 0 failed
+PASS  cargo test --bin wg commands::retry::tests -- --test-threads=1
+      30 passed; 0 failed
+PASS  cargo test --bin wg commands::incomplete::tests -- --test-threads=1
+      11 passed; 0 failed
+PASS  cargo test --bin wg commands::status::tests::pending_evaluation_is_not_reported_as_worker_progress -- --test-threads=1
+      1 passed; 0 failed
+PASS  cargo test --test evaluation_recording -- --test-threads=1
+      30 passed; 0 failed
+PASS  cargo test --test integration_agency_pipeline -- --test-threads=1
+      37 passed; 0 failed
+PASS  cargo test --test integration_service_coordinator -- --test-threads=1
+      47 passed; 0 failed
+PASS  cargo test --test test_coordinator_lifecycle -- --test-threads=1
+      8 passed; 0 failed
+PASS  cargo clippy
+PASS  cargo build --locked
+PASS  WG_SMOKE_SCENARIO=eval_retry_pipeline_drift WG_SMOKE_TIMEOUT_SECS=120 bash tests/smoke/scenarios/eval_retry_pipeline_drift.sh
+      PASS: real service preempted attempt 1, atomically minted/rearmed attempt 2, survived restarts, consumed once, and dispatched downstream
+PASS  cargo install --path . --locked
+
+Notes:
+- Existing repository compiler/clippy warnings remain unchanged and non-fatal.
+- An exploratory `cargo clippy --all-targets --all-features -- -D warnings` was not used as the CI criterion: the optional matrix-sdk dependency overflowed rustc query depth before checking this crate. The repository/CI command is plain `cargo clippy`, which passed.

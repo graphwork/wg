@@ -70,6 +70,9 @@ struct TaskSummaryInfo {
     delayed: usize,
     done_today: usize,
     done_total: usize,
+    evaluation_active: usize,
+    evaluation_repairable: usize,
+    evaluation_operator_required: usize,
 }
 
 /// Recent activity entry
@@ -373,6 +376,9 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             delayed: 0,
             done_today: 0,
             done_total: 0,
+            evaluation_active: 0,
+            evaluation_repairable: 0,
+            evaluation_operator_required: 0,
         });
     }
 
@@ -388,6 +394,9 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
     let mut delayed = 0;
     let mut done_today = 0;
     let mut done_total = 0;
+    let mut evaluation_active = 0;
+    let mut evaluation_repairable = 0;
+    let mut evaluation_operator_required = 0;
 
     let today_start = now
         .date_naive()
@@ -454,7 +463,20 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
                 // Terminal/parked states, not counted in summary
             }
             Status::PendingEval | Status::FailedPendingEval => {
-                in_progress += 1;
+                match worksgood::eval_lifecycle::evaluation_health(&graph, &task.id)
+                    .map(|health| health.state)
+                {
+                    Some(worksgood::eval_lifecycle::EvaluationHealthState::ActiveEvaluation) => {
+                        evaluation_active += 1
+                    }
+                    Some(
+                        worksgood::eval_lifecycle::EvaluationHealthState::RepairablePipelineDrift,
+                    ) => evaluation_repairable += 1,
+                    Some(
+                        worksgood::eval_lifecycle::EvaluationHealthState::OperatorRequiredAmbiguity,
+                    ) => evaluation_operator_required += 1,
+                    None => evaluation_operator_required += 1,
+                }
             }
         }
     }
@@ -466,6 +488,9 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
         delayed,
         done_today,
         done_total,
+        evaluation_active,
+        evaluation_repairable,
+        evaluation_operator_required,
     })
 }
 
@@ -725,6 +750,17 @@ fn print_status(status: &StatusOutput) {
         status.tasks.done_total,
         status.tasks.done_today
     );
+    let evaluation_total = status.tasks.evaluation_active
+        + status.tasks.evaluation_repairable
+        + status.tasks.evaluation_operator_required;
+    if evaluation_total > 0 {
+        println!(
+            "Evaluation: {} active, {} repairable pipeline drift, {} operator-required ambiguity",
+            status.tasks.evaluation_active,
+            status.tasks.evaluation_repairable,
+            status.tasks.evaluation_operator_required
+        );
+    }
 
     // Active cycles
     if !status.cycles.is_empty() {
@@ -887,6 +923,34 @@ mod tests {
         assert_eq!(summary.done_total, 1);
         assert_eq!(summary.done_today, 1);
         assert_eq!(summary.blocked, 1);
+    }
+
+    #[test]
+    fn pending_evaluation_is_not_reported_as_worker_progress() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        let mut source = make_task("source", "Pending evaluation");
+        source.status = Status::PendingEval;
+        source.retry_count = 1;
+        source.evaluation_lifecycle = Some(
+            worksgood::eval_lifecycle::EvaluationLifecycle::for_source(&source),
+        );
+        let evaluator = Task {
+            id: ".evaluate-source".into(),
+            title: "stale evaluator".into(),
+            status: Status::Done,
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(evaluator));
+        save_graph(&graph, &path).unwrap();
+
+        let summary = gather_task_summary(temp_dir.path(), false).unwrap();
+        assert_eq!(summary.in_progress, 0);
+        assert_eq!(summary.evaluation_active, 0);
+        assert_eq!(summary.evaluation_repairable, 0);
+        assert_eq!(summary.evaluation_operator_required, 1);
     }
 
     #[test]

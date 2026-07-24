@@ -2352,6 +2352,15 @@ description = "Exact live writer→satellite-completion→restart-reader regress
 timeout_seconds = 90
 
 [[scenario]]
+name = "eval_retry_pipeline_drift"
+script = "scenarios/eval_retry_pipeline_drift.sh"
+owners = [
+    "fix-eval-retry-pipeline-drift",
+]
+description = "Credential-free live-service regression for the 2026-07-24 retry drift: fake Pi attempt 1 is preempted before completion, the retry transaction atomically mints source attempt 2 and rearms the existing FLIP/evaluator plans without route or reasoning drift, daemon restarts bracket retry/completion/evaluation, only attempt-2 durable evidence is consumed exactly once, status/show/why-blocked report evaluation health rather than worker progress, and downstream dispatch proves the parent was not stranded PendingEval."
+timeout_seconds = 120
+
+[[scenario]]
 name = "disk_sentinel_admission_cleanup"
 script = "scenarios/disk_sentinel_admission_cleanup.sh"
 owners = [

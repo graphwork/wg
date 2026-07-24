@@ -376,6 +376,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     // Circuit-broken: mark incomplete for evaluator review (not auto-fail)
                     task.status = Status::Incomplete;
                     task.assigned = None;
+                    task.retry_count = task.retry_count.saturating_add(1);
                     if !task.tags.contains(&CIRCUIT_BROKEN_TAG.to_string()) {
                         task.tags.push(CIRCUIT_BROKEN_TAG.to_string());
                     }
@@ -441,9 +442,21 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     {
                         fresh.status = local.status;
                         fresh.assigned = local.assigned.clone();
+                        fresh.started_at = None;
                         fresh.retry_count = local.retry_count;
                         fresh.failure_reason = local.failure_reason.clone();
                         fresh.log = local.log.clone();
+                    }
+                }
+                for kill in &result.killed {
+                    if graph.get_task(&kill.task_id).is_some_and(|task| {
+                        matches!(task.status, Status::Open | Status::Incomplete)
+                    }) {
+                        worksgood::eval_lifecycle::begin_source_attempt(
+                            fresh_graph,
+                            &kill.task_id,
+                            "zero-output coordinator retry",
+                        );
                     }
                 }
                 true

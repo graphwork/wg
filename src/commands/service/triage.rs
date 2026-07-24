@@ -319,6 +319,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 if dead_attempt_exhausted_disk(dir, output_file) {
                     task.status = Status::Open;
                     task.assigned = None;
+                    task.started_at = None;
                     task.failure_class = Some(FailureClass::ResourceExhaustedDisk);
                     task.failure_reason = Some(
                         "Disk resource exhausted before terminal bookkeeping; source preserved for safe retry-in-place"
@@ -357,6 +358,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             );
                             task.status = Status::Open;
                             task.assigned = None;
+                            task.started_at = None;
                             task.retry_count += 1;
                             try_escalate_model(task, dir, &config);
                             task.log.push(LogEntry {
@@ -374,6 +376,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     // Existing behavior: simple unclaim
                     task.status = Status::Open;
                     task.assigned = None;
+                    task.started_at = None;
                     task.retry_count += 1;
                     try_escalate_model(task, dir, &config);
                     let reason_msg = match reason {
@@ -486,6 +489,8 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                 {
                     fresh.status = local.status;
                     fresh.assigned = local.assigned.clone();
+                    fresh.started_at = local.started_at.clone();
+                    fresh.retry_count = local.retry_count;
                     fresh.failure_class = local.failure_class;
                     fresh.failure_reason = local.failure_reason.clone();
                     fresh.log = local.log.clone();
@@ -493,6 +498,22 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     fresh.token_usage = local.token_usage.clone();
                     fresh.model = local.model.clone();
                     fresh.tried_models = local.tried_models.clone();
+                }
+            }
+            // A dead implementation worker that is reset to Open starts a new
+            // semantic source attempt. Mint/rearm in this same atomic graph
+            // transaction; evaluation satellites (dot tasks) are transport
+            // retries and are intentionally ignored by the helper.
+            for (_, task_id, _, _, _) in &dead {
+                if graph
+                    .get_task(task_id)
+                    .is_some_and(|task| task.status == Status::Open)
+                {
+                    worksgood::eval_lifecycle::begin_source_attempt(
+                        fresh_graph,
+                        task_id,
+                        "coordinator dead-agent retry",
+                    );
                 }
             }
             true
@@ -1122,6 +1143,7 @@ fn apply_triage_verdict(
 
             task.status = Status::Open;
             task.assigned = None;
+            task.started_at = None;
             task.retry_count += 1;
 
             // Attempt model escalation (rotate to next model in ranked tier list)
@@ -1182,6 +1204,7 @@ fn apply_triage_verdict(
 
             task.status = Status::Open;
             task.assigned = None;
+            task.started_at = None;
             task.retry_count += 1;
 
             // Attempt model escalation (rotate to next model in ranked tier list)

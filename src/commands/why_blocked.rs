@@ -11,6 +11,7 @@ struct BlockingNode {
     status: Status,
     is_phantom: bool,
     failure_reason: Option<String>,
+    evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     eval_bypasses: Vec<(String, Status)>,
     children: Vec<BlockingNode>,
 }
@@ -62,6 +63,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
     if json {
         print_json(
+            &graph,
             task,
             &blocking_tree,
             &root_blockers,
@@ -70,6 +72,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         )?;
     } else {
         print_human(
+            &graph,
             task,
             &blocking_tree,
             &root_blockers,
@@ -96,6 +99,8 @@ fn build_blocking_tree(
         status,
         is_phantom,
         failure_reason: task.and_then(|task| task.failure_reason.clone()),
+        evaluation_health: task
+            .and_then(|task| worksgood::eval_lifecycle::evaluation_health(graph, &task.id)),
         eval_bypasses: vec![],
         children: vec![],
     };
@@ -127,6 +132,7 @@ fn build_blocking_tree(
                         status: remote.status,
                         is_phantom: false,
                         failure_reason: None,
+                        evaluation_health: None,
                         eval_bypasses: vec![],
                         children: vec![], // Don't recurse into remote graphs
                     };
@@ -157,6 +163,7 @@ fn build_blocking_tree(
                     status: Status::Open,
                     is_phantom: true,
                     failure_reason: None,
+                    evaluation_health: None,
                     eval_bypasses: vec![],
                     children: vec![],
                 };
@@ -214,6 +221,7 @@ fn count_blockers_recursive(node: &BlockingNode, count: &mut usize, visited: &mu
 }
 
 fn print_human(
+    graph: &WorkGraph,
     task: &Task,
     tree: &BlockingNode,
     root_blockers: &[RootBlocker],
@@ -241,6 +249,13 @@ fn print_human(
             if let Some(reason) = task.failure_reason.as_deref() {
                 println!("Lifecycle health: {}", reason);
             }
+        }
+        if let Some(health) = worksgood::eval_lifecycle::evaluation_health(graph, &task.id) {
+            println!(
+                "Evaluation health: {} (pipeline={}, source_attempt={})",
+                health.state, health.pipeline_id, health.source_attempt
+            );
+            println!("  {}", health.diagnostic);
         }
         return;
     }
@@ -328,6 +343,12 @@ fn print_tree(node: &BlockingNode, prefix: &str, depth: usize) {
         if let Some(reason) = node.failure_reason.as_deref() {
             println!("{}     lifecycle health: {}", prefix, reason);
         }
+        if let Some(health) = node.evaluation_health.as_ref() {
+            println!(
+                "{}     evaluation health: {} — {}",
+                prefix, health.state, health.diagnostic
+            );
+        }
     }
 
     // Calculate the prefix for children
@@ -343,6 +364,7 @@ fn print_tree(node: &BlockingNode, prefix: &str, depth: usize) {
 }
 
 fn print_json(
+    graph: &WorkGraph,
     task: &Task,
     tree: &BlockingNode,
     root_blockers: &[RootBlocker],
@@ -379,6 +401,7 @@ fn print_json(
         "blocking_chain": tree_to_json(tree),
         "root_blockers": all_root_blockers,
         "total_blockers": total,
+        "evaluation_health": worksgood::eval_lifecycle::evaluation_health(graph, &task.id),
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -395,6 +418,9 @@ fn tree_to_json(node: &BlockingNode) -> serde_json::Value {
     }
     if let Some(reason) = node.failure_reason.as_deref() {
         obj["failure_reason"] = serde_json::Value::String(reason.to_string());
+    }
+    if let Some(health) = node.evaluation_health.as_ref() {
+        obj["evaluation_health"] = serde_json::to_value(health).unwrap_or_default();
     }
     obj["evaluation_system_bypasses"] = serde_json::Value::Array(
         node.eval_bypasses

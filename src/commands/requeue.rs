@@ -69,6 +69,12 @@ pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
             ),
         });
 
+        worksgood::eval_lifecycle::begin_source_attempt(
+            graph,
+            id,
+            "triage requeue",
+        );
+
         true
     })
     .context("Failed to modify graph")?;

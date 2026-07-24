@@ -423,7 +423,9 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
             && task.status == Status::InProgress
         {
             task.status = Status::Open;
+            task.retry_count = task.retry_count.saturating_add(1);
             task.assigned = None;
+            task.started_at = None;
 
             if pause {
                 task.paused = true;
@@ -445,6 +447,15 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str, pause: bool) -> Resul
                 });
             }
 
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                task_id,
+                if pause {
+                    "operator preemption (paused before redispatch)"
+                } else {
+                    "operator preemption with redispatch"
+                },
+            );
             return true;
         }
         false

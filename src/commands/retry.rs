@@ -203,23 +203,14 @@ pub fn run(
         );
         downstream_cleared = report.cleared;
 
-        // A terminal evaluation verdict belongs to the completed source
-        // attempt. An explicit retry reuses the exact persisted routes but
-        // mints a new pipeline identity and reopens the existing satellites;
-        // otherwise their old Done state would scorelessly bypass evaluation.
-        let source_for_eval_retry = graph
-            .get_task(id)
-            .filter(|source| {
-                source
-                    .evaluation_lifecycle
-                    .as_ref()
-                    .and_then(|lifecycle| lifecycle.consumed_verdict.as_ref())
-                    .is_some()
-            })
-            .cloned();
-        if let Some(source) = source_for_eval_retry {
-            worksgood::eval_lifecycle::rearm_satellites_for_source(graph, &source);
-        }
+        // Retry is a new source execution attempt even when the previous
+        // worker was preempted before producing a verdict. Mint the parent and
+        // rearm both satellites in this same graph transaction.
+        worksgood::eval_lifecycle::begin_source_attempt(
+            graph,
+            id,
+            if fresh { "fresh retry" } else { "resume-in-place retry" },
+        );
 
         true
     })
@@ -304,9 +295,9 @@ pub fn run(
 /// task to Open, increment retry_count. The dispatcher's next tick will
 /// respawn a fresh agent on it.
 ///
-/// Idempotent: if the agent is already dead the kill is a no-op, and the
-/// reconciler may have already reset the task before us — we still bump
-/// retry_count + log the retry.
+/// Idempotent across the graceful-kill race: if the reconciler has already
+/// reset the killed execution to an open, unclaimed retry generation, this
+/// path logs the retry without incrementing or minting another generation.
 fn retry_in_progress(
     dir: &Path,
     path: &Path,
@@ -324,6 +315,7 @@ fn retry_in_progress(
     };
     let task = task_snapshot.ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
     let assigned = task.assigned.clone();
+    let requested_retry_count = task.retry_count.saturating_add(1);
 
     let mut killed_agent: Option<(String, u32)> = None;
     if let Some(agent_id) = &assigned
@@ -362,6 +354,7 @@ fn retry_in_progress(
     let mut attempt: u32 = 0;
     let mut tier_escalation_msg: Option<String> = None;
     let mut downstream_cleared: Vec<String> = Vec::new();
+    let mut retry_generation_already_started = false;
 
     // Re-snapshot the registry — we just marked the killed agent Dead
     // above, so the eager walk now sees that state and will clear any
@@ -377,8 +370,15 @@ fn retry_in_progress(
             }
         };
 
-        // Honor max_retries before incrementing.
-        if let Some(max) = task.max_retries
+        // The dead-agent reconciler can win the race while the graceful kill
+        // waits. Its open, unclaimed state is this same requested retry, not a
+        // second source execution attempt.
+        retry_generation_already_started =
+            task.status == Status::Open && task.assigned.is_none();
+
+        // Honor max_retries before starting a generation ourselves.
+        if !retry_generation_already_started
+            && let Some(max) = task.max_retries
             && task.retry_count >= max
         {
             error = Some(anyhow::anyhow!(
@@ -390,7 +390,9 @@ fn retry_in_progress(
             return false;
         }
 
-        task.retry_count += 1;
+        if !retry_generation_already_started {
+            task.retry_count = task.retry_count.max(requested_retry_count);
+        }
         attempt = task.retry_count;
         task.status = Status::Open;
         task.assigned = None;
@@ -448,6 +450,18 @@ fn retry_in_progress(
             id,
         );
         downstream_cleared = report.cleared;
+
+        if !retry_generation_already_started {
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                id,
+                if fresh {
+                    "fresh in-progress retry"
+                } else {
+                    "resume-in-place in-progress retry"
+                },
+            );
+        }
 
         true
     })
@@ -554,6 +568,122 @@ mod tests {
         path
     }
 
+    fn source_with_eval_satellites(status: Status) -> Vec<Task> {
+        use worksgood::config::{Config, ReasoningLevel, RoleModelConfig};
+        use worksgood::eval_lifecycle::{
+            AgencyStage, DispatchSelectionSource, EvaluationLifecycle, build_plan,
+        };
+
+        let initial = make_task("t1", "Test task", Status::InProgress);
+        let mut config = Config::default();
+        let route = RoleModelConfig {
+            provider: None,
+            model: Some("pi:openai-codex:gpt-5.6-sol".into()),
+            tier: None,
+            endpoint: Some("pinned-endpoint".into()),
+            reasoning: Some(ReasoningLevel::Xhigh),
+        };
+        config.models.evaluator = Some(route.clone());
+        config.models.flip_inference = Some(route.clone());
+        config.models.flip_comparison = Some(route);
+        let flip_plan = build_plan(
+            &config,
+            &initial,
+            ".flip-t1",
+            DispatchSelectionSource::ScaffoldConfig,
+        )
+        .unwrap();
+        assert!(
+            flip_plan
+                .calls
+                .iter()
+                .any(|call| call.stage == AgencyStage::FlipComparison)
+        );
+        let eval_plan = build_plan(
+            &config,
+            &initial,
+            ".evaluate-t1",
+            DispatchSelectionSource::ScaffoldConfig,
+        )
+        .unwrap();
+        let mut source = initial;
+        source.status = status;
+        source.retry_count = 1;
+        let mut attempt_one = source.clone();
+        attempt_one.retry_count = 0;
+        source.evaluation_lifecycle = Some(EvaluationLifecycle::for_source(&attempt_one));
+        vec![
+            source,
+            Task {
+                id: ".flip-t1".into(),
+                title: "flip".into(),
+                status: Status::Done,
+                model: Some("pi:openai-codex:gpt-5.6-sol".into()),
+                reasoning: Some(ReasoningLevel::Xhigh),
+                agency_dispatch: Some(flip_plan),
+                ..Task::default()
+            },
+            Task {
+                id: ".evaluate-t1".into(),
+                title: "eval".into(),
+                status: Status::Done,
+                model: Some("pi:openai-codex:gpt-5.6-sol".into()),
+                reasoning: Some(ReasoningLevel::Xhigh),
+                agency_dispatch: Some(eval_plan),
+                ..Task::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn test_failed_retry_mints_parent_and_rearms_unconsumed_attempt_routes() {
+        let dir = tempdir().unwrap();
+        let tasks = source_with_eval_satellites(Status::Failed);
+        let old_calls: Vec<_> = tasks[1..]
+            .iter()
+            .map(|task| task.agency_dispatch.as_ref().unwrap().calls.clone())
+            .collect();
+        setup_workgraph(dir.path(), tasks);
+
+        run(dir.path(), "t1", false, false, None).unwrap();
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.source_attempt, 2);
+        for (index, task_id) in [".flip-t1", ".evaluate-t1"].iter().enumerate() {
+            let satellite = graph.get_task(task_id).unwrap();
+            let plan = satellite.agency_dispatch.as_ref().unwrap();
+            assert_eq!(satellite.status, Status::Open);
+            assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
+            assert_eq!(plan.source_attempt, 2);
+            assert_eq!(plan.calls, old_calls[index]);
+        }
+    }
+
+    #[test]
+    fn test_fresh_failed_retry_rearms_same_immutable_routes() {
+        let dir = tempdir().unwrap();
+        let tasks = source_with_eval_satellites(Status::Failed);
+        let old_calls: Vec<_> = tasks[1..]
+            .iter()
+            .map(|task| task.agency_dispatch.as_ref().unwrap().calls.clone())
+            .collect();
+        setup_workgraph(dir.path(), tasks);
+
+        run(dir.path(), "t1", false, true, None).unwrap();
+        let graph = load_graph(&graph_path(dir.path())).unwrap();
+        let source = graph.get_task("t1").unwrap();
+        let lifecycle = source.evaluation_lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.source_attempt, 2);
+        for (index, task_id) in [".flip-t1", ".evaluate-t1"].iter().enumerate() {
+            let satellite = graph.get_task(task_id).unwrap();
+            let plan = satellite.agency_dispatch.as_ref().unwrap();
+            assert_eq!(satellite.status, Status::Open);
+            assert_eq!(plan.pipeline_id, lifecycle.pipeline_id);
+            assert_eq!(plan.calls, old_calls[index]);
+        }
+    }
+
     #[test]
     fn test_retry_failed_task_transitions_to_open() {
         let dir = tempdir().unwrap();
@@ -657,6 +787,27 @@ mod tests {
         assert!(
             task.log.iter().any(|e| e.message.contains("hung 20min")),
             "reason must be recorded in task log"
+        );
+    }
+
+    #[test]
+    fn test_retry_in_progress_does_not_double_count_reconciler_race() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Open);
+        task.retry_count = 1;
+        setup_workgraph(dir_path, vec![task]);
+
+        let path = graph_path(dir_path);
+        retry_in_progress(dir_path, &path, "t1", false, false, None).unwrap();
+
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.retry_count, 1, "same preemption must not count twice");
+        assert!(
+            task.evaluation_lifecycle.is_none(),
+            "same preemption must not mint another evaluation generation"
         );
     }
 

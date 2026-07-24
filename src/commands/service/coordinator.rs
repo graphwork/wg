@@ -3209,6 +3209,8 @@ fn spawn_eval_inline(
                 linked_eval_verdict: None,
                 consumed_verdict: None,
                 repair_version: 0,
+                repair_attempts: 0,
+                diagnostic: None,
             }
         });
         if lifecycle.pipeline_id != plan.pipeline_id {
@@ -4189,6 +4191,8 @@ fn park_agency_execution_error(graph_path: &Path, task_id: &str, error: &anyhow:
                 linked_eval_verdict: None,
                 consumed_verdict: None,
                 repair_version: 0,
+                repair_attempts: 0,
+                diagnostic: None,
             }
         });
         lifecycle.schedule_attempts = lifecycle.schedule_attempts.saturating_add(1);

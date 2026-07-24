@@ -156,6 +156,8 @@ struct TaskDetails {
     meta_eval_attempts: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     evaluations: Vec<EvalSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluation_health: Option<worksgood::eval_lifecycle::EvaluationHealth>,
     /// Snapshot of the task's worktree (when one exists). Populated for
     /// retried tasks so the user can inspect prior WIP before deciding to
     /// resume in-place vs `wg retry --fresh`.
@@ -670,6 +672,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         rescued: task.rescued,
         meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
+        evaluation_health: worksgood::eval_lifecycle::evaluation_health(&graph, id),
         worktree_state: gather_worktree_state(dir, id),
         cron: gather_cron_diagnostics(&task),
     };
@@ -848,6 +851,13 @@ fn print_human_readable(details: &TaskDetails) {
             details.id,
             0.7_f64, // shown as human hint; actual threshold from config
         );
+    }
+    if let Some(health) = details.evaluation_health.as_ref() {
+        println!(
+            "evaluation_health: {}  (pipeline={}, source_attempt={})",
+            health.state, health.pipeline_id, health.source_attempt
+        );
+        println!("  {}", health.diagnostic);
     }
     if details.meta_eval_attempts > 0 {
         println!("meta_eval_attempts: {}", details.meta_eval_attempts);
@@ -1598,6 +1608,7 @@ mod tests {
             rescued: false,
             meta_eval_attempts: 0,
             evaluations: vec![],
+            evaluation_health: None,
             worktree_state: None,
             cron: None,
         };

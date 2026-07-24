@@ -229,9 +229,14 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
             }
         }
 
+        let starts_new_attempt = task.status == Status::InProgress;
         prev_assigned = task.assigned.clone();
         task.status = Status::Open;
         task.assigned = None;
+        if starts_new_attempt {
+            task.retry_count = task.retry_count.saturating_add(1);
+            task.started_at = None;
+        }
 
         let log_message = match &prev_assigned {
             Some(actor_id) => format!("Task unclaimed (was assigned to @{})", actor_id),
@@ -243,6 +248,14 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
             user: Some(worksgood::current_user()),
             message: log_message,
         });
+
+        if starts_new_attempt {
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                id,
+                "explicit unclaim redispatch",
+            );
+        }
 
         true
     })

@@ -152,6 +152,11 @@ fn run_inner(
             retry_count = task.retry_count;
             max_retries = task.max_retries;
             resource_retry_queued = true;
+            worksgood::eval_lifecycle::begin_source_attempt(
+                graph,
+                &id_owned,
+                "disk-exhaustion retry-in-place",
+            );
             return true;
         }
 
