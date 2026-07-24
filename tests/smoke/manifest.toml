@@ -2442,3 +2442,12 @@ owners = [
 ]
 description = "Candidate-binary live Linux /proc regression for required worktree isolation: an unknown dirty agent-1 directory with missing Git metadata is preserved byte-for-byte, spawn atomically reallocates agent-2, Git porcelain/path/branch/owner metadata agree, and both the real generated wrapper PID plus its nested shell handler PID have the isolated worktree cwd (never the shared checkout). Companion Rust tests cover corrupt/mismatched/interrupted metadata, live/terminal ownership, every injected transaction boundary, concurrency, dirty preservation, and explicit shared mode. Never globally installs the candidate."
 timeout_seconds = 180
+
+[[scenario]]
+name = "retained_worktree_slow_sweep_does_not_starve_dispatch"
+script = "scenarios/retained_worktree_slow_sweep_does_not_starve_dispatch.sh"
+owners = [
+    "bound-and-de",
+]
+description = "Candidate-binary daemon regression for a retained worktree on a simulated hung network filesystem: a real cleanup-marked Git worktree uses a FIFO marker so the maintenance worker blocks inside the retained scan while a ready shell task must still dispatch on the real coordinator loop. Proves retained read_dir/metadata/git/source work is off the dispatch-critical tick, the source remains fail-closed, timer/fs wakeups coalesce behind one single-flight sweep, diagnostics remain bounded, and legacy per-worktree skip spam is absent. Credential-free."
+timeout_seconds = 120

@@ -2492,6 +2492,36 @@ pub fn run_daemon(
     // coordinator agent reads them when building context for each interaction.
     let event_log = coordinator_agent::new_event_log();
 
+    // Retained source worktrees may live on a slow or hung network filesystem.
+    // Keep every read_dir/metadata/git/source probe off the dispatch-critical
+    // coordinator thread. The lane is single-flight and its capacity-1 wake
+    // queue coalesces timer/fs-watch bursts.
+    let cleanup_logger = {
+        let logger = logger.clone();
+        Arc::new(move |warning: bool, message: &str| {
+            if warning {
+                logger.warn(message);
+            } else {
+                logger.info(message);
+            }
+        }) as worktree::CleanupLog
+    };
+    let retained_cleanup_lane = match worktree::RetainedWorktreeCleanupLane::start(
+        dir.clone(),
+        cleanup_logger,
+    ) {
+        Ok(lane) => {
+            lane.request("daemon-start");
+            Some(lane)
+        }
+        Err(error) => {
+            logger.warn(&format!(
+                    "Retained-worktree cleanup lane unavailable; retaining source fail-closed: {error:#}"
+                ));
+            None
+        }
+    };
+
     // Spawn the persistent coordinator agent(s) (LLM sessions for chat).
     //
     // Bug A (orphan chat supervisor) regression-guard: enumerate the live
@@ -2706,6 +2736,13 @@ pub fn run_daemon(
     let mut registry_refresh_state = RegistryRefreshState::default();
 
     while running {
+        // A request is only an in-memory try_send. It never touches a retained
+        // path and cannot wait behind a running sweep; the capacity-1 lane
+        // folds all overlapping timer/fs-watch wakes into one deferred pass.
+        if let Some(lane) = retained_cleanup_lane.as_ref() {
+            lane.request("daemon-wake");
+        }
+
         // Reap zombie child processes (agents that have exited).
         // Even though agents call setsid() to create a new session, they are
         // still children of the daemon (parent-child is set at fork, not
@@ -3611,6 +3648,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
 
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
+    let cleanup = worktree::load_cleanup_lane_snapshot(dir);
 
     // Log file info
     let log_path = log_file_path(dir);
@@ -3647,6 +3685,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "tasks_ready": coord.tasks_ready,
                 "agents_spawned_last_tick": coord.agents_spawned,
             },
+            "retained_worktree_cleanup": cleanup,
             "log": {
                 "path": log_path_str,
                 "exists": log_exists,
@@ -3732,6 +3771,19 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             );
         } else {
             println!("  No ticks yet");
+        }
+        if let Some(cleanup) = cleanup {
+            println!(
+                "  Retained cleanup: {:?} (duration={}ms, candidates={}, examined={}, cached={}, retained={}, removed={}, coalesced={})",
+                cleanup.phase,
+                cleanup.last_duration_ms,
+                cleanup.last_report.candidates,
+                cleanup.last_report.examined,
+                cleanup.last_report.cache_hits,
+                cleanup.last_report.retained,
+                cleanup.last_report.removed,
+                cleanup.coalesced,
+            );
         }
         println!("Log: {}", log_path_str);
         if !recent_errors.is_empty() || !recent_fatals.is_empty() {

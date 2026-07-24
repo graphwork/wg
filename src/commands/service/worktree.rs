@@ -2,9 +2,9 @@
 //!
 //! Two-tier cleanup model:
 //! - **Atomic (happy path):** Agent wrapper writes `.wg-cleanup-pending` marker
-//!   at exit; coordinator tick calls [`sweep_cleanup_pending_worktrees`] to reap
-//!   marked worktrees whose agent is dead and task is terminal. Idempotent and
-//!   crash-safe — a missed sweep is retried on the next tick.
+//!   at exit; the daemon's single-flight background maintenance lane reaps
+//!   marked worktrees after all fail-closed safety gates pass. Coordinator ticks
+//!   never touch retained paths. Missed/coalesced wakes are retried off-thread.
 //! - **GC (fallback):** `wg gc --worktrees` (in [`super::super::worktree_gc`])
 //!   handles worktrees orphaned by kills, crashes, or bugs. Same safety predicate
 //!   plus an uncommitted-changes gate. User-invoked, dry-run by default.
@@ -16,14 +16,17 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, anyhow};
-use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use worksgood::config::ResourceManagementConfig;
 use worksgood::metrics::{CleanupTimer, ResourceRecoveryStats, record_recovery_branch};
 
@@ -39,11 +42,11 @@ pub const WORKTREES_DIR: &str = ".wg-worktrees";
 /// Two-phase atomic cleanup:
 /// 1. Wrapper writes this marker at agent exit (can't do `git worktree remove --force`
 ///    inline — see `test_wrapper_preserves_worktree` sacred invariant).
-/// 2. Coordinator tick sweeps marked worktrees whose agent is not live AND
-///    whose task is in a terminal status.
+/// 2. The daemon's background cleanup lane sweeps marked worktrees whose agent
+///    is not live and whose evaluation + merge evidence is affirmative.
 ///
 /// Idempotent + crash-safe: if a crash happens between marker write and sweep,
-/// the next tick retries. If the wrapper never writes the marker (e.g. kill -9),
+/// a later coalesced maintenance wake retries. If the wrapper never writes the marker (e.g. kill -9),
 /// the existing dead-agent reaper still sees the agent as dead and can
 /// fall back to `cleanup_orphaned_worktrees()`.
 pub const CLEANUP_PENDING_MARKER: &str = ".wg-cleanup-pending";
@@ -60,8 +63,8 @@ pub const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
 /// Determine whether a task's worktree is safe to reap under the retention policy.
 ///
 /// A worktree is **only** safe to reap when BOTH:
-/// 1. The task's evaluation passed — `task.status == Done` AND any
-///    `.evaluate-<task_id>` task is also `Done`.
+/// 1. The task's evaluation passed — `task.status == Done` AND an explicit
+///    `.evaluate-<task_id>` task exists and is also `Done`.
 /// 2. The branch has been merged into `main` (or `master`) — i.e., the branch
 ///    tip is reachable from the main branch, so all commits are permanently
 ///    captured.
@@ -96,9 +99,12 @@ pub fn is_safe_to_reap(
         return false;
     }
     let eval_id = format!(".evaluate-{}", task_id);
-    if let Some(eval) = graph.get_task(&eval_id)
-        && eval.status != worksgood::graph::Status::Done
-    {
+    let Some(eval) = graph.get_task(&eval_id) else {
+        // Missing evaluation evidence is not a pass. Retain the source until
+        // the graph contains an affirmative completed evaluator record.
+        return false;
+    };
+    if eval.status != worksgood::graph::Status::Done {
         return false;
     }
     let branch = match branch {
@@ -1018,138 +1024,722 @@ pub fn reap_dead_target_dirs(dir: &Path) -> Result<(usize, u64)> {
     Ok((count, bytes_freed))
 }
 
-/// Sweep worktrees marked `CLEANUP_PENDING_MARKER` by their agent wrappers.
-///
-/// The agent wrapper touches this marker after its merge-back section runs
-/// (regardless of task success/failure). This function is called from each
-/// coordinator tick to actually perform the removal atomically from the
-/// user's perspective (agent completes → next tick cleans up).
-///
-/// A worktree is removed iff ALL of:
-/// 1. It has the `CLEANUP_PENDING_MARKER` file.
-/// 2. Its owning agent is NOT live (per `AgentEntry::is_live`), OR
-///    the agent has no registry entry.
-/// 3. Its owning task is in a terminal status (Done/Failed/Abandoned)
-///    OR is missing from the graph.
-///
-/// Returns the number of worktrees successfully removed. Errors on individual
-/// worktrees are logged but do not abort the sweep (best-effort).
-pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
+/// Maximum retained entries examined by one maintenance-lane batch.
+/// A continuation is queued when more remain; the dispatcher never waits for it.
+pub const CLEANUP_SWEEP_BATCH_SIZE: usize = 32;
+
+/// Ordinary wakeups are folded into at most one retained sweep per interval.
+/// Explicit continuations for a bounded batch bypass this delay.
+pub const CLEANUP_SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(5);
+
+const CLEANUP_LANE_STATUS_FILE: &str = "worktree-cleanup.json";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CleanupSweepReport {
+    pub candidates: usize,
+    pub examined: usize,
+    pub cache_hits: usize,
+    pub invalidated: usize,
+    pub merge_checks: usize,
+    pub source_checks: usize,
+    pub retained: usize,
+    pub removed: usize,
+    pub errors: usize,
+    pub deferred: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupLanePhase {
+    #[default]
+    Idle,
+    Due,
+    Running,
+    Deferred,
+    Completed,
+    Error,
+}
+
+/// Small persisted diagnostic read by `wg service status`. All filesystem I/O
+/// that updates this record is performed by the maintenance worker, never by a
+/// dispatch-critical coordinator tick.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CleanupLaneSnapshot {
+    pub phase: CleanupLanePhase,
+    pub requests: u64,
+    pub coalesced: u64,
+    pub batches_completed: u64,
+    pub last_trigger: Option<String>,
+    pub last_completed_at: Option<String>,
+    pub last_duration_ms: u64,
+    pub last_report: CleanupSweepReport,
+    pub last_error: Option<String>,
+}
+
+pub fn load_cleanup_lane_snapshot(dir: &Path) -> Option<CleanupLaneSnapshot> {
+    let bytes = fs::read(dir.join("service").join(CLEANUP_LANE_STATUS_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn run_background_disk_maintenance(dir: &Path, log: &CleanupLog) {
+    let config = worksgood::config::Config::load_or_default(dir);
+    let resources = &config.coordinator.resource_management;
+    let was_due = worksgood::disk_sentinel::load_snapshot(dir)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| chrono::DateTime::parse_from_rfc3339(&snapshot.generated_at).ok())
+        .map(|generated| {
+            (chrono::Utc::now() - generated.with_timezone(&chrono::Utc)).num_seconds()
+                >= resources.disk_scan_interval_seconds as i64
+        })
+        .unwrap_or(true);
+    match worksgood::disk_sentinel::refresh_if_due(dir, resources) {
+        Ok(Some(snapshot)) if snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy => {
+            log(
+                true,
+                &format!("Disk sentinel {:?}: {}", snapshot.level, snapshot.reason),
+            );
+        }
+        Ok(_) => {}
+        Err(error) => log(true, &format!("Disk sentinel warning: {error:#}")),
+    }
+    if was_due {
+        match worksgood::disk_sentinel::cleanup_owned(dir, resources, true) {
+            Ok(report)
+                if report.reaped > 0
+                    || report.compressed_files > 0
+                    || report.deduplicated_files > 0 =>
+            {
+                log(
+                    false,
+                    &format!(
+                        "Disk cleanup: reaped {} owned target(s), freed {} bytes; compressed {} stream(s), saved {} bytes; deduplicated {}, saved {} bytes",
+                        report.reaped,
+                        report.bytes_freed,
+                        report.compressed_files,
+                        report.compression_bytes_saved,
+                        report.deduplicated_files,
+                        report.deduplication_bytes_saved
+                    ),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => log(true, &format!("Disk cleanup warning: {error:#}")),
+        }
+    }
+}
+
+fn save_cleanup_lane_snapshot(dir: &Path, snapshot: &CleanupLaneSnapshot) {
+    let service = dir.join("service");
+    if fs::create_dir_all(&service).is_err() {
+        return;
+    }
+    let path = service.join(CLEANUP_LANE_STATUS_FILE);
+    let tmp = service.join(format!(".{CLEANUP_LANE_STATUS_FILE}.tmp"));
+    let Ok(bytes) = serde_json::to_vec_pretty(snapshot) else {
+        return;
+    };
+    if fs::write(&tmp, bytes).is_ok() {
+        let _ = fs::rename(tmp, path);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetainedDecisionKey {
+    marker: Vec<u8>,
+    ownership: String,
+    task_id: Option<String>,
+    task_status: Option<String>,
+    eval_status: Option<String>,
+    branch: Option<String>,
+    branch_head: Option<String>,
+    main_heads: String,
+}
+
+#[derive(Default)]
+struct RetainedSweepCache {
+    decisions: HashMap<PathBuf, RetainedDecisionKey>,
+    cursor: usize,
+}
+
+fn read_repo_git_dir(project_root: &Path) -> Option<PathBuf> {
+    let dot_git = project_root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = fs::read_to_string(dot_git).ok()?;
+    let raw = pointer.trim().strip_prefix("gitdir: ")?;
+    let path = PathBuf::from(raw);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        project_root.join(path)
+    })
+}
+
+fn read_ref_oid(project_root: &Path, branch: &str) -> Option<String> {
+    let git_dir = read_repo_git_dir(project_root)?;
+    let reference = format!("refs/heads/{branch}");
+    let loose = git_dir.join(&reference);
+    if let Ok(value) = fs::read_to_string(loose) {
+        return Some(value.trim().to_string());
+    }
+    let packed = fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    packed.lines().find_map(|line| {
+        let (oid, name) = line.split_once(' ')?;
+        (name == reference).then(|| oid.to_string())
+    })
+}
+
+/// Read branch identity without spawning git. The worktree `.git` pointer and
+/// HEAD/ref files are enough to key a retained negative decision. If any piece
+/// is unavailable we return `None`, which is fail-closed.
+fn branch_from_worktree_metadata(worktree_path: &Path) -> Option<String> {
+    let pointer = fs::read_to_string(worktree_path.join(".git")).ok()?;
+    let raw = pointer.trim().strip_prefix("gitdir: ")?;
+    let git_dir = {
+        let path = PathBuf::from(raw);
+        if path.is_absolute() {
+            path
+        } else {
+            worktree_path.join(path)
+        }
+    };
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
+}
+
+fn main_head_key(project_root: &Path) -> String {
+    ["main", "master"]
+        .into_iter()
+        .map(|name| {
+            format!(
+                "{name}={}",
+                read_ref_oid(project_root, name).unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn inferred_task_id(name: &str, branch: Option<&str>) -> Option<String> {
+    branch
+        .and_then(|branch| branch.strip_prefix(&format!("wg/{name}/")))
+        .map(str::to_string)
+}
+
+fn recorded_worktree_path_matches(recorded: &str, worktree_path: &Path) -> bool {
+    let recorded = Path::new(recorded);
+    if recorded == worktree_path {
+        return true;
+    }
+    matches!(
+        (recorded.canonicalize(), worktree_path.canonicalize()),
+        (Ok(recorded), Ok(actual)) if recorded == actual
+    )
+}
+
+/// Return a stable ownership/liveness key, a preferred task id, and whether
+/// ownership currently makes deletion ineligible. A live occupant always
+/// retains. Conflicting task ownership also retains fail-closed.
+fn ownership_state(
+    registry: &worksgood::service::registry::AgentRegistry,
+    name: &str,
+    worktree_path: &Path,
+) -> (String, Option<String>, bool) {
+    let path_text = worktree_path.to_string_lossy();
+    let mut matching = registry
+        .agents
+        .values()
+        .filter(|agent| {
+            agent.id == name
+                || agent.worktree_path.as_deref().is_some_and(|path| {
+                    path == path_text || recorded_worktree_path_matches(path, worktree_path)
+                })
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut tasks = matching
+        .iter()
+        .map(|agent| agent.task_id.clone())
+        .collect::<Vec<_>>();
+    tasks.sort();
+    tasks.dedup();
+    let live = matching
+        .iter()
+        .any(|agent| agent.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS));
+    let conflict = tasks.len() > 1;
+    let preferred = registry
+        .agents
+        .get(name)
+        .map(|agent| agent.task_id.clone())
+        .or_else(|| (tasks.len() == 1).then(|| tasks[0].clone()));
+    let signature = matching
+        .iter()
+        .map(|agent| {
+            format!(
+                "{}:{}:{:?}:{}:{}:{}",
+                agent.id,
+                agent.task_id,
+                agent.status,
+                agent.pid,
+                agent.last_heartbeat,
+                agent.worktree_path.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    (
+        format!("{signature};live={live};conflict={conflict}"),
+        preferred,
+        live || conflict,
+    )
+}
+
+fn task_state_key(
+    graph: &worksgood::graph::WorkGraph,
+    task_id: Option<&str>,
+) -> (Option<String>, Option<String>, bool) {
+    let Some(task_id) = task_id else {
+        return (None, None, false);
+    };
+    let task_status = graph
+        .get_task(task_id)
+        .map(|task| format!("{:?}", task.status));
+    let eval_status = graph
+        .get_task(&format!(".evaluate-{task_id}"))
+        .map(|task| format!("{:?}", task.status));
+    let passed = graph
+        .get_task(task_id)
+        .is_some_and(|task| task.status == worksgood::graph::Status::Done)
+        && graph
+            .get_task(&format!(".evaluate-{task_id}"))
+            .is_some_and(|task| task.status == worksgood::graph::Status::Done);
+    (task_status, eval_status, passed)
+}
+
+fn retain_cached(
+    cache: &mut RetainedSweepCache,
+    path: &Path,
+    key: RetainedDecisionKey,
+    report: &mut CleanupSweepReport,
+) {
+    if cache.decisions.insert(path.to_path_buf(), key).is_some() {
+        report.invalidated += 1;
+    }
+    report.retained += 1;
+}
+
+/// Re-check every destructive precondition immediately before removal. Cached
+/// decisions are negative-only and are never consulted here.
+fn freshly_safe_to_remove(
+    dir: &Path,
+    project_root: &Path,
+    name: &str,
+    worktree_path: &Path,
+) -> Result<Option<String>> {
+    let marker = worktree_path.join(CLEANUP_PENDING_MARKER);
+    if !marker.is_file() {
+        return Ok(None);
+    }
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
+    let (_ownership, owner_task, blocked) = ownership_state(&registry, name, worktree_path);
+    if blocked {
+        return Ok(None);
+    }
+    let branch = find_branch_for_worktree(project_root, worktree_path);
+    let task_id = owner_task.or_else(|| inferred_task_id(name, branch.as_deref()));
+    let graph_path = dir.join("graph.jsonl");
+    let graph = worksgood::parser::load_graph(&graph_path)
+        .context("Failed to reload graph for final worktree cleanup gate")?;
+    if !is_safe_to_reap(
+        Some(&graph),
+        task_id.as_deref(),
+        project_root,
+        branch.as_deref(),
+    ) {
+        return Ok(None);
+    }
+    if worksgood::disk_sentinel::worktree_has_user_source_changes(worktree_path) {
+        return Ok(None);
+    }
+    Ok(branch)
+}
+
+fn sweep_cleanup_pending_worktrees_batch(
+    dir: &Path,
+    cache: &mut RetainedSweepCache,
+    batch_size: usize,
+) -> Result<CleanupSweepReport> {
     let project_root = dir
         .parent()
         .ok_or_else(|| anyhow!("Cannot determine project root from {:?}", dir))?;
     let worktrees_dir = project_root.join(WORKTREES_DIR);
-
+    let mut report = CleanupSweepReport::default();
     if !worktrees_dir.exists() {
-        return Ok(0);
+        cache.cursor = 0;
+        return Ok(report);
     }
 
-    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
-
-    // Load graph to check task status. If this fails we skip the sweep rather
-    // than do potentially unsafe removals.
-    let graph_path = dir.join("graph.jsonl");
-    let graph = if graph_path.exists() {
-        Some(worksgood::parser::load_graph(&graph_path).context("Failed to load graph for sweep")?)
-    } else {
-        None
-    };
-
-    let mut removed = 0;
+    // This entire discovery/load path runs only on the background maintenance
+    // worker. Nothing in coordinator_tick touches the retained filesystem.
+    let mut candidates = Vec::new();
     for entry in fs::read_dir(&worktrees_dir)? {
         let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("[worktree-sweep] read_dir entry error: {}", e);
+            Ok(entry) => entry,
+            Err(_) => {
+                report.errors += 1;
                 continue;
             }
         };
         let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("agent-") {
+        if name.starts_with("agent-") && entry.path().join(CLEANUP_PENDING_MARKER).exists() {
+            candidates.push((name, entry.path()));
+        }
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    report.candidates = candidates.len();
+    if candidates.is_empty() {
+        cache.cursor = 0;
+        cache.decisions.clear();
+        return Ok(report);
+    }
+
+    if cache.cursor >= candidates.len() {
+        cache.cursor = 0;
+    }
+    let start = cache.cursor;
+    let end = (start + batch_size.max(1)).min(candidates.len());
+    report.deferred = end < candidates.len();
+    cache.cursor = if report.deferred { end } else { 0 };
+
+    let registry = worksgood::service::registry::AgentRegistry::load(dir)?;
+    let graph_path = dir.join("graph.jsonl");
+    let graph = worksgood::parser::load_graph(&graph_path)
+        .context("Failed to load graph for retained worktree sweep")?;
+
+    for (name, worktree_path) in &candidates[start..end] {
+        report.examined += 1;
+        let marker = match fs::read(worktree_path.join(CLEANUP_PENDING_MARKER)) {
+            Ok(marker) => marker,
+            Err(_) => {
+                report.errors += 1;
+                report.retained += 1;
+                continue;
+            }
+        };
+        let (ownership, owner_task, ownership_blocked) =
+            ownership_state(&registry, name, worktree_path);
+        let branch = branch_from_worktree_metadata(worktree_path);
+        let task_id = owner_task.or_else(|| inferred_task_id(name, branch.as_deref()));
+        let (task_status, eval_status, eval_passed) = task_state_key(&graph, task_id.as_deref());
+
+        // Cheap/live/evaluation negatives intentionally omit merge state. An
+        // unrelated main-branch change must not invalidate every retained
+        // missing-evaluation entry.
+        let early_key = RetainedDecisionKey {
+            marker: marker.clone(),
+            ownership: ownership.clone(),
+            task_id: task_id.clone(),
+            task_status: task_status.clone(),
+            eval_status: eval_status.clone(),
+            branch: None,
+            branch_head: None,
+            main_heads: String::new(),
+        };
+        if ownership_blocked || !eval_passed {
+            if cache.decisions.get(worktree_path) == Some(&early_key) {
+                report.cache_hits += 1;
+                report.retained += 1;
+            } else {
+                retain_cached(cache, worktree_path, early_key, &mut report);
+            }
             continue;
         }
 
-        let wt_path = entry.path();
-        let marker_path = wt_path.join(CLEANUP_PENDING_MARKER);
-        if !marker_path.exists() {
+        let branch_head = branch
+            .as_deref()
+            .and_then(|branch| read_ref_oid(project_root, branch));
+        let merge_key = RetainedDecisionKey {
+            marker,
+            ownership,
+            task_id: task_id.clone(),
+            task_status,
+            eval_status,
+            branch: branch.clone(),
+            branch_head,
+            main_heads: main_head_key(project_root),
+        };
+        if cache.decisions.get(worktree_path) == Some(&merge_key) {
+            report.cache_hits += 1;
+            report.retained += 1;
+            continue;
+        }
+        if cache.decisions.contains_key(worktree_path) {
+            report.invalidated += 1;
+        }
+
+        let Some(branch_name) = branch.as_deref() else {
+            cache.decisions.insert(worktree_path.clone(), merge_key);
+            report.retained += 1;
+            continue;
+        };
+        report.merge_checks += 1;
+        if !is_branch_merged(project_root, branch_name) {
+            cache.decisions.insert(worktree_path.clone(), merge_key);
+            report.retained += 1;
             continue;
         }
 
-        // Safety check 1: agent must not be live.
-        if let Some(agent) = registry.agents.get(&name)
-            && agent.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS)
-        {
-            eprintln!(
-                "[worktree-sweep] Skipping {}: agent still live (status={:?}, pid={})",
-                name, agent.status, agent.pid
-            );
+        // Never cache a positive source decision. Dirty/source-error outcomes
+        // remain retained and a later bounded sweep checks them again. A fresh
+        // status check is also repeated in freshly_safe_to_remove.
+        report.source_checks += 1;
+        if worksgood::disk_sentinel::worktree_has_user_source_changes(worktree_path) {
+            cache.decisions.remove(worktree_path);
+            report.retained += 1;
             continue;
         }
 
-        // Find the branch — required for clean removal AND for inferring task ID
-        // when the agent is missing from the registry (orphan).
-        let branch = find_branch_for_worktree(project_root, &wt_path);
-
-        // Safety check 2: retention policy. Reap ONLY when the task has
-        // both evaluation-passed AND has been merged into main. Either alone
-        // is insufficient — eval-pass without merge means the work hasn't
-        // landed and may still need conflict handling; merge without eval-pass
-        // means unverified work that may need rescue. See `is_safe_to_reap`.
-        //
-        // Prefer registry's task_id; fall back to parsing the branch name
-        // (`wg/<agent-id>/<task-id>`) when the agent has no registry entry.
-        let task_id: Option<String> = registry
-            .agents
-            .get(&name)
-            .map(|a| a.task_id.clone())
-            .or_else(|| {
-                branch.as_deref().and_then(|b| {
-                    // `wg/<agent-id>/<task-id>` — task-id may contain slashes in theory
-                    // but our id format is kebab-case so this is safe.
-                    b.strip_prefix(&format!("wg/{}/", name)).map(str::to_string)
-                })
-            });
-
-        // Destructive worktree removal has a source gate independent of target
-        // cache cleanup. Ignore only the exact untracked WG lifecycle marker;
-        // any real tracked/untracked edit keeps the worktree recoverable.
-        if worksgood::disk_sentinel::worktree_has_user_source_changes(&wt_path) {
-            eprintln!(
-                "[worktree-sweep] Skipping {}: real uncommitted source is present",
-                name
-            );
-            continue;
-        }
-
-        if !is_safe_to_reap(
-            graph.as_ref(),
-            task_id.as_deref(),
-            project_root,
-            branch.as_deref(),
-        ) {
-            eprintln!(
-                "[worktree-sweep] Skipping {}: task '{:?}' not yet eval-passed AND merged (retention policy)",
-                name, task_id
-            );
-            continue;
-        }
-        eprintln!(
-            "[worktree-sweep] Removing {} (eval-passed AND merged — safe to reap)",
-            name
-        );
-
-        match remove_worktree_source_safe(project_root, &wt_path, branch.as_deref()) {
-            Ok(()) => removed += 1,
-            Err(error) => {
-                eprintln!(
-                    "[worktree-sweep] Source-safe removal refused for {}: {} — preserving worktree",
-                    name, error
-                );
+        match freshly_safe_to_remove(dir, project_root, name, worktree_path)? {
+            Some(fresh_branch) => {
+                match remove_worktree_source_safe(project_root, worktree_path, Some(&fresh_branch))
+                {
+                    Ok(()) => {
+                        cache.decisions.remove(worktree_path);
+                        report.removed += 1;
+                    }
+                    Err(_) => {
+                        cache.decisions.remove(worktree_path);
+                        report.errors += 1;
+                        report.retained += 1;
+                    }
+                }
+            }
+            None => {
+                cache.decisions.remove(worktree_path);
+                report.retained += 1;
             }
         }
     }
 
-    Ok(removed)
+    Ok(report)
+}
+
+/// Synchronous compatibility entry point for explicit commands and focused
+/// safety tests. The daemon does not call this from coordinator_tick; it owns a
+/// [`RetainedWorktreeCleanupLane`] instead.
+pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
+    let mut cache = RetainedSweepCache::default();
+    let mut removed = 0;
+    loop {
+        let report = sweep_cleanup_pending_worktrees_batch(dir, &mut cache, usize::MAX)?;
+        removed += report.removed;
+        if !report.deferred {
+            return Ok(removed);
+        }
+    }
+}
+
+type CleanupRunner = Box<dyn FnMut() -> Result<CleanupSweepReport> + Send + 'static>;
+pub type CleanupLog = Arc<dyn Fn(bool, &str) + Send + Sync + 'static>;
+
+/// Single-flight retained-worktree maintenance lane. Requests use a capacity-1
+/// channel: one running sweep plus at most one deferred wake. Timer/fs-watch
+/// bursts therefore cannot create concurrent destructive sweeps or an
+/// unbounded queue.
+pub struct RetainedWorktreeCleanupLane {
+    request_tx: SyncSender<()>,
+    snapshot: Arc<Mutex<CleanupLaneSnapshot>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl RetainedWorktreeCleanupLane {
+    pub fn start(dir: PathBuf, log: CleanupLog) -> Result<Self> {
+        let runner_dir = dir.clone();
+        let runner_log = Arc::clone(&log);
+        let mut cache = RetainedSweepCache::default();
+        let runner: CleanupRunner = Box::new(move || {
+            // Disk accounting includes a bounded `.wg-worktrees` size walk;
+            // it belongs on the same slow-filesystem lane, never in a tick.
+            run_background_disk_maintenance(&runner_dir, &runner_log);
+            sweep_cleanup_pending_worktrees_batch(&runner_dir, &mut cache, CLEANUP_SWEEP_BATCH_SIZE)
+        });
+        Self::start_with_runner(dir, log, CLEANUP_SWEEP_MIN_INTERVAL, runner)
+    }
+
+    fn start_with_runner(
+        dir: PathBuf,
+        log: CleanupLog,
+        min_interval: Duration,
+        mut runner: CleanupRunner,
+    ) -> Result<Self> {
+        let (request_tx, request_rx) = sync_channel::<()>(1);
+        let snapshot = Arc::new(Mutex::new(CleanupLaneSnapshot::default()));
+        let worker_snapshot = Arc::clone(&snapshot);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
+        thread::Builder::new()
+            .name("wg-worktree-cleanup".to_string())
+            .spawn(move || {
+                let mut last_started: Option<Instant> = None;
+                while request_rx.recv().is_ok() {
+                    if worker_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if let Some(last) = last_started {
+                        let delay = min_interval.saturating_sub(last.elapsed());
+                        if !delay.is_zero() {
+                            if let Ok(mut state) = worker_snapshot.lock() {
+                                if state.phase != CleanupLanePhase::Deferred {
+                                    state.phase = CleanupLanePhase::Due;
+                                }
+                                save_cleanup_lane_snapshot(&dir, &state);
+                            }
+                            thread::sleep(delay);
+                        }
+                    }
+                    if worker_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    last_started = Some(Instant::now());
+
+                    // A bounded batch may request an immediate continuation.
+                    loop {
+                        let started = Instant::now();
+                        if let Ok(mut state) = worker_snapshot.lock() {
+                            state.phase = CleanupLanePhase::Running;
+                            state.last_error = None;
+                            save_cleanup_lane_snapshot(&dir, &state);
+                        }
+                        match runner() {
+                            Ok(report) => {
+                                let duration = started.elapsed();
+                                let deferred = report.deferred;
+                                if let Ok(mut state) = worker_snapshot.lock() {
+                                    state.phase = if deferred {
+                                        CleanupLanePhase::Deferred
+                                    } else {
+                                        CleanupLanePhase::Completed
+                                    };
+                                    state.batches_completed =
+                                        state.batches_completed.saturating_add(1);
+                                    state.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
+                                    state.last_duration_ms =
+                                        duration.as_millis().min(u64::MAX as u128) as u64;
+                                    state.last_report = report.clone();
+                                    save_cleanup_lane_snapshot(&dir, &state);
+                                }
+                                // An unchanged all-cache-hit pass is visible in
+                                // the status snapshot but does not repeat a log
+                                // line. Log only first/change/removal/error work.
+                                if report.errors > 0
+                                    || report.removed > 0
+                                    || report.invalidated > 0
+                                    || (report.candidates > 0
+                                        && report.cache_hits != report.examined)
+                                {
+                                    log(
+                                        false,
+                                        &format!(
+                                            "Retained-worktree sweep {}: duration={}ms candidates={} examined={} cached={} invalidated={} merge_checks={} source_checks={} retained={} removed={} errors={}",
+                                            if deferred { "deferred" } else { "completed" },
+                                            duration.as_millis(),
+                                            report.candidates,
+                                            report.examined,
+                                            report.cache_hits,
+                                            report.invalidated,
+                                            report.merge_checks,
+                                            report.source_checks,
+                                            report.retained,
+                                            report.removed,
+                                            report.errors,
+                                        ),
+                                    );
+                                }
+                                if !deferred {
+                                    break;
+                                }
+                                thread::yield_now();
+                            }
+                            Err(error) => {
+                                let duration = started.elapsed();
+                                if let Ok(mut state) = worker_snapshot.lock() {
+                                    state.phase = CleanupLanePhase::Error;
+                                    state.batches_completed =
+                                        state.batches_completed.saturating_add(1);
+                                    state.last_completed_at = Some(chrono::Utc::now().to_rfc3339());
+                                    state.last_duration_ms =
+                                        duration.as_millis().min(u64::MAX as u128) as u64;
+                                    state.last_error = Some(format!("{error:#}"));
+                                    save_cleanup_lane_snapshot(&dir, &state);
+                                }
+                                log(
+                                    true,
+                                    &format!(
+                                        "Retained-worktree sweep failed closed after {}ms: {error:#}",
+                                        duration.as_millis()
+                                    ),
+                                );
+                                break;
+                            }
+                        }
+                        if worker_shutdown.load(Ordering::Acquire) {
+                            return;
+                        }
+                    }
+                }
+            })
+            .context("Failed to start retained-worktree cleanup lane")?;
+
+        Ok(Self {
+            request_tx,
+            snapshot,
+            shutdown,
+        })
+    }
+
+    /// Non-blocking and filesystem-free. Safe to call on every timer/fs wake.
+    pub fn request(&self, trigger: &str) {
+        if let Ok(mut state) = self.snapshot.lock() {
+            state.requests = state.requests.saturating_add(1);
+            state.last_trigger = Some(trigger.to_string());
+            match self.request_tx.try_send(()) {
+                Ok(()) => {
+                    if state.phase != CleanupLanePhase::Running {
+                        state.phase = CleanupLanePhase::Due;
+                    }
+                }
+                Err(TrySendError::Full(())) => {
+                    state.coalesced = state.coalesced.saturating_add(1);
+                    if state.phase == CleanupLanePhase::Running {
+                        state.phase = CleanupLanePhase::Deferred;
+                    }
+                }
+                Err(TrySendError::Disconnected(())) => {
+                    state.phase = CleanupLanePhase::Error;
+                    state.last_error = Some("cleanup worker disconnected".to_string());
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> CleanupLaneSnapshot {
+        self.snapshot.lock().unwrap().clone()
+    }
+}
+
+impl Drop for RetainedWorktreeCleanupLane {
+    fn drop(&mut self) {
+        // Deliberately do not join: a network filesystem syscall can remain
+        // blocked indefinitely. Process shutdown must not wait on maintenance.
+        self.shutdown.store(true, Ordering::Release);
+        let _ = self.request_tx.try_send(());
+    }
 }
 
 /// Prune worktrees that are older than `max_age_secs`.
@@ -3167,6 +3757,285 @@ mod tests {
             wt_path.join("target").exists(),
             "live retry agent's target/ must survive — would force slow rebuild on resume"
         );
+    }
+
+    #[test]
+    fn retained_sweep_is_bounded_and_deduplicates_negative_entries() {
+        use worksgood::graph::{Node, Status, Task, WorkGraph};
+        use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let wg_dir = project.join(".wg");
+        let worktrees = project.join(WORKTREES_DIR);
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+        fs::create_dir_all(&worktrees).unwrap();
+        worksgood::parser::save_graph(&WorkGraph::new(), wg_dir.join("graph.jsonl")).unwrap();
+        AgentRegistry::default().save(&wg_dir).unwrap();
+
+        for index in 0..80 {
+            let path = worktrees.join(format!("agent-{index:03}"));
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        }
+
+        let mut cache = RetainedSweepCache::default();
+        let first = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(first.candidates, 80);
+        assert_eq!(first.examined, 7, "one batch must have a hard entry bound");
+        assert!(first.deferred);
+
+        let mut first_examined = first.examined;
+        while cache.cursor != 0 {
+            first_examined += sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7)
+                .unwrap()
+                .examined;
+        }
+        assert_eq!(first_examined, 80);
+
+        let mut second_examined = 0;
+        let mut second_hits = 0;
+        loop {
+            let report = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+            second_examined += report.examined;
+            second_hits += report.cache_hits;
+            if !report.deferred {
+                break;
+            }
+        }
+        assert_eq!(second_examined, 80);
+        assert_eq!(
+            second_hits, 80,
+            "unchanged retained entries use negative cache"
+        );
+
+        // Marker content is keyed directly (not by an eventually-consistent
+        // mtime), so a relevant marker change invalidates immediately.
+        fs::write(
+            worktrees.join("agent-000").join(CLEANUP_PENDING_MARKER),
+            "changed",
+        )
+        .unwrap();
+        let marker_changed = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(marker_changed.invalidated, 1);
+        assert_eq!(marker_changed.cache_hits, 6);
+
+        // Ownership/liveness and task/evaluation state each participate in the
+        // key. Use our live PID first, then a dead owner and changed graph.
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut registry = AgentRegistry::default();
+        registry.agents.insert(
+            "agent-000".to_string(),
+            AgentEntry {
+                id: "agent-000".to_string(),
+                pid: std::process::id(),
+                task_id: "task-000".to_string(),
+                executor: "test".to_string(),
+                started_at: now.clone(),
+                last_heartbeat: now.clone(),
+                status: AgentStatus::Working,
+                output_file: String::new(),
+                model: None,
+                completed_at: None,
+                worktree_path: Some(worktrees.join("agent-000").to_string_lossy().to_string()),
+            },
+        );
+        registry.save(&wg_dir).unwrap();
+        cache.cursor = 0;
+        let live_changed = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(live_changed.invalidated, 1);
+
+        registry.agents.get_mut("agent-000").unwrap().pid = 999_999_999;
+        registry.agents.get_mut("agent-000").unwrap().status = AgentStatus::Done;
+        registry.save(&wg_dir).unwrap();
+        cache.cursor = 0;
+        let liveness_changed =
+            sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(liveness_changed.invalidated, 1);
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "task-000".to_string(),
+            title: "task".to_string(),
+            status: Status::Done,
+            ..Task::default()
+        }));
+        graph.add_node(Node::Task(Task {
+            id: ".evaluate-task-000".to_string(),
+            title: "eval".to_string(),
+            status: Status::Open,
+            ..Task::default()
+        }));
+        worksgood::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+        cache.cursor = 0;
+        let graph_changed = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(graph_changed.invalidated, 1);
+
+        graph.get_task_mut(".evaluate-task-000").unwrap().status = Status::Done;
+        worksgood::parser::save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+        cache.cursor = 0;
+        let eval_changed = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 7).unwrap();
+        assert_eq!(eval_changed.invalidated, 1);
+    }
+
+    #[test]
+    fn retained_merge_and_source_changes_invalidate_without_cached_deletion() {
+        use worksgood::graph::Status;
+        use worksgood::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+        let wg_dir = project.join(".wg");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+        let (worktree, branch) = create_test_worktree(&project, "agent-key", "task-key");
+        fs::write(worktree.join("branch.txt"), "branch-only").unwrap();
+        Command::new("git")
+            .args(["add", "branch.txt"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "branch change"])
+            .current_dir(&worktree)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        fs::write(worktree.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task_and_eval(&wg_dir, "task-key", Status::Done, Some(Status::Done));
+        register_agent(
+            &wg_dir,
+            "agent-key",
+            "task-key",
+            999_999_999,
+            AgentStatus::Done,
+        );
+
+        let mut cache = RetainedSweepCache::default();
+        let first = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 8).unwrap();
+        assert_eq!(first.merge_checks, 1);
+        assert_eq!(first.removed, 0);
+        let unchanged = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 8).unwrap();
+        assert_eq!(unchanged.cache_hits, 1);
+        assert_eq!(
+            unchanged.merge_checks, 0,
+            "unchanged merge proof is not rerun"
+        );
+
+        merge_branch_into_main(&project, &branch);
+        fs::write(worktree.join("valuable-untracked.rs"), "keep").unwrap();
+        let dirty = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 8).unwrap();
+        assert_eq!(
+            dirty.invalidated, 1,
+            "main-head change invalidates retained proof"
+        );
+        assert_eq!(dirty.source_checks, 1);
+        assert_eq!(dirty.removed, 0);
+        assert!(
+            worktree.exists(),
+            "fresh dirty-source gate must preserve source"
+        );
+
+        fs::remove_file(worktree.join("valuable-untracked.rs")).unwrap();
+        let cleaned = sweep_cleanup_pending_worktrees_batch(&wg_dir, &mut cache, 8).unwrap();
+        assert_eq!(
+            cleaned.source_checks, 1,
+            "dirty decisions are never positive-cached"
+        );
+        assert_eq!(cleaned.removed, 1);
+        assert!(!worktree.exists());
+    }
+
+    #[test]
+    fn blocked_cleanup_lane_coalesces_and_stays_single_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        let wg_dir = project.join(".wg");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+        worksgood::parser::save_graph(
+            &worksgood::graph::WorkGraph::new(),
+            wg_dir.join("graph.jsonl"),
+        )
+        .unwrap();
+        worksgood::service::registry::AgentRegistry::default()
+            .save(&wg_dir)
+            .unwrap();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let runner: CleanupRunner = {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let runs = Arc::clone(&runs);
+            let release_rx = Arc::clone(&release_rx);
+            Box::new(move || {
+                let now = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                max_active.fetch_max(now, AtomicOrdering::SeqCst);
+                runs.fetch_add(1, AtomicOrdering::SeqCst);
+                started_tx.send(()).unwrap();
+                let released = release_rx.lock().unwrap().recv().is_ok();
+                active.fetch_sub(1, AtomicOrdering::SeqCst);
+                if !released {
+                    return Ok(CleanupSweepReport::default());
+                }
+                Ok(CleanupSweepReport::default())
+            })
+        };
+        let log: CleanupLog = Arc::new(|_, _| {});
+        let lane = RetainedWorktreeCleanupLane::start_with_runner(
+            wg_dir.clone(),
+            log,
+            Duration::ZERO,
+            runner,
+        )
+        .unwrap();
+
+        lane.request("fs-watch");
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let request_started = Instant::now();
+        for _ in 0..100 {
+            lane.request("timer");
+        }
+        assert!(
+            request_started.elapsed() < Duration::from_millis(100),
+            "wake coalescing must be non-blocking and filesystem-free"
+        );
+
+        // The injected filesystem sweep remains blocked while ordinary callers
+        // continue immediately. The owned live-daemon smoke exercises a real
+        // coordinator tick and shell spawn under this same blocked condition.
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 1);
+
+        release_tx.send(()).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        release_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if lane.snapshot().batches_completed >= 2 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            runs.load(AtomicOrdering::SeqCst),
+            2,
+            "100 overlapping wakes coalesce to one deferred run"
+        );
+        assert_eq!(
+            max_active.load(AtomicOrdering::SeqCst),
+            1,
+            "destructive sweeps are single-flight"
+        );
+        assert!(lane.snapshot().coalesced >= 99);
     }
 
     #[test]

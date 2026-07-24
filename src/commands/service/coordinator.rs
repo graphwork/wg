@@ -3650,7 +3650,10 @@ fn spawn_shell_inline(dir: &Path, task_id: &str) -> Result<(String, u32)> {
 
     let mut locked_registry = AgentRegistry::load_locked(dir)?;
     if build_class.is_build_capable() {
-        let admission = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+        // Reclaiming owned/retained caches may traverse slow worktrees. The
+        // background maintenance lane performs that cleanup; dispatch only
+        // computes admission from current/cached evidence.
+        let admission = worksgood::disk_sentinel::build_admission(
             dir,
             &config.coordinator.resource_management,
             build_class,
@@ -4296,7 +4299,9 @@ fn spawn_agents_for_ready_tasks(
         // that can create build caches. Agency evaluation/assignment and graph
         // operations continue through the same ready queue.
         let build_class = worksgood::disk_sentinel::classify_task(task);
-        let projected = worksgood::disk_sentinel::build_admission_reclaiming_owned(
+        // Never reclaim retained paths on the dispatch thread. The
+        // single-flight maintenance lane owns all potentially slow cleanup.
+        let projected = worksgood::disk_sentinel::build_admission(
             dir,
             &config.coordinator.resource_management,
             build_class,
@@ -4770,67 +4775,10 @@ pub fn coordinator_tick(
     // below (max agents, no ready tasks) would skip chat processing otherwise.
     process_chat_inbox(dir);
 
-    // Periodic disk work is outside the TUI/render path and writes a bounded,
-    // cached snapshot consumed by status surfaces. Cleanup consults only the
-    // explicit ownership registry; unknown directories are never candidates.
-    let disk_was_due = worksgood::disk_sentinel::load_snapshot(dir)
-        .ok()
-        .flatten()
-        .and_then(|snapshot| chrono::DateTime::parse_from_rfc3339(&snapshot.generated_at).ok())
-        .map(|generated| {
-            (Utc::now() - generated.with_timezone(&Utc)).num_seconds()
-                >= config
-                    .coordinator
-                    .resource_management
-                    .disk_scan_interval_seconds as i64
-        })
-        .unwrap_or(true);
-    match worksgood::disk_sentinel::refresh_if_due(dir, &config.coordinator.resource_management) {
-        Ok(Some(snapshot)) if snapshot.level != worksgood::disk_sentinel::DiskLevel::Healthy => {
-            eprintln!(
-                "[dispatcher] Disk sentinel {:?}: {}",
-                snapshot.level, snapshot.reason
-            );
-        }
-        Ok(_) => {}
-        Err(error) => eprintln!("[dispatcher] Disk sentinel warning: {error:#}"),
-    }
-    if disk_was_due {
-        match worksgood::disk_sentinel::cleanup_owned(
-            dir,
-            &config.coordinator.resource_management,
-            true,
-        ) {
-            Ok(report)
-                if report.reaped > 0
-                    || report.compressed_files > 0
-                    || report.deduplicated_files > 0 =>
-            {
-                eprintln!(
-                    "[dispatcher] Disk cleanup: reaped {} owned target(s), freed {} bytes; compressed {} stream(s), saved {} bytes; deduplicated {}, saved {} bytes",
-                    report.reaped,
-                    report.bytes_freed,
-                    report.compressed_files,
-                    report.compression_bytes_saved,
-                    report.deduplicated_files,
-                    report.deduplication_bytes_saved
-                )
-            }
-            Ok(_) => {}
-            Err(error) => eprintln!("[dispatcher] Disk cleanup warning: {error:#}"),
-        }
-    }
-
-    // Source cleanup is a separate policy from rebuildable cache cleanup. The
-    // sweep ignores only the exact WG marker and removes a worktree only after
-    // eval + merge proof and a fresh real-source-dirtiness check.
-    match super::worktree::sweep_cleanup_pending_worktrees(dir) {
-        Ok(removed) if removed > 0 => {
-            eprintln!("[dispatcher] Archived/removed {removed} integrated clean worktree(s)")
-        }
-        Ok(_) => {}
-        Err(error) => eprintln!("[dispatcher] Worktree cleanup warning: {error:#}"),
-    }
+    // Retained source and periodic disk scans are deliberately NOT performed
+    // here. Both may traverse slow/network worktrees, so the daemon's
+    // single-flight RetainedWorktreeCleanupLane owns them. A dispatch-critical
+    // tick performs no retained-worktree read_dir/metadata/git/source probe.
 
     // Phase 1: Clean up dead agents and count alive ones
     let alive_count = match cleanup_and_count_alive(dir, &graph_path, max_agents)? {

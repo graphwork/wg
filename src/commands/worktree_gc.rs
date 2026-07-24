@@ -3,9 +3,10 @@
 //! Part of the two-tier worktree cleanup model:
 //!
 //! **Happy path (atomic cleanup):** When an agent finishes normally, its wrapper
-//! drops a `.wg-cleanup-pending` marker. The coordinator's next tick sweeps
-//! marked worktrees whose agent is dead and task is terminal
-//! (see [`super::service::worktree::sweep_cleanup_pending_worktrees`]).
+//! drops a `.wg-cleanup-pending` marker. The daemon's single-flight background
+//! maintenance lane sweeps marked worktrees after evaluation, merge, liveness,
+//! ownership, and source-safety gates pass (see
+//! [`super::service::worktree::sweep_cleanup_pending_worktrees`]).
 //!
 //! **Fallback (this module):** When the happy path fails — agent killed before
 //! writing the marker, coordinator crash between marker and sweep, or any
