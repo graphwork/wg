@@ -333,12 +333,12 @@ pub enum Commands {
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
 
-        /// Create the task in paused state (default for interactive use)
+        /// Compatibility spelling; every add is a paused visible draft
         #[arg(long)]
         paused: bool,
 
-        /// Skip automatic placement — make task immediately available for dispatch
-        #[arg(long = "no-place", alias = "immediate", alias = "ready")]
+        /// Removed: use `wg add`, then `wg publish <task> --only`
+        #[arg(long = "no-place", alias = "immediate", alias = "ready", hide = true)]
         no_place: bool,
 
         /// Placement hint: place near these tasks (comma-separated IDs)

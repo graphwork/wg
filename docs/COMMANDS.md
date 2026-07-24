@@ -26,10 +26,11 @@ Complete reference for all `wg` commands. Most query commands support `--json` f
 
 ### `wg add`
 
-Add a new task to the graph.
+Add a new task to the graph as a visible paused draft. Add never dispatches work; release a finished draft explicitly with `wg publish <TASK> --only`.
 
 ```bash
 wg add <TITLE> [OPTIONS]
+wg publish <TASK> --only
 ```
 
 **Arguments:**
@@ -64,8 +65,7 @@ wg add <TITLE> [OPTIONS]
 | `--propagation <POLICY>` | Retry propagation policy: `conservative`, `aggressive`, or `conditional:<float>` |
 | `--retry-strategy <STRATEGY>` | Retry strategy: `same-model`, `upgrade-model`, or `escalate-to-human` |
 | `--cron <EXPR>` | Cron schedule expression (6-field format: `"sec min hour day month dow"`) |
-| `--paused` | Create the task in paused state (default for interactive use) |
-| `--no-place` | Skip automatic placement — make task immediately available for dispatch |
+| `--paused` | Compatibility spelling; `wg add` always creates a visible draft |
 | `--place-near <IDS>` | Placement hint: place near these tasks (comma-separated IDs) |
 | `--place-before <IDS>` | Placement hint: place before these tasks (comma-separated IDs) |
 | `--delay <DUR>` | Delay before task becomes ready (e.g., `30s`, `5m`, `1h`, `1d`) |
@@ -87,8 +87,9 @@ wg add <TITLE> [OPTIONS]
 **Examples:**
 
 ```bash
-# Simple task
-wg add "Fix login bug"
+# Simple task: stage, inspect/wire, then explicitly release
+wg add "Fix login bug" --id fix-login
+wg publish fix-login --only
 
 # Task with dependencies and metadata
 wg add "Implement user auth" \

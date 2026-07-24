@@ -12,9 +12,11 @@ project="$scratch/project"
 mkdir -p "$project"
 cd "$project"
 wg init --no-agency >/dev/null
-wg add "disk sentinel visible row cargo test" --no-place \
+wg add "disk sentinel visible row cargo test" \
   --exec "printf resumed > '$project/resumed'" >/dev/null
-wg add "stale owned cache evidence" --no-place >/dev/null
+wg add "stale owned cache evidence" >/dev/null
+wg publish disk-sentinel-visible --only >/dev/null
+wg publish stale-owned-cache --only >/dev/null
 wg done stale-owned-cache >/dev/null
 
 write_cfg() {

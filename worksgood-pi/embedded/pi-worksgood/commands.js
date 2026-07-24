@@ -102,6 +102,13 @@ export function registerWgCommands(pi, backend) {
                     emit(ctx, r.stdout.trim() || r.stderr.trim(), r.code === 0 ? "info" : "error");
                     return;
                 }
+                case "publish": {
+                    if (!rest)
+                        return emit(ctx, "usage: /wg publish <id>", "warning");
+                    const r = await backend.publish(rest, { signal: ctx.signal });
+                    emit(ctx, r.stdout.trim() || r.stderr.trim(), r.code === 0 ? "info" : "error");
+                    return;
+                }
                 case "done": {
                     if (!rest)
                         return emit(ctx, "usage: /wg done <id>", "warning");

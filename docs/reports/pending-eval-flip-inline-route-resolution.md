@@ -50,10 +50,9 @@ clean=(env -i HOME="$scratch/home" XDG_CONFIG_HOME="$scratch/home/.config" \
 "${clean[@]}" wg config --auto-assign false --auto-evaluate true \
   --flip-enabled true --no-reload
 "${clean[@]}" wg add 'Study parent codex' --id study-parent-codex \
-  --no-place -d $'## Validation\n- [ ] lifecycle reaches Done'
-"${clean[@]}" wg pause study-parent-codex
-"${clean[@]}" wg service tick       # keep parent from being spawned
-"${clean[@]}" wg resume study-parent-codex  # eagerly scaffolds the chain
+  -d $'## Validation\n- [ ] lifecycle reaches Done'
+"${clean[@]}" wg service tick       # draft remains undispatched
+"${clean[@]}" wg publish study-parent-codex --only  # eagerly scaffolds the chain
 "${clean[@]}" wg claim study-parent-codex
 "${clean[@]}" wg done study-parent-codex
 "${clean[@]}" wg ready

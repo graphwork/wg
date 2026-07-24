@@ -520,9 +520,8 @@ fn handle_request(
                 cron.as_deref(),
                 origin.as_deref(),
             );
-            if resp.ok {
-                *wake_coordinator = true;
-            }
+            // Add is staging-only. Publishing is the explicit dispatch edge;
+            // a remote add must not wake the coordinator or invoke an LLM.
             resp
         }
         IpcRequest::QueryTask { task_id } => {
@@ -1278,6 +1277,11 @@ fn handle_add_task_with_reasoning(
             }
         }
     };
+    if task_id.starts_with('.') && !worksgood::graph::is_validated_system_task_id(&task_id) {
+        return IpcResponse::error(
+            "Dot-prefixed task IDs are reserved for validated WG system/agency records",
+        );
+    }
 
     // Handle cron scheduling
     let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(cron_expr) = cron {
@@ -1323,7 +1327,12 @@ fn handle_add_task_with_reasoning(
         started_at: None,
         completed_at: None,
         last_interaction_at: None,
-        log: vec![],
+        log: vec![worksgood::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: None,
+            user: Some(worksgood::current_user()),
+            message: "Task paused".to_string(),
+        }],
         retry_count: 0,
         max_retries: None,
         failure_reason: None,
@@ -1344,7 +1353,7 @@ fn handle_add_task_with_reasoning(
         last_iteration_completed_at: None,
         cycle_failure_restarts: 0,
         ready_after: None,
-        paused: false,
+        paused: true,
         visibility: "internal".to_string(),
         context_scope: None,
         cycle_config: None,
@@ -1411,7 +1420,9 @@ fn handle_add_task_with_reasoning(
         Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
     }
 
-    // Notify TUI to auto-focus on the new task (skip internal/system tasks)
+    // Notify already-running TUIs, but do not wake dispatch: the task remains
+    // a visible draft until an explicit publish.
+    crate::commands::notify_graph_changed(dir);
     if !task_id.starts_with('.') {
         crate::commands::notify_new_task_focus(dir, &task_id);
     }
@@ -3224,6 +3235,31 @@ poll_interval = 120
             "Internal dot-prefixed task should NOT create .new_task_focus"
         );
 
+        // An arbitrary dot prefix is not a private namespace: supported IPC
+        // clients must not be able to create user work hidden from graph views.
+        let rejected = handle_add_task(
+            dir,
+            "Hidden user task",
+            Some(".hidden-user-task"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(!rejected.ok, "unvalidated dot-prefixed IPC add must fail");
+        assert!(
+            load_graph(&dir.join("graph.jsonl"))
+                .unwrap()
+                .get_task(".hidden-user-task")
+                .is_none()
+        );
+
         // Adding a regular task SHOULD create the focus marker
         let resp = handle_add_task(
             dir,
@@ -3241,6 +3277,12 @@ poll_interval = 120
             None, // origin
         );
         assert!(resp.ok, "Adding regular task should succeed");
+        let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+        let user_task = graph.get_task("my-regular-task").unwrap();
+        assert!(user_task.paused, "remote add must remain a draft");
+        assert!(!user_task.unplaced, "remote user work must remain visible");
+        let internal = graph.get_task(".evaluate-my-task").unwrap();
+        assert!(internal.paused, "even internal add is staging-only");
         assert!(
             focus_path.exists(),
             "Regular task should create .new_task_focus"

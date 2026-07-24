@@ -59,7 +59,7 @@ The following terms have precise meanings throughout this manual. They are defin
 | *remote* | A named reference to another wg project's agency store, used for federation. Managed via `wg agency remote add/list/remove`. |
 | *provider* | The LLM provider backing a task or agent: `anthropic`, `openai`, `openrouter`, or `local`. Set per-task via `--provider` on `wg add`/`wg edit`, or per-agent via `wg config`. The coordinator resolves providers through the same priority chain as models. |
 | *exec-mode* | Controls the execution weight of an agent dispatched for a task. Four values: _full_ (default—complete tool access), _light_ (read-only tools), _bare_ (only `wg` CLI), _shell_ (no LLM—runs the task's `exec` field directly). Set via `--exec-mode` on `wg add`/`wg edit`. |
-| *placement* | The coordinator's automatic positioning of newly created tasks in the dependency graph. Controlled by placement hints: `--no-place` (skip placement—make the task immediately available), `--place-near <IDS>` (place near specified tasks), `--place-before <IDS>` (insert before specified tasks). Automatic placement is configured via `wg config --auto-place`. |
+| *placement* | The coordinator's automatic positioning of published drafts in the dependency graph. Controlled by `--place-near <IDS>` and `--place-before <IDS>` hints. Disable inference with `agency.auto_place=false`. |
 | *multi-coordinator* | Support for running multiple coordinator sessions within a single service daemon. Each coordinator manages an independent scheduling context. Managed via `wg service create-coordinator`, `stop-coordinator`, `archive-coordinator`, and `delete-coordinator`. The maximum number of concurrent coordinators is set via `wg config --max-coordinators`. |
 | *compaction* | The process of distilling graph state into a condensed summary (`context.md`). Triggered via `wg compact`. In the service daemon, compaction runs as the `.compact-0` task—a structural cycle where the coordinator introspects its own state. |
 | *sweep* | Detection and recovery of orphaned in-progress tasks whose agents have died. `wg sweep` scans for tasks claimed by agents whose PIDs no longer exist and offers to reclaim them. |
@@ -439,9 +439,10 @@ Created with:
     wg add "revise-draft" --after review-draft
     wg add "publish" --after revise-draft
 
-Then create the back-edge that forms the cycle:
+Then create the back-edge that forms the cycle and explicitly release the wired component:
 
     wg edit write-draft --add-after revise-draft
+    wg publish write-draft --wcc
 
 Here is the execution:
 
@@ -505,9 +506,8 @@ Pausing is orthogonal to status. You can pause an open task to hold it. You can 
 
 ## Placement Hints
 
-When a new task is added, the coordinator can automatically position it in the dependency graph through *placement*—an optional feature controlled by `wg config --auto-place`. Placement hints on `wg add` guide this positioning:
+When a visible draft is published, the coordinator can automatically position it in the dependency graph through *placement*—an optional feature controlled by `wg config --auto-place`. Set `agency.auto_place=false` to preserve only explicit dependencies and hints. Placement hints on `wg add` guide this positioning:
 
-- `--no-place` skips automatic placement entirely, leaving the task with only the dependencies explicitly specified via `--after`.
 - `--place-near <IDS>` suggests placing the task near the specified tasks in the graph—useful for grouping related work.
 - `--place-before <IDS>` suggests inserting the task before the specified tasks, adding dependency edges so those tasks come after the new one.
 
@@ -879,7 +879,7 @@ Two configuration options streamline the agency pipeline for projects that want 
 - `auto_create` (set via `wg config --auto-create`) tells the coordinator to automatically create agent identities for new tasks based on the available roles and motivations. Without it, agents must be explicitly created and assigned.
 - `auto_place` (set via `wg config --auto-place`) enables automatic placement of newly added tasks in the dependency graph. The coordinator uses heuristics to position the task near related work, respecting any placement hints (`--place-near`, `--place-before`) provided at creation time.
 
-Both options interact with the existing `auto_assign` pipeline: when all three are enabled, a new task is automatically placed, assigned an agent identity, and dispatched—the full lifecycle from creation to execution requires no manual intervention beyond the initial `wg add`.
+Both options interact with the existing `auto_assign` pipeline after release: `wg add` stages a visible draft, and `wg publish <task-id> --only` deliberately starts placement, assignment, and dispatch. No user add dispatches by itself.
 
 ## Configuration: Creator Identity
 
@@ -1141,7 +1141,7 @@ The maximum number of concurrent coordinators is configured via `wg config --max
 
 ## Peer Communication
 
-wg projects can communicate across repository boundaries through the *peer* system. `wg peer add <name> <path>` registers another wg instance as a named peer. Tasks can be created in a peer's graph via `wg add "title" --repo <peer-name>`, enabling cross-repo task dispatch without leaving the local CLI.
+wg projects can communicate across repository boundaries through the *peer* system. `wg peer add <name> <path>` registers another wg instance as a named peer. `wg add "title" --repo <peer-name>` stages a visible draft in the peer graph and prints the explicit peer-directory `wg publish <id> --only` command required to release it.
 
 `wg peer list` shows all configured peers with their service status (whether the peer's daemon is running). `wg peer status` performs a quick health check across all peers. This is distinct from agency federation (which shares identities and evaluations)—peer communication shares *work* across project boundaries.
 

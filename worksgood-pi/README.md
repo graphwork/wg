@@ -18,7 +18,7 @@ Topology B the SDK Node host). See
 
 | Surface | What |
 |---|---|
-| **Tools** (LLM/human callable) | `wg_ready`, `wg_show`, `wg_add`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
+| **Tools** (LLM/human callable) | `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
 | **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-model <provider:id>` (warm in-session swap) |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
 

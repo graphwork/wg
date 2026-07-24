@@ -12,7 +12,8 @@ GETTING STARTED
   wg setup --route claude-cli --yes   # Non-interactive: pick a route and accept defaults
   wg agency init              # Bootstrap roles, tradeoffs, and a default agent
   wg service start            # Start the dispatcher daemon
-  wg add "My first task"      # Add work — the service dispatches automatically
+  wg add "My first task"      # Create a visible draft
+  wg publish my-first-task --only  # Explicitly release it for dispatch
   wg status                   # Quick one-screen overview of your project
   wg dev-check                # Check branch and installed wg binary freshness
 
@@ -78,9 +79,10 @@ SERVICE MODE (recommended for parallel work)
   wg service start --max-agents 5  # Start dispatcher with parallelism limit
   wg service install               # Generate a systemd user service file
 
-  The dispatcher automatically spawns worker agents on ready tasks. Just add tasks:
+  The dispatcher automatically spawns worker agents on published, ready tasks:
 
   wg add "Do the thing" --after prerequisite-task
+  wg publish do-the-thing --only
 
   Monitor with wg agents and wg list. Do NOT manually wg spawn or wg claim —
   the dispatcher handles this.
@@ -182,11 +184,11 @@ DISCOVERING & ADDING WORK
   wg add "X" --delay 1h              # Ready after 1 hour
   wg add "X" --not-before 2026-04-01T09:00:00Z  # ISO 8601 timestamp
 
-  Placement hints — control where tasks land in the graph:
+  Placement hints — control where visible draft tasks land in the graph:
 
-  wg add "X" --no-place             # Skip auto-placement, dispatch immediately
   wg add "X" --place-near task-a    # Place near related tasks
   wg add "X" --place-before task-b  # Place before specific tasks
+  wg publish <task-id> --only        # Explicitly release just this draft
 
 TASK STATE COMMANDS
 ─────────────────────────────────────────
@@ -438,32 +440,35 @@ DISCOVERY & PUBLISHING
 GROWING THE GRAPH
 ─────────────────────────────────────────
   The graph is a shared medium. Artifacts you write are read by other agents.
-  Tasks you create get dispatched to other agents. You are not isolated —
+  Tasks you explicitly publish get dispatched to other agents. You are not isolated —
   you are part of a living system.
 
   Your job is not just to complete your task. It is to leave the system
   better than you found it:
 
   Found a bug while implementing?
-    wg add "Fix: edge case in parser" --after my-current-task -d "Found during impl"
+    wg add "Fix: edge case in parser" --id fix-parser --after my-current-task -d "Found during impl"
+    wg publish fix-parser --only
 
   Documentation wrong or missing?
-    wg add "Fix docs for X" -d "Spotted while reading auth.rs"
+    wg add "Fix docs for X" --id fix-docs-x -d "Spotted while reading auth.rs"
+    wg publish fix-docs-x --only
 
   Follow-up verification needed?
-    wg add "Verify fix works end-to-end" --after my-current-task
+    wg add "Verify fix works end-to-end" --id verify-e2e --after my-current-task
+    wg publish verify-e2e --only
 
   The loop: spec → implement → verify → improve → spec.
   You may be any node. Use 'wg context' to see what came before.
   Use 'wg add' to create what comes next.
 
-  The dispatcher dispatches anything you add. You don't need permission.
+  The dispatcher dispatches anything you explicitly publish. You don't need permission.
   Use judgment on size — if a fix takes 5 minutes, just do it inline.
   Create tasks for work that benefits from separate focus.
 
 TIPS
 ─────────────────────────────────────────
-• If the dispatcher is running: add tasks → it dispatches automatically
+• If the dispatcher is running: add visible drafts, then publish them explicitly
 • If no dispatcher: ready → claim → work → done
 • Run 'wg log' BEFORE starting work to track progress
 • Use 'wg context' to understand what dependencies produced
@@ -811,7 +816,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a new task (supports --context-scope, --exec-mode, --model provider:model, --delay, --not-before, --no-place, --place-near, --place-before, --cron, --timeout, --skill, --independent)",
+                "add": "Add a visible draft task (supports --context-scope, --exec-mode, --model provider:model, --delay, --not-before, --place-near, --place-before, --cron, --timeout, --skill, --independent); release with wg publish <task-id> --only",
                 "edit": "Edit an existing task (title, description, deps, model, tags, etc.)",
                 "ready": "See tasks available to work on (manual mode)",
                 "status": "Quick one-screen status overview"
@@ -889,7 +894,6 @@ fn json_output() -> serde_json::Value {
             "timeout": "wg add \"task\" --timeout 30m (per-task timeout)",
             "independent": "wg add \"task\" --independent (suppress implicit --after)",
             "placement": {
-                "no_place": "wg add \"task\" --no-place (skip auto-placement)",
                 "place_near": "wg add \"task\" --place-near task-a",
                 "place_before": "wg add \"task\" --place-before task-b"
             }
@@ -913,10 +917,10 @@ fn json_output() -> serde_json::Value {
                 "docs_wrong": "wg add \"Fix docs for X\" -d \"Spotted while reading ...\"",
                 "followup": "wg add \"Verify: ...\" --after <task-id>"
             },
-            "guidance": "The dispatcher dispatches anything you add. If a fix takes 5 minutes, do it inline. Create tasks for work that benefits from separate focus."
+            "guidance": "Add creates a visible draft; the dispatcher acts only after explicit publish. If a fix takes 5 minutes, do it inline. Create and publish tasks for work that benefits from separate focus."
         },
         "tips": [
-            "If the dispatcher is running: add tasks with dependencies, it dispatches automatically",
+            "If the dispatcher is running: add visible drafts with dependencies, then publish them explicitly",
             "If no dispatcher: ready → claim → work → done",
             "Run 'wg log' BEFORE starting work to track progress",
             "Use 'wg context' to understand what dependencies produced",

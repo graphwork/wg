@@ -302,59 +302,125 @@ fn add_creates_draft_paused_task() {
 }
 
 #[test]
-fn add_no_place_creates_unpaused_task_with_unplaced() {
+fn removed_no_place_refuses_before_creating_hidden_work() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    let output = wg_ok(&wg_dir, &["add", "Test no-place task", "--no-place"]);
-    // Should NOT be draft/paused
+    for removed in ["--no-place", "--immediate", "--ready"] {
+        let output = wg_cmd(&wg_dir, &["add", "Refused hidden task", removed]);
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success(),
+            "removed flag {removed} must fail loudly"
+        );
+        assert!(
+            combined.contains("wg add 'Refused hidden task' --id 'refused-hidden-task'"),
+            "{combined}"
+        );
+        assert!(
+            combined.contains("wg publish 'refused-hidden-task' --only"),
+            "{combined}"
+        );
+    }
+    let help = wg_ok(&wg_dir, &["add", "--help"]);
     assert!(
-        !output.contains("draft"),
-        "With --no-place, task should not be draft, got: {}",
-        output
+        !help.contains("no-place"),
+        "removed flag leaked into help: {help}"
     );
-
-    // The slug generator takes up to 3 words: "test-no-place"
-    // Verify not paused via show (JSON output doesn't include unplaced field,
-    // but the task should be Open and not have "draft" in output)
-    let show_output = wg_ok(&wg_dir, &["show", "test-no-place"]);
     assert!(
-        !show_output.contains("Paused: true"),
-        "Task should not be paused with --no-place, got: {}",
-        show_output
+        !help.contains("--immediate"),
+        "removed alias leaked into help: {help}"
     );
-    // Verify it's Open status
     assert!(
-        show_output.contains("open") || show_output.contains("Open"),
-        "Task should be Open, got: {}",
-        show_output
+        worksgood::parser::load_graph(&wg_dir.join("graph.jsonl"))
+            .unwrap()
+            .get_task("refused-hidden-task")
+            .is_none(),
+        "refused invocation must not mutate the graph"
     );
 }
 
 #[test]
-fn system_tasks_skip_draft_by_default() {
+fn public_add_rejects_reserved_dot_prefixed_system_identity() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    // System tasks start with a dot — they should NOT be draft/paused
-    // Use --id to preserve the dot-prefix (slug generator strips dots)
-    let output = wg_ok(
+    let output = wg_cmd(
         &wg_dir,
         &["add", ".system-test-task", "--id", ".system-test-task"],
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
     assert!(
-        !output.contains("draft"),
-        "System task should not be draft, got: {}",
-        output
+        stderr.contains("reserved for validated WG system/agency records"),
+        "{stderr}"
     );
+}
 
-    // Verify it's Open, not paused
-    let show_output = wg_ok(&wg_dir, &["show", ".system-test-task"]);
-    assert!(
-        !show_output.contains("Paused: true"),
-        "System task should not be paused, got: {}",
-        show_output
+#[test]
+fn validated_dot_prefixed_scaffolding_stays_private_without_no_place() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            ".assign-private-fixture",
+            "--id",
+            ".assign-private-fixture",
+        ],
     );
+    let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let scaffold = graph.get_task(".assign-private-fixture").unwrap();
+    assert!(scaffold.paused, "system add is still staged explicitly");
+    assert!(
+        !scaffold.unplaced,
+        "privacy comes from validated system identity"
+    );
+    assert!(worksgood::graph::is_system_task(&scaffold.id));
+
+    let visible = wg_ok(&wg_dir, &["viz", "--all", "--no-tui"]);
+    assert!(
+        !visible.contains(".assign-private-fixture"),
+        "private scaffold leaked into user graph:\n{visible}"
+    );
+}
+
+#[test]
+fn visible_user_tasks_survive_every_lifecycle_projection() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let mut graph = WorkGraph::new();
+    let cases = [
+        ("visible-draft", Status::Open, true, 0),
+        ("visible-open", Status::Open, false, 0),
+        ("visible-in-progress", Status::InProgress, false, 0),
+        ("visible-pending-eval", Status::PendingEval, false, 0),
+        ("visible-retrying", Status::Open, false, 2),
+        ("visible-done", Status::Done, false, 0),
+    ];
+    for (id, status, paused, retry_count) in cases {
+        let mut task = make_task(id, id);
+        task.status = status;
+        task.paused = paused;
+        task.retry_count = retry_count;
+        task.unplaced = false;
+        graph.add_node(Node::Task(task));
+    }
+    worksgood::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+    let output = wg_ok(&wg_dir, &["viz", "--all", "--no-tui"]);
+    for (id, _, _, _) in cases {
+        assert!(
+            output.contains(id),
+            "{id} disappeared from the user graph:\n{output}"
+        );
+    }
 }
 
 #[test]
@@ -1067,11 +1133,14 @@ fn coordinator_does_not_create_place_tasks_for_draft_tasks() {
 // ===========================================================================
 
 #[test]
-fn agent_context_defaults_to_no_place() {
+fn agent_context_add_is_a_visible_draft() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    // In agent context (WG_TASK_ID set), tasks should default to --no-place behavior
+    wg_ok(&wg_dir, &["add", "Parent task", "--id", "parent-task"]);
+
+    // Ambient agent identity must not turn ordinary child work into a hidden,
+    // immediately-dispatched task.
     let output = wg_cmd_agent_context(&wg_dir, &["add", "Agent child task"]);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1081,11 +1150,27 @@ fn agent_context_defaults_to_no_place() {
         stdout,
         stderr
     );
-    // Should NOT be draft
     assert!(
-        !stdout.contains("draft"),
-        "Agent-created tasks should not be draft, got: {}",
+        stdout.contains("draft") && stdout.contains("wg publish agent-child-task --only"),
+        "Agent-created tasks should use the explicit visible lifecycle, got: {}",
         stdout
+    );
+    let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("agent-child-task").unwrap();
+    assert!(task.paused);
+    assert!(!task.unplaced);
+    assert_eq!(task.after, vec!["parent-task"]);
+
+    let independent =
+        wg_cmd_agent_context(&wg_dir, &["add", "Agent independent task", "--independent"]);
+    assert!(independent.status.success());
+    let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("agent-independent-task").unwrap();
+    assert!(task.paused);
+    assert!(!task.unplaced);
+    assert!(
+        task.after.is_empty(),
+        "--independent must suppress ambient WG_TASK_ID"
     );
 }
 
@@ -1128,7 +1213,6 @@ fn placement_hints_cli_roundtrip() {
         &[
             "add",
             "Task with hints",
-            "--no-place",
             "--place-near",
             "task-a",
             "--place-before",

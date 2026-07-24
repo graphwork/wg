@@ -139,7 +139,6 @@ def create_trial_task(
         "--id", task_id,
         "-d", description,
         "--verify", task_def["verify_cmd"],
-        "--no-place",  # skip placement — we want raw execution
     ]
 
     # Add context scope
@@ -158,7 +157,8 @@ def create_trial_task(
     cmd.extend(["-t", f"difficulty-{task_def['difficulty']}"])
 
     output = run_wg(cmd, wg_dir)
-    print(f"  Created: {task_id}")
+    run_wg(["publish", task_id, "--only"], wg_dir)
+    print(f"  Created and published: {task_id}")
     return task_id
 
 
@@ -210,7 +210,6 @@ def create_fanin_task(
         "add", title,
         "--id", task_id,
         "-d", description,
-        "--no-place",
     ]
 
     # Add --after for each trial task
@@ -221,7 +220,8 @@ def create_fanin_task(
     cmd.extend(["-t", "tb-fanin"])
 
     run_wg(cmd, wg_dir)
-    print(f"  Created fan-in: {task_id}")
+    run_wg(["publish", task_id, "--only"], wg_dir)
+    print(f"  Created and published fan-in: {task_id}")
     return task_id
 
 

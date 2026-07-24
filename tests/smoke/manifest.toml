@@ -898,7 +898,7 @@ owners = [
     "dispatcher-poll-lower",
     "smoke-gate-is",
 ]
-description = "Pins the kick-dispatcher contract for user-initiated state mutations. After `wg add --immediate` (and equivalently `wg publish` / `wg unclaim` / `wg service resume`), the daemon log MUST show `KickDispatcher received, ticking immediately` and a coordinator tick MUST fire within 1 second — bypassing the 2s settling delay used by GraphChanged. Pre-fix the dispatcher waited the full settling_delay on every CLI mutation, on top of a 30-60s safety-timer poll, so users perceived dead air after every state-changing command. If a future change reverts callers to notify_graph_changed (or removes the kick fast-path in the daemon loop), this scenario fails."
+description = "Pins the explicit release contract: draft-only `wg add` emits GraphChanged but never kicks dispatch; `wg publish --only` (like `wg unclaim` / `wg service resume`) logs `KickDispatcher received, ticking immediately` and fires a coordinator tick within 1 second, bypassing settling. This prevents implicit LLM work on add while preserving prompt response after publish."
 timeout_seconds = 30
 
 [[scenario]]
@@ -2496,4 +2496,13 @@ owners = [
     "show-authoritative-service",
 ]
 description = "Candidate-binary credential-free real tmux/SGR flow for the one-row authoritative destination: two same-host project daemons and three TUI clients launched from forged/nested/other-project shell contexts must render the authenticated OS-account host + canonical project; wide-to-Termux resizing preserves exact .chat identity/primary controls while optional context degrades whole; same-frame click and command-mode I open full copyable graph/socket/PID-birth/build/protocol/profile-route details; daemon restart replaces the birth owner; graph bytes remain unchanged."
+timeout_seconds = 180
+
+[[scenario]]
+name = "public_add_visible_publish_tui"
+script = "scenarios/public_add_visible_publish_tui.sh"
+owners = [
+    "remove-public-no-place",
+]
+description = "Candidate-binary live tmux human flow: an external CLI with ambient worker/chat identity adds an ordinary visible draft while TUI is already running; file-watch refresh shows it within a bounded interval, exact keyboard search commits it, add never makes it ready or scaffolds LLM work, publish --only is the sole release edge, root/worker/independent tasks remain unplaced=false, lifecycle/retry/done stay graph-visible, and the removed hidden-work option hard-refuses with copy-pasteable guidance. Never globally installs the candidate."
 timeout_seconds = 180

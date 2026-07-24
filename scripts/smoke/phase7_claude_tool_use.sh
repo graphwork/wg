@@ -47,10 +47,13 @@ pass "daemon + claude coordinator up"
 
 echo
 echo "=== Test B: seed 3 distinctive open tasks ==="
-wg add "pineapple-task" --no-place -d "distinctive pineapple" >/dev/null 2>&1
-wg add "kiwi-task" --no-place -d "distinctive kiwi" >/dev/null 2>&1
-wg add "durian-task" --no-place -d "distinctive durian" >/dev/null 2>&1
-pass "3 tasks added"
+wg add "pineapple-task" -d "distinctive pineapple" >/dev/null 2>&1
+wg add "kiwi-task" -d "distinctive kiwi" >/dev/null 2>&1
+wg add "durian-task" -d "distinctive durian" >/dev/null 2>&1
+wg publish pineapple-task --only >/dev/null
+wg publish kiwi-task --only >/dev/null
+wg publish durian-task --only >/dev/null
+pass "3 tasks added and explicitly published"
 
 echo
 echo "=== Test C: coordinator answers graph question using tool-use ==="

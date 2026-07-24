@@ -101,11 +101,9 @@ export PATH="$fake_bin:$PATH"
 
 scaffold_eval() {
   local id="$1"
-  "$WG_REAL" --dir "$graph" add "silent evaluator source $id" --id "$id" --no-place \
+  "$WG_REAL" --dir "$graph" add "silent evaluator source $id" --id "$id" \
     -d $'## Validation\n- [ ] silent inference completes' >/dev/null
-  "$WG_REAL" --dir "$graph" pause "$id" >/dev/null
-  "$WG_REAL" --dir "$graph" service tick --max-agents 0 >/dev/null
-  "$WG_REAL" --dir "$graph" resume "$id" >/dev/null
+  "$WG_REAL" --dir "$graph" publish "$id" --only >/dev/null
   "$WG_REAL" --dir "$graph" claim "$id" >/dev/null
   "$WG_REAL" --dir "$graph" done "$id" --ignore-unmerged-worktree --skip-smoke >/dev/null
 }

@@ -62,7 +62,7 @@ Error: Dependency 'bild-artifacts' does not exist.
 The research confirmed that `wg publish` (`src/commands/resume.rs:178-205`) already performs hard validation on all dependencies, including transitive subgraph validation. The paused/publish workflow is the correct pattern for batch creation.
 
 **Gap to close:** The coordinator prompt recommends but does not mandate the batch workflow. The coordinator sometimes creates individual non-paused tasks, especially for single-task requests. Update the coordinator prompt to:
-1. Always use `--paused --no-place` when creating 2+ tasks that reference each other
+1. Always use `--paused` when creating 2+ tasks that reference each other
 2. The quality-pass workflow already implies this; make it explicit that cross-referencing tasks MUST be paused
 
 **No behavioral enforcement in code.** The strict validation in Mechanism 1 implicitly enforces this: if a coordinator tries `wg add "A" --after B` without `--paused` and B doesn't exist yet, it gets a hard error, forcing it to use the batch workflow.
@@ -273,8 +273,8 @@ This is the path of least resistance for introducing phantom edges today, and th
 The standard coordinator batch workflow:
 
 ```
-1. wg add "task-a" --paused --no-place --after task-b    ← phantom warning (B not yet created)
-2. wg add "task-b" --paused --no-place                   ← now B exists
+1. wg add "task-a" --paused --after task-b    ← phantom warning (B not yet created)
+2. wg add "task-b" --paused                   ← now B exists
 3. wg publish                                             ← validates ALL deps, succeeds
 ```
 

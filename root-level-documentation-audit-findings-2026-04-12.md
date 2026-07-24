@@ -36,7 +36,7 @@ Total root-level .md files: **57**
 
 **Verified Commands (all functional):**
 - ✅ `wg init`, `wg setup`, `wg agency init` 
-- ✅ `wg add` with all documented flags (`--after`, `--hours`, `--skill`, `--deliverable`, `--model`, `--exec-mode`, `--verify`, `--delay`, `--not-before`, `--place-near`, `--place-before`, `--no-place`, `--paused`, `--visibility`, `--context-scope`)
+- ✅ `wg add` with documented flags at audit time (the former public placement bypass has since been removed; add now stages visible drafts for explicit publish)
 - ✅ `wg edit` with all documented operations
 - ✅ `wg service start`, `wg service stop`, `wg agents`, `wg tui`
 - ✅ `wg approve`, `wg reject` for verification workflow

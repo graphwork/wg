@@ -25,7 +25,7 @@ cat >"$G/config.toml" <<'TOML'
 model = "claude:opus"
 TOML
 "$WG_BIN" --dir "$G" chat create --name termux-stack --command cat >/dev/null
-"$WG_BIN" --dir "$G" add "termux-graph-anchor" -d "phone stack task detail" --no-place >/dev/null
+"$WG_BIN" --dir "$G" add "termux-graph-anchor" -d "phone stack task detail" >/dev/null
 cat >"$G/tui-state.json" <<'JSON'
 {"layout":{"dock":"left","size_percent":63,"mode":"split"},"active_coordinator_id":0,"right_panel_tab":"Chat","open_tabs":[".chat-0"],"active":".chat-0"}
 JSON

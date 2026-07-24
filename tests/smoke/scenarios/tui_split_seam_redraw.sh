@@ -28,7 +28,7 @@ export TMUX_TMPDIR="$scratch/tmux"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR" "$TMUX_TMPDIR" "$scratch/project"
 G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
-"$WG_BIN" --dir "$G" add "Archived seam chat" --id .chat-0 -t chat-loop -t archived --no-place >/dev/null 2>&1
+"$WG_BIN" --dir "$G" add "Archived seam chat" --id .chat-0 -t chat-loop -t archived >/dev/null 2>&1
 # Long independent rows put real Graph dashes/text at every prospective desktop
 # seam column; enough rows do the same at both prospective phone seam rows.
 for n in $(seq -w 1 24); do
@@ -36,7 +36,7 @@ for n in $(seq -w 1 24); do
     "Graph seam seed $n abcdefghijklmnopqrstuvwxyz 0123456789 abcdefghijklmnopqrstuvwxyz" \
     --id "seam-seed-$n-abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789" \
     -d "Graph cells must be replaced, never recolored, when the split moves." \
-    --no-place >/dev/null 2>&1
+    >/dev/null 2>&1
 done
 cat >"$G/tui-state.json" <<'JSON'
 {"layout":{"dock":"right","size_percent":33,"mode":"split"},"active_coordinator_id":0,"right_panel_tab":"Detail","open_tabs":[".chat-0"],"active":".chat-0"}

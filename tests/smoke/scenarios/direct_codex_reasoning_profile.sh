@@ -50,8 +50,9 @@ wg profile use codex --no-reload >profile-again.log 2>&1 || loud_fail "profile r
 after=$(sha256sum "$profile_file")
 [[ "$before" == "$after" ]] || loud_fail "existing user codex profile was silently overwritten"
 
-wg add 'direct codex reasoning probe' --id direct-codex-probe --reasoning high --no-place \
+wg add 'direct codex reasoning probe' --id direct-codex-probe --reasoning high \
   -d 'Reply OK' >add.log 2>&1 || loud_fail "wg add failed: $(cat add.log)"
+wg publish direct-codex-probe --only >/dev/null || loud_fail "wg publish failed"
 start_wg_daemon "$project" --max-agents 1 --no-coordinator-agent --interval 1 \
   || loud_fail "daemon failed to start"
 

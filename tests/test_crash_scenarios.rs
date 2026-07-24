@@ -13,6 +13,9 @@
 //! - Registry state transitions (alive → dead → cleanup)
 //! - Worktree cleanup and branch removal
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use serial_test::serial;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -67,7 +70,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 
 /// Helper: run `wg` and assert success, returning stdout as string.
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -160,7 +163,7 @@ fn add_shell_task(wg_dir: &Path, task_id: &str, title: &str, exec_cmd: &str) {
             task_id,
             "--exec",
             exec_cmd,
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 }
@@ -893,7 +896,7 @@ working_dir = "/nonexistent/directory"
                 "Spawn Failure Test",
                 "--id",
                 "spawn-fail-task",
-                "--immediate",
+                add_publish::PUBLISH_MARKER,
             ],
         );
         notify_graph_changed(&wg_dir);
@@ -952,11 +955,16 @@ fn test_crash_scenarios_infrastructure() {
     );
 
     // Verify we can create tasks in the test environment
-    let output = wg_cmd(
+    wg_ok(
         &wg_dir,
-        &["add", "test-task", "--id", "test", "--immediate"],
+        &[
+            "add",
+            "test-task",
+            "--id",
+            "test",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
-    assert!(output.status.success(), "Should be able to add tasks");
 
     // Verify we can check task status
     let status_output = wg_cmd(&wg_dir, &["show", "test", "--json"]);

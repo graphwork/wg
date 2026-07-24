@@ -48,7 +48,7 @@ The non-existent dependency is stored verbatim in the task's `after` field (`src
 
 **Finding: A paused/publish mechanism exists and DOES validate dependencies.**
 
-The coordinator prompt (`src/commands/service/coordinator_prompt_fallback.txt:155`) instructs the coordinator to create batch tasks with `--paused --no-place`, then use `wg publish` to atomically unpause the batch.
+The coordinator prompt (`src/commands/service/coordinator_prompt_fallback.txt:155`) instructs the coordinator to create batch tasks with `--paused`, then use `wg publish` to atomically unpause the batch.
 
 The `wg publish` command (`src/commands/resume.rs:178-205`) calls `validate_task_deps()` which **hard-fails on dangling dependencies**:
 
@@ -82,7 +82,7 @@ The subgraph variant (`validate_subgraph` at line 208) validates **all tasks in 
 
 **Cross-referencing within a batch:** When the coordinator creates tasks A, B, C where B depends on A, and all are paused, the IDs exist in the graph even though they're paused. So `wg publish` will find them. The publish mechanism is specifically designed to catch phantoms that are typos or references to never-created tasks.
 
-However, note that the coordinator is **not always using paused mode** — the quality pass workflow is described in the fallback prompt but is not enforced. Individual `wg add` calls without `--paused` create immediately-active tasks, and phantom edges in those calls only produce warnings.
+All supported `wg add` paths now stage paused visible drafts, so dependency validation is deferred consistently to the explicit `wg publish` boundary. Add itself never creates immediately active work.
 
 ## 3. Graph Integrity Checks
 
@@ -188,7 +188,7 @@ A phantom blocker is shown as `Open` (the default), which is misleading — it d
 The coordinator prompt (`src/commands/service/coordinator_prompt_fallback.txt`) instructs the coordinator to:
 
 1. Use `wg add` for each task
-2. For batches (2+ tasks), use `--paused --no-place` and then `wg publish`
+2. For batches (2+ tasks), use `--paused` and then `wg publish`
 
 However:
 - The coordinator runs as an LLM agent executing shell commands sequentially

@@ -136,14 +136,13 @@ for role in evaluator flip_inference flip_comparison; do
   run_wg config --local --set-model "$role" 'pi:openai-codex:gpt-5.6-sol' --no-reload >/dev/null
 done
 run_wg config --local --model 'pi:openai-codex:gpt-5.6-sol' --reasoning high --no-reload >/dev/null
-run_wg add 'retry-safe source' --id retry-source --no-place \
+run_wg add 'retry-safe source' --id retry-source \
   -d $'## Validation\n- [ ] attempt-two evaluation only' >/dev/null
-run_wg add 'downstream after evaluation' --id downstream --after retry-source --no-place >/dev/null
+run_wg add 'downstream after evaluation' --id downstream --after retry-source >/dev/null
 
 # Materialize attempt-1 plans without letting a worker dispatch yet.
-run_wg pause retry-source >/dev/null
-run_wg service tick --max-agents 0 >/dev/null
-run_wg resume retry-source >/dev/null
+run_wg publish retry-source --only >/dev/null
+run_wg publish downstream --only >/dev/null
 python3 - <<'PY'
 import json
 rows=[json.loads(line) for line in open('.wg/graph.jsonl') if line.strip()]

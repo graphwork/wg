@@ -5,6 +5,9 @@
 //! zstd compression is reliable, and that operation log + graph state remain
 //! coherent.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,7 +60,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -298,7 +301,13 @@ fn full_lifecycle_produces_ordered_operations() {
     // add -> claim -> pause -> resume -> done
     wg_ok(
         &wg_dir,
-        &["add", "Lifecycle task", "--id", "lifecycle", "--immediate"],
+        &[
+            "add",
+            "Lifecycle task",
+            "--id",
+            "lifecycle",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(&wg_dir, &["claim", "lifecycle", "--actor", "agent-1"]);
     wg_ok(&wg_dir, &["pause", "lifecycle"]);
@@ -308,7 +317,10 @@ fn full_lifecycle_produces_ordered_operations() {
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     let ops: Vec<&str> = entries.iter().map(|e| e.op.as_str()).collect();
 
-    assert_eq!(ops, vec!["add_task", "claim", "pause", "resume", "done"]);
+    assert_eq!(
+        ops,
+        vec!["add_task", "publish", "claim", "pause", "resume", "done"]
+    );
 
     // All should reference the same task
     for entry in &entries {
@@ -331,7 +343,13 @@ fn fail_retry_done_lifecycle() {
     // add -> claim -> fail -> retry -> claim -> done
     wg_ok(
         &wg_dir,
-        &["add", "Retry task", "--id", "retry-task", "--immediate"],
+        &[
+            "add",
+            "Retry task",
+            "--id",
+            "retry-task",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(&wg_dir, &["claim", "retry-task"]);
     wg_ok(&wg_dir, &["fail", "retry-task", "--reason", "oops"]);
@@ -343,7 +361,9 @@ fn fail_retry_done_lifecycle() {
     let ops: Vec<&str> = entries.iter().map(|e| e.op.as_str()).collect();
     assert_eq!(
         ops,
-        vec!["add_task", "claim", "fail", "retry", "claim", "done"]
+        vec![
+            "add_task", "publish", "claim", "fail", "retry", "claim", "done"
+        ]
     );
 }
 
@@ -734,9 +754,36 @@ fn coherency_after_full_lifecycle() {
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
     // Perform a series of operations
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--immediate"]);
-    wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b", "--immediate"]);
-    wg_ok(&wg_dir, &["add", "Task C", "--id", "task-c", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task A",
+            "--id",
+            "task-a",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "task-b",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task C",
+            "--id",
+            "task-c",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
 
     // Complete A
     wg_ok(&wg_dir, &["done", "task-a"]);
@@ -819,15 +866,33 @@ fn coherency_after_archive_and_gc() {
     // Add tasks, complete one, fail another, keep one open
     wg_ok(
         &wg_dir,
-        &["add", "Done task", "--id", "done-task", "--immediate"],
+        &[
+            "add",
+            "Done task",
+            "--id",
+            "done-task",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(
         &wg_dir,
-        &["add", "Fail task", "--id", "fail-task", "--immediate"],
+        &[
+            "add",
+            "Fail task",
+            "--id",
+            "fail-task",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(
         &wg_dir,
-        &["add", "Keep task", "--id", "keep-task", "--immediate"],
+        &[
+            "add",
+            "Keep task",
+            "--id",
+            "keep-task",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     wg_ok(&wg_dir, &["done", "done-task"]);
@@ -874,7 +939,16 @@ fn wg_log_operations_shows_entries() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Test task",
+            "--id",
+            "t1",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(&wg_dir, &["done", "t1"]);
 
     let output = wg_ok(&wg_dir, &["log", "--operations"]);
@@ -892,7 +966,16 @@ fn wg_log_operations_json() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Test task",
+            "--id",
+            "t1",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
 
     let output = wg_ok(&wg_dir, &["log", "--operations", "--json"]);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&output)
@@ -940,8 +1023,26 @@ fn multiple_tasks_archive_produces_multiple_entries() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Done A", "--id", "done-a", "--immediate"]);
-    wg_ok(&wg_dir, &["add", "Done B", "--id", "done-b", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Done A",
+            "--id",
+            "done-a",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Done B",
+            "--id",
+            "done-b",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(&wg_dir, &["done", "done-a"]);
     wg_ok(&wg_dir, &["done", "done-b"]);
     wg_ok(&wg_dir, &["archive", "--yes"]);

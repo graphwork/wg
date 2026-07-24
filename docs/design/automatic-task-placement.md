@@ -1,5 +1,10 @@
 # Automatic Task Placement — `.place-*` System Tasks
 
+> **Superseded design.** Placement is now merged into assignment. Public task
+> creation always stages visible drafts; `wg publish <task-id> --only` is the
+> only release edge. Disable inference globally with `agency.auto_place=false`.
+> The historical per-task bypass described below is not an available command.
+
 ## Overview
 
 When a new task is added to the graph, a lightweight system task (`.place-<task>`)
@@ -126,14 +131,14 @@ All tasks created via `wg add` (without `--after` deps) are created in draft
 
 ### Skip placement
 ```bash
-# Explicit no-placement — task stays free-standing
-wg add "Quick fix" --no-place
+# Historical explicit placement bypass — task stays free-standing
+wg add "Quick fix"
 
 # Task with explicit deps — placement optional but still runs
 wg add "Step 2" --after step-1
 ```
 
-**`--no-place` flag behavior:**
+**`the legacy bypass` flag behavior:**
 - Task is created with `paused: false` (not draft)
 - No `.place-*` task is created
 - Task becomes immediately eligible for dispatch
@@ -146,21 +151,21 @@ If the user provides `--after`, placement still runs by default, but:
   integration gate connections
 - The placer may determine no additional edges are needed and simply publish
 
-To skip placement entirely when deps are provided:
+All user-created tasks are staged first; explicit dependencies remain placement hints:
 ```bash
-wg add "Step 2" --after step-1 --no-place
+wg add "Step 2" --id step-2 --after step-1
+wg publish step-2 --only
 ```
 
 ### Behavioral matrix
 
-| Flags | Draft? | .place-* created? | Notes |
+| Operation | Draft? | Placement/dispatch? | Notes |
 |---|---|---|---|
-| `wg add "Task"` | Yes | Yes | Full placement flow |
-| `wg add "Task" --after X` | Yes | Yes | Placer respects X, may add more |
-| `wg add "Task" --no-place` | No | No | Free-standing, immediate dispatch |
-| `wg add "Task" --after X --no-place` | No | No | User-specified deps only |
-| `wg add "Task" --paused` | Yes | No | User-managed draft (existing behavior) |
-| `wg add ".system-task"` | No | No | System tasks skip placement |
+| `wg add "Task"` | Yes | No | Visible draft; never dispatches on add |
+| `wg add "Task" --after X` | Yes | No | Visible draft with a user-specified edge |
+| `wg publish <id> --only` | No | According to agency config | Explicitly releases exactly one task |
+| `wg publish <id> --wcc` | No | According to agency config | Explicitly releases a wired component |
+| private system scaffolding | implementation-defined | Internal only | Dot-prefixed machinery is not a public add mode |
 
 ---
 
@@ -329,9 +334,9 @@ placement system uses this: after adding edges, the placer calls `wg publish`.
 
 No changes needed to the publish command itself.
 
-### `--no-place` / `--immediate` flag
-- `--no-place` is the recommended flag name (clear, matches system naming)
-- `--immediate` could be an alias but adds cognitive overhead. Prefer one flag.
+### Removed public placement-bypass mode
+- `the legacy bypass` is the recommended flag name (clear, matches system naming)
+- Historical immediate-dispatch aliases are hard-refused; explicit publish is the only release edge.
 
 ### When does the coordinator create `.place-*` tasks?
 **On coordinator tick (Phase 2)**, not on `wg add`:
@@ -401,7 +406,7 @@ Additional context (if available, but not required):
 **Publish anyway.** Some placement is better than none. If the placer can't
 determine dependencies with confidence, it should:
 1. Log its uncertainty: `wg log <task> "Placement uncertain — no clear file overlap or conceptual affinity found"`
-2. Publish the task (it becomes a free-standing task, like `--no-place`)
+2. Publish the task (it becomes a free-standing task, like `the legacy bypass`)
 3. The task will be dispatched and may discover its own dependencies at runtime
 
 ### Should placement be reversible?
@@ -518,11 +523,11 @@ wg add "Research WebSocket support" --place-near tui-firehose-inspector \
 
 1. **Add `unplaced` and `placed` fields to Task struct**
    - Add `unplaced: bool` (default false) and tag-based `placed` tracking
-   - Update `wg add` to accept `--no-place` flag
-   - When `--no-place`: set `unplaced=true`, `paused=false`
-   - When no `--no-place` and no explicit `--paused`: set `paused=true` (draft-by-default)
+   - Update `wg add` to accept `the legacy bypass` flag
+   - When `the legacy bypass`: set `unplaced=true`, `paused=false`
+   - When no `the legacy bypass` and no explicit `--paused`: set `paused=true` (draft-by-default)
    - Files: `src/graph.rs`, `src/cli.rs`, `src/commands/add.rs`
-   - Verify: `cargo test`, `wg add --no-place` creates unpaused task
+   - Verify: `cargo test`, `wg add` creates unpaused task
 
 2. **Add `DispatchRole::Placer` to config**
    - Add Placer variant to `DispatchRole` enum
@@ -568,7 +573,7 @@ wg add "Research WebSocket support" --place-near tui-firehose-inspector \
 
 7. **Integration tests**
    - Test: draft task → `.place-*` created → task placed → dispatch
-   - Test: `--no-place` skips placement
+   - Test: `the legacy bypass` skips placement
    - Test: auto-placement fast path
    - Test: system tasks skip placement
    - Test: placer failure → fallback publish

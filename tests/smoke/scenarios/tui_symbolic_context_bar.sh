@@ -31,8 +31,8 @@ cat >"$G/config.toml" <<'TOML'
 model = "claude:opus"
 TOML
 "$WG_BIN" --dir "$G" chat create --name symbolic --command cat >/dev/null
-"$WG_BIN" --dir "$G" add symbolic-first -d "first exact symbolic target" --no-place >/dev/null
-"$WG_BIN" --dir "$G" add symbolic-second -d "second exact symbolic target" --no-place >/dev/null
+"$WG_BIN" --dir "$G" add symbolic-first -d "first exact symbolic target" >/dev/null
+"$WG_BIN" --dir "$G" add symbolic-second -d "second exact symbolic target" >/dev/null
 cat >"$G/tui-state.json" <<'JSON'
 {"layout":{"dock":"right","size_percent":60,"mode":"full"},"active_coordinator_id":0,"right_panel_tab":"Chat","open_tabs":[".chat-0"],"active":".chat-0"}
 JSON

@@ -431,8 +431,8 @@ async def run_condition_a_trial(
             "--exec-mode", "full",
             "--context-scope", "clean",
             "--model", model,
-            "--no-place",
         ])
+        await exec_wg(wg_dir, ["publish", root_task_id, "--only"])
 
         # 5. Start isolated service
         await start_trial_service(wg_dir, model, max_agents)

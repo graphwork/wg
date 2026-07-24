@@ -403,15 +403,12 @@ fn test_accidental_cycle_cli_ready() {
     // Create unconfigured cycle via CLI: A → B → C → A
     let wg_dir = setup_workgraph(&temp_dir, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--no-place"]);
-    wg_ok(
-        &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--no-place"],
-    );
-    wg_ok(
-        &wg_dir,
-        &["add", "Task C", "--id", "c", "--after", "b", "--no-place"],
-    );
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
+    wg_ok(&wg_dir, &["publish", "a", "--only"]);
+    wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
+    wg_ok(&wg_dir, &["publish", "b", "--only"]);
+    wg_ok(&wg_dir, &["add", "Task C", "--id", "c", "--after", "b"]);
+    wg_ok(&wg_dir, &["publish", "c", "--only"]);
 
     // Create the cycle with --allow-cycle
     wg_ok(&wg_dir, &["edit", "a", "--add-after", "c", "--allow-cycle"]);
@@ -427,7 +424,7 @@ fn test_accidental_cycle_cli_ready() {
         .collect();
     let task_lines: Vec<&str> = lines
         .iter()
-        .filter(|l| l.contains("Task"))
+        .filter(|l| l.contains("Task") && !l.contains(".assign-"))
         .cloned()
         .collect();
     assert_eq!(

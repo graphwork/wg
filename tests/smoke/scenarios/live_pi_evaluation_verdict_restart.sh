@@ -50,12 +50,10 @@ cd "$project"
 wg init >/dev/null
 wg config --auto-assign false --auto-evaluate true --flip-enabled false --no-reload >/dev/null
 wg config --local --set-model evaluator 'pi:openai-codex:gpt-5.6-terra' --no-reload >/dev/null
-wg add 'live Pi evaluation digest' --id live-eval-source --no-place \
+wg add 'live Pi evaluation digest' --id live-eval-source \
   -d $'## Validation\n- [ ] explicit Pi Terra evaluation is consumed' >/dev/null
 # Materialize the evaluator scaffold without dispatching any worker.
-wg pause live-eval-source >/dev/null
-wg service tick --max-agents 0 >/dev/null
-wg resume live-eval-source >/dev/null
+wg publish live-eval-source --only >/dev/null
 wg claim live-eval-source >/dev/null
 wg done live-eval-source --ignore-unmerged-worktree --skip-smoke >/dev/null
 

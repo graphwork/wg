@@ -77,7 +77,7 @@ All documented commands exist and function as described:
 
 | Feature | Documentation | CLI Status | Notes |
 |---------|---------------|------------|-------|
-| `--no-place` | Skip auto-placement | ✅ Verified | On wg add |
+| Historical placement-bypass mode (removed) | Skipped placement and dispatched implicitly | Superseded | Use visible add + explicit publish |
 | `--place-near <IDS>` | Place near specified tasks | ✅ Verified | On wg add |
 | `--place-before <IDS>` | Insert before tasks | ✅ Verified | On wg add |
 

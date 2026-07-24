@@ -97,6 +97,9 @@ export class WgBackend {
     add(title, extra = [], opts = {}) {
         return this.run(["add", title, ...extra], opts);
     }
+    publish(id, opts = {}) {
+        return this.run(["publish", id, "--only"], opts);
+    }
     done(id, opts = {}) {
         return this.run(["done", id], opts);
     }

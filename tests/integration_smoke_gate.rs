@@ -101,15 +101,22 @@ fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
         "wg init failed: {}",
         String::from_utf8_lossy(&init.stderr)
     );
-    let claim_id = wg_cmd_with_env(
-        &wg_dir,
-        &["add", "Task under test", "--id", task_id, "--immediate"],
-        &[],
-    );
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
+    )
+    .unwrap();
+    let claim_id = wg_cmd_with_env(&wg_dir, &["add", "Task under test", "--id", task_id], &[]);
     assert!(
         claim_id.status.success(),
         "wg add failed: {}",
         String::from_utf8_lossy(&claim_id.stderr)
+    );
+    let publish = wg_cmd_with_env(&wg_dir, &["publish", task_id, "--only"], &[]);
+    assert!(
+        publish.status.success(),
+        "wg publish failed: {}",
+        String::from_utf8_lossy(&publish.stderr)
     );
     let claim = wg_cmd_with_env(&wg_dir, &["claim", task_id], &[]);
     assert!(
@@ -293,12 +300,10 @@ owners = ["unrelated-task"]
     // Reset task to in-progress to test --full-smoke path.
     // (Use claim with --force semantics by re-adding; simpler: create another task.)
     let task_id2 = "all-or-nothing-2";
-    let add = wg_cmd_with_env(
-        &wg_dir,
-        &["add", "Task two", "--id", task_id2, "--immediate"],
-        &[],
-    );
+    let add = wg_cmd_with_env(&wg_dir, &["add", "Task two", "--id", task_id2], &[]);
     assert!(add.status.success());
+    let publish = wg_cmd_with_env(&wg_dir, &["publish", task_id2, "--only"], &[]);
+    assert!(publish.status.success());
     let claim = wg_cmd_with_env(&wg_dir, &["claim", task_id2], &[]);
     assert!(claim.status.success());
 

@@ -24,15 +24,14 @@ coordinator logic.
 
 ### 1. How does the coordinator insert the quality pass into the dependency chain?
 
-**Answer: The coordinator inserts a `.quality-pass-<batch>` task after creating a batch of tasks, using `--before` edges to gate downstream execution.**
+**Answer: The coordinator inserts a private `.quality-pass-<batch>` task and uses dependency edges to gate downstream execution.**
 
 The coordinator already follows a pattern of creating system tasks (`.assign-*`,
 `.evaluate-*`, `.flip-*`) that sit in the dependency chain. The quality pass uses
 the same pattern:
 
 1. Coordinator receives a user request and creates tasks via `wg add`.
-2. Coordinator creates a single `.quality-pass-<batch-id>` task with no `--after`
-   dependencies (immediately ready).
+2. Coordinator creates a single private `.quality-pass-<batch-id>` draft with no `--after` dependencies.
 3. Coordinator wires each new task to depend on the quality pass:
    `wg edit <task-id> --add-after .quality-pass-<batch-id>` for each task in the batch.
 
@@ -43,18 +42,17 @@ The batch ID is a timestamp (matching the existing `.create-*` and `.evolve-*` c
 `.assign-*` tasks because it may change the assignment. There are two options:
 
 - **Option A (recommended):** The quality pass runs as the FIRST step, before
-  `scaffold_full_pipeline`. The coordinator creates tasks with `--no-place` and
-  `--paused`, then creates the quality pass task, then the quality pass agent
-  un-pauses tasks after review (which triggers the normal scaffold pipeline at
+  `scaffold_full_pipeline`. The coordinator creates tasks with plain visible drafts, then creates the quality pass task, then the quality pass agent
+  publishes tasks after review (which triggers the normal scaffold pipeline at
   coordinator tick). This keeps the quality pass cleanly separated from the
   existing pipeline.
 
 - **Option B:** The quality pass runs after `.assign-*` and overrides assignments.
   This wastes the initial assignment LLM call. Rejected.
 
-**Chosen: Option A.** The coordinator creates tasks paused. The quality pass reviews
+**Chosen: Option A.** The coordinator creates visible drafts. The quality pass reviews
 them, applies agency assignment + model selection + verify gates, then un-pauses
-them (via `wg resume <task-id>`). The coordinator's normal tick then scaffolds
+them (via `wg publish <task-id> --only`). The coordinator's normal tick then scaffolds
 `.assign-*`, `.flip-*`, `.evaluate-*` as usual — but the `.assign-*` step sees
 the pre-set agent and skips the LLM call (existing behavior: `build_auto_assign_tasks`
 skips tasks that already have `.agent` set).
@@ -120,7 +118,7 @@ The MVP quality pass does two things per task:
    - `wg edit <task-id> --model <tier>` — set the model
 
 Then un-pause:
-   - `wg resume <task-id>` — release the task for execution
+   - `wg publish <task-id> --only` — release the task for execution
 
 **v2 additions (deferred):**
 - Verification gate consistency: `wg edit <task-id> --verify "..."` for code tasks
@@ -152,7 +150,7 @@ being reviewed, it creates a second `.quality-pass-<batch2>` task. No cycle need
 # Step 1: User says "Add auth system with JWT tokens"
 # Coordinator decomposes into tasks, created PAUSED:
 
-wg add "Research: JWT library selection" --paused --no-place \
+wg add "Research: JWT library selection" \
   -d "## Description
 Evaluate JWT libraries for Rust...
 
@@ -160,7 +158,7 @@ Evaluate JWT libraries for Rust...
 - [ ] Library comparison matrix produced
 - [ ] Recommendation with rationale"
 
-wg add "Implement: JWT auth middleware" --paused --no-place \
+wg add "Implement: JWT auth middleware" \
   --after research-jwt-library \
   -d "## Description
 Implement JWT auth middleware...
@@ -170,7 +168,7 @@ Implement JWT auth middleware...
 - [ ] Implementation makes the test pass
 - [ ] cargo build + cargo test pass"
 
-wg add "Test: auth integration tests" --paused --no-place \
+wg add "Test: auth integration tests" \
   --after implement-jwt-auth \
   -d "## Description
 Write integration tests...
@@ -179,10 +177,9 @@ Write integration tests...
 - [ ] Tests cover happy path + error cases
 - [ ] cargo test passes"
 
-# Step 2: Coordinator creates the quality pass task (NOT paused, immediately ready):
+# Step 2: Coordinator creates a private system-scaffold draft:
 
 wg add ".quality-pass-20260402T143800" \
-  --no-place \
   -d "## Quality Pass: Post-Triage Review
 
 Review and optimize task metadata for a batch of newly created tasks.
@@ -202,7 +199,7 @@ For each task:
    - Simple/mechanical tasks → haiku
    - Standard implementation → sonnet
    - Complex reasoning/design → opus
-4. Un-pause each task: \`wg resume <task-id>\`
+4. Publish each reviewed task: \`wg publish <task-id> --only\`
 
 ## Data sources
 - Role performance: \`wg agency stats\`
@@ -214,6 +211,7 @@ For each task:
 wg edit research-jwt-library --add-after .quality-pass-20260402T143800
 wg edit implement-jwt-auth --add-after .quality-pass-20260402T143800
 wg edit test-auth-integration --add-after .quality-pass-20260402T143800
+wg publish .quality-pass-20260402T143800 --only
 ```
 
 ### What the quality pass agent does (inside the task)
@@ -228,19 +226,19 @@ wg agency stats
 # Decision: research task → Researcher role (66be1375, highest avg 0.85) + model haiku (simple research)
 wg assign research-jwt-library 66be1375...
 wg edit research-jwt-library --model haiku
-wg resume research-jwt-library
+wg publish research-jwt-library --only
 
 wg show implement-jwt-auth
 # Decision: implementation → Programmer role (52335de1, avg 0.84, 871 tasks) + model sonnet (standard impl)
 wg assign implement-jwt-auth 52335de1...
 wg edit implement-jwt-auth --model sonnet
-wg resume implement-jwt-auth
+wg publish implement-jwt-auth --only
 
 wg show test-auth-integration
 # Decision: testing → Programmer role + model sonnet
 wg assign test-auth-integration 52335de1...
 wg edit test-auth-integration --model sonnet
-wg resume test-auth-integration
+wg publish test-auth-integration --only
 
 wg done .quality-pass-20260402T143800
 ```
@@ -303,12 +301,12 @@ Pick based on task complexity signals:
 Apply: `wg edit <task-id> --model <tier>`
 
 ### 4. Release for execution
-After assigning agent and model: `wg resume <task-id>`
+After assigning agent and model: `wg publish <task-id> --only`
 
 ## Validation
 - Every listed task has an agent assigned (check via `wg show`)
 - Every listed task has a model set
-- Every listed task is un-paused (status: open, not paused)
+- Every listed task is published (status: open, not paused)
 - Assignments are justified by evaluation data, not arbitrary
 ```
 
@@ -357,7 +355,7 @@ BEFORE (current):
 
 AFTER (with quality pass):
   coordinator creates tasks (paused)
-  → .quality-pass-* (assigns agent, model, resumes)
+  → .quality-pass-* (assigns agent, model, publishes)
   → [.assign-* sees pre-set agent, skips LLM call]
   → task execution
   → .flip-* → .evaluate-*
@@ -383,7 +381,7 @@ The coordinator prompt update adds:
 
 ```
 When creating tasks from a user request:
-1. Create all tasks with --paused --no-place
+1. Create all tasks as visible drafts
 2. Create a .quality-pass-<timestamp> task listing the new task IDs
 3. Wire each new task to depend on the quality pass via --add-after
 ```

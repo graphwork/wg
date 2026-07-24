@@ -137,7 +137,8 @@ The `superseded_by` field creates a traceable link from the old task to its repl
 When `auto_place` is enabled (`wg config --auto-place true`), placement analysis is merged into the assignment step. Rather than creating separate `.place-*` tasks, the dispatcher performs placement analysis inline when building `.assign-*` tasks for ready unassigned work:
 
 ```
-wg add "New task" → Open state → dispatcher creates .assign-<task-id>
+wg add "New task" → visible Draft
+wg publish new-task --only → Open state → dispatcher creates .assign-<task-id>
                                 → assignment agent analyzes graph context
                                   (including placement when auto_place is on)
                                 → determines optimal dependencies, wiring,
@@ -150,10 +151,9 @@ The assignment agent examines the current graph structure and the task's descrip
 - The best agent identity to assign
 - Whether the task needs specific context scope or exec mode
 
-If `auto_place` is disabled, tasks are added directly in Open state and the user must wire dependencies manually with `--after`.
+If `auto_place` is disabled, publishing preserves only explicit dependencies and placement hints; no placement inference runs. `wg add` still creates a visible draft.
 
 You can also control placement via CLI flags on `wg add`:
-- `--no-place` — skip automatic placement entirely; make the task immediately available
 - `--place-near <IDS>` — hint: place near these tasks (comma-separated)
 - `--place-before <IDS>` — hint: place before these tasks (comma-separated)
 
@@ -411,7 +411,7 @@ wg context write-tests
 - Use `wg log` to leave progress traces — they become context for dependent tasks
 - Use `wg artifact` to mark outputs — they appear in `wg context` for successors
 - Always check `wg context <your-task>` before starting work — it shows what predecessors produced
-- **You are expected to create tasks** when you discover work. Bugs, missing docs, needed refactors — create them with `wg add`. The dispatcher dispatches automatically.
+- **You are expected to create tasks** when you discover work. Create a visible draft with `wg add`, then explicitly release it with `wg publish <id> --only`; only published work dispatches.
 
 ### 4.1.1 Discovery — see what's new
 

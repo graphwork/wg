@@ -137,21 +137,21 @@ done
 
 echo "  Claude writing banana-from-claude..."
 wg chat --coordinator 0 \
-  "Run in the shell: wg add 'banana-from-claude' --no-place. Then reply with just the word: added." \
+  "Run: wg add 'banana-from-claude', then wg publish banana-from-claude --only. Reply: added." \
   --timeout 300 >/dev/null 2>&1 || true
 new=$(wait_for_outbox_growth 0 "${base[0]}" 300) || fail "claude outbox didn't grow (stuck at $new)"
 echo "  Claude outbox: $new lines; reply: $(last_outbox_content 0 | head -c 120)"
 
 echo "  Native writing banana-from-native..."
 wg chat --coordinator "$nat_id" \
-  "Run in the shell: wg add 'banana-from-native' --no-place. Then reply with just the word: added." \
+  "Run: wg add 'banana-from-native', then wg publish banana-from-native --only. Reply: added." \
   --timeout 300 >/dev/null 2>&1 || true
 new=$(wait_for_outbox_growth "$nat_id" "${base[$nat_id]}" 300) || fail "native outbox didn't grow"
 echo "  Native outbox: $new lines; reply: $(last_outbox_content "$nat_id" | head -c 120)"
 
 echo "  Codex writing banana-from-codex..."
 wg chat --coordinator "$cdx_id" \
-  "Run in the shell: wg add 'banana-from-codex' --no-place. Then reply with just the word: added." \
+  "Run: wg add 'banana-from-codex', then wg publish banana-from-codex --only. Reply: added." \
   --timeout 360 >/dev/null 2>&1 || true
 new=$(wait_for_outbox_growth "$cdx_id" "${base[$cdx_id]}" 360) || fail "codex outbox didn't grow"
 echo "  Codex outbox: $new lines; reply: $(last_outbox_content "$cdx_id" | head -c 120)"

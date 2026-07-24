@@ -148,6 +148,10 @@ export class WgBackend {
     return this.run(["add", title, ...extra], opts);
   }
 
+  publish(id: string, opts: WgRunOptions = {}): Promise<ExecResult> {
+    return this.run(["publish", id, "--only"], opts);
+  }
+
   done(id: string, opts: WgRunOptions = {}): Promise<ExecResult> {
     return this.run(["done", id], opts);
   }

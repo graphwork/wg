@@ -8,6 +8,9 @@
 //! These tests run serially because each spawns daemon and agent processes
 //! that are sensitive to CPU/scheduling contention under parallel execution.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use serial_test::serial;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -89,7 +92,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 
 /// Helper: run `wg` and assert success, returning stdout as string.
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -172,7 +175,10 @@ fn socket_path_for(tmp_root: &Path) -> String {
 /// Helper: add a task with a shell exec command.
 fn add_shell_task(wg_dir: &Path, task_id: &str, title: &str, exec_cmd: &str) {
     // wg add doesn't support --exec directly, so we add the task then patch the JSONL
-    wg_ok(wg_dir, &["add", title, "--id", task_id, "--immediate"]);
+    wg_ok(
+        wg_dir,
+        &["add", title, "--id", task_id, add_publish::PUBLISH_MARKER],
+    );
 
     // Patch the graph to add exec field
     let graph_path = wg_dir.join("graph.jsonl");

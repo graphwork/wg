@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # Scenario: dispatcher_kick_bypasses_settling_delay
 #
-# Regression check for dispatcher-poll-lower (2026-04-27): user-initiated
-# state mutations (`wg add --immediate`, `wg publish`, `wg unclaim`,
-# `wg service resume`) MUST send a `KickDispatcher` IPC that bypasses the
-# settling delay so the dispatcher ticks within sub-second.
+# Regression check for dispatcher-poll-lower (2026-04-27): explicit release
+# mutations (`wg publish`, `wg unclaim`, `wg service resume`) MUST send a
+# `KickDispatcher` IPC that bypasses settling. Draft-only `wg add` must not.
 #
 # Before this fix, the dispatcher waited the full settling_delay (2s) after
 # every GraphChanged IPC, on top of the safety-timer poll (default 30s, was
 # 60s in some configs). The user perceived 30-60s of dead air after every
 # state-changing CLI command.
 #
-# This scenario boots a fresh daemon, runs `wg add --immediate`, and asserts
-# that the daemon log shows "KickDispatcher received, ticking immediately"
+# This scenario boots a fresh daemon, stages a visible draft, publishes it,
+# and asserts that publish logs "KickDispatcher received, ticking immediately"
 # AND a coordinator tick fires within 1 second of the IPC arriving. If the
 # kick path regresses (e.g. callers revert to notify_graph_changed), this
 # scenario fails because the log line is gone or the tick is delayed.
@@ -50,30 +49,39 @@ if ! grep -q "Coordinator tick #1" "$daemon_log" 2>/dev/null; then
     loud_fail "daemon never logged its first tick. log tail:\n$(tail -30 "$daemon_log" 2>/dev/null || echo '<no log>')"
 fi
 
-# Snapshot the pre-add tick count so we can detect the post-kick tick.
-pre_kick_ticks=$(grep -c "Coordinator tick #" "$daemon_log" 2>/dev/null || echo 0)
-
-# Fire the kick by adding an immediately-published task. The wg add path
-# must call notify_kick (not notify_graph_changed) when paused=false.
-if ! wg add "smoke-kick-test" --immediate >add.log 2>&1; then
+# Stage the task. Add is graph-visible but staging-only and must not kick.
+pre_add_kicks=$(grep -c "KickDispatcher received" "$daemon_log" 2>/dev/null || true)
+if ! wg add "smoke-kick-test" >add.log 2>&1; then
     loud_fail "wg add failed: $(tail -5 add.log)"
+fi
+post_add_kicks=$(grep -c "KickDispatcher received" "$daemon_log" 2>/dev/null || true)
+(( post_add_kicks == pre_add_kicks )) \
+    || loud_fail "draft add unexpectedly kicked dispatch: before=$pre_add_kicks after=$post_add_kicks"
+
+# Publish is the sole release edge and must kick immediately.
+pre_kick_ticks=$(grep -c "Coordinator tick #" "$daemon_log" 2>/dev/null || true)
+pre_publish_kicks=$post_add_kicks
+if ! wg publish smoke-kick-test --only >publish.log 2>&1; then
+    loud_fail "wg publish failed: $(tail -5 publish.log)"
 fi
 
 # Allow up to 1 second for the IPC to be processed and the tick to fire.
 # If the kick path is broken, the next tick won't come until either the
 # settling delay (2s) or the safety-timer poll (5s default).
+post_kick_ticks=$pre_kick_ticks
 for _ in $(seq 1 10); do
-    if grep -q "KickDispatcher received" "$daemon_log" 2>/dev/null; then
+    post_publish_kicks=$(grep -c "KickDispatcher received" "$daemon_log" 2>/dev/null || true)
+    post_kick_ticks=$(grep -c "Coordinator tick #" "$daemon_log" 2>/dev/null || true)
+    if (( post_publish_kicks > pre_publish_kicks && post_kick_ticks > pre_kick_ticks )); then
         break
     fi
     sleep 0.1
 done
 
-if ! grep -q "KickDispatcher received" "$daemon_log" 2>/dev/null; then
-    loud_fail "no 'KickDispatcher received' log entry within 1s of wg add --immediate. log tail:\n$(tail -20 "$daemon_log" 2>/dev/null || echo '<no log>')"
+if (( ${post_publish_kicks:-0} <= pre_publish_kicks )); then
+    loud_fail "no new 'KickDispatcher received' log entry within 1s of publish. log tail:\n$(tail -20 "$daemon_log" 2>/dev/null || echo '<no log>')"
 fi
 
-post_kick_ticks=$(grep -c "Coordinator tick #" "$daemon_log" 2>/dev/null || echo 0)
 if (( post_kick_ticks <= pre_kick_ticks )); then
     loud_fail "expected coordinator tick after KickDispatcher; pre=$pre_kick_ticks, post=$post_kick_ticks. log tail:\n$(tail -20 "$daemon_log" 2>/dev/null || echo '<no log>')"
 fi

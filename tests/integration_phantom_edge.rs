@@ -1,7 +1,7 @@
 //! Integration tests for phantom edge prevention.
 //!
 //! Tests cover:
-//! - `wg add --after`: valid dep accepted, invalid dep rejected, paused defers, allow-phantom opts in
+//! - `wg add --after`: drafts may stage forward refs; publish validates them
 //! - `wg edit --add-after`: same validation
 //! - `wg publish`: batch with cross-refs works, batch with dangling ref errors
 //! - Retroactive backlink repair
@@ -109,10 +109,7 @@ fn add_with_valid_after_succeeds() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("dep-task", "Dependency")]);
 
-    let out = wg_ok(
-        &wg_dir,
-        &["add", "New Task", "--after", "dep-task", "--no-place"],
-    );
+    let out = wg_ok(&wg_dir, &["add", "New Task", "--after", "dep-task"]);
     assert!(out.contains("Added task"));
 
     let graph = load_graph(graph_path(&wg_dir)).unwrap();
@@ -124,28 +121,23 @@ fn add_with_valid_after_succeeds() {
 }
 
 // ===========================================================================
-// wg add --after: invalid dependency rejected (strict default)
+// wg publish: invalid dependency rejected at the explicit release edge
 // ===========================================================================
 
 #[test]
-fn add_with_nonexistent_after_fails() {
+fn publish_with_nonexistent_after_fails() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("existing", "Existing")]);
 
-    let (stdout, stderr) = wg_fail(
+    wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "New Task",
-            "--after",
-            "nonexistent-task-id",
-            "--no-place",
-        ],
+        &["add", "New Task", "--after", "nonexistent-task-id"],
     );
+    let (stdout, stderr) = wg_fail(&wg_dir, &["publish", "new-task", "--only"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("does not exist"),
-        "Error should mention dependency does not exist. Got: {}",
+        combined.contains("dangling dependencies"),
+        "Error should identify the dangling dependency. Got: {}",
         combined
     );
 }
@@ -159,11 +151,13 @@ fn add_with_typo_suggests_correction() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("build-artifacts", "Build")]);
 
-    let (stdout, stderr) = wg_fail(
-        &wg_dir,
-        &["add", "Deploy", "--after", "bild-artifacts", "--no-place"],
+    let output = wg_cmd(&wg_dir, &["add", "Deploy", "--after", "bild-artifacts"]);
+    assert!(output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let combined = format!("{}{}", stdout, stderr);
     assert!(
         combined.contains("build-artifacts"),
         "Error should suggest 'build-artifacts'. Got: {}",
@@ -213,7 +207,6 @@ fn add_allow_phantom_with_nonexistent_after_succeeds() {
             "--after",
             "ghost-dep",
             "--allow-phantom",
-            "--no-place",
         ],
     );
     assert!(out.contains("Added task"));
@@ -361,12 +354,11 @@ fn retroactive_backlink_repair_on_task_creation() {
             "--after",
             "task-b",
             "--allow-phantom",
-            "--no-place",
         ],
     );
 
     // Now create task B — the system should retroactively add 'task-a' to B's before list
-    wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b", "--no-place"]);
+    wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b"]);
 
     let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let b = graph.get_task("task-b").unwrap();
@@ -482,19 +474,20 @@ fn check_reports_phantom_edges() {
 }
 
 // ===========================================================================
-// Error message includes hint about --paused and --allow-phantom
+// Error message identifies publish as the validation boundary
 // ===========================================================================
 
 #[test]
-fn error_message_includes_hints() {
+fn publish_error_explains_missing_dependency() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    let (stdout, stderr) = wg_fail(&wg_dir, &["add", "Task", "--after", "nope", "--no-place"]);
+    wg_ok(&wg_dir, &["add", "Task", "--after", "nope"]);
+    let (stdout, stderr) = wg_fail(&wg_dir, &["publish", "task", "--only"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("--paused") && combined.contains("--allow-phantom"),
-        "Error should mention --paused and --allow-phantom hints. Got: {}",
+        combined.contains("Cannot publish") && combined.contains("nope"),
+        "Publish should identify the missing dependency. Got: {}",
         combined
     );
 }

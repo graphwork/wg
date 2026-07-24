@@ -39,7 +39,7 @@ Tasks are the fundamental units of work. Each task has:
 - **context_scope**: How much context the coordinator injects (`clean`, `task`, `graph`, `full`)
 - **delay**: Delay before dispatch (e.g., `1h`, `30m`)
 - **not_before**: Earliest dispatch time (ISO 8601)
-- **placement_hints**: Hints for auto-placement (`no_place`, `place_near`, `place_before`)
+- **placement_hints**: Hints for auto-placement (`place_near`, `place_before`); set `agency.auto_place=false` to disable inference
 - **cycle_config**: Cycle iteration settings (`max_iterations`, convergence, etc.)
 - **retry_count / max_retries**: Retry tracking and limits
 
@@ -188,6 +188,8 @@ Creates `.wg/graph.jsonl` in the current directory.
 
 ### Add Tasks
 
+`wg add` always creates a visible paused draft. After adding and wiring tasks, release each intentionally with `wg publish <task-id> --only` (or release a connected batch with `--wcc`).
+
 ```bash
 # Simple task
 wg add "Design API schema"
@@ -299,7 +301,7 @@ wg ready --json | jq -r '.[].id'
 
 ### Peer WG Instances
 
-WG instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and create cross-repo tasks with `wg add "Task" --repo <peer>`. See the [Command Reference](./COMMANDS.md) for details.
+WG instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and stage cross-repo drafts with `wg add "Task" --repo <peer>`; the command prints the explicit `wg --dir <peer-wg-dir> publish <id> --only` release step. See the [Command Reference](./COMMANDS.md) for details.
 
 ## See Also
 

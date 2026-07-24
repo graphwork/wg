@@ -100,13 +100,15 @@ auto_evaluate = false
         "-d", f"Terminal Bench trial task.\n\n{TASK_INSTRUCTION}",
         "--verify", VERIFY_CMD,
         "--model", "openrouter:minimax/minimax-m2.7",
-        "--no-place",
     ])
     print(f"[2] wg add: rc={rc}")
     if rc != 0:
         print(f"    ERROR: {err}")
         raise RuntimeError(f"wg add failed: {err}")
     print(f"    output: {out[:200]}")
+    rc, out, err = await exec_wg(wg_dir, ["publish", task_id, "--only"])
+    if rc != 0:
+        raise RuntimeError(f"wg publish failed: {err}")
 
     # Show task - verify field should be present
     print(f"\n[3] wg show (checking --verify field is set)")

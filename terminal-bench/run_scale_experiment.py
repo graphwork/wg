@@ -777,10 +777,12 @@ async def run_trial_condition_a(
             "--exec-mode", "full",
             "--context-scope", "clean",
             "--model", model,
-            "--no-place",
         ])
         if "[exit code:" in add_out and root_task_id not in add_out:
             raise RuntimeError(f"Task creation failed: {add_out}")
+        publish_out = await exec_wg(wg_dir, ["publish", root_task_id, "--only"])
+        if "[exit code:" in publish_out:
+            raise RuntimeError(f"Task publish failed: {publish_out}")
 
         # 4. Start isolated service
         await exec_wg(wg_dir, [
@@ -909,10 +911,12 @@ async def run_trial_condition_f(
             "--exec-mode", "full",
             "--context-scope", "graph",
             "--model", model,
-            "--no-place",
         ])
         if "[exit code:" in add_work and work_task_id not in add_work:
             raise RuntimeError(f"Work task creation failed: {add_work}")
+        publish_out = await exec_wg(wg_dir, ["publish", work_task_id, "--only"])
+        if "[exit code:" in publish_out:
+            raise RuntimeError(f"Work task publish failed: {publish_out}")
 
         # 4. Start wg service
         await exec_wg(wg_dir, [

@@ -13,6 +13,9 @@
 //! Run with: cargo test --test smoke_context
 //! For live tests: cargo test --test smoke_context -- --ignored
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -59,7 +62,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -583,7 +586,7 @@ fn smoke_context_management_openrouter() {
             "context-pressure-test",
             "--context-scope",
             "task",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

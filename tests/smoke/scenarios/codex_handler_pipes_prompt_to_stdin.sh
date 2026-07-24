@@ -54,11 +54,10 @@ if ! run_wg config --auto-assign false --no-reload >config.log 2>&1; then
 fi
 
 if ! run_wg add 'smoke probe codex' --id smoke-probe-codex \
-        -d 'echo hello world' \
-        --no-place \
-        >add.log 2>&1; then
+        -d 'echo hello world' >add.log 2>&1; then
     loud_fail "wg add failed: $(tail -10 add.log)"
 fi
+run_wg publish smoke-probe-codex --only >/dev/null || loud_fail "wg publish failed"
 
 # Boot dispatcher in background using the helper that captures the canonical
 # daemon PID from state.json (not $! of the wrapper). The helper also

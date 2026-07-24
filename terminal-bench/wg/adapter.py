@@ -524,14 +524,14 @@ DO NOT write code. DO NOT modify files. Only create wg tasks.
 
 ## Graph design
 
-Create tasks using `wg add`, then wire them into a self-correcting cycle:
+`wg add` stages visible drafts. Create and wire the cycle, then explicitly release every task with `wg publish <task-id> --only`:
 
 ```bash
 # 1. Work tasks (parallelize where possible — up to 8 agents run concurrently)
-wg add "Implement the solution" --no-place -d "Description of what to do..."
+wg add "Implement the solution" -d "Description of what to do..."
 
 # 2. Verify task (runs after work, checks if tests pass)
-wg add "Run tests and verify" --after implement-the-solution --no-place \
+wg add "Run tests and verify" --after implement-the-solution \
   -d "Run the test suite: bash tests/test.sh (or python3 tests/test_outputs.py).
 If tests PASS: wg done <your-task-id> --converged
 If tests FAIL: wg log <your-task-id> 'what failed and why', then wg done <your-task-id>"
@@ -633,7 +633,7 @@ Then create subtasks for the unfinished portions only.
 
 2. **Create 2-4 focused subtasks** (NEVER more than 4):
 ```bash
-wg add "Part 1: <specific scope>" --no-place -d "## What to do
+wg add "Part 1: <specific scope>" -d "## What to do
 <concrete instructions>
 
 ## Files to modify
@@ -648,7 +648,7 @@ Implement directly. Do NOT create subtasks. Do NOT decompose further."
 
 3. **Wire in a verify task**:
 ```bash
-wg add "Verify: run full test suite" --after part-1,part-2 --no-place \\
+wg add "Verify: run full test suite" --after part-1,part-2 \\
   -d "Run the test suite: <test command>.
 If ALL tests pass: wg done <your-task-id> --converged
 If tests fail: wg log <your-task-id> 'what failed' then wg done <your-task-id>"
@@ -815,9 +815,8 @@ async def _run_native_executor(
     )
     await environment.exec(command=write_instruction_cmd)
 
-    # Add the task to the graph using the instruction file.
-    # --no-place skips the placement pipeline and makes the task immediately
-    # available for dispatch (otherwise interactive default is paused/draft).
+    # Stage the visible task using the instruction file, then release it with
+    # an explicit publish after the graph write succeeds.
     # When a verify_cmd is provided, write it to a file and pass --verify so
     # `wg done` automatically gates completion on the test command passing.
     exec_mode_flag = ''
@@ -830,7 +829,7 @@ async def _run_native_executor(
         verify_flag = ' --verify "$(cat /tmp/tb-verify-cmd.txt)"'
     add_cmd = (
         f'cd {trial_workdir} && '
-        f'wg add "TB task" --id {task_id} --no-place{exec_mode_flag}{verify_flag} '
+        f'wg add "TB task" --id {task_id}{exec_mode_flag}{verify_flag} '
         f'-d "$(cat /tmp/tb-instruction.txt)"'
     )
     add_result = await environment.exec(command=add_cmd)
@@ -841,6 +840,17 @@ async def _run_native_executor(
             "task_id": task_id,
             "elapsed_s": 0.0,
             "error": f"wg add failed: {add_result.stderr}",
+        }
+    publish_result = await environment.exec(
+        command=f"cd {trial_workdir} && wg publish {task_id} --only"
+    )
+    if publish_result.return_code != 0:
+        logger.error(f"wg publish failed: {publish_result.stderr}")
+        return {
+            "status": "setup_error",
+            "task_id": task_id,
+            "elapsed_s": 0.0,
+            "error": f"wg publish failed: {publish_result.stderr}",
         }
 
     # Build the env export line.  OPENROUTER_API_KEY must be inherited by

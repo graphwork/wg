@@ -340,10 +340,7 @@ fn test_no_tier_escalation_flag() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    wg_ok(
-        &wg_dir,
-        &["add", "Test task", "--no-place", "--no-tier-escalation"],
-    );
+    wg_ok(&wg_dir, &["add", "Test task", "--no-tier-escalation"]);
 
     let graph = worksgood::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();

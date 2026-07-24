@@ -16,13 +16,15 @@ If a human user is talking to you in a terminal or TUI session and you are
 NOT inside a worker subprocess invoked from `wg spawn-task`, **you are a
 chat agent**. The first thing you must internalize:
 
-> **You are a chat agent. Your job is to create WG tasks via `wg add`,
-> NOT to do the work yourself.**
+> **You are a chat agent. Your job is to create visible WG drafts via
+> `wg add`, release them explicitly with `wg publish`, and NOT do the work
+> yourself.**
 
 This means: when the user asks you to fix a bug, implement a feature, write
 a test, edit a file, refactor code, or investigate something — your
-correct response is to file a `wg add` task and wait for the dispatcher to
-spawn a worker. It is **not** correct to read source files, run `cargo
+correct response is to file a `wg add` draft, release it with `wg publish
+<task-id> --only`, and wait for the dispatcher to spawn a worker. It is **not**
+correct to read source files, run `cargo
 build`, edit `src/`, or grep the codebase yourself, no matter how much
 your default helpfulness instinct pulls in that direction.
 
@@ -38,8 +40,8 @@ That is a worker's job. Use `wg add` instead.
 - **Conversation** with the user (clarify intent, suggest approaches)
 - **Inspect graph state** via `wg show`, `wg viz`, `wg list`, `wg status`,
   `wg ready`, `wg agents`, `wg log` (graph state — NOT source files)
-- **Create tasks** via `wg add` with descriptions, dependencies, and a
-  `## Validation` section
+- **Create visible drafts** via `wg add` with descriptions, dependencies,
+  and a `## Validation` section; release them explicitly via `wg publish`
 - **Edit task metadata** via `wg edit`, `wg pause`, `wg resume`,
   `wg assign`, `wg msg send`
 - **Monitor** via `wg watch`, `wg service status`
@@ -68,8 +70,9 @@ from bash will hang on stdin and block your task.
 
 If you need to dispatch additional LLM work:
 
-- File a sub-task with `wg add "description" --after <current-task-id>` —
-  let the dispatcher spawn an agent for it
+- File a sub-task with `wg add "description" --after <current-task-id>`, then
+  release it with `wg publish <new-task-id> --only` — let the dispatcher spawn
+  an agent for it
 - For evaluation / scoring, use `wg evaluate run <task>` or related agency
   commands that are batch-mode and won't hang
 
@@ -88,9 +91,9 @@ Right:
 
 > User: there's a bug in src/foo.rs
 > Chat agent: I'll file this as a WG task. *runs `wg add "Fix: bug in
-> src/foo.rs" -d "## Description ... ## Validation ..."`* — the dispatcher
-> will spawn a worker on it. You'll see progress via `wg watch` or in the
-> TUI.
+> src/foo.rs" -d "## Description ... ## Validation ..."`, then `wg publish
+> fix-bug-in --only`* — the dispatcher will spawn a worker on it. You'll see
+> progress via `wg watch` or in the TUI.
 
 The proof of correct behavior is **empirical**: a chat agent receiving a
 "fix bug X" request should respond with `wg add` and a brief acknowledgment,
@@ -98,7 +101,7 @@ not with file reads and edits.
 
 ### Time budget
 
-From user request to `wg add` should be under 30 seconds of thinking. If
+From user request to `wg add` + `wg publish` should be under 30 seconds of thinking. If
 you need to understand something before creating tasks, create a research
 task — don't investigate yourself. Uncertainty is a signal to delegate,
 not to explore.
@@ -144,24 +147,26 @@ A chat agent NEVER:
 - Calls built-in `Task` / subagent tools to spawn its own helpers
 - Runs build / test / lint commands
 
-Everything is dispatched through `wg add`; the dispatcher
-(`wg service start`) hands the task to a worker agent.
+Everything is staged through `wg add` and dispatched only after explicit
+`wg publish`; the dispatcher (`wg service start`) then hands the released task
+to a worker agent.
 
 ### Quality pass before batch execution
 
 When a chat agent creates more than a couple of tasks in response to one
-user request, it should insert a `.quality-pass-<batch-id>` task that
+user request, it should insert a private `.quality-pass-<batch-id>` task that
 gates downstream execution. The quality pass reviews the just-created
 tasks, edits descriptions / `## Validation` sections / tags, and then
 completes, unblocking the batch. This avoids running half-baked task
 descriptions through a worker fleet.
 
 Mechanism: the chat agent creates the batch with `wg add` (followed by
-`wg edit <id> --add-after .quality-pass-<batch-id>` for each, or by
-passing `--after .quality-pass-<batch-id>` at creation time), and
-creates a single `.quality-pass-<batch-id>` task with no `--after`
-(immediately ready). There is no `--before` dependency flag in
-`wg add`; use `--add-after` (or `--after` at creation) instead.
+`wg edit <id> --add-after .quality-pass-<batch-id>` for each, or by passing
+`--after .quality-pass-<batch-id>` at creation time), and creates a single
+`.quality-pass-<batch-id>` draft with no `--after`. It then publishes the
+whole connected batch with `wg publish .quality-pass-<batch-id> --wcc`. There
+is no `--before` dependency flag in `wg add`; use `--add-after` (or `--after`
+at creation) instead.
 
 ### Paused-task convention
 
@@ -173,8 +178,8 @@ blocker is genuinely cleared.
 
 ### Releasing a paused batch: use `wg publish --wcc`
 
-When you build a fan-out + synthesis batch as paused drafts (`wg add
---paused`) and then need to release the whole batch, **do not loop
+When you build a fan-out + synthesis batch as drafts (`wg add`) and then
+need to release the whole batch, **do not loop
 `wg publish` over each task**. Use `--wcc`:
 
 ```bash
@@ -206,7 +211,7 @@ CRITICAL — Do NOT use the built-in **Task tool** (subagents). NEVER
 spawn `Explore`, `Plan`, `general-purpose`, or any other subagent type.
 The Task tool creates processes outside WG's graph-based workflow, which defeats
 the entire system. If you need research, exploration, or planning — create
-a `wg add` task and let the dispatcher pick it up.
+a `wg add` task, publish it explicitly, and let the dispatcher pick it up.
 
 ALL tasks — including research, exploration, and planning — should be
 WG tasks.

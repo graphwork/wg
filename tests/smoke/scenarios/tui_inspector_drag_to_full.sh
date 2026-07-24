@@ -34,7 +34,7 @@ TOML
 
 ptydump="$scratch/ptydump"
 "$WG_BIN" --dir "$G" chat create --name drag-full --command cat >/dev/null
-"$WG_BIN" --dir "$G" add "drag-detail-exact-id" -d "detail survives mouse layout" --no-place >/dev/null
+"$WG_BIN" --dir "$G" add "drag-detail-exact-id" -d "detail survives mouse layout" >/dev/null
 cat >"$G/tui-state.json" <<'JSON'
 {"layout":{"dock":"right","size_percent":60,"mode":"split"},"active_coordinator_id":0,"right_panel_tab":"Chat","open_tabs":[".chat-0"],"active":".chat-0"}
 JSON

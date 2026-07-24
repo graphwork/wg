@@ -655,7 +655,6 @@ async def run_trial(task_def: dict, replica: int) -> dict:
             "add", f"Init: {task_def['title']}",
             "--id", init_task_id,
             "-d", "One-shot trigger task. Provides external predecessor for cycle header.",
-            "--no-place",
         ])
         await exec_wg(wg_dir, ["done", init_task_id])
         print(f"  [3a/8] Init task created and completed: {init_task_id}", flush=True)
@@ -677,7 +676,6 @@ async def run_trial(task_def: dict, replica: int) -> dict:
             "--exec-mode", "full",
             "--context-scope", "graph",
             "--model", MODEL,
-            "--no-place",
         ])
         if "[exit code:" in add_work and work_task_id not in add_work:
             raise RuntimeError(f"Work task creation failed: {add_work}")
@@ -719,7 +717,6 @@ async def run_trial(task_def: dict, replica: int) -> dict:
             "--exec-mode", "light",
             "--context-scope", "graph",
             "--model", MODEL,
-            "--no-place",
         ])
         if "[exit code:" in add_surv and surv_task_id not in add_surv:
             raise RuntimeError(f"Surveillance task creation failed: {add_surv}")
@@ -739,6 +736,11 @@ async def run_trial(task_def: dict, replica: int) -> dict:
             result["surveillance"]["cycle_edge"] = True
         print(f"  [5/8] Cycle edge created: {work_task_id} -> {surv_task_id} -> {work_task_id} "
               f"(max {MAX_ITERATIONS} iters, {CYCLE_DELAY} delay)", flush=True)
+
+        for publish_id in (work_task_id, surv_task_id):
+            publish_out = await exec_wg(wg_dir, ["publish", publish_id, "--only"])
+            if "[exit code:" in publish_out:
+                raise RuntimeError(f"Task publish failed for {publish_id}: {publish_out}")
 
         # Verify the cycle was detected and work is the header
         cycles_out = await exec_wg(wg_dir, ["cycles"])

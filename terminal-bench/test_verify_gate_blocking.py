@@ -85,10 +85,11 @@ auto_evaluate = false
         "-d", "Terminal Bench trial task - will test verify gate.",
         "--verify", VERIFY_CMD_FAIL,
         "--model", "openrouter:minimax/minimax-m2.7",
-        "--no-place",
     ])
     print(f"[2] wg add: rc={rc}")
     assert rc == 0, f"wg add failed: {err}"
+    rc, out, err = await exec_wg(wg_dir, ["publish", task_id, "--only"])
+    assert rc == 0, f"wg publish failed: {err}"
 
     # Show task - verify field should be present
     print(f"\n[3] wg show — checking 'Verify:' section is present")

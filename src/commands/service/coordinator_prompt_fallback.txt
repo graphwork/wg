@@ -152,10 +152,10 @@ and model selection using evaluation history.
 
 ### How it works
 
-1. **Create all batch tasks paused**: Add `--paused --no-place` to every `wg add` in the batch
-2. **Create the quality pass task** (NOT paused, immediately ready):
+1. **Create all batch tasks as visible drafts**: plain `wg add` is staging-only
+2. **Create a private `.quality-pass-*` system draft**, wire the batch to it, then publish it explicitly:
    ```
-   wg add ".quality-pass-<YYYYMMDDTHHMMSS>" --no-place \
+   wg add ".quality-pass-<YYYYMMDDTHHMMSS>" \
      -d "## Quality Pass: Post-Triage Review
 
    Review and optimize task metadata for newly created tasks before they enter execution.
@@ -209,7 +209,7 @@ and model selection using evaluation history.
    Apply: \`wg edit <task-id> --model <tier>\`
 
    ### 4. Release for execution
-   After assigning agent and model: \`wg resume <task-id>\`
+   After assigning agent and model: \`wg publish <task-id> --only\`
 
    ## Validation
    - Every listed task has an agent assigned (check via \`wg show\`)
@@ -222,6 +222,7 @@ and model selection using evaluation history.
    wg edit <task-id-1> --add-after .quality-pass-<timestamp>
    wg edit <task-id-2> --add-after .quality-pass-<timestamp>
    wg edit <task-id-3> --add-after .quality-pass-<timestamp>
+   wg publish .quality-pass-<timestamp> --only
    ```
 
 ### Example workflow
@@ -229,14 +230,14 @@ and model selection using evaluation history.
 User says: "Add JWT auth with tests"
 
 ```bash
-# Step 1: Create tasks PAUSED
-wg add "Research: JWT library selection" --paused --no-place \
+# Step 1: Create visible drafts
+wg add "Research: JWT library selection" \
   -d "## Description
 Evaluate JWT libraries for Rust...
 ## Validation
 - [ ] Library comparison matrix produced"
 
-wg add "Implement: JWT auth middleware" --paused --no-place \
+wg add "Implement: JWT auth middleware" \
   --after research-jwt-library \
   -d "## Description
 Implement JWT auth middleware...
@@ -244,13 +245,14 @@ Implement JWT auth middleware...
 - [ ] Failing test written first
 - [ ] cargo build + cargo test pass"
 
-# Step 2: Create quality pass (NOT paused)
-wg add ".quality-pass-20260402T143800" --no-place \
+# Step 2: Create a private quality-pass system draft
+wg add ".quality-pass-20260402T143800" \
   -d "<quality pass template with task IDs filled in>"
 
 # Step 3: Wire dependencies
 wg edit research-jwt-library --add-after .quality-pass-20260402T143800
 wg edit implement-jwt-auth --add-after .quality-pass-20260402T143800
+wg publish .quality-pass-20260402T143800 --only
 ```
 
 ### Why this works

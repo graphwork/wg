@@ -50,6 +50,7 @@ const EXPECTED_TOOLS = [
   "wg_ready",
   "wg_show",
   "wg_add",
+  "wg_publish",
   "wg_done",
   "wg_fail",
   "wg_msg_send",

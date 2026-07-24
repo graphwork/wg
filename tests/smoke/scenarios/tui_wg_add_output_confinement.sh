@@ -28,13 +28,13 @@ printf 'WG_ADD_OWNER_READY pid=%s fd1=%s fd2=%s\n' \
     "$$" "$(readlink "/proc/$$/fd/1")" "$(readlink "/proc/$$/fd/2")"
 while IFS= read -r line; do
     [[ "$line" == "add-now" ]] || continue
-    wg add 'Bind deterministic E97 shards' --no-place
+    wg add 'Bind deterministic E97 shards'
     sleep 0.06
-    wg add 'Implement leased peer lifecycle' --no-place
+    wg add 'Implement leased peer lifecycle'
     sleep 0.06
-    wg add 'Prove READY membership' --no-place
+    wg add 'Prove READY membership'
     sleep 0.06
-    wg add 'Join exact weighted reducer' --no-place
+    wg add 'Join exact weighted reducer'
     printf 'WG_ADD_OWNER_DONE\n'
 done
 DRIVER

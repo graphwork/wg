@@ -91,6 +91,19 @@ describe("WgBackend.setModelOverride exit-code handling", () => {
   });
 });
 
+describe("explicit task release", () => {
+  it("publishes exactly one staged task", async () => {
+    const { host, calls } = fakeHost({ stdout: "published", code: 0 });
+    const backend = new WgBackend(host, { dir: "/proj" });
+
+    await backend.publish("visible-draft");
+    expect(calls[0]).toEqual({
+      command: "wg",
+      args: ["--dir", "/proj", "publish", "visible-draft", "--only"],
+    });
+  });
+});
+
 describe("WG chat launch context", () => {
   it("prefers canonical WG_CHAT_ID and accepts WG_CHAT_REF compatibility alias", () => {
     expect(canonicalChatId({ WG_CHAT_ID: ".chat-7", WG_CHAT_REF: "chat-8" })).toBe(".chat-7");

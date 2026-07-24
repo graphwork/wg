@@ -78,11 +78,11 @@ fi
 
 if ! run_wg add "codex optional tool config smoke" \
         --id codex-optional-tool-smoke \
-        --no-place \
         -d "Smoke task: fake Codex succeeds only when WG isolates user config." \
         >add.log 2>&1; then
     loud_fail "wg add failed: $(tail -10 add.log)"
 fi
+run_wg publish codex-optional-tool-smoke --only >/dev/null || loud_fail "wg publish failed"
 
 if ! start_wg_daemon "$project" --max-agents 1 --no-coordinator-agent --interval 1; then
     loud_fail "start_wg_daemon failed"

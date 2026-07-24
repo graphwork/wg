@@ -4,6 +4,9 @@
 //! wg list --cron filter, wg edit --cron to set/clear cron schedules,
 //! and library-level is_cron_due / reset_cron_task / is_time_ready integration.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use chrono::{DateTime, Duration, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,6 +49,11 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
         graph.add_node(Node::Task(task));
     }
     save_graph(&graph, &graph_path).unwrap();
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
+    )
+    .unwrap();
     wg_dir
 }
 
@@ -80,7 +88,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -225,13 +233,19 @@ fn list_cron_filter_shows_only_cron_tasks() {
             "cron-1",
             "--cron",
             "0 0 2 * * *",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     // Add a normal task
     wg_ok(
         &wg_dir,
-        &["add", "Normal task", "--id", "normal-1", "--immediate"],
+        &[
+            "add",
+            "Normal task",
+            "--id",
+            "normal-1",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     // List all tasks → both should appear
@@ -273,12 +287,18 @@ fn list_cron_filter_json() {
             "cj1",
             "--cron",
             "0 */5 * * * *",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(
         &wg_dir,
-        &["add", "Normal JSON", "--id", "nj1", "--immediate"],
+        &[
+            "add",
+            "Normal JSON",
+            "--id",
+            "nj1",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     let output = wg_ok(&wg_dir, &["list", "--cron", "--json"]);
@@ -393,7 +413,7 @@ fn cron_task_appears_in_ready_when_due() {
             "cr1",
             "--cron",
             "0 0 2 * * *",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -427,7 +447,7 @@ fn cron_task_not_in_ready_when_not_due() {
             "cf1",
             "--cron",
             "0 0 2 * * *",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -462,7 +482,7 @@ fn list_shows_cron_indicator() {
             "cd1",
             "--cron",
             "0 0 2 * * *",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

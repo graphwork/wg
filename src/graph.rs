@@ -689,8 +689,8 @@ pub struct Task {
     /// Task that this task replaces (set on new tasks created as replacements)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
-    /// When true, task was created with --no-place and should skip automatic placement.
-    /// The assignment step will not include placement (dependency edge) decisions.
+    /// Private compatibility marker for validated dot-prefixed system/agency
+    /// records. Public user-task creation never sets this field.
     #[serde(default, skip_serializing_if = "is_bool_false")]
     pub unplaced: bool,
     /// Placement hint: place near these tasks (IDs). Used by the assignment step.
@@ -869,6 +869,34 @@ impl Task {
 /// System tasks use a `.` prefix (e.g. `.evaluate-foo`, `.assign-foo`).
 pub fn is_system_task(task_id: &str) -> bool {
     task_id.starts_with('.')
+}
+
+/// Returns `true` only for the validated private namespaces WG uses for
+/// dot-prefixed system/agency records. Supported task-creation APIs reject
+/// every other dot-prefixed ID so user work cannot disappear from graph views.
+pub fn is_validated_system_task_id(task_id: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        ".assign-",
+        ".flip-",
+        ".evaluate-",
+        ".place-",
+        ".verify-",
+        ".sep-verify-",
+        ".chat-",
+        ".coordinator-",
+        ".respond-to-",
+        ".quality-pass-",
+        ".compact-",
+        ".archive-",
+        ".registry-refresh-",
+        ".create-",
+        ".evolve-",
+        ".triage-",
+        ".merge-",
+        ".user-",
+        ".html-publish-",
+    ];
+    PREFIXES.iter().any(|prefix| task_id.starts_with(prefix))
 }
 
 /// Returns `true` if the task ID represents agency lifecycle scaffolding.

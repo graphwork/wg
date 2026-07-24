@@ -141,16 +141,17 @@ PY
 
 for n in 1 2 3; do
     if ! run_wg add "Authentication failed HTTP 401 quota blocker $n" \
-            --id "blocker-$n" --paused --no-place \
+            --id "blocker-$n" --paused \
             -d "Paused graph blocker; it must never be interpreted as provider stderr." \
             >"add-blocker-$n.log" 2>&1; then
         loud_fail "failed to add blocker-$n: $(tail -10 "add-blocker-$n.log")"
     fi
-    if ! run_wg add "graph refusal worker $n" --id "refusal-$n" --no-place \
+    if ! run_wg add "graph refusal worker $n" --id "refusal-$n" \
             -d "Worker starts ready; the smoke inserts its blocker before wg done." \
             >"add-refusal-$n.log" 2>&1; then
         loud_fail "failed to add refusal-$n: $(tail -10 "add-refusal-$n.log")"
     fi
+    run_wg publish "refusal-$n" --only >/dev/null || loud_fail "failed to publish refusal-$n"
 done
 
 if ! start_wg_daemon "$project" --max-agents 3 --no-coordinator-agent --interval 1; then
@@ -211,11 +212,12 @@ echo "PASS (1/3): three typed graph-policy refusals left provider counters at ze
 run_wg service stop --force >/dev/null 2>&1 || true
 
 for n in 1 2 3; do
-    if ! run_wg add "real provider auth failure $n" --id "auth-$n" --no-place \
+    if ! run_wg add "real provider auth failure $n" --id "auth-$n" \
             -d "Fake Codex emits a genuine HTTP 401 and crashes its wrapper." \
             >"add-auth-$n.log" 2>&1; then
         loud_fail "failed to add auth-$n: $(tail -10 "add-auth-$n.log")"
     fi
+    run_wg publish "auth-$n" --only >/dev/null || loud_fail "failed to publish auth-$n"
 done
 
 if ! start_wg_daemon "$project" --max-agents 3 --no-coordinator-agent --interval 1; then

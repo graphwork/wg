@@ -15,6 +15,9 @@
 //! 3. **Real E2E tests** (`#[ignore]` / `llm-tests` feature): Exercise the full
 //!    flow with a real OpenRouter API key and a cheap model.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -108,7 +111,7 @@ fn isolate_command_env(cmd: &mut Command, wg_dir: &Path) {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -1633,7 +1636,7 @@ PATH = "{}"
             "Shell dispatch test",
             "--id",
             "shell-dispatch-test",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

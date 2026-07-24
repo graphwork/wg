@@ -233,10 +233,11 @@ wg add "revise-draft" --after review-draft
 wg add "publish" --after revise-draft
 ```
 
-Then create the back-edge that forms the cycle:
+Then create the back-edge that forms the cycle and explicitly release the wired component:
 
 ```
 wg edit write-draft --add-after revise-draft
+wg publish write-draft --wcc
 ```
 
 Here is the execution:
@@ -293,9 +294,8 @@ Pausing is orthogonal to status. You can pause an open task to hold it. You can 
 
 == Placement Hints
 
-When a new task is added, the coordinator can automatically position it in the dependency graph through _placement_—an optional feature controlled by `wg config --auto-place`. Placement hints on `wg add` guide this positioning:
+When a visible draft is published, the coordinator can automatically position it in the dependency graph through _placement_—an optional feature controlled by `wg config --auto-place`. Set `agency.auto_place=false` to preserve only explicit dependencies and hints. Placement hints on `wg add` guide this positioning:
 
-- `--no-place` skips automatic placement entirely, leaving the task with only the dependencies explicitly specified via `--after`.
 - `--place-near <IDS>` suggests placing the task near the specified tasks in the graph—useful for grouping related work.
 - `--place-before <IDS>` suggests inserting the task before the specified tasks, adding dependency edges so those tasks come after the new one.
 

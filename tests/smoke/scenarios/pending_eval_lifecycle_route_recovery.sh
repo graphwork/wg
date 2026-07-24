@@ -13,11 +13,9 @@ cd "$scratch"
 wg init --route codex-cli >/dev/null
 wg config --auto-assign false --auto-evaluate true --flip-enabled true --no-reload >/dev/null
 
-wg add "route-stable source" --id route-source --no-place \
+wg add "route-stable source" --id route-source \
   -d $'## Validation\n- [ ] durable verdict required' >/dev/null
-wg pause route-source >/dev/null
-wg service tick --max-agents 0 >/dev/null
-wg resume route-source >/dev/null
+wg publish route-source --only >/dev/null
 
 python3 - <<'PY'
 import json
@@ -45,11 +43,9 @@ do
   wg config --local --set-model evaluator "$route" \
     --set-model flip_inference "$route" \
     --set-model flip_comparison "$route" --no-reload >/dev/null
-  wg add "route matrix $label" --id "route-$label" --no-place \
+  wg add "route matrix $label" --id "route-$label" \
     -d $'## Validation\n- [ ] persisted route identity' >/dev/null
-  wg pause "route-$label" >/dev/null
-  wg service tick --max-agents 0 >/dev/null
-  wg resume "route-$label" >/dev/null
+  wg publish "route-$label" --only >/dev/null
   LABEL="$label" ROUTE="$route" HANDLER="$handler" python3 - <<'PY'
 import json,os
 rows=[json.loads(x) for x in open('.wg/graph.jsonl') if x.strip()]
@@ -85,7 +81,8 @@ if grep -q 'ROOT CAUSE' <<<"$why"; then loud_fail "soft gate was mislabeled as S
 # Luca's retained predicate: the owning rescue stage can complete over a
 # FailedPendingEval source, but an ordinary dependent cannot.
 wg done .flip-route-source --ignore-unmerged-worktree --skip-smoke >/dev/null
-wg add 'ordinary dependent' --id ordinary --after route-source --no-place >/dev/null
+wg add 'ordinary dependent' --id ordinary --after route-source >/dev/null
+wg publish ordinary --only >/dev/null
 if wg done ordinary --ignore-unmerged-worktree --skip-smoke >/tmp/ordinary.out 2>&1; then
   loud_fail 'ordinary dependent bypassed FailedPendingEval gate'
 fi
@@ -175,8 +172,8 @@ PY
 # finished and persisted exactly one post-start Evaluation, but neither row had
 # plan/lifecycle metadata. A restart must losslessly link that evidence once;
 # it must not rearm the claimed row, spawn a replacement, or require approval.
-wg add 'legacy completed source' --id legacy-completed --no-place >/dev/null
-wg add 'legacy completed evaluator' --id .evaluate-legacy-completed --no-place >/dev/null
+wg add 'legacy completed source' --id legacy-completed >/dev/null
+wg add 'legacy completed evaluator' --id .evaluate-legacy-completed >/dev/null
 python3 - <<'PY'
 import datetime,json,os,tempfile
 now=datetime.datetime.now(datetime.timezone.utc)

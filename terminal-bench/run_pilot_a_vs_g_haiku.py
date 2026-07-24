@@ -317,7 +317,6 @@ async def run_condition_a(
             "--exec-mode", "full",
             "--context-scope", "clean",
             "--model", MODEL,
-            "--no-place",
         ])
         if "[exit code:" in add_out and root_task_id not in add_out:
             result["error"] = f"Task creation failed: {add_out}"
@@ -326,6 +325,11 @@ async def run_condition_a(
             print(f"  [{trial_id}] TASK CREATION FAILED: {add_out[:200]}", flush=True)
             return result
 
+        publish_out = await exec_wg(wg_dir, ["publish", root_task_id, "--only"])
+        if "[exit code:" in publish_out:
+            result["error"] = f"Task publish failed: {publish_out}"
+            result["status"] = "error"
+            return result
         # Start service
         await exec_wg(wg_dir, [
             "service", "start",

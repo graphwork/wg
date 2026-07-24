@@ -14,7 +14,7 @@ placement, model routing, and identity gaps.
                                │
                                ▼
                      ┌─────────────────────┐
-                     │  DRAFT (paused=true) │  (only if wg draft; wg add → Open)
+                     │  DRAFT (paused=true) │  (`wg add` always stages here)
                      └─────────┬───────────┘
                                │
               ┌────────────────┼──────────────────┐
@@ -157,7 +157,7 @@ placement, model routing, and identity gaps.
 
 **Agent path:** When the fast path doesn't apply (no deps, or file overlap detected), a `.place-<id>` task is created with placement context including active tasks, their artifacts, recently completed tasks, and integration gates. The agent analyzes this and runs `wg edit <id> --add-after <dep>` then `wg publish <id>`.
 
-**Why intermittent:** Placement only fires for draft tasks. Tasks created with `wg add` (not `wg draft`) go directly to Open and skip placement entirely. The fast-path auto-placement handles most drafted tasks silently without creating a visible `.place-*` task.
+**Historical cause (now superseded):** Placement once fired only for a separate draft path while `wg add` could go directly to Open. Now every supported `wg add` stages a visible draft and only explicit `wg publish` releases it; placement behavior is therefore decided consistently at publish time.
 
 **Identity:** Uses `config.agency.placer_agent` if configured. Otherwise runs bare.
 
@@ -285,7 +285,7 @@ These are two distinct mechanisms that operate at different stages:
 | **LLM call** | Always (lightweight, single API call via `DispatchRole::Assigner`) | Only when fast-path fails (no deps or file overlap detected) |
 | **Code** | `coordinator.rs:1037` (scaffold) + `assignment.rs:200` (LLM) | `coordinator.rs:742` |
 
-**Why placement seems intermittent:** Most tasks are created with `wg add` (which creates Open tasks directly), not `wg draft` (which creates paused tasks). Placement only applies to drafted tasks. Additionally, the auto-place fast path silently handles tasks that have explicit `--after` deps and no file overlap — these never create a visible `.place-*` task.
+**Historical explanation (now superseded):** The old split between direct-open `wg add` and a separate draft path made placement seem intermittent. All adds now stage visible drafts and require explicit publish. The auto-place fast path may still handle explicit dependency/no-overlap cases without creating a visible `.place-*` task.
 
 ## Model Routing — DispatchRole → Model Resolution
 

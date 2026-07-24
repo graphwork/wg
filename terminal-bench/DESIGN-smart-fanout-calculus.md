@@ -219,7 +219,7 @@ Then create subtasks for the unfinished portions only.
 
 2. **Create 2-4 focused subtasks** (NEVER more than 4):
 ```bash
-wg add "Part 1: <specific scope>" --no-place -d "## What to do
+wg add "Part 1: <specific scope>" -d "## What to do
 <concrete instructions>
 
 ## Files to modify
@@ -234,7 +234,7 @@ Implement directly. Do NOT create subtasks. Do NOT decompose further."
 
 3. **Wire in a verify task**:
 ```bash
-wg add "Verify: run full test suite" --after part-1,part-2 --no-place \
+wg add "Verify: run full test suite" --after part-1,part-2 \
   -d "Run the test suite: <test command>.
 If ALL tests pass: wg done <your-task-id> --converged
 If tests fail: wg log <your-task-id> 'what failed' then wg done <your-task-id>"
@@ -245,7 +245,12 @@ If tests fail: wg log <your-task-id> 'what failed' then wg done <your-task-id>"
 wg edit part-1 --add-after verify --max-iterations 3
 ```
 
-5. **Mark your seed task done**:
+5. **Explicitly release the wired component**:
+```bash
+wg publish part-1 --wcc
+```
+
+6. **Mark your seed task done**:
 ```bash
 wg done {seed_task_id}
 ```

@@ -547,11 +547,10 @@ bash terminal-bench/pre-pull-images.sh
 
 **Symptom:** wg service starts but no agent is spawned.
 
-**Cause:** The task was created without `--no-place`, leaving it in draft/paused
-state.
+**Cause:** The task was created as a visible draft but was not explicitly published.
 
-**Status:** Already fixed in the adapter. The `--no-place` flag is passed to
-`wg add` to make tasks immediately dispatchable.
+**Status:** The adapter must run `wg add`, capture the task id, then run
+`wg publish <task-id> --only` before waiting for dispatch.
 
 ### Harbor Import Errors
 

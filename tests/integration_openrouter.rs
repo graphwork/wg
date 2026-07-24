@@ -9,6 +9,9 @@
 //! Run with: cargo test --test integration_openrouter -- --ignored
 //! Requires: OPENROUTER_API_KEY environment variable.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,7 +54,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -128,7 +131,7 @@ fn test_openrouter_minimax_tool_loop() {
             "openrouter-tool-test",
             "--context-scope",
             "task",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -455,7 +458,7 @@ fn test_openrouter_bash_tool_execution() {
             "bash-tool-test",
             "--context-scope",
             "task",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -547,7 +550,7 @@ fn test_openrouter_journal_completeness() {
             "journal-test",
             "--context-scope",
             "task",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -700,7 +703,7 @@ fn test_openrouter_file_read_write_tools() {
             "file-rw-test",
             "--context-scope",
             "task",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

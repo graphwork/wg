@@ -1058,24 +1058,58 @@ fn main() -> Result<()> {
             } else {
                 tag
             };
-            // Determine effective paused/unplaced state:
-            // - --paused always pauses (user-managed draft, skips placement)
-            // - --no-place: unplaced=true, paused=false (immediate dispatch)
-            // - System tasks (dot-prefix): never draft, never placed
-            // - Agent context (WG_TASK_ID set): default to --no-place behavior
-            // - Default (interactive): paused=true (draft-by-default, needs placement)
-            let is_system_task = title.starts_with('.');
-            let is_agent_context =
-                std::env::var("WG_TASK_ID").is_ok() || std::env::var("WG_AGENT_ID").is_ok();
-            let effective_no_place = no_place || is_system_task || is_agent_context;
-            let effective_paused = if paused {
-                true
-            } else if effective_no_place {
-                false
-            } else {
-                // Draft by default for interactive use
-                true
-            };
+            // `wg add` is deliberately staging-only: every public task is a
+            // visible draft until an explicit `wg publish <id> --only`.
+            // Keep the removed spellings as hidden parser traps for one release
+            // so old automation fails before touching the graph and receives a
+            // copy-pasteable migration rather than silently creating hidden work.
+            if no_place {
+                let migration_id = id.clone().unwrap_or_else(|| {
+                    let words: Vec<String> = title
+                        .to_lowercase()
+                        .split(|c: char| !c.is_alphanumeric())
+                        .filter(|word| !word.is_empty())
+                        .take(3)
+                        .map(str::to_string)
+                        .collect();
+                    let candidate = words.join("-");
+                    if candidate.is_empty() {
+                        "visible-task".to_string()
+                    } else {
+                        candidate
+                    }
+                });
+                let shell_title = title.replace('\'', "'\"'\"'");
+                let shell_id = migration_id.replace('\'', "'\"'\"'");
+                anyhow::bail!(
+                    "--no-place (and its --immediate/--ready aliases) was removed because it hid work and dispatched implicitly.\n\
+                     Create visible work explicitly instead:\n\
+                     \n\
+                     wg add '{}' --id '{}'\n\
+                     wg publish '{}' --only\n\
+                     \n\
+                     Preserve dependencies or placement hints on `wg add`; use `agency.auto_place=false` to disable placement inference.",
+                    shell_title,
+                    shell_id,
+                    shell_id
+                );
+            }
+            let reserved_id = id
+                .as_deref()
+                .filter(|value| value.starts_with('.'))
+                .or_else(|| title.starts_with('.').then_some(title.as_str()));
+            if let Some(system_id) = reserved_id {
+                if !worksgood::graph::is_validated_system_task_id(system_id) {
+                    anyhow::bail!(
+                        "Dot-prefixed task IDs are reserved for validated WG system/agency records. \
+                         Create a normal visible task with a non-dot title/ID, then run \
+                         `wg publish <task-id> --only`."
+                    );
+                }
+            }
+            let effective_paused = true;
+            let effective_no_place = false;
+            let _ = paused; // retained as a harmless compatibility spelling; add is always a draft
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
                     &workgraph_dir,

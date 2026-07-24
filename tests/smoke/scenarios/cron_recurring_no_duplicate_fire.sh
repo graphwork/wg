@@ -50,20 +50,22 @@ mkdir -p "$fake_home/.config"
 export HOME="$fake_home"
 export XDG_CONFIG_HOME="$fake_home/.config"
 
-if ! wg init -x shell >init.log 2>&1; then
+if ! wg init --no-agency -x shell >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -5 init.log)"
 fi
+wg config --auto-assign false --auto-evaluate false --flip-enabled false --no-reload >/dev/null
 
 # Weekly Monday 09:00 UTC cron. dow=2 is Monday in the `cron` crate
 # (0.12.x), which uses a NON-STANDARD 1=Sunday mapping — see
 # src/cron.rs::cron_dow_mapping_is_nonstandard_one_indexed_sunday.
 cron_expr="0 0 9 * * 2"
-add_out=$(wg add "weekly-no-dup" --cron "$cron_expr" --no-place 2>&1) || \
+add_out=$(wg add "weekly-no-dup" --cron "$cron_expr" 2>&1) || \
     loud_fail "wg add --cron failed: $add_out"
 task_id=$(echo "$add_out" | grep "^Added task:" | grep -oP '\(\K[^)]+')
 if [[ -z "$task_id" ]]; then
     loud_fail "could not parse task id from: $add_out"
 fi
+wg publish "$task_id" --only >/dev/null || loud_fail "explicit cron publish failed"
 
 wg_dir="$scratch/.wg"
 graph="$wg_dir/graph.jsonl"

@@ -399,11 +399,16 @@ async def run_trial(
             "--exec-mode", "full",
             "--context-scope", "clean",
             "--model", model,
-            "--no-place",
         ])
         if "[exit code:" in add_out and root_task_id not in add_out:
             result["error"] = f"Task creation failed: {add_out}"
             result["status"] = "failed"
+            return result
+
+        publish_out = await exec_wg(wg_dir, ["publish", root_task_id, "--only"])
+        if "[exit code:" in publish_out:
+            result["error"] = f"Task publish failed: {publish_out}"
+            result["status"] = "error"
             return result
 
         # 6. Start wg service (native executor, per-trial instance)

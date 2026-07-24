@@ -44,7 +44,7 @@ async function fromExec(command, r) {
  * Register the wg tool family on a pi extension API.
  *
  * Tool names (the task's contract): `wg_ready`, `wg_show`, `wg_add`,
- * `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run`.
+ * `wg_publish`, `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run`.
  */
 export function registerWgTools(pi, backend) {
     pi.registerTool({
@@ -70,7 +70,7 @@ export function registerWgTools(pi, backend) {
     pi.registerTool({
         name: "wg_add",
         label: "WG: add task",
-        description: "Create a new WG task. Optionally give a description and a dependency (the new task runs after `after`).",
+        description: "Create a visible draft WG task. Optionally give a description and a dependency; call wg_publish explicitly to release it for dispatch.",
         parameters: Type.Object({
             title: Type.String({ description: "Task title." }),
             description: Type.Optional(Type.String({ description: "Markdown description, ideally with a '## Validation' section." })),
@@ -83,6 +83,17 @@ export function registerWgTools(pi, backend) {
             if (params.after)
                 extra.push("--after", params.after);
             return fromExec("add", await backend.add(params.title, extra, { signal }));
+        },
+    });
+    pi.registerTool({
+        name: "wg_publish",
+        label: "WG: publish task",
+        description: "Release one visible draft for dispatch (`wg publish <id> --only`).",
+        parameters: Type.Object({
+            id: Type.String({ description: "Draft task id to publish." }),
+        }),
+        async execute(_id, params, signal) {
+            return fromExec("publish", await backend.publish(params.id, { signal }));
         },
     });
     pi.registerTool({

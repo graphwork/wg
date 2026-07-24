@@ -81,7 +81,7 @@ fn subtask_creates_child_and_parks_parent() {
 
     let output = wg_cmd_env(
         &wg_dir,
-        &["add", "Research something", "--subtask", "--no-place"],
+        &["add", "Research something", "--subtask"],
         &[("WG_TASK_ID", "parent-task")],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,11 +97,19 @@ fn subtask_creates_child_and_parks_parent() {
         "Should mention subtask in output: {}",
         stdout
     );
+    assert!(
+        stdout.contains("wg publish research-something --only"),
+        "{stdout}"
+    );
 
     let graph = load_graph(&graph_path(&wg_dir)).unwrap();
 
     let child = graph.get_task("research-something").unwrap();
     assert_eq!(child.status, Status::Open);
+    assert!(
+        child.paused,
+        "subtask add must remain an explicit-release draft"
+    );
     assert!(
         child.after.is_empty(),
         "Child should not depend on parent: {:?}",

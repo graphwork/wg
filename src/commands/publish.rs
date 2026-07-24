@@ -693,7 +693,7 @@ Edit via `wg html publish edit` or remove via `wg html publish remove {}`.\n",
         None,           // timeout
         Some("shell"),  // exec_mode
         false,          // paused
-        true,           // no_place — system task, skip placement
+        false,          // removed public placement bypass
         &[],            // place_near
         &[],            // place_before
         None,           // delay
@@ -706,7 +706,9 @@ Edit via `wg html publish edit` or remove via `wg html publish remove {}`.\n",
         Some(schedule), // cron
         false,          // subtask
     )
-    .with_context(|| "failed to register cron task for publish deployment")?;
+    .with_context(|| "failed to stage cron task for publish deployment")?;
+    crate::commands::resume::publish(workgraph_dir, &task_id, true, false, None, false)
+        .with_context(|| "failed to publish cron task for publish deployment")?;
 
     Ok(task_id)
 }

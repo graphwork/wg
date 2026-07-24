@@ -26,7 +26,7 @@ daemon_log="$graph_dir/service/daemon.log"
 socket="$graph_dir/service/daemon.sock"
 
 # Seed a harmless task so `wg log` exercises its real GraphChanged notification.
-wg add ipc-stress-probe --no-place >add.log 2>&1 || loud_fail "wg add failed: $(tail -10 add.log)"
+wg add ipc-stress-probe >add.log 2>&1 || loud_fail "wg add failed: $(tail -10 add.log)"
 
 for _ in $(seq 1 30); do
     grep -q "Coordinator tick #[0-9].* complete" "$daemon_log" 2>/dev/null && break

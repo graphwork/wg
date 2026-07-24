@@ -88,7 +88,8 @@ JSON
 # satisfy through pi's built-in bash tool.
 (
     cd "$project" || exit 1
-    HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" wg add "pi live ready sentinel" --id pi-live-ready --no-place >/dev/null 2>&1
+    HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" wg add "pi live ready sentinel" --id pi-live-ready >/dev/null 2>&1
+    HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" wg publish pi-live-ready --only >/dev/null 2>&1
 ) || loud_fail "wg add sentinel failed"
 
 driver="$scratch/pi_live_driver.py"

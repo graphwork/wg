@@ -401,7 +401,7 @@ Two configuration options streamline the agency pipeline for projects that want 
 - `auto_create` (set via `wg config --auto-create`) tells the coordinator to automatically create agent identities for new tasks based on the available roles and motivations. Without it, agents must be explicitly created and assigned.
 - `auto_place` (set via `wg config --auto-place`) enables automatic placement of newly added tasks in the dependency graph. The coordinator uses heuristics to position the task near related work, respecting any placement hints (`--place-near`, `--place-before`) provided at creation time.
 
-Both options interact with the existing `auto_assign` pipeline: when all three are enabled, a new task is automatically placed, assigned an agent identity, and dispatched—the full lifecycle from creation to execution requires no manual intervention beyond the initial `wg add`.
+Both options interact with the existing `auto_assign` pipeline after release: `wg add` stages a visible draft, and `wg publish <task-id> --only` deliberately starts placement, assignment, and dispatch. No user add dispatches by itself.
 
 == Configuration: Creator Identity <creator-config>
 

@@ -4,6 +4,9 @@
 //! - Supersession tracking
 //! - No zombie eval/verify tasks left behind
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -42,7 +45,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -200,11 +203,29 @@ fn test_retry_after_failure_with_eval_task() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "config",
+            "--auto-assign",
+            "false",
+            "--auto-evaluate",
+            "false",
+            "--flip-enabled",
+            "false",
+        ],
+    );
 
     // Create and complete a task
     wg_ok(
         &wg_dir,
-        &["add", "Flaky feature", "--id", "flaky", "--immediate"],
+        &[
+            "add",
+            "Flaky feature",
+            "--id",
+            "flaky",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(&wg_dir, &["claim", "flaky"]);
 
@@ -286,15 +307,33 @@ fn test_supersession_via_abandon_flag() {
 
     wg_ok(
         &wg_dir,
-        &["add", "Original task", "--id", "original", "--immediate"],
+        &[
+            "add",
+            "Original task",
+            "--id",
+            "original",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(
         &wg_dir,
-        &["add", "Replacement A", "--id", "replace-a", "--immediate"],
+        &[
+            "add",
+            "Replacement A",
+            "--id",
+            "replace-a",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     wg_ok(
         &wg_dir,
-        &["add", "Replacement B", "--id", "replace-b", "--immediate"],
+        &[
+            "add",
+            "Replacement B",
+            "--id",
+            "replace-b",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     wg_ok(
@@ -411,7 +450,13 @@ fn test_no_zombie_accumulation_across_multiple_abandons() {
         let id = format!("task-{}", i);
         wg_ok(
             &wg_dir,
-            &["add", &format!("Task {}", i), "--id", &id, "--immediate"],
+            &[
+                "add",
+                &format!("Task {}", i),
+                "--id",
+                &id,
+                add_publish::PUBLISH_MARKER,
+            ],
         );
 
         // Simulate eval + verify system tasks
@@ -471,7 +516,13 @@ fn test_full_lifecycle_abandon_supersede_cascade() {
     // Create original task
     wg_ok(
         &wg_dir,
-        &["add", "Build auth system", "--id", "auth-v1", "--immediate"],
+        &[
+            "add",
+            "Build auth system",
+            "--id",
+            "auth-v1",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     // Create replacement tasks
@@ -482,7 +533,7 @@ fn test_full_lifecycle_abandon_supersede_cascade() {
             "Auth: login flow",
             "--id",
             "auth-login",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(
@@ -492,7 +543,7 @@ fn test_full_lifecycle_abandon_supersede_cascade() {
             "Auth: token refresh",
             "--id",
             "auth-token",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

@@ -183,7 +183,8 @@ wg --dir "$D" config --local \
   --no-reload
 wg --dir "$D" add "Implement parse_bool" --id synth \
   --description "Implement parse_bool accepting true and false; test both." \
-  --independent --no-place
+  --independent
+wg --dir "$D" publish synth --only
 wg --dir "$D" claim synth
 wg --dir "$D" artifact synth "/tmp/wg-flip-$MODEL/artifacts/parser.rs"
 wg --dir "$D" log synth \

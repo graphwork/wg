@@ -124,8 +124,9 @@ while IFS= read -r line; do
     case "\$line" in
         *GODISPATCH*)
             "\$WG" --dir "\$G" add "glm worker from chat" --id glm-from-chat \
-                --no-place --model pi:openrouter/z-ai/glm-5.2 \
+                --model pi:openrouter/z-ai/glm-5.2 \
                 -d "CHAT_DISPATCHED_WORKER_PROMPT" >>"$inv_log" 2>&1
+            "\$WG" --dir "\$G" publish glm-from-chat --only >>"$inv_log" 2>&1
             "\$WG" --dir "\$G" spawn glm-from-chat --executor pi --timeout 30s \
                 >>"$inv_log" 2>&1
             st=""

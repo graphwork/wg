@@ -24,7 +24,7 @@ unset TMUX TMUX_TMPDIR WG_DIR WG_TASK_ID WG_AGENT_ID WG_SPAWN_EPOCH WG_EXECUTOR_
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR" "$scratch/project"
 G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
-"$WG_BIN" --dir "$G" add "Clickable log task" --id clickable-log -d "pointer parity fixture" --no-place >/dev/null
+"$WG_BIN" --dir "$G" add "Clickable log task" --id clickable-log -d "pointer parity fixture" >/dev/null
 python3 - "$G/graph.jsonl" <<'PY'
 import json,sys
 p=sys.argv[1]; out=[]

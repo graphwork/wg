@@ -285,7 +285,7 @@ fn smoke_native_streaming_agent() {
     );
 
     // ── 4. Spawn native executor ─────────────────────────────────────────
-    // Note: We spawn without --immediate to allow the agent to run
+    // Publish is the explicit release edge before spawning the agent.
     let spawn_output = wg_cmd(
         &wg_dir,
         &[

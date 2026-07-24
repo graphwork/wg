@@ -230,7 +230,7 @@ wg service resume           # Resume dispatching
 
 | Command | Purpose |
 |---------|---------|
-| `wg add "Title" --description "Desc"` | Create a task (`-d` alias for `--description`) |
+| `wg add "Title" --description "Desc"` | Create a visible draft (`-d` alias for `--description`) |
 | `wg add "X" --after Y` | Create task with dependency |
 | `wg add "X" --after a,b,c` | Multiple dependencies (comma-separated) |
 | `wg add "X" --skill rust --input src/foo.rs --deliverable docs/out.md` | Task with skills, inputs, deliverables |
@@ -245,10 +245,8 @@ wg service resume           # Resume dispatching
 | `wg add "X" --max-retries 3` | Maximum retries on failure |
 | `wg add "X" --visibility public` | Visibility zone (internal/public/peer) |
 | `wg add "X" --after Y --max-iterations 3` | Create cycle header with max 3 iterations |
-| `wg add "X" --paused` | Create task in paused state |
-| `wg add "X" --delay 1h` | Task becomes ready after delay (30s, 5m, 1h, 1d) |
+| `wg add "X" --delay 1h` | Draft with a delayed eligibility time (publish separately) |
 | `wg add "X" --not-before "2026-01-15T09:00:00Z"` | Schedule task for specific time (ISO 8601) |
-| `wg add "X" --no-place` | Skip automatic placement analysis |
 | `wg add "X" --place-near a,b` | Placement hint: near these tasks |
 | `wg add "X" --place-before a,b` | Placement hint: before these tasks |
 | `wg add "X" --repo peer-name` | Create task in a peer wg (by name or path) |
@@ -285,7 +283,7 @@ wg service resume           # Resume dispatching
 | `wg approve <id>` | Approve a task in pending-validation (transitions to done) |
 | `wg reject <id> --reason "why"` | Reject a task in pending-validation (reopens for retry) |
 | `wg publish <id>` | Publish a draft task (validates deps, resumes subgraph) |
-| `wg publish <id> --only` | Publish single task only (skip subgraph propagation) |
+| `wg publish <id> --only` | Explicitly release one visible draft for dispatch |
 | `wg pause <id>` | Pause task (coordinator skips it) |
 | `wg resume <id>` | Resume a paused task |
 | `wg wait <id> --until "condition"` | Park task as Waiting until condition is met |

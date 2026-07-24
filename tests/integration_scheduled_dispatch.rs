@@ -4,6 +4,9 @@
 //! wg edit --not-before, wg show not_before display, wg list delayed indicator,
 //! wg ready filtering, and cycle --cycle-delay ready_after propagation.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use chrono::{DateTime, Duration, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,6 +57,11 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
         graph.add_node(Node::Task(task));
     }
     save_graph(&graph, &graph_path).unwrap();
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
+    )
+    .unwrap();
     wg_dir
 }
 
@@ -88,7 +96,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -214,7 +222,7 @@ fn add_not_before_past_timestamp_immediately_ready() {
             "p1",
             "--not-before",
             &past,
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -789,7 +797,13 @@ fn ready_command_excludes_delayed_task() {
     // Add a normal ready task
     wg_ok(
         &wg_dir,
-        &["add", "Normal task", "--id", "n1", "--immediate"],
+        &[
+            "add",
+            "Normal task",
+            "--id",
+            "n1",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     // Add a delayed task
     wg_ok(
@@ -801,7 +815,7 @@ fn ready_command_excludes_delayed_task() {
             "d1",
             "--delay",
             "3600s",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -825,7 +839,10 @@ fn ready_command_json_shows_not_ready() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Normal", "--id", "n1", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Normal", "--id", "n1", add_publish::PUBLISH_MARKER],
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -835,7 +852,7 @@ fn ready_command_json_shows_not_ready() {
             "d1",
             "--delay",
             "3600s",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 

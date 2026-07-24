@@ -292,7 +292,7 @@ pub fn notify_graph_changed(dir: &Path) {
 
 /// Best-effort kick to the service daemon: wake up and run one tick *now*,
 /// bypassing the settling delay. Sent by user-initiated state mutations
-/// (`wg publish`, `wg unclaim`, immediate `wg add`) where the user expects
+/// (`wg publish`, `wg unclaim`) where the user expects
 /// sub-second visible activity.
 ///
 /// Silently ignores all errors (daemon offline, socket unavailable). The
@@ -315,15 +315,17 @@ pub fn print_service_hint(dir: &Path) -> bool {
         Ok(Some(state)) if service::is_service_alive(state.pid) => {
             if service::is_service_paused(dir) {
                 eprintln!(
-                    "Service: running (paused). New tasks won't be dispatched until resumed. Use `wg service resume`."
+                    "Service: running (paused). Published tasks won't be dispatched until resumed. Use `wg service resume`."
                 );
             } else {
-                eprintln!("Service: running. The coordinator will dispatch this automatically.");
+                eprintln!("Service: running. The coordinator dispatches published ready work.");
             }
             true
         }
         _ => {
-            eprintln!("Warning: No service running. Tasks won't be dispatched automatically.");
+            eprintln!(
+                "Warning: No service running. Published tasks won't be dispatched automatically."
+            );
             eprintln!("  Start the coordinator with: wg service start");
             false
         }
@@ -856,6 +858,7 @@ mod provenance_coverage_tests {
             false, // subtask
         )
         .unwrap();
+        super::resume::publish(dir, "prov-pause", true, false, None, false).unwrap();
 
         super::pause::run(dir, "prov-pause").unwrap();
         let entries = ops_with_type(dir, "pause");
@@ -1148,6 +1151,8 @@ mod provenance_coverage_tests {
             false, // allow_cycle
         )
         .unwrap();
+        // Explicit release before exercising pause/resume.
+        super::resume::publish(dir, "lifecycle", true, false, None, false).unwrap();
         // pause
         super::pause::run(dir, "lifecycle").unwrap();
         // resume
@@ -1174,6 +1179,7 @@ mod provenance_coverage_tests {
             ops
         );
         assert!(ops.contains(&"edit"), "missing edit, got: {:?}", ops);
+        assert!(ops.contains(&"publish"), "missing publish, got: {:?}", ops);
         assert!(ops.contains(&"pause"), "missing pause, got: {:?}", ops);
         assert!(ops.contains(&"resume"), "missing resume, got: {:?}", ops);
         assert!(ops.contains(&"claim"), "missing claim, got: {:?}", ops);

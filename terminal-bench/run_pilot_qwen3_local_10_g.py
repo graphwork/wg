@@ -88,14 +88,14 @@ DO NOT write code. DO NOT modify files. Only create wg tasks.
 
 ## Graph design
 
-Create tasks using `wg add`, then wire them into a self-correcting cycle:
+`wg add` stages visible drafts. Create and wire the cycle, then explicitly release every task with `wg publish <task-id> --only`:
 
 ```bash
 # 1. Work tasks (parallelize where possible — up to {max_agents} agents run concurrently)
-wg add "Implement the solution" --no-place -d "Description of what to do..."
+wg add "Implement the solution" -d "Description of what to do..."
 
 # 2. Verify task (runs after work, checks if tests pass)
-wg add "Run tests and verify" --after implement-the-solution --no-place \\
+wg add "Run tests and verify" --after implement-the-solution \\
   -d "Run the test suite: <test command>.
 If tests PASS: wg done <your-task-id> --converged
 If tests FAIL: wg log <your-task-id> 'what failed and why', then wg done <your-task-id>"
@@ -497,12 +497,17 @@ async def run_trial(
             "--exec-mode", "full",
             "--context-scope", "graph",
             "--model", MODEL,
-            "--no-place",
         ])
         if "[exit code:" in add_out and root_task_id not in add_out:
             result["error"] = f"Task creation failed: {add_out}"
             result["status"] = "failed"
             result["failure_mode"] = "task_create_error"
+            return result
+
+        publish_out = await exec_wg(wg_dir, ["publish", root_task_id, "--only"])
+        if "[exit code:" in publish_out:
+            result["error"] = f"Task publish failed: {publish_out}"
+            result["status"] = "error"
             return result
 
         # 4. Start wg service (WITH coordinator agent for Condition G)

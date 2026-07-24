@@ -34,7 +34,7 @@ const SELFTEST = args.includes("--selftest");
 // `extensionsResult.errors` entry naming expected-vs-found versions.
 const FORCE_COMPAT_MISMATCH = args.includes("--force-compat-mismatch");
 
-const REQUIRED_TOOLS = ["wg_ready", "wg_show", "wg_add", "wg_done", "wg_fail", "wg_msg_send", "wg_msg_read", "wg_run"];
+const REQUIRED_TOOLS = ["wg_ready", "wg_show", "wg_add", "wg_publish", "wg_done", "wg_fail", "wg_msg_send", "wg_msg_read", "wg_run"];
 const REQUIRED_COMMANDS = ["wg", "wg-model"];
 
 function die(msg, code = 1) {

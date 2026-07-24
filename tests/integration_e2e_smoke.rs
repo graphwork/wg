@@ -3,6 +3,9 @@
 //! Exercises the complete happy-path workflow via the real `wg` binary in an
 //! isolated temp directory. Catches regressions that per-command unit tests miss.
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -45,7 +48,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -56,6 +59,21 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
         stderr
     );
     stdout
+}
+
+fn disable_agency(wg_dir: &Path) {
+    wg_ok(
+        wg_dir,
+        &[
+            "config",
+            "--auto-assign",
+            "false",
+            "--auto-evaluate",
+            "false",
+            "--flip-enabled",
+            "false",
+        ],
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +92,7 @@ fn smoke_test_full_lifecycle() {
 
     // ── 1. wg init ──────────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    disable_agency(&wg_dir);
     assert!(
         output.contains("Initialized WG"),
         "init should confirm initialization, got: {}",
@@ -87,6 +106,7 @@ fn smoke_test_full_lifecycle() {
 
     // ── 2. wg agency init ───────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["agency", "init"]);
+    disable_agency(&wg_dir);
     assert!(
         wg_dir.join("agency").exists(),
         "agency directory should exist after agency init"
@@ -102,7 +122,13 @@ fn smoke_test_full_lifecycle() {
     // ── 3. wg add 'Test task' --context-scope task ──────────────────────
     let output = wg_ok(
         &wg_dir,
-        &["add", "Test task", "--context-scope", "task", "--immediate"],
+        &[
+            "add",
+            "Test task",
+            "--context-scope",
+            "task",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
     assert!(
         output.contains("test-task") || output.contains("Test task"),
@@ -249,11 +275,18 @@ fn smoke_test_dependency_chain() {
     let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    disable_agency(&wg_dir);
 
     // Create parent task
     wg_ok(
         &wg_dir,
-        &["add", "Parent task", "--id", "parent", "--immediate"],
+        &[
+            "add",
+            "Parent task",
+            "--id",
+            "parent",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     // Create child task that depends on parent
@@ -266,7 +299,7 @@ fn smoke_test_dependency_chain() {
             "child",
             "--after",
             "parent",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -313,9 +346,16 @@ fn smoke_test_fail_retry_lifecycle() {
     let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    disable_agency(&wg_dir);
     wg_ok(
         &wg_dir,
-        &["add", "Flaky task", "--id", "flaky", "--immediate"],
+        &[
+            "add",
+            "Flaky task",
+            "--id",
+            "flaky",
+            add_publish::PUBLISH_MARKER,
+        ],
     );
 
     // Claim and fail

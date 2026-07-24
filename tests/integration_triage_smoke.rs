@@ -10,6 +10,9 @@
 //! 3. Multiple failed deps: task depends on A and B, both failed
 //! 4. Regression: fix succeeds, but re-run fails for new reason → re-triage
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -48,7 +51,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -83,6 +86,11 @@ fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    std::fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
+    )
+    .unwrap();
     (tmp, wg_dir)
 }
 
@@ -100,7 +108,16 @@ fn smoke_triage_basic_chain_recovery() {
     let (_tmp, wg_dir) = setup();
 
     // Build the chain: task-a → task-b → task-c
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task A",
+            "--id",
+            "task-a",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -110,7 +127,7 @@ fn smoke_triage_basic_chain_recovery() {
             "task-b",
             "--after",
             "task-a",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(
@@ -122,7 +139,7 @@ fn smoke_triage_basic_chain_recovery() {
             "task-c",
             "--after",
             "task-b",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -152,7 +169,7 @@ fn smoke_triage_basic_chain_recovery() {
             "Fix: parser assertion error",
             "--id",
             "fix-a",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     // Wire fix-a as a dependency of task-a
@@ -231,7 +248,16 @@ fn smoke_triage_cascading_failure_loop_guard() {
     let (_tmp, wg_dir) = setup();
 
     // Build: task-a → task-b
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task A",
+            "--id",
+            "task-a",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -241,7 +267,7 @@ fn smoke_triage_cascading_failure_loop_guard() {
             "task-b",
             "--after",
             "task-a",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -261,7 +287,7 @@ fn smoke_triage_cascading_failure_loop_guard() {
             "Fix: increase memory limit",
             "--id",
             "fix-v1",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v1"]);
@@ -308,7 +334,7 @@ fn smoke_triage_cascading_failure_loop_guard() {
             "Fix: streaming approach",
             "--id",
             "fix-v2",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v2"]);
@@ -339,7 +365,7 @@ fn smoke_triage_cascading_failure_loop_guard() {
             "Fix: reduce input size",
             "--id",
             "fix-v3",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-v3"]);
@@ -418,8 +444,26 @@ fn smoke_triage_multiple_failed_deps() {
     // Build: task-x ──┐
     //                  ├──→ task-m
     // Build: task-y ──┘
-    wg_ok(&wg_dir, &["add", "Task X", "--id", "task-x", "--immediate"]);
-    wg_ok(&wg_dir, &["add", "Task Y", "--id", "task-y", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task X",
+            "--id",
+            "task-x",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task Y",
+            "--id",
+            "task-y",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -429,7 +473,7 @@ fn smoke_triage_multiple_failed_deps() {
             "task-m",
             "--after",
             "task-x,task-y",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -453,7 +497,7 @@ fn smoke_triage_multiple_failed_deps() {
             "Fix: network retry logic",
             "--id",
             "fix-x",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-x", "fix-x"]);
@@ -467,7 +511,7 @@ fn smoke_triage_multiple_failed_deps() {
             "Fix: validation schema",
             "--id",
             "fix-y",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-y", "fix-y"]);
@@ -536,7 +580,16 @@ fn smoke_triage_regression_new_failure() {
     let (_tmp, wg_dir) = setup();
 
     // Build: task-a → task-b
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task A",
+            "--id",
+            "task-a",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
     wg_ok(
         &wg_dir,
         &[
@@ -546,7 +599,7 @@ fn smoke_triage_regression_new_failure() {
             "task-b",
             "--after",
             "task-a",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
 
@@ -566,7 +619,7 @@ fn smoke_triage_regression_new_failure() {
             "Fix: create default config",
             "--id",
             "fix-config",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-config"]);
@@ -620,7 +673,7 @@ fn smoke_triage_regression_new_failure() {
             "Fix: add schema migration",
             "--id",
             "fix-schema",
-            "--immediate",
+            add_publish::PUBLISH_MARKER,
         ],
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-schema"]);

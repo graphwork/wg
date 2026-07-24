@@ -106,6 +106,12 @@ export function registerWgCommands(pi: ExtensionAPI, backend: WgBackend): void {
           emit(ctx, r.stdout.trim() || r.stderr.trim(), r.code === 0 ? "info" : "error");
           return;
         }
+        case "publish": {
+          if (!rest) return emit(ctx, "usage: /wg publish <id>", "warning");
+          const r = await backend.publish(rest, { signal: ctx.signal });
+          emit(ctx, r.stdout.trim() || r.stderr.trim(), r.code === 0 ? "info" : "error");
+          return;
+        }
         case "done": {
           if (!rest) return emit(ctx, "usage: /wg done <id>", "warning");
           const r = await backend.done(rest, { signal: ctx.signal });

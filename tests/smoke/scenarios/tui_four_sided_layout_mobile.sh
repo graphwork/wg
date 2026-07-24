@@ -23,8 +23,8 @@ export TMUX_TMPDIR="$scratch/tmux"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$WG_GLOBAL_DIR" "$TMUX_TMPDIR" "$scratch/project"
 G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
-"$WG_BIN" --dir "$G" add "Archived chat" --id .chat-0 -t chat-loop -t archived --no-place >/dev/null
-"$WG_BIN" --dir "$G" add "layout-fixture-exact-id" -d "render both panes" --no-place >/dev/null
+"$WG_BIN" --dir "$G" add "Archived chat" --id .chat-0 -t chat-loop -t archived >/dev/null
+"$WG_BIN" --dir "$G" add "layout-fixture-exact-id" -d "render both panes" >/dev/null
 : >"$G/config.toml"
 # Daemon-produced disk cache fixture: the TUI may only read this through its
 # asynchronous cache, never by doing filesystem work in render/input.

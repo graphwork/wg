@@ -419,8 +419,8 @@ pub fn run_with_remote_provider(
     exec: Option<&str>,
     timeout: Option<&str>,
     exec_mode: Option<&str>,
-    paused: bool,
-    no_place: bool,
+    _paused: bool,
+    _removed_no_place: bool,
     place_near: &[String],
     place_before: &[String],
     delay: Option<&str>,
@@ -436,6 +436,9 @@ pub fn run_with_remote_provider(
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
     }
+    // All supported add callers are staging-only. This local binding also
+    // protects library/internal callers that predate the public CLI removal.
+    let paused = true;
 
     // R8 (default-deny): a disposable-scoped agent may only create *explicitly*
     // disposable child work (`--scope disposable` / `--tag disposable`). An
@@ -663,9 +666,10 @@ pub fn run_with_remote_provider(
     let max_depth = guardrails.max_task_depth;
 
     let _graph = modify_graph(&path, |graph| {
-    // For --subtask, don't add implicit --after on the parent (child must be immediately ready).
-    // The parent→child relationship is expressed via the parent's wait condition, not via after edges.
-    let effective_after = if subtask {
+    // For --subtask, don't add implicit --after on the parent (the parent→child
+    // relationship is expressed via its wait condition). `--independent` is
+    // likewise authoritative and suppresses ambient WG_TASK_ID inheritance.
+    let effective_after = if subtask || independent {
         after.to_vec()
     } else {
         default_parent_after(graph, after)
@@ -704,6 +708,12 @@ pub fn run_with_remote_provider(
         }
         None => generate_id(title, graph),
     };
+    if task_id.starts_with('.') && !worksgood::graph::is_validated_system_task_id(&task_id) {
+        error = Some(anyhow::anyhow!(
+            "Dot-prefixed task IDs are reserved for validated WG system/agency records"
+        ));
+        return false;
+    }
 
     // Validate after references (supports cross-repo peer:task-id syntax)
     for blocker_id in &effective_after {
@@ -846,7 +856,10 @@ pub fn run_with_remote_provider(
         tried_models: vec![],
         superseded_by: vec![],
         supersedes: None,
-        unplaced: no_place || subtask,
+        // User work is always graph-visible. Dot-prefixed agency records are
+        // created by validated scaffold builders and hidden by system identity,
+        // never by a public placement mode.
+        unplaced: false,
         place_near: place_near.to_vec(),
         place_before: place_before.to_vec(),
         independent,
@@ -925,16 +938,9 @@ pub fn run_with_remote_provider(
     }
 
     let task_id = task_id_out;
-    if paused {
-        // Draft tasks can't be dispatched until published. Notify the daemon
-        // (so TUIs can refresh) but don't wake it for dispatch — that would
-        // produce a no-op tick.
-        super::notify_graph_changed(dir);
-    } else {
-        // Published-immediately: kick the dispatcher so the user sees agent
-        // activity within sub-second.
-        super::notify_kick(dir);
-    }
+    // Draft tasks can't be dispatched until published. Notify the daemon (and
+    // any already-running TUI) without waking an LLM-backed dispatch tick.
+    super::notify_graph_changed(dir);
     super::notify_new_task_focus(dir, &task_id);
 
     // Record operation (include agent_id if running in agent context for guardrail tracking)
@@ -1020,18 +1026,22 @@ pub fn run_with_remote_provider(
 
         super::notify_graph_changed(dir);
 
-        println!("Added subtask: {} ({})", title, task_id);
+        println!("Added subtask (draft): {} ({})", title, task_id);
         println!(
             "  Parent '{}' is now waiting for subtask to complete.",
             parent_id
         );
+        println!("  Release it explicitly: wg publish {} --only", task_id);
         println!(
-            "  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes."
+            "  After publishing, exit cleanly. The coordinator will re-spawn you when the subtask finishes."
         );
     } else if paused {
-        println!("Added task (draft): {} ({})", title, task_id);
+        // Keep the stable first-line machine/human shape; lifecycle guidance
+        // lives on the next line so existing ID parsers do not need a hidden
+        // immediate mode.
+        println!("Added task: {} ({})", title, task_id);
         println!(
-            "  Task is paused (draft mode). When ready, run: wg publish {}",
+            "  Task is paused (draft mode). When ready, run: wg publish {} --only",
             task_id
         );
     } else {
@@ -1159,8 +1169,13 @@ pub fn run_remote(
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             println!(
-                "Added task to '{}': {} ({}:{})",
+                "Added task to '{}' (draft): {} ({}:{})",
                 peer_ref, title, peer_ref, task_id
+            );
+            println!(
+                "  Release it explicitly in that project: wg --dir '{}' publish {} --only",
+                resolved.workgraph_dir.display(),
+                task_id
             );
         } else {
             let err = response
@@ -1188,8 +1203,13 @@ pub fn run_remote(
             &origin,
         )?;
         println!(
-            "Added task to '{}' (direct): {} ({}:{})",
+            "Added task to '{}' (direct draft): {} ({}:{})",
             peer_ref, title, peer_ref, task_id
+        );
+        println!(
+            "  Release it explicitly in that project: wg --dir '{}' publish {} --only",
+            resolved.workgraph_dir.display(),
+            task_id
         );
     }
 
@@ -1247,6 +1267,12 @@ fn add_task_directly(
             }
             None => generate_id(title, graph),
         };
+        if task_id.starts_with('.') && !worksgood::graph::is_validated_system_task_id(&task_id) {
+            error = Some(anyhow::anyhow!(
+                "Dot-prefixed task IDs are reserved for validated WG system/agency records"
+            ));
+            return false;
+        }
 
         // Handle cron scheduling
         let (cron_schedule, cron_enabled, next_cron_fire) = if let Some(cron_expr) = cron {
@@ -1294,7 +1320,12 @@ fn add_task_directly(
             started_at: None,
             completed_at: None,
             last_interaction_at: None,
-            log: vec![],
+            log: vec![worksgood::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: None,
+                user: Some(worksgood::current_user()),
+                message: "Task paused".to_string(),
+            }],
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
@@ -1315,7 +1346,7 @@ fn add_task_directly(
             last_iteration_completed_at: None,
             cycle_failure_restarts: 0,
             ready_after: None,
-            paused: false,
+            paused: true,
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
@@ -1383,6 +1414,8 @@ fn add_task_directly(
     }
 
     let task_id = task_id_out;
+    super::notify_graph_changed(peer_workgraph_dir);
+    super::notify_new_task_focus(peer_workgraph_dir, &task_id);
 
     // Record provenance in the peer's WG project
     let config = worksgood::config::Config::load_or_default(peer_workgraph_dir);
@@ -2059,7 +2092,7 @@ mod tests {
     }
 
     #[test]
-    fn nonexistent_blocker_rejected_by_default() {
+    fn nonexistent_blocker_is_staged_for_publish_validation() {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
         std::fs::create_dir_all(dir_path).unwrap();
@@ -2067,7 +2100,7 @@ mod tests {
         let graph = WorkGraph::new();
         worksgood::parser::save_graph(&graph, &path).unwrap();
 
-        // Should fail by default — strict validation rejects phantom dependencies
+        // Draft creation records forward references; explicit publish validates them.
         let result = run(
             dir_path,
             "My task",
@@ -2114,11 +2147,12 @@ mod tests {
             None,  // cron
             false, // subtask
         );
-        assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("does not exist"),
-            "Expected 'does not exist' error for phantom dependency"
-        );
+        assert!(result.is_ok());
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("my-task").unwrap();
+        assert!(task.paused);
+        assert!(!task.unplaced);
+        assert_eq!(task.after, vec!["nonexistent"]);
     }
 
     #[test]
@@ -2574,8 +2608,8 @@ tier = "standard"
             Some("echo hello world"), // exec
             None,                     // timeout
             None,                     // exec_mode (should auto-set to shell)
-            false,                    // paused
-            true,                     // no_place
+            false,                    // legacy paused input (add still drafts)
+            false,                    // removed placement bypass
             &[],
             &[],
             None,
@@ -2962,7 +2996,8 @@ tier = "standard"
         let child = graph.get_task("research-subtask").unwrap();
         assert_eq!(child.status, Status::Open);
         assert!(child.after.is_empty());
-        assert!(child.unplaced);
+        assert!(child.paused);
+        assert!(!child.unplaced);
 
         let parent = graph.get_task("parent-task").unwrap();
         assert_eq!(parent.status, Status::Waiting);

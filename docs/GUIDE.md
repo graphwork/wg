@@ -90,6 +90,8 @@ per-project with `wg config --local`.
 
 ## Adding tasks
 
+Every `wg add` below stages a visible paused draft. Inspect and wire it first, then explicitly release it with `wg publish <task-id> --only` (or publish a connected batch with `--wcc`).
+
 ```bash
 # Simple task
 wg add "Set up CI pipeline"
@@ -120,11 +122,12 @@ wg add "Security audit" -d $'## Description\nReview surface for vulns.\n\n## Val
 wg add "Follow-up check" --delay 1h
 wg add "Deploy window" --not-before 2026-03-20T09:00:00Z   # ISO 8601
 
-# Placement hints and paused creation
+# Placement hints and explicit release
 wg add "Related work" --place-near auth-task
 wg add "Urgent fix" --place-before deploy-task
-wg add "Standalone" --no-place
-wg add "Draft idea" --paused
+wg add "Standalone" --independent
+wg add "Draft idea"                         # every add is a visible draft
+wg publish draft-idea --only                 # dispatch only after publish
 
 # Visibility for cross-org sharing
 wg add "Public API design" --visibility public

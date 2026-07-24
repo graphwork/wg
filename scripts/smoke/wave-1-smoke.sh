@@ -256,7 +256,7 @@ scenario_1_claude_e2e() {
     # Task lifecycle: add → publish → check status
     # (Full done-within-60s requires a live Claude API; test the graph mechanics here)
     local add_output
-    add_output=$(cd "$scratch" && wg add 'echo hello' --no-place 2>&1)
+    add_output=$(cd "$scratch" && wg add 'echo hello' 2>&1)
     # Format: "Added task: <title> (<id>)"
     local task_id
     task_id=$(echo "$add_output" | sed -n 's/.*Added task: .* (\(.*\))/\1/p')
@@ -266,7 +266,10 @@ scenario_1_claude_e2e() {
         return
     fi
 
-    # --no-place creates the task as open directly (no publish needed)
+    (cd "$scratch" && wg publish "$task_id" --only) >/dev/null 2>&1 || {
+        fail "$desc — explicit publish failed for $task_id"
+        return
+    }
 
     # Verify task exists and is open (not blocked/failed)
     local show_json
@@ -595,7 +598,7 @@ scenario_5_model_alias() {
 
     # Add a task with --model claude:sonnet
     local add_out
-    add_out=$(cd "$scratch" && wg add 'alias-test' --model claude:sonnet --no-place 2>&1)
+    add_out=$(cd "$scratch" && wg add 'alias-test' --model claude:sonnet 2>&1)
     local task_id
     task_id=$(echo "$add_out" | sed -n 's/.*Added task: .* (\(.*\))/\1/p')
 

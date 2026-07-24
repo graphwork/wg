@@ -48,18 +48,28 @@ chmod +x "$bindir/pi"
 (
     cd "$project" || exit 1
     env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" PATH="$bindir:$PATH" \
-        wg add "pi worker one shot" --id pi-worker-one-shot --no-place \
+        wg add "pi worker one shot" --id pi-worker-one-shot \
             --model pi:openrouter/test/model \
             -d "Worker prompt sentinel: PI_WORKER_PROMPT_OK" >/dev/null 2>&1
 ) || loud_fail "wg add failed"
+(
+    cd "$project" || exit 1
+    env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" PATH="$bindir:$PATH" \
+        wg publish pi-worker-one-shot --only >/dev/null 2>&1
+) || loud_fail "wg publish failed"
 
 (
     cd "$project" || exit 1
     env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" PATH="$bindir:$PATH" \
-        wg add "pi custom provider worker one shot" --id pi-custom-provider-one-shot --no-place \
+        wg add "pi custom provider worker one shot" --id pi-custom-provider-one-shot \
             --model pi:lunaroute:glm-5.2-nvfp4 \
             -d "Worker prompt sentinel: PI_CUSTOM_PROVIDER_PROMPT_OK" >/dev/null 2>&1
 ) || loud_fail "wg add custom provider failed"
+(
+    cd "$project" || exit 1
+    env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" PATH="$bindir:$PATH" \
+        wg publish pi-custom-provider-one-shot --only >/dev/null 2>&1
+) || loud_fail "wg publish custom provider failed"
 
 log="$scratch/pi-worker.log"
 spawn_out="$scratch/spawn.out"

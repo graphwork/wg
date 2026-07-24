@@ -169,7 +169,7 @@ pub const CRITICAL_WG_CLI_SECTION: &str = "\
 ## CRITICAL: Use wg CLI, NOT built-in tools
 - You MUST use `wg` CLI commands for ALL task management
 - NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools \u{2014} they are a completely separate system that does NOT interact with WG
-- If you need to create subtasks: `wg add \"title\" --after {{task_id}}`
+- If you need to create subtasks: `wg add \"title\" --id child-id --after {{task_id}}`, then `wg publish child-id --only`
 - To check task status: `wg show <task-id>`
 - To list tasks: `wg list`\n";
 
@@ -192,17 +192,17 @@ pub const ETHOS_SECTION: &str = "\
 ## The Graph is Alive
 
 You are not isolated. The graph is a shared medium — artifacts you write are read by other agents, \
-tasks you create get dispatched to other agents. You are one node in a living system.
+tasks you explicitly publish get dispatched to other agents. You are one node in a living system.
 
 **Your job is not just to complete your task.** It is to leave the system better than you found it \
 and to grow the graph where it needs growing:
 - **Task too large?** Decompose it — fan out independent parts as parallel subtasks, \
 add a synthesis task to integrate the results
-- **Found a bug or missing doc?** `wg add \"Fix: ...\" --after {{task_id}} -d \"Found while working on {{task_id}}\"`
-- **Prerequisite missing?** Create a blocking task: `wg add \"Prereq: ...\" && wg add \"{{task_id}}\" --after prereq-id`
-- **Follow-up needed?** `wg add \"Verify: ...\" --after {{task_id}}`
+- **Found a bug or missing doc?** `wg add \"Fix: ...\" --id fix-id --after {{task_id}} -d \"Found while working on {{task_id}}\" && wg publish fix-id --only`
+- **Prerequisite missing?** `wg add \"Prereq: ...\" --id prereq-id`, wire it with `wg edit {{task_id}} --add-after prereq-id`, then `wg publish prereq-id --only`
+- **Follow-up needed?** `wg add \"Verify: ...\" --id verify-id --after {{task_id}} && wg publish verify-id --only`
 
-The coordinator dispatches anything you add. You don't need permission.
+The coordinator dispatches explicitly published work. You don't need permission.
 
 **The loop:** spec \u{2192} implement \u{2192} verify \u{2192} improve \u{2192} spec. \
 You may be any node. Use `wg context` to see what came before. \
@@ -215,7 +215,8 @@ pub const AUTOPOIETIC_GUIDANCE: &str = "\
 ## Task Decomposition
 
 Fanout is a tool, not a default. Always attempt direct implementation first. \
-The coordinator will dispatch any subtasks you create automatically.
+`wg add` stages visible drafts only. After wiring the graph, explicitly release each \
+task with `wg publish <id> --only`, or publish a connected batch with `--wcc`.
 
 ### DEFAULT: Implement directly
 Start by doing the work yourself. Only switch to decomposition after assessing complexity.
@@ -801,7 +802,7 @@ pub const DEFAULT_WG_GUIDE: &str = "\
 working on one task in this graph. Other agents work on other tasks concurrently.
 
 ### Task Lifecycle
-Tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
+`wg add` creates a visible paused draft. `wg publish <id> --only` releases it, then tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
 Some tasks have a `pending-validation` step before `done` when the agency evaluator (auto_evaluate + FLIP) routes the work for human or LLM review.
 
 ### Core Commands
@@ -813,7 +814,8 @@ Some tasks have a `pending-validation` step before `done` when the agency evalua
 | `wg artifact <id> path` | Record a file you created/modified |
 | `wg done <id>` | Mark your task complete |
 | `wg fail <id> --reason \"...\"` | Mark your task failed |
-| `wg add \"title\" -d \"desc\"` | Create a new task |
+| `wg add \"title\" -d \"desc\"` | Create a visible draft task |
+| `wg publish <id> --only` | Explicitly release one draft for dispatch |
 | `wg list` | List all tasks |
 | `wg ready` | List tasks ready to be worked on |
 | `wg msg read <id>` | Check for messages on your task |
@@ -825,17 +827,19 @@ for correct execution order.
 
 ```bash
 # Task B depends on Task A completing first
-wg add \"Task B\" --after task-a
+wg add \"Task B\" --id task-b --after task-a
+wg publish task-b --only
 
 # Task C depends on multiple predecessors
-wg add \"Task C\" --after task-a,task-b
+wg add \"Task C\" --id task-c --after task-a,task-b
+wg publish task-c --only
 
 # Subtask that depends on current task
-wg add \"Subtask\" --after $CURRENT_TASK_ID
+wg add \"Subtask\" --id child-id --after $CURRENT_TASK_ID
+wg publish child-id --only
 ```
 
-**Always use `--after` when creating subtasks.** Without it, tasks form a flat \
-unordered list and may execute in the wrong order.
+**Always use `--after` when creating subtasks, then publish explicitly.** Without the edge, tasks form a flat unordered list; without publish, they correctly remain visible drafts.
 
 ### Validation
 Include a `## Validation` section in task descriptions with concrete acceptance criteria. \
@@ -895,7 +899,7 @@ pub const PATTERN_KEYWORDS_GLOSSARY: &str = "\
 
 Your task description uses organizational pattern vocabulary. Here is what each pattern expects:
 
-- **autopoietic / self-organizing**: Decompose this work into subtasks using `wg add`. Create your own task graph with proper dependencies. Don't try to do everything yourself — break it into pieces and let the coordinator dispatch them.
+- **autopoietic / self-organizing**: Decompose this work into visible drafts using `wg add`, wire dependencies, then release them explicitly with `wg publish`. Don't try to do everything yourself — let the coordinator dispatch only the published graph.
 
 - **committee / discussion / deliberation / swarm**: Spawn multiple parallel tasks (via `wg add`) representing different perspectives or approaches. Each task produces a position/analysis. Create a synthesis task (`--after` all perspectives) that integrates findings. Use `wg msg` to communicate between tasks if needed.
 
@@ -904,6 +908,8 @@ Your task description uses organizational pattern vocabulary. Here is what each 
 - **loop / cycle / iterate**: Use `--max-iterations` on tasks. Each iteration should build on the previous. Use `wg done --converged` when the work has stabilized. If verify fails and you can't fix it, use `wg fail` so the cycle can restart.
 
 - **research / investigate / audit**: Produce a structured document with findings. Reference specific files and line numbers. Create implementation subtasks if the research reveals work to be done.
+
+For every pattern, `wg add` only stages visible drafts. Wire the complete graph, then explicitly release each task with `wg publish <id> --only` (or a connected batch with `--wcc`).
 
 For detailed pattern descriptions, see docs/research/organizational-patterns.md\n";
 
@@ -928,10 +934,12 @@ If ANY dependency has status=Failed:
    a. If the failure is clear and scoped → create fix task(s) via `wg add`
    b. If the failure is ambiguous or cascading → create a research/investigate task
    c. If you cannot determine a fix after investigating → `wg fail` with what you investigated and what specifically blocks progress
-4. Create fix tasks that block the failed dep (so it re-runs after the fix):
+4. Create and publish fix tasks that block the failed dep (so it re-runs after the fix):
    ```
-   wg add \"Fix: <description>\" --before <failed-dep-id> \\
+   wg add \"Fix: <description>\" --id fix-dep \\
      -d \"## Validation\n- [ ] <validation criteria>\n\n<details from failure logs>\"
+   wg edit <failed-dep-id> --add-after fix-dep
+   wg publish fix-dep --only
    ```
 5. Retry the failed dependency:
    ```
@@ -3150,7 +3158,8 @@ args = ["--custom-flag"]
         assert!(prompt.contains("## Graph Patterns"));
         assert!(prompt.contains("## Reusable Workflow Functions"));
         assert!(prompt.contains("## CRITICAL: Use wg CLI"));
-        assert!(prompt.contains("wg add \"title\" --after task-1")); // {{task_id}} substituted
+        assert!(prompt.contains("wg add \"title\" --id child-id --after task-1")); // {{task_id}} substituted
+        assert!(prompt.contains("wg publish child-id --only"));
         assert!(prompt.contains("## Additional Context")); // R2
 
         // Should include R1 and R4
@@ -3305,7 +3314,10 @@ args = ["--custom-flag"]
         assert!(REUSABLE_FUNCTIONS_SECTION.contains("wg func apply"));
 
         assert!(CRITICAL_WG_CLI_SECTION.contains("NEVER use built-in TaskCreate"));
-        assert!(CRITICAL_WG_CLI_SECTION.contains("wg add \"title\" --after {{task_id}}"));
+        assert!(
+            CRITICAL_WG_CLI_SECTION.contains("wg add \"title\" --id child-id --after {{task_id}}")
+        );
+        assert!(CRITICAL_WG_CLI_SECTION.contains("wg publish child-id --only"));
     }
 
     #[test]

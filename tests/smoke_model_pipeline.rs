@@ -11,6 +11,9 @@
 //! 2. WG repo: real data integration
 //! 3. Profile ranking quality: non-alphabetical, meaningful score variance
 
+#[path = "common/add_publish.rs"]
+mod add_publish;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -53,7 +56,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
-    let output = wg_cmd(wg_dir, args);
+    let output = add_publish::run(wg_dir, args, wg_cmd);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -365,7 +368,10 @@ fn smoke_fresh_repo_default_model_from_config() {
     );
 
     // Add a task without specifying --model.
-    wg_ok(&wg_dir, &["add", "hello world 2", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "hello world 2", add_publish::PUBLISH_MARKER],
+    );
 
     let raw_config = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
     assert!(

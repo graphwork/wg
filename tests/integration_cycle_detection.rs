@@ -79,6 +79,31 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
         stdout,
         stderr
     );
+    // Cycle fixtures exercise runnable graph state. Public add is now
+    // staging-only, so make the release edge explicit in this helper.
+    if args.first() == Some(&"add") {
+        let task_id = args
+            .iter()
+            .position(|arg| *arg == "--id")
+            .and_then(|idx| args.get(idx + 1))
+            .copied()
+            .or_else(|| {
+                stdout
+                    .lines()
+                    .next()
+                    .and_then(|line| line.rsplit_once('('))
+                    .map(|(_, tail)| tail.trim_end_matches(')'))
+            })
+            .expect("add output should identify the staged task");
+        let publish = wg_cmd(wg_dir, &["publish", task_id, "--only"]);
+        assert!(
+            publish.status.success(),
+            "explicit publish of '{}' failed:\nstdout: {}\nstderr: {}",
+            task_id,
+            String::from_utf8_lossy(&publish.stdout),
+            String::from_utf8_lossy(&publish.stderr)
+        );
+    }
     stdout
 }
 
@@ -91,6 +116,11 @@ fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
         graph.add_node(Node::Task(task));
     }
     save_graph(&graph, &graph_path).unwrap();
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\nflip_enabled = false\n",
+    )
+    .unwrap();
     wg_dir
 }
 
@@ -3418,7 +3448,7 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3430,7 +3460,6 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
             "a",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
 
@@ -3540,7 +3569,7 @@ fn test_deep_reiteration_ordering_e2e() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3552,7 +3581,6 @@ fn test_deep_reiteration_ordering_e2e() {
             "a",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
 
@@ -3611,11 +3639,8 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Create pipeline: A → B → C
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
-    wg_ok(
-        &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--immediate"],
-    );
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
+    wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3627,7 +3652,6 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
             "b",
             "--max-iterations",
             "2",
-            "--immediate",
         ],
     );
 
@@ -3764,18 +3788,10 @@ fn test_deep_mixed_deps_setup_included_behavior() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Setup", "--id", "setup", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Setup", "--id", "setup"]);
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Implement",
-            "--id",
-            "impl",
-            "--after",
-            "setup",
-            "--immediate",
-        ],
+        &["add", "Implement", "--id", "impl", "--after", "setup"],
     );
     wg_ok(
         &wg_dir,
@@ -3788,7 +3804,6 @@ fn test_deep_mixed_deps_setup_included_behavior() {
             "impl",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
 
@@ -6136,15 +6151,7 @@ fn test_deadlock_breaker_e2e_two_task_cycle() {
     // Create A and B with mutual dependencies and cycle_config
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Task A",
-            "--id",
-            "a",
-            "--max-iterations",
-            "3",
-            "--immediate",
-        ],
+        &["add", "Task A", "--id", "a", "--max-iterations", "3"],
     );
     wg_ok(
         &wg_dir,
@@ -6157,7 +6164,6 @@ fn test_deadlock_breaker_e2e_two_task_cycle() {
             "a",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
 
@@ -6211,15 +6217,7 @@ fn test_deadlock_breaker_e2e_three_task_cycle() {
 
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Task A",
-            "--id",
-            "a",
-            "--max-iterations",
-            "3",
-            "--immediate",
-        ],
+        &["add", "Task A", "--id", "a", "--max-iterations", "3"],
     );
     wg_ok(
         &wg_dir,
@@ -6232,7 +6230,6 @@ fn test_deadlock_breaker_e2e_three_task_cycle() {
             "a",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
     wg_ok(
@@ -6246,7 +6243,6 @@ fn test_deadlock_breaker_e2e_three_task_cycle() {
             "b",
             "--max-iterations",
             "3",
-            "--immediate",
         ],
     );
 
@@ -6617,7 +6613,6 @@ fn test_cli_add_with_exec_flag() {
             "Run batch script",
             "--exec",
             "python3 run_batch.py --quality high",
-            "--no-place",
         ],
     );
     assert!(
@@ -6658,7 +6653,6 @@ fn test_cli_add_with_exec_and_timeout() {
             "render.sh",
             "--timeout",
             "6h",
-            "--no-place",
         ],
     );
 
