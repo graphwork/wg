@@ -832,6 +832,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
                         match entry.source {
                             project_profile::ProfileSource::Installed => "user",
                             project_profile::ProfileSource::BuiltinTemplate => "builtin",
+                            project_profile::ProfileSource::Generated => "generated",
                             project_profile::ProfileSource::Unavailable => "unavailable",
                         }
                         .to_string(),
@@ -857,6 +858,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         let kind = match entry.source {
             project_profile::ProfileSource::Installed => "user",
             project_profile::ProfileSource::BuiltinTemplate => "builtin",
+            project_profile::ProfileSource::Generated => "generated",
             project_profile::ProfileSource::Unavailable => "missing",
         };
         let mut labels = Vec::new();

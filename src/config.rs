@@ -5217,6 +5217,43 @@ impl Config {
     /// Legacy section names (per [`LEGACY_SECTION_ALIASES`]) are normalized to
     /// their canonical form before merging, so callers always see the canonical
     /// keys regardless of which file used the legacy name.
+    /// Resolve global + local settings with an explicit, already-planned
+    /// project-profile TOML overlay, without consulting the current project
+    /// association. Concierge planning uses this read-only path to fingerprint
+    /// the intended post-apply service config before confirmation.
+    pub fn load_merged_for_planned_profile(
+        workgraph_dir: &Path,
+        mut profile: toml::Value,
+    ) -> anyhow::Result<Self> {
+        let global_path = Self::global_config_read_path()?;
+        let local_path = workgraph_dir.join("config.toml");
+        let mut global_val = Self::load_toml_value(&global_path)?;
+        let mut local_val = Self::load_toml_value(&local_path)?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(
+            &mut global_val,
+            &global_path.display().to_string(),
+            &mut warnings,
+        );
+        normalize_legacy_tables(
+            &mut local_val,
+            &local_path.display().to_string(),
+            &mut warnings,
+        );
+        normalize_legacy_tables(&mut profile, "planned project profile", &mut warnings);
+        emit_legacy_warnings(&warnings);
+        apply_endpoint_inheritance_policy(&mut global_val, &local_val, true);
+        let merged = crate::profile::named::overlay_project_profile(
+            merge_toml(global_val, local_val),
+            &profile,
+        );
+        let config: Self = merged.try_into().map_err(|error| {
+            anyhow::anyhow!("Failed to parse config with planned project profile: {error}")
+        })?;
+        config.validate_model_format()?;
+        Ok(config)
+    }
+
     pub fn load_merged_toml_value(workgraph_dir: &Path) -> anyhow::Result<toml::Value> {
         let global_path = Self::global_config_read_path()?;
         let local_path = workgraph_dir.join("config.toml");

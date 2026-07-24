@@ -539,6 +539,14 @@ pub struct ServiceState {
     pub pid: u32,
     pub socket_path: String,
     pub started_at: String,
+    /// OS birth identity protects against PID reuse during reconcile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_start_identity: Option<String>,
+    /// Authenticated graph/build/protocol/config identity for lifecycle clients.
+    /// Old daemons deserialize with `None` and are treated as unverified rather
+    /// than guessed or killed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<worksgood::service_identity::ServiceIdentity>,
 }
 
 impl ServiceState {
@@ -1278,8 +1286,11 @@ pub fn run_start(
             .with_context(|| format!("Failed to remove stale socket at {:?}", socket))?;
     }
 
-    // Fork the daemon process
+    // Fork the daemon process. Capture the authenticated identity before
+    // launch; a lifecycle client verifies the same bytes/config over IPC.
     let current_exe = std::env::current_exe().context("Failed to get current executable path")?;
+    let service_identity =
+        worksgood::service_identity::expected_identity(dir, &current_exe, &config)?;
 
     let dir_str = dir.to_string_lossy().to_string();
     let socket_str = socket.to_string_lossy().to_string();
@@ -1368,6 +1379,8 @@ pub fn run_start(
         pid,
         socket_path: socket_str.clone(),
         started_at: chrono::Utc::now().to_rfc3339(),
+        pid_start_identity: worksgood::service_identity::pid_start_identity(pid),
+        identity: Some(service_identity),
     };
     state.save(dir)?;
 
@@ -3663,6 +3676,8 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             "pid": state.pid,
             "socket": state.socket_path,
             "started_at": state.started_at,
+            "pid_start_identity": state.pid_start_identity,
+            "identity": state.identity,
             "uptime": uptime,
             "agents": {
                 "alive": alive_count,
@@ -3715,6 +3730,20 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("Service: running (PID {})", state.pid);
         println!("Socket: {}", state.socket_path);
         println!("Uptime: {}", uptime);
+        if let Some(identity) = state.identity.as_ref() {
+            println!("Graph identity: {}", identity.graph_digest);
+            println!(
+                "Build: {} ({}, {})",
+                identity.build_id, identity.executable, identity.protocol
+            );
+            println!("Config fingerprint: {}", identity.config_fingerprint);
+            println!(
+                "Project profile generation: {:?} ({:?})",
+                identity.selected_profile, identity.selected_profile_fingerprint
+            );
+        } else {
+            println!("Identity: unverified legacy daemon state");
+        }
         if !agency_agents_defined {
             println!("Agents: No agents defined — run 'wg agency init' or 'wg agent create'");
         } else {
@@ -4853,6 +4882,8 @@ mod tests {
             pid: std::process::id(),
             socket_path: socket.display().to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: None,
+            identity: None,
         }
         .save(dir)
         .unwrap();
@@ -4880,6 +4911,8 @@ mod tests {
             pid: 12345,
             socket_path: "/tmp/test.sock".to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: None,
+            identity: None,
         };
 
         state.save(temp_dir.path()).unwrap();
@@ -4998,6 +5031,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: None,
+            identity: None,
         };
         state.save(dir).unwrap();
 
@@ -5026,6 +5061,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: None,
+            identity: None,
         };
         state.save(dir).unwrap();
 
@@ -5064,6 +5101,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             started_at: chrono::Utc::now().to_rfc3339(),
+            pid_start_identity: None,
+            identity: None,
         };
         state.save(dir).unwrap();
 

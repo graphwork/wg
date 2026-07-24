@@ -1,0 +1,102 @@
+WorksGood concierge closeout validation
+========================================
+Date (UTC): 2026-07-24
+Task: closeout-worksg-concierge
+Recovery base: 459e030b659c68de9498b51e1363294a3dc46db4
+Isolated CARGO_TARGET_DIR: /home/bot/wg/.wg-candidate-targets/closeout-worksg-concierge
+Global install performed: NO
+command -v worksgood: absent
+
+DONOR IDENTITY
+--------------
+branch=wg/agent-642/implement-worksg-concierge
+head=c4c1e211eda30b548831fdaad02d76317fb18baf
+tree=f494c9b8a57145dac9591f2ecb108704b4247726
+tracked_patch_sha256=1bf29bcb72eac0738b14fe09e1bdb7156beeda59cdb66be0f392537c9298d6b6
+tracked_patch_bytes=28955
+porcelain_v2_sha256_before_after=8cb0522e368ad91aacdf3ea17cc942bbd7713ffb40b1dba9d5a9f733a7d83ae6
+donor_status_before_after=9 modified + 5 untracked (identical)
+
+FINAL CANDIDATE
+---------------
+worksgood=/home/bot/wg/.wg-candidate-targets/closeout-worksg-concierge/debug/worksgood
+worksgood_sha256=de5cc02d941aa71c13008541187465af5f4f9161f69ac3d7913e13ee096163e5
+wg=/home/bot/wg/.wg-candidate-targets/closeout-worksg-concierge/debug/wg
+wg_sha256=e57865b11c8587e8817f5c3b36296776040253c319ada095f0892a3bc761febd
+
+PASS COMMANDS
+-------------
+1. cargo fmt --check
+   result=PASS
+
+2. CARGO_TARGET_DIR=<isolated> CARGO_BUILD_JOBS=2 \
+   cargo build --locked --features worksgood-trial --bin wg --bin worksgood
+   result=PASS
+   captured_log_sha256=15bfbaa921cb5a8cf4717d5ec3ca59b0b935f9c6cbce87e309b6eccc07d9c0d7
+
+3. CARGO_TARGET_DIR=<isolated> cargo test --locked --features worksgood-trial \
+   --lib concierge -- --test-threads=1
+   result=PASS 6 passed, 0 failed
+   captured_log_sha256=b946d90157dc9428fecc165f8c72d774fd31cdc9676b8875bbb9f41db382904d
+
+4. Same command, filter service_identity
+   result=PASS 2 passed, 0 failed
+   captured_log_sha256=1582cd2bb9e9aa0c8438ff77300d6604589fe6bb9b9ad5558dfef764c8787f27
+
+5. Same command, filter profile::project::tests
+   result=PASS 17 passed, 0 failed
+   captured_log_sha256=806ab6d0d72e0c881cba08eeb59ce86a736b752b913ddfa3da075c54980133bd
+
+6. WG_SMOKE_CANDIDATE_DIR=<isolated> \
+   bash tests/smoke/scenarios/worksgood_concierge_trial.sh
+   result=PASS (post-refinement)
+   final_line=PASS: worksgood exact/same-build reuse, generation reload, content-build restart, replaced/deleted/foreign fail-closed, failed-restart recovery/no stale TUI, concurrency, explicit effort+Pi argv, strict dry-run/no-chat, absolute identity, and service persistence
+   captured_log_sha256=f9c4de3f5ee9191912fd2c7e21d50e5900127a5b0780102a38e70007503cc1f5
+
+7. CARGO_TARGET_DIR=<isolated> CARGO_BUILD_JOBS=2 \
+   cargo clippy --locked --features worksgood-trial --all-targets
+   result=PASS (exit 0; existing baseline warnings; no diagnostic for candidate files)
+   captured_log_sha256=6e167741366e0bd00f326e6c34ca61991658c37072cfbec3e328481ea9043183
+
+8. env -u WG_TASK_ID -u WG_AGENT_ID -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER \
+   CARGO_TARGET_DIR=<isolated> CARGO_BUILD_JOBS=2 \
+   cargo test --locked --features worksgood-trial -- --test-threads=1
+   result=PASS; test_binaries=166; passed=9407; failed=0; ignored=34
+   captured_log_sha256=037f2486270c0e837827393b2259e8404da526b1213f7c6fc582c586155e37a9
+
+ITERATIVE DEDICATED-SMOKE FAILURES FIXED BEFORE FINAL PASS
+---------------------------------------------------------
+A. captured_log_sha256=ddaa732d35afbfd6f2e89678ea4541c4c8dc314151ea6073e860cdd9ee1ceaba
+   failure=Pi argv probe correctly refused required worktree isolation because scratch Git HEAD was unborn.
+   fix=seed one committed file before spawn probe.
+
+B. captured_log_sha256=117585ba20f16ff8fa85f0351bd12995d2660f0396bef38a979f5f51e6766a0d
+   failure=initial config-mismatch probe did not display mismatch.
+   diagnosis=the changed max_agents value was hidden by the selected profile overlay.
+
+C. captured_log_sha256=2df30e7548facfc4103a0080e6606d0ce8fb335c4ab715b821b6a9ce276849b5
+   failure=effective TUI config drift still did not display mismatch.
+   diagnosis=the live service correctly observed/reloaded config before the returning client.
+   final_fix=use a different absolute sibling-copy W authenticated by the tested receipt; this deterministically changes executable identity and exercises the real attended mismatch confirmation.
+
+No baseline/environmental test failure occurred. The completed full serial suite passed with worker service-control environment variables explicitly unset, matching the known clean-suite invocation from the reviewed predecessor.
+
+LATE MAINTAINER RECONCILE REFINEMENT (POST FULL-SERIAL)
+------------------------------------------------------
+The maintainer explicitly directed preserving the completed full-serial evidence, implementing focused reconcile changes, and rerunning affected/focused tests plus necessary smoke rather than discarding the completed run.
+
+9. cargo test --locked --features worksgood-trial --lib concierge -- --test-threads=1
+   result=PASS 10 passed, 0 failed (includes exact/same-build reuse, generation reload, content-build restart, and foreign/deleted refusal decisions)
+   captured_log_sha256=cb9f0de033998d5681db1300c8e856ee09e9f57e6b3c951a4a0429cc6d6e8978
+
+10. cargo test --locked --features worksgood-trial --lib service_identity -- --test-threads=1
+    result=PASS 2 passed, 0 failed
+    captured_log_sha256=389535a5ea8d72930749653a5f8988fa6568e21a37ec7508a4f34f0cfa8af72f
+
+11. cargo test --locked --features worksgood-trial --bin wg commands::service::tests -- --test-threads=1
+    result=PASS 57 passed, 0 failed
+    captured_log_sha256=d0aa4817243037b153086fc89cb34466ee08a8970d4b8b7a1d515c7ba105df57
+
+12. Post-refinement dedicated tmux smoke and clippy are the final results recorded as commands 6 and 7 above.
+
+The first three refinement smoke reruns exposed only assertion-output wrapping (the behavior had correctly restored the prior build); the final assertions normalize tmux line wraps. Captured hashes: b826c30960818fe27d1c2ce733e10f219944292c4a633e7558cfab17f2b4461e, be5925a64b3e5cb0a108372a469340fa3bc6ff7d4b859c0650120bde4910be28, 5645aed629a01d6183de4c15e82233d8d5d58f16ad5198e7400b610692bc389b. A fourth pre-final-echo pass hash was 371266ff6b5e2716e4526b2a94e3648675898ae904f91c0e38a8c544b403fd85.

@@ -142,8 +142,9 @@ name = "tui_chat_service_health_restart"
 script = "scenarios/tui_chat_service_health_restart.sh"
 owners = [
     "fix-tui-service",
+    "implement-worksg-concierge",
 ]
-description = "Pins fix-tui-service through the real tmux/PTY human flow: keep the TUI on its continuously-refreshing Chat tab, stop the daemon until the visible badge/vitals show DOWN, restart it externally, and require both HUD surfaces to recover live without a tab/TUI restart while the credential-free cat chat remains responsive."
+description = "Pins fix-tui-service through the real tmux/PTY human flow: keep the TUI on its continuously-refreshing Chat tab, stop the daemon until the visible badge/vitals show DOWN, restart it externally, and require both HUD surfaces to recover live without a tab/TUI restart while the credential-free cat chat remains responsive. The concierge owner reuses it for the no-chat/PTY-loss reconcile invariant."
 timeout_seconds = 45
 
 [[scenario]]
@@ -1163,8 +1164,9 @@ name = "project_profile_history"
 script = "scenarios/project_profile_history.sh"
 owners = [
     "implement-project-profile-history",
+    "implement-worksg-concierge",
 ]
-description = "Project-scoped reusable profiles: strict read-only plan, atomic edit/rename/delete fail-closed recovery, canonical fingerprint-pinned A/B selections, concurrent live daemon route isolation, current-first ordering, and bounded redacted successful-event history."
+description = "Project-scoped reusable profiles: strict read-only plan, atomic edit/rename/delete fail-closed recovery, canonical fingerprint-pinned A/B selections, concurrent live daemon route isolation, current-first ordering, and bounded redacted successful-event history. The concierge owner reuses this scenario as its two-project cross-route invariant."
 timeout_seconds = 120
 
 [[scenario]]
@@ -2243,8 +2245,9 @@ script = "scenarios/tui_stateful_chat_restart_resume.sh"
 owners = [
     "fix-tui-restart",
     "fix-path-unique",
+    "implement-worksg-concierge",
 ]
-description = "Real tmux/PTY stateful-resume regression: route-less chat creation under a Pi/Codex handler-first profile persists the exact Pi route with no Claude fallback; the first TUI and a restarted TUI keep exactly one .chat-0 row, reattach the same persistent pane PID selected by tui-state.json, preserve Pi session history, and accept input; wg chat show agrees the TUI-owned tmux runtime is live; killing the pane surfaces the real recovery panel and R resurrects the saved route/session without adding a row. Credential-free fake Pi."
+description = "Real tmux/PTY stateful-resume regression: route-less chat creation under a Pi/Codex handler-first profile persists the exact Pi route with no Claude fallback; the first TUI and a restarted TUI keep exactly one .chat-0 row, reattach the same persistent pane PID selected by tui-state.json, preserve Pi session history, and accept input; wg chat show agrees the TUI-owned tmux runtime is live; killing the pane surfaces the real recovery panel and R resurrects the saved route/session without adding a row. Credential-free fake Pi. The concierge owner reuses it for exact chat identity/turn survival."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2338,8 +2341,9 @@ script = "scenarios/pending_eval_lifecycle_route_recovery.sh"
 owners = [
     "salvage-and-finish",
     "validate-integrated-luca-2",
+    "implement-worksg-concierge",
 ]
-description = "Credential-free real CLI/dispatcher regression for the FailedPendingEval lifecycle repair: Codex scaffolding persists a handler-first two-stage plan, the owning FLIP completes over FailedPendingEval while ordinary work stays gated, why-blocked agrees with dispatcher readiness without inventing an SCC cycle, a terminal evaluator without durable evidence cannot scorelessly promote its source, a historical bare-Codex pre-claim breaker row normalizes/rearms exactly once, and a completed claimed legacy evaluator with exactly one post-start Evaluation is losslessly linked once after restart without a semantic rerun. Handler matrices and concurrent-tick reservation are pinned by companion Rust tests."
+description = "Credential-free real CLI/dispatcher regression for the FailedPendingEval lifecycle repair: Codex scaffolding persists a handler-first two-stage plan, the owning FLIP completes over FailedPendingEval while ordinary work stays gated, why-blocked agrees with dispatcher readiness without inventing an SCC cycle, a terminal evaluator without durable evidence cannot scorelessly promote its source, a historical bare-Codex pre-claim breaker row normalizes/rearms exactly once, and a completed claimed legacy evaluator with exactly one post-start Evaluation is losslessly linked once after restart without a semantic rerun. Handler matrices and concurrent-tick reservation are pinned by companion Rust tests. The concierge owner reuses it for FLIP/evaluation restart continuity."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2384,8 +2388,9 @@ name = "inline_evaluator_silent_heartbeat"
 script = "scenarios/inline_evaluator_silent_heartbeat.sh"
 owners = [
     "fix-inline-evaluator",
+    "implement-worksg-concierge",
 ]
-description = "Installed-binary credential-free production regression for the five-minute inline-evaluator false reap: an exact persisted codex:gpt-5.6-luna evaluator emits no model output for longer than an accelerated heartbeat window while the process-bound, absolute-WG, explicit-graph watcher refreshes registry liveness; registry and a real tmux TUI report it active, daemon SIGKILL/restart does not duplicate it, and it completes once. A second genuinely hung Luna stub keeps heartbeating but is terminated by the independent hard inference timeout with no wrapper/model/heartbeat orphan. Foreign PATH wg plus Claude/Pi sentinels pin project and same-system route isolation."
+description = "Installed-binary credential-free production regression for the five-minute inline-evaluator false reap: an exact persisted codex:gpt-5.6-luna evaluator emits no model output for longer than an accelerated heartbeat window while the process-bound, absolute-WG, explicit-graph watcher refreshes registry liveness; registry and a real tmux TUI report it active, daemon SIGKILL/restart does not duplicate it, and it completes once. A second genuinely hung Luna stub keeps heartbeating but is terminated by the independent hard inference timeout with no wrapper/model/heartbeat orphan. Foreign PATH wg plus Claude/Pi sentinels pin project and same-system route isolation. The concierge owner reuses it for no-duplicate inline evaluation continuity across daemon replacement."
 timeout_seconds = 60
 
 [[scenario]]
@@ -2473,3 +2478,13 @@ owners = [
 ]
 description = "Candidate-binary daemon regression for a retained worktree on a simulated hung network filesystem: a real cleanup-marked Git worktree uses a FIFO marker so the maintenance worker blocks inside the retained scan while a ready shell task must still dispatch on the real coordinator loop. Proves retained read_dir/metadata/git/source work is off the dispatch-critical tick, the source remains fail-closed, timer/fs wakeups coalesce behind one single-flight sweep, diagnostics remain bounded, and legacy per-worktree skip spam is absent. Credential-free."
 timeout_seconds = 120
+
+[[scenario]]
+name = "worksgood_concierge_trial"
+script = "scenarios/worksgood_concierge_trial.sh"
+owners = [
+    "implement-worksg-concierge",
+    "closeout-worksg-concierge",
+]
+description = "Candidate-only, credential-free attended tmux lifecycle for the profile-first worksgood trial: bounded nearest-repo resolution; stable non-TTY refusal; byte-stable help/dry-run/cancel; unknown-PATH/relative/symlink/receipt safety; Continue without AI; mocked Pi exact strong/weak routes, effort, and real --thinking argv; every core profile; first-run start; exact/same-build-alias reuse without path loops; compatible config/profile/reasoning generation reload; same-version/different-content and same-path replacement controlled restart; deleted executable and foreign graph identity fail-closed without signal/TUI; failed replacement restores an authenticated prior build without stale TUI; concurrent TUI clients keep one daemon; authenticated absolute executable/PID-birth/content-build/protocol/profile/config/socket/graph identity; no chat creation; post-TUI service persistence; explicit restart and graceful stop. One isolated wg+worksgood target, never installed."
+timeout_seconds = 600

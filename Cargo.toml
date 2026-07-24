@@ -28,6 +28,13 @@ path = "src/main.rs"
 name = "nex"
 path = "src/bin/nex.rs"
 
+# Reversible profile-first concierge trial. The complete advanced CLI remains
+# `wg`; release/install artifacts intentionally do not expose this target yet.
+[[bin]]
+name = "worksgood"
+path = "src/bin/worksgood.rs"
+required-features = ["worksgood-trial"]
+
 # Casa is deliberately a companion adapter target. Product election/projection/
 # delivery policy lives under adapters/, outside WG-Fed/Review/Exec core modules.
 [[bin]]
@@ -43,6 +50,9 @@ email = ["dep:lettre"]
 slack = []
 llm-tests = []  # gates tests that call Claude CLI
 test-support = []  # exposes test helpers for cross-crate use
+# Candidate-only concierge facade. Not default, not installed by the existing
+# cargo/package/release path; build explicitly in an isolated target/CARGO_HOME.
+worksgood-trial = []
 
 [dependencies]
 interprocess = "2"
@@ -57,6 +67,9 @@ toml = "0.8"
 serde_yaml = "0.9"
 dirs = "5.0"
 sha2 = "0.10"
+# Optimized assembly-backed SHA-256 for hashing large debug executable images
+# during authenticated service startup (pure-Rust dev SHA is too slow here).
+ring = "0.17"
 # Embeds the committed, version-locked WorksGood Pi bundle (worksgood-pi/embedded/)
 # into the binary at compile time so `cargo install --path .` stays node-free.
 include_dir = "0.7"

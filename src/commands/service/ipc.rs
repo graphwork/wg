@@ -864,6 +864,8 @@ fn handle_status(dir: &Path) -> IpcResponse {
         "pid": state.pid,
         "socket": state.socket_path,
         "started_at": state.started_at,
+        "pid_start_identity": state.pid_start_identity,
+        "identity": state.identity,
         "agents": {
             "alive": alive_count,
             "idle": idle_count,
@@ -1122,13 +1124,27 @@ fn handle_reconfigure(
         }
     }
 
-    // Update persisted coordinator state so `wg service status` reflects the change
+    // Update persisted coordinator and authenticated service state so status
+    // reflects the exact config that a lifecycle client just requested.
     if let Some(mut coord_state) = CoordinatorState::load(dir) {
         coord_state.max_agents = daemon_cfg.max_agents;
         coord_state.executor = daemon_cfg.executor.clone();
         coord_state.poll_interval = daemon_cfg.poll_interval.as_secs();
         coord_state.model = daemon_cfg.model.clone();
         coord_state.save(dir);
+    }
+    if !has_overrides
+        && let Ok(config) = Config::load_merged(dir)
+        && let Ok(Some(mut state)) = ServiceState::load(dir)
+        && let Some(identity) = state.identity.as_mut()
+        && let Ok(fingerprint) = worksgood::service_identity::config_fingerprint(&config)
+        && let Ok((profile, profile_fingerprint)) =
+            worksgood::service_identity::selected_profile_identity(dir)
+    {
+        identity.config_fingerprint = fingerprint;
+        identity.selected_profile = profile;
+        identity.selected_profile_fingerprint = profile_fingerprint;
+        let _ = state.save(dir);
     }
 
     logger.info(&format!(

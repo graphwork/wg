@@ -7992,6 +7992,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest 0.12.28",
+ "ring",
  "rquest",
  "rustyline",
  "serde",
